@@ -1,13 +1,16 @@
-use crate::{AmbientIndex, AmbientSample, LightingData, WorldLight, SOURCE_AMBIENT_RAY_LENGTH};
-use playsrc_collision::{MASK_OPAQUE, Snapshot, SnapshotRayRequest, TraceScope, World as Collision};
+use crate::{AmbientIndex, AmbientSample, LightingData, SOURCE_AMBIENT_RAY_LENGTH, WorldLight};
+use playsrc_collision::{
+    MASK_OPAQUE, Snapshot, SnapshotRayRequest, TraceScope, World as Collision,
+};
 use playsrc_visibility::World as Visibility;
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 const MAX_LOCAL_LIGHTS: usize = 4;
 const MAX_CACHE_ENTRIES: usize = 200;
 const MIN_WORLD_LIGHT: f32 = 0.0002;
 const LIGHT_IN_AMBIENT_CUBE: i32 = 0x0001;
 const SURFACE_SKY: u16 = 0x0004;
+const MODEL_AMBIENT_BOOST: i32 = 0x0001_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectedWorldLight {
@@ -20,24 +23,38 @@ pub struct ModelWorldLighting {
     pub origin: [f32; 3],
     pub leaf: usize,
     pub ambient_cube: [[f32; 3]; 6],
-    pub local_lights: Vec<SelectedWorldLight>,
+    pub local_lights: Arc<[SelectedWorldLight]>,
 }
 
 #[derive(Debug)]
-pub struct ModelLightingWorld {
-    indexes: Vec<AmbientIndex>,
-    samples: Vec<AmbientSample>,
-    lights: Vec<WorldLight>,
-    cache: BTreeMap<(i32, i32, i32, usize), ModelWorldLighting>,
+pub struct ModelLightingWorld<'source> {
+    indexes: Cow<'source, [AmbientIndex]>,
+    samples: Cow<'source, [AmbientSample]>,
+    lights: Cow<'source, [WorldLight]>,
+    cache: BTreeMap<(i32, i32, i32, usize), (u64, ModelWorldLighting)>,
+    revision: u64,
 }
 
-impl ModelLightingWorld {
+impl ModelLightingWorld<'static> {
     pub fn new(lighting: LightingData) -> Self {
         Self {
-            indexes: lighting.ambient_indexes,
-            samples: lighting.ambient_samples,
-            lights: lighting.world_lights,
+            indexes: Cow::Owned(lighting.ambient_indexes),
+            samples: Cow::Owned(lighting.ambient_samples),
+            lights: Cow::Owned(lighting.world_lights),
             cache: BTreeMap::new(),
+            revision: 0,
+        }
+    }
+}
+
+impl<'source> ModelLightingWorld<'source> {
+    pub fn borrowed(lighting: &'source LightingData) -> Self {
+        Self {
+            indexes: Cow::Borrowed(&lighting.ambient_indexes),
+            samples: Cow::Borrowed(&lighting.ambient_samples),
+            lights: Cow::Borrowed(&lighting.world_lights),
+            cache: BTreeMap::new(),
+            revision: 0,
         }
     }
 
@@ -58,7 +75,9 @@ impl ModelLightingWorld {
             (origin[2] as i32 + 32_768) >> 7,
             leaf,
         );
-        if let Some(value) = self.cache.get(&key) {
+        self.revision = self.revision.wrapping_add(1);
+        if let Some((revision, value)) = self.cache.get_mut(&key) {
+            *revision = self.revision;
             return Ok(value.clone());
         }
         let origin = cache_lighting_origin(origin, leaf, visibility, collision, snapshot)?;
@@ -115,7 +134,12 @@ impl ModelLightingWorld {
             let angular = source_world_light_angle(&light, direction)?;
             let record = SelectedWorldLight { source, light };
             if light.kind != 0 && illumination < MIN_WORLD_LIGHT {
-                add_world_light_to_cube(&mut ambient_cube, direction, light.intensity, ratio * angular)?;
+                add_world_light_to_cube(
+                    &mut ambient_cube,
+                    direction,
+                    light.intensity,
+                    ratio * angular,
+                )?;
             } else if selected.len() < MAX_LOCAL_LIGHTS {
                 selected.push((illumination, record, direction, ratio));
             } else if let Some((minimum, _)) = selected
@@ -124,8 +148,10 @@ impl ModelLightingWorld {
                 .min_by(|(_, left), (_, right)| left.0.total_cmp(&right.0))
                 && illumination > selected[minimum].0
             {
-                let (_, demoted, old_direction, old_ratio) =
-                    std::mem::replace(&mut selected[minimum], (illumination, record, direction, ratio));
+                let (_, demoted, old_direction, old_ratio) = std::mem::replace(
+                    &mut selected[minimum],
+                    (illumination, record, direction, ratio),
+                );
                 add_world_light_to_cube(
                     &mut ambient_cube,
                     old_direction,
@@ -133,7 +159,12 @@ impl ModelLightingWorld {
                     old_ratio * source_world_light_angle(&demoted.light, old_direction)?,
                 )?;
             } else {
-                add_world_light_to_cube(&mut ambient_cube, direction, light.intensity, ratio * angular)?;
+                add_world_light_to_cube(
+                    &mut ambient_cube,
+                    direction,
+                    light.intensity,
+                    ratio * angular,
+                )?;
             }
         }
 
@@ -141,12 +172,22 @@ impl ModelLightingWorld {
             origin,
             leaf,
             ambient_cube,
-            local_lights: selected.into_iter().map(|(_, light, _, _)| light).collect(),
+            local_lights: selected
+                .into_iter()
+                .map(|(_, light, _, _)| light)
+                .collect::<Vec<_>>()
+                .into(),
         };
         if self.cache.len() == MAX_CACHE_ENTRIES {
-            self.cache.pop_first();
+            let oldest = self
+                .cache
+                .iter()
+                .min_by_key(|(_, (revision, _))| *revision)
+                .map(|(key, _)| *key)
+                .ok_or(())?;
+            self.cache.remove(&oldest);
         }
-        self.cache.insert(key, value.clone());
+        self.cache.insert(key, (self.revision, value.clone()));
         Ok(value)
     }
 
@@ -166,7 +207,9 @@ impl ModelLightingWorld {
         }
         let bounds = visibility.leaves.get(leaf).ok_or(())?;
         let start = usize::from(index.first_sample);
-        let end = start.checked_add(usize::from(index.sample_count)).ok_or(())?;
+        let end = start
+            .checked_add(usize::from(index.sample_count))
+            .ok_or(())?;
         let samples = self.samples.get(start..end).ok_or(())?;
         let mut cube = [[0.0; 3]; 6];
         let mut total = 0.0;
@@ -247,7 +290,11 @@ fn cache_lighting_origin(
     center[1] = (minimum[1] + maximum[1]) * 0.5;
     center[2] = origin[2];
     snap_to_reference_leaf(visibility, origin, &mut center)?;
-    Ok(if trace(center)?.fraction < 1.0 { origin } else { center })
+    Ok(if trace(center)?.fraction < 1.0 {
+        origin
+    } else {
+        center
+    })
 }
 
 fn snap_to_reference_leaf(
@@ -304,7 +351,11 @@ pub fn source_world_light_ray(
     }
     if light.kind == 3 {
         let direction = light.normal.map(|value| -value);
-        return Ok((add(origin, scale(direction, SOURCE_AMBIENT_RAY_LENGTH)), direction, 1.0));
+        return Ok((
+            add(origin, scale(direction, SOURCE_AMBIENT_RAY_LENGTH)),
+            direction,
+            1.0,
+        ));
     }
     let delta = subtract(light.origin, origin);
     let squared = dot(delta, delta);
@@ -316,7 +367,8 @@ pub fn source_world_light_ray(
     let (minimum, maximum) = source_lightcache_bounds(origin);
     let radius = length(subtract(maximum, origin));
     if matches!(light.kind, 1 | 2) {
-        let closest = std::array::from_fn(|axis| light.origin[axis].clamp(minimum[axis], maximum[axis]));
+        let closest =
+            std::array::from_fn(|axis| light.origin[axis].clamp(minimum[axis], maximum[axis]));
         let delta = subtract(closest, light.origin);
         if dot(delta, delta) > light.radius * light.radius {
             return Ok((light.origin, direction, 0.0));
@@ -324,7 +376,14 @@ pub fn source_world_light_ray(
     }
     if light.kind == 2 {
         let sine = (1.0 - light.stop_dot2 * light.stop_dot2).max(0.0).sqrt();
-        if !sphere_intersects_cone(origin, radius, light.origin, light.normal, sine, light.stop_dot2)? {
+        if !sphere_intersects_cone(
+            origin,
+            radius,
+            light.origin,
+            light.normal,
+            sine,
+            light.stop_dot2,
+        )? {
             return Ok((light.origin, direction, 0.0));
         }
     } else if light.kind == 0
@@ -348,7 +407,10 @@ pub fn source_world_light_ray(
         4 => (light.linear_attenuation - distance).max(0.0),
         _ => 0.0,
     };
-    ratio.is_finite().then_some((light.origin, direction, ratio)).ok_or(())
+    ratio
+        .is_finite()
+        .then_some((light.origin, direction, ratio))
+        .ok_or(())
 }
 
 fn sphere_intersects_cone(
@@ -425,6 +487,53 @@ pub fn add_world_light_to_cube(
         }
     }
     Ok(())
+}
+
+pub fn apply_model_ambient_boost(
+    cube: &mut [[f32; 3]; 6],
+    lights: &[SelectedWorldLight],
+    origin: [f32; 3],
+    model_flags: i32,
+) {
+    if lights.is_empty() || model_flags & MODEL_AMBIENT_BOOST == 0 {
+        return;
+    }
+    let luminance = [0.3, 0.59, 0.11];
+    let mut average = 0.0;
+    let mut maximum: f32 = 0.0;
+    for side in cube.iter().copied() {
+        let value = dot(side, luminance);
+        average += value;
+        maximum = maximum.max(value);
+    }
+    average /= 6.0;
+    if maximum <= 0.0 || average >= 0.3 {
+        return;
+    }
+    let mut direct = 0.0;
+    for selected in lights {
+        let light = selected.light;
+        let delta = subtract(light.origin, origin);
+        let squared = dot(delta, delta);
+        let distance = squared.sqrt();
+        let denominator = light.constant_attenuation
+            + light.linear_attenuation * distance
+            + light.quadratic_attenuation * squared;
+        let attenuation = if denominator > 0.00001 {
+            denominator.recip()
+        } else {
+            1.0
+        };
+        direct += dot(scale(light.intensity, attenuation), luminance);
+    }
+    if average < direct * 0.1 {
+        let factor = (direct * 0.1 / maximum).min(5.0);
+        for side in cube {
+            for value in side {
+                *value *= factor;
+            }
+        }
+    }
 }
 
 fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
@@ -527,8 +636,7 @@ mod tests {
     #[test]
     fn demoted_world_lights_accumulate_only_on_facing_ambient_sides() {
         let mut cube = [[0.0; 3]; 6];
-        add_world_light_to_cube(&mut cube, [1.0, 0.0, 0.0], [2.0, 3.0, 4.0], 0.5)
-            .unwrap();
+        add_world_light_to_cube(&mut cube, [1.0, 0.0, 0.0], [2.0, 3.0, 4.0], 0.5).unwrap();
         assert_eq!(cube[0], [1.0, 1.5, 2.0]);
         assert!(cube[1..].iter().all(|side| *side == [0.0; 3]));
     }
@@ -536,16 +644,29 @@ mod tests {
     #[test]
     fn ambient_samples_use_inverse_squared_distance_and_borrow_solid_leaf_neighbors() {
         let world = ModelLightingWorld {
-            indexes: vec![
-                AmbientIndex { sample_count: 0, first_sample: 1 },
-                AmbientIndex { sample_count: 2, first_sample: 0 },
-            ],
-            samples: vec![
-                AmbientSample { cube: [[1.0, 2.0, 3.0]; 6], position: [0; 3] },
-                AmbientSample { cube: [[3.0, 6.0, 9.0]; 6], position: [255, 0, 0] },
-            ],
-            lights: Vec::new(),
+            indexes: Cow::Owned(vec![
+                AmbientIndex {
+                    sample_count: 0,
+                    first_sample: 1,
+                },
+                AmbientIndex {
+                    sample_count: 2,
+                    first_sample: 0,
+                },
+            ]),
+            samples: Cow::Owned(vec![
+                AmbientSample {
+                    cube: [[1.0, 2.0, 3.0]; 6],
+                    position: [0; 3],
+                },
+                AmbientSample {
+                    cube: [[3.0, 6.0, 9.0]; 6],
+                    position: [255, 0, 0],
+                },
+            ]),
+            lights: Cow::Owned(Vec::new()),
             cache: BTreeMap::new(),
+            revision: 0,
         };
         let visibility = visibility(vec![leaf(), leaf()]);
         let cube = world.sample_leaf(0, [0.0; 3], &visibility).unwrap();
@@ -553,5 +674,22 @@ mod tests {
         let expected = (1.0 + 3.0 * far) / (1.0 + far);
         assert_eq!(cube[0][0].to_bits(), expected.to_bits());
         assert_eq!(cube[5][1].to_bits(), (expected * 2.0).to_bits());
+    }
+
+    #[test]
+    fn flagged_models_boost_only_swamped_authored_ambient_cubes() {
+        let mut cube = [[0.02; 3]; 6];
+        let mut source = light();
+        source.constant_attenuation = 1.0;
+        source.quadratic_attenuation = 0.0;
+        let lights = [SelectedWorldLight {
+            source: 0,
+            light: source,
+        }];
+        apply_model_ambient_boost(&mut cube, &lights, [0.0; 3], MODEL_AMBIENT_BOOST);
+        assert!((cube[0][0] - 0.1).abs() < 0.00001);
+        let mut unchanged = [[0.02; 3]; 6];
+        apply_model_ambient_boost(&mut unchanged, &lights, [0.0; 3], 0);
+        assert_eq!(unchanged[0], [0.02; 3]);
     }
 }

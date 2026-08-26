@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js"
+import type { ModelEyeState, ModelLightingInput, ModelLocalLight } from "@playsrc/rendering"
 
 const LIMIT = 512 * 1024 * 1024
 export type ModelArtifact = Readonly<{
@@ -93,7 +94,7 @@ export type AudioArtifact = Readonly<{
     entries: readonly SoundScriptNode[]
   }>[]
 }>
-export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array }>
+export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array; lighting: ModelLightingInput; eyes: readonly ModelEyeState[] }>
 export type BrushModelArtifact=Readonly<{index:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];origin:readonly[number,number,number];headNode:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[];entities:readonly number[]}>
 export type ModelTextureBinding = Readonly<{
   kind: "material" | "model"
@@ -1014,12 +1015,35 @@ function parseAudio(r: Reader): AudioArtifact {
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
-  if (r.decode(r.take(4)) !== "PMTX" || r.u32() !== 2) throw new ArtifactError("PMTX identity")
+  if (r.decode(r.take(4)) !== "PMTX" || r.u32() !== 3) throw new ArtifactError("PMTX identity")
   const output = Array.from({ length: r.u32() }, () => {
     const entity = r.u32(), model = r.text(),skin=r.i32(),body=r.i32(),origin=tuple3(r),angles=tuple3(r), matrix = new Float32Array(12)
     for (let index = 0; index < matrix.length; index++) matrix[index] = r.f32()
     if(skin<0||body<0)throw new ArtifactError("model occurrence selection")
-    return Object.freeze({ entity, model,skin,body,origin,angles, matrix })
+    const present = r.u8(), count = r.u8(), ambient = r.u8()
+    if (present !== 1 || count > 4 || ambient !== 1 || r.u8()) throw new ArtifactError("model occurrence lighting")
+    const lightingOrigin = tuple3(r), cameraPosition = tuple3(r)
+    const ambientCube = Object.freeze(Array.from({ length: 6 }, () => tuple3(r))) as ModelLightingInput["ambientCube"]
+    const localLights = Object.freeze(Array.from({ length: count }, (): ModelLocalLight => {
+      const kind = r.u8()
+      if (kind > 2 || r.u8() || r.u8() || r.u8()) throw new ArtifactError("model occurrence local light")
+      const color = tuple3(r), position = tuple3(r), direction = tuple3(r)
+      const range = r.f32(), falloff = r.f32(), attenuation = tuple3(r), theta = r.f32(), phi = r.f32()
+      return Object.freeze({ kind: (["point", "directional", "spot"] as const)[kind]!, color, position,
+        direction, range, falloff, attenuation, theta, phi })
+    }))
+    const environment = r.text()
+    const lighting = Object.freeze({ lightingOrigin, cameraPosition, ambientCube, localLights,
+      localEnvironment: environment || null, ambientLight: true, staticLightVertex: false,
+      staticLightTexel: false }) satisfies ModelLightingInput
+    const eyes = Object.freeze(Array.from({ length: r.u32() }, (): ModelEyeState => {
+      const primitive = r.u32(), mesh = r.u32(), eyeball = r.u32(), texture = r.u32()
+      const worldOrigin = tuple3(r), authoredUp = tuple3(r)
+      const row = () => Object.freeze([r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [number, number, number, number]
+      return Object.freeze({ primitive, mesh, eyeball, texture, worldOrigin, authoredUp,
+        irisU: row(), irisV: row(), glintU: row(), glintV: row() })
+    }))
+    return Object.freeze({ entity, model,skin,body,origin,angles, matrix, lighting, eyes })
   })
   return Object.freeze(output)
 }

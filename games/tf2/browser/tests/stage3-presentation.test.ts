@@ -243,6 +243,7 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
   ;[1, 2, 3, 0, 0, 1, 4, 5, 6, 1, 7, 8, 9, 0, 1, 0, 10, 11, 12, -1].forEach(f32)
   u32(0)
   u32(0)
+  u32(0)
   const bytes = Uint8Array.from(output)
   const pose = decodeModelPoseOutput(bytes)[0]!
   expect(pose.sampleTick).toBe(7n)

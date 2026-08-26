@@ -483,7 +483,12 @@ pub fn encode_section_with_cancel(
                         .chain(light.intensity)
                         .chain(light.origin)
                         .chain(light.normal)
-                        .chain([light.stop_dot, light.stop_dot2, light.exponent, light.radius])
+                        .chain([
+                            light.stop_dot,
+                            light.stop_dot2,
+                            light.exponent,
+                            light.radius,
+                        ])
                         .chain(light.attenuation)
                     {
                         finite(value)?;

@@ -13,7 +13,11 @@ import {
   type ModelLightingInput,
   type ModelLocalLight,
 } from "../src/model-lighting"
-import { sourceStaticVertexLighting } from "../src/source-model-lighting"
+import {
+  createSourceModelEyeUniforms,
+  sourceStaticVertexLighting,
+  updateSourceModelEyeUniforms,
+} from "../src/source-model-lighting"
 
 const cube = [
   [1, 0, 0], [2, 0, 0], [0, 3, 0], [0, 4, 0], [0, 0, 5], [0, 0, 6],
@@ -103,5 +107,10 @@ describe("explicit Studio eye state", () => {
     })).toThrow(/current-framebuffer/i)
     expect(ambientCubeLuminance(cube)).toBeGreaterThanOrEqual(0)
     expect(ambientCubeLuminance(cube)).toBeLessThanOrEqual(1)
+    const uniforms = createSourceModelEyeUniforms()
+    updateSourceModelEyeUniforms(uniforms, eye)
+    expect((uniforms.irisU.value as { toArray(): number[] }).toArray()).toEqual([1, 0, 0, 0])
+    expect((uniforms.glintV.value as { toArray(): number[] }).toArray()).toEqual([0, 1, 0, 0])
+    expect((uniforms.origin.value as { toArray(): number[] }).toArray()).toEqual([1, 2, 3])
   })
 })

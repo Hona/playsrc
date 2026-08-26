@@ -49,10 +49,15 @@ import { createSourceLightmappedEnvironmentNode, type SourceLightmappedEnvironme
 import { SourceExposureSampler } from "./source-exposure"
 import {
   createSourceModelLightingUniforms,
-  sourceModelLightingNode,
+  createSourceModelEyeUniforms,
+  sourceEyeIrisNode,
+  sourceModelSurfaceNode,
   sourceStaticVertexLightingNode,
   updateSourceModelLightingUniforms,
+  updateSourceModelEyeUniforms,
+  type SourceModelEyeUniforms,
   type SourceModelLightingUniforms,
+  type SourceModelPhongState,
 } from "./source-model-lighting"
 import {
   createSourceViewFogUniforms,
@@ -822,6 +827,7 @@ export interface Renderer {
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
+  captureWorldModelEvidence(camera: Camera): ModelGeometryEvidence
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
@@ -917,6 +923,14 @@ type ModelPanelMaterialAnimation = Readonly<{
   scrollY: ReturnType<typeof TSL.uniform>
 }> & { frame: number }
 
+type ModelLightingScene = Readonly<{
+  materials: ReadonlyMap<string, ModelMaterialInput> | undefined
+  environment: EnvironmentInput | undefined
+  textures: ReadonlyMap<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>
+  cubemaps: ReadonlyMap<number, THREE.CubeTexture>
+  exposure: ReturnType<typeof TSL.uniform>
+}>
+
 type SceneResources = {
   map: RuntimeMap
   payload: Uint8Array
@@ -924,8 +938,10 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  modelLightingTextures: ReadonlyMap<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>
   modelPanelMaterialAnimations: ReadonlyMap<string, readonly ModelPanelMaterialAnimation[]>
   modelOccurrenceInstances:Map<number,THREE.Group>
+  modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
   particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
@@ -1019,7 +1035,13 @@ function sourceTransform(object: THREE.Object3D, position: readonly number[], an
     "ZYX",
   )
 }
-function runtimeStaticLightingNode(map:RuntimeMap,input:StaticPropInput,index:number):any{
+function runtimeStaticLightingNode(
+  map: RuntimeMap,
+  input: StaticPropInput,
+  index: number,
+  halfLambert: boolean,
+  warp?: THREE.Texture,
+):any{
   const normal=TSL.normalWorld.normalize(),cube=Array.from({length:6},(_,side)=>TSL.vec3(...input.runtimeAmbient.subarray(index*18+side*3,index*18+side*3+3) as unknown as [number,number,number]))
   let lighting=normal.x.lessThan(0).select(cube[1],cube[0]).mul(normal.x.mul(normal.x)).add(normal.y.lessThan(0).select(cube[3],cube[2]).mul(normal.y.mul(normal.y))).add(normal.z.lessThan(0).select(cube[5],cube[4]).mul(normal.z.mul(normal.z)))
   for(let at=input.runtimeLightOffsets[index]!;at<input.runtimeLightOffsets[index+1]!;at++){
@@ -1035,7 +1057,10 @@ function runtimeStaticLightingNode(map:RuntimeMap,input:StaticPropInput,index:nu
     else if(light.kind===4)attenuation=TSL.float(light.attenuation[1]).sub(distance).max(0)
     else attenuation=TSL.float(light.attenuation[0]).add(distance.mul(light.attenuation[1])).add(distance.mul(distance).mul(light.attenuation[2])).reciprocal()
     if(light.kind===2){const cone=direction.dot(TSL.vec3(...light.normal)).negate(),spread=Math.max(Number.EPSILON,light.stopDot-light.stopDot2),factor=cone.sub(light.stopDot2).div(spread).clamp(0,1);attenuation=attenuation.mul(light.exponent===0||light.exponent===1?factor:factor.pow(light.exponent))}
-    const lightDirection=light.kind===3?TSL.vec3(...light.normal).negate():direction,diffuse=normal.dot(lightDirection).mul(0.5).add(0.5).clamp(0,1).pow(2)
+    const lightDirection=light.kind===3?TSL.vec3(...light.normal).negate():direction
+    let diffuse:any=halfLambert?normal.dot(lightDirection).mul(0.5).add(0.5).clamp(0,1):normal.dot(lightDirection).clamp(0,1)
+    if(warp)diffuse=TSL.texture(warp,TSL.vec2(diffuse,0.5)).rgb.mul(2)
+    else if(halfLambert)diffuse=diffuse.pow(2)
     lighting=lighting.add(TSL.vec3(...light.intensity).mul(attenuation).mul(diffuse))
   }
   return lighting
@@ -1370,8 +1395,8 @@ class RendererOwner implements Renderer {
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
-  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; seen: number }>()
-  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; seen: number }>()
+  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; seen: number }>()
+  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; seen: number }>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
@@ -1577,6 +1602,43 @@ class RendererOwner implements Renderer {
           worldRay.setFromCamera(new THREE.Vector2(x, y), this.#camera)
           worldDepth = worldRay.intersectObjects(world, false)[0]?.distance ?? null
         }
+        samples.push(Object.freeze({
+          x,
+          y,
+          identity: owner.userData.identity,
+          material: String(hit.object.userData.materialIdentity),
+          modelDepth: hit.distance,
+          worldDepth,
+        }))
+      }
+    }
+    return Object.freeze({ sceneGeneration: this.#sceneGeneration, samples: Object.freeze(samples) })
+  }
+
+  captureWorldModelEvidence(camera: Camera): ModelGeometryEvidence {
+    if (!this.#active || this.#lifecycle !== "Ready") {
+      throw new RenderingError("InvalidState", "renderer player-model evidence is unavailable")
+    }
+    if (this.#dynamicModelInstances.size === 0) {
+      return Object.freeze({ sceneGeneration: this.#sceneGeneration, samples: Object.freeze([]) })
+    }
+    this.#setCamera(camera)
+    this.#scene.updateMatrixWorld(true)
+    const ray = new THREE.Raycaster()
+    const world = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const instances = [...this.#dynamicModelInstances.values()].map((instance) => instance.instance)
+    const samples: ModelGeometryEvidence["samples"][number][] = []
+    for (const y of [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45]) {
+      for (const x of [-0.4, -0.25, -0.1, 0, 0.1, 0.25, 0.4]) {
+        if (samples.length >= 12) break
+        ray.setFromCamera(new THREE.Vector2(x, y), this.#camera)
+        const hit = ray.intersectObjects(instances, true)[0]
+        if (!hit) continue
+        let owner: THREE.Object3D | null = hit.object
+        while (owner && !Number.isSafeInteger(owner.userData.identity)) owner = owner.parent
+        if (!owner) continue
+        const worldDepth = samples.length < 2 ? ray.intersectObjects(world, false)[0]?.distance ?? null : null
+        if (worldDepth !== null && hit.distance > worldDepth + 0.01) continue
         samples.push(Object.freeze({
           x,
           y,
@@ -1998,8 +2060,10 @@ class RendererOwner implements Renderer {
     const staticPropInstances: StaticPropResource[] = []
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
+    const modelLightingTextures = new Map<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
+    const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
     const brushModelTemplates=new Map<number,THREE.Group>()
     const particleTextures = new Map<string, THREE.DataTexture>()
     const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
@@ -2092,13 +2156,13 @@ class RendererOwner implements Renderer {
       directionalGpu.set(identity, { input, texture })
     }
 
-    const createModelTexture = (identity: string, role: number): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
+    const createModelTexture = (identity: string, role: number, kind: "material" | "model" = "material"): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
       const material = request.modelMaterials?.get(identity.toLowerCase())
       if (!material) {
         diagnostics.push(diagnostic("MissingMaterial", identity, "typed model material state is unavailable"))
         return undefined
       }
-      const binding = material.bindings.find((value) => value.kind === "material" && value.role === role)
+      const binding = material.bindings.find((value) => value.kind === kind && value.role === role)
       if (!binding) return undefined
       if (binding.colorRead === "format-dependent") {
         throw new RenderingError("MissingInput", `model texture ${binding.logicalPath} lacks a resolved color interpretation`)
@@ -2558,8 +2622,8 @@ class RendererOwner implements Renderer {
             const material=new THREE.MeshBasicNodeMaterial({depthTest:false,depthWrite:false,side:THREE.BackSide})
             if(face.encoding==="hdr-rgbs"){
               const baseUv=TSL.uv(),fudge=0.01/Math.max(authored.width,authored.height),increment=TSL.vec2(0.5/authored.width-fudge,0.5/authored.height-fudge),uv00=baseUv.sub(increment),uv10=TSL.vec2(baseUv.x.add(increment.x),baseUv.y.sub(increment.y)),uv01=TSL.vec2(baseUv.x.sub(increment.x),baseUv.y.add(increment.y)),uv11=baseUv.add(increment),s00=TSL.texture(texture,uv00),s10=TSL.texture(texture,uv10),s01=TSL.texture(texture,uv01),s11=TSL.texture(texture,uv11),fraction=TSL.fract(uv00.mul(TSL.vec2(authored.width,authored.height))),top=TSL.mix(s00.rgb.mul(s00.a),s10.rgb.mul(s10.a),fraction.x),bottom=TSL.mix(s01.rgb.mul(s01.a),s11.rgb.mul(s11.a),fraction.x)
-              material.colorNode=TSL.vec4(TSL.mix(top,bottom,fraction.y).mul(8),1)
-            }else material.colorNode=TSL.texture(texture,TSL.uv())
+              material.colorNode=TSL.vec4(TSL.mix(top,bottom,fraction.y).mul(8).mul(exposureUniform),1)
+            }else{const sample=TSL.texture(texture,TSL.uv());material.colorNode=TSL.vec4(sample.rgb.mul(exposureUniform),sample.a)}
             material.toneMapped=false;disposables.add(material)
             const mesh=new THREE.Mesh(geometry,material);mesh.userData.skyFace=geometryFace.face;mesh.renderOrder=-1;skyGroup.add(mesh)
           }
@@ -2613,7 +2677,19 @@ class RendererOwner implements Renderer {
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
-           const baseTexture = createModelTexture(resolved.logicalPath, 0)
+           const typedMaterial = request.modelMaterials?.get(resolved.logicalPath.toLowerCase())
+           const baseTexture = typedMaterial?.shader === "eye-refract" || typedMaterial?.shader === "eyes"
+             ? createModelTexture(resolved.logicalPath, 8, "model")
+             : createModelTexture(resolved.logicalPath, 0)
+           if ((typedMaterial?.shader === "eye-refract" || typedMaterial?.shader === "eyes") && !baseTexture) {
+             throw new RenderingError("MissingInput", `authored Studio eye iris ${resolved.logicalPath} is unavailable`)
+           }
+           if (typedMaterial && typedMaterial.shader !== "unlit-generic" && typedMaterial.shader !== "unlit-two-texture") {
+             const warp = createModelTexture(resolved.logicalPath, 6, "model")?.texture
+             const exponent = createModelTexture(resolved.logicalPath, 5, "model")?.texture
+             const iris = typedMaterial.shader === "eye-refract" || typedMaterial.shader === "eyes" ? baseTexture?.texture : undefined
+             if (warp || exponent || iris) modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({ warp, exponent, iris }))
+           }
           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
@@ -2626,8 +2702,7 @@ class RendererOwner implements Renderer {
             const first = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
               ? sampled!
               : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
-            const typedMaterial = request.modelMaterials?.get(resolved.logicalPath.toLowerCase())
-            let base = first
+             let base = first
             if (typedMaterial?.shader === "unlit-two-texture") {
               const second = createModelTexture(resolved.logicalPath, 6)
               if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
@@ -2683,7 +2758,10 @@ class RendererOwner implements Renderer {
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
             if(!material){
               material=original.clone()
-              const base=original.colorNode??TSL.vec4(1,1,1,1),rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?sourceStaticVertexLightingNode():runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform)
+              const base=original.colorNode??TSL.vec4(1,1,1,1)
+              const state=request.modelMaterials?.get(identity.toLowerCase())?.state as Readonly<{halfLambert?:boolean;phong?:unknown}>|undefined
+              const halfLambert=Boolean(state?.phong)||state?.halfLambert===true
+              const rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?sourceStaticVertexLightingNode():runtimeStaticLightingNode(map,props,propIndex,halfLambert,modelLightingTextures.get(identity.toLowerCase())?.warp)).mul(exposureUniform)
               const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
               material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
@@ -2728,6 +2806,32 @@ class RendererOwner implements Renderer {
         const m = occurrenceMatrices.get(occurrence.entity)!.matrix
         instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
         instance.matrixAutoUpdate = false
+        const inputs = modelDrawInputs.get(occurrence.entity)
+        if (inputs) {
+          const retained: { instance: THREE.Group; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms> } = { instance }
+          this.#applyDynamicModelLighting(retained, {
+            identity: occurrence.entity,
+            model: model.logicalPath,
+            position: Object.freeze([m[3]!, m[7]!, m[11]!]),
+            angles: Object.freeze([0, 0, 0]),
+            scale: 1,
+            modelLighting: inputs.lighting,
+            eyeStates: inputs.eyes,
+          }, {
+            materials: request.modelMaterials,
+            environment: request.environment,
+            textures: modelLightingTextures,
+            cubemaps: cubemapTextures,
+            exposure: exposureUniform,
+          })
+          if (retained.lighting) modelOccurrenceLighting.push(retained.lighting)
+          instance.traverse((object) => {
+            if (!(object instanceof THREE.Mesh) || object.userData.dynamicMaterial !== true) return
+            for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+              disposables.add(material)
+            }
+          })
+        }
         modelOccurrenceInstances.set(occurrence.entity,instance)
         mainModelOccurrences.add(instance)
       }
@@ -2915,8 +3019,10 @@ class RendererOwner implements Renderer {
       },
       group,
       modelTemplates,
+      modelLightingTextures,
       modelPanelMaterialAnimations,
       modelOccurrenceInstances,
+      modelOccurrenceLighting: Object.freeze(modelOccurrenceLighting),
       brushModelTemplates,
       particleTextures,
       particleMaterials,
@@ -3619,6 +3725,9 @@ class RendererOwner implements Renderer {
 
   #setCamera(input: Camera): void {
     this.#camera.position.set(...input.position)
+    for (const lighting of this.#active?.modelOccurrenceLighting ?? []) {
+      ;(lighting.cameraPosition.value as THREE.Vector3).set(...input.position)
+    }
     if (
       this.#camera.fov !== input.verticalFovDegrees
       || this.#camera.near !== input.near
@@ -4091,6 +4200,7 @@ class RendererOwner implements Renderer {
     for (let primitive = 0; primitive < meshes.length; primitive += 1) {
       const object = meshes[primitive]!
       const posed = pose.primitives[primitive]!
+      object.userData.posedPrimitive = posed.primitive
       if (
         posed.material !== object.userData.primitiveMaterial
         || posed.positions.length !== object.geometry.getAttribute("position").count * 3
@@ -4196,11 +4306,19 @@ class RendererOwner implements Renderer {
   }
 
   #applyDynamicModelLighting(
-    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms },
+    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms> },
     item: ModelItem,
+    scene?: ModelLightingScene,
   ): void {
     const input = item.modelLighting
     if (!input) return
+    const resources = scene ?? {
+      materials: this.#active!.loadRequest.modelMaterials,
+      environment: this.#active!.loadRequest.environment,
+      textures: this.#active!.modelLightingTextures,
+      cubemaps: this.#active!.cubemapTextures,
+      exposure: this.#active!.exposureUniform,
+    }
     let uniforms = retained.lighting
     if (!uniforms) {
       uniforms = createSourceModelLightingUniforms()
@@ -4209,7 +4327,7 @@ class RendererOwner implements Renderer {
       if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
       for (const mesh of meshes) {
         const identity = String(mesh.userData.materialIdentity).toLowerCase()
-        const authored = this.#active!.loadRequest.modelMaterials?.get(identity)
+        const authored = resources.materials?.get(identity)
         if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture") continue
         if (mesh.userData.dynamicMaterial !== true) {
           mesh.material = Array.isArray(mesh.material)
@@ -4222,20 +4340,63 @@ class RendererOwner implements Renderer {
           if (!(material instanceof THREE.MeshBasicNodeMaterial)) {
             throw new RenderingError("UnsupportedFeature", `model lighting shader ${identity} is unavailable`)
           }
-          const state = authored.state as Readonly<{ halfLambert?: boolean }>
+          const state = authored.state as Readonly<{
+            halfLambert?: boolean
+            phong?: SourceModelPhongState | null
+            dilation?: number
+          }>
           if (typeof state.halfLambert !== "boolean") {
             throw new RenderingError("MissingInput", `model half-Lambert state ${identity} is unavailable`)
           }
-          const base = material.colorNode ?? TSL.vec4(1, 1, 1, 1)
-          material.colorNode = TSL.vec4(
-            base.rgb.mul(sourceModelLightingNode(uniforms, state.halfLambert)).mul(this.#active!.exposureUniform),
-            base.a,
-          )
+          const textures = resources.textures.get(identity)
+          const environmentState = authored.environmentMap as Readonly<{
+            tint: readonly [number, number, number]
+          }> | null
+          let environment: Readonly<{ texture: THREE.CubeTexture; tint: readonly [number, number, number]; scale: number }> | undefined
+          if (environmentState && input.localEnvironment) {
+            const selected = resources.environment?.cubemapFacts.find((fact) =>
+              fact.logicalPath.toLowerCase() === input.localEnvironment,
+            )
+            const texture = selected && resources.cubemaps.get(selected.index)
+            if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
+            environment = Object.freeze({
+              texture,
+              tint: environmentState.tint,
+              scale: this.configuration.lightingProfile === "hdr" ? 16 : 1,
+            })
+          }
+          let base = material.colorNode ?? TSL.vec4(1, 1, 1, 1)
+          if (authored.shader === "eye-refract" || authored.shader === "eyes") {
+            const primitive = Number(mesh.userData.posedPrimitive ?? mesh.userData.sourcePrimitive)
+            const eye = item.eyeStates?.find((value) => value.primitive === primitive)
+            if (!eye || !textures?.iris || typeof state.dilation !== "number") {
+              throw new RenderingError("MissingInput", `authored Studio eye state ${identity}:${primitive} is unavailable`)
+            }
+            const eyeUniforms = createSourceModelEyeUniforms()
+            const eyes = retained.eyes ?? new Map<number, SourceModelEyeUniforms>()
+            eyes.set(primitive, eyeUniforms)
+            retained.eyes = eyes
+            updateSourceModelEyeUniforms(eyeUniforms, eye)
+            base = sourceEyeIrisNode(textures.iris, eyeUniforms, state.dilation, authored.shader === "eye-refract")
+          }
+          material.colorNode = sourceModelSurfaceNode(base, uniforms, {
+            halfLambert: state.phong ? true : state.halfLambert,
+            diffuseWarp: textures?.warp,
+            exponentTexture: textures?.exponent,
+            phong: state.phong,
+            environment,
+          }, resources.exposure)
           material.needsUpdate = true
         }
       }
     }
     updateSourceModelLightingUniforms(uniforms, input)
+    if (retained.eyes) {
+      for (const eye of item.eyeStates ?? []) {
+        const uniforms = retained.eyes.get(eye.primitive)
+        if (uniforms) updateSourceModelEyeUniforms(uniforms, eye)
+      }
+    }
   }
 
   #placeDynamicInstance(instance: THREE.Group, order: number): void {

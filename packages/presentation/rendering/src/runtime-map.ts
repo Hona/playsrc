@@ -1119,16 +1119,9 @@ function buildLdrLightmap(
       } else {
         const encoded = (source + sample) * 4
         const exponentByte = lighting[encoded + 3]!
-        const exponent = exponentByte > 127 ? exponentByte - 256 : exponentByte
-        const scale = 2 ** exponent / 255
-        const irradiance = sourceLdrLightmapIrradiance([
-          lighting[encoded]! * scale,
-          lighting[encoded + 1]! * scale,
-          lighting[encoded + 2]! * scale,
-        ])
-        rgba[target] = irradiance[0]
-        rgba[target + 1] = irradiance[1]
-        rgba[target + 2] = irradiance[2]
+        rgba[target] = sourceLdrEncodedChannel(lighting[encoded]!, exponentByte)
+        rgba[target + 1] = sourceLdrEncodedChannel(lighting[encoded + 1]!, exponentByte)
+        rgba[target + 2] = sourceLdrEncodedChannel(lighting[encoded + 2]!, exponentByte)
         rgba[target + 3] = 1
       }
     }
@@ -1148,28 +1141,37 @@ function sourceRound(value: number): number {
   return fraction < 0.5 ? lower : fraction > 0.5 ? lower + 1 : lower % 2 === 0 ? lower : lower + 1
 }
 
+const ldrChannels = new Float32Array(65_536)
+const ldrChannelsInitialized = new Uint8Array(65_536)
+const SOURCE_LDR_OVERBRIGHT = 2 ** 2.2
+
+function sourceLdrEffectiveChannel(linear: number): number {
+  const index = Math.max(0, Math.min(4091, sourceRound(linear * 1024)))
+  const gamma = Math.pow(index / 1024, 1 / 2.2) * 0.5
+  const quantized = Math.max(0, Math.min(255, sourceRound(gamma * 255))) / 255
+  const decoded = quantized <= 0.04045
+    ? quantized / 12.92
+    : ((quantized + 0.055) / 1.055) ** 2.4
+  return decoded * SOURCE_LDR_OVERBRIGHT
+}
+
+function sourceLdrEncodedChannel(channel: number, exponentByte: number): number {
+  const identity = exponentByte * 256 + channel
+  if (ldrChannelsInitialized[identity]) return ldrChannels[identity]!
+  const exponent = exponentByte > 127 ? exponentByte - 256 : exponentByte
+  const value = sourceLdrEffectiveChannel(channel * 2 ** exponent / 255)
+  ldrChannels[identity] = value
+  ldrChannelsInitialized[identity] = 1
+  return value
+}
+
 export function sourceLdrLightmapIrradiance(
   linear: readonly [number, number, number],
 ): readonly [number, number, number] {
   if (linear.some((value) => !Number.isFinite(value) || value < 0)) {
     throw new RuntimeMapError("LDR lightmap radiance is invalid")
   }
-  const encoded = linear.map((value) => {
-    const index = Math.max(0, Math.min(4091, sourceRound(value * 1024)))
-    return Math.pow(index / 1024, 1 / 2.2) * 0.5
-  })
-  const maximum = Math.max(...encoded)
-  if (maximum > 1) {
-    for (let channel = 0; channel < encoded.length; channel += 1) encoded[channel]! /= maximum
-  }
-  const overbright = 2 ** 2.2
-  return Object.freeze(encoded.map((value) => {
-    const quantized = Math.max(0, Math.min(255, sourceRound(value * 255))) / 255
-    const decoded = quantized <= 0.04045
-      ? quantized / 12.92
-      : ((quantized + 0.055) / 1.055) ** 2.4
-    return decoded * overbright
-  })) as unknown as readonly [number, number, number]
+  return Object.freeze(linear.map(sourceLdrEffectiveChannel)) as unknown as readonly [number, number, number]
 }
 
 export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
