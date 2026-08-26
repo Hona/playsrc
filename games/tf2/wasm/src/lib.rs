@@ -62,20 +62,27 @@ impl playsrc_simulation::MetricsClock for RuntimeMetricsClock {
 struct SharedWorld {
     world: Arc<playsrc_collision::World>,
     snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
+    impact_surfaces: Arc<BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>>,
 }
 impl Clone for SharedWorld {
     fn clone(&self) -> Self {
         Self {
             world: self.world.clone(),
             snapshot: self.snapshot.clone(),
+            impact_surfaces: self.impact_surfaces.clone(),
         }
     }
 }
 impl SharedWorld {
-    fn new(world: Arc<playsrc_collision::World>, snapshot: playsrc_collision::Snapshot) -> Self {
+    fn new(
+        world: Arc<playsrc_collision::World>,
+        snapshot: playsrc_collision::Snapshot,
+        impact_surfaces: BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>,
+    ) -> Self {
         Self {
             world,
             snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
+            impact_surfaces: Arc::new(impact_surfaces),
         }
     }
 
@@ -166,6 +173,68 @@ impl playsrc_movement::Tracer for SharedWorld {
                 )
             })?;
         Self::movement_trace(trace)
+    }
+
+    fn impact_surface(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        mask: u32,
+    ) -> Result<Option<playsrc_movement::ImpactSurface>, playsrc_movement::Error> {
+        let snapshot = self.snapshot();
+        let trace = self
+            .world
+            .trace_snapshot_hull(
+                &snapshot,
+                playsrc_collision::SnapshotTraceRequest {
+                    start,
+                    end,
+                    hull: playsrc_collision::Hull {
+                        mins: [0.0; 3],
+                        maxs: [0.0; 3],
+                    },
+                    mask,
+                    scope: playsrc_collision::TraceScope::Everything,
+                    ignored: &[],
+                },
+                |_| true,
+            )
+            .map_err(|_| {
+                playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Trace,
+                    playsrc_movement::FailureKind::Malformed,
+                    "impact surface collision",
+                )
+            })?;
+        let Some(brush) = trace.brush.and_then(|index| self.world.brushes.get(index)) else {
+            return Ok(None);
+        };
+        let Some(normal) = trace.plane.map(|plane| plane.normal) else {
+            return Ok(None);
+        };
+        let mut selected: Option<(f32, u32, u8)> = None;
+        for side in &self.world.sides[brush.first_side..brush.first_side + brush.side_count] {
+            let Some(candidates) = self.impact_surfaces.get(&side.texture_info) else {
+                continue;
+            };
+            for &(face, material, plane) in candidates {
+                let alignment = dot(normal, [plane[0], plane[1], plane[2]]).abs();
+                if alignment < 0.999 {
+                    continue;
+                }
+                let distance = (dot(trace.end, [plane[0], plane[1], plane[2]]) - plane[3]).abs();
+                if selected.is_none_or(|(prior, _, _)| distance < prior) {
+                    selected = Some((distance, face, material));
+                }
+            }
+        }
+        Ok(
+            selected.map(|(_, face, game_material)| playsrc_movement::ImpactSurface {
+                game_material,
+                surface_flags: trace.surface_flags,
+                face: Some(face),
+            }),
+        )
     }
 
     fn point_contents(&self, point: [f32; 3]) -> Result<u32, playsrc_movement::Error> {
@@ -311,6 +380,39 @@ struct RuntimeEnvironment {
     water_lod: Option<[f32; 2]>,
 }
 
+struct ParticleLighting {
+    indexes: Vec<playsrc_map::AmbientIndex>,
+    samples: Vec<playsrc_map::AmbientSample>,
+    lights: Vec<playsrc_map::WorldLight>,
+}
+
+struct CombatDecalSurface {
+    surface: playsrc_map::Surface,
+    receiving: playsrc_material::DecalState,
+}
+
+#[derive(Clone)]
+struct CombatDecalVariant {
+    reference: String,
+    offset: [f32; 2],
+    scale: [f32; 2],
+    dimensions: [f32; 2],
+    weight: f32,
+}
+
+struct CombatDecalWorld {
+    surfaces: BTreeMap<u32, CombatDecalSurface>,
+    variants: BTreeMap<u8, Vec<CombatDecalVariant>>,
+    random: playsrc_tf2::UniformRandomStream,
+    serial: u32,
+}
+
+struct CombatDecal {
+    identity: u32,
+    reference: String,
+    fragment: playsrc_map::MarkFragment,
+}
+
 type InspectedTexture<'source> =
     OnceLock<Result<playsrc_vtf::Decoder<'source>, playsrc_vtf::Error>>;
 
@@ -390,6 +492,8 @@ struct Slot {
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
+    particle_lighting: Option<ParticleLighting>,
+    combat_decals: Option<CombatDecalWorld>,
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, playsrc_studio_model::PresentationModel>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
@@ -863,7 +967,7 @@ unsafe fn compile_map(
             .surfaces
             .iter()
             .any(|surface| surface.displacement.is_some());
-        let runtime = playsrc_map::assemble_prepared_runtime(
+        let mut runtime = playsrc_map::assemble_prepared_runtime(
             canonical,
             entity_graph,
             collision_world,
@@ -922,6 +1026,11 @@ unsafe fn compile_map(
             &studio_model_checksums,
         )
         .map_err(|_| 5_u32)?;
+        let particle_lighting = ParticleLighting {
+            indexes: runtime.map.lighting.ambient_indexes.clone(),
+            samples: runtime.map.lighting.ambient_samples.clone(),
+            lights: runtime.map.lighting.world_lights.clone(),
+        };
         let visibility = runtime.visibility;
         let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
             .map_err(|_| 3_u32)?;
@@ -935,7 +1044,32 @@ unsafe fn compile_map(
             &BTreeMap::new(),
         )
         .map_err(|_| 5_u32)?;
-        let gameplay_world = SharedWorld::new(collision.clone(), initial_collision);
+        let registry = surface_property_registry(&resources).map_err(|_| 5_u32)?;
+        let mut impact_surfaces = BTreeMap::<i16, Vec<(u32, u8, [f32; 4])>>::new();
+        for surface in &runtime.map.surfaces {
+            let Some(material) = map_materials.get(surface.material) else {
+                return Err(5_u32);
+            };
+            let property = registry
+                .resolve(material.surface_property.as_deref())
+                .or_else(|| registry.resolve(Some(b"default")))
+                .ok_or(5_u32)?;
+            let texture = i16::try_from(surface.texture_info).map_err(|_| 5_u32)?;
+            impact_surfaces.entry(texture).or_default().push((
+                u32::try_from(surface.face).map_err(|_| 5_u32)?,
+                property.game_material,
+                surface.plane,
+            ));
+        }
+        let decals = combat_decal_world(
+            std::mem::take(&mut runtime.map.surfaces),
+            &map_materials,
+            &resources,
+            &decoders,
+        )
+        .map_err(|_| 5_u32)?;
+        let gameplay_world =
+            SharedWorld::new(collision.clone(), initial_collision, impact_surfaces);
         let model_bounds = collision
             .models
             .iter()
@@ -1014,6 +1148,8 @@ unsafe fn compile_map(
             particles,
             particle_materials,
             particle_sheets,
+            particle_lighting,
+            decals,
             studio_models,
             model_material_opacity,
             environment,
@@ -1051,6 +1187,8 @@ unsafe fn compile_map(
             particles,
             particle_materials,
             particle_sheets,
+            particle_lighting,
+            decals,
             studio_models,
             model_material_opacity,
             environment,
@@ -1071,6 +1209,8 @@ unsafe fn compile_map(
             particles: Some(particles),
             particle_materials,
             particle_sheets,
+            particle_lighting: Some(particle_lighting),
+            combat_decals: Some(decals),
             particle_output: Vec::new(),
             studio_models,
             model_material_opacity,
@@ -1104,6 +1244,8 @@ unsafe fn compile_map(
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
+            particle_lighting: None,
+            combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
             model_material_opacity: BTreeMap::new(),
@@ -1421,7 +1563,17 @@ pub unsafe extern "C" fn playsrc_particle_transact(
     let Some(world) = slot.particles.as_mut() else {
         return 0;
     };
-    let mut collision = ParticleCollision(collision_world);
+    let (Some(visibility), Some(lighting)) =
+        (slot.visibility.as_ref(), slot.particle_lighting.as_ref())
+    else {
+        return 0;
+    };
+    let mut collision = ParticleCollision {
+        world: collision_world,
+        visibility,
+        lighting,
+        lighting_cache: BTreeMap::new(),
+    };
     let output = match world.transact_render_output(
         &events,
         request,
@@ -3767,6 +3919,13 @@ pub unsafe extern "C" fn playsrc_game_advance(
             Ok(value) => value,
             Err(_) => fail!(19),
         };
+    let combat_decals = match slot.combat_decals.as_mut() {
+        Some(world) => match world.project(&snapshot.events) {
+            Ok(decals) => decals,
+            Err(_) => fail!(20),
+        },
+        None => fail!(20),
+    };
     let Some(encoded) = encode_snapshot(
         &snapshot,
         &producer,
@@ -3781,6 +3940,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             collision_snapshot: &collision_snapshot_bytes,
             entity_presentation: &entity_presentation,
             payload_constraint_blocked: candidate.payload_constraint_blocked(),
+            combat_decals: &combat_decals,
         },
     ) else {
         fail!(20);
@@ -4077,6 +4237,7 @@ struct SnapshotExtensions<'a> {
     collision_snapshot: &'a [u8],
     entity_presentation: &'a playsrc_tf2::EntityPresentationSnapshot,
     payload_constraint_blocked: bool,
+    combat_decals: &'a [CombatDecal],
 }
 
 fn encode_snapshot(
@@ -4729,6 +4890,45 @@ fn encode_snapshot(
     f32_field(&mut out, snapshot.medigun_charge, MAX)?;
     u32_field(&mut out, snapshot.medigun_target.unwrap_or(u32::MAX), MAX)?;
     u32_field(&mut out, u32::from(snapshot.medigun_releasing), MAX)?;
+    u32_field(
+        &mut out,
+        u32::try_from(extensions.combat_decals.len()).ok()?,
+        MAX,
+    )?;
+    for decal in extensions.combat_decals {
+        u32_field(&mut out, decal.identity, MAX)?;
+        u32_field(&mut out, u32::try_from(decal.fragment.face).ok()?, MAX)?;
+        u32_field(
+            &mut out,
+            u32::try_from(decal.fragment.positions.len()).ok()?,
+            MAX,
+        )?;
+        u32_field(
+            &mut out,
+            u32::try_from(decal.fragment.triangles.len()).ok()?,
+            MAX,
+        )?;
+        u32_field(&mut out, u32::try_from(decal.reference.len()).ok()?, MAX)?;
+        extend(&mut out, decal.reference.as_bytes(), MAX)?;
+        for ((position, normal), uv) in decal
+            .fragment
+            .positions
+            .iter()
+            .zip(&decal.fragment.normals)
+            .zip(&decal.fragment.uv)
+        {
+            floats(
+                &mut out,
+                position.iter().chain(normal).chain(uv).copied(),
+                MAX,
+            )?;
+        }
+        for triangle in &decal.fragment.triangles {
+            for index in triangle {
+                u32_field(&mut out, *index, MAX)?;
+            }
+        }
+    }
     Some(out)
 }
 
@@ -5719,8 +5919,19 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             0,
             [*health, *clip as f32, *reserve as f32, 0.0],
         ),
-        playsrc_tf2::Event::Damaged { amount, health } => {
-            (6, 0, 0, 0, [*amount, *health, 0.0, 0.0])
+        playsrc_tf2::Event::Damaged {
+            amount,
+            health,
+            origin,
+        } => {
+            let position = origin.unwrap_or([0.0; 3]);
+            (
+                6,
+                u8::from(origin.is_some()),
+                position[2].to_bits(),
+                0,
+                [*amount, *health, position[0], position[1]],
+            )
         }
         playsrc_tf2::Event::Healed {
             amount,
@@ -5755,9 +5966,18 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             [velocity[0], velocity[1], velocity[2], 0.0],
         ),
         playsrc_tf2::Event::Respawned => (11, 0, 0, 0, [0.0; 4]),
-        playsrc_tf2::Event::HitscanFired { weapon, pellets } => {
-            (12, weapon_code(*weapon), u32::from(*pellets), 0, [0.0; 4])
-        }
+        playsrc_tf2::Event::HitscanFired {
+            weapon,
+            pellets,
+            owner,
+            origin,
+        } => (
+            12,
+            weapon_code(*weapon),
+            u32::from(*pellets),
+            *owner,
+            [origin[0], origin[1], origin[2], 0.0],
+        ),
         playsrc_tf2::Event::HitscanImpact {
             weapon,
             target,
@@ -5766,15 +5986,24 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             critical,
             position,
             damage,
+            surface,
         } => (
             13,
             weapon_code(*weapon),
-            target.unwrap_or(0),
-            u32::from(*pellet) | (u32::from(*hitgroup) << 8) | (u32::from(*critical) << 16),
+            target.unwrap_or_else(|| {
+                surface
+                    .and_then(|value| value.face)
+                    .map_or(0, |face| face | 0x8000_0000)
+            }),
+            u32::from(*pellet)
+                | (u32::from(*hitgroup) << 8)
+                | (u32::from(*critical) << 16)
+                | (u32::from(surface.map_or(0, |value| value.game_material)) << 24),
             [position[0], position[1], position[2], *damage],
         ),
         playsrc_tf2::Event::MeleeImpact {
             weapon,
+            owner,
             target,
             position,
             damage,
@@ -5782,7 +6011,7 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             14,
             weapon_code(*weapon),
             target.unwrap_or(0),
-            0,
+            *owner,
             [position[0], position[1], position[2], *damage],
         ),
         playsrc_tf2::Event::PickedUp {
@@ -6056,6 +6285,176 @@ fn surface_property_registry(
     playsrc_material::SurfacePropertyRegistry::compile(&files).map_err(|_| ())
 }
 
+fn combat_decal_world(
+    surfaces: Vec<playsrc_map::Surface>,
+    materials: &[playsrc_material::Material],
+    bundle: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
+) -> Result<CombatDecalWorld, ()> {
+    let bytes = bundle
+        .get("scripts/decals_subrect.txt")
+        .copied()
+        .ok_or(())?;
+    let document = playsrc_keyvalues::parse_text(
+        bytes,
+        playsrc_keyvalues::EscapeMode::Escaped,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|_| ())?;
+    let groups = document
+        .roots
+        .iter()
+        .map(|node| (node.key.bytes.to_ascii_lowercase(), node))
+        .collect::<BTreeMap<_, _>>();
+    let translation = groups.get(b"translationdata".as_slice()).ok_or(())?;
+    let playsrc_keyvalues::Value::Object(entries) = &translation.value else {
+        return Err(());
+    };
+    let mut variants = BTreeMap::new();
+    for entry in entries {
+        if entry.key.bytes.len() != 1 {
+            return Err(());
+        }
+        let playsrc_keyvalues::Value::Scalar(target) = &entry.value else {
+            return Err(());
+        };
+        if target.token.bytes.is_empty() {
+            continue;
+        }
+        let Some(group) = groups.get(&target.token.bytes.to_ascii_lowercase()) else {
+            return Err(());
+        };
+        let playsrc_keyvalues::Value::Object(children) = &group.value else {
+            return Err(());
+        };
+        let mut choices = Vec::new();
+        for child in children {
+            let playsrc_keyvalues::Value::Scalar(weight) = &child.value else {
+                return Err(());
+            };
+            let weight = std::str::from_utf8(&weight.token.bytes)
+                .map_err(|_| ())?
+                .parse::<f32>()
+                .map_err(|_| ())?;
+            let reference = std::str::from_utf8(&child.key.bytes).map_err(|_| ())?;
+            let path = dependency_path(&child.key.bytes)?;
+            let material = resolve_material_semantics(
+                &path,
+                bundle,
+                playsrc_material::SelectionEnvironment::default(),
+            )?;
+            let size = |name: &[u8]| -> Result<[f32; 2], ()> {
+                let value = material.first_parameters.get(name).ok_or(())?;
+                let values = std::str::from_utf8(value)
+                    .map_err(|_| ())?
+                    .split_whitespace()
+                    .map(|component| component.parse::<f32>().map_err(|_| ()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                values.try_into().map_err(|_| ())
+            };
+            let position = size(b"$pos")?;
+            let dimensions = size(b"$size")?;
+            let texture = material
+                .textures
+                .iter()
+                .find(|texture| material.selected_textures.contains(&texture.role))
+                .and_then(|texture| texture.logical_path.as_ref())
+                .ok_or(())?;
+            let atlas = decoders.metadata(&texture.to_ascii_lowercase())?;
+            let width = atlas.width as f32;
+            let height = atlas.height as f32;
+            choices.push(CombatDecalVariant {
+                reference: reference.to_owned(),
+                offset: [(position[0] + 1.0) / width, (position[1] + 1.0) / height],
+                scale: [
+                    (dimensions[0] - 2.0) / width,
+                    (dimensions[1] - 2.0) / height,
+                ],
+                dimensions: dimensions.map(|value| value * material.decal.scale),
+                weight,
+            });
+        }
+        variants.insert(entry.key.bytes[0].to_ascii_uppercase(), choices);
+    }
+    let mut output = BTreeMap::new();
+    for mut surface in surfaces {
+        let receiving = materials.get(surface.material).ok_or(())?.decal;
+        surface.normals.clear();
+        surface.alpha.clear();
+        surface.uv.clear();
+        surface.lightmap_uv.clear();
+        surface.triangles.clear();
+        output.insert(
+            u32::try_from(surface.face).map_err(|_| ())?,
+            CombatDecalSurface { surface, receiving },
+        );
+    }
+    Ok(CombatDecalWorld {
+        surfaces: output,
+        variants,
+        random: playsrc_tf2::UniformRandomStream::from_seed(0).map_err(|_| ())?,
+        serial: 0,
+    })
+}
+
+impl CombatDecalWorld {
+    fn project(&mut self, events: &[playsrc_tf2::Event]) -> Result<Vec<CombatDecal>, ()> {
+        let mut decals = Vec::new();
+        for event in events {
+            let playsrc_tf2::Event::HitscanImpact {
+                target: None,
+                position,
+                surface: Some(surface),
+                ..
+            } = event
+            else {
+                continue;
+            };
+            let Some(face) = surface.face.and_then(|face| self.surfaces.get(&face)) else {
+                continue;
+            };
+            let Some(choices) = self.variants.get(&surface.game_material) else {
+                continue;
+            };
+            let mut selected = None;
+            let mut total = 0.0;
+            for variant in choices {
+                if total == 0.0 {
+                    selected = Some(variant);
+                }
+                total += variant.weight;
+                if total == 0.0 || self.random.random_float(0.0, total) < variant.weight {
+                    selected = Some(variant);
+                }
+            }
+            let Some(variant) = selected else {
+                continue;
+            };
+            let Some(mut fragment) = playsrc_map::project_combat_decal(
+                &face.surface,
+                &face.receiving,
+                *position,
+                variant.dimensions,
+            )
+            .map_err(|_| ())?
+            else {
+                continue;
+            };
+            for uv in &mut fragment.uv {
+                uv[0] = variant.offset[0] + uv[0] * variant.scale[0];
+                uv[1] = variant.offset[1] + uv[1] * variant.scale[1];
+            }
+            self.serial = self.serial.checked_add(1).ok_or(())?;
+            decals.push(CombatDecal {
+                identity: self.serial,
+                reference: variant.reference.clone(),
+                fragment,
+            });
+        }
+        Ok(decals)
+    }
+}
+
 fn attach_displacement_collision_inputs(
     world: playsrc_collision::World,
     map: &playsrc_map::CanonicalMap,
@@ -6262,6 +6661,47 @@ fn resolve_material_semantics(
     environment: playsrc_material::SelectionEnvironment,
 ) -> Result<playsrc_material::Material, ()> {
     let root = *bundle.get(identity).ok_or(())?;
+    if identity.ends_with("_subrect.vmt") {
+        let source = playsrc_keyvalues::parse_text(
+            root,
+            playsrc_keyvalues::EscapeMode::Escaped,
+            playsrc_keyvalues::Limits::default(),
+        )
+        .map_err(|_| ())?;
+        let document = source
+            .roots
+            .first()
+            .filter(|document| document.key.bytes.eq_ignore_ascii_case(b"Subrect"))
+            .ok_or(())?;
+        let playsrc_keyvalues::Value::Object(fields) = &document.value else {
+            return Err(());
+        };
+        let parent = fields
+            .iter()
+            .find(|field| field.key.bytes.eq_ignore_ascii_case(b"$material"))
+            .and_then(|field| match &field.value {
+                playsrc_keyvalues::Value::Scalar(value) => Some(value.token.bytes.as_slice()),
+                _ => None,
+            })
+            .ok_or(())?;
+        let mut material =
+            resolve_material_semantics(&dependency_path(parent)?, bundle, environment)?;
+        for field in fields {
+            if let playsrc_keyvalues::Value::Scalar(value) = &field.value {
+                material
+                    .first_parameters
+                    .entry(field.key.bytes.to_ascii_lowercase())
+                    .or_insert_with(|| value.token.bytes.clone());
+            }
+        }
+        if let Some(scale) = material.first_parameters.get(b"$decalscale".as_slice()) {
+            material.decal.scale = std::str::from_utf8(scale)
+                .map_err(|_| ())?
+                .parse::<f32>()
+                .map_err(|_| ())?;
+        }
+        return Ok(material);
+    }
     let mut responses = Vec::new();
     let material = loop {
         match playsrc_vmt::compose(
@@ -6305,6 +6745,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
         playsrc_material::Shader::Sprite => 7,
         playsrc_material::Shader::SkyHdr => 8,
         playsrc_material::Shader::SkyLdr => 9,
+        playsrc_material::Shader::DecalModulate => 11,
         playsrc_material::Shader::Unsupported => 255,
     }
 }
@@ -7978,6 +8419,10 @@ fn encode_material_states(
             }
         }
     }
+    for reference in [b"decals/decals_mod2x".as_slice(), b"VGUI/damageindicator"] {
+        let path = dependency_path(&reference)?;
+        insert_material_state_target(&mut targets, path.clone(), path, false)?;
+    }
     for (_, artifact) in models {
         for material in &artifact.model.materials {
             let path = artifact
@@ -8979,6 +9424,8 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "WeaponMedigun.HealingHealer",
         "WeaponMedigun.HealingDetachHealer",
         "WeaponMedigun.Charged",
+        "Player.HitSoundDefaultDing",
+        "Player.KillSoundDefaultDing",
     ];
     let flag_targets: &[&str] = &[
         "CaptureFlag.EnemyStolen",
@@ -9005,10 +9452,21 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "Game.YourTeamWon",
         "Game.YourTeamLost",
     ];
-    let player_targets: &[&str] = &["Player.Spy_Cloak", "Player.Spy_UnCloak"];
+    let player_targets: &[&str] = &["Player.Spy_Cloak", "Player.Spy_UnCloak", "TFPlayer.CritHit"];
+    let impact_targets: &[&str] = &[
+        "Default.BulletImpact",
+        "Concrete.BulletImpact",
+        "Wood.BulletImpact",
+        "SolidMetal.BulletImpact",
+        "Dirt.BulletImpact",
+        "Sand.BulletImpact",
+        "Glass.BulletImpact",
+        "Flesh.BulletImpact",
+    ];
     let mut documents = vec![
         ("scripts/game_sounds_weapons.txt", weapon_targets),
         ("scripts/game_sounds_player.txt", player_targets),
+        ("scripts/game_sounds_physics.txt", impact_targets),
     ];
     if bundle.contains_key("scripts/game_sounds_vo.txt") {
         documents.push(("scripts/game_sounds_vo.txt", flag_targets));
@@ -10760,6 +11218,38 @@ fn compile_environment_artifact(
                 state: m.decal,
             });
     }
+    for reference in [b"decals/decals_mod2x".as_slice(), b"VGUI/damageindicator"] {
+        let reference = reference.to_vec();
+        let path = dependency_path(&reference)?;
+        let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
+        let material =
+            resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let texture = material
+            .textures
+            .iter()
+            .find(|texture| {
+                material.selected_textures.contains(&texture.role)
+                    && texture.disposition == playsrc_material::TextureDisposition::Source
+            })
+            .ok_or(())?;
+        let metadata = decoders.metadata(
+            &texture
+                .logical_path
+                .as_ref()
+                .ok_or(())?
+                .to_ascii_lowercase(),
+        )?;
+        marks
+            .entry(reference.to_ascii_lowercase())
+            .or_insert(playsrc_map::MarkMaterial {
+                reference,
+                logical_path: path,
+                source_sha256,
+                width: metadata.width,
+                height: metadata.height,
+                state: material.decal,
+            });
+    }
     let marks = marks.into_values().collect::<Vec<_>>();
     let receiver_inputs = canonical
         .brush_model_occurrences
@@ -11668,6 +12158,10 @@ fn compile_particles(
         "particles/flamethrower.pcf",
         "particles/nailtrails.pcf",
         "particles/medicgun_beam.pcf",
+        "particles/blood_impact.pcf",
+        "particles/bullet_tracers.pcf",
+        "particles/impact_fx.pcf",
+        "particles/crit.pcf",
     ];
     let sources = paths
         .iter()
@@ -11692,6 +12186,32 @@ fn compile_particles(
         "muzzle_scattergun",
         "muzzle_pistol",
         "muzzle_shotgun",
+        "blood_impact_red_01",
+        "water_blood_impact_red_01",
+        "blood_spray_red_01",
+        "blood_spray_red_01_far",
+        "bullet_scattergun_tracer01_red",
+        "bullet_scattergun_tracer01_blue",
+        "bullet_scattergun_tracer01_red_crit",
+        "bullet_scattergun_tracer01_blue_crit",
+        "bullet_pistol_tracer01_red",
+        "bullet_pistol_tracer01_blue",
+        "bullet_pistol_tracer01_red_crit",
+        "bullet_pistol_tracer01_blue_crit",
+        "bullet_shotgun_tracer01_red",
+        "bullet_shotgun_tracer01_blue",
+        "bullet_shotgun_tracer01_red_crit",
+        "bullet_shotgun_tracer01_blue_crit",
+        "bullet_tracer01_red",
+        "bullet_tracer01_blue",
+        "bullet_tracer01_red_crit",
+        "bullet_tracer01_blue_crit",
+        "impact_concrete",
+        "impact_wood",
+        "impact_metal",
+        "impact_dirt",
+        "impact_glass",
+        "crit_text",
         "ExplosionCore_Wall",
         "ExplosionCore_MidAir",
         "new_flame",
@@ -11741,6 +12261,10 @@ fn compile_particles(
                 }
                 playsrc_material::BlendFactor::OneMinusSourceAlpha => {
                     playsrc_particle::ParticleBlendFactor::OneMinusSourceAlpha
+                }
+                playsrc_material::BlendFactor::DestinationColor
+                | playsrc_material::BlendFactor::SourceColor => {
+                    unreachable!("authored particle materials cannot use decal modulation")
                 }
             };
             Ok((
@@ -11876,8 +12400,13 @@ fn decode_particle_sheet(
         .then_some(playsrc_particle::ParticleSheet { sequences })
         .ok_or(())
 }
-struct ParticleCollision(Arc<playsrc_collision::World>);
-impl playsrc_particle::CollisionQuery for ParticleCollision {
+struct ParticleCollision<'a> {
+    world: Arc<playsrc_collision::World>,
+    visibility: &'a playsrc_visibility::World,
+    lighting: &'a ParticleLighting,
+    lighting_cache: BTreeMap<[u32; 3], [u8; 3]>,
+}
+impl playsrc_particle::CollisionQuery for ParticleCollision<'_> {
     fn trace_batch(
         &mut self,
         requests: &[playsrc_particle::TraceRequest],
@@ -11887,7 +12416,7 @@ impl playsrc_particle::CollisionQuery for ParticleCollision {
             .map(|r| {
                 let radius = r.radius.max(0.0);
                 let trace = self
-                    .0
+                    .world
                     .trace_hull(
                         r.start,
                         r.end,
@@ -11906,6 +12435,104 @@ impl playsrc_particle::CollisionQuery for ParticleCollision {
                 }
             })
             .collect())
+    }
+
+    fn lighting_at(&mut self, position: [f32; 3]) -> Result<[u8; 3], playsrc_particle::Error> {
+        let identity = position.map(f32::to_bits);
+        if let Some(value) = self.lighting_cache.get(&identity).copied() {
+            return Ok(value);
+        }
+        let failure = || playsrc_particle::Error {
+            code: playsrc_particle::ErrorCode::MissingQuery,
+            source: "particle-lighting".into(),
+            offset: 0,
+            detail: "authored map lighting query is unavailable".into(),
+        };
+        let mut node = 0_i32;
+        while node >= 0 {
+            let entry = self
+                .visibility
+                .nodes
+                .get(node as usize)
+                .ok_or_else(failure)?;
+            let plane = self
+                .visibility
+                .planes
+                .get(entry.plane_index as usize)
+                .ok_or_else(failure)?;
+            node = entry.children[usize::from(dot(position, plane.normal) < plane.distance)];
+        }
+        let mut index = usize::try_from(-node - 1).map_err(|_| failure())?;
+        let mut ambient = self.lighting.indexes.get(index).ok_or_else(failure)?;
+        if ambient.sample_count == 0 && ambient.first_sample != 0 {
+            index = usize::from(ambient.first_sample);
+            ambient = self.lighting.indexes.get(index).ok_or_else(failure)?;
+        }
+        let leaf = self.visibility.leaves.get(index).ok_or_else(failure)?;
+        let mut cube = [[0.0_f32; 3]; 6];
+        let mut total = 0.0;
+        let first = usize::from(ambient.first_sample);
+        let last = first + usize::from(ambient.sample_count);
+        for sample in self.lighting.samples.get(first..last).ok_or_else(failure)? {
+            let point = std::array::from_fn(|axis| {
+                f32::from(leaf.mins[axis])
+                    + f32::from(sample.position[axis])
+                        * f32::from(leaf.maxs[axis] - leaf.mins[axis])
+                        / 255.0
+            });
+            let delta = sub3(point, position);
+            let factor = (dot(delta, delta) + 1.0).recip();
+            total += factor;
+            for (face, source) in cube.iter_mut().zip(sample.cube) {
+                for channel in 0..3 {
+                    face[channel] += source[channel] * factor;
+                }
+            }
+        }
+        if total > 0.0 {
+            for face in &mut cube {
+                for channel in face {
+                    *channel /= total;
+                }
+            }
+        }
+        for light in &self.lighting.lights {
+            let Ok((end, direction, ratio)) = direct_light_ray(position, light) else {
+                continue;
+            };
+            if ratio <= 0.0 {
+                continue;
+            }
+            let trace = self
+                .world
+                .trace_hull(
+                    position,
+                    end,
+                    playsrc_collision::Hull {
+                        mins: [0.0; 3],
+                        maxs: [0.0; 3],
+                    },
+                    u32::MAX,
+                )
+                .map_err(|_| failure())?;
+            let distance = dot(sub3(end, position), sub3(end, position)).sqrt();
+            if if light.kind == 3 {
+                trace.surface_flags & 0x0004 == 0
+            } else {
+                (1.0 - trace.fraction) * distance > 8.0
+            } {
+                continue;
+            }
+            let angle = direct_light_angle(light, direction).map_err(|_| failure())?;
+            add_light_to_cube(&mut cube, direction, light.intensity, ratio * angle)
+                .map_err(|_| failure())?;
+        }
+        let value = std::array::from_fn(|channel| {
+            let value = cube.iter().map(|face| face[channel]).sum::<f32>() / 6.0;
+            (value.clamp(0.0, 1.0) * 255.0) as u8
+        });
+        self.lighting_cache.insert(identity, value);
+        Ok(value)
     }
 }
 struct ParticleReader<'a> {
@@ -12036,7 +12663,7 @@ fn decode_particle_transaction(
         prior_timestamp = timestamp_seconds;
         let effect_identity = r.u32()?;
         let command = match kind {
-            1 => {
+            1 | 5 => {
                 let seed = r.u64()?;
                 let owner = match r.u32()? {
                     u32::MAX => None,
@@ -12047,6 +12674,25 @@ fn decode_particle_transaction(
                 for index in 0..controls {
                     control_points.push(r.cp(index)?);
                 }
+                let control_points = if kind == 5 {
+                    let count = usize::try_from(r.u32()?).map_err(|_| ())?;
+                    if !(2..=31).contains(&count) {
+                        return Err(());
+                    }
+                    let mut points = Vec::with_capacity(count);
+                    for expected in 0..count {
+                        let index = r.u8()?;
+                        if usize::from(index) != expected || r.take(3)? != [0, 0, 0] {
+                            return Err(());
+                        }
+                        let mut point = r.cp()?;
+                        point.index = index;
+                        points.push(point);
+                    }
+                    points
+                } else {
+                    vec![r.cp()?]
+                };
                 playsrc_particle::EventCommand::Create {
                     effect_identity,
                     definition,
@@ -12540,6 +13186,8 @@ mod tests {
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
+            particle_lighting: None,
+            combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
             model_material_opacity: BTreeMap::new(),
@@ -12578,6 +13226,8 @@ mod tests {
             particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
+            particle_lighting: None,
+            combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
             model_material_opacity: BTreeMap::new(),
@@ -12876,11 +13526,13 @@ mod tests {
                 collision_snapshot: &collision_snapshot,
                 entity_presentation: &entity_presentation,
                 payload_constraint_blocked: false,
+                combat_decals: &[],
             },
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x13\0\0\0");
         assert_eq!(encoded.len(), 1032);
+        assert_eq!(encoded.len(), 1024);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[972..980], b"PGRL\x01\0\0\0");
         assert_eq!(
@@ -12909,6 +13561,7 @@ mod tests {
                 collision_snapshot: &collision_snapshot,
                 entity_presentation: &entity_presentation,
                 payload_constraint_blocked: true,
+                combat_decals: &[],
             },
         )
         .unwrap();

@@ -76,6 +76,7 @@ import {
   projectileFrame,
   projectileModels,
   hitscanMuzzleParticles,
+  combatImpactParticles,
   sourceViewOrientation,
   tf2Audio,
   tf2Camera,
@@ -153,6 +154,17 @@ const PARTICLE_SYSTEMS = new Set([
   "medicgun_beam_blue",
   "medicgun_beam_red_invun",
   "medicgun_beam_blue_invun",
+  "blood_impact_red_01",
+  "blood_spray_red_01",
+  "blood_spray_red_01_far",
+  "crit_text",
+  ...["scattergun", "pistol", "shotgun"].flatMap((weapon) =>
+    ["red", "blue"].flatMap((team) =>
+      [`bullet_${weapon}_tracer01_${team}`, `bullet_${weapon}_tracer01_${team}_crit`])),
+  "bullet_tracer01_red",
+  "bullet_tracer01_blue",
+  "bullet_tracer01_red_crit",
+  "bullet_tracer01_blue_crit",
 ])
 const SOUND_PATHS = [
   "sound/items/smallmedkit1.wav",
@@ -229,6 +241,42 @@ const SOUND_PATHS = [
   "sound/weapons/medigun_heal.wav",
   "sound/weapons/medigun_heal_detach.wav",
   "sound/weapons/medigun_charged.wav",
+  "sound/ui/hitsound.wav",
+  "sound/ui/killsound.wav",
+  "sound/player/crit_hit.wav",
+  "sound/player/crit_hit2.wav",
+  "sound/player/crit_hit3.wav",
+  "sound/player/crit_hit4.wav",
+  "sound/player/crit_hit5.wav",
+  "sound/physics/plastic/plastic_box_impact_hard1.wav",
+  "sound/physics/plastic/plastic_box_impact_hard2.wav",
+  "sound/physics/plastic/plastic_box_impact_hard3.wav",
+  "sound/physics/concrete/concrete_impact_bullet1.wav",
+  "sound/physics/concrete/concrete_impact_bullet2.wav",
+  "sound/physics/concrete/concrete_impact_bullet3.wav",
+  "sound/physics/concrete/concrete_impact_bullet4.wav",
+  "sound/physics/wood/wood_solid_impact_bullet1.wav",
+  "sound/physics/wood/wood_solid_impact_bullet2.wav",
+  "sound/physics/wood/wood_solid_impact_bullet3.wav",
+  "sound/physics/wood/wood_solid_impact_bullet4.wav",
+  "sound/physics/wood/wood_solid_impact_bullet5.wav",
+  "sound/physics/metal/metal_solid_impact_bullet1.wav",
+  "sound/physics/metal/metal_solid_impact_bullet2.wav",
+  "sound/physics/metal/metal_solid_impact_bullet3.wav",
+  "sound/physics/metal/metal_solid_impact_bullet4.wav",
+  "sound/physics/surfaces/sand_impact_bullet1.wav",
+  "sound/physics/surfaces/sand_impact_bullet2.wav",
+  "sound/physics/surfaces/sand_impact_bullet3.wav",
+  "sound/physics/surfaces/sand_impact_bullet4.wav",
+  "sound/physics/glass/glass_impact_bullet1.wav",
+  "sound/physics/glass/glass_impact_bullet2.wav",
+  "sound/physics/glass/glass_impact_bullet3.wav",
+  "sound/physics/glass/glass_impact_bullet4.wav",
+  "sound/physics/flesh/flesh_impact_bullet1.wav",
+  "sound/physics/flesh/flesh_impact_bullet2.wav",
+  "sound/physics/flesh/flesh_impact_bullet3.wav",
+  "sound/physics/flesh/flesh_impact_bullet4.wav",
+  "sound/physics/flesh/flesh_impact_bullet5.wav",
 ] as const
 const CTF_SOUND_PATHS = [
   "sound/vo/intel_enemystolen.mp3",
@@ -304,6 +352,7 @@ export type ApplicationView = Readonly<{
   snapshotTick?: string
   projectileStates?: string
   decalProbe?: string
+  combatDecals?: number
   modelOccurrenceCount?: number
   particleProbe?: string
   audioStarts?: readonly string[]
@@ -453,6 +502,8 @@ export class Tf2Application {
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #pyroFlameEffect?: string
+  #combatTracerCount = 0
+  #combatDecalCount = 0
   #pyroEffectSerial = 0
   #console?: DeveloperConsole
   #pendingConsoleOutput: Readonly<{ text: string; developer: boolean }>[] = []
@@ -1705,13 +1756,15 @@ export class Tf2Application {
     this.#audioStarts = []
     this.#pendingAudioRequests = []
     this.#pyroFlameEffect = undefined
+    this.#combatTracerCount = 0
+    this.#combatDecalCount = 0
     this.#pyroEffectSerial = 0
     this.#attachmentTransforms.clear()
     this.#fireAttachmentTransforms.clear()
   }
 
   #resetHudIntegration(): void {
-    if (!this.#uiResources || !this.#presentationRandom) throw new Error("TF2 HUD resources are unavailable")
+    if (!this.#uiResources || !this.#presentationRandom || !this.#artifacts) throw new Error("TF2 HUD resources are unavailable")
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
     this.#hudScoreboardIdentity = ""
@@ -1720,6 +1773,8 @@ export class Tf2Application {
       this.#hudIntegration.reset("map-replaced")
       return
     }
+    const damageTexture=this.#artifacts.environment.textures.find(texture=>texture.material.toLowerCase()==="materials/vgui/damageindicator.vmt")
+    if(!damageTexture)throw new Error("Authored TF2 damage indicator material is unavailable")
     this.#hudIntegration = initializeTf2HudIntegration({
       root: this.#hudRoot,
       resources: this.#uiResources,
@@ -1727,6 +1782,9 @@ export class Tf2Application {
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
+      damageIndicator:Object.freeze({material:damageTexture.material,texture:damageTexture,
+        eyePosition:()=>this.#snapshot?tf2Camera(this.#snapshot,this.#yaw,this.#pitch).position:[0,0,0],
+        yawDegrees:()=>this.#yaw,random:()=>this.#presentationRandom!.nextUnit()}),
       onCommand: (command) => {
 
         if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 21 || command.weapon >= 40 && command.weapon <= 45 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
@@ -2074,6 +2132,7 @@ export class Tf2Application {
 
   #catalog(): ConsoleCatalog {
     const crosshair = this.#settings?.crosshairConVars() ?? []
+    const combatSettings=["tf_dingalingaling","tf_dingalingaling_lasthit"] as const
     return Object.freeze({
       revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}-settings-${this.#settings?.snapshot().settings.revision ?? 0}`,
       items: Object.freeze([
@@ -2228,6 +2287,8 @@ export class Tf2Application {
           disposition: "visible" as const,
           displayValue: setting.value,
         })),
+        ...combatSettings.map(name=>Object.freeze({kind:"convar" as const,name,disposition:"visible" as const,
+          displayValue:String(Number(this.#settings?.snapshot().settings.current[name]===true))})),
       ]),
     })
   }
@@ -2343,6 +2404,19 @@ export class Tf2Application {
       return
     }
     const crosshair = TF2_CROSSHAIR_SETTINGS.find((setting) => setting.name === command)
+    if(command==="tf_dingalingaling"||command==="tf_dingalingaling_lasthit"){
+      if(!this.#settings||tokens.length>1||(tokens[0]!==undefined&&tokens[0]!=="0"&&tokens[0]!=="1")){
+        this.#output(`${command} accepts exactly 0 or 1`)
+        return
+      }
+      if(tokens[0]!==undefined){
+        this.#settings.synchronize({[command]:tokens[0]==="1"})
+        localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY,new TextDecoder().decode(this.#settings.persistence()))
+        this.#console?.apply({kind:"replace-catalog",catalog:this.#catalog()})
+      }
+      this.#output(`"${command}" = "${Number(this.#settings.snapshot().settings.current[command]===true)}"`)
+      return
+    }
     if (crosshair) {
       if (!this.#settings) {
         this.#output(`ERROR: ${command} settings authority is unavailable`)
@@ -3275,7 +3349,44 @@ export class Tf2Application {
   }
 
   #playAudio(snapshot: Snapshot, camera: Camera): void {
-    const incoming = tf2Audio(snapshot)
+    const incoming = [...tf2Audio(snapshot)]
+    for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
+      const event=snapshot.events[ordinal]!
+      if(event.kind!==13)continue
+      const world=(event.subject&0x8000_0000)!==0
+      if(!world&&event.subject===0)continue
+      const position=Object.freeze([event.values[0],event.values[1],event.values[2]]) as readonly[number,number,number]
+      if(Math.hypot(...position.map((value,axis)=>value-camera.position[axis]!))>=1024)continue
+      const material=world?(event.auxiliary>>>24):70
+      const selection=material===67||material===84?["Concrete.BulletImpact",4] as const
+        :material===87?["Wood.BulletImpact",5] as const
+        :material===77||material===86?["SolidMetal.BulletImpact",4] as const
+        :material===68||material===78?["Dirt.BulletImpact",4] as const
+        :material===89?["Glass.BulletImpact",4] as const
+        :material===70||material===66?["Flesh.BulletImpact",5] as const
+        :["Default.BulletImpact",3] as const
+      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*16384n+BigInt(ordinal)+8192n)&0xffff_ffffn),definition:selection[0],source:Object.freeze({kind:"world",identity:0,ownerIdentity:null,origin:position,radius:0,sourceClass:"world"}),samples:Object.freeze({volume:0.7,pitch:100,wave:this.#presentationRandom!.nextInteger(0,selection[1]-1),soundLevel:75})}))
+    }
+    for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
+      const event=snapshot.events[ordinal]!
+      if(event.kind!==17||event.auxiliary!==1||event.values[2]!==1||event.subject===1)continue
+      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*8192n+BigInt(ordinal)+4096n)&0xffff_ffffn),definition:"TFPlayer.CritHit",source:Object.freeze({kind:"entity",identity:event.subject,ownerIdentity:event.subject,origin:snapshot.bots.find(bot=>bot.identity===event.subject)?.position??camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:1,pitch:100,wave:this.#presentationRandom!.nextInteger(0,4),soundLevel:85})}))
+    }
+    const preferences=this.#settings?.snapshot().settings.current
+    if(preferences&&(preferences.tf_dingalingaling===true||preferences.tf_dingalingaling_lasthit===true)){
+      for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
+        const event=snapshot.events[ordinal]!
+        if(event.kind!==17||event.auxiliary!==1||event.subject===1)continue
+        const last=event.values[1]<=0&&preferences.tf_dingalingaling_lasthit===true
+        if(!last&&preferences.tf_dingalingaling!==true)continue
+        const effect=Number(preferences[last?"tf_dingalingaling_last_effect":"tf_dingalingaling_effect"]??0)
+        if(effect!==0)throw new Error(`Authored TF2 ${last?"kill":"hit"} sound variant ${effect} is unavailable`)
+        const minimum=Number(preferences[last?"tf_dingaling_lasthit_pitchmindmg":"tf_dingaling_pitchmindmg"]??100)
+        const maximum=Number(preferences[last?"tf_dingaling_lasthit_pitchmaxdmg":"tf_dingaling_pitchmaxdmg"]??100)
+        const fraction=Math.max(0,Math.min(1,(event.values[0]-10)/140))
+        incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*4096n+BigInt(ordinal))&0xffff_ffffn),definition:last?"Player.KillSoundDefaultDing":"Player.HitSoundDefaultDing",source:Object.freeze({kind:"entity",identity:1,ownerIdentity:1,origin:camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:Number(preferences[last?"tf_dingaling_lasthit_volume":"tf_dingaling_volume"]??0.75),pitch:minimum+(maximum-minimum)*fraction,wave:0,soundLevel:0})}))
+      }
+    }
     if (!this.#audioRunning || !this.#audio || !this.#audioWorld || !this.#audioRegistry || !this.#audioContext || !this.#artifacts) {
       if (incoming.length > 0) this.#pendingAudioRequests.push(...incoming)
       return
@@ -4056,7 +4167,6 @@ export class Tf2Application {
       if(!ownsGeneration())return
       const particleStart=performance.now()
       const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
-      const hitscanMuzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9||snapshot.class===8?publication.eventBatches.flatMap(batch=>hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms})):null
       const medicBeam: ProjectileParticleRequest[] = []
       if (this.#medicBeamTarget !== null && (this.#medicBeamTarget !== snapshot.medigunTarget || this.#medicBeamReleasing !== snapshot.medigunReleasing)) {
         const prior = this.#medicBeamTarget
@@ -4083,8 +4193,21 @@ export class Tf2Application {
           medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:patient`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:patient`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: patientPoint }))
         }
       }
-      const supplementalParticles=[...(hitscanMuzzles??[]),...pyroParticles,...medicBeam]
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles])
+      const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
+      const playerAttachmentTransforms=needsCriticalAttachment?new Map(botPoses.map(pose=>{
+        const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity)!
+        return [bot.identity,new Map(pose.attachments.map(attachment=>[attachment.name.toLowerCase(),transformAttachment(attachment.matrix,bot.position,sourceViewOrientation(0,bot.yawDegrees))]))] as const
+      })):undefined
+      const combatParticles=publication.eventBatches.flatMap(batch=>{
+        const muzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9||snapshot.class===8
+          ?hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms}):[]
+        const result=combatImpactParticles(batch.snapshot,{tracerCount:this.#combatTracerCount},{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms,playerAttachmentTransforms})
+        this.#combatTracerCount=result.state.tracerCount
+        return [...muzzles,...result.particles]
+      })
+      const supplementalParticles=[...combatParticles,...pyroParticles,...medicBeam]
+      const combinedParticles=supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles].sort((left,right)=>left.tick<right.tick?-1:left.tick>right.tick?1:0)
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,combinedParticles)
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)
@@ -4096,6 +4219,8 @@ export class Tf2Application {
       const frame=Object.freeze({
         effects: Object.freeze([]),
         particles: particleItems,
+        combatDecals:snapshot.combatDecals,
+        maximumCombatDecals:Number(this.#settings?.snapshot().settings.current.mp_decals??200),
         models: Object.freeze([
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
@@ -4128,6 +4253,7 @@ export class Tf2Application {
         modelVisibility: new Map(snapshot.pickups.map((pickup) => [pickup.identity, pickup.available])),
         collisionWorldIdentity: snapshot.collisionSnapshot.worldIdentity,
       }) satisfies Omit<Frame,"camera"|"visibility"|"deltaSeconds">
+      this.#combatDecalCount+=snapshot.combatDecals.length
       this.#preparedRevision+=1
       const prepared=Object.freeze({
         generation,
@@ -4201,6 +4327,7 @@ export class Tf2Application {
         medigunReleasing: snapshot.medigunReleasing,
         botProbe: snapshot.bots.map(bot=>`${bot.identity}:${bot.team}:${bot.class}:${bot.objective}:${bot.area??"none"}:${bot.remainingPathAreas}:${bot.position.map(value=>value.toFixed(1)).join(",")}:${bot.target??"none"}:${bot.weapon?.identity??"none"}:${bot.weapon?.clip??0}:${bot.shots}:${bot.hits}:${bot.kills}:${bot.deaths}`).join("|"),
         particleRenderItems: particleItems.length,
+        combatDecals:this.#combatDecalCount,
         flamePoints: snapshot.flamePoints.length,
         movement: snapshot.movement,
         playerFlags: snapshot.playerFlags,

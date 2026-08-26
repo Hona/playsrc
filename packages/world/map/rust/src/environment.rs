@@ -2872,6 +2872,50 @@ fn project_infodecal(
     })
 }
 
+pub fn project_combat_decal(
+    surface: &Surface,
+    receiving: &DecalState,
+    origin: [f32; 3],
+    dimensions: [f32; 2],
+) -> Result<Option<MarkFragment>, EnvironmentError> {
+    if dimensions
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+        || origin.iter().any(|value| !value.is_finite())
+    {
+        return Err(failure(
+            EnvironmentErrorCode::InvalidRecord,
+            Some(surface.face),
+        ));
+    }
+    if surface.flags & SURF_NODECALS != 0 || receiving.suppress_decals || receiving.alpha_tested {
+        return Ok(None);
+    }
+    let normal = stored_surface_normal(surface)?;
+    if (dot(origin, normal) - surface.plane[3]).abs() >= INFODECAL_PLANE_DISTANCE {
+        return Ok(None);
+    }
+    let Some((basis_u, basis_v)) = decal_basis(normal) else {
+        return Ok(None);
+    };
+    let basis_u = scale(basis_u, dimensions[0].recip());
+    let basis_v = scale(basis_v, dimensions[1].recip());
+    let offset_u = 0.5 - dot(origin, basis_u);
+    let offset_v = 0.5 - dot(origin, basis_v);
+    let polygon = surface
+        .positions
+        .iter()
+        .map(|position| ClipVertex {
+            position: *position,
+            uv: [
+                dot(*position, basis_u) + offset_u,
+                dot(*position, basis_v) + offset_v,
+            ],
+        })
+        .collect();
+    Ok(clipped_fragment(surface, clip_decal_unit(polygon), normal))
+}
+
 fn project_overlay(
     map: &CanonicalMap,
     visibility: &VisibilityWorld,
@@ -4038,6 +4082,54 @@ mod tests {
         assert_eq!(
             clipped.iter().map(|vertex| vertex.uv).collect::<Vec<_>>(),
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn combat_decals_clip_to_the_actual_face_and_reject_ineligible_receivers() {
+        let mut surface = mark_surface(
+            vec![
+                [-16.0, -16.0, 0.0],
+                [16.0, -16.0, 0.0],
+                [16.0, 16.0, 0.0],
+                [-16.0, 16.0, 0.0],
+            ],
+            [0.0, 0.0, 1.0, 0.0],
+        );
+        let state = DecalState {
+            scale: 1.0,
+            suppress_decals: false,
+            alpha_tested: false,
+            material: false,
+            translucent: false,
+            additive: false,
+            vertex_color: false,
+            vertex_alpha: false,
+            no_cull: false,
+            ignore_z: false,
+        };
+        let fragment = project_combat_decal(&surface, &state, [12.0, 0.0, 0.0], [16.0, 16.0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(fragment.face, 7);
+        assert!(
+            fragment
+                .positions
+                .iter()
+                .all(|position| position[0] <= 16.0)
+        );
+        assert!(fragment.positions.iter().all(|position| position[2] == 0.1));
+        assert!(
+            fragment
+                .uv
+                .iter()
+                .all(|uv| uv.iter().all(|value| (0.0..=1.0).contains(value)))
+        );
+        surface.flags = SURF_NODECALS;
+        assert!(
+            project_combat_decal(&surface, &state, [0.0; 3], [16.0, 16.0])
+                .unwrap()
+                .is_none()
         );
     }
 

@@ -7,6 +7,7 @@ import {
   encodeModelPoseBatch,
   ProjectilePresentationError,
   hitscanMuzzleParticles,
+  combatImpactParticles,
   tf2Camera,
   tf2Hud,
   type ProjectileParticleRequest,
@@ -483,4 +484,32 @@ test("starts authored hitscan muzzle systems from exact fire-tick attachment tra
       attachmentTransforms: new Map([[identity, new Map([["muzzle", { position, orientation }]])]]),
     })[0]).toMatchObject({ system: "muzzle_shotgun", launcherIdentity: identity })
   }
+})
+
+test("joins Source tracer cadence, both endpoint control points, blood LOD and attacker-only crit effects", () => {
+  const muzzle = Object.freeze([2, 3, 4]) as readonly [number, number, number]
+  const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
+  const snapshot = Object.freeze({
+    tick: 22n, team: 2, position: Object.freeze([0, 0, 0]), bots: Object.freeze([{ identity: 7, team: 3, position: Object.freeze([128, 0, 0]) }]),
+    events: Object.freeze([
+      Object.freeze({ kind: 12, detail: 4, subject: 10, auxiliary: 1, values: Object.freeze([0, 0, 64, 0]) }),
+      Object.freeze({ kind: 13, detail: 4, subject: 7, auxiliary: 0x0001_0000, values: Object.freeze([128, 0, 64, 18]) }),
+      Object.freeze({ kind: 13, detail: 4, subject: 0, auxiliary: 1, values: Object.freeze([256, 0, 64, 9]) }),
+      Object.freeze({ kind: 17, detail: 4, subject: 7, auxiliary: 1, values: Object.freeze([18, 82, 1, 1]) }),
+    ]),
+  }) as unknown as Snapshot
+  const systems = new Set(["bullet_scattergun_tracer01_red_crit", "blood_impact_red_01", "blood_spray_red_01", "crit_text"])
+  const result = combatImpactParticles(snapshot, { tracerCount: 0 }, {
+    systems,
+    attachmentTransforms: new Map([[4, new Map([["muzzle", { position: muzzle, orientation }]])]]),
+    playerAttachmentTransforms:new Map([[7,new Map([["head",{position:Object.freeze([128,0,72]) as readonly[number,number,number],orientation}]])]]),
+  })
+  expect(result.state.tracerCount).toBe(2)
+  expect(result.particles.map(request => request.kind === "start" ? request.system : "")).toEqual([
+    "bullet_scattergun_tracer01_red_crit", "blood_impact_red_01", "blood_spray_red_01", "crit_text",
+  ])
+  const tracer = result.particles[0]!
+  expect(tracer.kind === "start" && tracer.controlPoints.map(point => point.position)).toEqual([muzzle, [128, 0, 64]])
+  const encoded = createParticleBatchEncoder().encode(22n, [0, 0, 0], result.particles)
+  expect(encoded[32]).toBe(5)
 })

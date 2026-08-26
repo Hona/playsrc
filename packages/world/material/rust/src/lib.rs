@@ -22,6 +22,7 @@ pub enum Shader {
     Water,
     Refract,
     Sprite,
+    DecalModulate,
     SkyLdr,
     SkyHdr,
     Unsupported,
@@ -267,6 +268,8 @@ pub enum BlendFactor {
     One,
     SourceAlpha,
     OneMinusSourceAlpha,
+    DestinationColor,
+    SourceColor,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlendEquation {
@@ -637,7 +640,14 @@ fn static_state_with_alpha(
         && !base_alpha_environment_mask
         && (features.translucent || features.alpha_test);
     let alpha_blend = alpha < 1.0 || features.vertex_alpha || (base_texture_alpha && !alpha_test);
-    let blend = if material.particle.is_some() {
+    let blend = if material.shader == Shader::DecalModulate {
+        BlendState {
+            enabled: true,
+            equation: BlendEquation::Add,
+            source: BlendFactor::DestinationColor,
+            destination: BlendFactor::SourceColor,
+        }
+    } else if material.particle.is_some() {
         alpha::sprite_card_blend(material)?
     } else if features.additive {
         BlendState {
@@ -670,12 +680,16 @@ fn static_state_with_alpha(
             .particle
             .as_ref()
             .is_some_and(|state| state.alpha_test);
-    let alpha_test = if material.particle.is_some() {
+    let alpha_test = if material.shader == Shader::DecalModulate {
+        true
+    } else if material.particle.is_some() {
         sprite_card_alpha_test
     } else {
         alpha_test
     };
-    let (alpha_test_function, alpha_test_reference) = if material.particle.is_some() {
+    let (alpha_test_function, alpha_test_reference) = if material.shader == Shader::DecalModulate {
+        (CompareFunction::Greater, 0.0)
+    } else if material.particle.is_some() {
         (CompareFunction::Greater, 0.01)
     } else {
         let declared_reference = float_or(&material.first_parameters, b"$alphatestreference", 0.0)?;
@@ -698,9 +712,11 @@ fn static_state_with_alpha(
         }
         Shader::VertexLitGeneric => LightingModel::VertexLit,
         Shader::Sprite if material.particle.is_some() => LightingModel::Particle,
-        Shader::UnlitGeneric | Shader::UnlitTwoTexture | Shader::Sprite | Shader::Refract => {
-            LightingModel::Unlit
-        }
+        Shader::UnlitGeneric
+        | Shader::UnlitTwoTexture
+        | Shader::Sprite
+        | Shader::Refract
+        | Shader::DecalModulate => LightingModel::Unlit,
         Shader::Water => LightingModel::Water,
         Shader::SkyLdr | Shader::SkyHdr => LightingModel::Sky,
         Shader::Unsupported if material.model.is_some() => LightingModel::VertexLit,
@@ -1491,6 +1507,8 @@ fn shader(v: &[u8]) -> Shader {
         Shader::Refract
     } else if v.eq_ignore_ascii_case(b"Sprite") || v.eq_ignore_ascii_case(b"SpriteCard") {
         Shader::Sprite
+    } else if v.eq_ignore_ascii_case(b"DecalModulate") {
+        Shader::DecalModulate
     } else if v.eq_ignore_ascii_case(b"Sky") {
         Shader::SkyLdr
     } else {
@@ -2015,6 +2033,30 @@ mod tests {
             hdr.environment_map.unwrap().texture.color_read,
             TextureColorRead::Linear
         );
+    }
+
+    #[test]
+    fn decal_modulate_uses_authored_destination_color_source_color_depth_and_alpha() {
+        let decal = material(
+            br#"DecalModulate {
+                "$basetexture" "Decals/decals_mod2x"
+                "$decal" "1"
+                "$translucent" "1"
+            }"#,
+            SelectionEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(decal.shader, Shader::DecalModulate);
+        let state = static_state(&decal, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.lighting, LightingModel::Unlit);
+        assert_eq!(state.blend.source, BlendFactor::DestinationColor);
+        assert_eq!(state.blend.destination, BlendFactor::SourceColor);
+        assert!(state.alpha_test);
+        assert_eq!(state.alpha_test_function, CompareFunction::Greater);
+        assert_eq!(state.alpha_test_reference, 0.0);
+        assert!(state.depth_test);
+        assert!(!state.depth_write);
+        assert_eq!(state.polygon_offset, PolygonOffset::Decal);
     }
 
     #[test]

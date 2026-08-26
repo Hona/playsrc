@@ -365,6 +365,16 @@ export type GameplayEvent = Readonly<{
   values: readonly [number, number, number, number]
 }>
 
+export type CombatDecal = Readonly<{
+  identity: number
+  face: number
+  reference: string
+  positions: Float32Array
+  normals: Float32Array
+  uv: Float32Array
+  indices: Uint32Array
+}>
+
 export type CaptureFlagStatus = 0 | 1 | 2
 export type CaptureFlag = Readonly<{
   identity: number
@@ -636,6 +646,7 @@ export type Snapshot = Readonly<{
   round: RoundSnapshot
   jump: JumpSnapshot | null
   events: readonly GameplayEvent[]
+  combatDecals: readonly CombatDecal[]
   activities: readonly ActivityEvent[]
   lifecycleEvents: readonly LifecycleEvent[]
   physicsRequests: readonly ProjectilePhysicsRequest[]
@@ -2131,18 +2142,50 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       target: target === 0xffff_ffff ? null : target, position, yawDegrees, construction, rechargeEndTick: rechargeEndTick === 0xffff_ffff_ffff_ffffn ? null : rechargeEndTick, startedTick: view.getBigUint64(at + 64, true), timesUsed: view.getUint32(at + 72, true) }))
     at += 76
   }
-  const roundLength = bytes.byteLength - at - 12
-  const round = decodeRound(buffer, base + at, roundLength)
-  at += roundLength
+  requireBytes(48,"Round rules header")
+  const roundLength=48+view.getUint32(at+44,true)*8
+  requireBytes(roundLength,"Round rules")
+  const round=decodeRound(buffer,base+at,roundLength)
+  at+=roundLength
   requireBytes(12, "Medi Gun state")
   const medigunCharge = view.getFloat32(at, true), rawMedigunTarget = view.getUint32(at + 4, true), medigunFlags = view.getUint32(at + 8, true)
-  if (!Number.isFinite(medigunCharge) || medigunCharge < 0 || medigunCharge > 1 || medigunFlags > 1
-    || (rawMedigunTarget !== 0xffff_ffff && !bots.some(bot => bot.identity === rawMedigunTarget))) {
-    throw new Tf2CodecError("Medi Gun state is invalid")
-  }
+  if (!Number.isFinite(medigunCharge) || medigunCharge < 0 || medigunCharge > 1 || medigunFlags > 1 || (rawMedigunTarget !== 0xffff_ffff && !bots.some(bot => bot.identity === rawMedigunTarget))) throw new Tf2CodecError("Medi Gun state is invalid")
   const medigunTarget = rawMedigunTarget === 0xffff_ffff ? null : rawMedigunTarget
   at += 12
-  if(at!==bytes.byteLength||entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
+  requireBytes(4,"combat decal count")
+  const decalCount=count(view.getUint32(at,true),"combat decal")
+  at+=4
+  const combatDecals:CombatDecal[]=[]
+  for(let index=0;index<decalCount;index++){
+    requireBytes(20,"combat decal header")
+    const identity=view.getUint32(at,true),face=view.getUint32(at+4,true)
+    const vertices=count(view.getUint32(at+8,true),"combat decal vertex")
+    const triangles=count(view.getUint32(at+12,true),"combat decal triangle")
+    const referenceLength=view.getUint32(at+16,true)
+    at+=20
+    if(identity===0||vertices<3||vertices>128||triangles<1||triangles>128||referenceLength<1||referenceLength>1024)throw new Tf2CodecError("combat decal header is invalid")
+    requireBytes(referenceLength,"combat decal reference")
+    const reference=decoder.decode(data.subarray(at,at+referenceLength))
+    at+=referenceLength
+    requireBytes(vertices*32+triangles*12,"combat decal geometry")
+    const positions=new Float32Array(vertices*3),normals=new Float32Array(vertices*3),uv=new Float32Array(vertices*2)
+    for(let vertex=0;vertex<vertices;vertex++){
+      for(let axis=0;axis<3;axis++)positions[vertex*3+axis]=view.getFloat32(at+axis*4,true)
+      for(let axis=0;axis<3;axis++)normals[vertex*3+axis]=view.getFloat32(at+12+axis*4,true)
+      for(let axis=0;axis<2;axis++)uv[vertex*2+axis]=view.getFloat32(at+24+axis*4,true)
+      at+=32
+    }
+    const indices=new Uint32Array(triangles*3)
+    for(let vertex=0;vertex<indices.length;vertex++){
+      indices[vertex]=view.getUint32(at,true)
+      if(indices[vertex]!>=vertices)throw new Tf2CodecError("combat decal triangle index is invalid")
+      at+=4
+    }
+    if(!finite([...positions,...normals,...uv]))throw new Tf2CodecError("combat decal geometry is non-finite")
+    combatDecals.push(Object.freeze({identity,face,reference,positions,normals,uv,indices}))
+  }
+  if(at!==bytes.byteLength)throw new Tf2CodecError("combat decal section has trailing bytes")
+  if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)
   const frozenProjectiles = Object.freeze(projectiles)
@@ -2181,6 +2224,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     round,
     jump,
     events: Object.freeze(events),
+    combatDecals:Object.freeze(combatDecals),
     activities: Object.freeze(activities),
     lifecycleEvents: Object.freeze(lifecycleEvents),
     physicsRequests: Object.freeze(physicsRequests),

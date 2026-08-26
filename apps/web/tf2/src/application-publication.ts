@@ -110,6 +110,7 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("snapshot-tick", "snapshotTick"),
   attribute("projectile-states", "projectileStates"),
   attribute("decal-probe", "decalProbe"),
+  attribute("combat-decals", "combatDecals"),
   attribute("model-occurrences", "modelOccurrenceCount"),
   attribute("particle-probe", "particleProbe"),
   attribute("audio-starts", "audioStarts", (view) => view.audioStarts?.join("|")),

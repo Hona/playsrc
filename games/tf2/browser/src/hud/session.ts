@@ -300,7 +300,13 @@ function mapGameplayEvent(
         kind: "damage",
         amount: source.values[0],
         health: eventHealth(snapshot, source.values[1]),
-        direction: tf2HudUnavailable("missing-source-fact"),
+        direction: source.detail === 1
+          ? tf2HudAvailable(Object.freeze([
+              source.values[2],
+              source.values[3],
+              new DataView(Uint32Array.of(source.subject).buffer).getFloat32(0, true),
+            ]) as readonly [number, number, number])
+          : tf2HudUnavailable("missing-source-fact"),
       })
       break
     case 7:
