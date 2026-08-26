@@ -2492,7 +2492,10 @@ fn encode_model_poses(
             let selected = playsrc_studio_model::select_primitives(
                 model,
                 &bodygroups,
-                request.skin,
+                playsrc_studio_model::source_skin_family(
+                    i32::try_from(request.skin).unwrap_or(i32::MAX),
+                    model.skins.len(),
+                ),
                 request.lod,
             )
             .map_err(|_| ())?;

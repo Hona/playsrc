@@ -1050,6 +1050,32 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let selected = self.team_selection.select(choice, random)?;
         if let Some(team) = selected {
+            if team.is_gameplay() && team != before.local_team {
+                if let Some(spawn) = self.map.team_spawn(team) {
+                    self.spawn = spawn;
+                }
+                self.movement = MovementState::from_player(
+                    Player {
+                        position: self.spawn,
+                        velocity: [0.0; 3],
+                        grounded: false,
+                        crouched: false,
+                        jump_latched: false,
+                    },
+                    MovementPolicy {
+                        class: self.class,
+                        modifiers: self.movement_modifiers,
+                    }
+                    .resolve(),
+                );
+                self.buildings.reset();
+                self.ammo = self.class.data().maximum_ammo;
+                self.health = self.maximum_health();
+                self.air_dashes = 0;
+                self.in_water = false;
+                self.last_movement = None;
+                self.fire_was_held = false;
+            }
             self.lifecycle = if team == PlayerTeam::Spectator {
                 PlayerLifecycle::Observer
             } else if team == PlayerTeam::Unassigned {
@@ -6730,6 +6756,42 @@ mod tests {
                 .iter()
                 .any(|event| event.kind == LifecycleEventKind::TeamChanged
                     && event.team == PlayerTeam::Blue)
+        );
+    }
+
+    #[test]
+    fn team_selection_spawns_at_the_first_enabled_authored_point_for_each_team() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "10 20 1" "StartDisabled" "1"}
+{"classname" "info_player_teamspawn" "TeamNum" "3" "origin" "300 400 1" "StartDisabled" "1"}
+{"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "100 200 1"}
+{"classname" "info_player_teamspawn" "TeamNum" "3" "origin" "500 600 1"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let map = MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        let mut session = Session::connected(
+            Floor,
+            [10.0, 20.0, 1.0],
+            map,
+            team_selection::TeamRules::default(),
+        );
+        session
+            .select_team_choice(team_selection::TeamChoice::Red)
+            .unwrap();
+        assert_eq!(session.movement.position, [100.0, 200.0, 1.0]);
+        session.advance(Command::default()).unwrap();
+        session.ammo.metal = 20;
+        session
+            .select_team_choice(team_selection::TeamChoice::Blue)
+            .unwrap();
+        assert_eq!(session.movement.position, [500.0, 600.0, 1.0]);
+        assert_eq!(session.ammo.metal, session.class.data().maximum_ammo.metal);
+        assert_eq!(
+            session.advance(Command::default()).unwrap().team,
+            PlayerTeam::Blue
         );
     }
 

@@ -82,6 +82,10 @@ export function sourceMouseButtonCode(button: number): string | null {
   return sourceButton === undefined ? null : `MOUSE${sourceButton}`
 }
 
+export function pointerLockRequestRequired(owner: Element | null, target: Element): boolean {
+  return owner !== target
+}
+
 export function applyPointerDelta(
   yaw: number,
   pitch: number,
