@@ -28,6 +28,7 @@ export type WorkerRequest = WorkerEnvelope & (
     }>
   | Readonly<{ id: number; kind: "finalize-resources"; generation: number; authenticatedIdentity?: Readonly<{ byteLength: number; sha256: string }> }>
   | Readonly<{ id: number; kind: "retain-resources"; generation: number; section: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "retain-resources"; generation: number; sourceGeneration: number; sectionIndex: number }>
   | Readonly<{ id: number; kind: "release-resources"; generation: number }>
   | Readonly<{
       id: number

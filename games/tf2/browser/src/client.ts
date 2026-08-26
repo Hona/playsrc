@@ -39,6 +39,7 @@ export type ResourceConfiguration = Readonly<{
   byteLength: number
   sha256: string
   sections: readonly Uint8Array[]
+  sectionIdentities?: readonly string[]
 }>
 
 export type LoadedGame = Readonly<{
@@ -318,18 +319,34 @@ export class Tf2WorkerClient {
     if (response.kind !== "resources-released" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
   }
 
+  async retainResourceSection(generation: number, source: ResourceConfiguration, sectionIndex: number): Promise<Uint8Array> {
+    const section = source.sections[sectionIndex]
+    if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff
+      || !Number.isSafeInteger(source.generation) || source.generation < 1 || source.generation >= generation
+      || !Number.isSafeInteger(sectionIndex) || sectionIndex < 0 || !section
+      || section.byteLength < 12 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES) {
+      throw new Tf2WorkerError("BoundExceeded")
+    }
+    const response = section.buffer instanceof SharedArrayBuffer
+      ? await this.#request({ kind: "retain-resources", generation, sourceGeneration: source.generation, sectionIndex })
+      : await (async () => {
+        const transferred = section.slice().buffer
+        return this.#request({ kind: "retain-resources", generation, section: transferred }, [transferred])
+      })()
+    if (response.kind !== "resources-retained" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
+    return section
+  }
+
   async #retainResources(generation: number, configuration: ResourceConfiguration): Promise<ResourceConfiguration> {
-    for (const section of configuration.sections) {
-      const transferred = section.slice().buffer
-      const response = await this.#request({ kind: "retain-resources", generation, section: transferred }, [transferred])
-      if (response.kind !== "resources-retained" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
-    }
-    const retained = await this.finalizeResources(generation, configuration.sections)
-    if (retained.byteLength !== configuration.byteLength || retained.sha256 !== configuration.sha256) {
+    try {
+      for (let index = 0; index < configuration.sections.length; index += 1) await this.retainResourceSection(generation, configuration, index)
+      const retained = await this.finalizeResources(generation, configuration.sections)
+      if (retained.byteLength !== configuration.byteLength || retained.sha256 !== configuration.sha256) throw new Tf2WorkerError("IntegrityFailure")
+      return retained
+    } catch (error) {
       await this.releaseResources(generation).catch(() => {})
-      throw new Tf2WorkerError("IntegrityFailure")
+      throw error
     }
-    return retained
   }
 
   async stage(

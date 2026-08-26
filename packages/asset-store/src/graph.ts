@@ -28,6 +28,13 @@ export type ResourceChunkDescriptor = Readonly<{
   entries: readonly ResourceEntryDescriptor[]
 }>
 
+/** Decoded section identity includes the authenticated entry table, not just its encoded blob. */
+export function resourceSectionIdentity(chunk: ResourceChunkDescriptor): string {
+  return JSON.stringify([chunk.encodedSha256, chunk.encodedByteLength, chunk.codec,
+    chunk.decodedSha256, chunk.decodedByteLength,
+    chunk.entries.map((entry) => [entry.logicalPath, entry.offset, entry.byteLength, entry.sha256])])
+}
+
 export type ResourceGraph = Readonly<{
   schema: "playsrc-resource-graph-v1"
   game: "tf2"

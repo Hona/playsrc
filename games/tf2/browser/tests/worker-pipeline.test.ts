@@ -288,7 +288,15 @@ class PipelineWorker implements WorkerLike {
       }
       case "retain-resources": {
         const retained = this.resources.get(request.generation) ?? []
-        retained.push(new Uint8Array(request.section).slice())
+        if ("section" in request) retained.push(new Uint8Array(request.section).slice())
+        else {
+          const source = this.resources.get(request.sourceGeneration)?.[request.sectionIndex]
+          if (!source) {
+            this.#respond({ id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 })
+            return
+          }
+          retained.push(source)
+        }
         this.resources.set(request.generation, retained)
         this.#respond({ id: request.id, kind: "resources-retained", generation: request.generation })
         return
@@ -642,6 +650,33 @@ describe("TF2 Worker transport ownership", () => {
     expect(staged.payload).toEqual(MAP)
     expect(worker.requests.map((request) => request.kind)).toEqual(["retain-resources", "finalize-resources", "load"])
     expect(resources.sections[0]!.byteLength).toBe(12)
+    await client.shutdown()
+  })
+
+  test("retains authenticated shared source owners across generations without copying their bytes", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const section = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: new Uint8Array(12).fill(4) }], 3)
+    const resources = await client.finalizeResources(3, [section])
+    const staged = await client.stage(4, Uint8Array.of(1), 0, resources, KEY)
+    expect(staged.payload).toEqual(MAP)
+    expect(worker.requests.find((request) => request.kind === "retain-resources"))
+      .toMatchObject({ generation: 4, sourceGeneration: 3, sectionIndex: 0 })
+    expect(worker.resources.get(4)![0]).toBe(worker.resources.get(3)![0])
+    await client.releaseResources(3)
+    expect(worker.resources.get(4)![0]![0]).toBe(4)
+    await client.shutdown()
+  })
+
+  test("rejects stale, out-of-bounds, and reversed shared section owners", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const section = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: new Uint8Array(12) }], 6)
+    const resources = await client.finalizeResources(6, [section])
+    await expect(client.retainResourceSection(6, resources, 0)).rejects.toMatchObject({ code: "BoundExceeded" })
+    await expect(client.retainResourceSection(7, resources, 1)).rejects.toMatchObject({ code: "BoundExceeded" })
+    await client.releaseResources(6)
+    await expect(client.retainResourceSection(7, resources, 0)).rejects.toMatchObject({ code: "MalformedRequest" })
     await client.shutdown()
   })
 
