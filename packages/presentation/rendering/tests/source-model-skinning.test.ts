@@ -41,4 +41,15 @@ describe("authored Source GPU bone skinning", () => {
     expect(() => updateSourceModelSkeleton(skeleton, matrices.subarray(0, 12))).toThrow("count differs")
     skeleton.dispose()
   })
+
+  test("shares one bounded GPU shader palette shape across unequal authored bone counts", () => {
+    const first = createSourceModelSkeleton(new Float32Array(65 * 12))
+    const second = createSourceModelSkeleton(new Float32Array(97 * 12))
+    expect(first.bones).toHaveLength(128)
+    expect(second.bones).toHaveLength(128)
+    expect(updateSourceModelSkeleton(first, new Float32Array(65 * 12))).toBe(128 * 64)
+    expect(() => updateSourceModelSkeleton(first, new Float32Array(97 * 12))).toThrow("count differs")
+    first.dispose()
+    second.dispose()
+  })
 })
