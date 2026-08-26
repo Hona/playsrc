@@ -73,6 +73,9 @@ export type LoadedGame = Readonly<{
     modelCacheHits: number
     modelCacheMisses: number
     wasmLinearMemoryBytes: number
+    wasmAllocatorLiveBytes: number
+    wasmAllocatorHighWaterBytes: number
+    wasmCompileOwnerBytes: readonly number[]
     resourceSections: number
     resourceBytes: number
     totalMilliseconds: number
@@ -463,6 +466,9 @@ export class Tf2WorkerClient {
           modelCacheHits: loaded.timings.modelCacheHits,
           modelCacheMisses: loaded.timings.modelCacheMisses,
           wasmLinearMemoryBytes: loaded.timings.wasmLinearMemoryBytes,
+          wasmAllocatorLiveBytes: loaded.timings.wasmAllocatorLiveBytes,
+          wasmAllocatorHighWaterBytes: loaded.timings.wasmAllocatorHighWaterBytes,
+          wasmCompileOwnerBytes: Object.freeze([...loaded.timings.wasmCompileOwnerBytes]),
           resourceSections: loaded.timings.resourceSections,
           resourceBytes: loaded.timings.resourceBytes,
           totalMilliseconds: performance.now() - started,

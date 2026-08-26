@@ -63,6 +63,7 @@ export class WebGpuUploadBatch {
   readonly #updateBinding: UploadBatchBackend["updateBinding"]
   readonly #updateAttribute: UploadBatchBackend["updateAttribute"]
   readonly #shadows = new WeakMap<UploadBuffer, Uint8Array>()
+  readonly #trackedDestinations = new WeakSet<UploadBuffer>()
   readonly #copies: PendingCopy[] = []
   readonly #retired = new Set<UploadBuffer>()
   #bytes = new Uint8Array(INITIAL_CAPACITY)
@@ -150,6 +151,19 @@ export class WebGpuUploadBatch {
     if (destinationOffset % 4 !== 0 || size % 4 !== 0 || sourceOffset < 0 || sourceOffset + size > source.length) {
       throw new Error("WebGPU upload range violates its exact four-byte buffer bounds")
     }
+    if (!this.#trackedDestinations.has(destination)) {
+      this.#trackedDestinations.add(destination)
+      const destroy = destination.destroy
+      const owner = new WeakRef(this)
+      Object.defineProperty(destination, "destroy", {
+        configurable: true,
+        writable: true,
+        value(this: UploadBuffer) {
+          owner.deref()?.#discardDestination(this)
+          return destroy.call(this)
+        },
+      })
+    }
     const prior = this.#copies.at(-1)
     if (prior && prior.destination === destination && prior.destinationOffset === destinationOffset && prior.size === size) {
       this.#bytes.set(source.subarray(sourceOffset, sourceOffset + size), prior.sourceOffset)
@@ -169,6 +183,14 @@ export class WebGpuUploadBatch {
       this.#copies.push({ destination, sourceOffset: this.#length, destinationOffset, size })
     }
     this.#length = required
+  }
+
+  #discardDestination(destination: UploadBuffer): void {
+    for (let index = this.#copies.length - 1; index >= 0; index -= 1) {
+      if (this.#copies[index]!.destination === destination) this.#copies.splice(index, 1)
+    }
+    this.#shadows.delete(destination)
+    if (!this.#copies.length) this.#length = 0
   }
 
   #flush(): unknown | undefined {

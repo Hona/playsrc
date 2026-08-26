@@ -279,6 +279,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const heapAfter = await cdp.send("Runtime.getHeapUsage")
   const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
   const residentAfter = processResidentMemory(processAfter?.processInfo)
+  const wasmWorkers = await Promise.all(page.workers().map(async (worker) => ({
+    url: worker.url(),
+    ...await (worker.url().includes("gameplay-worker") ? worker.evaluate(() => ({
+      heapBytes: (performance as any).memory?.usedJSHeapSize ?? null,
+      memory: (globalThis as any).__playsrcWorkerMemory ?? null,
+    })).catch(() => ({ heapBytes: null, memory: null })) : { heapBytes: null, memory: null }),
+  })))
+  const loadPerformance = JSON.parse(await root.getAttribute("data-load-performance") ?? "null")
   const storage = await page.evaluate(async () => {
     const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[]
     return {
@@ -340,7 +348,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     longAnimationFrames: summarizeDistribution(measurement.longAnimationFrames.map((frame: { duration: number }) => frame.duration)),
     longTasks: summarizeDistribution(measurement.longTasks.map((task: { duration: number }) => task.duration)),
-    memory: { beforeBytes: heapBefore.usedSize, afterBytes: heapAfter.usedSize, embedderBytes: heapAfter.embedderHeapUsedSize },
+    memory: {
+      beforeBytes: heapBefore.usedSize,
+      afterBytes: heapAfter.usedSize,
+      embedderBytes: heapAfter.embedderHeapUsedSize,
+      residentBeforeBytes: residentBefore?.reduce((total, entry) => total + (entry.residentBytes ?? 0), 0) ?? null,
+      residentAfterBytes: residentAfter?.reduce((total, entry) => total + (entry.residentBytes ?? 0), 0) ?? null,
+      wasm: wasmWorkers,
+      load: loadPerformance,
+    },
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
   }

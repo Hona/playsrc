@@ -137,6 +137,9 @@ export type WorkerResponse =
         modelCacheHits: number
         modelCacheMisses: number
         wasmLinearMemoryBytes: number
+        wasmAllocatorLiveBytes: number
+        wasmAllocatorHighWaterBytes: number
+        wasmCompileOwnerBytes: readonly number[]
         resourceSections: number
         resourceBytes: number
         totalMilliseconds: number

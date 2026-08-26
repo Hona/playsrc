@@ -120,6 +120,16 @@ impl Bsp {
     pub fn lump(&self, index: usize) -> Option<&Lump> {
         self.lumps.get(index)
     }
+
+    pub fn release_lump_payload(&mut self, index: usize) -> bool {
+        let Some(lump) = self.lumps.get_mut(index) else {
+            return false;
+        };
+        lump.records = LumpData::Opaque;
+        lump.pak = None;
+        lump.decoded = Some(Vec::new());
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -584,6 +594,21 @@ mod tests {
         assert_eq!(bsp.lumps[61].overlaps, vec![62, 63]);
         assert_eq!(bsp.lumps[62].overlaps, vec![61, 63]);
         assert_eq!(bsp.lumps[63].overlaps, vec![61, 62]);
+    }
+
+    #[test]
+    fn released_lump_discards_decoded_records_without_changing_authored_source() {
+        let mut bytes = empty_bsp();
+        bytes.extend_from_slice(&[12, 34, 56, 78]);
+        set_lump(&mut bytes, 8, HEADER_BYTES as i32, 4, 1, 0);
+        let mut bsp = parse(&bytes, Profile::Source2013V20, Limits::default()).unwrap();
+        assert!(matches!(bsp.lumps[8].records, LumpData::Lighting(_)));
+        assert!(bsp.release_lump_payload(8));
+        assert!(matches!(bsp.lumps[8].records, LumpData::Opaque));
+        assert!(bsp.lumps[8].bytes(&bsp).is_empty());
+        assert_eq!(bsp.lumps[8].encoded_bytes(&bsp), &[12, 34, 56, 78]);
+        assert_eq!(bsp.source_bytes(), bytes);
+        assert!(!bsp.release_lump_payload(LUMP_COUNT));
     }
 
     #[test]
