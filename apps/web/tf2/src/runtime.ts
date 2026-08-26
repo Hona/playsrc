@@ -115,6 +115,7 @@ import {
 } from "./presentation-viewport"
 import { RequiredParticleDisplayQueue } from "./particle-display"
 import { DisplayBackpressure } from "./display-backpressure"
+import { mapResidency } from "./map-residency"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
 import { tokenizeSourceCommand } from "./console-command"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
@@ -3243,6 +3244,29 @@ export class Tf2Application {
     await this.#switchCatalogMap(this.#activeTarget)
   }
 
+  #profileMapResidency(phase: string, resources?: ResourceConfiguration, loaded?: LoadedGame): void {
+    const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+    if (!profile) return
+    const snapshots = new Set<ArrayBufferLike>()
+    for (const publication of [this.#pendingPresentation, this.#preparedPresentation?.publication]) {
+      if (!publication) continue
+      snapshots.add(publication.snapshotBytes.buffer)
+      for (const batch of publication.eventBatches) snapshots.add(batch.bytes.buffer)
+    }
+    const entry = {
+      at: performance.now(), phase,
+      ...mapResidency(
+        this.#loaded && { ...this.#loaded, sections: this.#dependencies?.sections },
+        resources && { ...loaded, generation: resources.generation, sections: resources.sections },
+      ),
+      audioDecodedSampleBytes: [...this.#audioBuffers.values()].reduce((total, buffer) => total + buffer.length * buffer.numberOfChannels * 4, 0),
+      snapshotBackingBytes: [...snapshots].reduce((total, buffer) => total + buffer.byteLength, 0),
+      vguiFontFaces: document.fonts.size,
+    }
+    ;((profile.mapResidency ??= []) as unknown[]).push(entry)
+    profile.mapResidencyPhase = phase
+  }
+
   async #switchCatalogMap(target: BrowserTargetConfiguration): Promise<void> {
     if (!this.#configuration || !this.#resourceCatalog) return
     if (!this.#client || !this.#renderer || !this.#loaded) {
@@ -3273,6 +3297,7 @@ export class Tf2Application {
     const previousGeneration = this.#generation
     const previousBlockers = new Set(this.#blockers)
     let resourceGeneration: number | undefined
+    this.#profileMapResidency("acquire")
     try {
       const signal = operation.signal
       this.#loadingTarget = target
@@ -3291,13 +3316,16 @@ export class Tf2Application {
       const dependencies = await this.#decodeResourceSet(graph, ["gameplay"], entries, signal)
       if (!dependencies) throw new Error("Gameplay resource configuration is unavailable")
       resourceGeneration = dependencies.generation
+      this.#profileMapResidency("sources-admitted", dependencies)
       this.#requireOperation(operation)
       await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries }, operation)
+      this.#profileMapResidency("replacement-complete")
       if (this.#operations.current(operation)) this.#loadingTarget = undefined
     } catch (error) {
       if (resourceGeneration !== undefined && resourceGeneration !== this.#generation) {
         await this.#client?.discard(resourceGeneration).catch(() => undefined)
       }
+      this.#profileMapResidency("candidate-discarded")
       if (!this.#operations.current(operation)) return
       this.#loadingTarget = undefined
       const reason=error instanceof Error?`${error.name}: ${error.message}`:String(error)
@@ -3419,11 +3447,13 @@ export class Tf2Application {
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
+    this.#profileMapResidency("compiled", candidate?.dependencies, staged)
     if (operation) this.#requireOperation(operation)
     const coverageSamples=await this.#client.coverage(generation)
     if (operation) this.#requireOperation(operation)
     finishReplacePhase("stage")
     const artifacts = await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
+    this.#profileMapResidency("presentation-parsed", candidate?.dependencies, staged)
     finishReplacePhase("presentationParse")
     this.#resetMapBlockers()
     this.#recordVisualOutputBlockers(artifacts)
@@ -3472,6 +3502,7 @@ export class Tf2Application {
         diagnostic: true,
       })
       finishReplacePhase("rendererLoadMap")
+      this.#profileMapResidency("gpu-admitted", candidate?.dependencies, staged)
       this.#environmentDrawables = scene.environmentDrawables
       this.#canvas.dataset.staticProps=JSON.stringify(scene.staticProps)
       this.#canvas.dataset.runtimeStaticProps=JSON.stringify(scene.runtimeStaticProps)
@@ -3484,6 +3515,7 @@ export class Tf2Application {
       if (operation) this.#requireOperation(operation)
       await this.#client.activate(generation)
       finishReplacePhase("activation")
+      this.#profileMapResidency("activated-before-prior-js-retirement", candidate?.dependencies, staged)
     } catch (error) {
       await this.#client.discard(generation).catch(() => {})
       if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile

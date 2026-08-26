@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 pub const MAX_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CHUNK_ENTRIES: usize = 2_048;
 pub const MAX_GRAPH_ENTRIES: usize = 8_192;
+pub const MAX_GRAPH_CHUNKS: usize = 1_024;
 pub const MAX_LOGICAL_PATH_BYTES: usize = 4_096;
 pub const LARGE_RESOURCE_BYTES: usize = 4 * 1024 * 1024;
 const COMPRESSION_PERCENT: usize = 95;
@@ -238,7 +239,7 @@ pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
         return Err(GraphError::BoundExceeded);
     }
     let mut identities = BTreeSet::new();
-    let mut groups = BTreeMap::<(Vec<String>, u8, String), Vec<Resource>>::new();
+    let mut groups = BTreeMap::<(Vec<String>, String, u8, String), Vec<Resource>>::new();
     for resource in resources {
         if !valid_logical_path(&resource.logical_path)
             || resource.roles.is_empty()
@@ -251,23 +252,53 @@ pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
         }
         let roles = resource.roles.iter().cloned().collect::<Vec<_>>();
         let path_hash = hash(resource.logical_path.as_bytes());
-        let bucket = path_hash[0] >> 2;
+        // Directory regions keep unrelated map additions from changing a shared
+        // model/texture section. Within each region the path (not content) picks
+        // a stable shard; entry bytes and the entire table remain authenticated.
+        let region = resource
+            .logical_path
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_owned();
+        let bucket = path_hash[0] >> 7;
         let individual = if resource.bytes.len() >= LARGE_RESOURCE_BYTES {
             resource.logical_path.clone()
         } else {
             String::new()
         };
         groups
-            .entry((roles, bucket, individual))
+            .entry((roles, region, bucket, individual))
             .or_default()
             .push(resource);
     }
 
-    let groups = groups.into_iter().collect::<Vec<_>>();
+    let mut bounded = Vec::new();
+    for ((roles, _, _, _), mut resources) in groups {
+        resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+        let mut section = Vec::new();
+        let mut bytes = CHUNK_HEADER_BYTES;
+        for resource in resources {
+            let length =
+                CHUNK_ENTRY_FIXED_BYTES + resource.logical_path.len() + resource.bytes.len();
+            if length > MAX_CHUNK_BYTES - CHUNK_HEADER_BYTES {
+                return Err(GraphError::BoundExceeded);
+            }
+            if bytes + length > MAX_CHUNK_BYTES || section.len() == MAX_CHUNK_ENTRIES {
+                bounded.push((roles.clone(), std::mem::take(&mut section)));
+                bytes = CHUNK_HEADER_BYTES;
+            }
+            section.push(resource);
+            bytes += length;
+        }
+        bounded.push((roles, section));
+        if bounded.len() > MAX_GRAPH_CHUNKS {
+            return Err(GraphError::BoundExceeded);
+        }
+    }
+    let groups = bounded;
     let results = groups
         .into_par_iter()
-        .map(|((roles, _, _), mut resources)| {
-            resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+        .map(|(roles, resources)| {
             let references = resources.iter().collect::<Vec<_>>();
             let (decoded, entries) = decoded_chunk(&references)?;
             let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
@@ -617,6 +648,10 @@ pub fn decode_authenticated_resource_set(batch: &[u8]) -> Result<Vec<u8>, GraphE
 
 fn decode_resource_set(batch: &[u8], authenticated_encoded: bool) -> Result<Vec<u8>, GraphError> {
     let chunks = batch_chunks(batch)?;
+    if let [(descriptor, encoded)] = chunks.as_slice() {
+        let verified = verify_chunk(descriptor, encoded, authenticated_encoded)?;
+        return compact_verified_section(descriptor, verified);
+    }
     let entry_count = chunks.iter().try_fold(0usize, |count, (descriptor, _)| {
         count
             .checked_add(descriptor.entries.len())
@@ -703,6 +738,36 @@ fn decode_resource_set(batch: &[u8], authenticated_encoded: bool) -> Result<Vec<
     Ok(output)
 }
 
+// Browser admission is one bounded chunk at a time. After full verification the
+// inflated allocation becomes its final PSRE owner, rather than coexisting with
+// another source-sized output. PSCH's larger table makes every move leftward.
+fn compact_verified_section(
+    descriptor: &ChunkDescriptor,
+    verified: VerifiedChunk<'_>,
+) -> Result<Vec<u8>, GraphError> {
+    let mut output = verified.bytes.into_owned();
+    output[..4].copy_from_slice(b"PSRE");
+    let mut cursor = CHUNK_HEADER_BYTES;
+    for (entry, (source, length)) in descriptor.entries.iter().zip(verified.entries) {
+        let header_end = cursor + 8 + entry.logical_path.len();
+        if header_end > source {
+            return Err(GraphError::MalformedChunk);
+        }
+        output[cursor..cursor + 4]
+            .copy_from_slice(&(entry.logical_path.len() as u32).to_le_bytes());
+        cursor += 4;
+        output[cursor..cursor + entry.logical_path.len()]
+            .copy_from_slice(entry.logical_path.as_bytes());
+        cursor += entry.logical_path.len();
+        output[cursor..cursor + 4].copy_from_slice(&(length as u32).to_le_bytes());
+        cursor += 4;
+        output.copy_within(source..source + length, cursor);
+        cursor += length;
+    }
+    output.truncate(cursor);
+    Ok(output)
+}
+
 pub fn read_resource_set(
     graph_path: &std::path::Path,
     selected_role: Option<&str>,
@@ -782,13 +847,14 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let mut groups = BTreeMap::<(Vec<String>, u8, String), Vec<Resource>>::new();
+        let mut groups = BTreeMap::<(Vec<String>, String, u8, String), Vec<Resource>>::new();
         for resource in resources.clone() {
             let roles = resource.roles.iter().cloned().collect::<Vec<_>>();
             groups
                 .entry((
                     roles,
-                    hash(resource.logical_path.as_bytes())[0] >> 2,
+                    resource.logical_path.rsplit_once('/').unwrap().0.to_owned(),
+                    hash(resource.logical_path.as_bytes())[0] >> 7,
                     String::new(),
                 ))
                 .or_default()
@@ -796,7 +862,7 @@ mod tests {
         }
         let mut expected = groups
             .into_iter()
-            .map(|((roles, _, _), mut resources)| {
+            .map(|((roles, _, _, _), mut resources)| {
                 resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
                 let references = resources.iter().collect::<Vec<_>>();
                 let (decoded, entries) = decoded_chunk(&references).unwrap();
@@ -855,6 +921,116 @@ mod tests {
             })
             .count();
         assert!(unchanged + 1 >= before.len());
+    }
+
+    #[test]
+    fn map_regions_preserve_shared_sections_and_exact_resource_closure() {
+        let common = (0..32)
+            .map(|index| {
+                resource(
+                    &format!("materials/models/player/scout/{index}.vtf"),
+                    "gameplay",
+                    vec![index; 1024],
+                )
+            })
+            .collect::<Vec<_>>();
+        let shared = pack(common.clone()).unwrap();
+        for region in ["materials/brick", "materials/models/props_farm", "maps"] {
+            let mut inputs = common.clone();
+            inputs.extend((0..32).map(|index| {
+                resource(
+                    &format!("{region}/{index}.vtf"),
+                    "gameplay",
+                    vec![255 - index; 1024],
+                )
+            }));
+            let forward = pack(inputs.clone()).unwrap();
+            inputs.reverse();
+            assert_eq!(forward, pack(inputs.clone()).unwrap());
+            for chunk in &shared {
+                assert!(
+                    forward.contains(chunk),
+                    "unrelated region changed an authenticated section"
+                );
+            }
+            let actual = forward
+                .iter()
+                .flat_map(|chunk| decode(&chunk.descriptor, &chunk.encoded).unwrap())
+                .map(|entry| (entry.logical_path, entry.bytes))
+                .collect::<BTreeMap<_, _>>();
+            let expected = inputs
+                .into_iter()
+                .map(|entry| (entry.logical_path, entry.bytes))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn region_count_never_exceeds_the_consumer_generation_bound() {
+        let resources = (0..=MAX_GRAPH_CHUNKS)
+            .map(|index| {
+                resource(
+                    &format!("materials/region{index}/a.vmt"),
+                    "gameplay",
+                    vec![0],
+                )
+            })
+            .collect();
+        assert_eq!(pack(resources), Err(GraphError::BoundExceeded));
+    }
+
+    #[test]
+    fn verified_admission_compacts_in_place_without_changing_any_resource_byte() {
+        let resources = (0..256)
+            .map(|index| {
+                resource(
+                    &format!("materials/shared/{index:04}.vtf"),
+                    "gameplay",
+                    vec![index as u8; if index % 3 == 0 { 0 } else { index * 127 }],
+                )
+            })
+            .collect::<Vec<_>>();
+        let references = resources.iter().collect::<Vec<_>>();
+        let (decoded, entries) = decoded_chunk(&references).unwrap();
+        let descriptor = ChunkDescriptor {
+            codec: Codec::Identity,
+            encoded_byte_length: decoded.len().to_string(),
+            encoded_sha256: hex_hash(&decoded),
+            decoded_byte_length: decoded.len().to_string(),
+            decoded_sha256: hex_hash(&decoded),
+            roles: vec!["gameplay".into()],
+            entries,
+        };
+        let verified = verify_chunk(&descriptor, &decoded, false).unwrap();
+        let owned = VerifiedChunk {
+            entries: verified.entries,
+            bytes: Cow::Owned(decoded.clone()),
+        };
+        let pointer = owned.bytes.as_ptr();
+        let actual = compact_verified_section(&descriptor, owned).unwrap();
+        assert_eq!(pointer, actual.as_ptr());
+        let expected = encode_resource_set(
+            &resources
+                .into_iter()
+                .map(|entry| DecodedEntry {
+                    logical_path: entry.logical_path,
+                    bytes: entry.bytes,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        let mut chunk = PackedChunk {
+            descriptor,
+            encoded: decoded,
+        };
+        assert_eq!(
+            decode_to_resource_set(&encode_batch(&[chunk.clone()]).unwrap()).unwrap(),
+            expected
+        );
+        chunk.encoded[0] ^= 1;
+        assert!(decode_to_resource_set(&encode_batch(&[chunk]).unwrap()).is_err());
     }
 
     #[test]

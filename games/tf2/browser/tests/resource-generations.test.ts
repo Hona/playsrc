@@ -101,3 +101,32 @@ test("shared section identity authenticates decoded content and the complete ent
     ...["logicalPath", "offset", "byteLength", "sha256"].map((key) => ({ ...chunk, entries: [{ ...chunk.entries[0]!, [key]: "different" }] })),
   ]) expect(resourceSectionIdentity(changed)).not.toBe(identity)
 })
+
+test("two candidates, cancel, reload and late messages never resurrect retired regions or free rollback", () => {
+  for (const order of [[2, 3], [3, 2]]) {
+    const freed: number[] = []
+    const owners = new ResourceGenerations((value) => freed.push(value.pointer))
+    owners.adopt(1, section(100))
+    owners.get(1)!.sha256 = HASH
+    for (const generation of [2, 3]) {
+      expect(owners.retain(generation, 1, 0)).toBe(true)
+      owners.adopt(generation, section(generation * 100))
+    }
+    for (const generation of order) {
+      owners.release(generation)
+      expect(owners.retain(generation, 1, 0)).toBe(false)
+      expect(() => owners.adopt(generation, section(900))).toThrow()
+      expect(freed).not.toContain(100)
+      expect(owners.get(1)!.sha256).toBe(HASH)
+    }
+    expect(owners.retain(4, 1, 0)).toBe(true)
+    owners.get(4)!.sha256 = HASH
+    owners.release(1)
+    expect(freed).not.toContain(100)
+    expect(owners.retain(5, 1, 0)).toBe(false)
+    expect(owners.retain(5, 4, 0)).toBe(true)
+    owners.release(4)
+    owners.release(5)
+    expect(freed.toSorted()).toEqual([100, 200, 300])
+  }
+})

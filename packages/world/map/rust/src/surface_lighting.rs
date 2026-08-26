@@ -5,6 +5,22 @@ use std::collections::BTreeSet;
 const SURF_SKY_2D: i32 = 0x0002;
 const SURF_SKY: i32 = 0x0004;
 const SURF_NODRAW: i32 = 0x0080;
+// Read only the selected authored luxel. Keeping a linear copy of every lightmap
+// alongside the canonical map needlessly triples RGBExp32 storage during admission.
+fn light_sample(samples: &LightingSamples, index: usize) -> Option<[f32; 3]> {
+    match samples {
+        LightingSamples::LinearRgb32(samples) => samples.get(index).copied(),
+        LightingSamples::RgbExp32(samples) => samples.get(index).map(|sample| {
+            let scale = 2.0_f32.powi(sample[3] as i8 as i32) / 255.0;
+            [
+                f32::from(sample[0]) * scale,
+                f32::from(sample[1]) * scale,
+                f32::from(sample[2]) * scale,
+            ]
+        }),
+    }
+}
+
 pub const SOURCE_AMBIENT_RAY_LENGTH: f32 = 32_768.0 * 1.74;
 pub const SOURCE_AMBIENT_RAY_COUNT: usize = 162;
 
@@ -36,20 +52,19 @@ struct FaceLight {
 }
 
 #[derive(Clone, Debug)]
-pub struct SurfaceLightingWorld {
-    map: CanonicalMap,
-    visibility: VisibilityWorld,
+pub struct SurfaceLightingWorld<'source> {
+    map: &'source CanonicalMap,
+    visibility: &'source VisibilityWorld,
     detail_faces: Vec<Vec<usize>>,
     face_light: Vec<FaceLight>,
-    samples: Vec<[f32; 3]>,
     water_materials: BTreeSet<usize>,
     sky_ambient: Option<[f32; 3]>,
 }
 
-impl SurfaceLightingWorld {
+impl<'source> SurfaceLightingWorld<'source> {
     pub fn compile(
-        map: &CanonicalMap,
-        visibility: &VisibilityWorld,
+        map: &'source CanonicalMap,
+        visibility: &'source VisibilityWorld,
         water_materials: BTreeSet<usize>,
     ) -> Result<Self, SurfaceLightError> {
         if map.surfaces.len() != map.lighting.surfaces.len()
@@ -57,20 +72,6 @@ impl SurfaceLightingWorld {
         {
             return Err(SurfaceLightError::InvalidInput);
         }
-        let samples = match &map.lighting.samples {
-            LightingSamples::LinearRgb32(samples) => samples.clone(),
-            LightingSamples::RgbExp32(samples) => samples
-                .iter()
-                .map(|sample| {
-                    let scale = 2.0_f32.powi(sample[3] as i8 as i32) / 255.0;
-                    [
-                        f32::from(sample[0]) * scale,
-                        f32::from(sample[1]) * scale,
-                        f32::from(sample[2]) * scale,
-                    ]
-                })
-                .collect(),
-        };
         let mut node_faces = BTreeSet::new();
         for node in &visibility.nodes {
             let start = usize::from(node.first_face);
@@ -104,7 +105,7 @@ impl SurfaceLightingWorld {
             let average = if lighting.kind == SurfaceLightingKind::Unlit || sample_start == 0 {
                 None
             } else {
-                Some(*samples.get(sample_start - 1).ok_or(())?)
+                Some(light_sample(&map.lighting.samples, sample_start - 1).ok_or(())?)
             };
             face_light.push(FaceLight {
                 average,
@@ -118,11 +119,10 @@ impl SurfaceLightingWorld {
             .find(|light| light.kind == 5)
             .map(|light| light.intensity);
         Ok(Self {
-            map: map.clone(),
-            visibility: visibility.clone(),
+            map,
+            visibility,
             detail_faces,
             face_light,
-            samples,
             water_materials,
             sky_ambient,
         })
@@ -314,7 +314,7 @@ impl SurfaceLightingWorld {
                     .sample_start
                     .checked_add(dt.max(0) as usize * smax + ds.max(0) as usize)
                     .ok_or(())?;
-                let radiance = *self.samples.get(index).ok_or(())?;
+                let radiance = light_sample(&self.map.lighting.samples, index).ok_or(())?;
                 let reflectivity = self.map.materials[surface.material].reflectivity;
                 state.closest = fraction;
                 state.hit = Some(SurfaceLightHit {
@@ -479,6 +479,38 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_luxels_preserve_every_exponent_and_linear_float_bit() {
+        let authored = (0..=255u8)
+            .map(|exponent| [0, 127, 255, exponent])
+            .collect::<Vec<_>>();
+        let linear = authored
+            .iter()
+            .map(|sample| {
+                let scale = 2.0_f32.powi(sample[3] as i8 as i32) / 255.0;
+                [
+                    f32::from(sample[0]) * scale,
+                    f32::from(sample[1]) * scale,
+                    f32::from(sample[2]) * scale,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let samples = LightingSamples::RgbExp32(authored);
+        for (index, expected) in linear.iter().enumerate() {
+            assert_eq!(
+                light_sample(&samples, index).unwrap().map(f32::to_bits),
+                expected.map(f32::to_bits)
+            );
+        }
+        assert_eq!(light_sample(&samples, linear.len()), None);
+        let samples = LightingSamples::LinearRgb32(vec![[-0.0, f32::MIN_POSITIVE, f32::MAX]]);
+        assert_eq!(
+            light_sample(&samples, 0).unwrap().map(f32::to_bits),
+            [-0.0, f32::MIN_POSITIVE, f32::MAX].map(f32::to_bits)
+        );
+        assert_eq!(light_sample(&samples, 1), None);
+    }
 
     #[test]
     fn cube_projection_preserves_axis_weighting_and_order() {
