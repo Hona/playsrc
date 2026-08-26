@@ -14,6 +14,7 @@ export class OwnedResourceGeneration implements Iterable<OwnedResource> {
   readonly sceneGeneration: number
   #state: ResourceGenerationState = "Staging"
   #resources = new Set<OwnedResource>()
+  #releasing = new Set<OwnedResource>()
   #disposals = 0
 
   constructor(deviceGeneration: number, sceneGeneration: number) {
@@ -33,10 +34,22 @@ export class OwnedResourceGeneration implements Iterable<OwnedResource> {
   }
 
   release(resource: OwnedResource): void {
-    if ((this.#state !== "Staging" && this.#state !== "Active") || !this.#resources.delete(resource)) {
+    if ((this.#state !== "Staging" && this.#state !== "Active") || this.#releasing.has(resource) || !this.#resources.delete(resource)) {
       throw new Error("resource cannot be released from this generation")
     }
     try { resource.dispose() } finally { this.#disposals += 1 }
+  }
+
+  releaseAfter(resource: OwnedResource, queueCompletion: Promise<unknown>): void {
+    if ((this.#state !== "Staging" && this.#state !== "Active") || this.#releasing.has(resource) || !this.#resources.has(resource)) {
+      throw new Error("resource cannot be released from this generation")
+    }
+    this.#releasing.add(resource)
+    void queueCompletion.catch(() => {}).then(() => {
+      this.#releasing.delete(resource)
+      if (!this.#resources.delete(resource)) return
+      try { resource.dispose() } finally { this.#disposals += 1 }
+    })
   }
 
   activate(): void {
@@ -60,6 +73,7 @@ export class OwnedResourceGeneration implements Iterable<OwnedResource> {
       this.#disposals += 1
     }
     this.#resources.clear()
+    this.#releasing.clear()
   }
 
   snapshot(): ResourceGenerationSnapshot {

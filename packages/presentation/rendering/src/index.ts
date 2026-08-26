@@ -780,6 +780,8 @@ export type RendererCreateRequest = Readonly<{
   canvas: Canvas
   configuration: RenderConfiguration
   powerPreference?: "low-power" | "high-performance"
+  sampleCount?: 1 | 4
+  textureQuality?: Readonly<{ mipOffset: number; trilinear: boolean; anisotropy: number }>
 }>
 
 export type FramePacingCallback = (timestampMilliseconds: number) => Frame | undefined | Promise<Frame | undefined>
@@ -820,6 +822,9 @@ export type ModelGeometryEvidence = Readonly<{
 
 export interface Renderer {
   readonly configuration: RenderConfiguration
+  readonly sampleCount: 1 | 4
+  readonly capabilities: Readonly<{ sampleCounts: readonly [1, 4]; presentationSynchronization: false }>
+  readonly textureQuality: RendererCreateRequest["textureQuality"]
   readonly lifecycle: RendererLifecycle
   readonly deviceGeneration: number
   readonly sceneGeneration: number
@@ -1143,7 +1148,8 @@ function textureFromRgba(
   return texture
 }
 
-function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.Texture {
+function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, frame = 0,
+  quality?: RendererCreateRequest["textureQuality"]): THREE.Texture {
   if (input.depth !== 1 || input.frameCount < 1 || !input.faces.includes(0) ||
     frame < 0 || frame >= input.frameCount || input.sampling.wrapS === 2 || input.sampling.wrapT === 2 || input.sampling.wrapU === 2) {
     throw new RenderingError("UnsupportedFeature", `authored 2D texture ${input.logicalPath} requires an unsupported topology or border sampler`)
@@ -1154,9 +1160,10 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
   if (planes.length !== input.mipCount || planes.some((plane, mip) => plane.mip !== mip)) {
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
   }
+  const selected = planes.slice(input.sampling.noLod ? 0 : Math.min(Math.max(0, quality?.mipOffset ?? 0), planes.length - 1))
   const data = (plane: AuthoredTextureInput["planes"][number]) =>
     sourceTextureSamples(plane.rgba, input.sourceFormat, input.scalarEncoding)
-  const base = planes[0]!
+  const base = selected[0]!
   const compressedFormat = input.sourceFormat === null ? null : new Map<number, THREE.CompressedPixelFormat>([
     [13, THREE.RGBA_S3TC_DXT1_Format],
     [20, THREE.RGBA_S3TC_DXT1_Format],
@@ -1164,7 +1171,7 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     [15, THREE.RGBA_S3TC_DXT5_Format],
   ]).get(input.sourceFormat)
   if (input.sourceFormat !== null && ![0,1,2,3,11,12,16,24].includes(input.sourceFormat) && compressedFormat === undefined) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
-  const mipmaps = planes.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  const mipmaps = selected.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
   const texture = compressedFormat === null || compressedFormat === undefined
     ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, compressedFormat, THREE.UnsignedByteType)
@@ -1180,8 +1187,11 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     THREE.LinearMipmapLinearFilter,
     THREE.LinearMipmapLinearFilter,
   ][input.sampling.minFilter] ?? THREE.LinearFilter
+  if (quality && input.sampling.minFilter >= 2 && mipmaps.length > 1) {
+    texture.minFilter = quality.trilinear || quality.anisotropy > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearMipmapNearestFilter
+  }
   texture.magFilter = input.sampling.magFilter === 0 ? THREE.NearestFilter : THREE.LinearFilter
-  texture.anisotropy = input.sampling.anisotropyLevel
+  texture.anisotropy = quality?.anisotropy ?? input.sampling.anisotropyLevel
   texture.generateMipmaps = false
   texture.flipY = false
   texture.needsUpdate = true
@@ -1384,6 +1394,9 @@ function validateDirectionalInputs(
 
 class RendererOwner implements Renderer {
   readonly configuration: RenderConfiguration
+  readonly sampleCount: 1 | 4
+  readonly capabilities = Object.freeze({ sampleCounts: Object.freeze([1, 4] as const), presentationSynchronization: false as const })
+  readonly textureQuality: RendererCreateRequest["textureQuality"]
   readonly #canvas: Canvas
   readonly #powerPreference: "low-power" | "high-performance" | undefined
   readonly #exposure: ExposureController
@@ -1463,6 +1476,13 @@ class RendererOwner implements Renderer {
 
   constructor(request: RendererCreateRequest) {
     this.configuration = validateRenderConfiguration(request.configuration)
+    this.sampleCount = request.sampleCount ?? 4
+    if (this.sampleCount !== 1 && this.sampleCount !== 4) throw new RenderingError("UnsupportedFeature", "WebGPU sample count is unsupported")
+    this.textureQuality = request.textureQuality
+    if (this.textureQuality && (!Number.isSafeInteger(this.textureQuality.mipOffset)
+      || ![1, 2, 4, 8, 16].includes(this.textureQuality.anisotropy))) {
+      throw new RenderingError("MalformedInput", "WebGPU texture quality is invalid")
+    }
     this.#canvas = request.canvas
     this.#powerPreference = request.powerPreference
     const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
@@ -1727,7 +1747,7 @@ class RendererOwner implements Renderer {
   async #createBackend(): Promise<Backend> {
     const backend = new THREE.WebGPURenderer({
       canvas: this.#canvas,
-      antialias: true,
+      antialias: this.sampleCount === 4,
       alpha: this.configuration.alphaMode === "premultiplied",
       powerPreference: this.#powerPreference,
     }) as Backend
@@ -2142,11 +2162,12 @@ class RendererOwner implements Renderer {
     )
     const waterFogUniforms = createSourceWaterFogUniforms()
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.Texture }>()
-    const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables)
+    const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables, 4, () =>
+      this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
     const authoredTextureKey = (input: AuthoredTextureInput, colorSpace: string, frame = 0): string =>
       `${input.sourceSha256}:${input.sourceFormat ?? "rgba"}:${input.scalarEncoding}:${colorSpace}:${frame}`
     const retainAuthoredTexture = (input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.Texture =>
-      textureResidency.retain(authoredTextureKey(input, colorSpace, frame), () => textureFromAuthored(input, colorSpace, frame))
+      textureResidency.retain(authoredTextureKey(input, colorSpace, frame), () => textureFromAuthored(input, colorSpace, frame, this.textureQuality))
     const modelDrawInputs = new Map((request.modelDrawInputs ?? []).map((input) => [input.entity, input] as const))
     const modelsRequiringLighting = new Set(map.models
       .filter((model) => model.materials.some((material) => {
@@ -2274,6 +2295,7 @@ class RendererOwner implements Renderer {
     }
 
     const authoredFrames = (authored: AuthoredTextureInput, colorSpace: string): AuthoredTextureFrames => {
+      const quality = this.textureQuality
       const identity = `${authored.sourceSha256}:${authored.sourceFormat ?? "rgba"}:${authored.scalarEncoding}:${colorSpace}`
       let frames = animatedTextureFrames.get(identity)
       if (!frames) {
@@ -2284,7 +2306,7 @@ class RendererOwner implements Renderer {
               throw new RenderingError("MalformedInput", `authored texture ${authored.logicalPath} selected an invalid frame`)
             }
             return textureResidency.select(identity, frame, consumer, () =>
-              textureFromAuthored(authored, colorSpace, frame), authored.frameCount)
+              textureFromAuthored(authored, colorSpace, frame, quality), authored.frameCount)
           },
         })
         animatedTextureFrames.set(identity, frames)

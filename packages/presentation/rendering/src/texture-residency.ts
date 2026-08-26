@@ -17,17 +17,19 @@ export type TextureResidencySnapshot = Readonly<{
 export class SharedTextureResidency<T extends OwnedResource> {
   readonly #generation: OwnedResourceGeneration
   readonly #maximumFrames: number
+  readonly #queueCompletion?: () => Promise<unknown>
   readonly #resources = new Map<string, ResidentTexture<T>>()
   readonly #sequences = new Map<string, Set<string>>()
   readonly #selected = new Map<string, string>()
   #evictions = 0
 
-  constructor(generation: OwnedResourceGeneration, maximumFrames = 4) {
+  constructor(generation: OwnedResourceGeneration, maximumFrames = 4, queueCompletion?: () => Promise<unknown>) {
     if (!Number.isSafeInteger(maximumFrames) || maximumFrames < 1) {
       throw new Error("animated texture residency bound is invalid")
     }
     this.#generation = generation
     this.#maximumFrames = maximumFrames
+    this.#queueCompletion = queueCompletion
   }
 
   retain(identity: string, create: () => T): T {
@@ -82,7 +84,8 @@ export class SharedTextureResidency<T extends OwnedResource> {
         const entry = this.#resources.get(candidate)!
         frames.delete(candidate)
         this.#resources.delete(candidate)
-        this.#generation.release(entry.value)
+        if (this.#queueCompletion) this.#generation.releaseAfter(entry.value, this.#queueCompletion())
+        else this.#generation.release(entry.value)
         this.#evictions += 1
       }
     }

@@ -4,12 +4,46 @@ import {
   TF2_KEYBOARD_ACTIONS,
   TF2_OPTIONS_AUTHORITY,
   TF2_SELECTED_OPTIONS,
+  TF2_BALANCED_VIDEO_SETTINGS,
+  tf2VideoConfiguration,
+  tf2VideoConvars,
+  tf2VideoSettingsFromConvars,
   createSettingsState,
   decodeSettingsPersistence,
   encodeSettingsPersistence,
 } from "../src"
 
 describe("configured TF2 Options profile", () => {
+  test("maps the balanced video preset to its complete effective Source configuration", () => {
+    const state = createSettingsState({ catalog: TF2_SELECTED_OPTIONS })
+    expect(state.snapshot().current).toMatchObject(TF2_BALANCED_VIDEO_SETTINGS)
+    expect(tf2VideoConvars(tf2VideoConfiguration(state.snapshot().current))).toEqual({
+      r_rootlod: 1, mat_picmip: 1, r_shadowrendertotexture: 1,
+      r_flashlightdepthtexture: 0, mat_reducefillrate: 1, mat_hdr_level: 0,
+      mat_antialias: 0, mat_aaquality: 0, mat_trilinear: 0, mat_forceaniso: 1,
+      r_waterforceexpensive: 0, r_waterforcereflectentities: 0, mat_vsync: 0,
+      mat_queue_mode: -1, mat_colorcorrection: 0, mat_motion_blur_enabled: 0,
+    })
+  })
+
+  test("maps every selectable model, texture, shadow, filtering, water, and HDR quality", () => {
+    for (const [value, rootLod] of [["low", 2], ["medium", 1], ["high", 0]] as const)
+      expect(tf2VideoConfiguration({ "video.model-detail": value }).rootLod).toBe(rootLod)
+    for (const [value, picmip] of [["low", 2], ["medium", 1], ["high", 0], ["ultra", -1]] as const)
+      expect(tf2VideoConfiguration({ "video.texture-detail": value }).picmip).toBe(picmip)
+    for (const [value, render, depth] of [["low", 0, 0], ["medium", 1, 0], ["high", 1, 1]] as const)
+      expect(tf2VideoConfiguration({ "video.shadow-detail": value })).toMatchObject({ shadowRenderToTexture: render, flashlightDepthTexture: depth })
+    for (const [value, anisotropy] of [["bilinear", 1], ["trilinear", 1], ["anisotropic-2", 2], ["anisotropic-4", 4], ["anisotropic-8", 8], ["anisotropic-16", 16]] as const)
+      expect(tf2VideoConfiguration({ "video.filtering": value })).toMatchObject({ anisotropy, trilinear: Number(value === "trilinear") })
+    for (const [value, expensive, entities] of [["no-reflections", 0, 0], ["reflect-world", 1, 0], ["reflect-all", 1, 1]] as const)
+      expect(tf2VideoConfiguration({ "video.water-detail": value })).toMatchObject({ waterForceExpensive: expensive, waterReflectEntities: entities })
+    for (const level of [0, 1, 2] as const) expect(tf2VideoConfiguration({ "video.hdr": level }).hdrLevel).toBe(level)
+    expect(() => tf2VideoConfiguration({ "video.antialias-samples": 2 })).toThrow("unsupported")
+    const configuration = tf2VideoConfiguration(TF2_BALANCED_VIDEO_SETTINGS)
+    expect(tf2VideoSettingsFromConvars(configuration, { r_rootlod: 2, mat_picmip: -1, mat_forceaniso: 8 }))
+      .toMatchObject({ "video.model-detail": "low", "video.texture-detail": "ultra", "video.filtering": "anisotropic-8" })
+    expect(() => tf2VideoSettingsFromConvars(configuration, { mat_forceaniso: 3 })).toThrow("filtering")
+  })
   test("retains fixed SDK, content, page, and physical-profile identities", () => {
     expect(TF2_OPTIONS_AUTHORITY).toMatchObject({
       sdkRevision: "88fa198fba3fb85d46d4c95018254693fdc3af0a",
