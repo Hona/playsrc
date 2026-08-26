@@ -3585,7 +3585,7 @@ class RendererOwner implements Renderer {
     const soleMain = plan.passes.length === 1 && plan.passes[0]?.kind === "main" ? plan.passes[0] : undefined
     if (
       !plan.visibleWater && soleMain && !soleMain.clip && !soleMain.renderWaterSurface
-      && soleMain.drawEntities && soleMain.drawSky2d === (frame.visibility?.sky === 2)
+      && soleMain.drawEntities && soleMain.drawSky2d === (frame.visibility?.sky === 1)
     ) {
       const background = this.#scene.background
       this.#backend.autoClear = !preserveColor
