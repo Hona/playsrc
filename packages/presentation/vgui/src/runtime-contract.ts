@@ -103,6 +103,13 @@ export type VguiFontPresentation = Readonly<{
   style: "normal" | "italic"
   available: boolean
   measure?: (text: string, wrapWidth: number | null) => Readonly<{ width: number; height: number }>
+  metricsForViewport?: (height: number) => Readonly<{
+    sizePx: number
+    lineHeightPx: number
+    weight?: number
+    style?: "normal" | "italic"
+    measure?: (text: string, wrapWidth: number | null) => Readonly<{ width: number; height: number }>
+  }>
 }>
 
 export type VguiLineBorder = Readonly<{

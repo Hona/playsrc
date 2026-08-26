@@ -104,6 +104,7 @@ function children(
   source: VguiResourceDocument,
   blocks: readonly VguiResourceNode[],
   conditions: readonly string[],
+  resolutionSuffixes: readonly string[],
 ): void {
   const selected = blocks.filter((block) => block.value === null && scalar(block, "ControlName") !== null)
   if (selected.length === 0) return
@@ -118,11 +119,11 @@ function children(
     kind: "replace-resource",
     parent: owner,
     document: derived(source, `level-${owner}`, distinct.map(shallow)),
-    selection: { activeConditions: conditions, resolutionSuffixes: ["_hidef"] },
+    selection: { activeConditions: conditions, resolutionSuffixes },
   })
   for (const block of distinct) {
     const child = panel(runtime, scalar(block, "fieldName") ?? block.name, owner)
-    if (child !== null) children(runtime, child, source, block.children, conditions)
+    if (child !== null) children(runtime, child, source, block.children, conditions, resolutionSuffixes)
   }
 }
 
@@ -221,6 +222,7 @@ class Presentation implements Tf2LocalMatchPresentation {
   #buildTraining(): void {
     const runtime = this.#training
     const conditions = this.#request.resources.activeConditions
+    const resolutionSuffixes = this.#request.resources.resolutionSuffixes
     runtime.deferPresentation(() => {
       const source = this.#request.resources.document("resource/ui/training/main.res")
       const owner = source.root.children.find((block) => block.name === "TrainingDialog")
@@ -228,16 +230,16 @@ class Presentation implements Tf2LocalMatchPresentation {
       if (!owner || !container) throw new Error("TF2 authored training dialog is malformed")
       this.#trainingDialog = apply(runtime, { kind: "create-panel", parent: 1, control: "CTrainingDialog", name: "TrainingDialog" })!
       apply(runtime, { kind: "set-panel-state", panel: this.#trainingDialog, proportional: true })
-      apply(runtime, { kind: "replace-resource", parent: 1, document: derived(source, "dialog", [shallow(owner)]), selection: { activeConditions: conditions, resolutionSuffixes: ["_hidef"] } })
-      children(runtime, this.#trainingDialog, source, [container], conditions)
+      apply(runtime, { kind: "replace-resource", parent: 1, document: derived(source, "dialog", [shallow(owner)]), selection: { activeConditions: conditions, resolutionSuffixes } })
+      children(runtime, this.#trainingDialog, source, [container], conditions, resolutionSuffixes)
       this.#trainingContainer = control(runtime, "Container")
       const modeOwner = control(runtime, "ModeSelectionPanel")
       const modeSource = this.#request.resources.document("resource/ui/training/modeselection/modeselection.res")
-      children(runtime, modeOwner, modeSource, modeSource.root.children, conditions)
+      children(runtime, modeOwner, modeSource, modeSource.root.children, conditions, resolutionSuffixes)
       const modePanel = this.#request.resources.document("resource/ui/training/modeselection/modepanel.res")
       for (const name of ["BasicTrainingPanel", "OfflinePracticePanel"] as const) {
         const selected = control(runtime, name)
-        children(runtime, selected, modePanel, modePanel.root.children, conditions)
+        children(runtime, selected, modePanel, modePanel.root.children, conditions, resolutionSuffixes)
         const block = modeSource.root.children.find((value) => value.name === name)!
         for (const variable of ["modename", "description"] as const) {
           apply(runtime, { kind: "set-dialog-variable", panel: selected, name: variable, value: this.#localize(scalar(block, variable) ?? "") })
@@ -251,9 +253,9 @@ class Presentation implements Tf2LocalMatchPresentation {
         }
       }
       const practiceModes = this.#request.resources.document("resource/ui/training/offlinepractice/practicemodeselection.res")
-      children(runtime, control(runtime, "OfflinePractice_ModeSelectionPanel"), practiceModes, practiceModes.root.children, conditions)
+      children(runtime, control(runtime, "OfflinePractice_ModeSelectionPanel"), practiceModes, practiceModes.root.children, conditions, resolutionSuffixes)
       const practiceMaps = this.#request.resources.document("resource/ui/training/offlinepractice/mapselection.res")
-      children(runtime, control(runtime, "OfflinePractice_MapSelectionPanel"), practiceMaps, practiceMaps.root.children, conditions)
+      children(runtime, control(runtime, "OfflinePractice_MapSelectionPanel"), practiceMaps, practiceMaps.root.children, conditions, resolutionSuffixes)
       apply(runtime, { kind: "mutate-control", panel: control(runtime, "DifficultyComboBox"), mutation: {
         editable: false,
         items: TF2_BOT_DIFFICULTIES.map((text, id) => ({ id, text, enabled: true })),
@@ -289,7 +291,7 @@ class Presentation implements Tf2LocalMatchPresentation {
       this.#serverSheet = this.#create(runtime, this.#serverDialog, "PropertySheet", "CreateServerSheet", { x: 8, y: 31, width: 332, height: 392 })
       this.#serverPage = this.#create(runtime, this.#serverSheet, "CCreateMultiplayerGameServerPage", "ServerPage", { x: 0, y: 28, width: 332, height: 364 })
       const server = this.#request.resources.document("resource/createmultiplayergameserverpage.res")
-      children(runtime, this.#serverPage, server, server.root.children.filter((block) => block.name !== "ServerPage"), this.#request.resources.activeConditions)
+      children(runtime, this.#serverPage, server, server.root.children.filter((block) => block.name !== "ServerPage"), this.#request.resources.activeConditions, this.#request.resources.resolutionSuffixes)
       apply(runtime, { kind: "mutate-control", panel: control(runtime, "MapList"), mutation: {
         editable: false,
         items: this.#maps.map((map, id) => ({ id, text: map.identity, enabled: true })),
@@ -302,7 +304,7 @@ class Presentation implements Tf2LocalMatchPresentation {
       } })
       this.#gamePage = this.#create(runtime, this.#serverSheet, "PropertyPage", "GameplayPage", { x: 0, y: 28, width: 332, height: 364 })
       const gameplay = this.#request.resources.document("resource/createmultiplayergamegameplaypage.res")
-      children(runtime, this.#gamePage, gameplay, gameplay.root.children, this.#request.resources.activeConditions)
+      children(runtime, this.#gamePage, gameplay, gameplay.root.children, this.#request.resources.activeConditions, this.#request.resources.resolutionSuffixes)
       const options = control(runtime, "GameOptions")
       const definitions = this.#request.resources.document("resource/ui/training/offlinepractice/mapselection.res")
       const authored = definitions.root.children
@@ -313,7 +315,7 @@ class Presentation implements Tf2LocalMatchPresentation {
             ? Object.freeze({ ...property, value: "Default" })
             : property)),
         }))
-      children(runtime, options, definitions, authored, this.#request.resources.activeConditions)
+      children(runtime, options, definitions, authored, this.#request.resources.activeConditions, this.#request.resources.resolutionSuffixes)
       for (const [name, bounds] of [
         ["DifficultyLabel", { x: 8, y: 12, width: 130, height: 24 }],
         ["DifficultyComboBox", { x: 145, y: 12, width: 150, height: 24 }],

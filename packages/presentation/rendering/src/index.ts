@@ -695,6 +695,7 @@ export type ModelPanelPass = Readonly<{
   origin: readonly [number, number, number]
   angles: readonly [number, number, number]
   bounds: Readonly<{ x: number; y: number; width: number; height: number }>
+  background: "opaque" | "transparent"
   presentationTimeSeconds?: number
   pose?: NonNullable<ModelItem["pose"]>
 }>
@@ -2883,8 +2884,9 @@ class RendererOwner implements Renderer {
     const result: { identity: string; model: string; skin: number; primitives: number }[] = []
     const previousAutoClear = this.#backend.autoClear
     try {
-      for (const [index, panel] of panels.entries()) {
+      for (const panel of panels) {
         if (!panel.identity || !panel.model || !Number.isSafeInteger(panel.skin) || panel.skin < 0
+          || (panel.background !== "opaque" && panel.background !== "transparent")
           || !finite([...panel.origin, ...panel.angles, panel.horizontalFov4By3,
             panel.bounds.x, panel.bounds.y, panel.bounds.width, panel.bounds.height])
           || panel.bounds.width <= 0 || panel.bounds.height <= 0
@@ -2939,9 +2941,9 @@ class RendererOwner implements Renderer {
         this.#backend.setViewport(x, y, width, height)
         this.#backend.setScissor(x, y, width, height)
         this.#backend.setScissorTest(true)
-        this.#backend.autoClear = index === 0
-        this.#modelPanelScene.background = index === 0 ? new THREE.Color(0x000000) : null
-        if (index > 0) this.#backend.clearDepth()
+        this.#backend.autoClear = panel.background === "opaque"
+        this.#modelPanelScene.background = panel.background === "opaque" ? new THREE.Color(0x000000) : null
+        if (panel.background === "transparent") this.#backend.clearDepth()
         this.#backend.render(this.#modelPanelScene, this.#modelPanelCamera)
         let primitives = 0
         retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) primitives += 1 })

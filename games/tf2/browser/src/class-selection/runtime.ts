@@ -115,19 +115,19 @@ function shallow(node: VguiResourceNode): VguiResourceNode {
 }
 
 function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument,
-  children: readonly VguiResourceNode[], conditions: readonly string[]): void {
+  children: readonly VguiResourceNode[], conditions: readonly string[], resolutionSuffixes: readonly string[]): void {
   const selected = children.filter((child) => child.value === null && scalar(child, "ControlName") !== null)
   if (selected.length === 0) return
   apply(runtime, {
     kind: "replace-resource",
     parent,
     document: synthetic(source, `level-${parent}`, selected.map(shallow)),
-    selection: { activeConditions: conditions, resolutionSuffixes: ["_hidef"] },
+    selection: { activeConditions: conditions, resolutionSuffixes },
   })
   for (const child of selected) {
     const childPanel = panel(runtime, scalar(child, "fieldName") ?? child.name, parent)
     if (childPanel === null) continue
-    applyChildren(runtime, childPanel, source, child.children, conditions)
+    applyChildren(runtime, childPanel, source, child.children, conditions, resolutionSuffixes)
     const parentSnapshot = runtime.snapshot().panels.find((candidate) => candidate.id === parent)
     if (parentSnapshot?.control === "CExImageButton" && scalar(child, "ControlName") === "ImagePanel") {
       apply(runtime, { kind: "set-panel-state", panel: childPanel, mouseInput: false, keyboardInput: false })
@@ -136,7 +136,7 @@ function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiRe
 }
 
 function finiteScalar(node: VguiResourceNode, name: string): number {
-  const value = Number(scalar(node, `${name}_hidef`) ?? scalar(node, name))
+  const value = Number(scalar(node, name))
   if (!Number.isFinite(value)) throw new Error(`TF2 class selection authored model field is invalid: ${node.name}:${name}`)
   return value
 }
@@ -199,11 +199,11 @@ class Integration implements Tf2ClassSelectionIntegration {
       apply(this.#runtime, {
         kind: "replace-resource", parent: 1,
         document: synthetic(this.#source, "frame", [shallow(ownerBlock)]),
-        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: request.resources.resolutionSuffixes },
       })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#owner, proportional: true })
       applyChildren(this.#runtime, this.#owner, this.#source,
-        this.#source.root.children.filter((value) => value !== ownerBlock), request.resources.activeConditions)
+        this.#source.root.children.filter((value) => value !== ownerBlock), request.resources.activeConditions, request.resources.resolutionSuffixes)
       for (const playerClass of TF2_CLASS_SELECTION_CLASSES) {
         const button = panel(this.#runtime, playerClass.name, this.#owner)
         if (button === null) throw new Error(`TF2 class selection authored button is unavailable: ${playerClass.name}`)
@@ -215,7 +215,7 @@ class Integration implements Tf2ClassSelectionIntegration {
       const tipsOwner = panel(this.#runtime, "ClassTipsPanel", this.#owner)
       if (tipsOwner === null) throw new Error("TF2 class selection authored tips owner is unavailable")
       const tipsSource = request.resources.document(CLASS_TIPS_LIST_PATH)
-      applyChildren(this.#runtime, tipsOwner, tipsSource, tipsSource.root.children, request.resources.activeConditions)
+      applyChildren(this.#runtime, tipsOwner, tipsSource, tipsSource.root.children, request.resources.activeConditions, request.resources.resolutionSuffixes)
       this.#tips = panel(this.#runtime, "ClassTipsListPanel", tipsOwner) ?? 0
       if (this.#tips === 0) throw new Error("TF2 class selection authored tips list is unavailable")
       for (const name of ["Offense", "Defense", "Support", "CountLabel", "ClassMenuSelect"]) {
@@ -264,7 +264,7 @@ class Integration implements Tf2ClassSelectionIntegration {
       const item = apply(this.#runtime, { kind: "create-panel", parent: this.#tips, control: "CTFClassTipsItemPanel", name })!
       this.#tipPanels.push(item)
       apply(this.#runtime, { kind: "set-bounds", panel: item, bounds: { x: 0, y: position, width: 235, height: 30 } })
-      applyChildren(this.#runtime, item, source, authored.children, this.#resources.activeConditions)
+      applyChildren(this.#runtime, item, source, authored.children, this.#resources.activeConditions, this.#resources.resolutionSuffixes)
       const label = panel(this.#runtime, "TipLabel", item)
       const icon = panel(this.#runtime, "TipIcon", item)
       if (label === null || icon === null) throw new Error("TF2 class selection authored tip controls are unavailable")

@@ -6,5 +6,5 @@ const local = await loadLocalConfig()
 
 export default headedProfileConfiguration({
   match: "hud-layout.profile.ts",
-  output: path.join(local.sourceCacheDir, "profiles", "hud", "jump_beef", "playwright-results"),
+  output: path.join(local.sourceCacheDir, "profiles", "hud", "three-map", "playwright-results"),
 })

@@ -26,7 +26,7 @@ function convert(value: Tf2UiResourceNode): VguiResourceNode {
     value: value.value,
     condition: value.condition?.symbol ?? null,
     children: Object.freeze(value.children.filter((child) =>
-      !/(?:_lodef|_minmode)$/iu.test(child.name)
+      !/(?:_hidef|_lodef|_minmode)$/iu.test(child.name)
       && !/^(?:border|border_override|background-texture|paintbackgroundtype|drawcolor|frame|image)$/iu.test(child.name)
       && !(child.value !== null && control && generic.has(control) && !isVguiGenericResourcePropertySupported(control as never, child.name)),
     ).map(convert)),
@@ -111,6 +111,7 @@ function resources(): Tf2VguiResources {
     .flatMap((panel) => panel.roots.flatMap((root) => root.children.flatMap((block) => block.children.filter((child) => child.value !== null).map((child) => child.name)))))
   accepted.set("CTFHudElement", hudProperties)
   accepted.set("CTFHealthPanel", hudProperties)
+  accepted.set("CTFHudTimeStatus", hudProperties)
   const menuProperties = new Set(tf2UiResources.panels
     .filter((panel) => panel.domain === "main-menu")
     .flatMap((panel) => panel.roots.flatMap((root) => root.children.flatMap((block) => block.children.filter((child) => child.value !== null).map((child) => child.name)))))
@@ -135,7 +136,7 @@ function resources(): Tf2VguiResources {
         ...(/COptionsSubVideoAdvancedDlg|CGammaDialog/u.test(control.name) ? ["sizeable", "moveable", "title"] : []),
       ]),
     }))
-  for (const name of ["CTFHudElement", "CTFHealthPanel", "CHudMainMenuOverride", "CTFMatchmakingDashboard", "CTFPlaylistPanel"]) {
+  for (const name of ["CTFHudElement", "CTFHealthPanel", "CTFHudTimeStatus", "CHudMainMenuOverride", "CTFMatchmakingDashboard", "CTFPlaylistPanel"]) {
     if (customControls.some((control) => control.name === name)) continue
     customControls.push(Object.freeze({
       name, baseControl: "EditablePanel", element: "div", role: null, focusable: false,
@@ -151,6 +152,7 @@ function resources(): Tf2VguiResources {
     localization: Object.freeze({ identity: "tf2-test", revision: "1", language: "english", tokens: Object.freeze([]) }),
     animations: Object.freeze({ identity: "tf2-test", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),
+    resolutionSuffixes: Object.freeze([]),
     customControls: Object.freeze(customControls),
     gameUiBackground: Object.freeze({
       identity: "tf2-gameui-background-test", contentBuild: tf2UiResources.contentBuild,
@@ -401,11 +403,25 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(first.find((panel) => panel.name === "HudWeaponAmmoBG")?.state.image).toBe("../hud/ammo_red_bg")
     expect(first.find((panel) => panel.name === "HudWeaponAmmo")?.resourceOwner).toBeNull()
     expect(first.find((panel) => panel.name === "HudWeaponAmmoBG")?.resourceOwner ?? "").toContain("hudammoweapons.res")
+    expect(hud.modelPanel()).toBeNull()
     hud.setPlayerClassUsePlayerModel(true)
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["classmodelpanel"])
     expect(hud.snapshot().binding?.facts.player).toMatchObject({ value: { playerClassUsePlayerModel: true } })
+    expect(hud.modelPanel()).toEqual({
+      model: "models/player/soldier.mdl",
+      skin: 0,
+      fov: 25,
+      origin: [145, -5, -90],
+      angles: [-10, 170, 0],
+      bounds: { x: 0, y: 399, width: 150, height: 300 },
+    })
+    hud.setViewport({ width: 1024, height: 768, devicePixelRatio: 1 })
+    expect(hud.modelPanel()?.bounds).toEqual({ x: 0, y: 426, width: 160, height: 320 })
+    hud.setViewport({ width: 1280, height: 720, devicePixelRatio: 1 })
+    expect(hud.modelPanel()?.bounds).toEqual({ x: 0, y: 399, width: 150, height: 300 })
     hud.setPlayerClassUsePlayerModel(false)
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
+    expect(hud.modelPanel()).toBeNull()
 
     const secondBinding = hud.publish(compact(2n, 4, 3, 3, 7, 24, 2), context)
     const second = hud.snapshot().vgui.panels
@@ -423,6 +439,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(model.find((panel) => panel.name === "classmodelpanelBG")?.state.image).toBe("../hud/character_blue_bg_clipped")
     expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "modelIdentity", value: { kind: "available", value: "models/player/soldier.mdl" } })
     expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Original" } })
+    expect(hud.modelPanel()).toMatchObject({ model: "models/player/soldier.mdl", skin: 1, origin: [145, -5, -90] })
 
     hud.publish(compact(4n, 3, 2, 1, 4, 20), contextWithModel(false))
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
@@ -445,6 +462,13 @@ describe("TF2 HUD and pause headed symptom loop", () => {
         expect(panels.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe(item.image)
       }
     }
+    const dying = compact(10n, 3, 2, 1, 4, 20)
+    const deadSnapshot = Object.freeze({ ...dying.snapshot, lifecycle: 2 as const, health: 0 })
+    hud.publish(Object.freeze({ snapshot: deadSnapshot, eventBatches: Object.freeze([Object.freeze({ snapshot: deadSnapshot })]) }), contextWithModel(true))
+    expect(hud.modelPanel()).toBeNull()
+    expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo", "classmodelpanel"])).toEqual([])
+    hud.publish(compact(11n, 3, 2, 1, 4, 20), contextWithModel(true))
+    expect(hud.modelPanel()).toMatchObject({ model: "models/player/soldier.mdl", skin: 0, origin: [145, -5, -90] })
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo", "PlayerStatusClassImage", "classmodelpanel"])).toEqual([])
     expect(hud.action({ kind: "select-weapon", weapon: 1 })).toEqual({ kind: "unavailable", reason: "initial" })
@@ -494,6 +518,29 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     publish(1n, flag(10, 2, 0), flag(20, 3, 0), 0)
     let panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["HudObjectiveStatus", "RedFlag", "BlueFlag"])).toEqual(["HudObjectiveStatus", "BlueFlag", "RedFlag"])
+    const geometry = (name: string) => panels.find((panel) => panel.name === name)?.bounds
+    expect(geometry("ObjectiveStatusFlagPanel")).toEqual({ x: 0, y: 0, width: 1280, height: 720 })
+    expect(geometry("BlueFlag")).toEqual({ x: 438, y: 578, width: 240, height: 135 })
+    expect(geometry("RedFlag")).toEqual({ x: 603, y: 578, width: 240, height: 135 })
+    expect(geometry("BlueScore")).toEqual({ x: 445, y: 650, width: 112, height: 52 })
+    expect(geometry("RedScore")).toEqual({ x: 725, y: 650, width: 112, height: 52 })
+    expect(geometry("PlayingTo")).toEqual({ x: 535, y: 678, width: 210, height: 45 })
+    expect(geometry("PlayingToBG")).toEqual({ x: 528, y: 674, width: 225, height: 57 })
+    expect(panels.filter((panel) => panel.name === "StatusIcon").map((panel) => panel.absoluteBounds)).toEqual([
+      { x: 715, y: 617, width: 45, height: 45 },
+      { x: 550, y: 617, width: 45, height: 45 },
+    ])
+    const playerClass = panels.find((panel) => panel.name === "HudPlayerClass")!
+    const scoreboard = panels.find((panel) => panel.name === "scoreinfo")!
+    expect(panels.filter((panel) => panel.name === "classmodelpanel").map((panel) => panel.parent)).toEqual([
+      playerClass.id,
+      scoreboard.id,
+    ])
+    hud.setPlayerClassUsePlayerModel(true)
+    expect(hud.modelPanel()).toMatchObject({ model: "models/player/soldier.mdl", skin: 0 })
+    expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "classmodelpanel" && panel.parent === playerClass.id)?.effectivelyVisible).toBe(true)
+    expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "classmodelpanel" && panel.parent === scoreboard.id)?.effectivelyVisible).toBe(false)
+    hud.setPlayerClassUsePlayerModel(false)
     expect(panels.filter((panel) => panel.name === "StatusIcon").map((panel) => panel.state.image)).toEqual([
       "../hud/objectives_flagpanel_ico_flag_home", "../hud/objectives_flagpanel_ico_flag_home",
     ])
@@ -547,20 +594,26 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     }
     publish(1n, { waitingForPlayers: true, waitingRemaining: 29 })
     let panels = hud.snapshot().vgui.panels
-    expect(visible(panels, ["HudMatchStatus", "ObjectiveStatusTimePanel", "WaitingForPlayersPanel"])).toEqual(["HudMatchStatus", "WaitingForPlayersPanel", "ObjectiveStatusTimePanel"])
+    expect(visible(panels, ["HudMatchStatus", "ObjectiveStatusTimePanel", "WaitingForPlayersPanel"])).toEqual(["HudMatchStatus", "ObjectiveStatusTimePanel"])
+    expect(panels.find((panel) => panel.name === "BGFrame")?.bounds).toEqual({ x: 367, y: -7, width: 547, height: 42 })
+    expect(panels.find((panel) => panel.name === "ObjectiveStatusTimePanel")?.bounds).toEqual({ x: 543, y: 0, width: 195, height: 225 })
+    expect(panels.find((panel) => panel.name === "TimePanelBG")?.effectivelyVisible).toBe(false)
+    expect(panels.find((panel) => panel.name === "TimePanelValue")?.absoluteBounds).toEqual({ x: 607, y: 18, width: 67, height: 15 })
     expect(panels.find((panel) => panel.name === "TimePanelValue")?.text).toBe("0:29")
     expect(visible(panels, ["SetupLabel", "SetupBG"])).toEqual([])
-    publish(2n, { waitingForPlayers: true, waitingRemaining: 9 })
+    publish(2n, { waitingForPlayers: true, waitingRemaining: 29, events: [Object.freeze({ kind: 2, detail: 0, team: 0, flags: 0, identity: 0 })] })
+    expect(visible(hud.snapshot().vgui.panels, ["WaitingForPlayersPanel"])).toEqual(["WaitingForPlayersPanel"])
+    publish(3n, { waitingForPlayers: true, waitingRemaining: 9, events: [Object.freeze({ kind: 3, detail: 0, team: 0, flags: 0, identity: 0 })] })
     expect(visible(hud.snapshot().vgui.panels, ["WaitingForPlayersEndingLabel"])).toEqual(["WaitingForPlayersEndingLabel"])
-    publish(3n)
+    publish(4n, { events: [Object.freeze({ kind: 4, detail: 0, team: 0, flags: 0, identity: 0 })] })
     panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["WaitingForPlayersPanel"])).toEqual([])
     expect(visible(panels, ["SetupLabel", "SetupBG"])).toEqual(["SetupLabel", "SetupBG"])
     expect(panels.find((panel) => panel.name === "TimePanelValue")?.text).toBe("1:10")
     expect(panels.find((panel) => panel.name === "TimePanelBG")?.state.image).toBe("../hud/objectives_timepanel_red_bg")
-    publish(4n, { inSetup: false, inOvertime: true, timer: { ...timer, remaining: 0 } })
+    publish(5n, { inSetup: false, inOvertime: true, timer: { ...timer, remaining: 0 } })
     expect(visible(hud.snapshot().vgui.panels, ["OvertimeLabel", "OvertimeBG"])).toEqual(["OvertimeLabel", "OvertimeBG"])
-    publish(5n, { state: 5, inSetup: false, winningTeam: 2, winReason: 4, redScore: 1 })
+    publish(6n, { state: 5, inSetup: false, winningTeam: 2, winReason: 4, redScore: 1 })
     panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
     expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toContain("defended")

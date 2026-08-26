@@ -32,7 +32,11 @@ describe("authored Source VGUI model-panel presentation", () => {
       displayWidth: 2560,
       displayHeight: 1440,
       devicePixelRatio: 2,
-    }).viewport).toEqual({ x: 200, y: 960, width: 600, height: 400 })
+    }).viewport).toEqual({ x: 200, y: 80, width: 600, height: 400 })
+    expect(sourceModelPanelPresentation({
+      ...request,
+      bounds: { x: 0, y: 399, width: 150, height: 300 },
+    }).viewport).toEqual({ x: 0, y: 399, width: 150, height: 300 })
     expect(() => sourceModelPanelPresentation({ ...request, bounds: { x: 1280, y: 0, width: 1, height: 1 } })).toThrow("outside the display")
     expect(() => sourceModelPanelPresentation({ ...request, horizontalFov4By3: Number.NaN })).toThrow("invalid")
   })

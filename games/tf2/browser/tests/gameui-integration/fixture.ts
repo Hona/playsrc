@@ -30,7 +30,7 @@ function convert(node: Tf2UiResourceNode): VguiResourceNode {
     value: node.value,
     condition: node.condition?.token ?? null,
     children: Object.freeze(node.children.filter((child) =>
-      !/(?:_lodef|_minmode)$/iu.test(child.name)
+      !/(?:_hidef|_lodef|_minmode)$/iu.test(child.name)
       && !/^(?:border|border_override|background-texture|paintbackgroundtype|drawcolor|frame|image)$/iu.test(child.name)
       && !(child.value !== null && control && genericControls.has(control)
         && !isVguiGenericResourcePropertySupported(control as never, child.name)),
@@ -172,6 +172,7 @@ function createResources(): Tf2VguiResources {
     }),
     animations: Object.freeze({ identity: "tf2-gameui-transitions", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),
+    resolutionSuffixes: Object.freeze([]),
     customControls: Object.freeze(customControls),
     gameUiBackground: Object.freeze({
       identity: "tf2-gameui-background-test",

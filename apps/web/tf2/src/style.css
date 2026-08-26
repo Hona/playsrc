@@ -80,7 +80,7 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .class-selection-layer { z-index: 25; }
 .tf2-application[data-class-selection-visible="false"] .class-selection-layer { display: none; }
 .tf2-application[data-class-selection-visible="true"] .hud-layer,
-.tf2-application[data-class-selection-visible="true"] .engineer-layer { visibility: hidden; }
+.tf2-application[data-class-selection-visible="true"] .engineer-layer { display: none; }
 .team-selection-layer { z-index: 25; }
 .options-layer { z-index: 30; }
 .local-match-layer { z-index: 30; }
