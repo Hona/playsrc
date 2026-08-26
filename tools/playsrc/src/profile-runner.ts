@@ -1,14 +1,15 @@
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { promisify } from "node:util"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget, type HeadedProfileTarget } from "../profile/profile-target"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
-import { browserLease, prepareProfileBrowser } from "./profile-browser"
+import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -97,10 +98,8 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
 
 export async function profileSourceIdentity(root = repositoryRoot): Promise<string> {
   const command = async (arguments_: string[]): Promise<string> => {
-    const child = Bun.spawn(["git", ...arguments_], { cwd: root, stdout: "pipe", stderr: "pipe" })
-    const [output, errors, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-    if (status !== 0) throw new Error(`Headed profile source identity failed: ${errors.trim()}`)
-    return output
+    const { stdout } = await promisify(execFile)("git", arguments_, { cwd: root, maxBuffer: 64 * 1024 * 1024 })
+    return stdout
   }
   const [head, changes, untracked] = await Promise.all([
     command(["rev-parse", "HEAD"]),
@@ -313,7 +312,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     browserStarted = Date.now()
     currentPhase = "headed-browser"
     const command = [
-      process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? (profile === "application-upgrade" ? "node" : process.execPath),
+      process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? profileNodeExecutable(),
       path.join(repositoryRoot, "node_modules", "@playwright", "test", "cli.js"),
       "test",
       `--config=${plan.config}`,
