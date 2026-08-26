@@ -76,7 +76,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, worker: instrumentation.worker, counters: instrumentation.counters,
-      longTasks: instrumentation.longTasks, longAnimationFrames: instrumentation.longAnimationFrames,
+      longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
+      longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
   }, seconds)
   await page.keyboard.up("w")
