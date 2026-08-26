@@ -11,7 +11,7 @@ const PRESENTATION_OUTPUT_LIMIT: usize = 512 * 1024 * 1024;
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, Mutex, OnceLock, RwLock, Weak,
         atomic::{AtomicU32, Ordering},
     },
 };
@@ -19,6 +19,8 @@ static SIMULATION_ERROR: AtomicU32 = AtomicU32::new(0);
 static SIMULATION_ERROR_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
 static GAME_ADVANCE_ERROR: AtomicU32 = AtomicU32::new(0);
 static GAME_ADVANCE_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
+static PRESENTATION_MODEL_CACHE_HITS: AtomicU32 = AtomicU32::new(0);
+static PRESENTATION_MODEL_CACHE_MISSES: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "playsrc_metrics")]
@@ -479,10 +481,26 @@ impl<'source> TextureDecoders<'source> {
 }
 
 struct CompiledPresentationModel {
-    model: playsrc_studio_model::PresentationModel,
+    model: Arc<playsrc_studio_model::PresentationModel>,
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
     illumination_attachment: i32,
+}
+
+struct CachedPresentationModel {
+    model: Weak<playsrc_studio_model::PresentationModel>,
+    identity: [u8; 32],
+    illumination_position: playsrc_studio_model::Vector3,
+    illumination_attachment: i32,
+}
+
+type PresentationModelCacheKey = (String, u8, u8);
+
+fn presentation_model_cache()
+-> &'static Mutex<BTreeMap<PresentationModelCacheKey, CachedPresentationModel>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<PresentationModelCacheKey, CachedPresentationModel>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 #[derive(Clone, Copy)]
@@ -505,6 +523,7 @@ struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
     presentation: Vec<u8>,
+    presentation_bytes: usize,
     coverage: Vec<u8>,
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
@@ -512,7 +531,7 @@ struct Slot {
     particle_lighting: Option<ParticleLighting>,
     combat_decals: Option<CombatDecalWorld>,
     particle_output: Vec<u8>,
-    studio_models: BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    studio_models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
@@ -535,6 +554,7 @@ struct Slot {
     snapshot: Vec<u8>,
     compile_metrics: [u64; 17],
     texture_inspections: [u32; 2],
+    model_cache: [u32; 2],
 }
 
 struct Tf2Simulation {
@@ -811,6 +831,91 @@ pub extern "C" fn playsrc_resource_take() -> *mut u8 {
     let bytes = std::mem::take(&mut *output).into_boxed_slice();
     Box::into_raw(bytes) as *mut u8
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ResourceSection {
+    pub pointer: *const u8,
+    pub length: usize,
+}
+
+unsafe fn resource_sections<'a>(
+    pointer: *const ResourceSection,
+    count: usize,
+) -> Result<BTreeMap<String, &'a [u8]>, ()> {
+    if pointer.is_null() || count == 0 || count > 1_024 {
+        return Err(());
+    }
+    let sections = unsafe { std::slice::from_raw_parts(pointer, count) };
+    let mut resources = BTreeMap::new();
+    let mut total = 0usize;
+    for section in sections {
+        if section.pointer.is_null() || section.length < 12 || section.length > 1024 * 1024 * 1024 {
+            return Err(());
+        }
+        total = total.checked_add(section.length).ok_or(())?;
+        if total > 1024 * 1024 * 1024 {
+            return Err(());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(section.pointer, section.length) };
+        for (identity, value) in bundle(bytes)? {
+            if resources.insert(identity, value).is_some() || resources.len() > 4_096 {
+                return Err(());
+            }
+        }
+    }
+    Ok(resources)
+}
+
+fn resource_set_identity(resources: &BTreeMap<String, &[u8]>) -> Result<(usize, [u8; 32]), ()> {
+    let mut hash = Sha256::new();
+    hash.update(b"PSRE");
+    hash.update(1_u32.to_le_bytes());
+    hash.update(
+        u32::try_from(resources.len())
+            .map_err(|_| ())?
+            .to_le_bytes(),
+    );
+    let mut length = 12usize;
+    for (identity, bytes) in resources {
+        let path_length = u32::try_from(identity.len()).map_err(|_| ())?;
+        let byte_length = u32::try_from(bytes.len()).map_err(|_| ())?;
+        hash.update(path_length.to_le_bytes());
+        hash.update(identity.as_bytes());
+        hash.update(byte_length.to_le_bytes());
+        hash.update(bytes);
+        length = length
+            .checked_add(8)
+            .and_then(|value| value.checked_add(identity.len()))
+            .and_then(|value| value.checked_add(bytes.len()))
+            .ok_or(())?;
+    }
+    (length <= 1024 * 1024 * 1024)
+        .then_some((length, hash.finalize().into()))
+        .ok_or(())
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Every section must identify readable module memory and `output` must contain 32 writable bytes.
+pub unsafe extern "C" fn playsrc_resource_sections_hash(
+    pointer: *const ResourceSection,
+    count: usize,
+    output: *mut u8,
+) -> usize {
+    if output.is_null() {
+        return 0;
+    }
+    let Ok(resources) = (unsafe { resource_sections(pointer, count) }) else {
+        return 0;
+    };
+    let Ok((length, hash)) = resource_set_identity(&resources) else {
+        return 0;
+    };
+    unsafe { std::ptr::copy_nonoverlapping(hash.as_ptr(), output, hash.len()) };
+    length
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 /// Each nonempty pointer/length pair must identify readable bytes in this module's memory.
@@ -818,8 +923,9 @@ pub unsafe extern "C" fn playsrc_compile_map(
     bsp_pointer: *const u8,
     bsp_length: usize,
     profile: u32,
-    configuration_pointer: *const u8,
-    configuration_length: usize,
+    configuration_pointer: *const ResourceSection,
+    configuration_count: usize,
+    configuration_sha256_pointer: *const u8,
 ) -> u32 {
     unsafe {
         compile_map(
@@ -827,7 +933,8 @@ pub unsafe extern "C" fn playsrc_compile_map(
             bsp_length,
             profile,
             configuration_pointer,
-            configuration_length,
+            configuration_count,
+            configuration_sha256_pointer,
             None,
         )
     }
@@ -839,8 +946,9 @@ pub unsafe extern "C" fn playsrc_compile_map_cached(
     bsp_pointer: *const u8,
     bsp_length: usize,
     profile: u32,
-    configuration_pointer: *const u8,
-    configuration_length: usize,
+    configuration_pointer: *const ResourceSection,
+    configuration_count: usize,
+    configuration_sha256_pointer: *const u8,
     presentation_pointer: *const u8,
     presentation_length: usize,
 ) -> u32 {
@@ -857,7 +965,8 @@ pub unsafe extern "C" fn playsrc_compile_map_cached(
             bsp_length,
             profile,
             configuration_pointer,
-            configuration_length,
+            configuration_count,
+            configuration_sha256_pointer,
             presentation,
         )
     }
@@ -867,10 +976,13 @@ unsafe fn compile_map(
     bsp_pointer: *const u8,
     bsp_length: usize,
     profile: u32,
-    configuration_pointer: *const u8,
-    configuration_length: usize,
+    configuration_pointer: *const ResourceSection,
+    configuration_count: usize,
+    configuration_sha256_pointer: *const u8,
     cached_presentation: Option<&[u8]>,
 ) -> u32 {
+    PRESENTATION_MODEL_CACHE_HITS.store(0, Ordering::Relaxed);
+    PRESENTATION_MODEL_CACHE_MISSES.store(0, Ordering::Relaxed);
     let mut metrics_clock = RuntimeMetricsClock::new();
     let compile_started =
         playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -880,11 +992,6 @@ unsafe fn compile_map(
         &[]
     } else {
         unsafe { std::slice::from_raw_parts(bsp_pointer, bsp_length) }
-    };
-    let configuration = if configuration_length == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(configuration_pointer, configuration_length) }
     };
     let result = (|| {
         let bsp = playsrc_bsp::parse(
@@ -903,7 +1010,16 @@ unsafe fn compile_map(
             1 => playsrc_map::LightingProfile::Hdr,
             _ => return Err(2),
         };
-        let resources = bundle(configuration).map_err(|_| 7_u32)?;
+        let resources = unsafe { resource_sections(configuration_pointer, configuration_count) }
+            .map_err(|_| 7_u32)?;
+        if configuration_sha256_pointer.is_null() {
+            return Err(7);
+        }
+        let configuration_sha256: [u8; 32] = unsafe {
+            std::slice::from_raw_parts(configuration_sha256_pointer, 32)
+                .try_into()
+                .map_err(|_| 7_u32)?
+        };
         let decoders = TextureDecoders::new(&resources);
         let resource_hashes = resources
             .par_iter()
@@ -1042,7 +1158,7 @@ unsafe fn compile_map(
                 } else {
                     "playsrc-map-runtime-2"
                 },
-                configuration,
+                configuration_sha256,
                 materials: &resolved_materials,
                 profile_materials: &profile_materials,
                 inputs: &inputs,
@@ -1263,6 +1379,7 @@ unsafe fn compile_map(
         )) => Slot {
             generation,
             payload: Some(payload),
+            presentation_bytes: cached_presentation.map_or(presentation.len(), <[u8]>::len),
             presentation,
             coverage,
             particles: Some(particles),
@@ -1294,11 +1411,16 @@ unsafe fn compile_map(
             snapshot: Vec::new(),
             compile_metrics,
             texture_inspections,
+            model_cache: [
+                PRESENTATION_MODEL_CACHE_HITS.load(Ordering::Relaxed),
+                PRESENTATION_MODEL_CACHE_MISSES.load(Ordering::Relaxed),
+            ],
         },
         Err(error) => Slot {
             generation,
             payload: Some(Vec::new()),
             presentation: Vec::new(),
+            presentation_bytes: 0,
             coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
@@ -1329,6 +1451,7 @@ unsafe fn compile_map(
             snapshot: Vec::new(),
             compile_metrics,
             texture_inspections: [0; 2],
+            model_cache: [0; 2],
         },
     };
     if index == slots.len() {
@@ -1349,13 +1472,19 @@ pub fn compile_artifact(
     profile: u32,
     configuration: &[u8],
 ) -> Result<CompiledArtifact, u32> {
+    let section = ResourceSection {
+        pointer: configuration.as_ptr(),
+        length: configuration.len(),
+    };
+    let configuration_sha256: [u8; 32] = Sha256::digest(configuration).into();
     let handle = unsafe {
         playsrc_compile_map(
             bsp.as_ptr(),
             bsp.len(),
             profile,
-            configuration.as_ptr(),
-            configuration.len(),
+            &section,
+            1,
+            configuration_sha256.as_ptr(),
         )
     };
     let failure = playsrc_result_error(handle);
@@ -1494,8 +1623,32 @@ pub extern "C" fn playsrc_texture_inspection_count(handle: u32, index: usize) ->
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn playsrc_model_cache_count(handle: u32, index: usize) -> u32 {
+    with(handle, |slot| {
+        slot.model_cache.get(index).copied().unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn playsrc_presentation_length(handle: u32) -> usize {
-    with(handle, |slot| slot.presentation.len()).unwrap_or(0)
+    with(handle, |slot| slot.presentation_bytes).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_presentation_take(handle: u32) -> *mut u8 {
+    let Some((index, generation)) = decode(handle) else {
+        return std::ptr::null_mut();
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return std::ptr::null_mut();
+    };
+    if slot.generation != generation || slot.presentation.is_empty() {
+        return std::ptr::null_mut();
+    }
+    slot.presentation_bytes = 0;
+    Box::into_raw(std::mem::take(&mut slot.presentation).into_boxed_slice()) as *mut u8
 }
 #[unsafe(no_mangle)]
 /// # Safety
@@ -1534,6 +1687,7 @@ pub extern "C" fn playsrc_presentation_release(handle: u32) -> u32 {
     }
     slot.presentation.clear();
     slot.presentation.shrink_to_fit();
+    slot.presentation_bytes = 0;
     1
 }
 
@@ -1903,7 +2057,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
 }
 
 fn pose_bot_hitboxes(
-    models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     bots: &[playsrc_tf2::bot::Snapshot],
     tick: u64,
 ) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, String> {
@@ -2033,7 +2187,7 @@ struct ViewOutput {
 }
 
 fn encode_model_poses(
-    models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     requests: &[ModelPoseRequest],
@@ -3326,6 +3480,48 @@ pub unsafe extern "C" fn playsrc_result_copy(
     })
     .unwrap_or(0)
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_result_take(handle: u32) -> *mut u8 {
+    let Some((index, generation)) = decode(handle) else {
+        return std::ptr::null_mut();
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return std::ptr::null_mut();
+    };
+    if slot.generation != generation {
+        return std::ptr::null_mut();
+    }
+    let Some(payload) = slot.payload.as_mut() else {
+        return std::ptr::null_mut();
+    };
+    if payload.is_empty() {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(std::mem::take(payload).into_boxed_slice()) as *mut u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_result_release(handle: u32) -> u32 {
+    let Some((index, generation)) = decode(handle) else {
+        return 0;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return 0;
+    };
+    if slot.generation != generation {
+        return 0;
+    }
+    let Some(payload) = slot.payload.as_mut() else {
+        return 0;
+    };
+    payload.clear();
+    payload.shrink_to_fit();
+    1
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 /// `pointer` must identify at least 32 writable bytes in this module's memory.
@@ -3601,22 +3797,26 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
         return 0;
     }
     slot.payload = None;
-    slot.presentation.clear();
+    slot.presentation = Vec::new();
+    slot.presentation_bytes = 0;
+    slot.coverage = Vec::new();
     slot.particles = None;
-    slot.particle_materials.clear();
-    slot.particle_sheets.clear();
-    slot.particle_output.clear();
-    slot.studio_models.clear();
-    slot.viewmodel_bob.clear();
-    slot.model_output.clear();
+    slot.particle_materials = Vec::new();
+    slot.particle_sheets = BTreeMap::new();
+    slot.particle_output = Vec::new();
+    slot.studio_models = BTreeMap::new();
+    slot.model_material_opacity = BTreeMap::new();
+    slot.viewmodel_bob = BTreeMap::new();
+    slot.model_output = Vec::new();
     slot.visibility = None;
     slot.area_state = None;
-    slot.visibility_output.clear();
+    slot.visibility_output = Vec::new();
+    slot.environment = None;
     slot.collision = None;
     slot.gameplay_world = None;
-    slot.collision_templates.clear();
+    slot.collision_templates = Vec::new();
     slot.collision_revision = 0;
-    slot.pushers.clear();
+    slot.pushers = BTreeMap::new();
     slot.latest_game_snapshot = None;
     slot.hash = [0; 32];
     slot.derived_hash = [0; 32];
@@ -3624,7 +3824,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.error = 0;
     slot.spawn = None;
     slot.session = None;
-    slot.snapshot.clear();
+    slot.snapshot = Vec::new();
     1
 }
 
@@ -7304,7 +7504,7 @@ fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<Strin
 
 fn resolve_models(
     graph: &playsrc_entity::Graph,
-    studio_models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    studio_models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     bundle: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
@@ -7516,6 +7716,47 @@ fn build_model_presentation(
     profile: playsrc_map::LightingProfile,
     presentation_profile: playsrc_studio_model::PresentationProfile,
 ) -> Result<Box<CompiledPresentationModel>, ()> {
+    let key = (
+        identity.to_owned(),
+        u8::from(profile == playsrc_map::LightingProfile::Hdr),
+        match presentation_profile {
+            playsrc_studio_model::PresentationProfile::World => 0,
+            playsrc_studio_model::PresentationProfile::ViewModel => 1,
+        },
+    );
+    {
+        let mut cache = presentation_model_cache()
+            .lock()
+            .expect("presentation model cache");
+        if let Some(retained) = cache.get(&key) {
+            if let Some(model) = retained.model.upgrade() {
+                let valid = model.dependencies.iter().all(|dependency| {
+                    match (
+                        dependency.sha256,
+                        bundle.get(dependency.logical_path.as_str()),
+                        resource_hashes.get(dependency.logical_path.as_str()),
+                    ) {
+                        (Some(expected), Some(bytes), Some(actual)) => {
+                            expected == *actual && dependency.byte_length == bytes.len()
+                        }
+                        (None, None, None) => dependency.byte_length == 0,
+                        _ => false,
+                    }
+                });
+                if valid {
+                    PRESENTATION_MODEL_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Box::new(CompiledPresentationModel {
+                        model,
+                        identity: retained.identity,
+                        illumination_position: retained.illumination_position,
+                        illumination_attachment: retained.illumination_attachment,
+                    }));
+                }
+            }
+            cache.remove(&key);
+        }
+    }
+    PRESENTATION_MODEL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
     let built = playsrc_tf2::presentation::build_model(
         identity,
         bundle,
@@ -7544,9 +7785,23 @@ fn build_model_presentation(
         }
         digest.update((dependency.byte_length as u64).to_le_bytes());
     }
+    let model = Arc::new(*model);
+    let identity = digest.finalize().into();
+    presentation_model_cache()
+        .lock()
+        .expect("presentation model cache")
+        .insert(
+            key,
+            CachedPresentationModel {
+                model: Arc::downgrade(&model),
+                identity,
+                illumination_position: built.illumination_position,
+                illumination_attachment: built.illumination_attachment,
+            },
+        );
     Ok(Box::new(CompiledPresentationModel {
-        model: *model,
-        identity: digest.finalize().into(),
+        model,
+        identity,
         illumination_position: built.illumination_position,
         illumination_attachment: built.illumination_attachment,
     }))
@@ -9689,7 +9944,7 @@ fn decoded_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<Decoded
 }
 type CompiledPresentation = (
     Vec<u8>,
-    BTreeMap<String, playsrc_studio_model::PresentationModel>,
+    BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     RuntimeEnvironment,
 );
@@ -9993,16 +10248,11 @@ fn load_cached_presentation(
     phase_started = phase_finished;
     let model_material_opacity =
         model_material_opacity(&models, bundle, decoders, profile, None).map_err(|_| 7_u32)?;
-    let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
+    let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    let output = (
-        presentation.to_vec(),
-        models,
-        model_material_opacity,
-        environment,
-    );
+    let output = (Vec::new(), models, model_material_opacity, environment);
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
     Ok((output, metrics, PresentationSizeLedger::default()))
@@ -10634,7 +10884,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         profile,
         Some(&prepared_model_materials),
     )?;
-    let models: BTreeMap<String, playsrc_studio_model::PresentationModel> = models
+    let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
@@ -12946,6 +13196,66 @@ mod tests {
     }
 
     #[test]
+    fn bounded_resource_sections_preserve_the_canonical_monolithic_identity() {
+        let first =
+            playsrc_asset_graph::encode_resource_set(&[playsrc_asset_graph::DecodedEntry {
+                logical_path: "materials/b.vmt".to_owned(),
+                bytes: vec![2, 3, 4],
+            }])
+            .unwrap();
+        let second =
+            playsrc_asset_graph::encode_resource_set(&[playsrc_asset_graph::DecodedEntry {
+                logical_path: "materials/a.vmt".to_owned(),
+                bytes: vec![7, 8],
+            }])
+            .unwrap();
+        let sections = [
+            ResourceSection {
+                pointer: first.as_ptr(),
+                length: first.len(),
+            },
+            ResourceSection {
+                pointer: second.as_ptr(),
+                length: second.len(),
+            },
+        ];
+        let canonical = playsrc_asset_graph::encode_resource_set(&[
+            playsrc_asset_graph::DecodedEntry {
+                logical_path: "materials/a.vmt".to_owned(),
+                bytes: vec![7, 8],
+            },
+            playsrc_asset_graph::DecodedEntry {
+                logical_path: "materials/b.vmt".to_owned(),
+                bytes: vec![2, 3, 4],
+            },
+        ])
+        .unwrap();
+        let mut actual = [0; 32];
+        assert_eq!(
+            unsafe {
+                playsrc_resource_sections_hash(
+                    sections.as_ptr(),
+                    sections.len(),
+                    actual.as_mut_ptr(),
+                )
+            },
+            canonical.len()
+        );
+        assert_eq!(actual, Sha256::digest(&canonical).as_slice());
+        let duplicate = [sections[0], sections[0]];
+        assert_eq!(
+            unsafe {
+                playsrc_resource_sections_hash(
+                    duplicate.as_ptr(),
+                    duplicate.len(),
+                    actual.as_mut_ptr(),
+                )
+            },
+            0
+        );
+    }
+
+    #[test]
     #[ignore = "requires the exact configured Pyro source graph"]
     fn configured_pyro_particle_materials_compile() {
         let graph = std::env::var("PLAYSRC_PYRO_GRAPH").expect("configured Pyro graph path");
@@ -13376,7 +13686,8 @@ mod tests {
         guard.push(Slot {
             generation: 1,
             payload: Some(vec![1, 2]),
-            presentation: Vec::new(),
+            presentation: vec![7, 8, 9],
+            presentation_bytes: 3,
             coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
@@ -13407,16 +13718,33 @@ mod tests {
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
             texture_inspections: [0; 2],
+            model_cache: [0; 2],
         });
         drop(guard);
         let old = encode(0, 1);
         assert_eq!(playsrc_result_length(old), 2);
+        assert_eq!(playsrc_presentation_length(old), 3);
+        let presentation = playsrc_presentation_take(old);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(presentation, 3) },
+            &[7, 8, 9]
+        );
+        assert_eq!(playsrc_presentation_length(old), 0);
+        unsafe { playsrc_free(presentation, 3) };
+        let payload = playsrc_result_take(old);
+        assert_eq!(unsafe { std::slice::from_raw_parts(payload, 2) }, &[1, 2]);
+        assert_eq!(playsrc_result_length(old), 0);
+        unsafe { playsrc_free(payload, 2) };
+        let mut hash = [0; 32];
+        assert_eq!(unsafe { playsrc_result_hash(old, hash.as_mut_ptr()) }, 1);
+        assert_eq!(hash, [3; 32]);
         assert_eq!(playsrc_dispose(old), 1);
         let mut guard = slots().lock().unwrap();
         guard[0] = Slot {
             generation: 2,
             payload: Some(vec![4]),
             presentation: Vec::new(),
+            presentation_bytes: 0,
             coverage: Vec::new(),
             particles: None,
             particle_materials: Vec::new(),
@@ -13447,6 +13775,7 @@ mod tests {
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
             texture_inspections: [0; 2],
+            model_cache: [0; 2],
         };
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);

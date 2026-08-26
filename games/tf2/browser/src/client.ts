@@ -7,9 +7,9 @@ import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selectio
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
 const MAX_BSP_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_BYTES = 768 * 1024 * 1024
-const MAX_CONFIGURATION_SECTION_BYTES = 512 * 1024 * 1024
-const MAX_CONFIGURATION_SECTIONS = 64
+const MAX_CONFIGURATION_BYTES = 1024 * 1024 * 1024
+const MAX_CONFIGURATION_SECTION_BYTES = 32 * 1024 * 1024
+const MAX_CONFIGURATION_SECTIONS = 1_024
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1
 const HEX_BYTES = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"))
 type RequestWithoutId = WorkerRequest extends infer Request
@@ -32,6 +32,13 @@ export type WorkerLike = Readonly<{
   removeEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
   removeEventListener(type: "error", listener: (event: ErrorEvent) => void): void
   terminate(): void
+}>
+
+export type ResourceConfiguration = Readonly<{
+  generation: number
+  byteLength: number
+  sha256: string
+  sections: readonly Uint8Array[]
 }>
 
 export type LoadedGame = Readonly<{
@@ -63,6 +70,11 @@ export type LoadedGame = Readonly<{
     presentationReleaseMilliseconds: number
     textureDecoderRequests: number
     textureMetadataInspections: number
+    modelCacheHits: number
+    modelCacheMisses: number
+    wasmLinearMemoryBytes: number
+    resourceSections: number
+    resourceBytes: number
     totalMilliseconds: number
   }>
   initialView: InitialView
@@ -92,7 +104,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
 async function presentationKey(key: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v14\0${key}`))
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v15\0${key}`))
 }
 
 function transferredBytes(bytes: Uint8Array): ArrayBuffer {
@@ -212,8 +224,11 @@ export class Tf2WorkerClient {
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
-  async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[], shared: boolean): Promise<Uint8Array> {
-    if (records.length < 1 || records.length > 1_024 || typeof shared !== "boolean") throw new Tf2WorkerError("BoundExceeded")
+  async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[], generation?: number): Promise<Uint8Array> {
+    if (records.length < 1 || records.length > 1_024
+      || (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff))) {
+      throw new Tf2WorkerError("BoundExceeded")
+    }
     const encoder = new TextEncoder()
     let total = 12
     const chunks = records.map(({ descriptor, bytes }) => {
@@ -224,20 +239,58 @@ export class Tf2WorkerClient {
       if (total > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
       return Object.freeze({ descriptor: transferredBytes(encodedDescriptor), bytes: transferredBytes(bytes) })
     })
-    const response = await this.#request({ kind: "decode-resources", chunks, shared }, chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
+    const shared = generation !== undefined
+    const response = await this.#request({ kind: "decode-resources", chunks, shared, ...(shared ? { generation } : {}) },
+      chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
     if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer || response.bytes instanceof SharedArrayBuffer)
       || (response.bytes instanceof SharedArrayBuffer) !== shared
-      || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_SECTION_BYTES) {
+      || !Number.isSafeInteger(response.byteOffset) || response.byteOffset < 0
+      || !Number.isSafeInteger(response.byteLength) || response.byteLength < 12 || response.byteLength > MAX_CONFIGURATION_SECTION_BYTES
+      || response.byteOffset + response.byteLength > response.bytes.byteLength) {
       throw new Tf2WorkerError("WorkerFailed")
     }
-    return new Uint8Array(response.bytes)
+    return new Uint8Array(response.bytes, response.byteOffset, response.byteLength)
+  }
+
+  async finalizeResources(generation: number, sections: readonly Uint8Array[]): Promise<ResourceConfiguration> {
+    if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff
+      || sections.length < 1 || sections.length > MAX_CONFIGURATION_SECTIONS
+      || sections.some((section) => section.byteLength < 12 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES)) {
+      throw new Tf2WorkerError("BoundExceeded")
+    }
+    const response = await this.#request({ kind: "finalize-resources", generation })
+    if (response.kind !== "resources-finalized" || response.generation !== generation
+      || !Number.isSafeInteger(response.byteLength) || response.byteLength < 12 || response.byteLength > MAX_CONFIGURATION_BYTES
+      || !HASH.test(response.sha256) || response.sections !== sections.length) {
+      throw new Tf2WorkerError("WorkerFailed")
+    }
+    return Object.freeze({ generation, byteLength: response.byteLength, sha256: response.sha256, sections: Object.freeze([...sections]) })
+  }
+
+  async releaseResources(generation: number): Promise<void> {
+    const response = await this.#request({ kind: "release-resources", generation })
+    if (response.kind !== "resources-released" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
+  }
+
+  async #retainResources(generation: number, configuration: ResourceConfiguration): Promise<ResourceConfiguration> {
+    for (const section of configuration.sections) {
+      const transferred = section.slice().buffer
+      const response = await this.#request({ kind: "retain-resources", generation, section: transferred }, [transferred])
+      if (response.kind !== "resources-retained" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
+    }
+    const retained = await this.finalizeResources(generation, configuration.sections)
+    if (retained.byteLength !== configuration.byteLength || retained.sha256 !== configuration.sha256) {
+      await this.releaseResources(generation).catch(() => {})
+      throw new Tf2WorkerError("IntegrityFailure")
+    }
+    return retained
   }
 
   async stage(
     generation: number,
     bsp: Uint8Array,
     profile: 0 | 1,
-    configuration: readonly Uint8Array[],
+    configuration: ResourceConfiguration,
     derivedKey: string,
   ): Promise<StagedGame> {
     const started = performance.now()
@@ -247,11 +300,10 @@ export class Tf2WorkerClient {
       generation > 0xffff_ffff ||
       bsp.byteLength < 1 ||
       bsp.byteLength > MAX_BSP_BYTES ||
-      !Array.isArray(configuration) ||
-      configuration.length < 1 ||
-      configuration.length > MAX_CONFIGURATION_SECTIONS ||
-      configuration.some((section) => !(section instanceof Uint8Array) || section.byteLength < 1 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES) ||
-      configuration.reduce((total, section) => total + section.byteLength, 0) > MAX_CONFIGURATION_BYTES ||
+      !Number.isSafeInteger(configuration?.byteLength) || configuration.byteLength < 12 || configuration.byteLength > MAX_CONFIGURATION_BYTES ||
+      !HASH.test(configuration.sha256) || !Array.isArray(configuration.sections)
+      || configuration.sections.length < 1 || configuration.sections.length > MAX_CONFIGURATION_SECTIONS
+      || configuration.sections.some((section) => !(section instanceof Uint8Array) || section.byteLength < 12 || section.byteLength > MAX_CONFIGURATION_SECTION_BYTES) ||
       !HASH.test(derivedKey)
     ) {
       throw new Tf2WorkerError("BoundExceeded")
@@ -282,15 +334,14 @@ export class Tf2WorkerClient {
     const [mapResult, presentationResult] = await Promise.allSettled([mapRead, presentationRead])
     if (mapResult.status === "rejected") throw mapResult.reason
     if (presentationResult.status === "rejected") throw presentationResult.reason
-    const cached = mapResult.value
-    const cachedPresentation = presentationResult.value
+    const cachedRecord = mapResult.value
+    const cachedPresentationRecord = presentationResult.value
+    const cached = cachedRecord?.bytes
+    const cachedPresentation = cachedPresentationRecord?.bytes
     const cachedPresentationBytes = cachedPresentation?.byteLength
+    if (configuration.generation !== generation) configuration = await this.#retainResources(generation, configuration)
     let phase = performance.now()
     const bspBuffer = transferredBytes(bsp)
-    const configurationBuffers = configuration.map((section) => section.buffer instanceof SharedArrayBuffer
-      && section.byteOffset === 0 && section.byteLength === section.buffer.byteLength
-      ? section.buffer
-      : section.slice().buffer)
     const presentationBuffer = cachedPresentation ? transferredBytes(cachedPresentation) : undefined
     const inputCloneMilliseconds = performance.now() - phase
     phase = performance.now()
@@ -299,11 +350,11 @@ export class Tf2WorkerClient {
       generation,
       profile,
       bsp: bspBuffer,
-      configuration: configurationBuffers,
+      configurationSha256: configuration.sha256,
+      configurationBytes: configuration.byteLength,
       includeMap: !cached,
       ...(presentationBuffer ? { presentation: presentationBuffer } : {}),
-    }, [bspBuffer, ...configurationBuffers.filter((section): section is ArrayBuffer => section instanceof ArrayBuffer),
-      ...(presentationBuffer ? [presentationBuffer] : [])])
+    }, [bspBuffer, ...(presentationBuffer ? [presentationBuffer] : [])])
     const workerLoadMilliseconds = performance.now() - phase
     try {
       if (
@@ -338,7 +389,7 @@ export class Tf2WorkerClient {
       let mapPersistence = Promise.resolve(0)
       if (cached) {
         phase = performance.now()
-        if (cached.byteLength !== loaded.payloadBytes || (await sha256(cached)) !== loaded.payloadSha256) {
+        if (cached.byteLength !== loaded.payloadBytes || cachedRecord!.sha256 !== loaded.payloadSha256) {
           throw new Tf2WorkerError("IntegrityFailure")
         }
         mapIntegrityMilliseconds = performance.now() - phase
@@ -409,6 +460,11 @@ export class Tf2WorkerClient {
           presentationReleaseMilliseconds: loaded.timings.presentationReleaseMilliseconds,
           textureDecoderRequests: loaded.timings.textureDecoderRequests,
           textureMetadataInspections: loaded.timings.textureMetadataInspections,
+          modelCacheHits: loaded.timings.modelCacheHits,
+          modelCacheMisses: loaded.timings.modelCacheMisses,
+          wasmLinearMemoryBytes: loaded.timings.wasmLinearMemoryBytes,
+          resourceSections: loaded.timings.resourceSections,
+          resourceBytes: loaded.timings.resourceBytes,
           totalMilliseconds: performance.now() - started,
         }),
         initialView: Object.freeze({
@@ -475,7 +531,7 @@ export class Tf2WorkerClient {
     generation: number,
     bsp: Uint8Array,
     profile: 0 | 1,
-    configuration: readonly Uint8Array[],
+    configuration: ResourceConfiguration,
     derivedKey: string,
   ): Promise<LoadedGame> {
     const staged = await this.stage(generation, bsp, profile, configuration, derivedKey)

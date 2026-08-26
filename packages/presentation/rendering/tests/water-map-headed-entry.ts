@@ -21,7 +21,7 @@ type Exports = Readonly<{
   playsrc_resource_decode(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
-  playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -86,7 +86,14 @@ exports.playsrc_free(resourcePointer, resourceLength)
 console.info(`decoded ${resources.byteLength} resource bytes; compiling exact HDR map`)
 const bspPointer = copied(exports, bsp)
 const configPointer = copied(exports, resources)
-const handle = exports.playsrc_compile_map(bspPointer, bsp.byteLength, 1, configPointer, resources.byteLength)
+const configSections = exports.playsrc_alloc(8)
+new DataView(exports.memory.buffer, configSections, 8).setUint32(0, configPointer, true)
+new DataView(exports.memory.buffer, configSections, 8).setUint32(4, resources.byteLength, true)
+const configHash = exports.playsrc_alloc(32)
+new Uint8Array(exports.memory.buffer, configHash, 32).set(new Uint8Array(await crypto.subtle.digest("SHA-256", resources)))
+const handle = exports.playsrc_compile_map(bspPointer, bsp.byteLength, 1, configSections, 1, configHash)
+exports.playsrc_free(configSections, 8)
+exports.playsrc_free(configHash, 32)
 exports.playsrc_free(bspPointer, bsp.byteLength)
 exports.playsrc_free(configPointer, resources.byteLength)
 require(exports.playsrc_result_error(handle) === 0, `Rust HDR Water map compilation failed: ${exports.playsrc_result_error(handle)}`)

@@ -40,6 +40,7 @@
     "profile:three-map-load": "bun tools/playsrc/src/profile-runner.ts three-map-load",
     "profile:map-coverage": "bun tools/playsrc/src/profile-runner.ts map-coverage",
     "profile:map-sanity": "bun tools/playsrc/src/profile-runner.ts map-sanity",
+    "profile:map-memory": "bun tools/playsrc/src/profile-runner.ts map-memory",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",
     "profile:startup-browser": "bun tools/playsrc/src/profile-runner.ts startup-browser",
     "test": "bun test",

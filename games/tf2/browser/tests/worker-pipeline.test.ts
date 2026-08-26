@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
+import type { DerivedObjectCache, VerifiedDerivedObject } from "@playsrc/asset-store/browser"
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
-import { Tf2WorkerClient, Tf2WorkerError, type WorkerLike } from "../src/client"
+import { Tf2WorkerClient, Tf2WorkerError, type ResourceConfiguration, type WorkerLike } from "../src/client"
 import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTimings } from "../src/protocol"
 
 const MAP = Uint8Array.from([0x50, 0x53, 0x4d, 0x50, 9, 8, 7, 6])
@@ -50,17 +50,28 @@ const LOAD_TIMINGS = Object.freeze({
   presentationSerializationMilliseconds: 0,
   textureDecoderRequests: 0,
   textureMetadataInspections: 0,
+  modelCacheHits: 0,
+  modelCacheMisses: 0,
+  wasmLinearMemoryBytes: 0,
+  resourceSections: 1,
+  resourceBytes: 12,
   totalMilliseconds: 0,
 })
 
 async function digest(bytes: Uint8Array): Promise<string> {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (value) =>
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes)), (value) =>
     value.toString(16).padStart(2, "0"),
   ).join("")
 }
 
 async function presentationIdentity(key: string): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v14\0${key}`))
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v15\0${key}`))
+}
+
+async function configuration(generation: number, values: readonly number[] = []): Promise<ResourceConfiguration> {
+  const section = new Uint8Array(Math.max(12, values.length))
+  section.set(values)
+  return Object.freeze({ generation, byteLength: section.byteLength, sha256: await digest(section), sections: Object.freeze([section]) })
 }
 
 function visibilityOutput(animated = false): ArrayBuffer {
@@ -117,7 +128,7 @@ class MemoryCache implements DerivedObjectCache {
   #activeReads = 0
   #pendingRead?: Readonly<{ ready: Promise<void>; release(): void }>
 
-  async read(key: string): Promise<Uint8Array | undefined> {
+  async read(key: string): Promise<VerifiedDerivedObject | undefined> {
     this.reads += 1
     this.#activeReads += 1
     this.maximumConcurrentReads = Math.max(this.maximumConcurrentReads, this.#activeReads)
@@ -132,7 +143,8 @@ class MemoryCache implements DerivedObjectCache {
       await ready
     }
     this.#activeReads -= 1
-    return this.entries.get(key)?.slice()
+    const value = this.entries.get(key)?.slice()
+    return value ? Object.freeze({ bytes: value, sha256: await digest(value) }) : undefined
   }
 
   async write(key: string, expected: string | null, bytes: Uint8Array): Promise<string> {
@@ -156,6 +168,7 @@ class PipelineWorker implements WorkerLike {
   failure?: WorkerResponse
   animatedWorldMaterial = false
   terminated = false
+  readonly resources = new Map<number, Uint8Array[]>()
   #message?: (event: MessageEvent<WorkerResponse>) => void
   #error?: (event: ErrorEvent) => void
 
@@ -183,12 +196,6 @@ class PipelineWorker implements WorkerLike {
 
   postMessage(message: WorkerRequest, transfer: Transferable[] = []): void {
     const request = structuredClone(message, { transfer })
-    if (message.kind === "load" && request.kind === "load") {
-      Object.assign(request, {
-        configuration: request.configuration.map((section, index) =>
-          message.configuration[index] instanceof SharedArrayBuffer ? message.configuration[index]! : section),
-      })
-    }
     this.requests.push(request)
     if (this.failure) {
       this.#respond({ ...this.failure, id: request.id } as WorkerResponse)
@@ -239,11 +246,47 @@ class PipelineWorker implements WorkerLike {
       }
       case "decode-resources": {
         const input = request.chunks[0]!.bytes
-        const bytes = request.shared ? new SharedArrayBuffer(input.byteLength) : input
-        if (request.shared) new Uint8Array(bytes).set(new Uint8Array(input))
-        this.#respond({ id: request.id, kind: "resources", bytes }, bytes instanceof ArrayBuffer ? [bytes] : [])
+        if (request.generation !== undefined) {
+          const bytes = new SharedArrayBuffer(input.byteLength + 16)
+          const section = new Uint8Array(bytes, 8, input.byteLength)
+          section.set(new Uint8Array(input))
+          const retained = this.resources.get(request.generation) ?? []
+          retained.push(section)
+          this.resources.set(request.generation, retained)
+          this.#respond({ id: request.id, kind: "resources", bytes, byteOffset: 8, byteLength: input.byteLength })
+        } else {
+          this.#respond({ id: request.id, kind: "resources", bytes: input, byteOffset: 0, byteLength: input.byteLength }, [input])
+        }
         return
       }
+      case "finalize-resources": {
+        const sections = this.resources.get(request.generation) ?? []
+        const first = sections[0]
+        if (!first) {
+          this.#respond({ id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 })
+          return
+        }
+        void digest(first).then((sha256) => this.#respond({
+          id: request.id,
+          kind: "resources-finalized",
+          generation: request.generation,
+          byteLength: sections.reduce((total, section) => total + section.byteLength, 0),
+          sha256,
+          sections: sections.length,
+        }))
+        return
+      }
+      case "retain-resources": {
+        const retained = this.resources.get(request.generation) ?? []
+        retained.push(new Uint8Array(request.section).slice())
+        this.resources.set(request.generation, retained)
+        this.#respond({ id: request.id, kind: "resources-retained", generation: request.generation })
+        return
+      }
+      case "release-resources":
+        this.resources.delete(request.generation)
+        this.#respond({ id: request.id, kind: "resources-released", generation: request.generation })
+        return
       case "discard":
         this.#respond({ id: request.id, kind: "discarded", generation: request.generation })
         return
@@ -304,8 +347,8 @@ describe("TF2 Worker transport ownership", () => {
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
     const bsp = Uint8Array.from([1, 2, 3, 4])
-    const configuration = Uint8Array.from([5, 6, 7])
-    const staged = await client.stage(3, bsp, 0, [configuration], KEY)
+    const source = await configuration(3, [5, 6, 7])
+    const staged = await client.stage(3, bsp, 0, source, KEY)
     await staged.persistence
     expect(worker.requests.map((request) => request.kind)).toEqual(["load"])
     expect(worker.requests[0]).toMatchObject({ includeMap: true, generation: 3 })
@@ -314,26 +357,30 @@ describe("TF2 Worker transport ownership", () => {
     expect(staged.cache).toBe("stored")
     expect(staged.presentationCache).toBe("stored")
     expect(bsp.byteLength).toBe(0)
-    expect(configuration).toEqual(Uint8Array.from([5, 6, 7]))
+    expect(source.sections[0]!.subarray(0, 3)).toEqual(Uint8Array.from([5, 6, 7]))
+    expect(worker.requests[0]).toMatchObject({ configurationSha256: source.sha256, configurationBytes: source.byteLength })
+    expect(worker.requests[0]).not.toHaveProperty("configuration")
     expect(cache.maximumConcurrentReads).toBe(2)
     expect(cache.writes.toSorted()).toEqual([KEY, await presentationIdentity(KEY)].toSorted())
     await client.shutdown()
     expect(worker.terminated).toBe(true)
   })
 
-  test("transfers every bounded source-backed section in one map request without detaching its retained closure", async () => {
+  test("retains every bounded source-backed section without copying it into a map request", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, new MemoryCache())
-    const first = Uint8Array.from([1, 2, 3])
-    const second = Uint8Array.from([4, 5, 6, 7])
-    await client.stage(9, Uint8Array.from([8]), 0, [first, second], KEY)
+    const first = new Uint8Array(12), second = new Uint8Array(12)
+    first.set([1, 2, 3]); second.set([4, 5, 6, 7])
+    const source: ResourceConfiguration = Object.freeze({ generation: 9, byteLength: 24, sha256: await digest(first), sections: Object.freeze([first, second]) })
+    await client.stage(9, Uint8Array.from([8]), 0, source, KEY)
     const request = worker.requests[0]
     expect(request?.kind).toBe("load")
     if (request?.kind !== "load") throw new Error("sectioned Worker map request is absent")
-    expect(request.configuration.map((section) => [...new Uint8Array(section)])).toEqual([[1, 2, 3], [4, 5, 6, 7]])
-    expect([...first]).toEqual([1, 2, 3])
-    expect([...second]).toEqual([4, 5, 6, 7])
-    await expect(client.stage(10, Uint8Array.from([8]), 0, [], KEY)).rejects.toMatchObject({ code: "BoundExceeded" })
+    expect(request).not.toHaveProperty("configuration")
+    expect([...first.subarray(0, 3)]).toEqual([1, 2, 3])
+    expect([...second.subarray(0, 4)]).toEqual([4, 5, 6, 7])
+    await expect(client.stage(10, Uint8Array.from([8]), 0,
+      { ...source, sections: Object.freeze([]) }, KEY)).rejects.toMatchObject({ code: "BoundExceeded" })
     await client.shutdown()
   })
 
@@ -343,7 +390,7 @@ describe("TF2 Worker transport ownership", () => {
     cache.entries.set(await presentationIdentity(KEY), PRESENTATION.slice())
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    const staged = await client.stage(8, Uint8Array.from([8]), 1, [Uint8Array.from([7])], KEY)
+    const staged = await client.stage(8, Uint8Array.from([8]), 1, await configuration(8, [7]), KEY)
     expect(worker.requests.map((request) => request.kind)).toEqual(["load"])
     expect(worker.requests[0]).toMatchObject({ includeMap: false, generation: 8 })
     expect(staged.cache).toBe("hit")
@@ -360,7 +407,7 @@ describe("TF2 Worker transport ownership", () => {
     cache.entries.set(KEY, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]))
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    await expect(client.stage(4, Uint8Array.from([1]), 0, [Uint8Array.from([2])], KEY))
+    await expect(client.stage(4, Uint8Array.from([1]), 0, await configuration(4, [2]), KEY))
       .rejects.toMatchObject({ code: "IntegrityFailure" })
     expect(worker.requests.map((request) => request.kind)).toEqual(["load", "discard"])
     await client.shutdown()
@@ -424,13 +471,13 @@ describe("TF2 Worker transport ownership", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     const owned = new Uint8Array(12)
     owned[0] = 7
-    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }], false)).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: owned }])).toEqual(Uint8Array.from([7, ...new Array(11).fill(0)]))
     expect(owned.byteLength).toBe(0)
     expect(worker.requests[0]).toMatchObject({ kind: "decode-resources", chunks: [{ descriptor: expect.any(ArrayBuffer) }] })
     const retained = new Uint8Array(20)
     retained.fill(3)
     const slice = retained.subarray(4, 16)
-    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: slice }], false)).toEqual(new Uint8Array(12).fill(3))
+    expect(await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: slice }])).toEqual(new Uint8Array(12).fill(3))
     expect(retained.byteLength).toBe(20)
     expect(retained[0]).toBe(3)
     await client.shutdown()
@@ -441,14 +488,43 @@ describe("TF2 Worker transport ownership", () => {
     const client = new Tf2WorkerClient(worker, new MemoryCache())
     const input = new Uint8Array(12)
     input.fill(9)
-    const decoded = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], true)
+    const decoded = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], 3)
     expect(decoded.buffer).toBeInstanceOf(SharedArrayBuffer)
-    await client.stage(3, Uint8Array.from([1]), 0, [decoded], KEY)
+    expect(decoded.byteOffset).toBe(8)
+    const resources = await client.finalizeResources(3, [decoded])
+    await client.stage(3, Uint8Array.from([1]), 0, resources, KEY)
     const request = worker.requests.find((entry) => entry.kind === "load")
     if (!request || request.kind !== "load") throw new Error("load request is absent")
-    expect(request.configuration[0]).toBeInstanceOf(SharedArrayBuffer)
-    new Uint8Array(request.configuration[0]!)[1] = 19
+    expect(request).not.toHaveProperty("configuration")
+    worker.resources.get(3)![0]![1] = 19
     expect(decoded[1]).toBe(19)
+    await client.shutdown()
+  })
+
+  test("retains bounded source sections in the Worker without cloning a monolithic configuration", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const input = new Uint8Array(12)
+    input[0] = 9
+    const section = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], 5)
+    const resources = await client.finalizeResources(5, [section])
+    expect(input.byteLength).toBe(0)
+    expect(resources).toMatchObject({ generation: 5, byteLength: 12, sha256: await digest(section) })
+    expect(worker.requests.map((request) => request.kind)).toEqual(["decode-resources", "finalize-resources"])
+    const staged = await client.stage(5, Uint8Array.of(1), 0, resources, KEY)
+    expect(staged.payload).toEqual(MAP)
+    expect(worker.requests.at(-1)).not.toHaveProperty("configuration")
+    await client.shutdown()
+  })
+
+  test("readmits retained source sections individually when a later generation reuses them", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const resources = await configuration(3, [8, 7, 6])
+    const staged = await client.stage(4, Uint8Array.of(1), 0, resources, KEY)
+    expect(staged.payload).toEqual(MAP)
+    expect(worker.requests.map((request) => request.kind)).toEqual(["retain-resources", "finalize-resources", "load"])
+    expect(resources.sections[0]!.byteLength).toBe(12)
     await client.shutdown()
   })
 
@@ -482,7 +558,7 @@ describe("TF2 Worker transport ownership", () => {
     }()
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, cache)
-    const staged = await client.stage(3, Uint8Array.from([1]), 0, [Uint8Array.from([2])], KEY)
+    const staged = await client.stage(3, Uint8Array.from([1]), 0, await configuration(3, [2]), KEY)
     expect(await staged.persistence).toMatchObject({
       presentationCache: "unavailable",
       presentationCacheError: "Error: presentation storage unavailable",

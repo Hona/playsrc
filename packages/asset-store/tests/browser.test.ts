@@ -302,11 +302,11 @@ describe("browser asset adapters", () => {
       const cache = await openDerivedObjectCache("verified-read-recency")
       await cache.write(firstKey, await digest(firstBytes), firstBytes)
       await cache.write(untouchedKey, await digest(untouchedBytes), untouchedBytes)
-      expect(await cache.read(firstKey)).toEqual(firstBytes)
+      expect(await cache.read(firstKey)).toEqual({ bytes: firstBytes, sha256: await digest(firstBytes) })
       const records = fake.databases.get("verified-read-recency")!
       expect(records.get(firstKey)?.storedAt).toBe(101)
       expect(records.get(untouchedKey)?.storedAt).toBe(100)
-      expect(await cache.read(firstKey)).toEqual(firstBytes)
+      expect(await cache.read(firstKey)).toEqual({ bytes: firstBytes, sha256: await digest(firstBytes) })
       expect(records.get(firstKey)?.storedAt).toBe(102)
       expect(planDerivedCacheEviction(
         [...records.values()].map((record) => ({ key: record.key as string, byteLength: record.byteLength as number, storedAt: record.storedAt as number })),
@@ -341,7 +341,8 @@ describe("browser asset adapters", () => {
         await cache.write(key, await digest(value), value)
       }
       for (let index = 1; index <= 6; index += 1) {
-        expect(await cache.read(index.toString(16).repeat(64))).toEqual(new Uint8Array(128).fill(index))
+        const expected = new Uint8Array(128).fill(index)
+        expect(await cache.read(index.toString(16).repeat(64))).toEqual({ bytes: expected, sha256: await digest(expected) })
       }
       expect(fake.inventories.objects).toBe(0)
       expect(fake.inventories.metadata).toBeGreaterThan(0)
@@ -371,7 +372,7 @@ describe("browser asset adapters", () => {
       const cache = await openDerivedObjectCache("preserved-version-one")
       expect(fake.versions.get("preserved-version-one")).toBe(2)
       expect(fake.metadata.get("preserved-version-one")?.get(key)).toEqual({ key, byteLength: value.byteLength, storedAt: 17 })
-      expect(await cache.read(key)).toEqual(value)
+      expect(await cache.read(key)).toEqual({ bytes: value, sha256: await digest(value) })
       expect(fake.databases.get("preserved-version-one")?.get(key)?.bytes).toBe(blob)
       expect(fake.inventories.objects).toBe(0)
       cache.close()
