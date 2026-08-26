@@ -210,8 +210,10 @@ pub fn resolve_render_output(
     items: Vec<RenderItem>,
     materials: &BTreeMap<String, ParticleMaterial>,
 ) -> Result<Vec<RenderItem>, Error> {
-    let mut output = Vec::with_capacity(items.len());
-    for mut item in items {
+    let mut output = items;
+    let mut retained = 0;
+    for index in 0..output.len() {
+        let item = &mut output[index];
         let material = materials.get(&item.material).ok_or_else(|| {
             Error::new(
                 ErrorCode::MissingDependency,
@@ -284,8 +286,10 @@ pub fn resolve_render_output(
             blend: material.blend,
             color_space: material.color_space,
         });
-        output.push(item);
+        output.swap(retained, index);
+        retained += 1;
     }
+    output.truncate(retained);
     Ok(output)
 }
 
@@ -325,22 +329,19 @@ pub fn encode_render_output(
             "render output exceeds its byte or count limit",
         ));
     }
-    let material_indexes: BTreeMap<&str, u32> = materials
-        .iter()
-        .enumerate()
-        .map(|(index, material)| {
-            u32::try_from(index)
-                .map(|index| (material.as_str(), index))
-                .map_err(|_| {
-                    Error::new(
-                        ErrorCode::BoundExceeded,
-                        "particle-output",
-                        0,
-                        "material index exceeds u32",
-                    )
-                })
-        })
-        .collect::<Result<_, _>>()?;
+    if materials
+        .len()
+        .checked_sub(1)
+        .is_some_and(|index| u32::try_from(index).is_err())
+    {
+        return Err(Error::new(
+            ErrorCode::BoundExceeded,
+            "particle-output",
+            0,
+            "material index exceeds u32",
+        ));
+    }
+    let sorted_materials = materials.windows(2).all(|pair| pair[0] <= pair[1]);
     let mut bytes = vec![0; length];
     bytes[0..4].copy_from_slice(&0x5250_5350_u32.to_le_bytes());
     bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
@@ -406,16 +407,24 @@ pub fn encode_render_output(
                 "render item contains an invalid scalar",
             ));
         }
-        let material = material_indexes
-            .get(item.material.as_str())
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::MissingDependency,
-                    "particle-output",
-                    index,
-                    "render item material is absent from the supplied registry",
-                )
-            })?;
+        let material = if sorted_materials {
+            materials
+                .partition_point(|identity| identity.as_str() <= item.material.as_str())
+                .checked_sub(1)
+                .filter(|index| materials[*index] == item.material)
+        } else {
+            materials
+                .iter()
+                .rposition(|identity| identity == &item.material)
+        }
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::MissingDependency,
+                "particle-output",
+                index,
+                "render item material is absent from the supplied registry",
+            )
+        })? as u32;
         let offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES;
         bytes[offset..offset + 4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
         bytes[offset + 4..offset + 8].copy_from_slice(&item.effect_identity.to_le_bytes());
@@ -575,7 +584,7 @@ pub struct ParticleWorld {
     limits: WorldLimits,
     time: f32,
     effects: Vec<Effect>,
-    event_identities: BTreeSet<u64>,
+    event_identities: Arc<BTreeSet<u64>>,
     simulation_random: SimdRandom,
 }
 
@@ -605,7 +614,7 @@ struct System {
     unique_particle_identity: i32,
     emitter_contexts: Vec<EmitterContext>,
     operator_contexts: Vec<OperatorContext>,
-    controls: Vec<Option<ControlPoint>>,
+    controls: Arc<Vec<Option<ControlPoint>>>,
     local_lighting: Option<(i32, [f32; 3], [u8; 3])>,
     target_control_point: u8,
     particles: Vec<Particle>,
@@ -726,7 +735,7 @@ impl ParticleWorld {
             limits,
             time: 0.0,
             effects: Vec::new(),
-            event_identities: BTreeSet::new(),
+            event_identities: Arc::new(BTreeSet::new()),
             simulation_random: SimdRandom::new(12_345_678),
         })
     }
@@ -868,7 +877,7 @@ impl ParticleWorld {
         event: &Event,
         collision: &mut impl CollisionQuery,
     ) -> Result<(), Error> {
-        if !self.event_identities.insert(event.identity) {
+        if !Arc::make_mut(&mut self.event_identities).insert(event.identity) {
             return Err(Error::new(
                 ErrorCode::InvalidEvent,
                 "particle-world",
@@ -989,8 +998,9 @@ impl ParticleWorld {
             }
             EventCommand::Reset => {
                 self.effects.clear();
-                self.event_identities.clear();
-                self.event_identities.insert(event.identity);
+                let identities = Arc::make_mut(&mut self.event_identities);
+                identities.clear();
+                identities.insert(event.identity);
             }
         }
         Ok(())
@@ -1073,6 +1083,7 @@ impl ParticleWorld {
         for control in control_points {
             controls[control.index as usize] = Some(control.clone());
         }
+        let controls = Arc::new(controls);
         let mut instantiate_state = InstantiateState {
             controls: &controls,
             system_count: &mut system_count,
@@ -1105,7 +1116,7 @@ impl ParticleWorld {
                 "camera position is non-finite",
             ));
         }
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(particle_count(&self.effects));
         let mut bounds: Option<Bounds> = None;
         for effect in &self.effects {
             if let Some(effect_bounds) = system_bounds(&effect.root, &self.registry) {
@@ -1173,7 +1184,7 @@ fn initialize_system_first_frame(
 }
 
 struct InstantiateState<'a> {
-    controls: &'a [Option<ControlPoint>],
+    controls: &'a Arc<Vec<Option<ControlPoint>>>,
     system_count: &'a mut usize,
     limits: WorldLimits,
 }
@@ -1282,7 +1293,7 @@ fn instantiate(
         unique_particle_identity: 0,
         emitter_contexts,
         operator_contexts,
-        controls: state.controls.to_vec(),
+        controls: Arc::clone(state.controls),
         local_lighting: None,
         target_control_point: state
             .controls
@@ -3274,7 +3285,9 @@ fn set_control(system: &mut System, control: ControlPoint) {
     if control.index != 0 {
         system.target_control_point = control.index;
     }
-    system.controls[control.index as usize] = Some(control.clone());
+    if system.controls[control.index as usize].as_ref() != Some(&control) {
+        Arc::make_mut(&mut system.controls)[control.index as usize] = Some(control.clone());
+    }
     for child in &mut system.children {
         set_control(child, control.clone());
     }
@@ -3359,8 +3372,15 @@ fn restart_system(system: &mut System, registry: &Registry) {
 }
 
 fn update_control_history(system: &mut System) {
-    for control in system.controls.iter_mut().flatten() {
-        control.previous_position = control.position;
+    if system
+        .controls
+        .iter()
+        .flatten()
+        .any(|control| control.previous_position != control.position)
+    {
+        for control in Arc::make_mut(&mut system.controls).iter_mut().flatten() {
+            control.previous_position = control.position;
+        }
     }
 }
 

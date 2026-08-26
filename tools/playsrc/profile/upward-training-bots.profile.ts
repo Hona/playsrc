@@ -221,6 +221,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const { readyMilliseconds, playerCount, launch } = finalLoad
   const expectedBots = playerCount - 1
 
+  const combat = process.env.PROFILE_PARTICLE_COMBAT === "1"
+  const combatCommand = async (value: string): Promise<void> => {
+    await page.keyboard.press("Backquote")
+    const entry = page.locator("[aria-label='Console command']")
+    await entry.fill(value)
+    await entry.press("Enter")
+    await page.keyboard.press("Backquote")
+  }
+  if (combat) {
+    await combatCommand("joinclass pyro")
+    await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("7")
+    await combatCommand("+attack")
+  }
+
   const canvas = page.locator("canvas.world-canvas")
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1") await canvas.click({ position: { x: 300, y: 250 } })
@@ -262,11 +276,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
     })
     classObserver.observe(main, { attributes: true, attributeFilter: ["data-hud-probe"] })
     let animationCallbacks = 0
+    const particleSamples: Array<{ classIdentity: number; items: number }> = []
     instrumentation.active = true
     try {
       while (performance.now() - started < duration * 1000) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-        animationCallbacks += 1
+         animationCallbacks += 1
+         particleSamples.push({ classIdentity: Number(main.dataset.hudProbe?.split(":")[1] ?? 0), items: Number(main.dataset.particleItems ?? 0) })
         if (main.dataset.phase !== "Ready") throw new Error(`Upward training left gameplay: ${main.dataset.phase}: ${main.dataset.detail}`)
       }
     } finally { instrumentation.active = false; classObserver.disconnect() }
@@ -278,7 +294,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
-      frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames,
+      frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames, particleSamples,
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       classSwitches,
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
@@ -337,7 +353,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
       }
     })()
     : Promise.resolve()
-  const [measurement] = await Promise.all([measurementPromise, exercise(), interaction])
+  const combatActions = combat ? (async () => {
+    for (const identity of ["heavyweapons", "medic", "soldier"]) {
+      await new Promise(resolve => setTimeout(resolve, seconds * 250))
+      await combatCommand(`joinclass ${identity}`)
+    }
+  })() : Promise.resolve()
+  const [measurement] = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
   const clockAfter = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
   const traceFinished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
   await cdp.send("Tracing.end")
@@ -413,6 +435,17 @@ test("profile authored headed Upward offline-practice default roster and actual 
       uploadedBytes: item.queueWriteBytes - (values[index - 1]?.queueWriteBytes ?? 0),
       workerCallsSincePrevious: item.workerCalls - (values[index - 1]?.workerCalls ?? 0),
     })) },
+    particleCombat: {
+      enabled: combat,
+      classes: Object.fromEntries([...new Set(measurement.particleSamples.map(sample => sample.classIdentity))].sort((left, right) => left - right).map(identity => {
+        const samples = measurement.particleSamples.filter(sample => sample.classIdentity === identity)
+        return [identity, { frames: samples.length, liveParticles: summarizeDistribution(samples.map(sample => sample.items)) }]
+      })),
+      simulation: summarizeDistribution(completed.map(frame => frame.detail.particleWorker)),
+      decode: summarizeDistribution(completed.map(frame => frame.detail.particleDecode)),
+      renderItems: summarizeDistribution(completed.map(frame => frame.detail.particleItems)),
+      batches: summarizeDistribution(completed.map(frame => frame.detail.particleBatches)),
+    },
     gpu: {
       ...measurement.counters,
       modelUploads: measurement.modelUploads,
@@ -478,6 +511,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     frameIntervals: report.frameIntervals, frameWork: report.frameWork, simulation: report.simulation,
     classSwitches: report.classSwitches,
+    particleCombat: report.particleCombat,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
       calls: value.calls, views: value.views, sharedDispatches: value.sharedDispatches, bytes: value.bytes, receivedBytes: value.receivedBytes,
       queue: value.timings.queueMilliseconds ?? null, maximumMilliseconds: value.milliseconds.max,

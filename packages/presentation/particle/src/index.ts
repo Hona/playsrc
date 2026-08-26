@@ -4,6 +4,8 @@ const OUTPUT_HEADER_BYTES = 40
 const OUTPUT_RECORD_BYTES = 436
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_RENDER_ITEMS = 65_536
+const DEFAULT_LIMITS = Object.freeze({ maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES, maxRenderItems: DEFAULT_MAX_RENDER_ITEMS })
+const HEX_BYTES = Object.freeze(Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0")))
 
 export type PcfResource = Readonly<{
   logicalPath: string
@@ -101,10 +103,7 @@ export class ParticleAdapterError extends Error {
 export function createParticleSystem(
   kernel: ParticleKernel,
   resources: readonly PcfResource[],
-  limits: ParticleAdapterLimits = Object.freeze({
-    maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
-    maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
-  }),
+  limits: ParticleAdapterLimits = DEFAULT_LIMITS,
 ): Readonly<{
   advance(batch: ParticleBatch): ParticleRenderOutput
   reset(bytes: Uint8Array): void
@@ -139,10 +138,7 @@ export function createParticleSystem(
 export function decodeParticleRenderOutput(
   bytes: Uint8Array,
   materials: readonly string[],
-  limits: ParticleAdapterLimits = Object.freeze({
-    maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
-    maxRenderItems: DEFAULT_MAX_RENDER_ITEMS,
-  }),
+  limits: ParticleAdapterLimits = DEFAULT_LIMITS,
 ): ParticleRenderOutput {
   validateLimits(limits)
   validateMaterials(materials)
@@ -168,15 +164,16 @@ export function decodeParticleRenderOutput(
   const minimum = tuple3(view, 16)
   const maximum = tuple3(view, 28)
   if (
-    ![...minimum, ...maximum].every(Number.isFinite)
+    !finite3(minimum)
+    || !finite3(maximum)
     || (boundsState === 0
-      ? [...minimum, ...maximum].some(value => value !== 0)
+      ? minimum.some(value => value !== 0) || maximum.some(value => value !== 0)
       : minimum.some((value, component) => value > maximum[component]!))
   ) {
     throw new ParticleAdapterError("MalformedOutput", "particle bounds are invalid")
   }
   const bounds = boundsState === 0 ? null : Object.freeze({ minimum, maximum })
-  const output: ParticleRenderItem[] = []
+  const output: ParticleRenderItem[] = new Array(count)
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
     const primitive = bytes[offset + 14]
@@ -220,27 +217,25 @@ export function decodeParticleRenderOutput(
     const trailLengthScale = view.getFloat32(offset + 420, true)
     const yawRadians = view.getFloat32(offset + 432, true)
     if (
-      ![
-        ...position,
-        ...previousPosition,
-        radius,
-        rollRadians,
-        yawRadians,
-        opacity,
-        trailLength,
-        sortKey,
-        ageSeconds,
-        lifetimeSeconds,
-        animationRate,
-        trailMinLength,
-        trailMaxLength,
-        trailFadeInSeconds,
-        secondaryAnimationRate,
-        stepSeconds,
-        ...trailEndPosition,
-        trailWidth,
-        trailLengthScale,
-      ].every(Number.isFinite)
+      !finite3(position)
+      || !finite3(previousPosition)
+      || !finite3(trailEndPosition)
+      || !Number.isFinite(radius)
+      || !Number.isFinite(rollRadians)
+      || !Number.isFinite(yawRadians)
+      || !Number.isFinite(opacity)
+      || !Number.isFinite(trailLength)
+      || !Number.isFinite(sortKey)
+      || !Number.isFinite(ageSeconds)
+      || !Number.isFinite(lifetimeSeconds)
+      || !Number.isFinite(animationRate)
+      || !Number.isFinite(trailMinLength)
+      || !Number.isFinite(trailMaxLength)
+      || !Number.isFinite(trailFadeInSeconds)
+      || !Number.isFinite(secondaryAnimationRate)
+      || !Number.isFinite(stepSeconds)
+      || !Number.isFinite(trailWidth)
+      || !Number.isFinite(trailLengthScale)
       || radius < 0
       || opacity < 0
       || opacity > 1
@@ -262,13 +257,13 @@ export function decodeParticleRenderOutput(
     ) {
       throw new ParticleAdapterError("MalformedOutput", "particle output contains an invalid scalar")
     }
-    output.push(Object.freeze({
+    output[index] = Object.freeze({
       identity: view.getUint32(offset, true),
       effectIdentity: view.getUint32(offset + 4, true),
       particleIdentity: view.getUint32(offset + 8, true),
       rendererIndex: view.getUint16(offset + 12, true),
       primitive: primitive === 0 ? "sprite" : "trail",
-      systemUuid: uuid(bytes.subarray(offset + 16, offset + 32)),
+      systemUuid: uuid(bytes, offset + 16),
       material,
       position,
       previousPosition,
@@ -302,7 +297,7 @@ export function decodeParticleRenderOutput(
       stableTieIdentity: view.getBigUint64(offset + 424, true),
       primarySheet,
       secondarySheet,
-    }))
+    })
   }
   return Object.freeze({ bounds, items: Object.freeze(output) })
 }
@@ -366,6 +361,10 @@ function tuple3(view: DataView, offset: number): readonly [number, number, numbe
   ])
 }
 
+function finite3(value: readonly [number, number, number]): boolean {
+  return Number.isFinite(value[0]) && Number.isFinite(value[1]) && Number.isFinite(value[2])
+}
+
 function sheetSample(
   view: DataView,
   blendOffset: number,
@@ -382,7 +381,7 @@ function sheetSample(
 }
 
 function sheetImages(view: DataView, offset: number): readonly (readonly [number, number, number, number])[] {
-  const output: (readonly [number, number, number, number])[] = []
+  const output: (readonly [number, number, number, number])[] = new Array(4)
   for (let image = 0; image < 4; image += 1) {
     const start = offset + image * 16
     const rectangle = Object.freeze([
@@ -394,11 +393,13 @@ function sheetImages(view: DataView, offset: number): readonly (readonly [number
     if (!rectangle.every(Number.isFinite)) {
       throw new ParticleAdapterError("MalformedOutput", "particle sheet rectangle is invalid")
     }
-    output.push(rectangle)
+    output[image] = rectangle
   }
   return Object.freeze(output)
 }
 
-function uuid(bytes: Uint8Array): string {
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")
+function uuid(bytes: Uint8Array, offset: number): string {
+  let identity = ""
+  for (let index = 0; index < 16; index += 1) identity += HEX_BYTES[bytes[offset + index]!]!
+  return identity
 }

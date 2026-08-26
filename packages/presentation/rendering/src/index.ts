@@ -23,7 +23,7 @@ import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
-import { writeParticleQuad } from "./particle-geometry"
+import { createParticleQuadWriter } from "./particle-geometry"
 import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
@@ -4557,6 +4557,7 @@ class RendererOwner implements Renderer {
     const uvNext = (geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).array as Float32Array
     const sheetBlend = (geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array
     const colors = (geometry.getAttribute("particleColor") as THREE.BufferAttribute).array as Float32Array
+    const writeParticleQuad = createParticleQuadWriter(camera)
     const dirty = [false, false, false, false]
     const set = (array: Float32Array, offset: number, value: number, identity: number): void => {
       const rounded = Math.fround(value)
@@ -4567,7 +4568,7 @@ class RendererOwner implements Renderer {
     }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
-      writeParticleQuad(item, camera, positions, index * 12)
+      writeParticleQuad(item, positions, index * 12)
       const sample = item.primarySheet!
       const current = sample.current[0]!
       const next = sample.next[0]!

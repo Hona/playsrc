@@ -687,6 +687,21 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
         encode_render_output(&resolved, whole_output.1, &material_names, 1024 * 1024).unwrap();
     assert_eq!(&encoded[0..4], &0x5250_5350_u32.to_le_bytes());
     assert_eq!(encoded.len(), 40 + resolved.len() * 436);
+    let reversed_names = material_names.iter().rev().cloned().collect::<Vec<_>>();
+    let reversed =
+        encode_render_output(&resolved, whole_output.1, &reversed_names, 1024 * 1024).unwrap();
+    for (index, item) in resolved.iter().enumerate() {
+        let offset = 40 + index * 436 + 32;
+        let expected = reversed_names
+            .iter()
+            .rposition(|identity| identity == &item.material)
+            .unwrap() as u32;
+        assert_eq!(&reversed[offset..offset + 4], &expected.to_le_bytes());
+        assert_eq!(
+            &reversed[offset + 4..offset + 404],
+            &encoded[offset + 4..offset + 404]
+        );
+    }
 }
 
 #[test]
