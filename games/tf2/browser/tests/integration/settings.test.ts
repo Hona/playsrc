@@ -51,6 +51,6 @@ describe("TF2 browser settings integration", () => {
     expect(result.lastApply?.complete).toBeFalse()
     expect(result.lastApply?.rejectedOwners).toEqual(["renderer"])
     expect(result.settings.pending?.["video.hdr"]).toBe(1)
-    expect(result.settings.current["video.hdr"]).toBe(2)
+    expect(result.settings.current["video.hdr"]).toBe(0)
   })
 })

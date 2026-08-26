@@ -375,16 +375,16 @@ settings.push(
 convar("mat_monitorgamma", "2.2", A, "Monitor gamma", 1.6, 2.6)
 convar("mat_dxlevel", "0", 0, "Current DirectX support level")
 convar("fov_desired", "75", AU, "Base field of view", 20, 90)
-convar("r_rootlod", "0", A | F.MATERIAL_SYSTEM_THREAD, "Root model LOD", 0, 2)
-convar("mat_picmip", "0", A, "Texture detail", -1, 4)
+convar("r_rootlod", "1", A | F.MATERIAL_SYSTEM_THREAD, "Root model LOD", 0, 2)
+convar("mat_picmip", "1", A, "Texture detail", -1, 4)
 convar("mat_trilinear", "0", F.ALLOWED_IN_COMPETITIVE, "Trilinear filtering")
 convar("mat_forceaniso", "1", A, "Anisotropic filtering")
 convar("mat_antialias", "0", A, "Antialias sample count")
 convar("mat_aaquality", "0", A, "Antialias quality")
-convar("r_shadowrendertotexture", "0", A, "Render-to-texture shadows")
-convar("r_flashlightdepthtexture", "1", F.ALLOWED_IN_COMPETITIVE, "Depth texture shadows")
-convar("mat_reducefillrate", "0", F.ALLOWED_IN_COMPETITIVE, "Reduced shader detail")
-convar("mat_hdr_level", "2", A, "HDR level")
+convar("r_shadowrendertotexture", "1", A, "Render-to-texture shadows")
+convar("r_flashlightdepthtexture", "0", F.ALLOWED_IN_COMPETITIVE, "Depth texture shadows")
+convar("mat_reducefillrate", "1", F.ALLOWED_IN_COMPETITIVE, "Reduced shader detail")
+convar("mat_hdr_level", "0", A, "HDR level")
 convar("r_waterforceexpensive", "0", A, "Realtime water reflection")
 convar("r_waterforcereflectentities", "0", F.ALLOWED_IN_COMPETITIVE, "Reflect entities in water")
 convar("mat_vsync", "0", F.ALLOWED_IN_COMPETITIVE, "Vertical synchronization", 0, 1)
@@ -401,14 +401,14 @@ settings.push(
   Object.freeze({ kind: "integer", ...common("video.dx-level", "video", "renderer", 0, ["mat_dxlevel"], "owner-restart"), defaultValue: 0, minimum: 0, maximum: 2_147_483_647 }),
   Object.freeze({ kind: "float", ...common("video.gamma", "video", "renderer", A, ["mat_monitorgamma"]), defaultValue: 2.2, minimum: 1.6, maximum: 2.6 }),
   Object.freeze({ kind: "float", ...common("video.field-of-view", "video", "game", AU, ["fov_desired"]), defaultValue: 75, minimum: 75, maximum: 90 }),
-  Object.freeze({ kind: "enum", ...common("video.model-detail", "video", "renderer", A | F.MATERIAL_SYSTEM_THREAD, ["r_rootlod"]), defaultValue: "high", options: Object.freeze(["low", "medium", "high"].map((value) => Object.freeze({ value, label: value }))) }),
-  Object.freeze({ kind: "enum", ...common("video.texture-detail", "video", "renderer", A, ["mat_picmip"]), defaultValue: "high", options: Object.freeze(["low", "medium", "high", "ultra"].map((value) => Object.freeze({ value, label: value }))) }),
+  Object.freeze({ kind: "enum", ...common("video.model-detail", "video", "renderer", A | F.MATERIAL_SYSTEM_THREAD, ["r_rootlod"]), defaultValue: "medium", options: Object.freeze(["low", "medium", "high"].map((value) => Object.freeze({ value, label: value }))) }),
+  Object.freeze({ kind: "enum", ...common("video.texture-detail", "video", "renderer", A, ["mat_picmip"]), defaultValue: "medium", options: Object.freeze(["low", "medium", "high", "ultra"].map((value) => Object.freeze({ value, label: value }))) }),
   Object.freeze({ kind: "enum", ...common("video.filtering", "video", "renderer", A, ["mat_trilinear", "mat_forceaniso"]), defaultValue: "bilinear", options: Object.freeze(["bilinear", "trilinear", "anisotropic-2", "anisotropic-4", "anisotropic-8", "anisotropic-16"].map((value) => Object.freeze({ value, label: value }))) }),
   Object.freeze({ kind: "integer", ...common("video.antialias-samples", "video", "renderer", A, ["mat_antialias"]), defaultValue: 0, minimum: 0, maximum: 8 }),
   Object.freeze({ kind: "integer", ...common("video.antialias-quality", "video", "renderer", A, ["mat_aaquality"]), defaultValue: 0, minimum: 0, maximum: 4 }),
-  Object.freeze({ kind: "enum", ...common("video.shadow-detail", "video", "renderer", A, ["r_shadowrendertotexture", "r_flashlightdepthtexture"]), defaultValue: "high", options: Object.freeze(["low", "medium", "high"].map((value) => Object.freeze({ value, label: value }))) }),
-  Object.freeze({ kind: "enum", ...common("video.shader-detail", "video", "renderer", F.ALLOWED_IN_COMPETITIVE, ["mat_reducefillrate"]), defaultValue: "high", options: Object.freeze(["low", "high"].map((value) => Object.freeze({ value, label: value }))) }),
-  Object.freeze({ kind: "enum", ...common("video.hdr", "video", "renderer", A, ["mat_hdr_level"], "owner-restart"), defaultValue: 2, options: Object.freeze([0, 1, 2].map((value) => Object.freeze({ value, label: String(value) }))) }),
+  Object.freeze({ kind: "enum", ...common("video.shadow-detail", "video", "renderer", A, ["r_shadowrendertotexture", "r_flashlightdepthtexture"]), defaultValue: "medium", options: Object.freeze(["low", "medium", "high"].map((value) => Object.freeze({ value, label: value }))) }),
+  Object.freeze({ kind: "enum", ...common("video.shader-detail", "video", "renderer", F.ALLOWED_IN_COMPETITIVE, ["mat_reducefillrate"]), defaultValue: "low", options: Object.freeze(["low", "high"].map((value) => Object.freeze({ value, label: value }))) }),
+  Object.freeze({ kind: "enum", ...common("video.hdr", "video", "renderer", A, ["mat_hdr_level"], "owner-restart"), defaultValue: 0, options: Object.freeze([0, 1, 2].map((value) => Object.freeze({ value, label: String(value) }))) }),
   Object.freeze({ kind: "enum", ...common("video.water-detail", "video", "renderer", A, ["r_waterforceexpensive", "r_waterforcereflectentities"]), defaultValue: "no-reflections", options: Object.freeze(["no-reflections", "reflect-world", "reflect-all"].map((value) => Object.freeze({ value, label: value }))) }),
   Object.freeze({ kind: "boolean", ...common("video.vsync", "video", "renderer", F.ALLOWED_IN_COMPETITIVE, ["mat_vsync"]), defaultValue: false }),
   Object.freeze({ kind: "boolean", ...common("video.multicore", "video", "renderer", A, ["mat_queue_mode"]), defaultValue: true }),

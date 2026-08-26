@@ -35,3 +35,22 @@ test("active generations own on-demand resources and release evicted resources e
   expect(counts).toEqual([1, 1])
   expect(generation.snapshot()).toMatchObject({ state: "Disposed", resources: 0, disposals: 2 })
 })
+
+test("evicted GPU resources survive until their submitted work completes", async () => {
+  const generation = new OwnedResourceGeneration(1, 1)
+  let disposed = 0
+  const resource = generation.add({ dispose() { disposed += 1 } })
+  generation.activate()
+  let complete!: () => void
+  const submitted = new Promise<void>((resolve) => { complete = resolve })
+  generation.releaseAfter(resource, submitted)
+  expect(disposed).toBe(0)
+  expect(generation.snapshot().resources).toBe(1)
+  expect(() => generation.releaseAfter(resource, submitted)).toThrow()
+  complete()
+  await submitted
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(disposed).toBe(1)
+  expect(generation.snapshot()).toMatchObject({ resources: 0, disposals: 1 })
+})

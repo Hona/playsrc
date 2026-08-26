@@ -392,8 +392,9 @@ class Presentation implements Tf2OptionsPresentation {
     for (const [name, schemaId] of [["VSync", "video.vsync"], ["Multicore", "video.multicore"], ["ColorCorrection", "video.color-correction"], ["MotionBlur", "video.motion-blur"]] as const) {
       this.#bindNamed(video, name, this.#binding(schemaId, "combo", Object.freeze([false, true]), Object.freeze(["#gameui_disabled", "#gameui_enabled"])))
     }
+    this.#bindNamed(video, "AntialiasingMode", this.#binding("video.antialias-samples", "combo", Object.freeze([0, 4]), Object.freeze(["#gameui_disabled", "4x MSAA"])))
     this.#bindNamed(video, "FovSlider", this.#binding("video.field-of-view", "slider"))
-    for (const name of ["dxlabel", "AntialiasingMode", "Bloom"]) {
+    for (const name of ["dxlabel", "Bloom", "VSync"]) {
       const identity = panel(this.#runtime, name, video)
       if (identity !== null) apply(this.#runtime, { kind: "set-panel-state", panel: identity, enabled: false })
     }

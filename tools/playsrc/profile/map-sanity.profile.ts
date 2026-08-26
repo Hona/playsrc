@@ -176,6 +176,24 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       await page.keyboard.press("Digit2")
     }
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 600_000 })
+    if (index === 0) {
+      const generation = Number(await root.getAttribute("data-generation"))
+      await consoleCommand(page, entry, "mat_hdr_level 2")
+      await page.waitForFunction((previous) => {
+        const main = document.querySelector<HTMLElement>("main")
+        return main?.dataset.phase === "Failed"
+          || main?.dataset.phase === "Ready" && Number(main.dataset.generation) > previous
+      }, generation, { timeout: 120_000, polling: 20 })
+      await expect(root).toHaveAttribute("data-phase", "Ready")
+      if (await root.getAttribute("data-team-selection-visible") === "true") {
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+        await chooseTf2Team(page, "red")
+      }
+      if (await root.getAttribute("data-class-selection-visible") === "true") {
+        if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+        await page.keyboard.press("Digit2")
+      }
+    }
     const staticProps = JSON.parse((await canvas.getAttribute("data-static-props")) ?? "null") as null | {
       total: number
       main: number
@@ -530,6 +548,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     }
     maps.push({
       target,
+      videoQuality: await page.evaluate(() => (globalThis as any).__playsrcProfile.videoQuality),
       loadMilliseconds,
       activeMilliseconds: Number(measured.elapsedMilliseconds.toFixed(3)),
       staticProps,
@@ -551,6 +570,10 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     headed: true,
     startupMovie: "skipped",
     viewport: { width: 1280, height: 720 },
+    gpuAdapter: await page.evaluate(async () => {
+      const adapter = await navigator.gpu?.requestAdapter()
+      return adapter?.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description } : null
+    }),
     requestedActiveSeconds: seconds,
     activeMilliseconds: Number(maps.reduce((total, map) => total + Number(map.activeMilliseconds), 0).toFixed(3)),
     targets: TARGETS,

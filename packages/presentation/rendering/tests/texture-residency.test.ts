@@ -68,4 +68,22 @@ describe("authored GPU texture residency", () => {
     expect(disposed).toEqual([])
     expect(residency.snapshot()).toEqual({ resources: 9, pinned: 0, animated: 9, evictions: 0 })
   })
+
+  test("defers animated frame destruction until previous GPU submissions finish", async () => {
+    const generation = new OwnedResourceGeneration(1, 1)
+    let complete!: () => void
+    const submitted = new Promise<void>((resolve) => { complete = resolve })
+    const residency = new SharedTextureResidency(generation, 1, () => submitted)
+    const disposed: number[] = []
+    residency.select("animated", 0, "world", () => ({ dispose() { disposed.push(0) } }))
+    generation.activate()
+    residency.select("animated", 1, "world", () => ({ dispose() { disposed.push(1) } }))
+    expect(disposed).toEqual([])
+    expect(generation.snapshot().resources).toBe(2)
+    complete()
+    await submitted
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(disposed).toEqual([0])
+  })
 })

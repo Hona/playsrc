@@ -103,7 +103,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
-import { TF2_SELECTED_OPTIONS, type AdapterRequestResult, type SettingsAdapterRequest } from "@playsrc/settings"
+import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
 import {
   initializeBrowserPresentationViewportOwner,
@@ -600,7 +600,8 @@ export class Tf2Application {
   #developer = 1
   #showFps: ClientDiagnosticMode = 0
   #showPos: ClientDiagnosticMode = 0
-  #renderLevel: 0 | 1 | 2 = 2
+  #renderLevel: 0 | 1 | 2 = 0
+  #videoConfiguration: Tf2VideoConfiguration = tf2VideoConfiguration(TF2_BALANCED_VIDEO_SETTINGS)
   #mapIdentity = ""
   #environmentDrawables = 0
   #modelProbes: NonNullable<ApplicationView["modelProbes"]> = Object.freeze([])
@@ -988,13 +989,25 @@ export class Tf2Application {
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
     if (request.owner === "renderer") {
-      if (request.changes.some((change) => change.settingId !== "video.hdr")) return reject("browser renderer owner does not implement every requested effect")
-      const value = request.changes.at(-1)?.nextValue
-      if (value !== 0 && value !== 1 && value !== 2) return reject("renderer HDR value is invalid")
-      this.#renderLevel = value
+      if (request.changes.some((change) => !(change.settingId in TF2_BALANCED_VIDEO_SETTINGS))) return reject("browser renderer owner does not implement every requested effect")
+      const previousConfiguration = this.#videoConfiguration
+      const previousLevel = this.#renderLevel
+      let configuration: Tf2VideoConfiguration
+      try {
+        configuration = tf2VideoConfiguration({
+          ...(this.#settings?.snapshot().settings.current ?? TF2_BALANCED_VIDEO_SETTINGS),
+          ...Object.fromEntries(request.changes.map((change) => [change.settingId, change.nextValue])),
+        })
+      } catch (error) { return reject(error instanceof Error ? error.message : "renderer configuration is invalid") }
+      this.#videoConfiguration = configuration
+      this.#renderLevel = configuration.hdrLevel
       if (this.#client && this.#renderer && this.#loaded) {
         try { await this.#replaceCatalogMap() }
-        catch (error) { return reject(error instanceof Error ? error.message : "renderer replacement failed") }
+        catch (error) {
+          this.#videoConfiguration = previousConfiguration
+          this.#renderLevel = previousLevel
+          return reject(error instanceof Error ? error.message : "renderer replacement failed")
+        }
       }
       return Object.freeze({ requestId: request.requestId, status: "applied" })
     }
@@ -1256,6 +1269,7 @@ export class Tf2Application {
     this.#settings = initializeTf2BrowserSettings({
       persistence: persisted === null ? null : new TextEncoder().encode(persisted),
       current: {
+        ...TF2_BALANCED_VIDEO_SETTINGS,
         "keyboard.console-enabled": true,
         "audio.effect-volume": this.#effectVolume,
         "audio.music-volume": this.#musicVolume,
@@ -1269,6 +1283,8 @@ export class Tf2Application {
       owners: { renderer: "available", audio: "available", input: "available", game: "available", application: "available" },
       apply: (request) => this.#applySettings(request),
     })
+    this.#videoConfiguration = tf2VideoConfiguration(this.#settings.snapshot().settings.current)
+    this.#renderLevel = this.#videoConfiguration.hdrLevel
     this.#set({ menuPreparation: "settings-ready" })
     const persistenceState = persisted === null ? "absent" : this.#settings.snapshot().persistenceDiagnostic ? "rejected" : "loaded"
     try { this.#gameUi = initializeTf2GameUiIntegration({
@@ -1465,6 +1481,7 @@ export class Tf2Application {
       if (!this.#activeTarget) throw new Error("Default TF2 target is absent")
       this.#presentationRandom = createTf2PresentationRandom(this.#configuration.presentation.randomSeed)
       this.#renderLevel = this.#configuration.renderLevel
+      this.#videoConfiguration = tf2VideoConfiguration({ ...TF2_BALANCED_VIDEO_SETTINGS, "video.hdr": this.#renderLevel })
       this.#mapIdentity = this.#activeTarget.target
       this.#set({ phase: "Startup", startupState: "Preparing", detail: "Preparing configured Valve startup movie" })
       const catalogDescriptor = this.#configuration.catalog
@@ -1594,6 +1611,8 @@ export class Tf2Application {
         canvas: this.#canvas,
         configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
         powerPreference: "high-performance",
+        sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
+        textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy },
       })
       finishLoadPhase("rendererCreate")
       this.#resizeRenderer()
@@ -2307,12 +2326,12 @@ export class Tf2Application {
           disposition: "visible" as const,
           displayValue: String(this.#showPos),
         }),
-        Object.freeze({
+        ...Object.entries(tf2VideoConvars(this.#videoConfiguration)).map(([name, value]) => Object.freeze({
           kind: "convar" as const,
-          name: "mat_hdr_level",
+          name,
           disposition: "visible" as const,
-          displayValue: String(this.#renderLevel),
-        }),
+          displayValue: String(value),
+        })),
         ...crosshair.map((setting) => Object.freeze({
           kind: "convar" as const,
           name: setting.name,
@@ -2433,6 +2452,37 @@ export class Tf2Application {
         true,
       )
       for (const blocker of [...this.#blockers].sort()) this.#output(`BLOCKED: ${blocker}`)
+      return
+    }
+    const videoConvars = tf2VideoConvars(this.#videoConfiguration)
+    if (command !== "mat_hdr_level" && Object.hasOwn(videoConvars, command)) {
+      if (tokens.length > 1 || (tokens.length === 1 && !/^-?\d+$/.test(tokens[0]!))) {
+        this.#output(`${command} requires one supported integer value`)
+        return
+      }
+      if (tokens.length === 1) {
+        if (command === "mat_vsync") {
+          this.#output("mat_vsync presentation synchronization is unavailable in browser WebGPU")
+          return
+        }
+        try {
+          const selected = tf2VideoSettingsFromConvars(this.#videoConfiguration, { [command]: Number(tokens[0]) })
+          const current = this.#settings?.snapshot().settings.current
+          if (!this.#settings || !current) throw new Error("video settings authority is unavailable")
+          for (const [setting, value] of Object.entries(selected)) {
+            if (current[setting] !== value) this.#settings.set(setting, value)
+          }
+          const applied = await this.#settings.apply()
+          if (!applied.lastApply?.complete) throw new Error(applied.lastApply?.rejections[0]?.reason ?? "video settings transaction was rejected")
+          localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+          this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        } catch (error) {
+          this.#settings?.cancel()
+          this.#output(`${command} rejected: ${error instanceof Error ? error.message : String(error)}`)
+          return
+        }
+      }
+      this.#output(`${command} = ${tf2VideoConvars(this.#videoConfiguration)[command]}`)
       return
     }
     const crosshair = TF2_CROSSHAIR_SETTINGS.find((setting) => setting.name === command)
@@ -2866,13 +2916,21 @@ export class Tf2Application {
       }
       if (tokens[0] && Number(tokens[0]) !== this.#renderLevel) {
         const prior = this.#renderLevel,
+          priorConfiguration = this.#videoConfiguration,
           generation = this.#generation
         this.#renderLevel = Number(tokens[0]) as 0 | 1 | 2
+        this.#videoConfiguration = tf2VideoConfiguration({
+          ...(this.#settings?.snapshot().settings.current ?? TF2_BALANCED_VIDEO_SETTINGS),
+          "video.hdr": this.#renderLevel,
+        })
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
         await this.#replaceCatalogMap()
         if (this.#generation === generation) {
           this.#renderLevel = prior
+          this.#videoConfiguration = priorConfiguration
           this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+        } else {
+          this.#settings?.synchronize({ "video.hdr": this.#renderLevel })
         }
       }
       this.#output(`mat_hdr_level = ${this.#renderLevel}`)
@@ -3072,14 +3130,22 @@ export class Tf2Application {
     const prior = this.#loaded
     const priorArtifacts = this.#artifacts
     const priorConfiguration = this.#renderer.configuration
+    const priorSampleCount = this.#renderer.sampleCount
+    const priorTextureQuality = this.#renderer.textureQuality
     let persistence!:Awaited<LoadedGame["persistence"]>
     try {
-      if (this.#renderer.configuration.lightingProfile !== (this.#renderLevel === 2 ? "hdr" : "ldr")) {
+      if (this.#renderer.configuration.lightingProfile !== (this.#renderLevel === 2 ? "hdr" : "ldr")
+        || this.#renderer.sampleCount !== (this.#videoConfiguration.antialias === 4 ? 4 : 1)
+        || this.#renderer.textureQuality?.mipOffset !== this.#videoConfiguration.picmip
+        || this.#renderer.textureQuality?.trilinear !== (this.#videoConfiguration.trilinear === 1)
+        || this.#renderer.textureQuality?.anisotropy !== this.#videoConfiguration.anisotropy) {
         await this.#renderer.dispose()
         this.#renderer = await createRenderer({
           canvas: this.#canvas,
           configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
           powerPreference: "high-performance",
+          sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
+          textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy },
         })
         this.#resizeRenderer()
       }
@@ -3118,12 +3184,16 @@ export class Tf2Application {
       finishReplacePhase("activation")
     } catch (error) {
       await this.#client.discard(generation).catch(() => {})
-      if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile) {
+      if (this.#renderer.configuration.lightingProfile !== priorConfiguration.lightingProfile
+        || this.#renderer.sampleCount !== priorSampleCount
+        || this.#renderer.textureQuality !== priorTextureQuality) {
         await this.#renderer.dispose().catch(() => {})
         this.#renderer = await createRenderer({
           canvas: this.#canvas,
           configuration: priorConfiguration,
           powerPreference: "high-performance",
+          sampleCount: priorSampleCount,
+          textureQuality: priorTextureQuality,
         })
         this.#resizeRenderer()
       }
@@ -3964,6 +4034,13 @@ export class Tf2Application {
     const skyDisposition=sky3d?"authored":visibility.sky===2?"controller-absent":"not-visible"
     if(this.#canvas.dataset.skyVisibilityDisposition!==skyDisposition)this.#canvas.dataset.skyVisibilityDisposition=skyDisposition
     if(profile){
+      profile.videoQuality=Object.freeze({
+        ...this.#videoConfiguration,
+        sampleCount:renderer.sampleCount,
+        lightingProfile:renderer.configuration.lightingProfile,
+        presentationSynchronizationSupported:renderer.capabilities.presentationSynchronization,
+        waterPasses:rendered.waterPasses,
+      })
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))

@@ -184,7 +184,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
     application: "tf2",
     applicationBuild,
     defaultTarget: targetIdentity,
-    renderLevel: 2,
+    renderLevel: 0,
     assetOrigin: APPLICATION_URL.slice(0, -1),
     allowedExternalOrigins: ["https://allowed-host"],
     wasm,
