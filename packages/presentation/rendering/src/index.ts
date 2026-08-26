@@ -843,7 +843,8 @@ type WaterMaterialResource = Readonly<{
 }>
 type RefractMaterialResource = Readonly<{
   material: THREE.MeshBasicNodeMaterial
-  normalFrames: readonly THREE.Texture[]
+  normalFrames: AuthoredTextureFrames
+  normalConsumer: string
   normalNode: ReturnType<typeof TSL.texture>
   state: RefractMaterialInput
 }>
@@ -1045,7 +1046,7 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"textureResidency"|"brushModelTemplates"|"waterMaterials"|"worldMaterials"|"cubemapTextures"|"particleBatchMaterials"|"combatDecalMeshes">>): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"textureResidency"|"brushModelTemplates"|"waterMaterials"|"refractMaterials"|"worldMaterials"|"cubemapTextures"|"particleBatchMaterials"|"combatDecalMeshes">>): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
@@ -1055,6 +1056,7 @@ function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTem
   scene.modelOccurrenceInstances.clear()
   scene.brushModelTemplates?.clear()
   ;(scene.waterMaterials as Map<string, WaterMaterialResource> | undefined)?.clear()
+  ;(scene.refractMaterials as Map<string, RefractMaterialResource> | undefined)?.clear()
   ;(scene.worldMaterials as Map<string, WorldMaterialResource> | undefined)?.clear()
   ;(scene.cubemapTextures as Map<number, THREE.CubeTexture> | undefined)?.clear()
   for(const material of scene.particleBatchMaterials?.values()??[])material.dispose()
@@ -2101,7 +2103,8 @@ class RendererOwner implements Renderer {
         || state.normalFrame < 0 || state.normalFrame >= normal.frameCount) {
         throw new RenderingError("MissingInput", `authored Refract normal ${state.normal.logicalPath} is unavailable`)
       }
-      const normalFrames = authoredNormalFrames(normal)
+      const normalFrames = authoredFrames(normal, THREE.NoColorSpace)
+      const normalConsumer = `refract:${key}`
       const overlay = createSourceRefractMaterial({
         state: {
           refractAmount: state.refractAmount,
@@ -2109,10 +2112,10 @@ class RendererOwner implements Renderer {
           blurAmount: state.blurAmount,
           ignoreDepth: state.ignoreDepth,
         },
-        normal: normalFrames[state.normalFrame]!,
+        normal: normalFrames.select(state.normalFrame, normalConsumer),
       })
       disposables.add(overlay.material)
-      refractMaterials.set(key, Object.freeze({ ...overlay, normalFrames, state }))
+      refractMaterials.set(key, Object.freeze({ ...overlay, normalFrames, normalConsumer, state }))
     }
 
     const createWaterMaterial = (identity: string, geometry: THREE.BufferGeometry): WaterMaterialResource => {
@@ -2691,6 +2694,7 @@ class RendererOwner implements Renderer {
         disposables,
         textureResidency,
         waterMaterials,
+        refractMaterials,
         worldMaterials,
         projectedMarks,
         disposed: false,
@@ -3206,10 +3210,10 @@ class RendererOwner implements Renderer {
   #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]>): void {
     const scene = this.#active
     const resource = scene?.refractMaterials.get(overlay.identity.toLowerCase())
-    if (!scene || !resource || overlay.normalFrame < 0 || overlay.normalFrame >= resource.normalFrames.length) {
+    if (!scene || !resource || overlay.normalFrame < 0 || overlay.normalFrame >= resource.normalFrames.frameCount) {
       throw new RenderingError("MissingInput", `authored underwater Refract overlay ${overlay.identity} is unavailable`)
     }
-    const normal = resource.normalFrames[overlay.normalFrame]!
+    const normal = resource.normalFrames.select(overlay.normalFrame, resource.normalConsumer)
     const matrix = overlay.normalTransform
     normal.matrixAutoUpdate = false
     normal.matrix.set(
