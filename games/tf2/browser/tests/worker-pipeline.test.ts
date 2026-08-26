@@ -166,7 +166,7 @@ class MemoryCache implements DerivedObjectCache {
   close(): void {}
 }
 
-function modelPoseOutput(): Uint8Array {
+function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000, 0]): Uint8Array {
   const values: number[] = [0x50, 0x4d, 0x50, 0x4f]
   const u32 = (value: number) => {
     const bytes = new Uint8Array(4)
@@ -185,7 +185,7 @@ function modelPoseOutput(): Uint8Array {
   values.push(...new Array(4 + 8 + 68 + 8).fill(0))
   for (let index = 0; index < 4; index++) u32(0)
   u32(1)
-  for (const bits of [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000, 0]) u32(bits)
+  for (const bits of bones) u32(bits)
   u32(0); u32(0); u32(0); u32(0)
   return Uint8Array.from(values)
 }
@@ -199,7 +199,9 @@ class PipelineWorker implements WorkerLike {
   presentationSchema = 16
   workerWasmSha256?: string
   malformedModelOutput = false
+  modelBits?: number[]
   readonly modelLeases = new Map<number, SharedArrayBuffer>()
+  closing?: number
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
   #message?: (event: MessageEvent<WorkerResponse>) => void
@@ -256,7 +258,7 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "models": {
-        const bytes = modelPoseOutput()
+        const bytes = modelPoseOutput(this.modelBits)
         const output = new SharedArrayBuffer(bytes.length + 24)
         new Uint8Array(output, 12, bytes.length).set(bytes)
         if (this.malformedModelOutput) new Uint8Array(output)[12] = 0
@@ -364,12 +366,17 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "shutdown":
+        if (this.modelLeases.size > 0) { this.closing = request.id; return }
         this.#respond({ id: request.id, kind: "shutdown" })
         return
       case "release-model-output":
         const output = this.modelLeases.get(request.lease)
         if (output) new Uint8Array(output).fill(0xff)
         this.modelLeases.delete(request.lease)
+        if (this.closing !== undefined && this.modelLeases.size === 0) {
+          this.#respond({ id: this.closing, kind: "shutdown" })
+          this.closing = undefined
+        }
         return
       default:
         this.#respond({ id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 })
@@ -447,6 +454,47 @@ describe("TF2 Worker transport ownership", () => {
     expect(worker.modelLeases.size).toBe(0)
     expect(worker.requests.map(request => request.kind)).toEqual(["models", "release-model-output"])
     await client.shutdown()
+  })
+
+  test("does not reclaim an unread model lease when shutdown overtakes the browser response", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const models = client.models(3, new Uint8Array(12))
+    const shutdown = client.shutdown()
+    expect(client.shutdown()).toBe(shutdown)
+    await expect(client.models(3, new Uint8Array(12))).rejects.toThrow("Closed")
+    const [poses] = await Promise.all([models, shutdown])
+    expect(poses[0]!.model).toBe("model")
+    expect(poses[0]!.boneMatrices[0]).toBe(1)
+    expect(Object.is(poses[0]!.boneMatrices[1], -0)).toBe(true)
+    expect(worker.requests.map(request => request.kind)).toEqual(["models", "shutdown", "release-model-output"])
+    expect(worker.modelLeases.size).toBe(0)
+    expect(worker.terminated).toBe(true)
+  })
+
+  test("preserves every finite binary32 edge and rejects nonfinite palettes before publication", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const bits = [0, 0x80000000, 1, 0x80000001, 0x007fffff, 0x807fffff, 0x00800000, 0x80800000, 0x7f7fffff, 0xff7fffff, 0x3f800001, 0xbf800001]
+    worker.modelBits = bits
+    const poses = await client.models(2, new Uint8Array(12))
+    expect([...new Uint32Array(poses[0]!.boneMatrices.buffer)]).toEqual(bits)
+    for (const invalid of [0x7fc00001, 0x7f800001, 0xffc00001, 0x7f800000, 0xff800000]) {
+      worker.modelBits = [invalid, ...bits.slice(1)]
+      await expect(client.models(2, new Uint8Array(12))).rejects.toThrow("model pose scalar")
+      expect(worker.modelLeases.size).toBe(0)
+    }
+    await client.shutdown()
+  })
+
+  test("rejects malformed lease identities and ranges without retaining a live Worker", async () => {
+    for (const mutation of [{ byteOffset: -1 }, { byteOffset: 1 }, { byteLength: NaN }, { byteLength: 65 * 1024 * 1024 }, { lease: 9 }, { generation: 4 }]) {
+      const worker = new PipelineWorker(await digest(MAP))
+      worker.failure = { id: 1, kind: "models", generation: 2, lease: 1, output: new SharedArrayBuffer(12), byteOffset: 0, byteLength: 12, timings: TIMINGS, ...mutation }
+      const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+      await expect(client.models(2, new Uint8Array(12))).rejects.toThrow("WorkerFailed")
+      expect(worker.terminated).toBe(true)
+    }
   })
 
   test("reads and changes the authoritative team roster without a simulation-frame crossing", async () => {

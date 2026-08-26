@@ -77,6 +77,7 @@ const resourceSets = new ResourceGenerations((section) => {
 })
 const modelOutputLeases = new Map<number, { generation: number; handle: number; pointer: number; capacity: number }>()
 let leasedModelBytes = 0
+let closing: Extract<WorkerRequest, { kind: "shutdown" }> | undefined
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
@@ -874,6 +875,11 @@ function releaseModelOutput(request: Extract<WorkerRequest, { kind: "release-mod
   modelOutputLeases.delete(request.lease)
   leasedModelBytes -= retained.capacity
   wasm.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
+  if (closing && modelOutputLeases.size === 0) {
+    const request = closing
+    closing = undefined
+    shutdown(request)
+  }
 }
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const started = performance.now()
@@ -917,10 +923,11 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
-  if (wasm) {
-    for (const retained of modelOutputLeases.values()) wasm.playsrc_free(retained.pointer, retained.capacity)
-    modelOutputLeases.clear()
-    leasedModelBytes = 0
+  // A queued shutdown can run before the main thread has read an earlier response.
+  // Keep its immutable allocation alive until the decoder acknowledges ownership.
+  if (modelOutputLeases.size > 0) {
+    closing = request
+    return
   }
   if (wasm && active) wasm.playsrc_dispose(active.handle)
   if (wasm && pending) wasm.playsrc_dispose(pending.handle)
@@ -933,6 +940,10 @@ function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
 
 function dispatch(request: WorkerRequest): void | Promise<void> {
   if (!request || !canonicalId(request.id) || typeof request.kind !== "string") return
+  if (closing && request.kind !== "release-model-output") {
+    fail(request.id, "TransitionFailed")
+    return
+  }
   switch (request.kind) {
     case "initialize":
       return initialize(request)
