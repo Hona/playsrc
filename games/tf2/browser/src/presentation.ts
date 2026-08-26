@@ -33,7 +33,7 @@ export type Tf2Hud = Readonly<{
 export type Tf2AudioRequest = Readonly<{
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak"
+  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak" | "Player.HitSoundDefaultDing" | "Player.KillSoundDefaultDing" | "TFPlayer.CritHit" | "Default.BulletImpact" | "Concrete.BulletImpact" | "Wood.BulletImpact" | "SolidMetal.BulletImpact" | "Dirt.BulletImpact" | "Sand.BulletImpact" | "Glass.BulletImpact" | "Flesh.BulletImpact"
   source: Readonly<{
     kind: "entity" | "world"
     identity: number
@@ -612,9 +612,10 @@ export function createParticleBatchEncoder() {
             || typeof request.system !== "string"
             || request.system.length === 0
             || !Array.isArray(request.controlPoints)
-            || request.controlPoints.length !== 1
-            || !particleControlPoint(request.controlPoints[0])
-            || request.controlPoints[0].ownerIdentity !== request.ownerIdentity
+            || request.controlPoints.length < 1
+            || request.controlPoints.length > 31
+            || request.controlPoints.some((control, index) => !particleControlPoint(control)
+              || control.index !== index || control.ownerIdentity !== request.ownerIdentity)
             || (request.attachment !== null && (
               !uint32(request.attachment.entityIdentity)
               || !["backblast", "muzzle", "trail"].includes(request.attachment.name)
@@ -633,7 +634,9 @@ export function createParticleBatchEncoder() {
             }
             systems.set(request.system, encoded)
           }
-          length += 16 + encoded.byteLength + 32
+          length += 16 + encoded.byteLength + (request.controlPoints.length === 1
+            ? 32
+            : 4 + request.controlPoints.length * 36)
         } else if (request.kind === "set-control-point") {
           if (!particleControlPoint(request.controlPoint)) {
             throw new ProjectilePresentationError("MalformedFact", "particle control-point request is invalid")
@@ -668,7 +671,9 @@ export function createParticleBatchEncoder() {
       let at = 32
       for (let index = 0; index < requests.length; index += 1) {
         const request = requests[index]!
-        bytes[at] = request.kind === "start" ? 1 : request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
+        bytes[at] = request.kind === "start"
+          ? request.controlPoints.length === 1 ? 1 : 5
+          : request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
         bytes[at + 1] = request.kind === "stop" && request.immediate ? 1 : 0
         view.setBigUint64(at + 4, requestIdentities[index]!, true)
         view.setFloat32(at + 12, Math.fround(Number(request.tick) * 0.015), true)
@@ -681,11 +686,20 @@ export function createParticleBatchEncoder() {
           view.setUint32(at + 12, system.byteLength, true)
           bytes.set(system, at + 16)
           at += 16 + system.byteLength
-          const control = request.controlPoints[0]!
-          control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
-          control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
-          view.setUint32(at + 28, control.ownerIdentity, true)
-          at += 32
+          if (request.controlPoints.length > 1) {
+            view.setUint32(at, request.controlPoints.length, true)
+            at += 4
+          }
+          for (const control of request.controlPoints) {
+            if (request.controlPoints.length > 1) {
+              bytes[at] = control.index
+              at += 4
+            }
+            control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
+            control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
+            view.setUint32(at + 28, control.ownerIdentity, true)
+            at += 32
+          }
         } else if (request.kind === "set-control-point") {
           const control = request.controlPoint
           control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
@@ -718,7 +732,7 @@ function particleIdentity(value: string): boolean {
 
 function particleControlPoint(value: ParticleControlPoint | undefined): value is ParticleControlPoint {
   return value !== undefined
-    && value.index === 0
+    && Number.isInteger(value.index) && value.index >= 0 && value.index <= 30
     && finite(value.position)
     && value.position.every(component => Number.isFinite(Math.fround(component)))
     && quaternion(value.orientation)
@@ -847,7 +861,7 @@ export type ParticleAttachment = Readonly<{
 export type AttachmentTransform = Readonly<{ position: Vector3; orientation: Quaternion }>
 
 export type ParticleControlPoint = Readonly<{
-  index: 0
+  index: number
   position: Vector3
   orientation: Quaternion
   ownerIdentity: number
@@ -912,7 +926,8 @@ export function hitscanMuzzleParticles(
 ): readonly ProjectileParticleRequest[] {
   const requests: ProjectileParticleRequest[] = []
   for (const event of snapshot.events) {
-    if (event.kind !== 12 || (event.detail !== 4 && event.detail !== 5 && event.detail !== 7 && event.detail !== 10 && event.detail !== 50 && event.detail !== 40 && event.detail !== 41)) continue
+    if (event.kind !== 12 || (event.auxiliary !== undefined && event.auxiliary !== 0 && event.auxiliary !== 1)
+      || (event.detail !== 4 && event.detail !== 5 && event.detail !== 7 && event.detail !== 10 && event.detail !== 50 && event.detail !== 40 && event.detail !== 41)) continue
     const system = event.detail === 4 ? "muzzle_scattergun" : event.detail === 5 || event.detail === 41 ? "muzzle_pistol" : event.detail === 50 ? "muzzle_revolver" : "muzzle_shotgun"
     if (!catalog.systems.has(system)) throw new ProjectilePresentationError("MissingSystem", system)
     const transform = catalog.attachmentTransforms?.get(event.detail)?.get("muzzle")
@@ -939,6 +954,83 @@ export function hitscanMuzzleParticles(
     }))
   }
   return Object.freeze(requests)
+}
+
+export type CombatPresentationState = Readonly<{ tracerCount: number }>
+
+export function combatImpactParticles(
+  snapshot: Snapshot,
+  state: CombatPresentationState,
+  catalog: Pick<ProjectileResourceCatalog, "systems" | "attachmentTransforms"> & Readonly<{
+    playerAttachmentTransforms?: ReadonlyMap<number, ReadonlyMap<string, AttachmentTransform>>
+  }>,
+): Readonly<{ particles: readonly ProjectileParticleRequest[]; state: CombatPresentationState }> {
+  const particles: ProjectileParticleRequest[] = []
+  let tracerCount = state.tracerCount
+  let source: Readonly<{ weapon: number; owner: number; position: Vector3 }> | undefined
+  const emit = (system: string, owner: number, weapon: number, points: readonly Vector3[], ordinal: number) => {
+    if (!catalog.systems.has(system)) throw new ProjectilePresentationError("MissingSystem", system)
+    const identity = `combat:${snapshot.tick}:${owner}:${weapon}:${ordinal}:${system}`
+    const teamCode = owner === 1 ? snapshot.team : snapshot.bots.find(bot => bot.identity === owner)?.team
+    if (teamCode !== 2 && teamCode !== 3) return
+    particles.push(Object.freeze({
+      kind: "start", identity, effectIdentity: identity, eventIdentity: identity,
+      tick: snapshot.tick, projectileIdentity: (0x7f00_0000 + ordinal) >>> 0,
+      ownerIdentity: owner, launcherIdentity: weapon, team: teamCode === 2 ? "red" : "blue",
+      system, attachment: null,
+      controlPoints: Object.freeze(points.map((position, index) => Object.freeze({
+        index, position, orientation: Object.freeze([0, 0, 0, 1]) as Quaternion,
+        ownerIdentity: owner,
+      }))),
+    }))
+  }
+  for (let ordinal = 0; ordinal < snapshot.events.length; ordinal += 1) {
+    const event = snapshot.events[ordinal]!
+    if (event.kind === 12) {
+      source = Object.freeze({ weapon: event.detail, owner: event.auxiliary || 1,
+        position: Object.freeze([event.values[0], event.values[1], event.values[2]]) as Vector3 })
+      continue
+    }
+    if(event.kind===14&&event.subject!==0&&event.subject!==1){
+      const hit=Object.freeze([event.values[0],event.values[1],event.values[2]]) as Vector3
+      emit("blood_impact_red_01",event.subject,event.detail,Object.freeze([hit]),ordinal)
+      const delta=hit.map((component,axis)=>component-snapshot.position[axis]!)
+      emit(Math.hypot(...delta)<400?"blood_spray_red_01":"blood_spray_red_01_far",event.subject,event.detail,Object.freeze([hit]),ordinal)
+      continue
+    }
+    if(event.kind===17&&event.auxiliary===1&&event.values[2]===1&&event.subject!==1){
+      const head=catalog.playerAttachmentTransforms?.get(event.subject)?.get("head")
+      if(!head)throw new ProjectilePresentationError("MissingAttachment",`${event.subject}:head`)
+      emit("crit_text",1,event.detail,Object.freeze([head.position]),ordinal)
+      continue
+    }
+    if (event.kind !== 13 || !source || source.weapon !== event.detail) continue
+    const hit = Object.freeze([event.values[0], event.values[1], event.values[2]]) as Vector3
+    const critical = (event.auxiliary & 0x0001_0000) !== 0
+    const frequency = source.weapon === 9 ? 4 : 2
+    const showTracer = tracerCount++ % frequency === 0
+    if (showTracer) {
+      const stem = source.weapon === 4 ? "bullet_scattergun_tracer01"
+        : source.weapon === 5 || source.weapon === 13 || source.weapon === 41 || source.weapon === 50
+          ? "bullet_pistol_tracer01"
+          : source.weapon === 7 || source.weapon === 10 || source.weapon === 40
+            ? "bullet_shotgun_tracer01"
+            : source.weapon === 9 ? "bullet_tracer01" : null
+      const muzzle = source.owner === 1 ? catalog.attachmentTransforms.get(source.weapon)?.get("muzzle") : undefined
+      if (stem && muzzle) {
+        const team = snapshot.team === 2 ? "red" : "blue"
+        emit(`${stem}_${team}${critical ? "_crit" : ""}`, source.owner, source.weapon,
+          Object.freeze([muzzle.position, hit]), ordinal)
+      }
+    }
+    if (event.subject !== 0 && event.subject !== 1 && (event.subject & 0x8000_0000) === 0) {
+      emit("blood_impact_red_01", event.subject, source.weapon, Object.freeze([hit]), ordinal)
+      const delta = hit.map((component, axis) => component - snapshot.position[axis]!)
+      emit(Math.hypot(...delta) < 400 ? "blood_spray_red_01" : "blood_spray_red_01_far",
+        event.subject, source.weapon, Object.freeze([hit]), ordinal)
+    }
+  }
+  return Object.freeze({ particles: Object.freeze(particles), state: Object.freeze({ tracerCount }) })
 }
 
 export type ProjectileResourceCatalog = Readonly<{

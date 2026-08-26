@@ -10,11 +10,11 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1153)
+  const bytes = new ArrayBuffer(1157)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 18, true)
+  view.setUint32(4, 19, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -412,10 +412,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 120
+    const objectiveOffset = prior.byteLength - 124
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
-    const roundOffset = prior.byteLength - 48
+    const roundOffset = prior.byteLength - 52
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
     bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)

@@ -38,6 +38,7 @@ import type { CaptureObjectives, RoundSnapshot, Tf2Team } from "../codec"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
+import { Tf2HudDamagePresentation, type Tf2DamageIndicatorInput } from "./damage"
 
 export type Tf2HudIntegrationDiagnostic = Readonly<{
   code: "VguiRejected" | "PanelUnavailable" | "ValueUnavailable" | "UnsupportedPanelValue" | "AnimationUnavailable"
@@ -77,6 +78,7 @@ export type Tf2HudIntegrationRequest = Readonly<{
   reducedMotion: boolean
   clock: Readonly<{ nowSeconds(): number }>
   random: Readonly<{ nextUnit(): number }>
+  damageIndicator?: Tf2DamageIndicatorInput
   onCommand(command: Tf2HudCommand): void
 }>
 
@@ -191,6 +193,8 @@ class Integration implements Tf2HudIntegration {
   readonly #runtime: VguiRuntime
   readonly #crosshair: Tf2HudCrosshairPresentation
   readonly #scope: Tf2HudScopePresentation
+  readonly #damage?: Tf2HudDamagePresentation
+  readonly #clock: Readonly<{ nowSeconds(): number }>
   readonly #resources: Tf2VguiResources
   readonly #onCommand: (command: Tf2HudCommand) => void
   readonly #cloakLabel: string | undefined
@@ -240,6 +244,7 @@ class Integration implements Tf2HudIntegration {
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#resources = request.resources
+    this.#clock = request.clock
     this.#onCommand = request.onCommand
     this.#cloakLabel = request.resources.localization.tokens.find(token => token.name.toLowerCase() === "tf_cloak")?.value
     this.#viewport = Object.freeze({ ...request.viewport })
@@ -333,6 +338,7 @@ class Integration implements Tf2HudIntegration {
     })
     this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
     this.#scope = new Tf2HudScopePresentation(request.root)
+    if (request.damageIndicator) this.#damage = new Tf2HudDamagePresentation(request.root, request.damageIndicator)
   }
 
   #initializeObjectives() {
@@ -858,6 +864,7 @@ class Integration implements Tf2HudIntegration {
     }
     this.#previous = tf2HudAvailable(binding.facts)
     this.#binding = binding
+    this.#damage?.publish(binding, this.#clock.nowSeconds())
     return binding
     })
   }
@@ -869,7 +876,10 @@ class Integration implements Tf2HudIntegration {
     return command
   }
 
-  frame(timeSeconds: number): void { apply(this.#runtime, { kind: "frame", timeSeconds }) }
+  frame(timeSeconds: number): void {
+    apply(this.#runtime, { kind: "frame", timeSeconds })
+    this.#damage?.frame(timeSeconds, this.#viewport)
+  }
   setViewport(viewport: VguiViewport): void {
     if (viewport.width === this.#viewport.width
       && viewport.height === this.#viewport.height
@@ -985,6 +995,7 @@ class Integration implements Tf2HudIntegration {
       this.#previous = unavailable
       this.#binding = null
       this.#scope.hide()
+      this.#damage?.reset()
       this.#animationTrace.length = 0
       if (this.#objective) {
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
@@ -1008,6 +1019,7 @@ class Integration implements Tf2HudIntegration {
     this.#destroyed = true
     this.#crosshair.destroy()
     this.#scope.destroy()
+    this.#damage?.reset()
     apply(this.#runtime, { kind: "destroy" })
   }
 }
