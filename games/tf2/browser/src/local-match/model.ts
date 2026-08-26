@@ -97,7 +97,7 @@ export function createTf2LocalMatchMaps(
     const authored = practice.maps.find((map) => map.identity === identity)
     if (authored) return [authored]
     if (identity === "ctf_2fort") {
-      return [Object.freeze({ identity, displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 32 })]
+      return [Object.freeze({ identity, displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 24 })]
     }
     return [Object.freeze({
       identity,
@@ -141,7 +141,7 @@ export function tf2LocalMatchLaunch(
         mode: settings.quotaMode,
         difficulty: settings.difficulty,
         joinAfterPlayer: true,
-        autoVacate: true,
+        autoVacate: false,
         offlinePractice: false,
       })
   return Object.freeze({ entry, mapIdentity: map.identity, configuration })

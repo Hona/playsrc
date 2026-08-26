@@ -53,6 +53,7 @@ function processMemory(processes: readonly BrowserProcess[]) {
 test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible frames and residency", async ({ page, context, browser }, testInfo) => {
   test.setTimeout(150_000)
   const seconds = profileSampleSeconds()
+  const fullRoster = process.env.PROFILE_2FORT_FULL_ROSTER === "1"
   const label = process.env.PROFILE_2FORT_LABEL ?? "latest"
   const local = await loadLocalConfig()
   const directory = path.join(local.sourceCacheDir, "profiles", "ctf-2fort-performance")
@@ -237,11 +238,24 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   const processBefore = processMemory((await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }).processInfo)
   const heapBefore = await pageCdp.send("Runtime.getHeapUsage")
 
-  await page.keyboard.press("Backquote")
   const entry = page.locator("[aria-label='Console command']")
-  await entry.fill("map ctf_2fort")
-  const started = await page.evaluate(() => { performance.clearResourceTimings(); (window as any).__playsrcProfile.stage = "load"; return performance.now() })
-  await entry.press("Enter")
+  let started: number
+  if (fullRoster) {
+    await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+    await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
+    const dialog = page.locator(".local-match-layer").getByRole("dialog", { name: "CREATE SERVER" })
+    await dialog.locator("[data-vgui-name='MapList']").click()
+    await page.getByRole("option", { name: "ctf_2fort" }).click()
+    await dialog.getByRole("tab", { name: "GAME" }).click()
+    await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("23")
+    started = await page.evaluate(() => { performance.clearResourceTimings(); (window as any).__playsrcProfile.stage = "load"; return performance.now() })
+    await dialog.getByRole("button", { name: "Start" }).click()
+  } else {
+    await page.keyboard.press("Backquote")
+    await entry.fill("map ctf_2fort")
+    started = await page.evaluate(() => { performance.clearResourceTimings(); (window as any).__playsrcProfile.stage = "load"; return performance.now() })
+    await entry.press("Enter")
+  }
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
     return main?.dataset.teamSelectionVisible === "true" || main?.dataset.phase === "Ready" || main?.dataset.phase === "Failed"
@@ -271,15 +285,25 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   const heapLoaded = await pageCdp.send("Runtime.getHeapUsage")
   await checkpoint("soldier-playable", { milliseconds: playableAt - started, residentBytes: loadedMemory.residentBytes, heapBytes: heapLoaded.usedSize, phases: JSON.parse(await root.getAttribute("data-load-performance") ?? "null") })
 
+  if (fullRoster) {
+    await expect(root).toHaveAttribute("data-bot-count", "23", { timeout: 45_000 })
+    await page.waitForFunction(() => (window as any).__playsrcProfile.bots?.length === 23, undefined, { timeout: 30_000 })
+    const scoreboard = JSON.parse(await root.getAttribute("data-scoreboard-probe") ?? "{}")
+    expect(scoreboard.red.playerCount).toBe(12)
+    expect(scoreboard.blue.playerCount).toBe(12)
+    await checkpoint("bots", { count: 23, red: scoreboard.red.playerCount, blue: scoreboard.blue.playerCount })
+  }
   if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
   const command = async (value: string) => { await entry.fill(value); await entry.press("Enter") }
-  await command("tf_bot_add red soldier normal")
-  await expect(root).toHaveAttribute("data-bot-count", "1", { timeout: 30_000 })
-  await page.waitForFunction(() => (window as any).__playsrcProfile.bots?.length === 1, undefined, { timeout: 30_000 })
-  await command("tf_bot_add blue scout normal")
-  await expect(root).toHaveAttribute("data-bot-count", "2", { timeout: 30_000 })
-  await page.waitForFunction(() => (window as any).__playsrcProfile.bots?.length === 2, undefined, { timeout: 30_000 })
-  await checkpoint("bots", { count: 2 })
+  if (!fullRoster) {
+    await command("tf_bot_add red soldier normal")
+    await expect(root).toHaveAttribute("data-bot-count", "1", { timeout: 30_000 })
+    await page.waitForFunction(() => (window as any).__playsrcProfile.bots?.length === 1, undefined, { timeout: 30_000 })
+    await command("tf_bot_add blue scout normal")
+    await expect(root).toHaveAttribute("data-bot-count", "2", { timeout: 30_000 })
+    await page.waitForFunction(() => (window as any).__playsrcProfile.bots?.length === 2, undefined, { timeout: 30_000 })
+    await checkpoint("bots", { count: 2 })
+  }
   await command("noclip")
   await command("setpos 523 -439 250")
   await page.keyboard.press("Backquote")
@@ -406,7 +430,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
 
   expect(memoryBspRequests).toBe(1)
   expect(props.total).toBe(2265)
-  expect(route.bots).toHaveLength(2)
+  expect(route.bots).toHaveLength(fullRoster ? 23 : 2)
   expect(outdoorVisiblePixels).toBeGreaterThan(20_000)
   expect(outdoorSkyPixels).toBeGreaterThan(5_000)
   expect(ticksPerSecond).toBeGreaterThan(55)

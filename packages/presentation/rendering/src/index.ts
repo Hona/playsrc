@@ -3706,6 +3706,19 @@ class RendererOwner implements Renderer {
         const materialIdentity = runtimeModel.materials[primitive.material]!.logicalPath.toLowerCase()
         const material = this.#active!.loadRequest.modelMaterials?.get(materialIdentity)
         if (!material) continue
+        if (this.#active!.loadRequest.diagnostic && material.requiredInputs.some((requirement) =>
+          (requirement === "ambient-cube" || requirement === "local-lights" || requirement === "camera-position")
+            ? item.modelLighting === undefined
+            : requirement === "studio-eye-parameters"
+              ? !(item.eyeStates ?? []).some((eye) => eye.primitive === (item.pose?.primitives[primitiveIndex]?.primitive ?? primitiveIndex))
+              : requirement === "local-environment"
+                ? item.modelLighting?.localEnvironment === null || item.modelLighting?.localEnvironment === undefined
+                : requirement === "current-framebuffer"
+                  ? item.currentFramebufferAvailable !== true
+                  : requirement === "game-proxy-values"
+                    ? item.gameProxyValuesAvailable !== true
+                    : false,
+        )) continue
         try {
           prepareModelDrawInputs({
             primitive: item.pose?.primitives[primitiveIndex]?.primitive ?? primitiveIndex,
@@ -4206,6 +4219,16 @@ class RendererOwner implements Renderer {
       const key = `${materialIdentity}\0${first.blendSource}\0${first.blendDestination}`
       const required = batch.end - batch.start
       let retained = this.#particleBatchMeshes[index]
+      if (retained && (retained.key !== key || retained.capacity < required)) {
+        const reusable = this.#particleBatchMeshes.findIndex((candidate, candidateIndex) =>
+          candidateIndex > index && candidate.key === key && candidate.capacity >= required,
+        )
+        if (reusable >= 0) {
+          this.#particleBatchMeshes[index] = this.#particleBatchMeshes[reusable]!
+          this.#particleBatchMeshes[reusable] = retained
+          retained = this.#particleBatchMeshes[index]
+        }
+      }
       if (!retained || retained.key !== key || retained.capacity < required) {
         if (retained) {
           this.#particles.remove(retained.mesh)

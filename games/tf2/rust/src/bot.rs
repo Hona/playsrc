@@ -5,7 +5,7 @@ use playsrc_entity::{Entity, Graph};
 use playsrc_movement::{
     Command as MoveCommand, Configuration as MovementConfiguration, Player, State, StepInput, step,
 };
-use playsrc_nav::{Area, Direction, Mesh};
+use playsrc_nav::{Area, Direction, Mesh, PathScratch};
 
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
@@ -445,6 +445,7 @@ pub struct BotWorld {
     respawn_waves: [f32; 2],
     configuration: Option<Configuration>,
     next_quota_think: f32,
+    path_scratch: PathScratch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -543,6 +544,7 @@ impl BotWorld {
             respawn_waves: initial_respawn_waves(graph),
             configuration: None,
             next_quota_think: 0.0,
+            path_scratch: PathScratch::default(),
         })
     }
 
@@ -1028,23 +1030,32 @@ impl BotWorld {
             let maintenance_due = tick >= bot.next_target_tick;
             if maintenance_due {
                 bot.next_target_tick = tick + ticks(TARGET_SELECTION_INTERVAL, self.tick_interval);
-                let visible: Vec<_> = actors
-                    .iter()
-                    .copied()
-                    .filter(|actor| {
-                        actor.identity != bot.identity
-                            && actor.alive
-                            && bot.team.is_enemy(actor.team)
-                    })
-                    .filter(|actor| visible_actor(world, bot, *actor))
-                    .collect();
-                bot.known_since
-                    .retain(|identity, _| visible.iter().any(|actor| actor.identity == *identity));
-                for actor in &visible {
+                let mut visible = [None; MAX_BOTS + 1];
+                let mut visible_count = 0;
+                for actor in actors.iter().copied() {
+                    if actor.identity != bot.identity
+                        && actor.alive
+                        && bot.team.is_enemy(actor.team)
+                        && visible_actor(world, bot, actor)
+                    {
+                        visible[visible_count] = Some(actor);
+                        visible_count += 1;
+                    }
+                }
+                let visible = &visible[..visible_count];
+                bot.known_since.retain(|identity, _| {
+                    visible
+                        .iter()
+                        .flatten()
+                        .any(|actor| actor.identity == *identity)
+                });
+                for actor in visible.iter().flatten() {
                     bot.known_since.entry(actor.identity).or_insert(tick);
                 }
                 bot.target = visible
-                    .into_iter()
+                    .iter()
+                    .flatten()
+                    .copied()
                     .filter(|actor| {
                         tick.saturating_sub(bot.known_since[&actor.identity])
                             >= ticks(bot.difficulty.recognition_seconds(), self.tick_interval)
@@ -1155,29 +1166,34 @@ impl BotWorld {
                 let goal = mesh.nearest_area(bot.goal).map(|area| area.identity);
                 if let (Some(start), Some(goal)) = (start, goal) {
                     bot.path = mesh
-                        .build_path(start, goal, |from, destination, direction, length| {
-                            path_cost(
-                                from,
-                                destination,
-                                direction,
-                                length,
-                                PathContext {
-                                    team: bot.team,
-                                    bot_identity: bot.identity,
-                                    now: tick as f32 * self.tick_interval,
-                                    route: if matches!(
-                                        bot.objective,
-                                        ObjectiveKind::DeliverFlag
-                                            | ObjectiveKind::GetHealth
-                                            | ObjectiveKind::GetAmmo
-                                    ) {
-                                        Route::Fastest
-                                    } else {
-                                        Route::Default
+                        .build_path_with_scratch(
+                            start,
+                            goal,
+                            &mut self.path_scratch,
+                            |from, destination, direction, length| {
+                                path_cost(
+                                    from,
+                                    destination,
+                                    direction,
+                                    length,
+                                    PathContext {
+                                        team: bot.team,
+                                        bot_identity: bot.identity,
+                                        now: tick as f32 * self.tick_interval,
+                                        route: if matches!(
+                                            bot.objective,
+                                            ObjectiveKind::DeliverFlag
+                                                | ObjectiveKind::GetHealth
+                                                | ObjectiveKind::GetAmmo
+                                        ) {
+                                            Route::Fastest
+                                        } else {
+                                            Route::Default
+                                        },
                                     },
-                                },
-                            )
-                        })
+                                )
+                            },
+                        )
                         .unwrap_or_default();
                     bot.path_index = 0;
                     bot.current_area = Some(start);
@@ -3096,6 +3112,54 @@ mod tests {
         );
         assert_eq!(world.len(), 2);
         assert_eq!(world.snapshots()[1].team, PlayerTeam::Red);
+    }
+
+    #[test]
+    fn full_local_quota_balances_twenty_four_players_for_either_human_team() {
+        for human_team in [PlayerTeam::Red, PlayerTeam::Blue] {
+            let mut world =
+                BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+            let mut random = UniformRandomStream::from_seed(0).unwrap();
+            world
+                .configure(Configuration {
+                    quota: 23,
+                    maximum_players: 24,
+                    mode: QuotaMode::Normal,
+                    difficulty: Difficulty::Expert,
+                    join_after_player: true,
+                    auto_vacate: false,
+                    offline_practice: false,
+                })
+                .unwrap();
+
+            for admission in 0..23 {
+                let tick = admission * 17;
+                assert!(
+                    world
+                        .maintain_quota(tick, human_team, PlayerClass::Soldier, 0, 0, &mut random,)
+                        .unwrap()
+                );
+                assert_eq!(world.len(), admission as usize + 1);
+            }
+
+            let snapshots = world.snapshots();
+            let red = snapshots
+                .iter()
+                .filter(|bot| bot.team == PlayerTeam::Red)
+                .count()
+                + usize::from(human_team == PlayerTeam::Red);
+            let blue = snapshots
+                .iter()
+                .filter(|bot| bot.team == PlayerTeam::Blue)
+                .count()
+                + usize::from(human_team == PlayerTeam::Blue);
+            assert_eq!((red, blue), (12, 12));
+            assert!(
+                !world
+                    .maintain_quota(23 * 17, human_team, PlayerClass::Soldier, 0, 0, &mut random)
+                    .unwrap()
+            );
+        }
     }
 
     #[test]

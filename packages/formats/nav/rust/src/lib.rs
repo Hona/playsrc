@@ -279,6 +279,14 @@ struct Grid {
     cells: Vec<Vec<usize>>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PathScratch {
+    costs: Vec<f32>,
+    parents: Vec<Option<usize>>,
+    closed: Vec<bool>,
+    queue: BinaryHeap<OpenArea>,
+}
+
 impl Mesh {
     pub fn area(&self, identity: u32) -> Option<&Area> {
         self.index.get(&identity).map(|index| &self.areas[*index])
@@ -396,7 +404,20 @@ impl Mesh {
         best.map(|(area, _)| area)
     }
 
-    pub fn build_path<F>(&self, start: u32, goal: u32, mut cost: F) -> Option<Vec<u32>>
+    pub fn build_path<F>(&self, start: u32, goal: u32, cost: F) -> Option<Vec<u32>>
+    where
+        F: FnMut(&Area, &Area, Direction, f32) -> Option<f32>,
+    {
+        self.build_path_with_scratch(start, goal, &mut PathScratch::default(), cost)
+    }
+
+    pub fn build_path_with_scratch<F>(
+        &self,
+        start: u32,
+        goal: u32,
+        scratch: &mut PathScratch,
+        mut cost: F,
+    ) -> Option<Vec<u32>>
     where
         F: FnMut(&Area, &Area, Direction, f32) -> Option<f32>,
     {
@@ -406,10 +427,19 @@ impl Mesh {
             return Some(vec![start]);
         }
         let goal_position = self.areas[goal_index].center();
-        let mut costs = vec![f32::INFINITY; self.areas.len()];
-        let mut parents: Vec<Option<usize>> = vec![None; self.areas.len()];
-        let mut closed = vec![false; self.areas.len()];
-        let mut queue = BinaryHeap::new();
+        scratch.costs.resize(self.areas.len(), f32::INFINITY);
+        scratch.costs.fill(f32::INFINITY);
+        scratch.parents.resize(self.areas.len(), None);
+        scratch.parents.fill(None);
+        scratch.closed.resize(self.areas.len(), false);
+        scratch.closed.fill(false);
+        scratch.queue.clear();
+        let PathScratch {
+            costs,
+            parents,
+            closed,
+            queue,
+        } = scratch;
         let mut order = 0_u64;
         costs[start_index] = 0.0;
         queue.push(OpenArea {
