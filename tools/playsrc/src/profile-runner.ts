@@ -383,7 +383,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     const cleanupStarted = Date.now()
     if (progress) clearInterval(progress)
     if (heartbeat) clearInterval(heartbeat)
-    if (browserStarted) browserMilliseconds = Date.now() - browserStarted
+    if (browserStarted && !childExited) browserMilliseconds = Date.now() - browserStarted
     await heartbeatWrites
     try {
       if (owner) await writeLease(metadataPath, owner.metadata.token, outcome === "passed" || outcome === "deferred" ? OWNER_IDLE_MILLISECONDS : 0)
