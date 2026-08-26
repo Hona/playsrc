@@ -20,6 +20,8 @@ import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
+import { browserFrameProfiler, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
+export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { writeParticleQuad } from "./particle-geometry"
 import { synchronizeDynamicAttribute } from "./dynamic-attributes"
@@ -832,6 +834,7 @@ export interface Renderer {
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
+  completeFrameProfile(): RendererFrameProfile | undefined
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
   captureWorldModelEvidence(camera: Camera): ModelGeometryEvidence
@@ -1408,6 +1411,9 @@ class RendererOwner implements Renderer {
   #deviceGeneration = 0
   #sceneGeneration = 0
   #backend!: Backend
+  #instrumentation?: RendererFrameInstrumentation
+  #timestampFrame = 0
+  #timestampPending = false
   #scene = new THREE.Scene()
   readonly #viewFogUniforms = createSourceViewFogUniforms()
   #waterClipping = new THREE.ClippingGroup()
@@ -1529,6 +1535,29 @@ class RendererOwner implements Renderer {
   }
   get sceneGeneration(): number {
     return this.#sceneGeneration
+  }
+
+  completeFrameProfile(): RendererFrameProfile | undefined {
+    const result = this.#instrumentation?.complete()
+    const profile = browserFrameProfiler()
+    if (result && profile?.capabilities.timestampQuery && ++this.#timestampFrame % 32 === 0 && !this.#timestampPending) {
+      this.#timestampPending = true
+      const frame = this.#timestampFrame
+      this.#pass("gpu-timestamp-resolve", () => {
+        void this.#backend.resolveTimestampsAsync("render").then((milliseconds: unknown) => {
+          if (typeof milliseconds === "number" && Number.isFinite(milliseconds) && milliseconds > 0) {
+            profile.gpuTimestamps?.push({ frame, milliseconds })
+          }
+        }).catch((error: unknown) => {
+          profile.losses.push({ kind: "timestamp", at: performance.now(), message: error instanceof Error ? error.message : String(error) })
+        }).finally(() => { this.#timestampPending = false })
+      })
+    }
+    return result
+  }
+
+  #pass<T>(identity: string, callback: () => T): T {
+    return this.#instrumentation ? this.#instrumentation.pass(identity, callback) : callback()
   }
 
   captureGeometryEvidence(camera: Camera, ownership: "main" | "sky3d" = "main"): GeometryEvidence {
@@ -1758,19 +1787,29 @@ class RendererOwner implements Renderer {
   }
 
   async #createBackend(): Promise<Backend> {
+    const profiler = browserFrameProfiler()
     const backend = new THREE.WebGPURenderer({
       canvas: this.#canvas,
       antialias: this.sampleCount === 4,
       alpha: this.configuration.alphaMode === "premultiplied",
       powerPreference: this.#powerPreference,
+      ...(profiler ? { trackTimestamp: true } : {}),
     }) as Backend
-    backend.onDeviceLost = () => {
+    backend.onDeviceLost = (info) => {
+      profiler?.losses.push({ kind: "device", at: performance.now(), message: String((info as { message?: unknown })?.message ?? "WebGPU device was lost") })
       void this.#recover()
     }
     let context: Backend["backend"]["context"]
     try {
       await backend.init()
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
+      if (profiler) {
+        this.#instrumentation = new RendererFrameInstrumentation(
+          backend.info as unknown as ConstructorParameters<typeof RendererFrameInstrumentation>[0],
+          profiler,
+          (backend.backend.device as { features?: { has(feature: string): boolean } } | undefined)?.features,
+        )
+      }
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
       this.#camera.coordinateSystem = backend.coordinateSystem
       this.#viewCamera.coordinateSystem = backend.coordinateSystem
@@ -3282,8 +3321,8 @@ class RendererOwner implements Renderer {
         this.#backend.setScissorTest(true)
         this.#backend.autoClear = panel.background === "opaque"
         this.#modelPanelScene.background = panel.background === "opaque" ? new THREE.Color(0x000000) : null
-        if (panel.background === "transparent") this.#backend.clearDepth()
-        this.#backend.render(this.#modelPanelScene, this.#modelPanelCamera)
+        if (panel.background === "transparent") this.#pass("hud-depth-reset", () => this.#backend.clearDepth())
+        this.#pass("hud-model", () => this.#backend.render(this.#modelPanelScene, this.#modelPanelCamera))
         let primitives = 0
         retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) primitives += 1 })
         result.push({ identity: panel.identity, model: panel.model, skin: panel.skin, primitives })
@@ -3482,9 +3521,9 @@ class RendererOwner implements Renderer {
           try {
             const phase = executeViewModelDepthPhase({
               depthRange: viewModelDepthRange,
-              clearWorldDepth: () => this.#backend.clearDepth(),
+              clearWorldDepth: () => this.#pass("viewmodel-depth-reset", () => this.#backend.clearDepth()),
               setDepthRange: ([minimum, maximum]) => this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, minimum, maximum),
-              draw: () => this.#backend.render(this.#scene, this.#viewCamera),
+              draw: () => this.#pass("viewmodel", () => this.#backend.render(this.#scene, this.#viewCamera)),
             })
             viewModelPass = Object.freeze({
               depthRange: phase.depthRange,
@@ -3597,12 +3636,16 @@ class RendererOwner implements Renderer {
         batch.index.clearUpdateRanges()
         batch.index.addUpdateRange(0, count)
         batch.index.needsUpdate = true
+        this.#instrumentation?.indexUpload(count * batch.index.array.BYTES_PER_ELEMENT)
       }
       batch.mesh.geometry.setDrawRange(0, count)
       batch.mesh.visible = count > 0 && !(ownership === 1 && batch.mesh.userData.skyWater === true)
       if (!batch.transparent) bundleChanged = true
     }
-    if (bundleChanged) (ownership === 0 ? scene.worldBundle : scene.skyWorldBundle).needsUpdate = true
+    if (bundleChanged) {
+      ;(ownership === 0 ? scene.worldBundle : scene.skyWorldBundle).needsUpdate = true
+      this.#instrumentation?.invalidateBundle()
+    }
     if (ownership === 0) {
       this.#worldVisibilitySurfaces = surfaces
       this.#worldVisibilityIdentity = identity
@@ -4031,9 +4074,9 @@ class RendererOwner implements Renderer {
       if (scene.skyGroup) scene.skyGroup.visible = true
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
-      this.#backend.render(this.#scene, this.#camera)
+      this.#pass("sky3d", () => this.#backend.render(this.#scene, this.#camera))
       rendered = true
-      this.#backend.clearDepth()
+      this.#pass("sky-depth-reset", () => this.#backend.clearDepth())
     } finally {
       this.#setCamera(frame.camera)
       scene.worldBundle.visible = mainWorldVisible
@@ -4082,7 +4125,7 @@ class RendererOwner implements Renderer {
     const plan = frame.visibility?.water
     if (!plan) {
       this.#backend.autoClear = !preserveColor
-      this.#backend.render(this.#scene, this.#camera)
+      this.#pass("main", () => this.#backend.render(this.#scene, this.#camera))
       this.#backend.autoClear = true
       return Object.freeze({ passes: Object.freeze(["main"] as const), timings: Object.freeze([]), restored: true })
     }
@@ -4096,7 +4139,7 @@ class RendererOwner implements Renderer {
       this.#backend.autoClear = !preserveColor
       this.#scene.background = soleMain.drawSky2d ? background : null
       try {
-        this.#backend.render(this.#scene, this.#camera)
+        this.#pass("main", () => this.#backend.render(this.#scene, this.#camera))
       } finally {
         this.#scene.background = background
       }
@@ -4186,7 +4229,7 @@ class RendererOwner implements Renderer {
           )
           this.#backend.autoClear = pass.kind === "main" && preserveColor ? false : pass.kind !== "intersection"
           const renderStarted = performance.now()
-          this.#backend.render(this.#scene, this.#camera)
+          this.#pass(pass.kind, () => this.#backend.render(this.#scene, this.#camera))
           renderMilliseconds = performance.now() - renderStarted
           completed.push(pass.kind)
         } finally {
@@ -4421,6 +4464,7 @@ class RendererOwner implements Renderer {
             this.#uploadEvidence.poseUploadBytes += update.bytes
             if (!update.changed) this.#uploadEvidence.unchangedPoseAttributes += 1
           }
+          this.#instrumentation?.poseUpload(update.bytes)
         }
       } else {
         const geometry = object.geometry.clone()
@@ -4429,6 +4473,7 @@ class RendererOwner implements Renderer {
         geometry.setAttribute("tangent", new THREE.BufferAttribute(posed.tangents.slice(), 4).setUsage(THREE.DynamicDrawUsage))
         object.geometry = geometry
         object.userData.dynamicGeometry = true
+        this.#instrumentation?.poseUpload(posed.positions.byteLength + posed.normals.byteLength + posed.tangents.byteLength)
       }
     }
     return meshes

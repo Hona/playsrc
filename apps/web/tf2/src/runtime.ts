@@ -87,7 +87,7 @@ import {
   type Tf2AudioRequest,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
-import { createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
+import { browserFrameProfiler, createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -3846,6 +3846,8 @@ export class Tf2Application {
 
   readonly #frame = (time: number): void => {
     this.#animationFrame = requestAnimationFrame(this.#frame)
+    const frameProfiler = browserFrameProfiler()
+    if (frameProfiler?.active) (frameProfiler as typeof frameProfiler & { animationCallbacks?: number[] }).animationCallbacks?.push(time)
     let timeSeconds: number
     try {
       timeSeconds = this.#frameClock.admit(performance.now() / 1_000)
@@ -3881,12 +3883,21 @@ export class Tf2Application {
 
   #offerDisplay():void{
     if (this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
+    const frameProfiler = browserFrameProfiler()
+    if (frameProfiler?.active) frameProfiler.counters.displayOffers! += 1
     const required=this.#requiredParticleDisplayFrames.peek()
     const prepared=required??this.#preparedPresentation
     if(
       this.#displayTask||!prepared||this.#closed||this.#paused||
       (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
-    )return
+    ){
+      if(frameProfiler?.active){
+        if(this.#displayTask)frameProfiler.counters.displayRejectedBusy!+=1
+        else if(prepared&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)frameProfiler.counters.displayRejectedUnchanged!+=1
+      }
+      return
+    }
+    if(frameProfiler?.active)frameProfiler.counters.displayStarted!+=1
     const task=this.#renderDisplay(prepared).then(()=>{
       if(required&&prepared.generation===this.#generation)this.#requiredParticleDisplayFrames.complete(required)
     }).catch((error)=>{
@@ -4000,7 +4011,11 @@ export class Tf2Application {
     if(this.#closed||this.#paused||renderer!==this.#renderer||!currentPresentedCamera(presentedCamera,{
       generation:this.#generation,viewportRevision:this.#presentationViewport?.revision??-1,
       viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,
-    }))return
+    })){
+      const frameProfiler=browserFrameProfiler()
+      if(frameProfiler?.active)frameProfiler.counters.displayAbandoned!+=1
+      return
+    }
     const deltaTicks=this.#lastRenderedTick===undefined
       ? prepared.publication.selectedTicks
       : prepared.snapshot.tick>=this.#lastRenderedTick
@@ -4061,6 +4076,23 @@ export class Tf2Application {
     this.#lastRenderedViewRevision=viewRevision
     this.#lastRenderedTick=prepared.snapshot.tick
     this.#displayFrame+=1
+    const frameProfiler=browserFrameProfiler()
+    const rendererProfile=renderer.completeFrameProfile()
+    const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
+    if(frameProfiler?.active&&rendererProfile){
+      frameProfiler.counters.completedFrames!+=1
+      frameProfiler.completedFrames.push({
+        at:performance.now(),displayFrame:this.#displayFrame,tick:Number(prepared.snapshot.tick),
+        preparedRevision:prepared.revision,viewRevision,mouseRevision,snapRevision,
+        position:camera.position,yaw:camera.yawDegrees,pitch:camera.pitchDegrees,
+        drawSurfaces:visibility.drawSurfaces.length,leaves:visibility.leaves.length,
+        props:rendered.visibleMainStaticPropSources.length,
+        skySurfaces:rendered.sky3dPass?.skySurfaces??0,skyProps:rendered.sky3dPass?.skyProps??0,
+        mainVisibilityIdentity:visibility.cacheIdentity,skyVisibilityIdentity:sky3d?.visibility.cacheIdentity??null,
+        workerPending:frameProfiler.counters.workerPending,gpuSubmissions:frameProfiler.counters.submissions,
+        gpuCommandBuffers:frameProfiler.counters.commandBuffers,renderer:rendererProfile,detail:frameDetail,
+      })
+    }
     this.#phaseTimings=[prepared.modelMilliseconds,visibilityMilliseconds,prepared.particleMilliseconds,renderMilliseconds,totalMilliseconds]
     this.#canvas.dataset.displayFrame=String(this.#displayFrame)
     this.#canvas.dataset.displayViewRevision=String(viewRevision)
@@ -4130,7 +4162,7 @@ export class Tf2Application {
         waterOverlay:visibility.water.visibleWater?.overlay?.identity,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
-        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        ...(profile&&!frameProfiler?{performanceDetailProbe:JSON.stringify(frameDetail)}:{}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,
