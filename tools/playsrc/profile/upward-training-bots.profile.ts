@@ -8,6 +8,7 @@ import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
+import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, type TraceJoin } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
@@ -772,6 +773,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     compositor: { ...summarizeCompositorTruth(exactTraceWindow ? traceEvents : [], measurement.elapsed, exactTraceWindow ?? undefined),
       stages: summarizeCompositorStages(exactTraceWindow ? traceEvents : [], exactTraceWindow ?? undefined),
       stalls: exactTraceWindow ? analyzeCompositorStalls(traceEvents, exactTraceWindow, measurement.lifecycle) : [] },
+    nativeWebGpu: exactTraceWindow ? summarizeWebGpuTrace(traceEvents, exactTraceWindow) : null,
     compositorIncludingSetupAndCollection: clockBefore !== undefined && clockAfter !== undefined && clockAfter > clockBefore ? {
       elapsedMilliseconds: (clockAfter - clockBefore) * 1_000,
       ...summarizeCompositorTruth(traceEvents, (clockAfter - clockBefore) * 1_000, { startedMicroseconds: clockBefore * 1_000_000, endedMicroseconds: clockAfter * 1_000_000 }),
