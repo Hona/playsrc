@@ -491,7 +491,11 @@ class Reader {
 }
 const hex = (bytes: Uint8Array) => Array.from(bytes, (v) => v.toString(16).padStart(2, "0")).join("")
 const digest = async (bytes: Uint8Array) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
-function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EnvironmentArtifact {
+function parseEnvironment(
+  bytes: Uint8Array,
+  resources: ReadonlyMap<string, Uint8Array>,
+  sharedTextures: Map<string, AuthoredTextureArtifact>,
+): EnvironmentArtifact {
   const r = new Reader(bytes)
   if (r.decoder.decode(r.take(4)) !== "PENV" || r.u32() !== 5) throw new ArtifactError("environment identity")
   const profile = r.u8()
@@ -760,7 +764,7 @@ function parseEnvironment(bytes: Uint8Array, resources: ReadonlyMap<string, Uint
   }
   const authoredTextures = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
-    const texture = parseModelAuthoredTextureRecord(r, resources)
+    const texture = parseModelAuthoredTextureRecord(r, resources, sharedTextures)
     if (authoredTextures.has(texture.logicalPath)) throw new ArtifactError("environment authored texture identity")
     authoredTextures.set(texture.logicalPath, texture)
   }
@@ -1076,45 +1080,11 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
   return output
 }
 
-function parseAuthoredTextureRecord(r: Reader): AuthoredTextureArtifact {
-  const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
-      mipCount = r.u8(), scalarCode = r.u8(), frameCount = r.u16(), faces = Object.freeze(Array.from({ length: r.u32() }, () => r.u8()))
-    if (!logicalPath.startsWith("materials/") || !width || !height || !depth || !mipCount || !frameCount ||
-      scalarCode > 1 || faces.length < 1 || new Set(faces).size !== faces.length || faces.some((face) => face > 6)) throw new ArtifactError("authored texture header")
-    const wrapS = r.u8(), wrapT = r.u8(), wrapU = r.u8(), minFilter = r.u8(), magFilter = r.u8(), anisotropyLevel = r.u8(),
-      mipmapped = r.u8(), noLod = r.u8(), allMips = r.u8()
-    if (wrapS > 2 || wrapT > 2 || wrapU > 2 || minFilter > 4 || magFilter > 2 || !anisotropyLevel || mipmapped > 1 || noLod > 1 || allMips > 1 || r.u8() || r.u8() || r.u8()) {
-      throw new ArtifactError("authored texture sampling")
-    }
-    const expected: Array<readonly [number, number, number, number]> = []
-    for (let mip = mipCount - 1; mip >= 0; mip--) {
-      const slices = Math.max(1, depth >> mip)
-      for (let frame = 0; frame < frameCount; frame++) for (const face of faces) for (let slice = 0; slice < slices; slice++) expected.push([mip, frame, face, slice])
-    }
-    const planeCount = r.u32()
-    if (planeCount !== expected.length) throw new ArtifactError("authored texture plane count")
-    const planes: AuthoredTexturePlane[] = []
-    for (let index = 0; index < planeCount; index++) {
-      const mip = r.u8(), face = r.u8(), frame = r.u16(), slice = r.u16()
-      if (r.u16()) throw new ArtifactError("authored texture plane reserved field")
-      const planeWidth = r.u32(), planeHeight = r.u32(), rgba = r.blob(256 * 1024 * 1024), target = expected[index]!
-      const componentBytes = scalarCode === 0 ? 1 : 2
-      if (mip !== target[0] || frame !== target[1] || face !== target[2] || slice !== target[3] ||
-        planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip) || rgba.length !== planeWidth * planeHeight * 4 * componentBytes) {
-        throw new ArtifactError("authored texture plane")
-      }
-      planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
-    }
-    return Object.freeze({
-    logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
-    scalarEncoding: scalarCode === 0 ? "u8" : "f16",
-    sourceFormat: null,
-    sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
-    planes: Object.freeze(planes),
-  })
-}
-
-function parseModelAuthoredTextureRecord(r: Reader, resources: ReadonlyMap<string, Uint8Array>): AuthoredTextureArtifact {
+function parseModelAuthoredTextureRecord(
+  r: Reader,
+  resources: ReadonlyMap<string, Uint8Array>,
+  sharedTextures: Map<string, AuthoredTextureArtifact>,
+): AuthoredTextureArtifact {
   const logicalPath = r.text().toLowerCase(), sourceSha256 = hex(r.take(32)), width = r.u32(), height = r.u32(), depth = r.u32(),
     mipCount = r.u8(), scalarCode = r.u8(), frameCount = r.u16(), faces = Object.freeze(Array.from({ length: r.u32() }, () => r.u8()))
   if (!logicalPath.startsWith("materials/") || !width || !height || !depth || !mipCount || !frameCount || scalarCode > 1
@@ -1162,19 +1132,37 @@ function parseModelAuthoredTextureRecord(r: Reader, resources: ReadonlyMap<strin
       || planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip)) throw new ArtifactError("model authored texture plane")
     planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
   }
-  return Object.freeze({
+  const texture = Object.freeze({
     logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
     scalarEncoding: scalarCode === 0 ? "u8" : "f16", sourceFormat,
     sampling: Object.freeze({ wrapS, wrapT, wrapU, minFilter, magFilter, anisotropyLevel, mipmapped: mipmapped === 1, noLod: noLod === 1, allMips: allMips === 1 }),
     planes: Object.freeze(planes),
-  })
+  }) satisfies AuthoredTextureArtifact
+  const sharedIdentity = `${logicalPath}:${sourceFormat ?? "decoded"}`
+  const shared = sharedTextures.get(sharedIdentity)
+  if (!shared) {
+    sharedTextures.set(sharedIdentity, texture)
+    return texture
+  }
+  if (shared.sourceSha256 !== sourceSha256 || shared.width !== width || shared.height !== height
+    || shared.depth !== depth || shared.mipCount !== mipCount || shared.frameCount !== frameCount
+    || shared.sourceFormat !== sourceFormat || shared.scalarEncoding !== texture.scalarEncoding
+    || shared.planes.length !== planes.length || shared.faces.some((face, index) => face !== faces[index])
+    || Object.entries(shared.sampling).some(([key, value]) => value !== texture.sampling[key as keyof typeof texture.sampling])) {
+    throw new ArtifactError("shared authored texture identity")
+  }
+  return shared
 }
 
-function parseAuthoredTextures(r: Reader, resources: ReadonlyMap<string, Uint8Array>): ReadonlyMap<string, AuthoredTextureArtifact> {
+function parseAuthoredTextures(
+  r: Reader,
+  resources: ReadonlyMap<string, Uint8Array>,
+  sharedTextures: Map<string, AuthoredTextureArtifact>,
+): ReadonlyMap<string, AuthoredTextureArtifact> {
   if (r.decoder.decode(r.take(4)) !== "PMIP" || r.u32() !== 2) throw new ArtifactError("PMIP identity")
   const output = new Map<string, AuthoredTextureArtifact>()
   for (let count = r.u32(); count > 0; count--) {
-    const texture = parseModelAuthoredTextureRecord(r, resources)
+    const texture = parseModelAuthoredTextureRecord(r, resources, sharedTextures)
     if (output.has(texture.logicalPath)) throw new ArtifactError("authored texture identity")
     output.set(texture.logicalPath, texture)
   }
@@ -1349,7 +1337,8 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     )
   }
   const particleMaterials = Object.freeze(Array.from({ length: particleMaterialCount }, () => r.text()))
-  const environment = parseEnvironment(r.blob(512 * 1024 * 1024), resources)
+  const sharedTextures = new Map<string, AuthoredTextureArtifact>()
+  const environment = parseEnvironment(r.blob(512 * 1024 * 1024), resources, sharedTextures)
   const materialStates = parseMaterialStates(r)
   if (r.decoder.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
@@ -1363,7 +1352,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const audio = parseAudio(r)
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
-  const authoredTextures = parseAuthoredTextures(r, resources)
+  const authoredTextures = parseAuthoredTextures(r, resources, sharedTextures)
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   const staticProps = parseStaticProps(r, modelCount,[...models.keys()],resources)
   if (staticProps.count !== 0 && await digest(resources.get("derived/static-prop-lighting.pvha")!) !== staticProps.aggregateSha256) throw new ArtifactError("static prop VHV aggregate hash")
