@@ -7,8 +7,7 @@ use playsrc_studio_model::{
     TextureDisposition as StudioTextureDisposition, TextureRole as StudioTextureRole, VtxVariant,
     build_presentation_model, load,
 };
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{borrow::Cow, collections::BTreeMap};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelPresentationError {
@@ -25,12 +24,11 @@ pub struct BuiltModelPresentation {
 pub fn build_model(
     identity: &str,
     resources: &BTreeMap<String, &[u8]>,
-    model_resources: &BTreeMap<String, Arc<[u8]>>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     integer_hdr: bool,
     profile: PresentationProfile,
 ) -> Result<BuiltModelPresentation, ModelPresentationError> {
-    let document = load_model(identity, resources, model_resources)?;
+    let document = load_model(identity, resources)?;
     let mut responses = Vec::new();
     loop {
         match build_presentation_model(
@@ -108,7 +106,6 @@ fn model_profile(bytes: &[u8]) -> Result<Profile, ModelPresentationError> {
 fn load_model(
     identity: &str,
     resources: &BTreeMap<String, &[u8]>,
-    model_resources: &BTreeMap<String, Arc<[u8]>>,
 ) -> Result<Box<Document>, ModelPresentationError> {
     let mdl = *resources
         .get(&identity.to_ascii_lowercase())
@@ -129,7 +126,7 @@ fn load_model(
             Load::Needs(requests) => {
                 for request in requests {
                     let path = request.logical_path.to_ascii_lowercase();
-                    let bytes = model_resources.get(&path).cloned();
+                    let bytes = resources.get(&path).copied().map(Cow::Borrowed);
                     if request.role != DependencyRole::Physics && bytes.is_none() {
                         return Err(ModelPresentationError::Missing);
                     }

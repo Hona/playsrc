@@ -57,6 +57,7 @@ import {
 } from "./source-water"
 import { sourceWaterTangentAttributes } from "./source-water-geometry"
 import { createSourceRefractMaterial } from "./source-refract"
+import { prepareWaterPipelineVisibility } from "./water-pipeline-visibility"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -384,7 +385,7 @@ export type DirectionalTextureInput = Readonly<{
   sha256: string
   width: number
   height: number
-  rgba: Uint8Array
+  authored: AuthoredTextureInput
   uvTransform: readonly [number, number, number, number, number, number]
 }>
 export type EnvironmentTextureInput = Readonly<{
@@ -1218,7 +1219,7 @@ function worldNodeMaterial(
   secondTexture: THREE.Texture | undefined,
   detailTexture: THREE.Texture | undefined,
   lightmaps: readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?],
-  directional: THREE.DataTexture | undefined,
+  directional: THREE.Texture | undefined,
   directionalKind: "normal" | "ssbump" | undefined,
   directionalUvTransform: DirectionalTextureInput["uvTransform"] | undefined,
   exposure: ReturnType<typeof TSL.uniform>,
@@ -1281,9 +1282,9 @@ function diagnostic(code: SceneDiagnostic["code"], identity: string, detail: str
   return Object.freeze({ code, identity, detail })
 }
 
-async function validateDirectionalInputs(
+function validateDirectionalInputs(
   inputs: readonly DirectionalTextureInput[],
-): Promise<Map<string, DirectionalTextureInput>> {
+): Map<string, DirectionalTextureInput> {
   const result = new Map<string, DirectionalTextureInput>()
   for (const input of inputs) {
     const identity = input.material.toLowerCase()
@@ -1298,11 +1299,12 @@ async function validateDirectionalInputs(
       !Number.isSafeInteger(input.height) ||
       input.height < 1 ||
       input.height > MAX_DIMENSION ||
-      input.width * input.height * 4 !== input.rgba.byteLength ||
+      input.authored.logicalPath.toLowerCase() !== input.logicalPath.toLowerCase() ||
+      input.authored.sourceSha256 !== input.sha256 ||
+      input.authored.width !== input.width || input.authored.height !== input.height ||
       input.uvTransform.length !== 6 ||
       !input.uvTransform.every(Number.isFinite) ||
-      result.has(identity) ||
-      (await digest(input.rgba)) !== input.sha256
+      result.has(identity)
     ) {
       throw new RenderingError("MalformedInput", "directional texture input is invalid")
     }
@@ -1310,7 +1312,6 @@ async function validateDirectionalInputs(
       identity,
       Object.freeze({
         ...input,
-        rgba: input.rgba.slice(),
         uvTransform: Object.freeze([...input.uvTransform]) as DirectionalTextureInput["uvTransform"],
       }),
     )
@@ -1629,7 +1630,7 @@ class RendererOwner implements Renderer {
     if (!map.lightmap) throw new RenderingError("MissingInput", "explicit light-style scalars are required")
     if(!request.brushModels||request.brushModels.length<1)throw new RenderingError("MissingInput","complete brush-model descriptors are required")
     for(let index=0;index<request.brushModels.length;index++){const descriptor=request.brushModels[index]!,geometry=map.brushModels.find(model=>model.index===index);if(descriptor.index!==index||descriptor.surfaceRange[1]<descriptor.surfaceRange[0]||(geometry&&geometry.batches.some(batch=>!descriptor.materials.includes(batch.material))))throw new RenderingError("IdentityMismatch","brush-model geometry differs from its descriptor")}
-    const directionalInputs = await validateDirectionalInputs(request.directionalTextures ?? [])
+    const directionalInputs = validateDirectionalInputs(request.directionalTextures ?? [])
     if (
       request.environment &&
       (request.environment.profile !== map.lighting.profile ||
@@ -1853,9 +1854,8 @@ class RendererOwner implements Renderer {
     const previousQuaternion = this.#camera.quaternion.clone()
     const previousFog = this.#scene.fog
     const previousTarget = this.#backend.getRenderTarget()
-    const waterVisibility = scene.waterMeshes.map((water) => water.mesh.visible)
+    const restoreSceneVisibility = prepareWaterPipelineVisibility(scene.group, scene.waterMeshes.map((water) => water.mesh))
     try {
-      for (const water of scene.waterMeshes) water.mesh.visible = true
       const combinations = [
         { target: scene.reflectionTarget, height: volume.surfaceZ + depth * 0.5, keep: "above" as const },
         { target: scene.refractionTarget, height: volume.surfaceZ + depth * 0.5, keep: "below" as const },
@@ -1884,9 +1884,7 @@ class RendererOwner implements Renderer {
       this.#camera.quaternion.copy(previousQuaternion)
       this.#camera.updateMatrixWorld()
       this.#setSceneFog(previousFog as THREE.Fog | null)
-      for (let index = 0; index < scene.waterMeshes.length; index += 1) {
-        scene.waterMeshes[index]!.mesh.visible = waterVisibility[index]!
-      }
+      restoreSceneVisibility()
     }
   }
 
@@ -1961,7 +1959,7 @@ class RendererOwner implements Renderer {
       "float",
     )
     const waterFogUniforms = createSourceWaterFogUniforms()
-    const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.DataTexture }>()
+    const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.Texture }>()
     const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables)
     const authoredTextureKey = (input: AuthoredTextureInput, colorSpace: string, frame = 0): string =>
       `${input.sourceSha256}:${input.sourceFormat ?? "rgba"}:${input.scalarEncoding}:${colorSpace}:${frame}`
@@ -2008,9 +2006,8 @@ class RendererOwner implements Renderer {
       diagnostics.push(diagnostic("MissingTextureMips", identity, "the supplied texture contains mip zero only"))
     }
     for (const [identity, input] of directionalInputs) {
-      const texture = textureFromRgba(input, THREE.NoColorSpace)
+      const texture = retainAuthoredTexture(input.authored, THREE.NoColorSpace)
       directionalGpu.set(identity, { input, texture })
-      disposables.add(texture)
     }
 
     const createModelTexture = (identity: string, role: number): Readonly<{texture:THREE.Texture;input:AuthoredTextureInput}> | undefined => {
@@ -4405,7 +4402,7 @@ class RendererOwner implements Renderer {
       this.#backend = await this.#createBackend()
       this.#deviceGeneration += 1
       if (active) {
-        const directional = await validateDirectionalInputs(active.loadRequest.directionalTextures ?? [])
+        const directional = validateDirectionalInputs(active.loadRequest.directionalTextures ?? [])
         const map = await parseRuntimeMapVerified(active.payload)
         const rebuiltMap =
           map.lighting.profile === "hdr" && active.loadRequest.lightStyles
