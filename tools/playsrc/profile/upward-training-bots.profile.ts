@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
-import { profileSourceIdentity } from "../src/profile-runner"
+import { applicationBuildIdentity } from "../src/build-identity"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
@@ -30,7 +30,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   await mkdir(directory, { recursive: true })
-  const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await profileSourceIdentity()
+  const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   await page.addInitScript(installBrowserFrameProfiler)
@@ -587,7 +587,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const record of measured.simulationPublications) joins.push({ kind: "simulation-publication", at: record.at, end: record.at + record.decodeMilliseconds, detail: record })
     for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
   }
-  const sourceFingerprintAfter = await profileSourceIdentity()
+  const sourceFingerprintAfter = await applicationBuildIdentity()
   profilePhases.enter("trace-analysis-retention")
   let workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", ...workerCapture, unsampledTargets: workerCpu?.unsampledTargets ?? [] }))
   if (workerBytes.byteLength > TRACE_LIMITS.probeBytes) {
