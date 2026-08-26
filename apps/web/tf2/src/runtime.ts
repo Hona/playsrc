@@ -72,7 +72,6 @@ import {
   createParticleBatchEncoder,
   createProjectilePresentationMapper,
   createViewmodelPresenter,
-  decodeModelPoseOutput,
   encodeModelPoseBatch,
   projectileFrame,
   projectileModels,
@@ -2250,7 +2249,7 @@ export class Tf2Application {
         return [Object.freeze({ panel: panel.name, request })]
       })
       if (requests.length > 0) {
-        const posed = decodeModelPoseOutput(await client.models(generation, encodeModelPoseBatch(requests.map((value) => value.request))))
+        const posed = await client.models(generation, encodeModelPoseBatch(requests.map((value) => value.request)))
         if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
         for (const item of posed) {
           const selected = requests.find((candidate) => candidate.request.identity === item.identity)
@@ -3793,7 +3792,7 @@ export class Tf2Application {
         bodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)),
       })
     })
-    const posed = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
+    const posed = await this.#client.models(this.#generation, encodeModelPoseBatch(requests))
     return Object.freeze(posed.map((model) => Object.freeze({
       model: model.model,
       sequence: model.sequence,
@@ -3828,7 +3827,7 @@ export class Tf2Application {
         itemBodygroups: Object.freeze(itemArtifact.bodygroupCounts.map(() => 0)),
       })
     })
-    const poses = decodeModelPoseOutput(await this.#client.models(this.#generation, encodeModelPoseBatch(requests)))
+    const poses = await this.#client.models(this.#generation, encodeModelPoseBatch(requests))
     return activities.map((activity) => {
       const parts = poses.filter((pose) => pose.activity === activity)
       if(parts.length!==2||parts[0]?.role!=="item"||parts[1]?.role!=="hand")throw new Error(`Viewmodel timeline composition ${activity} differs`);const hand=parts[1]!;return `${activity}:${hand.sequence}:${hand.cycle}:${parts.map(part=>part.primitives.length).join("+")}:${hand.events.length}:item>hand`
@@ -4762,7 +4761,7 @@ export class Tf2Application {
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
-      const modelPoses=modelOutput===undefined?[]:decodeModelPoseOutput(modelOutput)
+      const modelPoses=modelOutput===undefined?[]:modelOutput
       const modelMilliseconds=performance.now()-modelStart
       const viewmodelIdentities=new Set([...historicalViewmodels.map(request=>request.identity),...(viewmodel?[viewmodel.item.identity]:[])])
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))

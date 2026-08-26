@@ -47,6 +47,9 @@ type WasmExports = Readonly<{
   playsrc_model_transact(handle: number, pointer: number, length: number): number
   playsrc_model_output_length(handle: number): number
   playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_model_output_take(handle: number): number
+  playsrc_model_output_capacity(handle: number): number
+  playsrc_model_output_recycle(handle: number, pointer: number, capacity: number): void
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
   playsrc_visibility_output_pointer(handle: number): number
@@ -72,6 +75,8 @@ const resourceSets = new ResourceGenerations((section) => {
   if (section.authoredBacking) wasm!.playsrc_resource_release(section.pointer, section.length)
   else wasm!.playsrc_free(section.pointer, section.length)
 })
+const modelOutputLeases = new Map<number, { generation: number; handle: number; pointer: number; capacity: number }>()
+let leasedModelBytes = 0
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
   scope.postMessage(message, transfer)
@@ -151,6 +156,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_model_transact,
         candidate.playsrc_model_output_length,
         candidate.playsrc_model_output_copy,
+        candidate.playsrc_model_output_take,
+        candidate.playsrc_model_output_capacity,
+        candidate.playsrc_model_output_recycle,
         candidate.playsrc_visibility_query,
         candidate.playsrc_visibility_output_length,
         candidate.playsrc_visibility_output_pointer,
@@ -812,6 +820,10 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
+  if (modelOutputLeases.size >= 64 || modelOutputLeases.has(request.id)) {
+    fail(request.id, "MalformedRequest")
+    return
+  }
   if (!(request.batch instanceof ArrayBuffer) || request.batch.byteLength < 12 || request.batch.byteLength > 1024 * 1024) {
     fail(request.id, "MalformedRequest")
     return
@@ -833,16 +845,35 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
     return
   }
   const outputCopyStarted = performance.now()
-  const outputPointer = value.exports.playsrc_alloc(length) >>> 0
-  if (value.exports.playsrc_model_output_copy(value.handle, outputPointer, length) !== length) {
-    value.exports.playsrc_free(outputPointer, length)
+  const capacity = value.exports.playsrc_model_output_capacity(value.handle)
+  if (!Number.isSafeInteger(capacity) || capacity < length || capacity > 128 * 1024 * 1024 - leasedModelBytes) {
     fail(request.id, "InternalFailure", 817)
     return
   }
-  const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
-  value.exports.playsrc_free(outputPointer, length)
+  const outputPointer = value.exports.playsrc_model_output_take(value.handle) >>> 0
+  const output = value.exports.memory.buffer
+  if (outputPointer === 0 || !(output instanceof SharedArrayBuffer)) {
+    if (outputPointer !== 0) value.exports.playsrc_model_output_recycle(value.handle, outputPointer, capacity)
+    fail(request.id, "InternalFailure", 817)
+    return
+  }
+  modelOutputLeases.set(request.id, { generation: request.generation, handle: value.handle, pointer: outputPointer, capacity })
+  leasedModelBytes += capacity
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "models", generation: request.generation, output, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
+  try {
+    post({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: outputPointer, byteLength: length, lease: request.id, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } })
+  } catch (error) {
+    releaseModelOutput({ id: request.id, kind: "release-model-output", generation: request.generation, lease: request.id })
+    throw error
+  }
+}
+
+function releaseModelOutput(request: Extract<WorkerRequest, { kind: "release-model-output" }>): void {
+  const retained = modelOutputLeases.get(request.lease)
+  if (!retained || retained.generation !== request.generation || request.id !== request.lease || !wasm) return
+  modelOutputLeases.delete(request.lease)
+  leasedModelBytes -= retained.capacity
+  wasm.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
 }
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const started = performance.now()
@@ -886,6 +917,11 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
+  if (wasm) {
+    for (const retained of modelOutputLeases.values()) wasm.playsrc_free(retained.pointer, retained.capacity)
+    modelOutputLeases.clear()
+    leasedModelBytes = 0
+  }
   if (wasm && active) wasm.playsrc_dispose(active.handle)
   if (wasm && pending) wasm.playsrc_dispose(pending.handle)
   if (wasm) for (const generation of resourceSets.keys()) releaseResourceSet(wasm, generation)
@@ -926,6 +962,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return observe(request)
     case "particles":
       return particles(request)
+    case "release-model-output":
+      return releaseModelOutput(request)
     case "models": {
       const companion = request.visibility
       if (companion && (!canonicalId(companion.id) || companion.id === request.id || !Number.isFinite(companion.queuedAt))) {

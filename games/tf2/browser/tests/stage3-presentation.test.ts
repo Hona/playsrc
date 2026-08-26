@@ -294,6 +294,12 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
   expect(first!.events).toBe(second!.events)
   expect(first!.eyes).toBe(second!.eyes)
   expect(second!.identity).toBe(10)
+  const memory = new SharedArrayBuffer(bytes.byteLength + 24)
+  new Uint8Array(memory, 12, bytes.byteLength).set(bytes)
+  const resident = decodeModelPoseOutput(new Uint8Array(memory, 12, bytes.byteLength))[0]!
+  expect([...resident.boneMatrices]).toEqual([...pose.boneMatrices])
+  expect(resident.primitives).toEqual(pose.primitives)
+  expect(resident.model).toBe(pose.model)
   const invalid = bytes.slice()
   new DataView(invalid.buffer).setFloat32(invalid.byteLength - 76, Number.NaN, true)
   expect(() => decodeModelPoseOutput(invalid)).toThrow(ProjectilePresentationError)

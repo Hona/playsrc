@@ -532,13 +532,13 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (UTF8_DECODER.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 8) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (view.getUint32(0, false) !== 0x504d504f || view.getUint32(4, true) !== 8) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
     i32 = () => { ensure(4); const value = view.getInt32(at, true); at += 4; return value },
     f32 = () => { ensure(4); const value = view.getFloat32(at, true); at += 4; if (!Number.isFinite(value)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar"); return value },
-    text = () => { const length = u32(); ensure(length); const value = UTF8_DECODER.decode(bytes.subarray(at, at + length)); at += length; return value }
+    text = () => { const length = u32(); ensure(length); const range = bytes.subarray(at, at + length); const value = UTF8_DECODER.decode(range.buffer instanceof SharedArrayBuffer ? range.slice() : range); at += length; return value }
   const output: PosedModel[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
     const identity = u32()

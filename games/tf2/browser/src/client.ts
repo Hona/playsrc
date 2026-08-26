@@ -1,6 +1,7 @@
 import type { DerivedObjectCache } from "@playsrc/asset-store/browser"
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { decodeSnapshot, type Snapshot } from "./codec"
+import { decodeModelPoseOutput, type PosedModel } from "./presentation"
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type VisibilityView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
 
@@ -647,7 +648,7 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("WorkerFailed")
     return new Uint8Array(response.output)
   }
-  async models(generation: number, batch: Uint8Array): Promise<Uint8Array> {
+  async models(generation: number, batch: Uint8Array): Promise<readonly PosedModel[]> {
     if (batch.byteLength < 12 || batch.byteLength > 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
     if (this.#queuedModels) this.#flushModels()
     const pending = this.#reserve()
@@ -657,10 +658,24 @@ export class Tf2WorkerClient {
       if (this.#queuedModels === queued) this.#flushModels()
     })
     const response = await pending.response
-    if (response.kind !== "models" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
+    if (response.kind !== "models" || response.generation !== generation || !(response.output instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(response.byteOffset) || !Number.isSafeInteger(response.byteLength) ||
+      response.byteOffset < 0 || response.byteOffset % 4 !== 0 || response.byteLength < 12 || response.byteLength > 64 * 1024 * 1024 ||
+      response.byteOffset > response.output.byteLength - response.byteLength || response.lease !== response.id) {
+      this.#error()
       throw new Tf2WorkerError("WorkerFailed")
     }
-    return new Uint8Array(response.output)
+    try {
+      // The decoder returns owned compact palettes/attachments, never a lease-backed view.
+      // No caller, asynchronous callback, renderer or GPU may outlive this read ownership.
+      return decodeModelPoseOutput(new Uint8Array(response.output, response.byteOffset, response.byteLength))
+    } finally {
+      try {
+        this.#worker.postMessage({ id: response.id, kind: "release-model-output", generation, lease: response.lease })
+      } catch {
+        this.#error()
+      }
+    }
   }
 
   async visibility(generation: number, input: VisibilityView): Promise<VisibilityResult> {

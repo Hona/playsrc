@@ -2081,6 +2081,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         &mut slot.viewmodel_bob,
         &requests,
         &mut world,
+        std::mem::take(&mut slot.model_output),
     ) else {
         return 0;
     };
@@ -2091,6 +2092,55 @@ pub unsafe extern "C" fn playsrc_model_transact(
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_model_output_length(handle: u32) -> usize {
     with(handle, |slot| slot.model_output.len()).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_model_output_capacity(handle: u32) -> usize {
+    with(handle, |slot| slot.model_output.capacity()).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_model_output_take(handle: u32) -> *mut u8 {
+    let Some((index, generation)) = decode(handle) else {
+        return std::ptr::null_mut();
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else {
+        return std::ptr::null_mut();
+    };
+    if slot.generation != generation || slot.model_output.is_empty() {
+        return std::ptr::null_mut();
+    }
+    let mut bytes = std::mem::take(&mut slot.model_output);
+    let pointer = bytes.as_mut_ptr();
+    std::mem::forget(bytes);
+    pointer
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// The exact pointer and capacity from `playsrc_model_output_take` must be returned once,
+/// only after every browser read has finished. A stale map handle releases the allocation.
+pub unsafe extern "C" fn playsrc_model_output_recycle(
+    handle: u32,
+    pointer: *mut u8,
+    capacity: usize,
+) {
+    if pointer.is_null() {
+        return;
+    }
+    let bytes = unsafe { Vec::from_raw_parts(pointer, 0, capacity) };
+    let Some((index, generation)) = decode(handle) else {
+        return;
+    };
+    let mut slots = slots().lock().expect("TF2 slots");
+    if let Some(slot) = slots.get_mut(index)
+        && slot.generation == generation
+        && slot.model_output.is_empty()
+        && slot.model_output.capacity() < capacity
+    {
+        slot.model_output = bytes;
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2420,8 +2470,10 @@ fn encode_model_poses(
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     requests: &[ModelPoseRequest],
     world: &mut ModelPoseWorld<'_>,
+    mut out: Vec<u8>,
 ) -> Result<Vec<u8>, ()> {
-    let mut out = b"PMPO".to_vec();
+    out.clear();
+    out.extend_from_slice(b"PMPO");
     out.extend_from_slice(&8u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
@@ -14509,7 +14561,7 @@ mod tests {
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
-            model_output: Vec::new(),
+            model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
             visibility: None,
             visibility_candidates: None,
             area_state: None,
@@ -14535,6 +14587,28 @@ mod tests {
         });
         drop(guard);
         let old = encode(0, 1);
+        assert_eq!(playsrc_model_output_length(old), 8);
+        let capacity = playsrc_model_output_capacity(old);
+        let model = playsrc_model_output_take(old);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(model, 8) },
+            &[0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f]
+        );
+        assert_eq!(playsrc_model_output_length(old), 0);
+        assert!(playsrc_model_output_take(old).is_null());
+        unsafe { playsrc_model_output_recycle(old, model, capacity) };
+        assert_eq!(playsrc_model_output_capacity(old), capacity);
+        assert_eq!(playsrc_model_output_length(old), 0);
+        {
+            let mut guard = slots().lock().unwrap();
+            guard[0].model_output.extend_from_slice(&[1, 2, 3]);
+        }
+        let reused = playsrc_model_output_take(old);
+        assert_eq!(reused, model);
+        assert_eq!(unsafe { std::slice::from_raw_parts(reused, 3) }, &[1, 2, 3]);
+        // A lease may finish after map replacement; stale owners may only free it.
+        unsafe { playsrc_model_output_recycle(encode(0, 2), reused, capacity) };
+        assert_eq!(playsrc_model_output_capacity(old), 0);
         assert_eq!(playsrc_result_length(old), 2);
         assert_eq!(playsrc_presentation_length(old), 3);
         let presentation = playsrc_presentation_take(old);

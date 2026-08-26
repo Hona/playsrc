@@ -53,6 +53,7 @@ export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "set-position"; generation: number; position: readonly [number, number, number] }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "release-model-output"; generation: number; lease: number }>
   | Readonly<{
       id: number
       kind: "models"
@@ -156,7 +157,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "position-set"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
-  | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "models"; generation: number; output: SharedArrayBuffer; byteOffset: number; byteLength: number; lease: number; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; outputs: readonly ArrayBuffer[]; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>

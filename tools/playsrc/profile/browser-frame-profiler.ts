@@ -153,8 +153,10 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = host.performance.now()
-          record.receivedBytes = event.data?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
+          const shared = typeof SharedArrayBuffer === "function" && event.data?.output instanceof SharedArrayBuffer
+          record.receivedBytes = shared ? 0 : event.data?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
             ?? event.data?.output?.byteLength ?? event.data?.payload?.byteLength ?? 0
+          record.sharedBytes = shared ? event.data.byteLength ?? 0 : 0
           if (event.data?.timings) record.timings = event.data.timings
           this.records.delete(event.data.id)
           state.counters.workerPending = Math.max(0, state.counters.workerPending - 1)
@@ -162,7 +164,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
-        if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string") {
+        if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string" && message.kind !== "release-model-output") {
           const started=host.performance.now()
           const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean,views?:number)=>{
             const record={kind,started,bytes,pending:state.counters.workerPending,sharedDispatch,...(views===undefined?{}:{views})}
