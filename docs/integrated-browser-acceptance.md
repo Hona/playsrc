@@ -1,13 +1,19 @@
 # Integrated browser acceptance
 
-Acceptance is not yet signed off. The retained runs establish specific fixes and
-partial coverage, not a completed Windows/2Fort/Engineer/all-DPR stock-input gate.
+The local fixtures below have passed. **Real Windows performance remains an
+unsigned gate**, and neither the historical 505 ms incident nor all first-use GPU
+compilation stalls are claimed resolved.
 
 `bun run profile:acceptance <scenario>` runs one visibly headed Edge scenario
 under the shared machine lock and three-minute deadline. Scenarios:
 `training-dpr1`, `training-dpr1.25`, `training-dpr1.5`, `training-dpr2`, `2fort`,
 `engineer`, `lifecycle`. Sampling is 5–10 real seconds. No quality, bot count,
 simulation clock, or pointer-lock emulation is substituted.
+
+`stock-dpr1`, `stock-dpr1.25`, `stock-dpr1.5`, and `stock-dpr2` run just the
+correctness phase when existing performance captures can be reused. They wait
+for authored idle poses and visible model-depth witnesses, retain 27 stock-slot
+screenshots each, and do not label screenshot/RAF cadence as performance.
 
 Training uses the authored 16-total-player default, cold RED admission and warm
 BLU admission, a nine-class native-input cycle, then stock-slot input/screenshots.
@@ -32,6 +38,36 @@ comparison metadata is missing. A passing Mac sample is not Windows acceptance
 and does not resolve an older seconds-per-frame incident. Short runs also do not
 establish long-session memory stability. Windows acceptance additionally requires
 an independently verified unlocked interactive desktop.
+
+## Local verification
+
+All rows use visible local Edge, unchanged simulation and stock content, and the
+shared checked FIFO lock. The nine-class performance cycle uses Training's 16
+total players; the stock-only idle/depth proof includes all nine classes on RED
+at DPR 1/1.25 and BLU at DPR 1.5/2. All 108 final stock captures have visible
+viewmodel-depth samples and zero recorded GPU losses.
+
+| Scenario | Presented p95 / p99 / max, ms | Observed simulation Hz |
+| --- | ---: | ---: |
+| Training DPR 1 | 16.667 / 33.333 / 116.018 | 66.688 |
+| Training DPR 1.25 | 16.667 / 33.333 / 112.288 | 66.677 |
+| Training DPR 1.5, complete current-main run | 16.668 / 33.333 / 166.665 | 66.535 |
+| Training DPR 2 | 16.667 / 33.333 / 128.803 | 66.686 |
+| 2Fort, 23 bots, balanced 12v12 | 33.333 / 33.333 / 50.000 | 66.645 |
+| Engineer construction | 16.667 / 16.668 / 16.668 | 66.66 |
+
+Engineer used actual captured mouse construction/upgrade/destruction for eight
+RED/BLU objects. Its final stationary-camera sentry witnesses retain 595 changed
+pixels at actual object-depth locations, rather than counting unrelated camera
+motion as construction. HDR2/aniso4 persistence, cold/warm admission, two live
+map replacements and five-second overhead `jump_beef` water also passed.
+
+The incomplete `acceptance-native-dpr15-complete` run is **retained, not replaced
+by the passing row**: its maximum presented gap was 566.649 ms, with native Dawn
+pipeline creation spanning the incident (one call lasted 192.356 ms). The later
+complete run does not prove that first-use/driver-cache risk fixed. Cold/warm
+loading, process RSS growth and exact source/browser identities remain in each
+raw report; these short captures are not a long-session memory or Windows claim.
 
 ## Retained collision-tail observations
 
