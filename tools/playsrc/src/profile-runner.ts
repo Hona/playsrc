@@ -168,7 +168,7 @@ async function verifyOwner(metadata: OwnerMetadata, identity: string, target: st
 
 async function stopOwner(metadataPath: string, metadata: OwnerMetadata): Promise<void> {
   if (isAlive(metadata.pid)) {
-    process.kill(metadata.pid, "SIGTERM")
+    process.kill(process.platform === "win32" ? metadata.pid : -metadata.pid, "SIGTERM")
     const deadline = Date.now() + 5_000
     while (isAlive(metadata.pid) && Date.now() < deadline) await Bun.sleep(50)
     if (isAlive(metadata.pid)) throw new Error("Shared headed profile development owner did not stop within 5000 ms")
@@ -216,7 +216,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
     }
     await Bun.sleep(100)
   }
-  process.kill(pid, "SIGTERM")
+  process.kill(process.platform === "win32" ? pid : -pid, "SIGTERM")
   throw new Error("Shared headed profile development owner exceeded the bounded profile runtime")
 }
 
