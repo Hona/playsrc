@@ -347,13 +347,33 @@ test("profile authored headed Upward offline-practice default roster and actual 
     })
     classObserver.observe(main, { attributes: true, attributeFilter: ["data-hud-probe"] })
     let animationCallbacks = 0
-    const particleSamples: Array<{ classIdentity: number; items: number }> = []
+    const particleSamples: Array<{ at: number; classIdentity: number; items: number; particleUploadBytes: number; particleUploadWrites: number; queueWriteBytes: number; textureWrites: number }> = []
+    let previousParticleUploadBytes = firstUploads.particleUploadBytes ?? 0
+    let previousParticleUploadWrites = firstUploads.particleUploadWrites ?? 0
+    let previousQueueWriteBytes = 0
+    let previousTextureWrites = 0
     instrumentation.active = true
     try {
       while (performance.now() - started < duration * 1000) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-         animationCallbacks += 1
-         particleSamples.push({ classIdentity: Number(main.dataset.hudProbe?.split(":")[1] ?? 0), items: Number(main.dataset.particleItems ?? 0) })
+        animationCallbacks += 1
+        const particleUploadBytes = Number((globalThis as any).__playsrcProfile.modelParticleUploads?.particleUploadBytes ?? 0)
+        const particleUploadWrites = Number((globalThis as any).__playsrcProfile.modelParticleUploads?.particleUploadWrites ?? 0)
+        const queueWriteBytes = instrumentation.counters.queueWriteBytes
+        const textureWrites = instrumentation.counters.textureWrites
+        particleSamples.push({
+          at: performance.now() - started,
+          classIdentity: Number(main.dataset.hudProbe?.split(":")[1] ?? 0),
+          items: Number(main.dataset.particleItems ?? 0),
+          particleUploadBytes: particleUploadBytes - previousParticleUploadBytes,
+          particleUploadWrites: particleUploadWrites - previousParticleUploadWrites,
+          queueWriteBytes: queueWriteBytes - previousQueueWriteBytes,
+          textureWrites: textureWrites - previousTextureWrites,
+        })
+        previousParticleUploadBytes = particleUploadBytes
+        previousParticleUploadWrites = particleUploadWrites
+        previousQueueWriteBytes = queueWriteBytes
+        previousTextureWrites = textureWrites
         if (main.dataset.phase !== "Ready") throw new Error(`Upward training left gameplay: ${main.dataset.phase}: ${main.dataset.detail}`)
       }
     } finally { instrumentation.active = false; classObserver.disconnect(); mutationObserver.disconnect() }
@@ -532,7 +552,29 @@ test("profile authored headed Upward offline-practice default roster and actual 
       enabled: combat,
       classes: Object.fromEntries([...new Set(measurement.particleSamples.map(sample => sample.classIdentity))].sort((left, right) => left - right).map(identity => {
         const samples = measurement.particleSamples.filter(sample => sample.classIdentity === identity)
-        return [identity, { frames: samples.length, liveParticles: summarizeDistribution(samples.map(sample => sample.items)) }]
+        const intervals = samples.slice(1).flatMap((sample, index) => {
+          const previous = samples[index]!
+          return sample.at - previous.at < 250 ? [sample.at - previous.at] : []
+        })
+        const particleWorkers = workers.filter(record => {
+          if (record.kind !== "particles") return false
+          const at = record.started - measurement.started
+          const playerClass = measurement.classSwitches.findLast(change => change.at <= at)?.playerClass
+            ?? measurement.particleSamples[0]?.classIdentity
+          return playerClass === identity
+        })
+        return [identity, {
+          frames: samples.length,
+          liveParticles: summarizeDistribution(samples.map(sample => sample.items)),
+          frameIntervals: summarizeFrameTimes(intervals),
+          particleUploadBytes: samples.reduce((total, sample) => total + sample.particleUploadBytes, 0),
+          particleUploadWrites: samples.reduce((total, sample) => total + sample.particleUploadWrites, 0),
+          gpuUploadBytes: samples.reduce((total, sample) => total + sample.queueWriteBytes, 0),
+          textureWrites: samples.reduce((total, sample) => total + sample.textureWrites, 0),
+          particleWorkerInputBytes: particleWorkers.reduce((total, record) => total + record.bytes, 0),
+          particleWorkerOutputBytes: particleWorkers.reduce((total, record) => total + (record.receivedBytes ?? 0), 0),
+          simultaneousBurstFrames: samples.filter(sample => sample.items > 0).length,
+        }]
       })),
       simulation: summarizeDistribution(completed.map(frame => frame.detail.particleWorker)),
       decode: summarizeDistribution(completed.map(frame => frame.detail.particleDecode)),

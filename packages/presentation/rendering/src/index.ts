@@ -24,6 +24,7 @@ import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameI
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { createParticleQuadWriter } from "./particle-geometry"
+import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
@@ -1451,6 +1452,7 @@ class RendererOwner implements Renderer {
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
   readonly #particleBatchRanges: MutableParticleBatchRange[] = []
+  readonly #particleAttributeUpdates = createParticleAttributeUpdates()
   readonly #cameraDirection = new THREE.Vector3()
   readonly #cameraTarget = new THREE.Vector3()
   readonly #projectionPoint = new THREE.Vector3()
@@ -1480,6 +1482,8 @@ class RendererOwner implements Renderer {
     unchangedPoseAttributes: number
     poseUploadBytes: number
     particleUploadBytes: number
+    particleUploadWrites: number
+    particleFullUploadBytes: number
     particleGeometries: number
     retainedParticleBatches: number
   }
@@ -1528,6 +1532,8 @@ class RendererOwner implements Renderer {
         unchangedPoseAttributes: 0,
         poseUploadBytes: 0,
         particleUploadBytes: 0,
+        particleUploadWrites: 0,
+        particleFullUploadBytes: 0,
         particleGeometries: 0,
         retainedParticleBatches: 0,
       }
@@ -4552,7 +4558,7 @@ class RendererOwner implements Renderer {
   #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
     if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
-    for(let index=0;index<capacity;index+=1){const vertex=index*4;indices.set([vertex,vertex+1,vertex+2,vertex,vertex+2,vertex+3],index*6)}
+    for(let index=0;index<capacity;index+=1){const vertex=index*4,offset=index*6;indices[offset]=vertex;indices[offset+1]=vertex+1;indices[offset+2]=vertex+2;indices[offset+3]=vertex;indices[offset+4]=vertex+2;indices[offset+5]=vertex+3}
     geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
   }
 
@@ -4569,47 +4575,29 @@ class RendererOwner implements Renderer {
     const sheetBlend = (geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array
     const colors = (geometry.getAttribute("particleColor") as THREE.BufferAttribute).array as Float32Array
     const writeParticleQuad = createParticleQuadWriter(camera)
-    const dirty = [false, false, false, false]
-    const set = (array: Float32Array, offset: number, value: number, identity: number): void => {
-      const rounded = Math.fround(value)
-      if (!Object.is(array[offset], rounded)) {
-        array[offset] = rounded
-        dirty[identity] = true
-      }
-    }
+    const updates = this.#particleAttributeUpdates
+    resetParticleAttributeUpdates(updates)
+    const arrays = { uv, uvNext, sheetBlend, colors }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
       writeParticleQuad(item, positions, index * 12)
-      const sample = item.primarySheet!
-      const current = sample.current[0]!
-      const next = sample.next[0]!
-      const red = ((item.color >> 16) & 255) / 255
-      const green = ((item.color >> 8) & 255) / 255
-      const blue = (item.color & 255) / 255
-      for (let vertex = 0; vertex < 4; vertex += 1) {
-        const uvOffset = index * 8 + vertex * 2
-        const colorOffset = index * 16 + vertex * 4
-        const right = vertex === 1 || vertex === 2
-        const bottom = vertex >= 2
-        set(uv, uvOffset, current[right ? 2 : 0]!, 0)
-        set(uv, uvOffset + 1, current[bottom ? 3 : 1]!, 0)
-        set(uvNext, uvOffset, next[right ? 2 : 0]!, 1)
-        set(uvNext, uvOffset + 1, next[bottom ? 3 : 1]!, 1)
-        set(sheetBlend, index * 4 + vertex, sample.blend, 2)
-        set(colors, colorOffset, red, 3)
-        set(colors, colorOffset + 1, green, 3)
-        set(colors, colorOffset + 2, blue, 3)
-        set(colors, colorOffset + 3, item.opacity, 3)
-      }
+      writeParticleAppearance(item, arrays, index, updates)
     }
     const vertices = (end - start) * 4
     for (const [index, name] of (["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const).entries()) {
-      if (index > 0 && !dirty[index - 1]) continue
+      const update = index > 0 ? updates[index - 1]! : undefined
+      if (update && update.end === 0) continue
       const attribute = geometry.getAttribute(name) as THREE.BufferAttribute
+      const offset = update?.start ?? 0
+      const count = update ? update.end - update.start : vertices * attribute.itemSize
       attribute.clearUpdateRanges()
-      attribute.addUpdateRange(0, vertices * attribute.itemSize)
+      attribute.addUpdateRange(offset, count)
       attribute.needsUpdate = true
-      if (this.#uploadEvidence) this.#uploadEvidence.particleUploadBytes += vertices * attribute.itemSize * Float32Array.BYTES_PER_ELEMENT
+      if (this.#uploadEvidence) {
+        this.#uploadEvidence.particleUploadBytes += count * Float32Array.BYTES_PER_ELEMENT
+        this.#uploadEvidence.particleUploadWrites += 1
+        this.#uploadEvidence.particleFullUploadBytes += vertices * attribute.itemSize * Float32Array.BYTES_PER_ELEMENT
+      }
     }
     geometry.setDrawRange(0, (end - start) * 6)
   }
