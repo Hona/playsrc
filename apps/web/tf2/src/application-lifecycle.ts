@@ -3,6 +3,14 @@ export type ApplicationOperation = Readonly<{
   signal: AbortSignal
 }>
 
+export function admitBotConfiguration<Configuration>(
+  configuration: Configuration | undefined,
+  mapIdentity: string,
+  dependencies: ReadonlyMap<string, unknown>,
+): Configuration | undefined {
+  return dependencies.has(`maps/${mapIdentity}.nav`) ? configuration : undefined
+}
+
 export class ApplicationFrameClock {
   #current = 0
 

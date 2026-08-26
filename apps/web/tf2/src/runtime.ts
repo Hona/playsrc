@@ -119,6 +119,7 @@ import {
   ApplicationFrameClock,
   ApplicationOperationLedger,
   PredictedEyeInterpolation,
+  admitBotConfiguration,
   composeViewmodelTransform,
   currentPresentationGeneration,
   routeApplicationEscape,
@@ -1672,7 +1673,9 @@ export class Tf2Application {
         })
       }
       if (this.#pendingLocalMatch?.mapIdentity === target.target) {
-        this.#botConfiguration = this.#pendingLocalMatch.configuration
+        this.#botConfiguration = admitBotConfiguration(
+          this.#pendingLocalMatch.configuration, target.target, this.#dependencyEntries,
+        )
         this.#pendingLocalMatch = undefined
       }
       this.#requireOperation(operation)
@@ -2602,7 +2605,9 @@ export class Tf2Application {
         this.#botDifficulty = Number(tokens[0]) as 0 | 1 | 2 | 3
         if (this.#activeBotConfiguration) {
           this.#activeBotConfiguration = Object.freeze({ ...this.#activeBotConfiguration, difficulty: this.#botDifficulty })
-          this.#botConfiguration = this.#activeBotConfiguration
+          this.#botConfiguration = admitBotConfiguration(
+            this.#activeBotConfiguration, this.#mapIdentity, this.#dependencyEntries,
+          )
         }
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
@@ -2643,8 +2648,10 @@ export class Tf2Application {
             ...(command === "tf_bot_join_after_player" ? { joinAfterPlayer: value === "1" } : { autoVacate: value === "1" }),
           })
         }
-        if (this.#snapshot && this.#dependencyEntries.has(`maps/${this.#mapIdentity}.nav`)) {
-          this.#botConfiguration = this.#activeBotConfiguration
+        if (this.#snapshot) {
+          this.#botConfiguration = admitBotConfiguration(
+            this.#activeBotConfiguration, this.#mapIdentity, this.#dependencyEntries,
+          )
         }
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
@@ -3180,7 +3187,9 @@ export class Tf2Application {
       })
     }
     if (this.#pendingLocalMatch?.mapIdentity === name) {
-      this.#botConfiguration = this.#pendingLocalMatch.configuration
+      this.#botConfiguration = admitBotConfiguration(
+        this.#pendingLocalMatch.configuration, name, this.#dependencyEntries,
+      )
       this.#pendingLocalMatch = undefined
     }
     if (operation) this.#requireOperation(operation)

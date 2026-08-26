@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { TF2_MAIN_MENU_STATE, transitionTf2GameUi } from "@playsrc/game-tf2-browser/gameui"
+import { encodeCommand, type BotConfiguration } from "@playsrc/game-tf2-browser/codec"
 import {
   ApplicationFrameClock,
   ApplicationOperationLedger,
+  admitBotConfiguration,
   PredictedEyeInterpolation,
   composeViewmodelTransform,
   currentPresentationGeneration,
@@ -11,6 +13,26 @@ import {
 } from "../src/application-lifecycle"
 
 describe("TF2 application lifecycle ownership", () => {
+  test("never admits persisted bot settings into a navless map's team/class Worker command", () => {
+    const configuration: BotConfiguration = Object.freeze({
+      quota: 6, maximumPlayers: 32, mode: "fill", difficulty: 2,
+      joinAfterPlayer: true, autoVacate: true, offlinePractice: false,
+    })
+    const command = (map: string, dependencies: ReadonlyMap<string, unknown>) => new DataView(encodeCommand({
+      forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0,
+      jump: false, crouch: false, fire: false, detonate: false,
+      selectTeam: 2, selectClass: 3,
+      botConfiguration: admitBotConfiguration(configuration, map, dependencies),
+    }))
+    const previousMap = new Map<string, unknown>([["maps/ctf_2fort.nav", new Uint8Array([1])]])
+    expect(command("jump_beef", previousMap).getUint32(44, true)).toBe(0)
+    for (const map of ["ctf_2fort", "pl_upward"]) {
+      const dependencies = new Map<string, unknown>([[`maps/${map}.nav`, new Uint8Array([1])]])
+      expect(command(map, dependencies).getUint32(44, true)).not.toBe(0)
+    }
+    expect(command("ctf_2fort", new Map()).getUint32(44, true)).toBe(0)
+  })
+
   test("admits one nondecreasing frame clock across stale animation callbacks and owner creation", () => {
     const clock = new ApplicationFrameClock()
     expect(clock.admit(4)).toBe(4)
