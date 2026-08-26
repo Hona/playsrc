@@ -15,7 +15,6 @@ use std::{
     env, fs,
     io::{ErrorKind, Read},
     path::{Path, PathBuf},
-    sync::Arc,
     time::Instant,
 };
 
@@ -1813,7 +1812,7 @@ fn collect_model(
                         requester: request.requester,
                         role: request.role,
                         logical_path: path,
-                        bytes: bytes.map(Arc::from),
+                        bytes: bytes.map(std::borrow::Cow::Owned),
                     });
                 }
             }
