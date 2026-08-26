@@ -1679,14 +1679,15 @@ fn verify_eye_states(files: &VpkFiles) -> Result<String, String> {
                 size: studio::Float32(0.0_f32.to_bits()),
             },
         };
-        let states = studio::eye_draw_states(&document, &request)
-            .map_err(|error| error.to_string())?;
-        let definitions = studio::eye_definitions(&document)
-            .map_err(|error| error.to_string())?;
+        let states =
+            studio::eye_draw_states(&document, &request).map_err(|error| error.to_string())?;
+        let definitions = studio::eye_definitions(&document).map_err(|error| error.to_string())?;
         let retained = studio::eye_draw_states_for_definitions(identity, &definitions, &request)
             .map_err(|error| error.to_string())?;
         if retained != states {
-            return Err(format!("{identity} retained eye definitions changed authored draw state"));
+            return Err(format!(
+                "{identity} retained eye definitions changed authored draw state"
+            ));
         }
         if states.len() != expected {
             return Err(format!("{identity} eye count changed"));
