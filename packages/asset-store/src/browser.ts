@@ -5,6 +5,9 @@ const MAX_OBJECT_BYTES = 536_870_912
 const CACHE_OPERATION_TIMEOUT_MILLISECONDS = 30_000
 const MAX_CACHE_BYTES = 1024 * 1024 * 1024
 const MAX_CACHE_RECORDS = 4_096
+const VERIFIED_RECORD_VERSION = 1
+const VERIFIED_BLOB_TYPE = "application/x-playsrc-verified"
+const TRANSACTION_IDENTITY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const KINDS = new Set([
   "source-object",
   "derived-object",
@@ -37,9 +40,18 @@ export type DerivedRecord = Readonly<{
   sha256: string
   bytes: Blob
   storedAt: number
+  verificationVersion?: number
+  transactionIdentity?: string
 }>
 
-export type DerivedCacheMetadata = Readonly<{ key: string; byteLength: number; storedAt: number }>
+export type DerivedCacheMetadata = Readonly<{
+  key: string
+  byteLength: number
+  storedAt: number
+  sha256?: string
+  verificationVersion?: number
+  transactionIdentity?: string
+}>
 export type VerifiedDerivedObject = Readonly<{ bytes: Uint8Array; sha256: string }>
 
 export function planDerivedCacheEviction(
@@ -209,7 +221,11 @@ export type ImmutableObjectCacheEvent = Readonly<{
   sha256: string
   byteLength: number
   milliseconds: number
+  verification?: "verified-at-write" | "rehash"
+  hashMilliseconds?: number
 }>
+
+const verifiedReadEvidence = new WeakMap<Uint8Array, Readonly<{ verification: "verified-at-write" | "rehash"; hashMilliseconds: number }>>()
 
 export function createImmutableObjectAcquirer(options: Readonly<{
   concurrency?: number
@@ -246,13 +262,14 @@ export function createImmutableObjectAcquirer(options: Readonly<{
   let active = 0
   let order = 0
 
-  const reportCache = (kind: ImmutableObjectCacheEvent["kind"], descriptor: ObjectDescriptor, started: number): void => {
+  const reportCache = (kind: ImmutableObjectCacheEvent["kind"], descriptor: ObjectDescriptor, started: number, bytes?: Uint8Array): void => {
     try {
       options.onCacheEvent?.(Object.freeze({
         kind,
         sha256: descriptor.sha256,
         byteLength: Number(descriptor.byteLength),
         milliseconds: performance.now() - started,
+        ...(bytes ? verifiedReadEvidence.get(bytes) : undefined),
       }))
     } catch {}
   }
@@ -276,7 +293,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
     }
     if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
     if (retained) {
-      reportCache("hit", transfer.descriptor, started)
+      reportCache("hit", transfer.descriptor, started, retained.bytes)
       progress(0, retained.bytes.byteLength)
       progress(retained.bytes.byteLength, retained.bytes.byteLength)
       return retained.bytes
@@ -389,7 +406,7 @@ export async function verifyDerivedRecord(
   }
   const record = value as Record<string, unknown>
   if (
-    Object.keys(record).sort().join("\0") !== "byteLength\0bytes\0key\0sha256\0storedAt"
+    !["byteLength\0bytes\0key\0sha256\0storedAt", "byteLength\0bytes\0key\0sha256\0storedAt\0transactionIdentity\0verificationVersion"].includes(Object.keys(record).sort().join("\0"))
     || record.key !== expectedKey
     || !Number.isSafeInteger(record.byteLength)
     || (record.byteLength as number) < 0
@@ -399,6 +416,9 @@ export async function verifyDerivedRecord(
     || record.bytes.size !== record.byteLength
     || !Number.isSafeInteger(record.storedAt)
     || (record.storedAt as number) < 0
+    || (record.verificationVersion !== undefined && (record.verificationVersion !== VERIFIED_RECORD_VERSION
+      || typeof record.transactionIdentity !== "string" || !TRANSACTION_IDENTITY.test(record.transactionIdentity)
+      || record.bytes.type !== `${VERIFIED_BLOB_TYPE};identity=${record.transactionIdentity}`))
   ) {
     throw new BrowserAssetError("IntegrityFailure", "derived cache record is malformed")
   }
@@ -407,6 +427,31 @@ export async function verifyDerivedRecord(
     throw new BrowserAssetError("IntegrityFailure", "derived cache record hash differs")
   }
   return bytes
+}
+
+function verifiedTransactionRecord(value: unknown, metadata: unknown, expectedKey: string): DerivedRecord | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (record.verificationVersion === undefined && record.transactionIdentity === undefined) return undefined
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    throw new BrowserAssetError("IntegrityFailure", "derived cache verification metadata is missing")
+  }
+  const authority = metadata as Record<string, unknown>
+  if (Object.keys(record).sort().join("\0") !== "byteLength\0bytes\0key\0sha256\0storedAt\0transactionIdentity\0verificationVersion"
+    || Object.keys(authority).sort().join("\0") !== "byteLength\0key\0sha256\0storedAt\0transactionIdentity\0verificationVersion"
+    || record.key !== expectedKey || authority.key !== expectedKey
+    || !Number.isSafeInteger(record.byteLength) || (record.byteLength as number) < 0 || (record.byteLength as number) > MAX_OBJECT_BYTES
+    || authority.byteLength !== record.byteLength || !HASH.test(record.sha256 as string) || authority.sha256 !== record.sha256
+    || !(record.bytes instanceof Blob) || record.bytes.size !== record.byteLength
+    || record.bytes.type !== `${VERIFIED_BLOB_TYPE};identity=${record.transactionIdentity}`
+    || record.verificationVersion !== VERIFIED_RECORD_VERSION || authority.verificationVersion !== VERIFIED_RECORD_VERSION
+    || typeof record.transactionIdentity !== "string" || !TRANSACTION_IDENTITY.test(record.transactionIdentity)
+    || authority.transactionIdentity !== record.transactionIdentity
+    || !Number.isSafeInteger(record.storedAt) || (record.storedAt as number) < 0
+    || !Number.isSafeInteger(authority.storedAt) || (authority.storedAt as number) < (record.storedAt as number)) {
+    throw new BrowserAssetError("IntegrityFailure", "derived cache verified transaction identity differs")
+  }
+  return record as DerivedRecord
 }
 
 function requestResult<T>(request: IDBRequest<T>,operation:string): Promise<T> {
@@ -491,7 +536,9 @@ export async function openDerivedObjectCache(
       return
     }
     if (current.key !== verified.key || current.byteLength !== verified.byteLength
-      || !Number.isSafeInteger(current.storedAt) || current.storedAt < verified.storedAt) {
+      || !Number.isSafeInteger(current.storedAt) || current.storedAt < verified.storedAt
+      || (verified.verificationVersion !== undefined && (current.verificationVersion !== verified.verificationVersion
+        || current.transactionIdentity !== verified.transactionIdentity || current.sha256 !== verified.sha256))) {
       try { transaction.abort() } catch {}
       await done.catch(() => {})
       throw new BrowserAssetError("IntegrityFailure", "derived cache recency metadata is malformed")
@@ -503,19 +550,33 @@ export async function openDerivedObjectCache(
       await done.catch(() => {})
       throw new BrowserAssetError("BoundExceeded", "derived cache recency exceeds its bound")
     }
-    await requestResult(metadata.put({ key: current.key, byteLength: current.byteLength, storedAt } satisfies DerivedCacheMetadata), "read recency metadata write request")
+    await requestResult(metadata.put({ ...current, storedAt } satisfies DerivedCacheMetadata), "read recency metadata write request")
     await done
     latestReadRecency = Math.max(latestReadRecency, storedAt)
   }
   const cache: DerivedObjectCache = {
     async read(key: string): Promise<VerifiedDerivedObject | undefined> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
-      const [objects, , transaction] = stores("readonly")
+      const [objects, metadata, transaction] = stores("readonly")
       const done = transactionDone(transaction,"read transaction")
-      const value = await requestResult(objects.get(key),"read request")
+      const [value, authority] = await Promise.all([
+        requestResult(objects.get(key), "read request"),
+        requestResult(metadata.get(key), "read metadata request"),
+      ])
       await done
-      if (value === undefined) return undefined
-      const bytes = await bounded(verifyDerivedRecord(value, key),"derived record verification")
+      if (value === undefined) {
+        if (authority !== undefined) throw new BrowserAssetError("IntegrityFailure", "derived cache object is missing from its verified transaction")
+        return undefined
+      }
+      const verified = verifiedTransactionRecord(value, authority, key)
+      const verificationStarted = performance.now()
+      const bytes = verified
+        ? new Uint8Array(await bounded(verified.bytes.arrayBuffer(), "verified derived record bytes"))
+        : await bounded(verifyDerivedRecord(value, key), "derived record verification")
+      verifiedReadEvidence.set(bytes, {
+        verification: verified ? "verified-at-write" : "rehash",
+        hashMilliseconds: verified ? 0 : performance.now() - verificationStarted,
+      })
       await refreshVerifiedRecency(value as DerivedRecord)
       return Object.freeze({ bytes, sha256: (value as DerivedRecord).sha256 })
     },
@@ -534,6 +595,7 @@ export async function openDerivedObjectCache(
       const done = transactionDone(transaction,"write transaction")
       const inventory = await requestResult(metadata.getAll(),"inventory request") as unknown as DerivedCacheMetadata[]
       const storedAt = Date.now()
+      const transactionIdentity = crypto.randomUUID()
       const evicted = planDerivedCacheEviction(inventory.map((record) => ({
         key: record.key,
         byteLength: record.byteLength,
@@ -548,10 +610,19 @@ export async function openDerivedObjectCache(
         key,
         byteLength: bytes.byteLength,
         sha256: actualSha256,
-        bytes: new Blob([bytes],{type:"application/octet-stream"}),
+        bytes: new Blob([bytes], { type: `${VERIFIED_BLOB_TYPE};identity=${transactionIdentity}` }),
         storedAt,
+        verificationVersion: VERIFIED_RECORD_VERSION,
+        transactionIdentity,
       } satisfies DerivedRecord),"write request").catch(error=>{requestError=error})
-      void requestResult(metadata.add({ key, byteLength: bytes.byteLength, storedAt } satisfies DerivedCacheMetadata),"metadata write request").catch(error=>{requestError??=error})
+      void requestResult(metadata.add({
+        key,
+        byteLength: bytes.byteLength,
+        storedAt,
+        sha256: actualSha256,
+        verificationVersion: VERIFIED_RECORD_VERSION,
+        transactionIdentity,
+      } satisfies DerivedCacheMetadata), "metadata write request").catch(error=>{requestError??=error})
       try {
         await done
       } catch (error) {

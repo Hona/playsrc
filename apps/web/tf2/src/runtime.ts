@@ -488,8 +488,15 @@ export class Tf2Application {
     onCacheEvent: (event) => {
       const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
       if (!profile) return
-      const statistics = (profile.immutableCache ??= { hits: 0, misses: 0, corruptions: 0, writes: 0, hitBytes: 0, writtenBytes: 0, readMilliseconds: 0, writeMilliseconds: 0 }) as Record<string, number>
-      if (event.kind === "hit") { statistics.hits! += 1; statistics.hitBytes! += event.byteLength; statistics.readMilliseconds! += event.milliseconds }
+      const statistics = (profile.immutableCache ??= { hits: 0, verifiedAtWriteHits: 0, rehashedHits: 0, hashMilliseconds: 0, misses: 0, corruptions: 0, writes: 0, hitBytes: 0, writtenBytes: 0, readMilliseconds: 0, writeMilliseconds: 0 }) as Record<string, number>
+      if (event.kind === "hit") {
+        statistics.hits! += 1
+        statistics.hitBytes! += event.byteLength
+        statistics.readMilliseconds! += event.milliseconds
+        if (event.verification === "verified-at-write") statistics.verifiedAtWriteHits! += 1
+        else if (event.verification === "rehash") statistics.rehashedHits! += 1
+        statistics.hashMilliseconds! += event.hashMilliseconds ?? 0
+      }
       else if (event.kind === "miss") statistics.misses! += 1
       else if (event.kind === "corrupt") statistics.corruptions! += 1
       else { statistics.writes! += 1; statistics.writtenBytes! += event.byteLength; statistics.writeMilliseconds! += event.milliseconds }

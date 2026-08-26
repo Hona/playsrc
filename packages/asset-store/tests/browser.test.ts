@@ -261,6 +261,73 @@ describe("browser asset adapters", () => {
     }
   })
 
+  test("authenticates immutable bytes once at admission and trusts their atomic origin-owned Blob identity across generations", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const hashing = jest.spyOn(crypto.subtle, "digest")
+    try {
+      const first = await openDerivedObjectCache("verified-at-write-generations")
+      await first.write(sha256, sha256, bytes)
+      expect(hashing).toHaveBeenCalledTimes(1)
+      const record = fake.databases.get("verified-at-write-generations")!.get(sha256)!
+      const metadata = fake.metadata.get("verified-at-write-generations")!.get(sha256)!
+      expect(record.transactionIdentity).toBe(metadata.transactionIdentity)
+      expect((record.bytes as Blob).type).toBe(`application/x-playsrc-verified;identity=${record.transactionIdentity}`)
+      first.close()
+
+      const second = await openDerivedObjectCache("verified-at-write-generations")
+      expect(await second.read(sha256)).toEqual({ bytes, sha256 })
+      expect(await second.read(sha256)).toEqual({ bytes, sha256 })
+      expect(hashing).toHaveBeenCalledTimes(1)
+      second.close()
+    } finally {
+      hashing.mockRestore()
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("rejects torn writes, metadata rollback, identity substitution, downgraded verification, and replacement Blobs", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    try {
+      const cache = await openDerivedObjectCache("verified-transaction-corruption")
+      await cache.write(sha256, sha256, bytes)
+      const objects = fake.databases.get("verified-transaction-corruption")!
+      const inventory = fake.metadata.get("verified-transaction-corruption")!
+      const record = objects.get(sha256)!
+      const metadata = inventory.get(sha256)!
+      const rejected = async (object: Record<string, unknown> | undefined, authority: Record<string, unknown> | undefined) => {
+        if (object) objects.set(sha256, object)
+        else objects.delete(sha256)
+        if (authority) inventory.set(sha256, authority)
+        else inventory.delete(sha256)
+        await expect(cache.read(sha256)).rejects.toMatchObject({ code: "IntegrityFailure" })
+      }
+
+      await rejected(undefined, metadata)
+      await rejected(record, undefined)
+      await rejected(record, { ...metadata, storedAt: (record.storedAt as number) - 1 })
+      await rejected(record, { ...metadata, transactionIdentity: crypto.randomUUID() })
+      await rejected(record, { ...metadata, sha256: "0".repeat(64) })
+      await rejected(record, { ...metadata, verificationVersion: 0 })
+      await rejected({ ...record, verificationVersion: 0 }, metadata)
+      await rejected({ ...record, bytes: new Blob([new TextEncoder().encode("immutablE")], { type: "application/octet-stream" }) }, metadata)
+      await rejected({ ...record, bytes: new Blob([bytes], { type: `application/x-playsrc-verified;identity=${crypto.randomUUID()}` }) }, metadata)
+
+      objects.set(sha256, record)
+      inventory.set(sha256, metadata)
+      expect(await cache.read(sha256)).toEqual({ bytes, sha256 })
+      await expect(cache.write("0".repeat(64), "0".repeat(64), bytes)).rejects.toMatchObject({ code: "IntegrityFailure" })
+      cache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
   test("admits immutable objects under one bounded LRU inventory without rewriting retained Blobs", async () => {
     const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
     const fake = new FakeIndexedDb()
@@ -629,7 +696,7 @@ describe("browser asset adapters", () => {
       })
       await expect(cache.read(sha256)).rejects.toMatchObject({
         code: "IntegrityFailure",
-        message: "derived cache recency metadata is malformed",
+        message: "derived cache verified transaction identity differs",
       })
       expect(fake.writes.objects).toBe(writes)
       expect(fake.databases.get("malformed-recency-metadata")!.get(sha256)).toBe(stored)
