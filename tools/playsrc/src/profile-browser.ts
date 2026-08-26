@@ -71,7 +71,9 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
     // to a different task or an arbitrary CDP endpoint.
     await browserLease(filename, previous.token, 0, lockToken)
     while (processIsAlive(previous.pid) && remaining() > 0) await Bun.sleep(50)
+    if (processIsAlive(previous.pid)) throw new Error("Previous headed browser is still retiring at the command deadline")
   }
+  if (remaining() <= 0) throw new Error("No command budget remains for headed browser startup")
   const token = randomUUID()
   await browserLease(filename, token, remaining())
   const logPath = `${filename}.${token}.log`

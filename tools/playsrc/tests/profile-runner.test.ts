@@ -5,7 +5,7 @@ import path from "node:path"
 import { headedProfileConfiguration } from "../profile/profile-config"
 import { headedProfileTarget } from "../profile/profile-target"
 import { buildCacheDirectory, rustBuildIdentity } from "../src/build-identity"
-import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, releaseHeadedProfileLock } from "../src/profile-runner"
+import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred } from "../src/profile-runner"
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
@@ -281,6 +281,28 @@ describe("bounded headed profile orchestration", () => {
     const report = phases.finish(false)
     expect(report.spans[1]).toMatchObject({ name: "sample", complete: false })
     expect(report.spans[1]!.durationMilliseconds).toBeGreaterThan(0)
+  })
+
+  test("defers an exhausted queue/build budget before launching an incomplete sample", () => {
+    expect(() => requireBrowserBudget(16_000)).toThrow(ProfileCapacityDeferred)
+    expect(() => requireBrowserBudget(30_000)).not.toThrow()
+  })
+
+  test("changed browser launch or binary identity cannot reuse an old process", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-browser-invalidation-"))
+    directories.push(directory)
+    const filename = path.join(directory, "browser.json")
+    const executable = path.join(directory, "binary")
+    await writeFile(executable, "first")
+    const launch = { channel: "msedge" }
+    await writeFile(filename, JSON.stringify({ token: "old", pid: process.pid, endpoint: "ws://owned", executable,
+      executableSha256: await fileFingerprint(executable), identity: await browserLaunchIdentity(launch) }))
+    await browserLease(filename, "old", 10_000)
+    await expect(prepareProfileBrowser(filename, { channel: "chromium" }, () => 0)).rejects.toThrow("still retiring")
+    await browserLease(filename, "old", 10_000)
+    await writeFile(executable, "other")
+    await expect(prepareProfileBrowser(filename, launch, () => 0)).rejects.toThrow("still retiring")
+    expect(JSON.parse(await readFile(filename, "utf8")).token).toBe("old")
   })
 
   test("source edits and new inputs invalidate fingerprints without process restart", async () => {
