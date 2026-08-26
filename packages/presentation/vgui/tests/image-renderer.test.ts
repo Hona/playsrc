@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isDirectVguiImageMaterial, shadeVguiImage, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
+import { isDirectVguiImageMaterial, shadeVguiImage, shadeVguiImageIncrementally, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
@@ -95,6 +95,25 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
 })
 
 describe("configured VGUI image material raster", () => {
+  test("yields bounded raster rows without changing one authored filtered pixel", async () => {
+    const source = Object.freeze({ ...texture("base"), width: 2, height: 2 })
+    const rgba = new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255])
+    const image = Object.freeze({ ...request(baseMaterial({ base: source })), width: 7, height: 9 })
+    const sources = new Map([["base", Object.freeze({ width: 2, height: 2, rgba, filtered: true, colorRead: "linear" as const })]])
+    let yields = 0
+    const incremental = await shadeVguiImageIncrementally(image, sources, async () => { yields += 1 }, 14)
+    expect([...incremental]).toEqual([...shadeVguiImage(image, sources)])
+    expect(yields).toBe(4)
+  })
+
+  test("never yields an already bounded raster and rejects invalid incremental budgets", async () => {
+    const image = request(baseMaterial())
+    let yields = 0
+    expect([...await shadeVguiImageIncrementally(image, new Map([["base", pixels([255, 128, 64, 255])]]), async () => { yields += 1 }, 1)]).toEqual([255, 188, 137, 255])
+    expect(yields).toBe(0)
+    await expect(shadeVguiImageIncrementally(image, new Map([["base", pixels([1, 2, 3, 4])]]), async () => {}, 0)).rejects.toThrow("budget")
+  })
+
   test("preserves every exact authored sRGB byte without repeated transfer-function evaluation", () => {
     const source = Object.freeze({ ...texture("base"), width: 256, colorRead: "srgb" as const })
     const rgba = new Uint8ClampedArray(256 * 4)

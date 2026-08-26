@@ -1,8 +1,15 @@
 import { summarizeFrameTimes } from "./profile-window"
 
-export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; dur?: number; args?: Record<string, any> }>
+export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; dur?: number; pid?: number; tid?: number; cat?: string; args?: Record<string, any> }>
 
 const PRESENTATION_EVENTS = ["PresentationFeedback", "Display::FrameDisplayed", "FramePresented"] as const
+
+export function activeGameplayTraceWindow(events: readonly ChromiumTraceEvent[]): Readonly<{ startedMicroseconds: number; endedMicroseconds: number }> {
+  const started = events.find(event => event.name === "playsrc-active-gameplay-start" && Number.isFinite(event.ts))?.ts
+  const ended = events.find(event => event.name === "playsrc-active-gameplay-end" && Number.isFinite(event.ts))?.ts
+  if (started === undefined || ended === undefined || ended < started) throw new Error("Chromium trace does not contain ordered active gameplay marks")
+  return Object.freeze({ startedMicroseconds: started, endedMicroseconds: ended })
+}
 
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
   if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0) throw new Error("Compositor sampling duration must be positive")
@@ -20,6 +27,40 @@ export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], 
     eventNames: [...new Set(presentations.map(event => event.name!))].sort(),
     traceEvents: events.length,
   })
+}
+
+export function analyzeCompositorStalls(
+  events: readonly ChromiumTraceEvent[],
+  window: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>,
+  lifecycle: readonly Readonly<{ at: number; phase: string; playerClass?: number }>[],
+  minimumMilliseconds = 50,
+) {
+  const sampled = events.filter(event => Number.isFinite(event.ts) && event.ts! >= window.startedMicroseconds && event.ts! <= window.endedMicroseconds)
+  const name = PRESENTATION_EVENTS.find(candidate => sampled.some(event => event.name === candidate))
+  if (!name) return []
+  const timestamps = [...new Set(sampled.filter(event => event.name === name).map(event => event.ts!))].sort((left, right) => left - right)
+  return timestamps.slice(1).flatMap((ended, index) => {
+    const started = timestamps[index]!
+    if (ended - started < minimumMilliseconds * 1_000) return []
+    const startedMilliseconds = (started - window.startedMicroseconds) / 1_000
+    const endedMilliseconds = (ended - window.startedMicroseconds) / 1_000
+    const overlapping = sampled.filter(event => event.ts! < ended && (event.ts! + (event.dur ?? 0)) > started)
+    return [{
+      milliseconds: Number(((ended - started) / 1_000).toFixed(3)),
+      startedMilliseconds: Number(startedMilliseconds.toFixed(3)),
+      endedMilliseconds: Number(endedMilliseconds.toFixed(3)),
+      classes: lifecycle.filter(event => event.at >= startedMilliseconds && event.at <= endedMilliseconds),
+      beginFrames: overlapping.filter(event => /BeginFrame|SurfaceFrame/u.test(event.name ?? "")).length,
+      work: overlapping.filter(event => (event.dur ?? 0) >= 1_000).map(event => ({
+        name: event.name ?? "unknown",
+        milliseconds: Number((event.dur! / 1_000).toFixed(3)),
+        overlapMilliseconds: Number((Math.min(ended, event.ts! + event.dur!) - Math.max(started, event.ts!)).toFixed(0)) / 1_000,
+        ...(event.pid === undefined ? {} : { pid: event.pid }),
+        ...(event.tid === undefined ? {} : { tid: event.tid }),
+        ...(event.cat === undefined ? {} : { category: event.cat }),
+      })).sort((left, right) => right.overlapMilliseconds - left.overlapMilliseconds).slice(0, 16),
+    }]
+  }).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 12)
 }
 
 export function assertVisibleGameplayTruth(evidence: Readonly<{ visible: boolean; focused: boolean; ticks: number; displayFrames: number; submissions: number; beforeSha256: string; afterSha256: string }>): void {

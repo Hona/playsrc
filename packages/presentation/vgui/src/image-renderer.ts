@@ -110,9 +110,12 @@ function slicedCoordinate(position: number, destination: number, source: number,
   return (sourceCorner + (centerDraw > 0 ? (position - drawCorner) / centerDraw * centerSource : 0)) / source
 }
 
-export function shadeVguiImage(
+function shadeVguiImageRows(
   request: VguiImageRasterRequest,
   textures: ReadonlyMap<string, VguiImageRasterTexturePixels>,
+  output: Uint8ClampedArray,
+  firstRow: number,
+  lastRow: number,
 ): Uint8ClampedArray {
   const baseTexture = textures.get(request.material.base.logicalIdentity)
   if (!baseTexture) throw new Error(`VGUI base texture ${request.material.base.logicalIdentity} is unavailable`)
@@ -120,7 +123,6 @@ export function shadeVguiImage(
   const detailTexture = request.material.detail ? textures.get(request.material.detail.logicalIdentity) : null
   if (request.material.second && !secondTexture) throw new Error(`VGUI second texture ${request.material.second.logicalIdentity} is unavailable`)
   if (request.material.detail && !detailTexture) throw new Error(`VGUI detail texture ${request.material.detail.logicalIdentity} is unavailable`)
-  const output = new Uint8ClampedArray(request.width * request.height * 4)
   let softStart = request.material.edgeSoftnessStart
   let softEnd = request.material.edgeSoftnessEnd
   let outlineStart0 = request.material.outlineStart0
@@ -147,7 +149,7 @@ export function shadeVguiImage(
   const tintAlpha = request.tint[3] / 255
   const color = new Float64Array(4)
   const secondary = new Float64Array(4)
-  for (let y = 0; y < request.height; y += 1) {
+  for (let y = firstRow; y < lastRow; y += 1) {
     for (let x = 0; x < request.width; x += 1) {
       let u: number
       let v: number
@@ -223,6 +225,29 @@ export function shadeVguiImage(
       output[offset + 2] = Math.round(clamp(linearToSrgb(color[2]!)) * 255)
       output[offset + 3] = Math.round(clamp(color[3]!) * 255)
     }
+  }
+  return output
+}
+
+export function shadeVguiImage(
+  request: VguiImageRasterRequest,
+  textures: ReadonlyMap<string, VguiImageRasterTexturePixels>,
+): Uint8ClampedArray {
+  return shadeVguiImageRows(request, textures, new Uint8ClampedArray(request.width * request.height * 4), 0, request.height)
+}
+
+export async function shadeVguiImageIncrementally(
+  request: VguiImageRasterRequest,
+  textures: ReadonlyMap<string, VguiImageRasterTexturePixels>,
+  yieldWork: () => Promise<void>,
+  maximumPixels = 4096,
+): Promise<Uint8ClampedArray> {
+  if (!Number.isSafeInteger(maximumPixels) || maximumPixels < 1) throw new Error("VGUI incremental raster pixel budget is invalid")
+  const output = new Uint8ClampedArray(request.width * request.height * 4)
+  const rows = Math.max(1, Math.floor(maximumPixels / request.width))
+  for (let first = 0; first < request.height; first += rows) {
+    if (first > 0) await yieldWork()
+    shadeVguiImageRows(request, textures, output, first, Math.min(request.height, first + rows))
   }
   return output
 }
@@ -324,7 +349,11 @@ export class VguiImageRasterizer {
       rendering = (async () => {
         const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
         const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
-        return shadeVguiImage(request, new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])))
+        return shadeVguiImageIncrementally(
+          request,
+          new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])),
+          () => new Promise<void>(resolve => setTimeout(resolve, 0)),
+        )
       })()
       this.#renders.set(signature, rendering, request.width * request.height * 4)
       void rendering.catch(() => this.#renders.delete(signature))

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { assertVisibleGameplayTruth, summarizeCompositorTruth } from "../profile/compositor-truth"
+import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorTruth } from "../profile/compositor-truth"
 
 describe("truthful compositor presentation evidence", () => {
   test("never mislabels animation callbacks, swaps, or application frames as presentation", () => {
@@ -30,6 +30,49 @@ describe("truthful compositor presentation evidence", () => {
   test("excludes compositor frames outside the real active gameplay window", () => {
     expect(summarizeCompositorTruth([{ name: "Display::FrameDisplayed", ts: 99 }, { name: "Display::FrameDisplayed", ts: 100 }, { name: "Display::FrameDisplayed", ts: 200 }, { name: "Display::FrameDisplayed", ts: 201 }], 1000, { startedMicroseconds: 100, endedMicroseconds: 200 })).toMatchObject({ presentedFrames: 2 })
     expect(() => summarizeCompositorTruth([], 1000, { startedMicroseconds: 2, endedMicroseconds: 1 })).toThrow("window is invalid")
+  })
+
+  test("attributes a real presentation gap to overlapping class lifecycle and bounded Chromium work", () => {
+    expect(analyzeCompositorStalls([
+      { name: "Display::FrameDisplayed", ts: 1_000_000 },
+      { name: "Display::FrameDisplayed", ts: 1_550_000 },
+      { name: "RunTask", ts: 1_100_000, dur: 310_000, pid: 7, tid: 8 },
+      { name: "MinorGC", ts: 1_200_000, dur: 45_000, pid: 7, tid: 8 },
+      { name: "BeginFrame", ts: 1_300_000, pid: 9, tid: 2 },
+    ], { startedMicroseconds: 900_000, endedMicroseconds: 1_600_000 }, [
+      { at: 220, phase: "selected", playerClass: 6 },
+    ], 50)).toMatchObject([{
+      milliseconds: 550,
+      startedMilliseconds: 100,
+      classes: [{ at: 220, phase: "selected", playerClass: 6 }],
+      work: [
+        { name: "RunTask", milliseconds: 310, overlapMilliseconds: 310, pid: 7, tid: 8 },
+        { name: "MinorGC", milliseconds: 45, overlapMilliseconds: 45, pid: 7, tid: 8 },
+      ],
+      beginFrames: 1,
+    }])
+  })
+
+  test("rejects synthetic intervals and does not attribute work outside a real presentation gap", () => {
+    expect(analyzeCompositorStalls([
+      { name: "Display::FrameDisplayed", ts: 1_000 },
+      { name: "Display::FrameDisplayed", ts: 18_000 },
+      { name: "RunTask", ts: 20_000, dur: 900_000 },
+    ], { startedMicroseconds: 0, endedMicroseconds: 1_000_000 }, [], 50)).toEqual([])
+  })
+
+  test("bounds evidence to exact browser gameplay marks, excluding post-sample protocol serialization", () => {
+    const events = [
+      { name: "playsrc-active-gameplay-start", ts: 100_000 },
+      { name: "Display::FrameDisplayed", ts: 120_000 },
+      { name: "Display::FrameDisplayed", ts: 136_000 },
+      { name: "playsrc-active-gameplay-end", ts: 150_000 },
+      { name: "Display::FrameDisplayed", ts: 686_000 },
+    ]
+    const window = activeGameplayTraceWindow(events)
+    expect(window).toEqual({ startedMicroseconds: 100_000, endedMicroseconds: 150_000 })
+    expect(summarizeCompositorTruth(events, 50, window)).toMatchObject({ presentedFrames: 2, intervals: { maximumMilliseconds: 16 } })
+    expect(() => activeGameplayTraceWindow([{ name: "playsrc-active-gameplay-start", ts: 1 }])).toThrow("gameplay marks")
   })
 
   test("rejects hidden, unfocused, frozen, unsubmitted, and visually static gameplay", () => {

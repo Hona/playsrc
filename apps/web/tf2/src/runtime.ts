@@ -5205,7 +5205,6 @@ export class Tf2Application {
     this.#buttons.clear()
     this.#setScoreboardVisible(false)
     this.#jumpPressed = this.#firePressed = this.#detonatePressed = this.#reloadPressed = false
-    this.#selectClass = undefined
     this.#selectWeapon = undefined
     this.#disguise = undefined
     this.#modeRequest = undefined

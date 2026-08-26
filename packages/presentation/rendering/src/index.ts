@@ -4686,10 +4686,9 @@ class RendererOwner implements Renderer {
       skeleton = createSourceModelSkeleton(pose.boneMatrices)
       instance.userData.sourceSkeleton = skeleton
     }
-    if (skeleton.bones.length * 12 !== pose.boneMatrices.length) {
-      throw new RenderingError("IdentityMismatch", "authored model bone count differs")
-    }
-    const matrixBytes = updateSourceModelSkeleton(skeleton, pose.boneMatrices)
+    let matrixBytes: number
+    try { matrixBytes = updateSourceModelSkeleton(skeleton, pose.boneMatrices) }
+    catch { throw new RenderingError("IdentityMismatch", "authored model bone count differs") }
     if (this.#uploadEvidence) {
       this.#uploadEvidence.poseAttributes += 1
       this.#uploadEvidence.poseUploadBytes += matrixBytes
@@ -4704,7 +4703,7 @@ class RendererOwner implements Renderer {
       ) throw new RenderingError("IdentityMismatch", "posed model primitive differs from its template")
       if (!(object instanceof THREE.SkinnedMesh)) {
         const authored = SOURCE_MODEL_BIND_GEOMETRY.get(object.geometry)
-        if (!authored || authored.palette.some((bone) => bone >= skeleton!.bones.length)) {
+        if (!authored || authored.palette.some((bone) => bone >= pose.boneMatrices.length / 12)) {
           throw new RenderingError("IdentityMismatch", "authored model bone palette differs from its skeleton")
         }
         const skinned = bindSourceModelMesh(authored.geometry, object.material, skeleton)
