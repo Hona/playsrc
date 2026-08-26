@@ -4,10 +4,19 @@ import path from "node:path"
 import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { assertVisibleGameplayTruth, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
+
+function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
+  if (!processes?.length || process.platform === "win32") return null
+  const result = Bun.spawnSync(["ps", "-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { stdout: "pipe", stderr: "pipe" })
+  if (result.exitCode !== 0) return null
+  const resident = new Map(new TextDecoder().decode(result.stdout).trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
+  return processes.map(process => ({ id: process.id, type: process.type, residentBytes: resident.has(process.id) ? resident.get(process.id)! * 1024 : null }))
+}
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context }, testInfo) => {
   const wallStarted = Date.now()
@@ -18,9 +27,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await mkdir(directory, { recursive: true })
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => { ;(globalThis as any).__playsrcProfile = {} })
+  const network = { requests: 0, failed: 0, responseBytes: 0 }
+  page.on("request", () => network.requests += 1)
+  page.on("requestfailed", () => network.failed += 1)
+  page.on("response", response => network.responseBytes += Number(response.headers()["content-length"] ?? 0))
   const root = page.locator("main")
   const layer = page.locator(".local-match-layer")
-  await page.goto("/")
+  await page.goto(process.env.PLAYSRC_PROFILE_ORIGIN ? "/tf2" : "/")
+  await page.bringToFront()
   await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 100_000 })
   await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
   await page.locator(".gameui-layer [data-vgui-name='TrainingEntry'] [data-vgui-name='ModeButton']").click()
@@ -48,12 +62,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const canvas = page.locator("canvas.world-canvas")
   const before = await canvas.screenshot({ timeout: 20_000 })
   const cdp = await context.newCDPSession(page)
+  const browserCdp = await context.browser()!.newBrowserCDPSession()
+  const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
+  const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
+  const residentBefore = processResidentMemory(processBefore?.processInfo)
+  const traceEvents: ChromiumTraceEvent[] = []
+  cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value as ChromiumTraceEvent[]))
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
   await page.keyboard.down("w")
+  await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline", options: "record-as-much-as-possible" })
+  const clockBefore = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
   const measurement = await page.evaluate(async (duration) => {
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
@@ -62,10 +84,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstFrame = Number(surface.dataset.displayFrame)
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const started = performance.now()
+    let animationCallbacks = 0
     instrumentation.active = true
     try {
       while (performance.now() - started < duration * 1000) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+        animationCallbacks += 1
         if (main.dataset.phase !== "Ready") throw new Error(`Upward training left gameplay: ${main.dataset.phase}: ${main.dataset.detail}`)
       }
     } finally { instrumentation.active = false }
@@ -73,6 +97,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const position = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     return {
       elapsed, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
+      visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
+      viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, worker: instrumentation.worker, counters: instrumentation.counters,
@@ -80,9 +106,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
   }, seconds)
+  const clockAfter = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
+  const traceFinished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
+  await cdp.send("Tracing.end")
   await page.keyboard.up("w")
+  await traceFinished
   const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
   const heapAfter = await cdp.send("Runtime.getHeapUsage")
+  const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
+  const residentAfter = processResidentMemory(processAfter?.processInfo)
+  const storage = await page.evaluate(async () => ({ serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller), indexedDatabases: typeof indexedDB.databases === "function" ? await indexedDB.databases() : null, estimate: navigator.storage?.estimate ? await navigator.storage.estimate() : null, navigation: performance.getEntriesByType("navigation").map(entry => entry.toJSON()), resourceCount: performance.getEntriesByType("resource").length }))
   const after = await canvas.screenshot({ timeout: 20_000 })
   const completed = measurement.frames as Array<{ at: number; tick: number; detail: Record<string, number>; renderer: { passes: Array<{ submissions: number }> } }>
   const intervals = completed.slice(1).map((frame, index) => frame.at - completed[index]!.at)
@@ -101,7 +134,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target: "pl_upward", entry: "training", launch,
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, totalWallMilliseconds: Date.now() - wallStarted,
-    completedFrames: actualFrames, presentedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
+    animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
+    compositor: summarizeCompositorTruth(traceEvents, measurement.elapsed, clockBefore !== undefined && clockAfter !== undefined ? { startedMicroseconds: clockBefore * 1_000_000, endedMicroseconds: clockAfter * 1_000_000 } : undefined),
+    browser: { platform: process.platform, origin: new URL(page.url()).origin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, residentBefore, residentAfter }, network, storage, userMachineEvidence: false },
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
     botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
@@ -118,10 +153,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
+  assertVisibleGameplayTruth({ visible: measurement.visible, focused: measurement.focused, ticks: report.simulation.ticks, displayFrames: actualFrames, submissions: measurement.counters.submissions, beforeSha256: report.pixels.beforeSha256, afterSha256: report.pixels.afterSha256 })
   await testInfo.attach("headed-upward-default-training-bots", { body: JSON.stringify(report), contentType: "application/json" })
   console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
     label, activeBots: report.activeBots, teams: report.teams,
-    completedFrames: report.completedFrames, presentedFramesPerSecond: report.presentedFramesPerSecond,
+    animationCallbacks: report.animationCallbacks, completedFrames: report.completedFrames, applicationCompletedFramesPerSecond: report.applicationCompletedFramesPerSecond, compositor: report.compositor,
+    browser: { ...report.browser, gpu: { devices: report.browser.gpu?.devices ?? null, featureStatus: report.browser.gpu?.featureStatus ?? null }, storage: { ...report.browser.storage, navigation: undefined } },
     frameIntervals: report.frameIntervals, frameWork: report.frameWork, simulation: report.simulation,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
       calls: value.calls, maximumMilliseconds: value.milliseconds.max,
@@ -137,7 +174,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   expect(report.completedFrames).toBeGreaterThan(0)
   expect(report.pixels.nonBlack).toBeGreaterThan(20_000)
   if (process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1") {
-    expect(report.presentedFramesPerSecond).toBeGreaterThanOrEqual(55)
+    expect(report.applicationCompletedFramesPerSecond).toBeGreaterThanOrEqual(55)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
     expect(report.frameIntervals.p95Milliseconds).toBeLessThan(35)
   }
