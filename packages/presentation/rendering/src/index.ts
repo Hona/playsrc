@@ -1403,8 +1403,8 @@ class RendererOwner implements Renderer {
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
-  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; seen: number }>()
-  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; seen: number }>()
+  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
+  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
@@ -4347,7 +4347,7 @@ class RendererOwner implements Renderer {
   }
 
   #applyDynamicModelLighting(
-    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms> },
+    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[] },
     item: ModelItem,
     scene?: ModelLightingScene,
   ): void {
@@ -4364,6 +4364,8 @@ class RendererOwner implements Renderer {
     if (!uniforms) {
       uniforms = createSourceModelLightingUniforms()
       retained.lighting = uniforms
+      retained.cubemapIdentity = input.localEnvironment
+      const cubemapNodes: any[] = []
       const meshes = retained.meshes ?? []
       if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
       for (const mesh of meshes) {
@@ -4422,7 +4424,7 @@ class RendererOwner implements Renderer {
             updateSourceModelEyeUniforms(eyeUniforms, eye)
             base = sourceEyeIrisNode(textures.iris, eyeUniforms, state.dilation, authored.shader === "eye-refract")
           }
-          material.colorNode = sourceModelSurfaceNode(base, uniforms, {
+          const shaded = sourceModelSurfaceNode(base, uniforms, {
             halfLambert: state.phong ? true : state.halfLambert,
             diffuseWarp: textures?.warp,
             exponentTexture: textures?.exponent,
@@ -4436,9 +4438,20 @@ class RendererOwner implements Renderer {
               },
             } : {}),
           }, resources.exposure)
+          material.colorNode = shaded.color
+          if (shaded.environmentNode && !textures?.environment) cubemapNodes.push(shaded.environmentNode)
           material.needsUpdate = true
         }
       }
+      if (cubemapNodes.length > 0) retained.cubemapNodes = cubemapNodes
+    } else if (retained.cubemapNodes && retained.cubemapIdentity !== input.localEnvironment) {
+      const selected = input.localEnvironment && resources.environment?.cubemapFacts.find((fact) =>
+        fact.logicalPath.toLowerCase() === input.localEnvironment,
+      )
+      const texture = selected && resources.cubemaps.get(selected.index)
+      if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
+      for (const node of retained.cubemapNodes) node.value = texture
+      retained.cubemapIdentity = input.localEnvironment
     }
     updateSourceModelLightingUniforms(uniforms, input)
     if (retained.eyes) {
