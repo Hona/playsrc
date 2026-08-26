@@ -855,7 +855,6 @@ type StaticPropResource = Readonly<{
   radius: number
   bounds: readonly [number, number, number, number, number, number]
   fadeUniform: ReturnType<typeof TSL.uniform>
-  bundled: boolean
 }>
 
 type ModelPanelMaterialAnimation = Readonly<{
@@ -912,8 +911,6 @@ type SceneResources = {
   skyGroup: THREE.Group | null
   mainStaticProps:THREE.Group
   skyStaticProps:THREE.Group
-  mainStaticPropBundle: THREE.BundleGroup
-  skyStaticPropBundle: THREE.BundleGroup
   staticPropInstances: readonly StaticPropResource[]
   reflectionTarget: THREE.RenderTarget
   refractionTarget: THREE.RenderTarget
@@ -1830,12 +1827,6 @@ class RendererOwner implements Renderer {
     group.add(worldBundle, mainTransparentWorld, skyWorldBundle, skyTransparentWorld)
     const mainStaticProps = new RetainedStaticSceneGroup()
     const skyStaticProps = new RetainedStaticSceneGroup()
-    const mainStaticPropBundle = new THREE.BundleGroup()
-    const skyStaticPropBundle = new THREE.BundleGroup()
-    mainStaticPropBundle.matrixAutoUpdate = false
-    skyStaticPropBundle.matrixAutoUpdate = false
-    mainStaticProps.add(mainStaticPropBundle)
-    skyStaticProps.add(skyStaticPropBundle)
     const mainModelOccurrences = new RetainedStaticSceneGroup()
     const projectedMarkGroup = new THREE.Group()
     projectedMarkGroup.matrixAutoUpdate = false
@@ -2526,10 +2517,7 @@ class RendererOwner implements Renderer {
           const lightingOrigin = Number.isFinite(props.lightingOrigin[propIndex * 3])
             ? Object.freeze([props.lightingOrigin[propIndex * 3]!, props.lightingOrigin[propIndex * 3 + 1]!, props.lightingOrigin[propIndex * 3 + 2]!] as const)
             : null
-          const bundled = meshes.every((mesh) => !Array.isArray(mesh.material) && !mesh.material.transparent)
-          ;(ownership === 0
-            ? bundled ? mainStaticPropBundle : mainStaticProps
-            : bundled ? skyStaticPropBundle : skyStaticProps).add(instance)
+          ;(ownership === 0 ? mainStaticProps : skyStaticProps).add(instance)
           staticPropInstances.push(Object.freeze({
             object: instance,
             source: props.source[propIndex]!,
@@ -2544,7 +2532,6 @@ class RendererOwner implements Renderer {
             radius: sphere.radius,
             bounds: Object.freeze([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z] as const),
             fadeUniform,
-            bundled,
           }))
         }
       }
@@ -2779,8 +2766,6 @@ class RendererOwner implements Renderer {
       skyGroup,
       mainStaticProps,
       skyStaticProps,
-      mainStaticPropBundle,
-      skyStaticPropBundle,
       staticPropInstances:Object.freeze(staticPropInstances),
       reflectionTarget,
       refractionTarget,
@@ -3169,7 +3154,6 @@ class RendererOwner implements Renderer {
     const next = this.#nextVisibleStaticIndices[ownership]
     next.clear()
     let membershipChanged = false
-    let bundleChanged = false
 
     for (let candidate = 0; candidate < count; candidate += 1) {
       const index = scene.leafVisibility.at(candidate)
@@ -3203,10 +3187,7 @@ class RendererOwner implements Renderer {
       ))) {
         prop.object.visible = true
         next.add(index)
-        if (!prior.has(index)) {
-          membershipChanged = true
-          if (prop.bundled) bundleChanged = true
-        }
+        if (!prior.has(index)) membershipChanged = true
       } else {
         prop.object.visible = false
       }
@@ -3214,12 +3195,9 @@ class RendererOwner implements Renderer {
 
     for (const index of prior) {
       if (next.has(index)) continue
-      const prop = scene.staticPropInstances[index]!
-      prop.object.visible = false
-      if (prop.bundled) bundleChanged = true
+      scene.staticPropInstances[index]!.object.visible = false
       membershipChanged = true
     }
-    if (bundleChanged) (ownership === 0 ? scene.mainStaticPropBundle : scene.skyStaticPropBundle).needsUpdate = true
     this.#visibleStaticIndices[ownership] = next
     this.#nextVisibleStaticIndices[ownership] = prior
     if (membershipChanged || next.size !== this.#visibleStaticSources[ownership].length) {
@@ -4191,8 +4169,6 @@ class RendererOwner implements Renderer {
       if (this.#active) {
         this.#active.worldBundle.needsUpdate = true
         this.#active.skyWorldBundle.needsUpdate = true
-        this.#active.mainStaticPropBundle.needsUpdate = true
-        this.#active.skyStaticPropBundle.needsUpdate = true
       }
       this.#viewportWidth = cssWidth
       this.#viewportHeight = cssHeight
