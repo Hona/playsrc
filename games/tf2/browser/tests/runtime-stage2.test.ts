@@ -419,6 +419,22 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(()=>encodeCommand({...base,building:{action:"hurt",amount:65536}})).toThrow("building damage is invalid")
   })
 
+  test("retains a primary-fire click beside every stock Engineer blueprint command", () => {
+    const base = { forward: 0, side: 0, yawDegrees: 315, pitchDegrees: 0, jump: false, crouch: false, fire: true, detonate: false }
+    for (const object of [
+      { kind: 2, mode: 0 },
+      { kind: 0, mode: 0 },
+      { kind: 1, mode: 0 },
+      { kind: 1, mode: 1 },
+    ] as const) {
+      const flags = new DataView(encodeCommand({ ...base, building: { action: "build", object } })).getUint32(28, true)
+      expect(flags & (1 << 3)).toBe(1 << 3)
+      expect((flags >> 16) & 7).toBe(1)
+      expect((flags >> 19) & 3).toBe(object.kind)
+      expect((flags >> 21) & 1).toBe(object.mode)
+    }
+  })
+
   test("encodes bounded bot commands and decodes ordered player lifecycle snapshots", () => {
     const base = { forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false }
     const add = new DataView(encodeCommand({ ...base, bot: { action: "add", count: 3, class: 4, team: 3, difficulty: 3 } }))

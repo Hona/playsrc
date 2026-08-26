@@ -369,6 +369,7 @@ pub struct MapRuntime {
     volumes: Vec<Volume>,
     pickups: Vec<MapPickup>,
     building_exclusions: Vec<BuildingExclusion>,
+    team_spawns: [Option<[f32; 3]>; 2],
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
@@ -633,8 +634,18 @@ impl MapRuntime {
         let mut volumes = Vec::new();
         let mut pickups = Vec::new();
         let mut building_exclusions = Vec::new();
+        let mut team_spawns = [None; 2];
         let mut teleports = BTreeMap::new();
         for entity in &graph.entities {
+            if class(entity, b"info_player_teamspawn") && !boolean(entity, b"StartDisabled", false)
+            {
+                if let Some(team) = source_team(entity)? {
+                    let index = usize::from(team == 3);
+                    if team_spawns[index].is_none() {
+                        team_spawns[index] = Some(vector(entity, b"origin", None)?);
+                    }
+                }
+            }
             if let Some(definition) = entity.classname.as_deref().and_then(map_pickup_definition) {
                 let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
                 match definition.kind {
@@ -824,6 +835,7 @@ impl MapRuntime {
             volumes,
             pickups,
             building_exclusions,
+            team_spawns,
             teleports,
             movers: BTreeMap::new(),
             game_filters,
@@ -1101,8 +1113,8 @@ impl MapRuntime {
         for value in &self.building_exclusions {
             if !value.enabled
                 || value
-                .team
-                .is_some_and(|number| number != team.source_number())
+                    .team
+                    .is_some_and(|number| number != team.source_number())
             {
                 continue;
             }
@@ -1134,6 +1146,14 @@ impl MapRuntime {
             }
         }
         Ok(true)
+    }
+
+    pub(crate) fn team_spawn(&self, team: crate::PlayerTeam) -> Option<[f32; 3]> {
+        match team {
+            crate::PlayerTeam::Red => self.team_spawns[0],
+            crate::PlayerTeam::Blue => self.team_spawns[1],
+            _ => None,
+        }
     }
 
     pub(crate) fn entity_revision(&self) -> u64 {
@@ -2144,45 +2164,101 @@ mod tests {
         .unwrap();
         let collision = AlwaysOverlap;
         let sentry = crate::building::Object::SENTRY;
-        assert!(!map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [50.0, 50.0, 0.0])
-            .unwrap());
-        assert!(map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Blue, [50.0, 50.0, 0.0])
-            .unwrap());
+        assert!(
+            !map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [50.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
+        assert!(
+            map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Blue,
+                [50.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
         for object in [
             crate::building::Object::DISPENSER,
             crate::building::Object::ENTRANCE,
             crate::building::Object::EXIT,
         ] {
-            assert!(map
-                .building_position_allowed(&collision, object, crate::PlayerTeam::Red, [50.0, 50.0, 0.0])
-                .unwrap());
+            assert!(
+                map.building_position_allowed(
+                    &collision,
+                    object,
+                    crate::PlayerTeam::Red,
+                    [50.0, 50.0, 0.0]
+                )
+                .unwrap()
+            );
         }
-        assert!(map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [100.01, 50.0, 0.0])
-            .unwrap());
-        assert!(!map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [50.0, 50.0, -33.0])
-            .unwrap());
-        assert!(map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
-            .unwrap());
+        assert!(
+            map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [100.01, 50.0, 0.0]
+            )
+            .unwrap()
+        );
+        assert!(
+            !map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [50.0, 50.0, -33.0]
+            )
+            .unwrap()
+        );
+        assert!(
+            map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [250.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
 
         let disabled = graph.entities[1].index as u32;
         map.input(1, disabled, b"SetActive", Variant::Void).unwrap();
-        assert!(!map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
-            .unwrap());
-        map.input(2, disabled, b"ToggleActive", Variant::Void).unwrap();
-        assert!(map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
-            .unwrap());
+        assert!(
+            !map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [250.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
+        map.input(2, disabled, b"ToggleActive", Variant::Void)
+            .unwrap();
+        assert!(
+            map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [250.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
         map.input(3, disabled, b"SetActive", Variant::Void).unwrap();
-        map.input(4, disabled, b"SetInactive", Variant::Void).unwrap();
-        assert!(map
-            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
-            .unwrap());
+        map.input(4, disabled, b"SetInactive", Variant::Void)
+            .unwrap();
+        assert!(
+            map.building_position_allowed(
+                &collision,
+                sentry,
+                crate::PlayerTeam::Red,
+                [250.0, 50.0, 0.0]
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -2204,33 +2280,182 @@ mod tests {
         )
         .unwrap();
         for team in [crate::PlayerTeam::Red, crate::PlayerTeam::Blue] {
-            assert!(!map
-                .building_position_allowed(
+            assert!(
+                !map.building_position_allowed(
                     &AlwaysOverlap,
                     crate::building::Object::SENTRY,
                     team,
                     [50.0, 50.0, -8.0],
                 )
-                .unwrap());
-            assert!(map
-                .building_position_allowed(
+                .unwrap()
+            );
+            assert!(
+                map.building_position_allowed(
                     &AlwaysOverlap,
                     crate::building::Object::SENTRY,
                     team,
                     [90.01, 50.0, 20.0],
                 )
-                .unwrap());
+                .unwrap()
+            );
         }
-        map.input(1, graph.entities[0].index as u32, b"SetInactive", Variant::Void)
-            .unwrap();
-        assert!(map
-            .building_position_allowed(
+        map.input(
+            1,
+            graph.entities[0].index as u32,
+            b"SetInactive",
+            Variant::Void,
+        )
+        .unwrap();
+        assert!(
+            map.building_position_allowed(
                 &AlwaysOverlap,
                 crate::building::Object::SENTRY,
                 crate::PlayerTeam::Red,
                 [50.0, 50.0, 20.0],
             )
-            .unwrap());
+            .unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires playsrc.local.json and the exact configured ctf_2fort and pl_upward BSPs"]
+    fn configured_build_regions_preserve_exact_authored_brush_boundaries_and_disabled_zones() {
+        struct AuthoredBrushes(playsrc_collision::World);
+
+        impl Tracer for AuthoredBrushes {
+            fn trace(
+                &self,
+                _start: [f32; 3],
+                end: [f32; 3],
+                _hull: Hull,
+                _mask: u32,
+            ) -> Result<Trace, MoveError> {
+                Ok(Trace {
+                    fraction: 1.0,
+                    start_solid: false,
+                    all_solid: false,
+                    end,
+                    normal: None,
+                    hit: None,
+                    contents: 0,
+                })
+            }
+        }
+
+        impl GameplayWorld for AuthoredBrushes {
+            fn overlaps_model_hull(
+                &self,
+                model: usize,
+                origin: [f32; 3],
+                position: [f32; 3],
+                hull: Hull,
+            ) -> Result<bool, MoveError> {
+                self.0
+                    .overlaps_model_hull(model, origin, position, hull)
+                    .map_err(|_| {
+                        MoveError::new(
+                            playsrc_movement::Operation::Trace,
+                            playsrc_movement::FailureKind::Malformed,
+                            "authored no-build brush",
+                        )
+                    })
+            }
+        }
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let config = std::fs::read_to_string(root.join("playsrc.local.json")).unwrap();
+        let marker = "\"tf2Dir\"";
+        let value = &config[config.find(marker).unwrap() + marker.len()..];
+        let value = value[value.find(':').unwrap() + 1..].trim_start();
+        let tf2 = std::path::PathBuf::from(&value[1..value[1..].find('"').unwrap() + 1]);
+
+        for identity in ["ctf_2fort", "pl_upward"] {
+            let bytes = std::fs::read(tf2.join("maps").join(format!("{identity}.bsp"))).unwrap();
+            let bsp = playsrc_bsp::parse(
+                &bytes,
+                playsrc_bsp::Profile::Source2013V20,
+                playsrc_bsp::Limits::default(),
+            )
+            .unwrap();
+            let graph = playsrc_entity::parse(
+                bsp.lump(0).unwrap().bytes(&bsp),
+                playsrc_entity::Limits::default(),
+            )
+            .unwrap();
+            let playsrc_bsp::LumpData::Models(models) = &bsp.lump(14).unwrap().records else {
+                panic!("configured model lump is absent");
+            };
+            let bounds = models
+                .iter()
+                .enumerate()
+                .map(|(model, value)| ModelBounds {
+                    model,
+                    mins: [
+                        value.mins.x.value(),
+                        value.mins.y.value(),
+                        value.mins.z.value(),
+                    ],
+                    maxs: [
+                        value.maxs.x.value(),
+                        value.maxs.y.value(),
+                        value.maxs.z.value(),
+                    ],
+                })
+                .collect();
+            let mut map = MapRuntime::compile(&graph, 0.015, 1, bounds).unwrap();
+            let collision = AuthoredBrushes(playsrc_collision::compile(&bsp).unwrap());
+            let (prohibited, valid) = if identity == "ctf_2fort" {
+                assert_eq!(map.building_exclusions.len(), 2);
+                ([900.0, 1400.0, 280.0], [880.0, 1400.0, 280.0])
+            } else {
+                assert_eq!(map.building_exclusions.len(), 16);
+                ([760.0, 540.0, 600.0], [800.0, 447.0, 592.0])
+            };
+            for team in [crate::PlayerTeam::Red, crate::PlayerTeam::Blue] {
+                for object in crate::building::Object::MENU {
+                    assert!(
+                        !map.building_position_allowed(&collision, object, team, prohibited)
+                            .unwrap(),
+                        "{identity}: {team:?} {object:?} prohibited"
+                    );
+                    assert!(
+                        map.building_position_allowed(&collision, object, team, valid)
+                            .unwrap(),
+                        "{identity}: {team:?} {object:?} valid"
+                    );
+                }
+            }
+            if identity == "pl_upward" {
+                let disabled = graph
+                    .entities
+                    .iter()
+                    .find(|entity| {
+                        entity.targetname.as_deref() == Some(b"func_nobuild_exitC4".as_slice())
+                    })
+                    .unwrap()
+                    .index as u32;
+                let point = [-220.0, -60.0, 750.0];
+                assert!(
+                    map.building_position_allowed(
+                        &collision,
+                        crate::building::Object::SENTRY,
+                        crate::PlayerTeam::Red,
+                        point,
+                    )
+                    .unwrap()
+                );
+                map.input(1, disabled, b"SetActive", Variant::Void).unwrap();
+                assert!(
+                    !map.building_position_allowed(
+                        &collision,
+                        crate::building::Object::SENTRY,
+                        crate::PlayerTeam::Red,
+                        point,
+                    )
+                    .unwrap()
+                );
+            }
+        }
     }
 
     #[test]

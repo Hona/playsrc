@@ -3,6 +3,7 @@ import {
   PhysicalBindingIndex,
   PhysicalButtonState,
   applyPointerDelta,
+  pointerLockRequestRequired,
   rawPointerMovementUnsupported,
   rebasePointerYaw,
   sourceMouseButtonCode,
@@ -40,6 +41,20 @@ test("retries adjusted pointer lock only when raw movement is unsupported", () =
 test("maps browser primary, auxiliary, secondary, and navigation buttons to exact Source bindings", () => {
   expect([0, 1, 2, 3, 4].map(sourceMouseButtonCode)).toEqual(["MOUSE1", "MOUSE3", "MOUSE2", "MOUSE4", "MOUSE5"])
   for (const button of [-1, 5, 1.5, Number.NaN]) expect(sourceMouseButtonCode(button)).toBeNull()
+})
+
+test("ordinary primary clicks never reacquire an already-owned pointer lock", () => {
+  const canvas = {} as Element
+  const other = {} as Element
+  expect(pointerLockRequestRequired(null, canvas)).toBe(true)
+  expect(pointerLockRequestRequired(other, canvas)).toBe(true)
+  expect(pointerLockRequestRequired(canvas, canvas)).toBe(false)
+
+  const buttons = new PhysicalButtonState()
+  expect(buttons.press("mouse:0", "+attack")).toBe(true)
+  expect(pointerLockRequestRequired(canvas, canvas)).toBe(false)
+  expect(buttons.held("+attack")).toBe(true)
+  expect(buttons.release("mouse:0")).toBe(true)
 })
 
 test("keeps unmodified physical bindings active under unrelated modifiers", () => {

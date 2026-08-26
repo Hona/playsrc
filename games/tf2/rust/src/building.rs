@@ -843,6 +843,52 @@ mod tests {
     }
 
     #[test]
+    fn every_stock_blueprint_finds_ground_with_the_exact_player_clip_brush_mask() {
+        struct PlayerClipGround;
+
+        impl Tracer for PlayerClipGround {
+            fn trace(
+                &self,
+                start: [f32; 3],
+                end: [f32; 3],
+                hull: Hull,
+                mask: u32,
+            ) -> Result<playsrc_movement::Trace, playsrc_movement::Error> {
+                if start != end && hull.maxs[2] <= 2.0 {
+                    assert_eq!(mask, 0x0001_400b);
+                }
+                let hit = start[2] > 0.0 && end[2] <= 0.0 && mask & 0x0001_0000 != 0;
+                let fraction = if hit {
+                    start[2] / (start[2] - end[2])
+                } else {
+                    1.0
+                };
+                Ok(playsrc_movement::Trace {
+                    fraction,
+                    start_solid: false,
+                    all_solid: false,
+                    end: if hit { [end[0], end[1], 0.0] } else { end },
+                    normal: hit.then_some([0.0, 0.0, 1.0]),
+                    hit: None,
+                    contents: if hit { 0x0001_0000 } else { 0 },
+                })
+            }
+        }
+
+        for object in Object::MENU {
+            let mut world = World::new(0.015);
+            world.request(Request::Build(object), PlayerClass::Engineer, MAX_METAL);
+            world
+                .update_placement(&PlayerClipGround, [0.0, 0.0, 0.0], 68.0, 90.0)
+                .unwrap();
+            let placement = world.placement().unwrap();
+            assert!(placement.valid, "{object:?}");
+            assert_eq!(placement.position[2], 0.0);
+            assert_eq!(placement.yaw_degrees, 90.0);
+        }
+    }
+
+    #[test]
     fn wrench_repairs_before_upgrade_with_exact_metal_ratio() {
         let mut world = World::new(0.015);
         let mut metal = MAX_METAL;
