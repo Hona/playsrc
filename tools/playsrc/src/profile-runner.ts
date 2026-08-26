@@ -85,11 +85,18 @@ function isAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH" }
 }
 
-export async function acquireHeadedProfileLock(lockPath: string, profile: string): Promise<Readonly<{ token: string; milliseconds: number }>> {
+export async function acquireHeadedProfileLock(
+  lockPath: string,
+  profile: string,
+  maximumWaitMilliseconds = MAX_WAIT_MILLISECONDS,
+): Promise<Readonly<{ token: string; milliseconds: number }>> {
+  if (!Number.isSafeInteger(maximumWaitMilliseconds) || maximumWaitMilliseconds < 1 || maximumWaitMilliseconds > MAX_WAIT_MILLISECONDS) {
+    throw new Error("Machine-wide headed profile lock wait is outside its three-minute bound")
+  }
   const started = Date.now()
   const token = randomUUID()
   let announcement = started
-  while (Date.now() - started < MAX_WAIT_MILLISECONDS) {
+  while (Date.now() - started < maximumWaitMilliseconds) {
     try {
       const file = await open(lockPath, "wx", 0o600)
       try { await file.writeFile(`${JSON.stringify({ token, pid: process.pid, profile, startedAt: new Date().toISOString() })}\n`) }
@@ -113,7 +120,7 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
       await Bun.sleep(250)
     }
   }
-  throw new Error(`Timed out waiting for the machine-wide headed profile lock after ${MAX_WAIT_MILLISECONDS} ms`)
+  throw new Error(`Timed out waiting for the machine-wide headed profile lock after ${maximumWaitMilliseconds} ms`)
 }
 
 export async function releaseHeadedProfileLock(lockPath: string, token: string): Promise<void> {
@@ -223,9 +230,11 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   const identity = await profileSourceIdentity()
   const sourceIdentityMilliseconds = Date.now() - identityStarted
   const lockPath = path.join(evidence, "chromium-profile.lock")
-  const lock = await acquireHeadedProfileLock(lockPath, profile)
+  const maximumWait = MAX_RUN_MILLISECONDS - (Date.now() - started)
+  if (maximumWait < 1) throw new Error(`${profile} exhausted its headed profile deadline before acquiring the machine-wide lock`)
+  const lock = await acquireHeadedProfileLock(lockPath, profile, maximumWait)
   const locked = Date.now()
-  const remaining = () => MAX_RUN_MILLISECONDS - (Date.now() - locked)
+  const remaining = () => MAX_RUN_MILLISECONDS - (Date.now() - started)
   const metadataPath = path.join(evidence, "development-owner.json")
   const plan = PROFILES[profile]
   const environment = "environment" in plan ? plan.environment : {}
