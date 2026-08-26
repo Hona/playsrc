@@ -1,4 +1,5 @@
 import type { Rgba } from "./contract"
+import { vguiRasterDataUrl } from "./raster-png"
 import type {
   VguiImageMaterialPresentation,
   VguiImageMaterialTexture,
@@ -354,13 +355,7 @@ export class VguiImageRasterizer {
           new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])),
           () => new Promise<void>(resolve => setTimeout(resolve, 0)),
         )
-        const canvas = this.#document.createElement("canvas")
-        canvas.width = request.width
-        canvas.height = request.height
-        const context = retainedVguiRasterContext(canvas)
-        if (!context) throw new Error("VGUI presentation canvas is unavailable")
-        context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
-        return canvas.toDataURL("image/png")
+        return vguiRasterDataUrl(request.width, request.height, pixels)
       })()
       this.#renders.set(signature, rendering, request.width * request.height * 4)
       void rendering.catch(() => this.#renders.delete(signature))
@@ -378,8 +373,4 @@ export class VguiImageRasterizer {
     this.#textures.clear()
     this.#renders.clear()
   }
-}
-
-export function retainedVguiRasterContext(canvas: Pick<HTMLCanvasElement, "getContext">): CanvasRenderingContext2D | null {
-  return canvas.getContext("2d", { willReadFrequently: true })
 }
