@@ -749,8 +749,12 @@ impl Snapshot {
     }
 
     fn candidate_indices(&self, bounds: Hull, scratch: &mut QueryScratch) {
+        #[cfg(feature = "replay-reference")]
+        crate::replay_diagnostics::count(0, 1);
         fn visit(snapshot: &Snapshot, identity: usize, bounds: Hull, output: &mut Vec<usize>) {
             let node = snapshot.broadphase[identity];
+            #[cfg(feature = "replay-reference")]
+            crate::replay_diagnostics::count(1, 1);
             if !bounds_intersect(bounds, node.bounds) {
                 return;
             }
@@ -772,6 +776,8 @@ impl Snapshot {
         // The hierarchy is spatial; callbacks, limits and equal-hit selection
         // still consume the exact authored order, never traversal order.
         scratch.candidates.sort_unstable();
+        #[cfg(feature = "replay-reference")]
+        crate::replay_diagnostics::count(2, scratch.candidates.len());
     }
 
     fn candidates(&self, bounds: Hull) -> impl Iterator<Item = &SnapshotRecord> {
@@ -1345,25 +1351,47 @@ impl World {
                     if convex.contents & request.mask == 0 {
                         continue;
                     }
-                    let temporary;
-                    let prepared = if request.transform.same_bits(object.transform) {
-                        &object.prepared[index]
-                    } else {
-                        temporary = PreparedConvex::compile(
+                    #[cfg(feature = "replay-reference")]
+                    crate::replay_diagnostics::count(3, 1);
+                    let query = || {
+                        let temporary;
+                        let prepared = if request.transform.same_bits(object.transform) {
+                            &object.prepared[index]
+                        } else {
+                            temporary = PreparedConvex::compile(
+                                &convex.vertices,
+                                &convex.faces,
+                                &convex.edges,
+                                basis,
+                            );
+                            &temporary
+                        };
+                        prepared.trace(
+                            request.start,
+                            request.end,
+                            request.hull,
+                            convex.contents,
+                            limits,
+                        )
+                    };
+                    #[cfg(feature = "replay-reference")]
+                    let mut candidate = if crate::replay_diagnostics::reference() {
+                        trace_convex_reference(
+                            request.start,
+                            request.end,
+                            request.hull,
                             &convex.vertices,
                             &convex.faces,
                             &convex.edges,
                             basis,
-                        );
-                        &temporary
-                    };
-                    let mut candidate = prepared.trace(
-                        request.start,
-                        request.end,
-                        request.hull,
-                        convex.contents,
-                        limits,
-                    )?;
+                            convex.contents,
+                            limits,
+                        )
+                    } else {
+                        query()
+                    }?;
+                    #[cfg(not(feature = "replay-reference"))]
+                    let mut candidate = query()?;
                     if candidate.hit.is_some() || candidate.start_solid || candidate.all_solid {
                         let triangle = candidate.hit.and_then(|hit| match hit {
                             Hit::Object {
@@ -1508,6 +1536,8 @@ impl PreparedConvex {
             if !seen.insert(normal.map(f32::to_bits)) {
                 return directions.len();
             }
+            #[cfg(feature = "replay-reference")]
+            crate::replay_diagnostics::count(5, vertices.len());
             let (minimum, maximum) = vertices.iter().copied().fold(
                 (f32::INFINITY, f32::NEG_INFINITY),
                 |(minimum, maximum), vertex| {
@@ -1599,7 +1629,7 @@ impl PreparedConvex {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "replay-reference"))]
 #[allow(clippy::too_many_arguments)]
 fn trace_convex_reference(
     start: [f32; 3],
@@ -1655,6 +1685,8 @@ fn trace_convex_reference(
             }
             let normal = scale(direction, 1.0 / length);
             let radius = dot_abs(normal, extents);
+            #[cfg(feature = "replay-reference")]
+            crate::replay_diagnostics::count(5, vertices.len());
             let (minimum, maximum) = vertices.iter().copied().fold(
                 (f32::INFINITY, f32::NEG_INFINITY),
                 |(minimum, maximum), vertex| {
@@ -1810,6 +1842,8 @@ fn clip_axes(
     contents: u32,
     point: bool,
 ) -> Result<Trace, Error> {
+    #[cfg(feature = "replay-reference")]
+    let axes = crate::replay_diagnostics::Planes::new(axes.into_iter());
     let mut output = miss(requested_start, requested_end);
     let mut enter = -1.0_f32;
     let mut leave = 1.0_f32;

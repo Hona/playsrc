@@ -8,6 +8,8 @@ mod contact;
 mod displacement;
 mod hitbox;
 mod lighting;
+#[cfg(feature = "replay-reference")]
+pub mod replay_diagnostics;
 mod snapshot;
 
 pub use contact::{

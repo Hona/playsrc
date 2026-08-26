@@ -353,6 +353,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         PLAYSRC_PROFILE_RUN_DIRECTORY: runDirectory,
         PLAYSRC_PROFILE_SOURCE_FINGERPRINT: identity!,
         PLAYSRC_PROFILE_BROWSER_ENDPOINT: browser?.endpoint ?? process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT,
+        PLAYSRC_PROFILE_DEADLINE: String(started + MAX_RUN_MILLISECONDS),
       },
       stdio: ["ignore", "inherit", "inherit"],
     })

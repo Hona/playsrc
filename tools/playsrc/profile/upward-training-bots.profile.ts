@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { applicationBuildIdentity } from "../src/build-identity"
@@ -18,6 +18,10 @@ import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
+import { startGameplayReplayJournal } from "./gameplay-replay"
+
+let retainIncomplete: (() => Promise<unknown>) | undefined
+test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
@@ -32,6 +36,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   await mkdir(directory, { recursive: true })
+  const replay = exerciseClasses ? await startGameplayReplayJournal(page, path.join(directory, "compositor-evidence"), evidenceLabel) : undefined
+  retainIncomplete = () => replay?.stop(false) ?? Promise.resolve()
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
@@ -350,6 +356,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const captured = spawnSync("screencapture", ["-x", nativeScreenshot], { timeout: 5_000 })
     if (captured.status !== 0) throw new Error("Native visible desktop capture failed")
   }
+  // Never enter an active sample that the shared runner's total deadline would
+  // necessarily truncate. The construction/command journal is already durable.
+  const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
+  if (totalDeadline - Date.now() < seconds * 1000 + 20_000) throw new Error("Insufficient bounded capture/retention time after lock and startup; partial replay retained")
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
@@ -361,6 +371,41 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
     traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
   await workerCpu?.start()
+  await replay?.mark(0)
+  const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
+  await mkdir(path.dirname(rawPartial), { recursive: true })
+  await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
+  let interrupted = false
+  const collectNative = async () => {
+    const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
+      .then(captures => ({ captures, error: null as string | null }), error => ({ captures: [], error: String(error) }))
+    await workerCpu?.close().catch(() => undefined)
+    let workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", ...workerCapture, unsampledTargets: workerCpu?.unsampledTargets ?? [] }))
+    if (workerBytes.byteLength > TRACE_LIMITS.probeBytes) {
+      workerCapture.error = "Worker CPU evidence exceeds its byte bound"
+      workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
+    }
+    const workerArtifact = await retainEvidenceBlob(path.join(directory, "compositor-evidence"), workerBytes, "workers.json")
+    await browserCdp.send("Tracing.end")
+    const completion = await traceFinished
+    const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
+    await retainEvidenceBlob(path.join(directory, "compositor-evidence"), raw.bytes, "trace.json.gz")
+    return { workerCapture, workerArtifact, completion, raw }
+  }
+  let nativeResult: ReturnType<typeof collectNative> | undefined
+  const finishNative = () => nativeResult ??= collectNative()
+  const interrupt = () => {
+    interrupted = true
+    void Promise.allSettled([finishNative(), replay?.stop(false)])
+  }
+  const captureDeadline = setTimeout(interrupt, Math.min(seconds * 1000 + 5000, Math.max(1, totalDeadline - Date.now() - 5000)))
+  process.once("SIGTERM", interrupt)
+  retainIncomplete = async () => {
+    clearTimeout(captureDeadline)
+    process.off("SIGTERM", interrupt)
+    interrupted = true
+    await Promise.allSettled([finishNative(), replay?.stop(false)])
+  }
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
   profilePhases.enter("sample-and-readback")
@@ -577,21 +622,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const sample = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
   profilePhases.enter("trace-drain")
+  clearTimeout(captureDeadline)
+  process.off("SIGTERM", interrupt)
+  await replay?.mark(1).catch(() => { interrupted = true })
+  const replayArtifact = await replay?.stop(!interrupted && sample.error === null)
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
-  const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
-    .then(captures => ({ captures, error: null }), error => ({ captures: [], error: String(error) }))
-  await workerCpu?.close().catch(() => undefined)
+  const { workerCapture, workerArtifact, completion, raw } = await finishNative()
   const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
-  await browserCdp.send("Tracing.end")
   // Stop samplers now, but a detached renderer or failed optional sampler must not discard the browser trace.
   const supplemental = Promise.all([cdp.send("Profiler.stop"), cdp.send("HeapProfiler.stopSampling"),
     cdp.send("Runtime.getHeapUsage"), browserCdp.send("SystemInfo.getProcessInfo")])
     .then(value => ({ value, error: null }), error => ({ value: null, error: String(error) }))
   if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
-  const completion = await traceFinished
-  const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream) : { bytes: new Uint8Array(), complete: false }
   const joins: TraceJoin[] = []
   const measured = sample.measurement
   if (measured) {
@@ -607,24 +651,21 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   const sourceFingerprintAfter = await applicationBuildIdentity()
   profilePhases.enter("trace-analysis-retention")
-  let workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", ...workerCapture, unsampledTargets: workerCpu?.unsampledTargets ?? [] }))
-  if (workerBytes.byteLength > TRACE_LIMITS.probeBytes) {
-    workerCapture.error = "Worker CPU evidence exceeds its byte bound"
-    workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
-  }
-  const workerArtifact = await retainEvidenceBlob(path.join(directory, "compositor-evidence"), workerBytes, "workers.json")
   const evidence = await retainCompositorEvidence({ directory: path.join(directory, "compositor-evidence"), raw: raw.bytes,
-    complete: raw.complete, dataLossOccurred: completion.dataLossOccurred,
+    complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred,
     identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
       sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
       gpu: system?.gpu ?? null, availableCategories, viewport: measured?.viewport ?? null,
       origin: new URL(page.url()).origin, localProductionBundle, label, headed: true, target, launch,
-      sampleError: sample.error, workerCpu: workerArtifact, nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
+      sampleError: sample.error, interrupted, workerCpu: workerArtifact, gameplayReplay: replayArtifact, nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
     probes: { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped : 1 } })
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
   console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
   profilePhases.enter("diagnostics-and-pixels")
+  retainIncomplete = undefined
+  if (replayArtifact && !replayArtifact.complete) throw new Error(`Gameplay replay incomplete; diagnostics retained: ${replayArtifact.error}`)
+  if (interrupted) throw new Error("Capture interrupted; partial diagnostics retained, not passing evidence")
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
   const collected = await supplemental
@@ -889,6 +930,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
     expect(report.compositor.intervals?.maximumMilliseconds).toBeLessThan(250)
     expect(report.compositorSilence?.maximumActiveSilenceMilliseconds).toBeLessThan(250)
+    expect(report.compositorSilence?.maximumCensoredBoundaryMilliseconds).toBeLessThan(250)
     expect(workerCapture.captures).toHaveLength(1)
     expect(workerCapture.captures[0]!.deadlineStopped).toBe(false)
     expect(workerIncidents[0]!.samples).toBeGreaterThan(0)

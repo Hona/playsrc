@@ -34,9 +34,15 @@ export function summarizeActivePresentationSilence(events: readonly ChromiumTrac
   }
   let maximumActiveSilenceMilliseconds = 0
   let maximumObservedOverlappingGapMilliseconds = 0
+  const censoredBoundaries: Array<{ stream: string; side: "start" | "end"; milliseconds: number }> = []
   let longestActiveSilence: { stream: string; startedMicroseconds: number; endedMicroseconds: number; observedMilliseconds: number; activeMilliseconds: number } | null = null
   for (const [stream, timestamps] of streams) {
     const sorted = [...new Set(timestamps)].sort((a, b) => a - b)
+    // Stream cessation/creation is not proof of a completed native gap. Still,
+    // missing a boundary partner must not certify a short sample as stall-free.
+    const first = sorted[0]!, last = sorted.at(-1)!
+    if (first > window.startedMicroseconds && first <= window.endedMicroseconds) censoredBoundaries.push({ stream, side: "start", milliseconds: (first - window.startedMicroseconds) / 1000 })
+    if (last >= window.startedMicroseconds && last < window.endedMicroseconds) censoredBoundaries.push({ stream, side: "end", milliseconds: (window.endedMicroseconds - last) / 1000 })
     for (let i = 1; i < sorted.length; i++) {
       const startedMicroseconds = sorted[i - 1]!, endedMicroseconds = sorted[i]!
       const activeMilliseconds = (Math.min(endedMicroseconds, window.endedMicroseconds) - Math.max(startedMicroseconds, window.startedMicroseconds)) / 1000
@@ -49,7 +55,8 @@ export function summarizeActivePresentationSilence(events: readonly ChromiumTrac
       }
     }
   }
-  return { maximumActiveSilenceMilliseconds, maximumObservedOverlappingGapMilliseconds, longestActiveSilence }
+  return { maximumActiveSilenceMilliseconds, maximumObservedOverlappingGapMilliseconds, longestActiveSilence, censoredBoundaries,
+    maximumCensoredBoundaryMilliseconds: Math.max(0, ...censoredBoundaries.map(value => value.milliseconds)) }
 }
 
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {

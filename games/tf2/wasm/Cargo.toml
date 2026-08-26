@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [features]
 threaded = ["dep:wasm-bindgen", "dep:wasm-bindgen-rayon"]
 presentation-bound-diagnostic = []
+collision-replay = ["playsrc-collision/replay-reference"]
 
 [dependencies]
 playsrc-wav = { path = "../../../packages/formats/wav/rust" }
