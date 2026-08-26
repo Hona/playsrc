@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
@@ -13,9 +14,9 @@ import { chooseTf2Team } from "./team-selection-evidence"
 
 function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
   if (!processes?.length || process.platform === "win32") return null
-  const result = Bun.spawnSync(["ps", "-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { stdout: "pipe", stderr: "pipe" })
-  if (result.exitCode !== 0) return null
-  const resident = new Map(new TextDecoder().decode(result.stdout).trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
+  const result = spawnSync("ps", ["-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { encoding: "utf8" })
+  if (result.status !== 0) return null
+  const resident = new Map(result.stdout.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
   return processes.map(process => ({ id: process.id, type: process.type, residentBytes: resident.has(process.id) ? resident.get(process.id)! * 1024 : null }))
 }
 
@@ -282,6 +283,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
       classSwitches,
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
+      capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
+      screen: {
+        css: { width: surface.clientWidth, height: surface.clientHeight },
+        physical: { width: surface.width, height: surface.height },
+        devicePixelRatio: devicePixelRatio,
+        visualViewportScale: visualViewport?.scale ?? null,
+        visibility: document.visibilityState,
+      },
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
@@ -382,6 +391,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     trace: traceEvents, cpu: cpuProfile,
     traceOffsetMicroseconds: (clockBefore ?? 0) * 1_000_000 - measurement.started * 1_000,
   })
+  const gpuProcessBefore = processBefore?.processInfo.find(process => process.type === "GPU")
+  const gpuProcessAfter = processAfter?.processInfo.find(process => process.type === "GPU")
   const report = {
     schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target: "pl_upward", entry: "training", launch,
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -405,13 +416,27 @@ test("profile authored headed Upward offline-practice default roster and actual 
     gpu: {
       ...measurement.counters,
       modelUploads: measurement.modelUploads,
-      submissionsPerCompletedFrame: Number((measurement.counters.submissions / Math.max(1, actualFrames)).toFixed(3)),
       writes: measurement.queueWrites,
       processCpuSeconds: (processAfter?.processInfo ?? []).map(process => {
         const before = processBefore?.processInfo.find(previous => previous.id === process.id)
         return { id: process.id, type: process.type, seconds: before ? Number((process.cpuTime - before.cpuTime).toFixed(6)) : null }
       }),
+      adapter: measurement.capabilities.adapter ?? null,
+      chromiumDevices: system?.gpu.devices ?? [],
+      backend: system?.gpu.auxAttributes?.displayType ?? system?.gpu.auxAttributes?.glImplementationParts ?? null,
+      featureStatus: system?.gpu.featureStatus ?? null,
+      timestamps: measurement.gpuTimestamps,
+      losses: measurement.losses,
+      process: {
+        id: gpuProcessAfter?.id ?? null,
+        cpuMilliseconds: gpuProcessBefore && gpuProcessAfter
+          ? Number(((gpuProcessAfter.cpuTime - gpuProcessBefore.cpuTime) * 1_000).toFixed(3))
+          : null,
+      },
+      submissionsPerCompletedFrame: Number((measurement.counters.submissions / Math.max(1, actualFrames)).toFixed(3)),
+      commandBuffersPerSubmission: Number((measurement.counters.commandBuffers / Math.max(1, measurement.counters.submissions)).toFixed(3)),
     },
+    screen: measurement.screen,
     longAnimationFrames: summarizeDistribution(measurement.longAnimationFrames.map((frame: { duration: number }) => frame.duration)),
     longTasks: summarizeDistribution(measurement.longTasks.map((task: { duration: number }) => task.duration)),
     memory: {
@@ -470,6 +495,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   expect(report.completedFrames).toBeGreaterThan(0)
   expect(report.pixels.nonBlack).toBeGreaterThan(20_000)
   if (exerciseClasses) expect(report.classSwitches.observed.length).toBeGreaterThan(0)
+  expect(report.screen.visibility).toBe("visible")
+  expect(report.gpu.losses).toHaveLength(0)
+  if (process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1") expect(report.compositor.evidence).toBe("chromium-compositor-presentation-trace")
   if (process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1") {
     expect(report.applicationCompletedFramesPerSecond).toBeGreaterThanOrEqual(55)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)

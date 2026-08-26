@@ -1,5 +1,15 @@
 import { test as base, expect } from "@playwright/test"
 
+const headedBrowser = process.env.PLAYSRC_PROFILE_CDP_ENDPOINT
+  ? base.extend<{}, { browser: import("@playwright/test").Browser }>({
+      browser: [async ({ playwright }, use) => {
+        const browser = await playwright.chromium.connectOverCDP(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT!, { timeout: 20_000 })
+        try { await use(browser) }
+        finally { await browser.close() }
+      }, { scope: "worker" }],
+    })
+  : base
+
 type ApplicationState = Readonly<{
   phase: string
   detail: string
@@ -9,7 +19,7 @@ type ApplicationState = Readonly<{
   blockers: string
 }>
 
-export const test = base.extend<{
+export const test = headedBrowser.extend<{
   applicationDiagnostics: void
   allowRecoverableApplicationFailure: boolean
   preserveStartupMovie: boolean

@@ -294,7 +294,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     progress = setInterval(() => console.error(`[performance] ${profile} running ${Math.round((Date.now() - locked) / 1_000)}s`), 10_000)
     deadline = setTimeout(() => { timedOut = true; child?.kill("SIGTERM") }, Math.max(0, remaining()))
     const command = [
-      process.execPath,
+      process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? process.execPath,
       path.join(repositoryRoot, "node_modules", "@playwright", "test", "cli.js"),
       "test",
       `--config=${plan.config}`,

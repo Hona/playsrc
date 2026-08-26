@@ -29,6 +29,7 @@ import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordere
 import { PersistentWorldDraws } from "./persistent-world-draws"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
+import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
@@ -1612,7 +1613,7 @@ class RendererOwner implements Renderer {
   }
 
   completeFrameProfile(): RendererFrameProfile | undefined {
-    if (this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
+    if (this.#framePresentation?.begun) this.#pass("frame-output", () => this.#framePresentation!.finish())
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     const profile = browserFrameProfiler()
@@ -1896,8 +1897,27 @@ class RendererOwner implements Renderer {
 
   async #createBackend(): Promise<Backend> {
     const profiler = browserFrameProfiler()
+    const gpu = (globalThis.navigator as any).gpu
+    const core = await requestCoreWebGpuDevice(gpu, this.#powerPreference)
+    if (profiler) {
+      ;(profiler.capabilities as any).adapter = {
+        vendor: core.adapter.info?.vendor ?? null,
+        architecture: core.adapter.info?.architecture ?? null,
+        device: core.adapter.info?.device ?? null,
+        description: core.adapter.info?.description ?? null,
+        fallback: core.adapter.info?.isFallbackAdapter ?? null,
+        core: core.features.includes("core-features-and-limits"),
+        textureCompressionBc: core.features.includes("texture-compression-bc"),
+        features: core.features,
+        limits: {
+          maxTextureDimension2D: core.adapter.limits?.maxTextureDimension2D ?? null,
+          maxBufferSize: core.adapter.limits?.maxBufferSize ?? null,
+        },
+      }
+    }
     const backend = new THREE.WebGPURenderer({
       canvas: this.#canvas,
+      device: core.device,
       antialias: this.sampleCount === 4,
       alpha: this.configuration.alphaMode === "premultiplied",
       powerPreference: this.#powerPreference,
@@ -1922,9 +1942,12 @@ class RendererOwner implements Renderer {
           profiler,
         )
       }
-      this.#uploadBatch = new WebGpuUploadBatch(backend.backend as unknown as UploadBatchBackend)
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
-      this.#framePresentation = new WebGpuFramePresentation(backend as unknown as FramePresentationBackend<THREE.RenderTarget>)
+      this.#framePresentation = new WebGpuFramePresentation(
+        backend as unknown as FramePresentationBackend<THREE.RenderTarget>,
+        backend.backend.device?.queue,
+      )
+      this.#uploadBatch = new WebGpuUploadBatch(backend.backend as unknown as UploadBatchBackend)
       this.#camera.coordinateSystem = backend.coordinateSystem
       this.#viewCamera.coordinateSystem = backend.coordinateSystem
       this.#modelPanelCamera.coordinateSystem = backend.coordinateSystem
