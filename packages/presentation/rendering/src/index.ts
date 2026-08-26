@@ -2809,7 +2809,8 @@ class RendererOwner implements Renderer {
         const index = mesh.geometry.getIndex()
         if (!index) throw new RenderingError("MalformedInput", "world batch has no index buffer")
         const transparent = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).some((material) => material.transparent)
-        const animated = worldMaterials.has(String(mesh.userData.materialIdentity).toLowerCase())
+        const animated = map.materials[batch.material]?.shader === 5
+          || worldMaterials.has(String(mesh.userData.materialIdentity).toLowerCase())
         const bundled = !transparent && !animated
         const slot = worldBatches.length
         if (bundled) {
