@@ -16,7 +16,7 @@ type WasmExports = Readonly<{
   memory: WebAssembly.Memory
   playsrc_alloc(length: number): number
   playsrc_free(pointer: number, length: number): void
-  playsrc_resource_decode(pointer: number, length: number): number
+  playsrc_resource_decode_authenticated(pointer: number, length: number): number
   playsrc_resource_length(): number
   playsrc_resource_take(): number
   playsrc_resource_release(pointer: number, length: number): number
@@ -122,7 +122,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
       ![
         candidate.playsrc_alloc,
         candidate.playsrc_free,
-        candidate.playsrc_resource_decode,
+        candidate.playsrc_resource_decode_authenticated,
         candidate.playsrc_resource_length,
         candidate.playsrc_resource_take,
         candidate.playsrc_resource_release,
@@ -236,7 +236,9 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
       bytes.set(new Uint8Array(chunk.bytes), offset)
       offset += chunk.bytes.byteLength
     }
-    decoded = exports.playsrc_resource_decode(input, batchLength)
+    // The application transfers immutable objects acquired by their authenticated
+    // graph descriptors; Rust still checks every decoded entry's exact digest.
+    decoded = exports.playsrc_resource_decode_authenticated(input, batchLength)
   } finally {
     exports.playsrc_free(input, batchLength)
   }

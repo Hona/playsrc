@@ -837,6 +837,24 @@ pub unsafe extern "C" fn playsrc_free(pointer: *mut u8, length: usize) {
 /// # Safety
 /// A nonempty pointer/length pair must identify readable bytes in this module's memory.
 pub unsafe extern "C" fn playsrc_resource_decode(pointer: *const u8, length: usize) -> u32 {
+    unsafe { decode_resource_batch(pointer, length, false) }
+}
+
+#[unsafe(no_mangle)]
+/// Decode the browser's authenticated immutable resource graph acquisition.
+///
+/// # Safety
+/// A nonempty pointer/length pair must identify readable bytes in this module's memory.
+/// The caller must have authenticated each descriptor against the selected resource
+/// graph and each exact encoded object against that descriptor before transferring it.
+pub unsafe extern "C" fn playsrc_resource_decode_authenticated(
+    pointer: *const u8,
+    length: usize,
+) -> u32 {
+    unsafe { decode_resource_batch(pointer, length, true) }
+}
+
+unsafe fn decode_resource_batch(pointer: *const u8, length: usize, authenticated: bool) -> u32 {
     let bytes = if length == 0 {
         &[]
     } else if pointer.is_null() {
@@ -844,7 +862,12 @@ pub unsafe extern "C" fn playsrc_resource_decode(pointer: *const u8, length: usi
     } else {
         unsafe { std::slice::from_raw_parts(pointer, length) }
     };
-    let Ok(decoded) = playsrc_asset_graph::decode_authenticated_resource_set(bytes) else {
+    let decoded = if authenticated {
+        playsrc_asset_graph::decode_authenticated_resource_set(bytes)
+    } else {
+        playsrc_asset_graph::decode_to_resource_set(bytes)
+    };
+    let Ok(decoded) = decoded else {
         resource_output().lock().expect("resource output").clear();
         return 0;
     };
