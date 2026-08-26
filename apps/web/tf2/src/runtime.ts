@@ -2690,7 +2690,7 @@ export class Tf2Application {
       return
     }
     const videoConvars = tf2VideoConvars(this.#videoConfiguration)
-    if (command !== "mat_hdr_level" && Object.hasOwn(videoConvars, command)) {
+    if (Object.hasOwn(videoConvars, command)) {
       if (tokens.length > 1 || (tokens.length === 1 && !/^-?\d+$/.test(tokens[0]!))) {
         this.#output(`${command} requires one supported integer value`)
         return
@@ -2710,6 +2710,7 @@ export class Tf2Application {
           const applied = await this.#settings.apply()
           if (!applied.lastApply?.complete) throw new Error(applied.lastApply?.rejections[0]?.reason ?? "video settings transaction was rejected")
           localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+          this.#set({ settingsPersistence: "stored" })
           this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
         } catch (error) {
           this.#settings?.cancel()
@@ -3142,33 +3143,6 @@ export class Tf2Application {
       }
       this.#modeRequest = this.#snapshot.movement.mode === 1 ? 0 : 1
       this.#output(`noclip ${this.#modeRequest === 1 ? "ON" : "OFF"} queued`)
-      return
-    }
-    if (command === "mat_hdr_level") {
-      if (tokens.length > 1 || (tokens.length === 1 && !(["0", "1", "2"] as string[]).includes(tokens[0]!))) {
-        this.#output("mat_hdr_level accepts exactly 0, 1, or 2")
-        return
-      }
-      if (tokens[0] && Number(tokens[0]) !== this.#renderLevel) {
-        const prior = this.#renderLevel,
-          priorConfiguration = this.#videoConfiguration,
-          generation = this.#generation
-        this.#renderLevel = Number(tokens[0]) as 0 | 1 | 2
-        this.#videoConfiguration = tf2VideoConfiguration({
-          ...(this.#settings?.snapshot().settings.current ?? TF2_BALANCED_VIDEO_SETTINGS),
-          "video.hdr": this.#renderLevel,
-        })
-        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
-        await this.#replaceCatalogMap()
-        if (this.#generation === generation) {
-          this.#renderLevel = prior
-          this.#videoConfiguration = priorConfiguration
-          this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
-        } else {
-          this.#settings?.synchronize({ "video.hdr": this.#renderLevel })
-        }
-      }
-      this.#output(`mat_hdr_level = ${this.#renderLevel}`)
       return
     }
     if (command === "map" && tokens.length === 1) {
@@ -4360,6 +4334,7 @@ export class Tf2Application {
         bounds:hudModel.bounds,background:"transparent" as const,presentationTimeSeconds,
       })])
       hudModelMilliseconds=result.milliseconds
+      if (profile) profile.hudModelPanel = { ...hudModel, panels: result.panels }
     }
     const rendererProfile=renderer.completeFrameProfile()
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart

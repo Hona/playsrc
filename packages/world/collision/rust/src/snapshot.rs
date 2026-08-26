@@ -1345,7 +1345,7 @@ fn trace_box(
         end,
         ray_start,
         ray_end,
-        &axes,
+        axes,
         contents,
         point_hull(hull),
     )
@@ -1394,37 +1394,56 @@ fn trace_convex(
     if directions.len() > limits.max_axes_per_convex {
         return Err(error(ErrorCode::Limit, None));
     }
-    let mut axes = Vec::with_capacity(directions.len() * 2);
-    for (direction, triangle) in directions {
-        let length = length(direction);
-        if length <= f32::EPSILON {
-            continue;
-        }
-        let normal = scale(direction, 1.0 / length);
-        let radius = dot_abs(normal, extents);
-        let (minimum, maximum) = vertices.iter().copied().fold(
-            (f32::INFINITY, f32::NEG_INFINITY),
-            |(minimum, maximum), vertex| {
-                let projection = dot(vertex, normal);
-                (minimum.min(projection), maximum.max(projection))
-            },
-        );
-        axes.push(IntervalAxis::new(
-            scale(normal, -1.0),
-            -(minimum - radius),
-            triangle,
-        ));
-        axes.push(IntervalAxis::new(normal, maximum + radius, triangle));
-    }
+    // Project support intervals on demand. A separating face already proves a
+    // miss; projecting every remaining edge axis first made compound prop hull
+    // queries dominate bot movement even when the convex could not be hit.
+    let axes = directions
+        .into_iter()
+        .filter_map(|(direction, triangle)| {
+            let length = length(direction);
+            if length <= f32::EPSILON {
+                return None;
+            }
+            let normal = scale(direction, 1.0 / length);
+            let radius = dot_abs(normal, extents);
+            let (minimum, maximum) = vertices.iter().copied().fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(minimum, maximum), vertex| {
+                    let projection = dot(vertex, normal);
+                    (minimum.min(projection), maximum.max(projection))
+                },
+            );
+            Some([
+                IntervalAxis::new(scale(normal, -1.0), -(minimum - radius), triangle),
+                IntervalAxis::new(normal, maximum + radius, triangle),
+            ])
+        })
+        .flatten();
+    #[cfg(test)]
+    let eager = clip_axes(
+        start,
+        end,
+        ray_start,
+        ray_end,
+        axes.clone().collect::<Vec<_>>(),
+        contents,
+        point_hull(hull),
+    );
     let mut trace = clip_axes(
         start,
         end,
         ray_start,
         ray_end,
-        &axes,
+        axes,
         contents,
         point_hull(hull),
     )?;
+    #[cfg(test)]
+    assert_eq!(
+        eager,
+        Ok(trace.clone()),
+        "lazy support projection must preserve the full eager trace"
+    );
     if trace.hit.is_some() || trace.start_solid || trace.all_solid {
         let triangle = trace.hit.and_then(|hit| match hit {
             Hit::Object {
@@ -1452,6 +1471,73 @@ struct IntervalAxis {
     distance: f32,
     triangle: Option<usize>,
 }
+
+#[cfg(test)]
+mod lazy_support_tests {
+    use super::*;
+
+    #[test]
+    fn separated_queries_do_not_project_unused_support_axes() {
+        let visited = std::cell::Cell::new(0);
+        let axes = [
+            IntervalAxis::new([1.0, 0.0, 0.0], 1.0, None),
+            IntervalAxis::new([0.0, 1.0, 0.0], 1.0, None),
+        ]
+        .into_iter()
+        .inspect(|_| visited.set(visited.get() + 1));
+        let trace = clip_axes([3.0; 3], [4.0; 3], [3.0; 3], [4.0; 3], axes, 1, false).unwrap();
+        assert_eq!(trace.fraction, 1.0);
+        assert_eq!(visited.get(), 1);
+    }
+
+    #[test]
+    fn lazy_and_eager_queries_match_for_rotations_extents_inside_and_sweeps() {
+        let vertices = box_vertices(Hull {
+            mins: [-8.0, -16.0, -4.0],
+            maxs: [8.0, 16.0, 4.0],
+        });
+        for yaw in [0.0, 15.0, 90.0, 180.0, 273.0] {
+            let basis = Transform {
+                origin: [11.0, -7.0, 3.0],
+                angles: [21.0, yaw, -13.0],
+            }
+            .basis()
+            .unwrap();
+            for hull in [
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                Hull {
+                    mins: [-24.0, -24.0, 0.0],
+                    maxs: [24.0, 24.0, 82.0],
+                },
+            ] {
+                for x in -8..=8 {
+                    for y in -8..=8 {
+                        let start = [x as f32 * 8.0, y as f32 * 8.0, 3.0];
+                        for end in [start, [0.0; 3], [-start[0], -start[1], -8.0]] {
+                            // Each test-build trace compares every returned field
+                            // against eager support projection before returning.
+                            trace_convex(
+                                start,
+                                end,
+                                hull,
+                                &vertices,
+                                &box_faces(),
+                                &box_edges(),
+                                basis,
+                                1,
+                                SnapshotLimits::default(),
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 impl IntervalAxis {
     const fn new(normal: [f32; 3], distance: f32, triangle: Option<usize>) -> Self {
         Self {
@@ -1467,7 +1553,7 @@ fn clip_axes(
     requested_end: [f32; 3],
     start: [f32; 3],
     end: [f32; 3],
-    axes: &[IntervalAxis],
+    axes: impl IntoIterator<Item = IntervalAxis>,
     contents: u32,
     point: bool,
 ) -> Result<Trace, Error> {
@@ -1495,7 +1581,7 @@ fn clip_axes(
             let fraction = (d1 - DIST_EPSILON).max(0.0) / (d1 - d2);
             if fraction > enter {
                 enter = fraction;
-                selected = Some(*axis);
+                selected = Some(axis);
             }
         } else {
             leave = leave.min((d1 + DIST_EPSILON) / (d1 - d2));

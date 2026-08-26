@@ -17,6 +17,17 @@ import { chooseTf2Team } from "./team-selection-evidence"
 import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
+import { acceptStockLoadouts } from "./stock-loadout-acceptance"
+
+function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
+  // CDP process IDs belong to the browser host, never the remote controller.
+  if (process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) return null
+  if (!processes?.length || process.platform === "win32") return null
+  const result = spawnSync("ps", ["-o", "pid=,rss=", "-p", processes.map(process => process.id).join(",")], { encoding: "utf8" })
+  if (result.status !== 0) return null
+  const resident = new Map(result.stdout.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number) as [number, number]))
+  return processes.map(process => ({ id: process.id, type: process.type, residentBytes: resident.has(process.id) ? resident.get(process.id)! * 1024 : null }))
+}
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
@@ -25,6 +36,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const target = createServer ? "ctf_2fort" : "pl_upward"
   const entry = createServer ? "create-server" : "training"
   const exerciseClasses = process.env.PROFILE_UPWARD_CLASS_SWITCH === "1"
+  const acceptance = process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
@@ -197,13 +209,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
       playerCount = Number(await playerEntry.inputValue())
       start = mapPanel.locator("[data-vgui-name='StartOfflinePracticeButton']")
     }
-    expect(playerCount).toBeGreaterThanOrEqual(12)
+    if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1") expect(playerCount).toBe(createServer ? 24 : 16)
+    else expect(playerCount).toBeGreaterThanOrEqual(12)
     const mapStarted = Date.now()
     networkStage = `${cache}-map`
     await start.click({ timeout: 5_000 })
     await expect(root).toHaveAttribute("data-team-selection-visible", "true", { timeout: 110_000 })
     const teamAdmissionMilliseconds = Date.now() - mapStarted
-    await chooseTf2Team(page, "red")
+    await chooseTf2Team(page, process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && cache === "warm" ? "blue" : "red")
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
     const readyMilliseconds = Date.now() - mapStarted
     const classSelectionMilliseconds = Date.now() - mapStarted
@@ -313,7 +326,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
 
   const canvas = page.locator("canvas.world-canvas")
   const before = await canvas.screenshot({ timeout: 20_000 })
-  if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1") await canvas.click({ position: { x: 300, y: 250 } })
+  if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses) await canvas.click({ position: { x: 300, y: 250 } })
   const cdp = await context.newCDPSession(page)
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
@@ -332,7 +345,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
-  const workerCpu = exerciseClasses ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
+  const workerCpu = exerciseClasses || acceptance ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
   const nativeScreenshot = process.env.PROFILE_NATIVE_SCREENSHOT === "1" ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
   if (nativeScreenshot) {
     if (process.platform !== "darwin") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
@@ -369,7 +382,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       lifecycle.push({ at: Number((performance.now() - started).toFixed(3)), phase, ...detail })
     }
     const keydown = (event: KeyboardEvent) => { if (event.code === "Comma" || /^Digit[1-9]$/u.test(event.code)) mark("key-down", { key: event.code }) }
-    const pointerdown = () => mark("weapon-fire")
+    const pointerdown = () => mark(document.pointerLockElement === surface ? "weapon-fire" : "pointer-capture")
     document.addEventListener("keydown", keydown, true)
     surface.addEventListener("pointerdown", pointerdown, true)
     let ended = started
@@ -515,9 +528,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
       poll()
     }), Math.max(0, deadline - Date.now()))
     await page.keyboard.up("Tab")
-    for (const [position, playerClass] of [...classes, ...classes].entries()) {
+    for (const [position, playerClass] of (acceptance ? classes : [...classes, ...classes]).entries()) {
       const index = position % classes.length
       if (Date.now() >= deadline) break
+      if (acceptance && position > 0 && position % 4 === 0) await page.waitForTimeout(2100)
       await page.keyboard.press("Comma")
       if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
         const started = performance.now()
@@ -533,6 +547,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
         poll()
       }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) break
       await page.mouse.click(Math.round(page.viewportSize()!.width / 2), Math.round(page.viewportSize()!.height / 2))
+      if (acceptance) {
+        await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: 2000 })
+        await page.mouse.down()
+        await page.waitForTimeout(100)
+        await page.mouse.up()
+      }
       exercisedClasses.push(playerClass)
     }
   }
@@ -684,6 +704,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }))
   const report = {
     schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target, entry, launch,
+    sourceFingerprint: process.env.PLAYSRC_PROFILE_SOURCE_IDENTITY ?? null,
+    roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, loads, totalWallMilliseconds: Date.now() - wallStarted,
     animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
@@ -697,7 +719,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     compositorEvidence: { ...evidence.artifact, complete: evidence.manifest.complete, errors: evidence.manifest.errors,
       issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
-    browser: { platform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
+    settings: await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality)),
+    browser: { platform: await page.evaluate(() => navigator.platform), userAgent: await page.evaluate(() => navigator.userAgent), controllerPlatform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
+    firstPlayableBoundary: "application-completed-frame-not-compositor",
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     presentationDom: {
       ...measurement.dom,
@@ -811,6 +835,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
+  if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && exerciseClasses) {
+    const stock = await acceptStockLoadouts(page, directory, label)
+    await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(stock, null, 2))
+    const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
+    expect(losses).toEqual([])
+  }
   assertVisibleGameplayTruth({ visible: measurement.visible, focused: measurement.focused, ticks: report.simulation.ticks, displayFrames: actualFrames, submissions: measurement.counters.submissions, beforeSha256: report.pixels.beforeSha256, afterSha256: report.pixels.afterSha256 })
   await testInfo.attach("headed-upward-default-training-bots", { body: JSON.stringify(report), contentType: "application/json" })
   console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
@@ -847,15 +877,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })}`)
   expect(report.activeBots).toBe(expectedBots)
   expect(report.teams.red + report.teams.blue).toBe(playerCount)
+  if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1") expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
   expect(report.completedFrames).toBeGreaterThan(0)
   expect(report.pixels.nonBlack).toBeGreaterThan(20_000)
   if (exerciseClasses) {
-    expect(report.classSwitches.requested.length).toBe(18)
-    expect(report.classSwitches.observed.length).toBe(18)
+    expect(report.classSwitches.requested.length).toBe(acceptance ? 9 : 18)
+    expect(report.classSwitches.observed.length).toBe(acceptance ? 9 : 18)
     expect(report.classSwitches.timing.length).toBe(report.classSwitches.observed.length)
-    expect(report.classSwitches.timing.every(item => item.fireAt !== null)).toBe(true)
+    if (acceptance) expect(report.classSwitches.timing.every(item => item.fireAt !== null)).toBe(true)
     expect(report.classSwitches.timing.filter(item => item.admission === "first").length).toBe(9)
-    expect(report.classSwitches.timing.filter(item => item.admission === "retained").length).toBe(9)
+    expect(report.classSwitches.timing.filter(item => item.admission === "retained").length).toBe(acceptance ? 0 : 9)
     expect(report.classSwitches.visibleScoreboardRows).toBe(playerCount)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
     expect(report.compositor.intervals?.maximumMilliseconds).toBeLessThan(250)

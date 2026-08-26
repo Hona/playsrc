@@ -2,7 +2,9 @@ import { headedProfileConfiguration } from "./tools/playsrc/profile/profile-conf
 import { headedProfileTarget } from "./tools/playsrc/profile/profile-target"
 
 export default headedProfileConfiguration({
-  match: process.env.PROFILE_SKY_COHERENCE === "1"
+  match: process.env.PROFILE_SCENARIOS === "integrated-lifecycle"
+    ? "integrated-lifecycle.profile.ts"
+    : process.env.PROFILE_SKY_COHERENCE === "1"
     ? "sky-coherence.profile.ts"
     : process.env.PROFILE_2FORT_MEMORY === "1"
     ? "ctf-2fort-performance.profile.ts"
