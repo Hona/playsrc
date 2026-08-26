@@ -954,7 +954,8 @@ export class SimulationSnapshotStream {
       offset += 24
       require(wireLength)
       restoredBytes += length
-      if (hostTick !== tick + 1n || length < 184 || length > 64 * 1024 * 1024 || restoredBytes > 448 * 1024 * 1024)
+      if (hostTick !== tick + 1n) throw new Tf2WorkerError("WorkerFailed")
+      if (length < 184 || length > 64 * 1024 * 1024 || restoredBytes > 448 * 1024 * 1024)
         throw new Tf2WorkerError("BoundExceeded")
       let eventBytes: Uint8Array
       if (baseTick === 0n) {
