@@ -2832,22 +2832,29 @@ class SourceVguiRuntime implements VguiRuntime {
     rect: VguiRect = Object.freeze({ x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height }),
   ): void {
     if (!image.material || rect.width <= 0 || rect.height <= 0) return
-    let canvas = panel.chromeElements.get(key) as HTMLCanvasElement | undefined
-    if (!canvas) {
+    let raster = panel.chromeElements.get(key) as HTMLImageElement | undefined
+    if (!raster) {
       if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
-      canvas = this.document.createElement("canvas")
-      canvas.dataset.vguiRaster = key
-      canvas.style.position = "absolute"
-      canvas.style.pointerEvents = "none"
-      panel.chromeElements.set(key, canvas)
-      this.auxiliaryNodes.add(canvas)
-      panel.element.append(canvas)
+      raster = this.document.createElement("img")
+      raster.alt = ""
+      raster.dataset.vguiRaster = key
+      raster.style.position = "absolute"
+      raster.style.pointerEvents = "none"
+      panel.chromeElements.set(key, raster)
+      this.auxiliaryNodes.add(raster)
+      panel.element.append(raster)
     }
-    canvas.style.left = `${rect.x}px`
-    canvas.style.top = `${rect.y}px`
-    canvas.style.width = `${rect.width}px`
-    canvas.style.height = `${rect.height}px`
-    canvas.style.zIndex = String(z)
+    const style = raster.style
+    const left = `${rect.x}px`
+    const top = `${rect.y}px`
+    const width = `${rect.width}px`
+    const height = `${rect.height}px`
+    const order = String(z)
+    if (style.left !== left) style.left = left
+    if (style.top !== top) style.top = top
+    if (style.width !== width) style.width = width
+    if (style.height !== height) style.height = height
+    if (style.zIndex !== order) style.zIndex = order
     const identity = `${panel.id}:${key}`
     const signature = JSON.stringify([
       image.logicalIdentity,
@@ -2863,7 +2870,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.rasterSignatures.set(identity, signature)
     const generation = (this.rasterGenerations.get(identity) ?? 0) + 1
     this.rasterGenerations.set(identity, generation)
-    void this.imageRasterizer.render(canvas, Object.freeze({
+    void this.imageRasterizer.render(raster, Object.freeze({
       width: Math.max(1, Math.trunc(rect.width)),
       height: Math.max(1, Math.trunc(rect.height)),
       viewportWidth: this.viewport.width,

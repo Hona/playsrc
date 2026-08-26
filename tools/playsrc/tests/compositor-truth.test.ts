@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorTruth } from "../profile/compositor-truth"
+import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth } from "../profile/compositor-truth"
 
 describe("truthful compositor presentation evidence", () => {
   test("never mislabels animation callbacks, swaps, or application frames as presentation", () => {
@@ -73,6 +73,16 @@ describe("truthful compositor presentation evidence", () => {
     expect(window).toEqual({ startedMicroseconds: 100_000, endedMicroseconds: 150_000 })
     expect(summarizeCompositorTruth(events, 50, window)).toMatchObject({ presentedFrames: 2, intervals: { maximumMilliseconds: 16 } })
     expect(() => activeGameplayTraceWindow([{ name: "playsrc-active-gameplay-start", ts: 1 }])).toThrow("gameplay marks")
+  })
+
+  test("reports bounded BeginFrame and presentation stages without counting duplicate compositor events", () => {
+    expect(summarizeCompositorStages([
+      { name: "BeginFrame", ts: 900 }, { name: "BeginFrame", ts: 1_000 }, { name: "BeginFrame", ts: 1_000 },
+      { name: "BeginFrame", ts: 18_000 }, { name: "FramePresented", ts: 19_000 },
+    ], { startedMicroseconds: 1_000, endedMicroseconds: 19_000 })).toMatchObject({
+      BeginFrame: { count: 2, intervals: { p95Milliseconds: 17, maximumMilliseconds: 17 } },
+      FramePresented: { count: 1 }, BeginMainFrame: { count: 0 },
+    })
   })
 
   test("rejects hidden, unfocused, frozen, unsubmitted, and visually static gameplay", () => {
