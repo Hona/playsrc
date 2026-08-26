@@ -202,7 +202,7 @@ export type DirectionalTextureArtifact = Readonly<{
   width: number
   height: number
   sha256: string
-  rgba: Uint8Array
+  authored: AuthoredTextureArtifact
   uvTransform: readonly [number, number, number, number, number, number]
 }>
 export type EnvironmentFragment = Readonly<{
@@ -1236,7 +1236,7 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
 }
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 13) throw new ArtifactError("artifact identity")
+  if (r.decoder.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(),
     directionalCount = r.u32(),
     particleMaterialCount = r.u32(),brushModelCount=r.u32()
@@ -1303,7 +1303,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
       }),
     )
   }
-  const directionalTextures: DirectionalTextureArtifact[] = []
+  const directionalRecords: Omit<DirectionalTextureArtifact, "authored">[] = []
   for (let i = 0; i < directionalCount; i++) {
     const material = r.text(),
       kindCode = r.u8()
@@ -1312,7 +1312,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
       width = r.u32(),
       height = r.u32(),
       sha256 = hex(r.take(32)),
-      rgba = r.blob(256 * 1024 * 1024),
       uvTransform = Object.freeze([r.f32(), r.f32(), r.f32(), r.f32(), r.f32(), r.f32()]) as readonly [
         number,
         number,
@@ -1321,9 +1320,8 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
         number,
         number,
       ]
-    if (width * height * 4 !== rgba.length || (await digest(rgba)) !== sha256)
-      throw new ArtifactError("directional texture identity")
-    directionalTextures.push(
+    if (width < 1 || height < 1) throw new ArtifactError("directional texture identity")
+    directionalRecords.push(
       Object.freeze({
         material,
         kind: kindCode === 0 ? "normal" : "ssbump",
@@ -1331,7 +1329,6 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
         width,
         height,
         sha256,
-        rgba,
         uvTransform,
       }),
     )
@@ -1339,6 +1336,14 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const particleMaterials = Object.freeze(Array.from({ length: particleMaterialCount }, () => r.text()))
   const sharedTextures = new Map<string, AuthoredTextureArtifact>()
   const environment = parseEnvironment(r.blob(512 * 1024 * 1024), resources, sharedTextures)
+  const directionalTextures = directionalRecords.map((record): DirectionalTextureArtifact => {
+    const authored = environment.authoredTextures.get(record.logicalPath.toLowerCase())
+    if (!authored || authored.width !== record.width || authored.height !== record.height
+      || authored.sourceSha256 !== record.sha256) {
+      throw new ArtifactError("directional authored texture identity")
+    }
+    return Object.freeze({ ...record, authored })
+  })
   const materialStates = parseMaterialStates(r)
   if (r.decoder.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
