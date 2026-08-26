@@ -49,4 +49,23 @@ describe("authored GPU texture residency", () => {
     expect(disposed).toEqual([0])
     expect(residency.snapshot().resources).toBe(1)
   })
+
+  test("reuses every exact authored animation frame across repeated complete cycles", () => {
+    const generation = new OwnedResourceGeneration(1, 1)
+    const residency = new SharedTextureResidency(generation)
+    let created = 0
+    const disposed: number[] = []
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      for (let frame = 0; frame < 9; frame += 1) {
+        const selected = residency.select("authored-water:linear", frame, "water", () => {
+          created += 1
+          return { frame, dispose() { disposed.push(frame) } }
+        }, 9)
+        expect(selected.frame).toBe(frame)
+      }
+    }
+    expect(created).toBe(9)
+    expect(disposed).toEqual([])
+    expect(residency.snapshot()).toEqual({ resources: 9, pinned: 0, animated: 9, evictions: 0 })
+  })
 })

@@ -2263,7 +2263,7 @@ class RendererOwner implements Renderer {
               throw new RenderingError("MalformedInput", `authored texture ${authored.logicalPath} selected an invalid frame`)
             }
             return textureResidency.select(identity, frame, consumer, () =>
-              textureFromAuthored(authored, colorSpace, frame))
+              textureFromAuthored(authored, colorSpace, frame), authored.frameCount)
           },
         })
         animatedTextureFrames.set(identity, frames)
