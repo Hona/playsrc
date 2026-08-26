@@ -17,7 +17,5 @@ if (scenario === "compare") {
   process.env.PROFILE_UPWARD_TRAINING_INTERACTION = "1"
   process.env.PROFILE_INTEGRATED_ACCEPTANCE = "1"
   process.env.PROFILE_UPWARD_TRAINING_LABEL ??= `acceptance-${scenario}-${Date.now()}`
-  // Do not spend almost the entire scenario budget waiting, then launch a
-  // cold/warm browser only to kill it halfway through correctness acceptance.
-  process.exitCode = await runHeadedProfile([plan.profile, ...arguments_], 120_000)
+  process.exitCode = await runHeadedProfile([plan.profile, ...arguments_])
 }

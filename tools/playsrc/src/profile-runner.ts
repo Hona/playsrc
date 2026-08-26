@@ -223,12 +223,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
   throw new Error("Shared headed profile development owner exceeded the bounded profile runtime")
 }
 
-export function profileLockWaitBudget(elapsedMilliseconds: number, minimumRunMilliseconds = 0): number {
-  if (!Number.isSafeInteger(minimumRunMilliseconds) || minimumRunMilliseconds < 0 || minimumRunMilliseconds >= MAX_RUN_MILLISECONDS) throw new Error("Headed scenario runtime reservation is invalid")
-  return MAX_RUN_MILLISECONDS - elapsedMilliseconds - minimumRunMilliseconds
-}
-
-export async function runHeadedProfile(arguments_: readonly string[], minimumRunMilliseconds = 0): Promise<number> {
+export async function runHeadedProfile(arguments_: readonly string[]): Promise<number> {
   const started = Date.now()
   const { profile, fresh, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()

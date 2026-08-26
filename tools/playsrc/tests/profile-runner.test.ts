@@ -402,4 +402,26 @@ describe("bounded headed profile orchestration", () => {
     await writeFile(path.join(directory, "new.rs"), "const B: u8 = 3;\n")
     expect(await rustBuildIdentity(directory)).not.toBe(edited)
   })
+
+  test("queued verification preserves FIFO order without replacing a live holder", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-profile-fifo-"))
+    directories.push(directory)
+    const pathname = path.join(directory, "chromium-profile.lock")
+    const holder = await acquireHeadedProfileLock(pathname, "holder")
+    let firstPublished!: () => void, secondPublished!: () => void
+    const firstReady = new Promise<void>(resolve => { firstPublished = resolve })
+    const secondReady = new Promise<void>(resolve => { secondPublished = resolve })
+    const first = acquireHeadedProfileLock(pathname, "first", 2000, { onProgress: firstPublished })
+    await firstReady
+    let secondAcquired = false
+    const second = acquireHeadedProfileLock(pathname, "second", 2000, { onProgress: secondPublished }).then(value => { secondAcquired = true; return value })
+    await secondReady
+    expect(JSON.parse(await readFile(pathname, "utf8")).token).toBe(holder.token)
+    await releaseHeadedProfileLock(pathname, holder.token)
+    const firstLock = await first
+    expect(secondAcquired).toBe(false)
+    await releaseHeadedProfileLock(pathname, firstLock.token)
+    const secondLock = await second
+    await releaseHeadedProfileLock(pathname, secondLock.token)
+  })
 })
