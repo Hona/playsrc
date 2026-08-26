@@ -8,7 +8,7 @@ export const TF2_OFFLINE_PRACTICE_STORAGE_KEY = "playsrc.tf2.OfflinePracticeConf
 export type Tf2LocalMatchMap = Readonly<{
   identity: string
   displayName: string
-  mode: "payload" | "capture-the-flag"
+  mode: "payload" | "capture-the-flag" | "custom"
   minimumPlayers: number
   maximumPlayers: number
 }>
@@ -99,7 +99,13 @@ export function createTf2LocalMatchMaps(
     if (identity === "ctf_2fort") {
       return [Object.freeze({ identity, displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 32 })]
     }
-    return []
+    return [Object.freeze({
+      identity,
+      displayName: identity,
+      mode: "custom",
+      minimumPlayers: practice.defaults.minimumPlayers,
+      maximumPlayers: practice.defaults.maximumPlayers,
+    })]
   }))
 }
 

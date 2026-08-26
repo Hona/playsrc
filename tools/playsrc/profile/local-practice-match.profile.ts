@@ -52,6 +52,7 @@ test("headed Training and Create Server launch a real TF2 bot match through comb
   await expect(dialog).toBeVisible()
   const map = dialog.locator("[data-vgui-name='MapList']")
   await map.click()
+  await expect(page.getByRole("option", { name: "jump_beef" })).toBeVisible()
   await expect(page.getByRole("option", { name: "pl_upward" })).toBeVisible()
   await page.getByRole("option", { name: "ctf_2fort" }).click()
   await dialog.getByRole("tab", { name: "GAME" }).click()

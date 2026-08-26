@@ -1555,12 +1555,22 @@ export async function verifyBrowserAcceptance(
       throw new BrowserEvidenceError(`${String(error)}; browser body: ${body}`)
     }
     const desktopMenuViewport = await viewportOwnership(session, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
-    const menuState = parseJson<{ active: Record<string, string | null>; inactive: Record<string, string | null>; eventDisplay: string }>(await agent([
+    const menuState = parseJson<{
+      active: Record<string, string | null>
+      inactive: Record<string, string | null>
+      visible: Record<string, boolean>
+      conditional: Record<string, boolean>
+      partySlots: number
+      eventDisplay: string
+    }>(await agent([
       "--session", session, "eval",
-      "(()=>{const get=n=>document.querySelector(`[data-vgui-name=\"${n}\"]`),entry=n=>get(n)?.querySelector('[data-vgui-name=ModeButton]');return {active:Object.fromEntries(['SettingsButton','TF2SettingsButton','QuitButton'].map(n=>[n,get(n)?.getAttribute('aria-disabled')??null])),inactive:{CharacterSetupButton:get('CharacterSetupButton')?.getAttribute('aria-disabled')??null,FindAGameButton:get('FindAGameButton')?.getAttribute('aria-disabled')??null,...Object.fromEntries(['CasualEntry','CompetitiveEntry','MvMEntry','ServerBrowserEntry','TrainingEntry','CreateServerEntry'].map(n=>[n,entry(n)?.getAttribute('aria-disabled')??null]))},eventDisplay:getComputedStyle(get('EventEntry')).display}})()",
+      "(()=>{const get=n=>document.querySelector(`[data-vgui-name=\"${n}\"]`),entry=n=>get(n)?.querySelector('[data-vgui-name=ModeButton]'),shown=n=>{const e=get(n);return !!e&&getComputedStyle(e).display!=='none'&&e.getAttribute('aria-hidden')==='false'};return {active:{...Object.fromEntries(['SettingsButton','TF2SettingsButton','FindAGameButton','QuitButton'].map(n=>[n,get(n)?.getAttribute('aria-disabled')??null])),...Object.fromEntries(['TrainingEntry','CreateServerEntry'].map(n=>[n,entry(n)?.getAttribute('aria-disabled')??null]))},inactive:{...Object.fromEntries(['CharacterSetupButton','GeneralStoreButton','AchievementsButton','CommentaryButton','CoachPlayersButton','WorkshopButton','ReplayButton','ReportBugButton','ToggleChatButton'].map(n=>[n,get(n)?.getAttribute('aria-disabled')??null])),...Object.fromEntries(['CasualEntry','CompetitiveEntry','MvMEntry','ServerBrowserEntry'].map(n=>[n,entry(n)?.getAttribute('aria-disabled')??null]))},visible:Object.fromEntries(['FriendsContainer','CharacterSetupButton','GeneralStoreButton','SettingsButton','TF2SettingsButton','NewUserForumsButton','AchievementsButton','CommentaryButton','CoachPlayersButton','WorkshopButton','ReplayButton','ReportBugButton','ToggleChatButton','PartySlot0','PartySlot1','PartySlot2','PartySlot3','PartySlot4','PartySlot5'].map(n=>[n,shown(n)])),conditional:Object.fromEntries(['Notifications_ShowButtonPanel','MOTD_ShowButtonPanel','StoreHasNewItemsImage','EventPromo','ShowPromoCodesButton'].map(n=>[n,shown(n)])),partySlots:document.querySelectorAll('.gameui-layer [data-vgui-name^=PartySlot] [data-vgui-name=EmptyImage]').length,eventDisplay:getComputedStyle(get('EventEntry')).display}})()",
     ]))
     require(Object.values(menuState.active).every((value) => value === "false")
       && Object.values(menuState.inactive).every((value) => value === "true")
+      && Object.values(menuState.visible).every(Boolean)
+      && Object.values(menuState.conditional).every((value) => !value)
+      && menuState.partySlots === 6
       && menuState.eventDisplay === "none", `configured Main Menu dispositions differ: ${JSON.stringify(menuState)}`)
     const menuPresentation = parseJson<{ random: { seed: number; draws: number }; character: string; consoleControls: number; characterVisible: boolean; characterBounds: number[]; characterCanvas: number[] }>(await agent([
       "--session", session, "eval",

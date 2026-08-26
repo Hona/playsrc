@@ -79,7 +79,7 @@ describe("TF2 configured GameUI actions", () => {
       ],
       account: [
         { identity: "items", text: "ITEMS", sourceCommand: "engine open_charinfo", visibility: "visible", capability: { kind: "inactive", owner: "account-items" } },
-        { identity: "store", text: "SHOP", sourceCommand: "engine open_store", visibility: "configured-hidden", capability: { kind: "inactive", owner: "economy-store" } },
+        { identity: "store", text: "SHOP", sourceCommand: "engine open_store", visibility: "visible", capability: { kind: "inactive", owner: "economy-store" } },
       ],
       settings: [
         { identity: "options", text: "Options", sourceCommand: "OpenOptionsDialog", visibility: "visible", capability: { kind: "request", request: "show-options" } },

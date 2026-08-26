@@ -83,10 +83,19 @@ const LIMITS: VguiRuntimeLimits = Object.freeze({
 
 const OBJECT_PROPERTIES = new Set(["button", "upbutton", "downbutton", "slider", "scrollbar", "tabskv"])
 const MAIN_MENU_PATH = "resource/ui/mainmenuoverride.res"
+const GAME_MENU_PATH = "resource/gamemenu.res"
 const DASHBOARD_PATH = "resource/ui/matchmakingdashboard.res"
+const DASHBOARD_PARTY_MEMBER_PATH = "resource/ui/dashboardpartymember.res"
 const DASHBOARD_PLAYLIST_PATH = "resource/ui/matchmakingdashboardplaylist.res"
 const PLAYLIST_PATH = "resource/ui/matchmakingplaylist.res"
 const PLAYLIST_ENTRY_PATH = "resource/ui/mainmenuplaylistentry.res"
+
+type AuthoredGameMenuEntry = Readonly<{
+  onlyInGame: boolean
+  onlyAtMenu: boolean
+  onlyInReplay: boolean
+  onlyWhenVrEnabled: boolean
+}>
 
 export function tf2CharacterImageVisible(state: Tf2GameUiState, backgroundUsesCharacterImage: boolean): boolean {
   return state.kind === "main-menu" && backgroundUsesCharacterImage
@@ -209,6 +218,8 @@ class Integration implements Tf2GameUiIntegration {
   readonly #onRequest: (request: Tf2GameUiRequest) => void
   readonly #diagnostics: Tf2GameUiIntegrationDiagnostic[] = []
   readonly #baseVisibility = new Map<VguiPanelId, boolean>()
+  readonly #gameMenuEntries = new Map<string, AuthoredGameMenuEntry>()
+  readonly #localization: ReadonlyMap<string, string>
   #baseBackground: VguiPanelId | null = null
   #baseBackgroundImage: string | null = null
   #viewport: VguiViewport
@@ -285,6 +296,7 @@ class Integration implements Tf2GameUiIntegration {
     this.#viewport = request.viewport
     this.#resources = request.resources
     this.#onRequest = request.onRequest
+    this.#localization = new Map(request.resources.localization.tokens.map((token) => [token.name.toLowerCase(), token.value]))
     const initialized = initializeVguiRuntime({
       runtimeIdentity: "tf2-gameui",
       root: request.root,
@@ -312,7 +324,9 @@ class Integration implements Tf2GameUiIntegration {
       mustApply(this.#runtime, { kind: "set-panel-state", panel: mainMenu, proportional: true })
       createCodeControl(this.#runtime, mainMenu, "ImagePanel", "TFCharacterImage")
       const dashboard = createCodeControl(this.#runtime, 1, "CTFMatchmakingDashboard", "MMDashboard")
+      mustApply(this.#runtime, { kind: "set-panel-state", panel: dashboard, proportional: true })
       const playlistContainer = createCodeControl(this.#runtime, 1, "EditablePanel", "ExpandableList")
+      mustApply(this.#runtime, { kind: "set-panel-state", panel: playlistContainer, proportional: true })
       const playlist = createCodeControl(this.#runtime, playlistContainer, "CTFPlaylistPanel", "playlist")
       const conditions = [tf2MainMenuAspectCondition(request.viewport)]
       if (request.presentation.activeHoliday !== "none") conditions.push(`if_${request.presentation.activeHoliday}`)
@@ -333,12 +347,14 @@ class Integration implements Tf2GameUiIntegration {
         if (image !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel: image, visible: false })
       }
       this.#applyOwned(DASHBOARD_PATH, dashboard)
+      this.#configurePartyMembers()
       this.#applyOwned(DASHBOARD_PLAYLIST_PATH, playlistContainer)
       this.#applyOwned(PLAYLIST_PATH, playlist, ["if_wider"])
       this.#configurePlaylist()
-      this.#disableUnownedControls()
-      this.#hideUnavailablePanels()
-      for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: false, keyboardInput: false })
+      this.#configureGameMenu(mainMenu)
+      this.#applyCommandCapabilities()
+      this.#applyConditionalVisibility(mainMenu)
+      for (const identity of [1, mainMenu]) mustApply(this.#runtime, { kind: "set-panel-state", panel: identity, mouseInput: true, keyboardInput: true })
       this.#captureBaseVisibility()
       this.#presentState()
     })
@@ -369,46 +385,131 @@ class Integration implements Tf2GameUiIntegration {
 
   #configurePlaylist(): void {
     const buttons = TF2_MAIN_MENU_STATE.panels.find((panel) => panel.identity === "play-list")!.buttons
+    const configured = this.#resources.document(PLAYLIST_PATH)
     for (const button of buttons) {
       const entryName = PLAYLIST_CONTROLS[button.identity]
       const entry = panelByName(this.#runtime, entryName)
       if (entry === null) continue
+      const definition = configured.root.children.find((node) => (scalar(node, "fieldName") ?? node.name) === entryName)
       this.#apply(PLAYLIST_ENTRY_PATH, entry)
       const mode = panelByName(this.#runtime, "ModeButton", entry)
       if (mode !== null) {
-        mustApply(this.#runtime, { kind: "mutate-control", panel: mode, mutation: { text: button.text, command: button.sourceCommand } })
+        mustApply(this.#runtime, {
+          kind: "mutate-control",
+          panel: mode,
+          mutation: { text: definition ? scalar(definition, "button_token") ?? button.text : button.text, command: button.sourceCommand },
+        })
         mustApply(this.#runtime, { kind: "set-panel-state", panel: mode, enabled: button.capability.kind === "request", mouseInput: true })
+      }
+      const description = definition ? scalar(definition, "desc_token") : null
+      if (description) {
+        mustApply(this.#runtime, {
+          kind: "set-dialog-variable",
+          panel: entry,
+          name: "desc_token",
+          value: this.#localization.get(description.replace(/^#/u, "").toLowerCase()) ?? description,
+        })
+      }
+      const image = definition ? scalar(definition, "image_name") : null
+      const modeImage = panelByName(this.#runtime, "ModeImage", entry)
+      if (image && modeImage !== null) mustApply(this.#runtime, { kind: "mutate-control", panel: modeImage, mutation: { image } })
+      if (["casual", "competitive", "mann-vs-machine"].includes(button.identity)) {
+        const disabledIcon = panelByName(this.#runtime, "DisabledIcon", entry)
+        if (disabledIcon !== null) {
+          mustApply(this.#runtime, { kind: "set-panel-state", panel: disabledIcon, visible: true, enabled: false, mouseInput: false })
+          const icon = panelByName(this.#runtime, "SubImage", disabledIcon)
+          if (icon !== null) {
+            mustApply(this.#runtime, {
+              kind: "mutate-control",
+              panel: icon,
+              mutation: { image: button.identity === "competitive" ? "locked_icon" : "gc_dc" },
+            })
+          }
+        }
       }
       if (button.visibility === "event-conditional") mustApply(this.#runtime, { kind: "set-panel-state", panel: entry, visible: false })
     }
   }
 
-  #disableUnownedControls(): void {
-    const active = new Set(["OpenOptionsDialog", "opentf2options", "view_newuser_forums", "quit", "resume_game", "Cancel", "find_game", "play_training", "create_server"])
-    const snapshots = this.#runtime.snapshot().panels
-    for (const command of this.#resources.descriptor.commands) {
-      if (active.has(command.command)) continue
-      const segments = command.nodePath.split("/")
-      const controlName = /^(.*)\[\d+\]$/u.exec(segments.at(-2) ?? "")?.[1]
-      if (!controlName) continue
-      const panel = snapshots.find((candidate) => candidate.name === controlName)
-      if (panel) mustApply(this.#runtime, { kind: "set-panel-state", panel: panel.id, enabled: false })
+  #configurePartyMembers(): void {
+    for (let slot = 0; slot < 6; slot += 1) {
+      const member = panelByName(this.#runtime, `PartySlot${slot}`)
+      if (member === null) throw new Error(`Configured dashboard party slot ${slot} is missing`)
+      createCodeControl(this.#runtime, member, "CAvatarImagePanel", "avatar")
+      this.#apply(DASHBOARD_PARTY_MEMBER_PATH, member)
+      for (const name of ["avatar", "LeaderIcon", "BannedIcon", "OutOfDateIcon", "OfflineIcon", "StatusDimmer", "Spinner"]) {
+        const panel = panelByName(this.#runtime, name, member)
+        if (panel !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
+      }
     }
   }
 
-  #hideUnavailablePanels(): void {
-    const names = new Set([
-      "CycleRankTypeButton", "RankTooltipPanel", "RankPanel", "RankModelPanel", "NoGCMessage", "NoGCImage", "RankBorder",
-      "Notifications_ShowButtonPanel", "Notifications_Panel", "WatchStreamButton", "QuestLogButton",
-      "MOTD_ShowButtonPanel", "MOTD_Panel", "VRBGPanel", "VRModeButton", "FriendsContainer", "EventPromo",
-      "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton", "StoreHasNewItemsImage",
-      "ReportPlayerButton", "CallVoteButton", "MutePlayersButton", "RequestCoachButton",
-      "AchievementsButton", "CommentaryButton", "CoachPlayersButton", "WorkshopButton", "ReplayButton", "ReportBugButton",
-      "SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator", "ToggleChatButton", "QueueContainer", "JoinPartyLobbyContainer",
-      ...Array.from({ length: 6 }, (_, index) => `PartySlot${index}`),
+  #configureGameMenu(mainMenu: VguiPanelId): void {
+    this.#gameMenuEntries.clear()
+    const source = this.#resources.document(GAME_MENU_PATH)
+    for (const definition of source.root.children) {
+      if (definition.value !== null) continue
+      const owner = panelByName(this.#runtime, definition.name, mainMenu)
+      if (owner === null) throw new Error(`Configured GameMenu control ${definition.name} is missing`)
+      const command = scalar(definition, "command")
+      const button = panelByName(this.#runtime, "SubButton", owner)
+      if (button !== null && command) {
+        mustApply(this.#runtime, {
+          kind: "mutate-control",
+          panel: button,
+          mutation: { text: scalar(definition, "label") ?? "", command },
+        })
+        mustApply(this.#runtime, { kind: "set-panel-state", panel: button, enabled: false })
+        const image = scalar(definition, "subimage")
+        const target = panelByName(this.#runtime, "SubImage", button)
+        if (image && target !== null) mustApply(this.#runtime, { kind: "mutate-control", panel: target, mutation: { image } })
+      }
+      this.#gameMenuEntries.set(definition.name.toLowerCase(), Object.freeze({
+        onlyInGame: scalar(definition, "OnlyInGame") === "1",
+        onlyAtMenu: scalar(definition, "OnlyAtMenu") === "1",
+        onlyInReplay: scalar(definition, "OnlyInReplay") === "1",
+        onlyWhenVrEnabled: scalar(definition, "OnlyWhenVREnabled") === "1",
+      }))
+    }
+  }
+
+  #applyCommandCapabilities(): void {
+    const active = new Set(TF2_MAIN_MENU_STATE.panels.flatMap((panel) => panel.buttons
+      .filter((button) => button.capability.kind === "request")
+      .map((button) => button.sourceCommand)))
+    active.add("resume_game")
+    active.add("Cancel")
+    const sources = new Set([MAIN_MENU_PATH, DASHBOARD_PATH, DASHBOARD_PARTY_MEMBER_PATH])
+    const snapshots = this.#runtime.snapshot().panels
+    const byId = new Map(snapshots.map((panel) => [panel.id, panel]))
+    for (const command of this.#resources.descriptor.commands) {
+      if (!sources.has(command.sourceLogicalPath) || active.has(command.command)) continue
+      const segments = command.nodePath.split("/")
+      const controlName = /^(.*)\[\d+\]$/u.exec(segments.at(-2) ?? "")?.[1]
+      const parentName = /^(.*)\[\d+\]$/u.exec(segments.at(-3) ?? "")?.[1]
+      if (!controlName) continue
+      for (const panel of snapshots) {
+        if (panel.name !== controlName) continue
+        const parent = panel.parent === null ? null : byId.get(panel.parent)
+        if (parentName && !parentName.toLowerCase().endsWith(".res") && parent?.name !== parentName) continue
+        mustApply(this.#runtime, { kind: "set-panel-state", panel: panel.id, enabled: false })
+      }
+    }
+  }
+
+  #applyConditionalVisibility(mainMenu: VguiPanelId): void {
+    const groups: readonly (readonly string[])[] = Object.freeze([
+      Object.freeze(["RankPanel", "RankModelPanel", "CycleRankTypeButton", "RankTooltipPanel", "NoGCMessage", "NoGCImage", "RankBorder"]),
+      Object.freeze(["Notifications_ShowButtonPanel", "Notifications_Panel"]),
+      Object.freeze(["MOTD_ShowButtonPanel", "MOTD_Panel"]),
+      Object.freeze(["WatchStreamButton", "QuestLogButton"]),
+      Object.freeze(["EventPromo", "ShowPromoCodesButton", "StoreHasNewItemsImage"]),
+      Object.freeze(["VRBGPanel", "VRModeButton"]),
+      Object.freeze(["SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator"]),
     ])
-    for (const panel of this.#runtime.snapshot().panels) {
-      if (names.has(panel.name)) mustApply(this.#runtime, { kind: "set-panel-state", panel: panel.id, visible: false })
+    for (const name of groups.flat()) {
+      const panel = panelByName(this.#runtime, name, mainMenu)
+      if (panel !== null) mustApply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
     }
   }
 
@@ -464,11 +565,7 @@ class Integration implements Tf2GameUiIntegration {
     }
     if (dashboard) {
       for (const panel of before.filter((candidate) => descendsFrom(candidate.id, dashboard.id))) {
-        const pauseControls = [resume, disconnect, findGame].filter((value) => value !== undefined)
-        const pauseControl = pauseControls.some((control) =>
-          panel.id === control.id || descendsFrom(panel.id, control.id) || descendsFrom(control.id, panel.id),
-        )
-        setVisible(panel.id, this.#state.kind === "pause" ? pauseControl : (this.#baseVisibility.get(panel.id) ?? panel.visible))
+        setVisible(panel.id, menu && (this.#baseVisibility.get(panel.id) ?? panel.visible))
       }
     }
     if (mainOverride) {
@@ -482,6 +579,15 @@ class Integration implements Tf2GameUiIntegration {
       const panel = byName.get(name.toLowerCase())
       if (panel) setVisible(panel.id, (name === "MainMenuOverride" || name === "MMDashboard" || name === "TopBar" ? menu : menu && this.#playlistActive) && name !== "EventEntry")
     }
+    for (const [name, entry] of this.#gameMenuEntries) {
+      const panel = byName.get(name)
+      if (!panel) continue
+      setVisible(panel.id, menu
+        && (!entry.onlyInGame || this.#state.kind === "pause")
+        && (!entry.onlyAtMenu || mainMenu)
+        && !entry.onlyInReplay
+        && !entry.onlyWhenVrEnabled)
+    }
     const expandable = byName.get("expandablelist")
     if (expandable) {
       const x = this.#playlistActive && menu ? this.#viewport.width - expandable.bounds.width : this.#viewport.width
@@ -492,8 +598,8 @@ class Integration implements Tf2GameUiIntegration {
       ResumeButton: this.#state.kind === "pause",
       DisconnectButton: this.#state.kind === "pause",
       FindAGameButton: menu,
-      GeneralStoreButton: false,
-      CharacterSetupButton: false,
+      GeneralStoreButton: menu,
+      CharacterSetupButton: menu,
       SettingsButton: menu,
       SettingsButtonSDK: false,
       TF2SettingsButton: menu,
@@ -544,8 +650,9 @@ class Integration implements Tf2GameUiIntegration {
         this.#mainMenuConditions = [aspectCondition, ...this.#mainMenuConditions.filter((condition) => condition !== "if_wider" && condition !== "if_taller")]
         this.#applyOwned(MAIN_MENU_PATH, this.#mainMenu, this.#mainMenuConditions)
         this.#configureScrollers(this.#mainMenu)
-        this.#disableUnownedControls()
-        this.#hideUnavailablePanels()
+        this.#configureGameMenu(this.#mainMenu)
+        this.#applyCommandCapabilities()
+        this.#applyConditionalVisibility(this.#mainMenu)
         this.#captureBaseVisibility(this.#mainMenu)
       }
       this.#presentState()

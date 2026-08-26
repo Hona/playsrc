@@ -28,7 +28,7 @@ function convert(node: Tf2UiResourceNode): VguiResourceNode {
   return Object.freeze({
     name: node.name,
     value: node.value,
-    condition: node.condition?.symbol ?? null,
+    condition: node.condition?.token ?? null,
     children: Object.freeze(node.children.filter((child) =>
       !/(?:_lodef|_minmode)$/iu.test(child.name)
       && !/^(?:border|border_override|background-texture|paintbackgroundtype|drawcolor|frame|image)$/iu.test(child.name)
@@ -161,10 +161,14 @@ function createResources(): Tf2VguiResources {
       identity: "tf2-gameui-transitions",
       revision: "1",
       language: "english",
-      tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) =>
-        token.definitions[0] && ["#LoadingMap", "#Gametype_Escort"].includes(token.name)
-          ? [Object.freeze({ name: token.name.replace(/^#/u, ""), value: token.definitions[0].value })]
-          : [])),
+      tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) => {
+        if (!["#LoadingMap", "#Gametype_Escort", "#TF_Matchmaking_HeaderModeSelect"].includes(token.name)
+          && !token.name.startsWith("#MMenu_PlayList_")) return []
+        const definition = token.definitions.at(-1)
+        return definition
+          ? [Object.freeze({ name: token.name.replace(/^#/u, ""), value: definition.value })]
+          : []
+      })),
     }),
     animations: Object.freeze({ identity: "tf2-gameui-transitions", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),

@@ -211,12 +211,16 @@ test("profile TF2 Main Menu startup and steady state", async ({ page, context, b
   await writeFile(path.join(outputDirectory, "steady-cpu-profile.cpuprofile"), JSON.stringify(steady.cpuProfile))
   await page.screenshot({ path: path.join(outputDirectory, "main-menu.png") })
   for (const name of [
-    "EventPromo", "FriendsContainer", "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton",
+    "EventPromo", "ShowPromoCodesButton", "StoreHasNewItemsImage",
     "Notifications_ShowButtonPanel", "MOTD_ShowButtonPanel", "WatchStreamButton", "QuestLogButton",
     "NoGCMessage", "NoGCImage", "RankBorder", "SettingsButtonSDK", "TF2SettingsButtonSDK",
   ]) await expect(page.locator(`[data-vgui-name="${name}"]`)).toBeHidden()
-  await expect(page.locator('[data-vgui-name="SettingsButton"]')).toBeVisible()
-  await expect(page.locator('[data-vgui-name="TF2SettingsButton"]')).toBeVisible()
+  for (const name of [
+    "FriendsContainer", "CharacterSetupButton", "GeneralStoreButton", "SettingsButton", "TF2SettingsButton",
+    "NewUserForumsButton", "AchievementsButton", "CommentaryButton", "CoachPlayersButton", "WorkshopButton",
+    "ReplayButton", "ReportBugButton", "ToggleChatButton", "PartySlot0", "PartySlot1", "PartySlot2",
+    "PartySlot3", "PartySlot4", "PartySlot5", "FindAGameButton",
+  ]) await expect(page.locator(`[data-vgui-name="${name}"]`)).toBeVisible()
 
   const optionsStartedMilliseconds = await page.evaluate(() => performance.now())
   const optionsOpenCapture = await startCdpCapture(cdp)

@@ -27,6 +27,7 @@ describe("TF2 authored offline practice and local server configuration", () => {
       maximumPlayers: 24,
     }])
     expect(createTf2LocalMatchMaps(configuredMaps, practice)).toEqual([
+      { identity: "jump_beef", displayName: "jump_beef", mode: "custom", minimumPlayers: 1, maximumPlayers: 32 },
       practice.maps[0],
       { identity: "ctf_2fort", displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 32 },
     ])
@@ -54,7 +55,7 @@ describe("TF2 authored offline practice and local server configuration", () => {
     }, map).configuration.quota).toBe(30)
   })
 
-  test("retains normal, fill, and match bot quota modes for both configured server maps", () => {
+  test("retains normal, fill, and match bot quota modes for every configured server map", () => {
     const maps = createTf2LocalMatchMaps(configuredMaps, createTf2OfflinePracticeCatalog(source, configuredMaps))
     for (const map of maps) for (const mode of ["normal", "fill", "match"] as const) {
       expect(tf2LocalMatchLaunch("create-server", {
@@ -75,6 +76,6 @@ describe("TF2 authored offline practice and local server configuration", () => {
     }
     expect(() => tf2LocalMatchLaunch("training", {
       mapIdentity: "ctf_2fort", difficulty: 1, playerCount: 6, quotaMode: "normal",
-    }, maps[1]!)).toThrow("offline practice excludes")
+    }, maps.find((map) => map.identity === "ctf_2fort")!)).toThrow("offline practice excludes")
   })
 })

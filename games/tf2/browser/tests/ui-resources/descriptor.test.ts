@@ -37,15 +37,37 @@ describe("configured TF2 UI resource descriptor", () => {
     }
   })
 
+  test("includes every authored playlist illustration and empty-party portrait in the immutable content closure", () => {
+    const dependencies = new Set(bundleManifest.dependencies.map((dependency) => dependency.logicalPath))
+    for (const name of [
+      "main_menu/main_menu_button_casual",
+      "main_menu/main_menu_button_competitive",
+      "main_menu/main_menu_button_mvm",
+      "main_menu/main_menu_button_community_server",
+      "main_menu/main_menu_button_training",
+      "main_menu/main_menu_button_custom_server",
+      "class_portraits/silhouette_alpha",
+    ]) {
+      const image = tf2UiResources.images.find((candidate) => candidate.configuredValue === name)
+      expect(image?.classification, name).toBe("content-vtf")
+      expect(image?.material?.logicalPath, name).toBe(`materials/vgui/${name}.vmt`)
+      expect(dependencies.has(image!.material!.logicalPath), name).toBeTrue()
+      expect(image?.textures).toHaveLength(1)
+      expect(dependencies.has(image!.textures[0]!.source.logicalPath), name).toBeTrue()
+    }
+  })
+
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-72773685d94d5de1")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-badfaac5ecf4abfd")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(127)
-    expect(tf2UiResources.panels).toHaveLength(113)
+    expect(tf2UiResources.sources).toHaveLength(128)
+    expect(tf2UiResources.panels).toHaveLength(114)
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/statsummary.res")?.sha256)
       .toBe("bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/mainmenuoverride.res")?.sha256)
       .toBe("5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92")
+    expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/dashboardpartymember.res"))
+      .toMatchObject({ domain: "main-menu", byteLength: 3_329, sha256: "cd09d886bf54e5f327931124170519820444c4c4215fbdc9c5779966a92f735b" })
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/clientscheme.res")?.sha256)
       .toBe("1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c")
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "scripts/hudlayout.res")?.sha256)
@@ -102,12 +124,12 @@ describe("configured TF2 UI resource descriptor", () => {
 
   test("retains every selected inventory with no unclassified item", () => {
     expect(tf2UiResources.controls).toHaveLength(80)
-    expect(tf2UiResources.properties).toHaveLength(21_738)
-    expect(tf2UiResources.commands).toHaveLength(108)
+    expect(tf2UiResources.properties).toHaveLength(21_875)
+    expect(tf2UiResources.commands).toHaveLength(109)
     expect(tf2UiResources.localization.tokens).toHaveLength(640)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
-    expect(tf2UiResources.images).toHaveLength(401)
+    expect(tf2UiResources.images).toHaveLength(409)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(80)

@@ -42,7 +42,7 @@ describe("TF2 authored local-match VGUI roots", () => {
     expect(server.find((panel) => panel.name === "ServerPage")?.effectivelyVisible).toBeTrue()
     expect(server.find((panel) => panel.name === "GameplayPage")?.effectivelyVisible).toBeFalse()
     expect(server.find((panel) => panel.name === "MapList")?.state.items.map((item) => item.text))
-      .toEqual(["pl_upward", "ctf_2fort"])
+      .toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
     expect(server.find((panel) => panel.name === "TeamFillComboBox")?.state.items.map((item) => item.text))
       .toEqual(["normal", "fill", "match"])
     expect(visible).toEqual([true, false, true])
