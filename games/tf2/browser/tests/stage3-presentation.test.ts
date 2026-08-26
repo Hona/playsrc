@@ -303,6 +303,8 @@ test("decodes exact aligned PMPO vertex planes without copying and rejects non-f
   shared.set(reference, bytes.byteLength)
   new DataView(shared.buffer).setUint32(8, 2, true)
   const [first, second] = decodeModelPoseOutput(shared)
+  expect(first!.events).toBe(second!.events)
+  expect(first!.eyes).toBe(second!.eyes)
   expect(second!.identity).toBe(10)
   expect(second!.primitives[0]!.positions).toBe(first!.primitives[0]!.positions)
   expect(second!.primitives[0]!.normals).toBe(first!.primitives[0]!.normals)

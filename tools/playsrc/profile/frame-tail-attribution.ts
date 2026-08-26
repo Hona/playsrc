@@ -1,0 +1,76 @@
+import { summarizeDistribution, type CpuProfile, type TraceEvent } from "./gameui-profile"
+
+type DisplayFrame = Readonly<{ at: number; displayFrame: number; mouseRevision?: number; detail?: Record<string, number>; workerPending?: number }>
+type WorkerRecord = Readonly<{ kind: string; started: number; finished?: number; timings?: Record<string, number> }>
+type InputRecord = Readonly<{ at: number; revision: number; kind: string }>
+
+export function attributeFrameTails(options: Readonly<{
+  frames: readonly DisplayFrame[]
+  workers: readonly WorkerRecord[]
+  inputs: readonly InputRecord[]
+  longAnimationFrames: readonly Readonly<{ at: number; duration: number; scripts?: readonly unknown[]; styleAndLayoutMilliseconds?: number }>[]
+  trace: readonly TraceEvent[]
+  cpu: CpuProfile
+  traceOffsetMicroseconds: number
+}>) {
+  const gc = options.trace.filter(event => event.ph === "X" && typeof event.dur === "number"
+    && /^(?:MinorGC|MajorGC|Scavenge|MarkCompact)$/iu.test(event.name ?? ""))
+  const collections = gc.map(event => ({
+    kind: /(?:MinorGC|Scavenge)/iu.test(event.name ?? "") ? "minor" as const
+      : /(?:MajorGC|MarkCompact)/iu.test(event.name ?? "") ? "major" as const : "other" as const,
+    at: (event.ts! - options.traceOffsetMicroseconds) / 1_000,
+    milliseconds: event.dur! / 1_000,
+    name: event.name!,
+    beforeBytes: Number(event.args?.usedHeapSizeBefore ?? event.args?.data?.usedHeapSizeBefore ?? 0),
+    afterBytes: Number(event.args?.usedHeapSizeAfter ?? event.args?.data?.usedHeapSizeAfter ?? 0),
+  }))
+  const nodes = new Map(options.cpu.nodes.map(node => [node.id, node]))
+  const parents = new Map<number, number>()
+  for (const node of options.cpu.nodes) for (const child of node.children ?? []) parents.set(child, node.id)
+  let timestamp = options.cpu.startTime
+  const samples = (options.cpu.samples ?? []).map((identity, index) => {
+    timestamp += options.cpu.timeDeltas?.[index] ?? 0
+    return { at: (timestamp - options.traceOffsetMicroseconds) / 1_000, identity }
+  })
+  const tails = options.frames.flatMap((frame, index) => {
+    if (index === 0) return []
+    const previous = options.frames[index - 1]!
+    const milliseconds = frame.at - previous.at
+    if (milliseconds <= 20) return []
+    const matchedSamples = samples.filter(sample => sample.at >= previous.at && sample.at <= frame.at)
+    const counts = new Map<number, number>()
+    for (const sample of matchedSamples) counts.set(sample.identity, (counts.get(sample.identity) ?? 0) + 1)
+    const stacks = [...counts].sort((left, right) => right[1] - left[1]).slice(0, 3).map(([identity, count]) => {
+      const frames: string[] = []
+      let current = nodes.get(identity)
+      while (current && frames.length < 8) {
+        frames.push(current.callFrame.functionName || "(anonymous)")
+        current = nodes.get(parents.get(current.id) ?? -1)
+      }
+      return { samples: count, frames }
+    })
+    return [{
+      displayFrame: frame.displayFrame, at: frame.at, milliseconds: Number(milliseconds.toFixed(3)),
+      work: frame.detail ?? null, workerPending: frame.workerPending ?? 0, stacks,
+      workers: options.workers.filter(worker => worker.started <= frame.at && (worker.finished ?? Infinity) >= previous.at)
+        .map(worker => ({ kind: worker.kind, milliseconds: Number(((worker.finished ?? frame.at) - worker.started).toFixed(3)), queueMilliseconds: worker.timings?.queueMilliseconds ?? null })),
+      garbageCollection: collections.filter(collection => collection.at < frame.at && collection.at + collection.milliseconds > previous.at),
+      longAnimationFrames: options.longAnimationFrames.filter(animation => animation.at < frame.at && animation.at + animation.duration > previous.at),
+    }]
+  })
+  const latency = options.inputs.flatMap(input => {
+    const frame = options.frames.find(candidate => candidate.at >= input.at && (candidate.mouseRevision ?? 0) >= input.revision)
+    return frame ? [frame.at - input.at] : []
+  })
+  return Object.freeze({
+    frames: tails,
+    garbageCollection: {
+      count: collections.length,
+      minor: collections.filter(collection => collection.kind === "minor").length,
+      major: collections.filter(collection => collection.kind === "major").length,
+      milliseconds: summarizeDistribution(collections.map(collection => collection.milliseconds)),
+      reclaimedBytes: collections.reduce((total, collection) => total + Math.max(0, collection.beforeBytes - collection.afterBytes), 0),
+    },
+    inputToVisibleMilliseconds: summarizeDistribution(latency),
+  })
+}

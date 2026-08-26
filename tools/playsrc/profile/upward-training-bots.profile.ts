@@ -5,6 +5,7 @@ import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { assertVisibleGameplayTruth, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
@@ -156,7 +157,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
     await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Upward")
     const mapPanel = layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel']")
-    const playerCount = Number(await mapPanel.locator("[data-vgui-name='NumPlayersTextEntry']").inputValue())
+    const playerEntry = mapPanel.locator("[data-vgui-name='NumPlayersTextEntry']")
+    if (process.env.PROFILE_UPWARD_TRAINING_PLAYERS) await playerEntry.fill(process.env.PROFILE_UPWARD_TRAINING_PLAYERS)
+    const playerCount = Number(await playerEntry.inputValue())
     expect(playerCount).toBeGreaterThanOrEqual(12)
     const mapStarted = Date.now()
     networkStage = `${cache}-map`
@@ -180,6 +183,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
 
   const canvas = page.locator("canvas.world-canvas")
   const before = await canvas.screenshot({ timeout: 20_000 })
+  if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1") await canvas.click({ position: { x: 300, y: 250 } })
   const cdp = await context.newCDPSession(page)
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
@@ -189,11 +193,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value as ChromiumTraceEvent[]))
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
+  await cdp.send("HeapProfiler.enable")
+  await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536 })
   await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
   if (!exerciseClasses) await page.keyboard.down("w")
-  await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline", options: "record-as-much-as-possible" })
+  await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
   const clockBefore = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
   const measurementPromise = page.evaluate(async (duration) => {
     const main = document.querySelector<HTMLElement>("main")!
@@ -227,13 +233,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const elapsed = performance.now() - started
     const position = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     return {
-      elapsed, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
+      elapsed, started, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
       visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames,
-      presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
+      presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       classSwitches,
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
@@ -269,13 +275,29 @@ test("profile authored headed Upward offline-practice default roster and actual 
       exercisedClasses.push(playerClass)
     }
   }
-  const [measurement] = await Promise.all([measurementPromise, exercise()])
+  const interaction = process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses
+    ? (async () => {
+      await page.waitForTimeout(300)
+      for (let index = 0; index < 6; index += 1) {
+        await page.mouse.move(310 + index * 14, 255 + index * 3)
+        if (index === 1) await page.keyboard.down("a")
+        if (index === 2) await page.keyboard.press("Digit2")
+        if (index === 3) await page.keyboard.press("Digit1")
+        if (index === 4) { await page.mouse.down(); await page.mouse.up() }
+        if (index === 5) await page.keyboard.up("a")
+        await page.waitForTimeout(250)
+      }
+    })()
+    : Promise.resolve()
+  const [measurement] = await Promise.all([measurementPromise, exercise(), interaction])
   const clockAfter = (await cdp.send("Performance.getMetrics")).metrics.find(metric => metric.name === "Timestamp")?.value
   const traceFinished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
   await cdp.send("Tracing.end")
   if (!exerciseClasses) await page.keyboard.up("w")
   await traceFinished
   const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
+  const allocationProfile = (await cdp.send("HeapProfiler.stopSampling")).profile
+  const allocations = (node: { selfSize: number; children: any[] }): number => node.selfSize + node.children.reduce((total, child) => total + allocations(child), 0)
   const heapAfter = await cdp.send("Runtime.getHeapUsage")
   const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
   const residentAfter = processResidentMemory(processAfter?.processInfo)
@@ -316,6 +338,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     if (decoded.pixels[index]! > 16 || decoded.pixels[index + 1]! > 16 || decoded.pixels[index + 2]! > 16) nonBlack += 1
   }
   const actualFrames = measurement.lastFrame - measurement.firstFrame
+  const tails = attributeFrameTails({
+    frames: completed, workers, inputs: measurement.input, longAnimationFrames: measurement.longAnimationFrames,
+    trace: traceEvents, cpu: cpuProfile,
+    traceOffsetMicroseconds: (clockBefore ?? 0) * 1_000_000 - measurement.started * 1_000,
+  })
   const report = {
     schema: "playsrc-tf2-upward-training-bots-profile-v1", label, headed: true, target: "pl_upward", entry: "training", launch,
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -356,7 +383,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
       residentAfterBytes: residentAfter?.reduce((total, entry) => total + (entry.residentBytes ?? 0), 0) ?? null,
       wasm: wasmWorkers,
       load: loadPerformance,
+      sampledRetainedAllocationBytes: allocations(allocationProfile.head),
     },
+    frameTails: tails,
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
   }
@@ -393,7 +422,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     gpuSubmissionsPerCompletedFrame: report.gpu.submissionsPerCompletedFrame,
     modelUploads: report.gpu.modelUploads,
     gpuWrites: { calls: report.gpu.queueWriteCalls, bytes: report.gpu.queueWriteBytes, milliseconds: report.gpu.queueWriteMilliseconds, histogram: report.gpu.writes.histogram, phases: report.gpu.writes.phases, processCpuSeconds: report.gpu.processCpuSeconds },
-    memory: report.memory, readyMilliseconds, loads: report.loads, totalWallMilliseconds: report.totalWallMilliseconds,
+    memory: report.memory, frameTails: { ...tails, frames: tails.frames.slice(0, 10), totalLongFrames: tails.frames.length }, readyMilliseconds, loads: report.loads, totalWallMilliseconds: report.totalWallMilliseconds,
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
   })}`)

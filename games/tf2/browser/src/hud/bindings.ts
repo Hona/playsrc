@@ -42,6 +42,8 @@ const HEALTH_WARNING_FRACTION = 0.49
 const HEALTH_BONUS_POSITION_ADJUSTMENT = 35
 const LOW_AMMO_WARNING_FRACTION = 0.4
 const LOW_AMMO_POSITION_ADJUSTMENT = 5
+const validatedScoreboards = new WeakMap<Tf2HudScoreboard, Tf2HudScoreboard>()
+const validatedSnapshots = new WeakSet<Tf2HudSnapshot>()
 
 function sourceRoundToInt(value: number): number {
   const sourceFloat = Math.fround(value)
@@ -306,6 +308,8 @@ function copyScoreboardTeam(value: Tf2ScoreboardTeam, expected: Tf2PlayableTeam)
 }
 
 function copyScoreboard(value: Tf2HudScoreboard): Tf2HudScoreboard {
+  const retained = validatedScoreboards.get(value)
+  if (retained) return retained
   if (!Array.isArray(value.players) || value.players.length > TF2_HUD_LIMITS.scoreboardPlayers) {
     bound("scoreboard player list exceeds its bound")
   }
@@ -323,7 +327,7 @@ function copyScoreboard(value: Tf2HudScoreboard): Tf2HudScoreboard {
     if (item !== "#Gametype_CTF" && item !== "#Gametype_Escort") malformed("scoreboard game type is invalid")
     return item
   }, "scoreboard game type")
-  return Object.freeze({
+  const scoreboard = Object.freeze({
     visible: value.visible === true,
     mapName: text(value.mapName, "scoreboard map name", 255),
     gameType,
@@ -335,6 +339,17 @@ function copyScoreboard(value: Tf2HudScoreboard): Tf2HudScoreboard {
     waitingToPlay: names(value.waitingToPlay, "scoreboard waiting-player name"),
     selectedPlayer,
   })
+  validatedScoreboards.set(scoreboard, scoreboard)
+  if (Object.isFrozen(value)
+    && Object.isFrozen(value.players) && Object.isFrozen(value.spectators) && Object.isFrozen(value.waitingToPlay)
+    && Object.isFrozen(value.red) && Object.isFrozen(value.blue)
+    && Object.isFrozen(value.gameType) && Object.isFrozen(value.selectedPlayer)
+    && value.players.every(player => Object.isFrozen(player)
+      && Object.isFrozen(player.class) && Object.isFrozen(player.ping) && Object.isFrozen(player.counters)
+      && (player.counters.kind !== "available" || Object.isFrozen(player.counters.value)))) {
+    validatedScoreboards.set(value, scoreboard)
+  }
+  return scoreboard
 }
 
 function copyFreezePanel(value: Tf2HudFreezePanel): Tf2HudFreezePanel {
@@ -347,13 +362,16 @@ function copyFreezePanel(value: Tf2HudFreezePanel): Tf2HudFreezePanel {
 }
 
 function copySnapshot(value: Tf2HudSnapshot): Tf2HudSnapshot {
+  if (validatedSnapshots.has(value)) return value
   if (typeof value.tick !== "bigint" || value.tick < 0n) malformed("HUD snapshot tick is invalid")
-  return Object.freeze({
+  const snapshot = Object.freeze({
     tick: value.tick,
     player: copyAvailability(value.player, copyPlayer, "HUD player"),
     scoreboard: copyAvailability(value.scoreboard, copyScoreboard, "HUD scoreboard"),
     freezePanel: copyAvailability(value.freezePanel, copyFreezePanel, "HUD freeze panel"),
   })
+  validatedSnapshots.add(snapshot)
+  return snapshot
 }
 
 function copyParticipant(value: Tf2HudKillfeedNotice["killer"], subject: string) {

@@ -8,6 +8,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     compositorFrames: [] as any[],
     animationCallbacks: [] as number[],
     worker: [] as any[],
+    input: [] as { at: number; revision: number; kind: string }[],
     longTasks: [] as any[],
     longAnimationFrames: [] as any[],
     gpuTimestamps: [] as { frame: number; milliseconds: number }[],
