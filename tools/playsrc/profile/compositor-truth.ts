@@ -60,20 +60,11 @@ export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], 
   const presentations = eventName ? sampled.filter(event => event.name === eventName) : []
   const timestamps = [...new Set(presentations.map(event => event.ts!))].sort((left, right) => left - right)
   const intervals = timestamps.slice(1).map((timestamp, index) => (timestamp - timestamps[index]!) / 1_000)
-  // Censored boundary gaps are not fabricated frame intervals. Keep them
-  // separately so a frozen tail (or an entirely unpresented sample) cannot pass
-  // merely because the last *completed* interval was short.
-  const boundaryGaps = window ? {
-    leading: ((timestamps[0] ?? window.endedMicroseconds) - window.startedMicroseconds) / 1_000,
-    trailing: (window.endedMicroseconds - (timestamps.at(-1) ?? window.startedMicroseconds)) / 1_000,
-  } : null
   return Object.freeze({
     evidence: timestamps.length ? "chromium-compositor-presentation-trace" as const : "unavailable" as const,
     presentedFrames: timestamps.length || null,
     presentedFramesPerSecond: timestamps.length ? Number((timestamps.length / elapsedMilliseconds * 1_000).toFixed(3)) : null,
     intervals: timestamps.length > 1 ? summarizeFrameTimes(intervals) : null,
-    unpresentedBoundaryMilliseconds: boundaryGaps,
-    maximumUnpresentedMilliseconds: Math.max(0, ...intervals, boundaryGaps?.leading ?? 0, boundaryGaps?.trailing ?? 0),
     eventNames: [...new Set(presentations.map(event => event.name!))].sort(),
     traceEvents: events.length,
   })

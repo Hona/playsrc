@@ -2,16 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth } from "../profile/compositor-truth"
 
 describe("truthful compositor presentation evidence", () => {
-  test("retains censored frozen tails even when completed intervals look fast", () => {
-    const result = summarizeCompositorTruth([
-      { name: "FramePresented", ts: 10_000 },
-      { name: "FramePresented", ts: 26_000 },
-    ], 5000, { startedMicroseconds: 0, endedMicroseconds: 5_000_000 })
-    expect(result.intervals!.maximumMilliseconds).toBe(16)
-    expect(result.unpresentedBoundaryMilliseconds).toEqual({ leading: 10, trailing: 4974 })
-    expect(result.maximumUnpresentedMilliseconds).toBe(4974)
-    expect(summarizeCompositorTruth([], 5000, { startedMicroseconds: 0, endedMicroseconds: 5_000_000 })).toMatchObject({ evidence: "unavailable", maximumUnpresentedMilliseconds: 5000 })
-  })
   test("never mislabels animation callbacks, swaps, or application frames as presentation", () => {
     expect(summarizeCompositorTruth([{ name: "RequestAnimationFrame", ts: 1 }, { name: "SwapBuffers", ts: 2 }], 5000)).toMatchObject({ evidence: "unavailable", presentedFrames: null, presentedFramesPerSecond: null, intervals: null })
   })

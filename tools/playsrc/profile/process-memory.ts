@@ -62,14 +62,18 @@ export async function captureProcessMemory(
   processes: readonly ProfileProcess[] | undefined,
   options: Readonly<{ platform?: string; remote?: boolean; execute?: typeof execute }> = {},
 ): Promise<MemorySnapshot> {
-  const platform = options.platform ?? process.platform
+  const platform = options.platform ?? process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM ?? process.platform
   const startedAt = Date.now()
   let measured: readonly ProcessMemory[] = (processes ?? []).map(process => ({ ...process, residentBytes: null, privateBytes: null }))
   let error: string | null = null
   try {
     // CDP PIDs belong to the browser host, which need not be this runner's machine.
-    if (options.remote) throw new Error("Remote CDP process memory requires collection on the browser host")
-    const command = processMemoryCommand(platform, processes ?? [])
+    const hostReader = process.env.PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE
+    if (options.remote && (!hostReader || !process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM)) throw new Error("Remote CDP process memory requires collection on the browser host")
+    const localCommand = processMemoryCommand(platform, processes ?? [])
+    const command = options.remote
+      ? { file: hostReader!, args: [JSON.stringify(processes)] }
+      : localCommand
     measured = decodeProcessMemory(platform, await (options.execute ?? execute)(command), processes!)
     if (measured.some(process => process.residentBytes === null)) error = "One or more browser processes exited or were unavailable"
   } catch (failure) { error = failure instanceof Error ? failure.message : String(failure) }

@@ -18,7 +18,6 @@ import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
-import { processResidentMemory } from "./process-resident-memory"
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()

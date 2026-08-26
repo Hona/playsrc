@@ -4,9 +4,9 @@ import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/sett
 import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
-import { activeGameplayTraceWindow, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { activeGameplayTraceWindow, summarizeActivePresentationSilence, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { chooseTf2Team } from "./team-selection-evidence"
-import { processResidentMemory } from "./process-resident-memory"
+import { captureProcessMemory } from "./process-memory"
 
 test("integrated persisted quality, two live map replacements and overhead water", async ({ page, context }, testInfo) => {
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "integrated-acceptance", `lifecycle-${Date.now()}`)
@@ -74,7 +74,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     await page.mouse.move(680, 380)
     await page.mouse.click(680, 380)
     expect(await main.getAttribute("data-camera-position")).not.toBe(before)
-    maps.push({ target, milliseconds: Date.now() - started, ...current, heap: await pageMetrics.send("Runtime.getHeapUsage"), resident: processResidentMemory((await browserMetrics.send("SystemInfo.getProcessInfo")).processInfo), workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
+    maps.push({ target, milliseconds: Date.now() - started, ...current, heap: await pageMetrics.send("Runtime.getHeapUsage"), resident: await captureProcessMemory((await browserMetrics.send("SystemInfo.getProcessInfo")).processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) }), workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
     await writeFile(path.join(directory, "maps.json"), JSON.stringify(maps, null, 2))
     await page.screenshot({ path: path.join(directory, `${target}.png`) })
   }
@@ -115,8 +115,9 @@ test("integrated persisted quality, two live map replacements and overhead water
   await finished
   await writeFile(path.join(directory, "water.trace.json"), JSON.stringify({ traceEvents }))
   const compositor = summarizeCompositorTruth(traceEvents, measurement.ended - initial.started, activeGameplayTraceWindow(traceEvents))
+  const silence = summarizeActivePresentationSilence(traceEvents, activeGameplayTraceWindow(traceEvents))
   await page.screenshot({ path: path.join(directory, "overhead-water.png") })
-  const report = { maps, quality, measurement, compositor, errors, secondsPerFrameIncidentResolved: false }
+  const report = { maps, quality, measurement, compositor, silence, errors, secondsPerFrameIncidentResolved: false }
   await writeFile(path.join(directory, "report.json"), JSON.stringify(report, null, 2))
   await testInfo.attach("integrated-lifecycle", { body: JSON.stringify(report), contentType: "application/json" })
   expect(measurement.visible).toBe("visible")
@@ -128,5 +129,5 @@ test("integrated persisted quality, two live map replacements and overhead water
   expect(measurement.losses).toEqual([])
   expect(errors).toEqual([])
   expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
-  expect(compositor.maximumUnpresentedMilliseconds).toBeLessThan(250)
+  expect(silence.maximumActiveSilenceMilliseconds).toBeLessThan(250)
 })

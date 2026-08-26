@@ -57,6 +57,27 @@ describe("browser-host process memory boundaries", () => {
     expect(snapshot.error).toContain("browser host")
   })
 
+  test("uses an explicitly configured browser-host reader with the same strict PID decoder", async () => {
+    const previousReader = process.env.PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE
+    const previousPlatform = process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM
+    process.env.PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE = "browser-host-reader"
+    process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM = "win32"
+    try {
+      const result = await captureProcessMemory(processes, { remote: true, execute: async command => {
+        expect(command).toEqual({ file: "browser-host-reader", args: [JSON.stringify(processes)] })
+        return JSON.stringify(processes.map(process => ({ id: process.id, residentBytes: 100, privateBytes: 200 })))
+      } })
+      expect(result.error).toBeNull()
+      expect(result.residentBytes).toBe(300)
+      expect(result.privateBytes).toBe(600)
+    } finally {
+      if (previousReader === undefined) delete process.env.PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE
+      else process.env.PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE = previousReader
+      if (previousPlatform === undefined) delete process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM
+      else process.env.PLAYSRC_PROFILE_BROWSER_PLATFORM = previousPlatform
+    }
+  })
+
   test("collects the actual local test process without a browser or process enumeration", async () => {
     if (!["darwin", "linux", "win32"].includes(process.platform)) return
     const snapshot = await captureProcessMemory([{ id: process.pid, type: "test-runner" }])
