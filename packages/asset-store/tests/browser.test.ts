@@ -192,6 +192,141 @@ async function digest(value: Uint8Array): Promise<string> {
 }
 
 describe("browser asset adapters", () => {
+  test("reuses one authenticated persistent immutable authority across browser generations without native duplicate caching", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    let requests = 0
+    const modes: Array<RequestCache | undefined> = []
+    const events: string[] = []
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests += 1
+      modes.push(init?.cache)
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    try {
+      const coldCache = await openDerivedObjectCache("persistent-immutable-generations")
+      const cold = createImmutableObjectAcquirer({ fetcher, cache: async () => coldCache, onCacheEvent: (event) => events.push(event.kind) })
+      expect(await cold("http://127.0.0.1:4321/", descriptor)).toEqual(bytes)
+      expect(requests).toBe(1)
+      expect(modes).toEqual(["no-store"])
+      const objectWrites = fake.writes.objects
+      coldCache.close()
+
+      const warmCache = await openDerivedObjectCache("persistent-immutable-generations")
+      const warm = createImmutableObjectAcquirer({ fetcher, cache: async () => warmCache, onCacheEvent: (event) => events.push(event.kind) })
+      const progress: number[] = []
+      expect(await warm("http://127.0.0.1:4321/", descriptor, { onProgress: (loaded) => progress.push(loaded) })).toEqual(bytes)
+      expect(requests).toBe(1)
+      expect(fake.writes.objects).toBe(objectWrites)
+      expect(progress).toEqual([0, bytes.byteLength])
+      expect(events).toEqual(["miss", "write", "hit"])
+      warmCache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("evicts corrupt immutable bytes before one freshly authenticated replacement", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    let requests = 0
+    const events: string[] = []
+    const fetcher = (async () => {
+      requests += 1
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    try {
+      const cache = await openDerivedObjectCache("corrupt-immutable-recovery")
+      await cache.write(sha256, sha256, bytes)
+      const records = fake.databases.get("corrupt-immutable-recovery")!
+      records.set(sha256, { ...records.get(sha256)!, bytes: new Blob([new TextEncoder().encode("immutablE")]) })
+      const acquire = createImmutableObjectAcquirer({ fetcher, cache: async () => cache, onCacheEvent: (event) => events.push(event.kind) })
+      expect(await acquire("http://127.0.0.1:4321/", descriptor)).toEqual(bytes)
+      expect(requests).toBe(1)
+      expect(events).toEqual(["corrupt", "miss", "write"])
+      expect(await cache.read(sha256)).toEqual({ bytes, sha256 })
+      cache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("admits immutable objects under one bounded LRU inventory without rewriting retained Blobs", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const now = jest.spyOn(Date, "now")
+    try {
+      const cache = await openDerivedObjectCache("bounded-immutable-eviction", { maximumBytes: 12, maximumRecords: 2 })
+      const first = new TextEncoder().encode("first"), second = new TextEncoder().encode("second"), third = new TextEncoder().encode("third")
+      const firstHash = await digest(first), secondHash = await digest(second), thirdHash = await digest(third)
+      now.mockReturnValue(10)
+      await cache.write(firstHash, firstHash, first)
+      now.mockReturnValue(20)
+      await cache.write(secondHash, secondHash, second)
+      const retainedBlob = fake.databases.get("bounded-immutable-eviction")!.get(firstHash)!.bytes
+      now.mockReturnValue(30)
+      expect((await cache.read(firstHash))?.bytes).toEqual(first)
+      now.mockReturnValue(40)
+      await cache.write(thirdHash, thirdHash, third)
+      expect(await cache.read(secondHash)).toBeUndefined()
+      expect((await cache.read(firstHash))?.bytes).toEqual(first)
+      expect((await cache.read(thirdHash))?.bytes).toEqual(third)
+      expect(fake.databases.get("bounded-immutable-eviction")!.get(firstHash)!.bytes).toBe(retainedBlob)
+      expect(fake.inventories.objects).toBe(0)
+      cache.close()
+    } finally {
+      now.mockRestore()
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("shares one persistent immutable admission while independently cancelling concurrent subscribers", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    let requests = 0
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const fetcher = (async () => {
+      requests += 1
+      await blocked
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    try {
+      const cache = await openDerivedObjectCache("concurrent-persistent-immutable")
+      const acquire = createImmutableObjectAcquirer({ fetcher, cache: async () => cache })
+      const controller = new AbortController()
+      const cancelled = acquire("http://127.0.0.1:4321/", descriptor, { signal: controller.signal })
+      const retained = acquire("http://127.0.0.1:4321/", descriptor)
+      controller.abort()
+      await expect(cancelled).rejects.toMatchObject({ code: "Cancelled" })
+      release()
+      expect(await retained).toEqual(bytes)
+      expect(requests).toBe(1)
+      expect(fake.writes.objects).toBe(1)
+      expect(await cache.read(sha256)).toEqual({ bytes, sha256 })
+      cache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
   test("shares one authenticated immutable transfer, verification, and progress between simultaneous consumers", async () => {
     const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
     let requests = 0

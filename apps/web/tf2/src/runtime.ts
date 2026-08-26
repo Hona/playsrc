@@ -479,9 +479,22 @@ export class Tf2Application {
   #dependencies?: ResourceConfiguration
   #dependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
+  #openingCache?: Promise<DerivedObjectCache>
   #client?: Tf2WorkerClient
   #resourceRuntime?: Promise<void>
-  readonly #immutableObjects = createImmutableObjectAcquirer({ concurrency: 8 })
+  readonly #immutableObjects = createImmutableObjectAcquirer({
+    concurrency: 8,
+    cache: () => this.#openObjectCache(),
+    onCacheEvent: (event) => {
+      const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+      if (!profile) return
+      const statistics = (profile.immutableCache ??= { hits: 0, misses: 0, corruptions: 0, writes: 0, hitBytes: 0, writtenBytes: 0, readMilliseconds: 0, writeMilliseconds: 0 }) as Record<string, number>
+      if (event.kind === "hit") { statistics.hits! += 1; statistics.hitBytes! += event.byteLength; statistics.readMilliseconds! += event.milliseconds }
+      else if (event.kind === "miss") statistics.misses! += 1
+      else if (event.kind === "corrupt") statistics.corruptions! += 1
+      else { statistics.writes! += 1; statistics.writtenBytes! += event.byteLength; statistics.writeMilliseconds! += event.milliseconds }
+    },
+  })
   readonly #operationProgressBytes = new Map<string, number>()
   #lastWatchdogProgress = 0
   #renderer?: Renderer
@@ -763,6 +776,24 @@ export class Tf2Application {
       priority,
       onProgress: (loaded, total) => this.#trackBootstrapObject(descriptor.sha256, loaded, total),
     })
+  }
+
+  #openObjectCache(): Promise<DerivedObjectCache> {
+    if (this.#cache) return Promise.resolve(this.#cache)
+    if (!this.#openingCache) {
+      this.#openingCache = openDerivedObjectCache().then((cache) => {
+        if (this.#closed) {
+          cache.close()
+          throw new DOMException("Application object cache was closed", "AbortError")
+        }
+        this.#cache = cache
+        return cache
+      }).catch((error) => {
+        this.#openingCache = undefined
+        throw error
+      })
+    }
+    return this.#openingCache
   }
 
   #returnToMainMenu(): void {
@@ -1161,7 +1192,7 @@ export class Tf2Application {
       const descriptor = this.#configuration.wasm
       this.#resourceRuntime = (async () => {
         const [cache, wasm] = await Promise.all([
-          this.#cache ? Promise.resolve(this.#cache) : openDerivedObjectCache(),
+          this.#openObjectCache(),
           this.#acquireObject(descriptor, signal, "critical"),
         ])
         this.#cache = cache
@@ -5254,6 +5285,7 @@ export class Tf2Application {
     this.#client = undefined
     this.#cache?.close()
     this.#cache = undefined
+    this.#openingCache = undefined
     this.#projectiles?.dispose()
     this.#projectiles = undefined
     await this.#renderer?.dispose().catch(() => {})
