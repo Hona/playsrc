@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { watch } from "node:fs"
-import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { closeSync, openSync, unlinkSync, watch, writeFileSync } from "node:fs"
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 const MAX_WAIT = 180_000
@@ -53,8 +53,33 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
   let awaken: (() => void) | undefined
   let revision = 0
   const changed = () => { revision++; awaken?.() }
+  let eligible = false
+  let claimed = false
+  let handedOff = false
+  let claimError: unknown
+  const tryClaim = () => {
+    if (!eligible || claimed || claimError || options.signal?.aborted || Date.now() - started >= maximumWaitMilliseconds) return
+    let file: number | undefined
+    try {
+      file = openSync(lockPath, "wx", 0o600)
+      writeFileSync(file, `${JSON.stringify({ ...ticket, startedAt: new Date().toISOString() })}\n`)
+      claimed = true
+      changed()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        claimError = error
+        if (file !== undefined) unlinkSync(lockPath)
+        changed()
+      }
+    } finally { if (file !== undefined) closeSync(file) }
+  }
+  // Only the selected head performs this one O_EXCL syscall. Directory-watch
+  // delivery is coalesced on macOS; re-scanning tickets before claiming lets
+  // older non-queued runners repeatedly barge ahead. No build, hashing, or
+  // source scan runs in this handoff path, and an existing lock is never stolen.
+  const handoff = setInterval(tryClaim, 10)
   const observers = [watch(queue, changed), watch(path.dirname(lockPath), (_event, filename) => {
-    if (filename?.toString() === path.basename(lockPath)) changed()
+    if (filename?.toString() === path.basename(lockPath)) { tryClaim(); changed() }
   })]
   options.signal?.addEventListener("abort", changed)
   let observation: LockObservation = { elapsedMilliseconds: 0, position: 1, waiting: 1, holder: null, holderAlive: null, holderAgeMilliseconds: null, recovered: 0 }
@@ -64,6 +89,11 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
     await rename(temporary, ticketPath)
     while (Date.now() - started < maximumWaitMilliseconds) {
       options.signal?.throwIfAborted()
+      if (claimError) throw claimError
+      if (claimed) {
+        handedOff = true
+        return { token, milliseconds: Date.now() - started, observation }
+      }
       const observed = revision
       const live: string[] = []
       for (const entry of (await readdir(queue)).filter(name => name.endsWith(".json")).sort()) {
@@ -72,6 +102,9 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
         if (!processIsAlive(candidate.pid)) { await unlink(path.join(queue, entry)).catch(() => undefined); continue }
         live.push(entry)
       }
+      eligible = live[0] === name
+      tryClaim()
+      if (claimed || claimError) continue
       let holder: Ticket | null = null
       try { holder = await readTicket(lockPath) } catch (error) {
         // Legacy writers publish into an empty O_EXCL file. Allow that small
@@ -92,16 +125,6 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
           }
           continue
         }
-        try {
-          const file = await open(lockPath, "wx", 0o600)
-          try { await file.writeFile(`${JSON.stringify({ ...ticket, startedAt: new Date().toISOString() })}\n`) }
-          finally { await file.close() }
-          if (options.signal?.aborted) {
-            await releaseHeadedProfileLock(lockPath, token)
-            options.signal.throwIfAborted()
-          }
-          return { token, milliseconds: Date.now() - started, observation }
-        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error }
       }
       if (Date.now() - lastAnnouncement >= 10_000) {
         lastAnnouncement = Date.now()
@@ -118,10 +141,12 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
     }
     throw new ProfileQueueTimeout({ ...observation, elapsedMilliseconds: Date.now() - started })
   } finally {
+    clearInterval(handoff)
     options.signal?.removeEventListener("abort", changed)
     observers.forEach(observer => observer.close())
     await unlink(ticketPath).catch(() => undefined)
     await unlink(temporary).catch(() => undefined)
+    if (claimed && !handedOff) await releaseHeadedProfileLock(lockPath, token)
   }
 }
 

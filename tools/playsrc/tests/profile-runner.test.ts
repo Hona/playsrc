@@ -150,6 +150,22 @@ describe("bounded headed profile orchestration", () => {
     expect(await readdir(`${pathname}.queue`)).toEqual([])
   })
 
+  test("the selected queue head claims release without another ticket scan", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-legacy-handoff-"))
+    directories.push(directory)
+    const pathname = path.join(directory, "chromium-profile.lock")
+    const first = await acquireHeadedProfileLock(pathname, "legacy")
+    let announce!: () => void
+    const announced = new Promise<void>(resolve => { announce = resolve })
+    const next = acquireHeadedProfileLock(pathname, "queued", 1_000, { onProgress: announce })
+    await announced
+    const started = performance.now()
+    await releaseHeadedProfileLock(pathname, first.token)
+    const claimed = await next
+    expect(performance.now() - started).toBeLessThan(50)
+    await releaseHeadedProfileLock(pathname, claimed.token)
+  })
+
   test("reports live holder timeout as capacity, cancels tickets, and preserves the holder", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-live-lock-"))
     directories.push(directory)
