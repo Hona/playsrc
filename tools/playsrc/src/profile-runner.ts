@@ -21,6 +21,7 @@ const PROFILES = Object.freeze({
   "map-sanity": { config: "playwright.map-sanity-profile.config.ts", target: "jump_beef" },
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
   "upward-outdoors": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_UPWARD_OUTDOORS: "1" } },
+  "2fort": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1" } },
   bots: { config: "playwright.bot-profile.config.ts", target: "pl_upward" },
   "2fort-bots": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_CTF_BOTS: "1" } },
   "2fort-visual": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_VISUAL: "1" } },

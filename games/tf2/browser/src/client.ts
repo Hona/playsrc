@@ -682,30 +682,6 @@ export class Tf2WorkerClient {
   }
 }
 
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false
-  let index = 0
-  if ((left.byteOffset & 3) === (right.byteOffset & 3)) {
-    while (index < left.byteLength && ((left.byteOffset + index) & 3) !== 0) {
-      if (left[index] !== right[index]) return false
-      index += 1
-    }
-    const words = (left.byteLength - index) >>> 2
-    if (words > 0) {
-      const source = new Uint32Array(left.buffer, left.byteOffset + index, words)
-      const target = new Uint32Array(right.buffer, right.byteOffset + index, words)
-      for (let word = 0; word < words; word += 1) {
-        if (source[word] !== target[word]) return false
-      }
-      index += words * 4
-    }
-  }
-  for (; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false
-  }
-  return true
-}
-
 export function mergePublicationSnapshots(snapshots: readonly Snapshot[]): Snapshot {
   const final = snapshots.at(-1)
   if (!final) throw new Tf2WorkerError("WorkerFailed")
@@ -754,7 +730,7 @@ function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationP
   if (
     bytes.byteLength < 16 ||
     bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x49 || bytes[3] !== 0x4d ||
-    view.getUint32(4, true) !== 1 || view.getUint32(12, true) !== 0
+    view.getUint32(4, true) !== 2 || view.getUint32(12, true) !== 0
   ) throw new Tf2WorkerError("WorkerFailed")
   const count = view.getUint32(8, true)
   if (count > 256) throw new Tf2WorkerError("BoundExceeded")
@@ -777,9 +753,6 @@ function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationP
       selectedTicks < 1 || eventCount !== selectedTicks ||
       lastHostTick - firstHostTick + 1n !== BigInt(selectedTicks)
     ) throw new Tf2WorkerError("WorkerFailed")
-    require(snapshotLength)
-    const snapshotBytes = bytes.subarray(offset, offset + snapshotLength)
-    offset += snapshotLength
     const eventBatches: SimulationEventBatch[] = []
     for (let event = 0; event < eventCount; event += 1) {
       require(12)
@@ -795,7 +768,8 @@ function decodeSimulationPublications(buffer: ArrayBuffer): readonly SimulationP
         snapshot: decodeSnapshot(eventBytes),
       }))
     }
-    if (!equalBytes(eventBatches.at(-1)!.bytes, snapshotBytes)) throw new Tf2WorkerError("WorkerFailed")
+    const snapshotBytes = eventBatches.at(-1)?.bytes
+    if (!snapshotBytes || snapshotBytes.byteLength !== snapshotLength) throw new Tf2WorkerError("WorkerFailed")
     publications.push(Object.freeze({
       hostFrame,
       firstHostTick,

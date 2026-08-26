@@ -51,7 +51,7 @@ export const test = base.extend<{
         return
       }
       if (["Startup", "Loading", "Replacing"].includes(state.phase)) {
-        const stallSeconds = process.env.PROFILE_PYRO_STOCK === "1" || process.env.PROFILE_COMBAT === "1" || process.env.PROFILE_MEDIC_WEAPONS === "1" ? 180 : 65
+        const stallSeconds = process.env.PROFILE_2FORT_MEMORY === "1" ? 150 : process.env.PROFILE_PYRO_STOCK === "1" || process.env.PROFILE_COMBAT === "1" || process.env.PROFILE_MEDIC_WEAPONS === "1" ? 180 : 65
         stallTimer = setTimeout(() => fail(`TF2 application stalled for ${stallSeconds} seconds in ${state.phase}: ${state.detail}\nIn-game console:\n${state.consoleOutput || "<not mounted>"}`), stallSeconds * 1_000)
       }
     })
