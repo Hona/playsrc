@@ -127,6 +127,7 @@ export async function fetchImmutableObject(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
   onProgress?: (loadedBytes: number, totalBytes: number) => void,
+  cacheMode: RequestCache = "force-cache",
 ): Promise<Uint8Array> {
   const expectedLength = length(descriptor)
   const url = objectUrl(origin, descriptor.sha256)
@@ -135,7 +136,7 @@ export async function fetchImmutableObject(
   try {
     response = await fetcher(url, {
       method: "GET",
-      cache: "force-cache",
+      cache: cacheMode,
       credentials: "omit",
       redirect: "error",
       signal,
@@ -203,9 +204,18 @@ export type ImmutableObjectAcquirer = (
   options?: ImmutableObjectAcquisition,
 ) => Promise<Uint8Array>
 
+export type ImmutableObjectCacheEvent = Readonly<{
+  kind: "hit" | "miss" | "corrupt" | "write"
+  sha256: string
+  byteLength: number
+  milliseconds: number
+}>
+
 export function createImmutableObjectAcquirer(options: Readonly<{
   concurrency?: number
   fetcher?: typeof fetch
+  cache?: () => Promise<DerivedObjectCache>
+  onCacheEvent?: (event: ImmutableObjectCacheEvent) => void
 }> = {}): ImmutableObjectAcquirer {
   const concurrency = options.concurrency ?? 8
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
@@ -236,6 +246,51 @@ export function createImmutableObjectAcquirer(options: Readonly<{
   let active = 0
   let order = 0
 
+  const reportCache = (kind: ImmutableObjectCacheEvent["kind"], descriptor: ObjectDescriptor, started: number): void => {
+    try {
+      options.onCacheEvent?.(Object.freeze({
+        kind,
+        sha256: descriptor.sha256,
+        byteLength: Number(descriptor.byteLength),
+        milliseconds: performance.now() - started,
+      }))
+    } catch {}
+  }
+
+  const acquire = async (transfer: Transfer, progress: (loaded: number, total: number) => void): Promise<Uint8Array> => {
+    if (!options.cache) return fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, progress)
+    const cache = await options.cache()
+    if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+    let started = performance.now()
+    let retained: VerifiedDerivedObject | undefined
+    try {
+      retained = await cache.read(transfer.descriptor.sha256)
+      if (retained && (retained.sha256 !== transfer.descriptor.sha256 || retained.bytes.byteLength !== Number(transfer.descriptor.byteLength))) {
+        throw new BrowserAssetError("IntegrityFailure", "cached immutable object differs from its descriptor")
+      }
+    } catch (error) {
+      if (!(error instanceof BrowserAssetError) || error.code !== "IntegrityFailure") throw error
+      reportCache("corrupt", transfer.descriptor, started)
+      await cache.remove(transfer.descriptor.sha256)
+      retained = undefined
+    }
+    if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+    if (retained) {
+      reportCache("hit", transfer.descriptor, started)
+      progress(0, retained.bytes.byteLength)
+      progress(retained.bytes.byteLength, retained.bytes.byteLength)
+      return retained.bytes
+    }
+    reportCache("miss", transfer.descriptor, started)
+    const bytes = await fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, progress, "no-store")
+    if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+    started = performance.now()
+    await cache.write(transfer.descriptor.sha256, transfer.descriptor.sha256, bytes)
+    reportCache("write", transfer.descriptor, started)
+    if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
+    return bytes
+  }
+
   const pump = (): void => {
     while (active < concurrency && queue.length > 0) {
       queue.sort((left, right) => left.priority - right.priority || left.order - right.order)
@@ -243,7 +298,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
       if (transfer.subscribers.size === 0) continue
       transfer.started = true
       active += 1
-      void fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, (loaded, total) => {
+      void acquire(transfer, (loaded, total) => {
         transfer.loaded = loaded
         transfer.total = total
         for (const subscriber of transfer.subscribers) {
@@ -386,7 +441,14 @@ function bounded<T>(promise:Promise<T>,operation:string):Promise<T>{
 
 export async function openDerivedObjectCache(
   databaseName = "playsrc-derived-v3",
+  bounds: Readonly<{ maximumBytes?: number; maximumRecords?: number }> = {},
 ): Promise<DerivedObjectCache> {
+  const maximumBytes = bounds.maximumBytes ?? MAX_CACHE_BYTES
+  const maximumRecords = bounds.maximumRecords ?? MAX_CACHE_RECORDS
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > MAX_CACHE_BYTES
+    || !Number.isSafeInteger(maximumRecords) || maximumRecords < 1 || maximumRecords > MAX_CACHE_RECORDS) {
+    throw new BrowserAssetError("BoundExceeded", "derived cache limits exceed their browser bounds")
+  }
   if (!globalThis.indexedDB) {
     throw new BrowserAssetError("PersistenceUnavailable", "IndexedDB is unavailable")
   }
@@ -461,7 +523,7 @@ export async function openDerivedObjectCache(
       if (!HASH.test(key) || (expectedSha256 !== null && !HASH.test(expectedSha256))) {
         throw new BrowserAssetError("MalformedIdentity", "derived identity is not canonical")
       }
-      if (bytes.byteLength > MAX_OBJECT_BYTES) {
+      if (bytes.byteLength > MAX_OBJECT_BYTES || bytes.byteLength > maximumBytes) {
         throw new BrowserAssetError("BoundExceeded", "derived object exceeds browser byte limit")
       }
       const actualSha256 = await bounded(sha256(bytes),"derived write hash")
@@ -476,7 +538,7 @@ export async function openDerivedObjectCache(
         key: record.key,
         byteLength: record.byteLength,
         storedAt: record.storedAt,
-      })), { key, byteLength: bytes.byteLength })
+      })), { key, byteLength: bytes.byteLength }, maximumBytes, maximumRecords)
       for (const evictedKey of evicted) {
         objects.delete(evictedKey)
         metadata.delete(evictedKey)

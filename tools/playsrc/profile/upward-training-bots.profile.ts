@@ -132,6 +132,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     responseBytes: number
     transferredBytes: number
     wireBytes: number
+    immutableRequests: number
+    browserCacheHits: number
+    immutableCache: Readonly<Record<string, number>>
+    persistentStorage: Readonly<{ records: number; bytes: number; usageBytes: number | null; quotaBytes: number | null }>
+    watchdogFailures: number
     playerCount: number
     launch: any
   }> = []
@@ -140,6 +145,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const previousRequests = network.requests
     const previousBytes = network.responseBytes
     const previousWireBytes = network.wireBytes
+    const previousImmutableRequests = network.immutableRequests
+    const previousCacheHits = network.cacheHits
     networkStage = `${cache}-startup`
     if (cache === "cold") await page.goto(process.env.PLAYSRC_PROFILE_ORIGIN ? "/tf2" : "/", { waitUntil: "domcontentloaded", timeout: 30_000 })
     else await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
@@ -172,8 +179,40 @@ test("profile authored headed Upward offline-practice default roster and actual 
     await expect(root).toHaveAttribute("data-bot-count", String(playerCount - 1), { timeout: 70_000 })
     const launch = JSON.parse(await root.getAttribute("data-local-match-settings") ?? "null")
     expect(launch).toMatchObject({ entry: "training", mapIdentity: "pl_upward", configuration: { quota: playerCount - 1, offlinePractice: true } })
-    const transferredBytes = await page.evaluate(() => (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).reduce((total, entry) => total + entry.transferSize, 0))
-    loads.push({ cache, startupMilliseconds, readyMilliseconds, requests: network.requests - previousRequests, responseBytes: network.responseBytes - previousBytes, transferredBytes, wireBytes: network.wireBytes - previousWireBytes, playerCount, launch })
+    const persistence = await page.evaluate(async () => {
+      const request = indexedDB.open("playsrc-derived-v3")
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      try {
+        const inventory = database.transaction("metadata", "readonly").objectStore("metadata").getAll()
+        const records = await new Promise<Array<{ byteLength: number }>>((resolve, reject) => {
+          inventory.onsuccess = () => resolve(inventory.result)
+          inventory.onerror = () => reject(inventory.error)
+        })
+        const estimate = await navigator.storage.estimate()
+        return {
+          transferredBytes: (performance.getEntriesByType("resource") as PerformanceResourceTiming[]).reduce((total, entry) => total + entry.transferSize, 0),
+          immutableCache: structuredClone((globalThis as any).__playsrcProfile?.immutableCache ?? {}),
+          persistentStorage: { records: records.length, bytes: records.reduce((total, record) => total + record.byteLength, 0), usageBytes: estimate.usage ?? null, quotaBytes: estimate.quota ?? null },
+          watchdogFailures: document.querySelector<HTMLElement>("main")?.dataset.phase === "Failed" ? 1 : 0,
+        }
+      } finally { database.close() }
+    })
+    loads.push({
+      cache, startupMilliseconds, readyMilliseconds,
+      requests: network.requests - previousRequests,
+      responseBytes: network.responseBytes - previousBytes,
+      transferredBytes: persistence.transferredBytes,
+      wireBytes: network.wireBytes - previousWireBytes,
+      immutableRequests: network.immutableRequests - previousImmutableRequests,
+      browserCacheHits: network.cacheHits - previousCacheHits,
+      immutableCache: persistence.immutableCache,
+      persistentStorage: persistence.persistentStorage,
+      watchdogFailures: persistence.watchdogFailures,
+      playerCount, launch,
+    })
   }
   await loadPractice("cold")
   if (process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1") await loadPractice("warm")
