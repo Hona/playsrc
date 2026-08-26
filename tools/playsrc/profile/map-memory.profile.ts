@@ -788,7 +788,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
     }).catch(() => null)
     await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline }, null, 2)}\n`)
-    console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { application: failure.application, console: failure.console, command: failure.command })}`)
+    console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { phase: failure.application.phase, generation: failure.application.generation, detail: failure.application.detail, console: failure.console, command: failure.command })}`)
     throw error
   } finally {
     clearInterval(sampler)

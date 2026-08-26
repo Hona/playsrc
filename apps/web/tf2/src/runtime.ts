@@ -3247,12 +3247,7 @@ export class Tf2Application {
   #profileMapResidency(phase: string, resources?: ResourceConfiguration, loaded?: LoadedGame): void {
     const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
     if (!profile) return
-    const snapshots = new Set<ArrayBufferLike>()
-    for (const publication of [this.#pendingPresentation, this.#preparedPresentation?.publication]) {
-      if (!publication) continue
-      snapshots.add(publication.snapshotBytes.buffer)
-      for (const batch of publication.eventBatches) snapshots.add(batch.bytes.buffer)
-    }
+    const snapshotGenerations = new Set([this.#generation, ...(resources ? [resources.generation] : [])])
     const entry = {
       at: performance.now(), phase,
       ...mapResidency(
@@ -3260,7 +3255,8 @@ export class Tf2Application {
         resources && { ...loaded, generation: resources.generation, sections: resources.sections },
       ),
       audioDecodedSampleBytes: [...this.#audioBuffers.values()].reduce((total, buffer) => total + buffer.length * buffer.numberOfChannels * 4, 0),
-      snapshotBackingBytes: [...snapshots].reduce((total, buffer) => total + buffer.byteLength, 0),
+      canonicalSnapshotBaselineBytes: [...snapshotGenerations].reduce((total, generation) =>
+        total + (this.#client?.snapshotMetrics(generation)?.retainedBaselineBytes ?? 0), 0),
       vguiFontFaces: document.fonts.size,
     }
     ;((profile.mapResidency ??= []) as unknown[]).push(entry)
