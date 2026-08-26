@@ -757,7 +757,11 @@ pub fn build_presentation_model(
         ));
     }
     let expanded_owned = estimated_owned_bytes(document, &dependencies, &materials, false);
-    let compact = expanded_owned.is_none_or(|bytes| bytes > limits.max_owned_bytes);
+    let authored = document
+        .animations
+        .iter()
+        .any(|animation| animation.authored_frames.is_some());
+    let compact = !authored && expanded_owned.is_none_or(|bytes| bytes > limits.max_owned_bytes);
     let retained_owned = if compact {
         estimated_owned_bytes(document, &dependencies, &materials, true)
     } else {
@@ -841,9 +845,8 @@ fn validate_model_limits(
         .iter()
         .try_fold(0_usize, |total, animation| {
             total.checked_add(
-                animation
-                    .frames
-                    .len()
+                usize::try_from(animation.frame_count)
+                    .ok()?
                     .checked_mul(animation.bone_map.len())?,
             )
         });
@@ -902,6 +905,7 @@ fn estimated_owned_bytes(
         .animations
         .len()
         .checked_mul(std::mem::size_of::<Animation>())?)?;
+    let mut authored_contexts = BTreeSet::new();
     for animation in &document.animations {
         add(animation
             .name
@@ -937,7 +941,32 @@ fn estimated_owned_bytes(
                 }
             }
         }
-        if compact {
+        if let Some(authored) = &animation.authored_frames {
+            add(std::mem::size_of::<crate::AuthoredAnimationFrames>())?;
+            add(authored
+                .source
+                .sections
+                .len()
+                .checked_mul(std::mem::size_of::<(i32, i32)>())?)?;
+            if authored_contexts.insert(Arc::as_ptr(&authored.context) as usize) {
+                add(std::mem::size_of::<crate::AuthoredAnimationContext>())?;
+                add(authored.context.mdl.len())?;
+                add(authored.context.ani.as_ref().map_or(0, |bytes| bytes.len()))?;
+                add(authored
+                    .context
+                    .blocks
+                    .len()
+                    .checked_mul(std::mem::size_of::<std::ops::Range<usize>>())?)?;
+                add(authored
+                    .context
+                    .bones
+                    .len()
+                    .checked_mul(std::mem::size_of::<crate::Bone>())?)?;
+                for bone in &*authored.context.bones {
+                    add(bone.name.len().checked_add(bone.surface_property.len())?)?;
+                }
+            }
+        } else if compact {
             add(compact_frame_bytes_len(animation)?)?;
         } else {
             add(animation
@@ -1219,6 +1248,7 @@ fn compact_animation(
         sections: animation.sections.clone(),
         frames: Vec::new(),
         compact_frames,
+        authored_frames: None,
     })
 }
 
@@ -2624,7 +2654,10 @@ fn sample_animation(
         .ok()
         .filter(|count| *count > 0)
         .ok_or_else(|| presentation_error(PresentationErrorCode::InvalidState, &model.identity))?;
-    if animation.frames.is_empty() && animation.compact_frames.is_empty() {
+    if animation.frames.is_empty()
+        && animation.compact_frames.is_empty()
+        && animation.authored_frames.is_none()
+    {
         return Err(presentation_error(
             PresentationErrorCode::InvalidState,
             &model.identity,
@@ -2634,7 +2667,16 @@ fn sample_animation(
     let first = frame.floor() as usize;
     let second = (first + 1).min(frame_count - 1);
     let fraction = frame - first as f32;
-    let (first_frame, second_frame) = if animation.frames.is_empty() {
+    let (first_frame, second_frame) = if animation.authored_frames.is_some() {
+        (
+            animation.authored_frame(first).map_err(|_| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?,
+            animation.authored_frame(second).map_err(|_| {
+                presentation_error(PresentationErrorCode::InvalidState, &model.identity)
+            })?,
+        )
+    } else if animation.frames.is_empty() {
         (
             compact_frame(animation, first, &model.identity)?,
             compact_frame(animation, second, &model.identity)?,
@@ -3240,14 +3282,29 @@ fn encode_model(
             output.option_index(*bone)?;
         }
         output.count(animation.sections.len())?;
-        for section in &animation.sections {
+        for (section_index, section) in animation.sections.iter().enumerate() {
             output.index(section.index)?;
             output.index(section.first_frame)?;
             output.index(section.frame_count)?;
             output.i32(section.block)?;
             output.i32(section.data_offset)?;
-            output.count(section.tracks.len())?;
-            for track in &section.tracks {
+            let authored_tracks = if animation.authored_frames.is_some() {
+                Some(
+                    animation
+                        .authored_section_tracks(section_index)
+                        .map_err(|_| {
+                            presentation_error(
+                                PresentationErrorCode::InvalidArtifact,
+                                &model.identity,
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            let tracks = authored_tracks.as_deref().unwrap_or(&section.tracks);
+            output.count(tracks.len())?;
+            for track in tracks {
                 output.index(track.bone)?;
                 output.u8(track.flags)?;
                 output.u64(track.source_offset as u64)?;
@@ -3258,7 +3315,28 @@ fn encode_model(
                 output.value_streams(&track.translation_values)?;
             }
         }
-        if !animation.frames.is_empty() && animation.compact_frames.is_empty() {
+        if animation.authored_frames.is_some()
+            && animation.frames.is_empty()
+            && animation.compact_frames.is_empty()
+        {
+            let frame_count = usize::try_from(animation.frame_count).map_err(|_| {
+                presentation_error(PresentationErrorCode::InvalidArtifact, &model.identity)
+            })?;
+            output.count(frame_count)?;
+            for index in 0..frame_count {
+                let frame = animation.authored_frame(index).map_err(|_| {
+                    presentation_error(PresentationErrorCode::InvalidArtifact, &model.identity)
+                })?;
+                output.count(frame.translations.len())?;
+                for translation in &frame.translations {
+                    output.vector(*translation)?;
+                }
+                output.count(frame.rotations.len())?;
+                for rotation in &frame.rotations {
+                    output.float4(*rotation)?;
+                }
+            }
+        } else if !animation.frames.is_empty() && animation.compact_frames.is_empty() {
             output.count(animation.frames.len())?;
             for frame in &animation.frames {
                 output.count(frame.translations.len())?;
@@ -4040,6 +4118,7 @@ pub fn decode_presentation(
             sections,
             frames,
             compact_frames,
+            authored_frames: None,
         });
     }
     let mut sequences = Vec::new();
@@ -4735,9 +4814,15 @@ fn validate_decoded_model(
         let compact = animation.frames.is_empty()
             && !animation.compact_frames.is_empty()
             && compact_frame(animation, 0, &model.identity).is_ok();
+        let authored = animation.frames.is_empty()
+            && animation.compact_frames.is_empty()
+            && animation
+                .authored_frames
+                .as_ref()
+                .is_some_and(|retained| retained.context.bones.len() == animation.bone_map.len());
         if animation.index != index
             || animation.frame_count <= 0
-            || (!expanded && !compact)
+            || (!expanded && !compact && !authored)
             || animation.bone_map.is_empty() && !model.bones.is_empty()
             || animation
                 .bone_map
@@ -5018,6 +5103,7 @@ mod tests {
                 },
             ],
             compact_frames: Vec::new(),
+            authored_frames: None,
         }
     }
 

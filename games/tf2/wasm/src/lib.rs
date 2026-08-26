@@ -930,15 +930,21 @@ unsafe fn compile_map(
             collision: &collision_world,
             additional_model_roots: &static_model_roots,
         };
+        let (presentation, configuration_sha256) = rayon::join(
+            || {
+                if let Some(cached) = cached_presentation {
+                    load_cached_presentation(presentation_inputs, cached).map_err(|_| 9_u32)
+                } else {
+                    compile_presentation(presentation_inputs).map_err(|_| 9_u32)
+                }
+            },
+            || <[u8; 32]>::from(Sha256::digest(configuration)),
+        );
         let (
             (presentation, studio_models, model_material_opacity, environment),
             presentation_metrics,
             _presentation_ledger,
-        ) = if let Some(cached) = cached_presentation {
-            load_cached_presentation(presentation_inputs, cached).map_err(|_| 9_u32)?
-        } else {
-            compile_presentation(presentation_inputs).map_err(|_| 9_u32)?
-        };
+        ) = presentation?;
         compile_metrics[11..17].copy_from_slice(&presentation_metrics);
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -990,7 +996,7 @@ unsafe fn compile_map(
                 } else {
                     "playsrc-map-runtime-2"
                 },
-                configuration,
+                configuration_sha256,
                 materials: &resolved_materials,
                 profile_materials: &profile_materials,
                 inputs: &inputs,

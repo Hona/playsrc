@@ -6,6 +6,7 @@ import { decodeScreenshot } from "./screenshot-pixels"
 
 const TARGETS = ["jump_beef", "pl_upward", "ctf_2fort"] as const
 const SAMPLE_MILLISECONDS = 2_000
+const INITIALIZATION_TARGET_MILLISECONDS = 10_000
 
 type Descriptor = { sha256: string; byteLength: string }
 type BrowserProfile = {
@@ -54,6 +55,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   const pageCdp = await page.context().newCDPSession(page)
   await pageCdp.send("Performance.enable")
   await page.addInitScript(() => {
+    performance.setResourceTimingBufferSize(4_096)
     const state: BrowserProfile = {
       requests: [], workers: [], hashes: [], indexedDb: [], phases: [], frames: [], longTasks: [],
       gpu: { uploadBytes: 0, uploadCalls: 0, uploadMilliseconds: 0, pipelines: 0, pipelineMilliseconds: 0 },
@@ -126,7 +128,9 @@ test("profiles exact headed cold initialization for all three configured TF2 map
         const record = {
           kind: message.kind,
           started: performance.now(),
-          requestBytes: byteLength(message.wasm) + byteLength(message.bsp) + byteLength(message.configuration) + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
+          requestBytes: byteLength(message.wasm) + byteLength(message.bsp)
+            + (Array.isArray(message.configuration) ? message.configuration.reduce((total: number, section: unknown) => total + byteLength(section), 0) : byteLength(message.configuration))
+            + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
             + (Array.isArray(message.chunks) ? message.chunks.reduce((total: number, chunk: { descriptor?: unknown; bytes?: unknown }) => total + byteLength(chunk.descriptor) + byteLength(chunk.bytes), 0) : 0),
           transferredBytes: transfer.reduce((total, value) => total + byteLength(value), 0),
         } as BrowserProfile["workers"][number]
@@ -353,20 +357,17 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       longTasks: profile.longTasks,
     }
     expect(row.simulation.ticks).toBeGreaterThan(0)
-    if (process.env.PLAYSRC_THREE_MAP_CAPTURE !== "before") {
-      expect(row.milliseconds.initializationExcludingDownload, `${target.target} exceeded the exact 30-second cold initialization budget`).toBeLessThanOrEqual(30_000)
-    }
     maps.push(row)
-    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
+    console.log(`PLAYSRC_THREE_MAP_ROW ${JSON.stringify({ target: row.target, wallSeconds: row.milliseconds.totalWall / 1_000, networkSeconds: row.milliseconds.networkDownload / 1_000, initializationSeconds: row.milliseconds.initializationExcludingDownload / 1_000, phases: row.milliseconds, frameP95Milliseconds: row.simulation.frameP95Milliseconds, tickHertz: row.simulation.hertz, mapCache: row.cache.map, presentationCache: row.cache.presentation })}`)
   }
 
   const report = {
     schema: "playsrc-three-map-load-profile-v1",
     capturedAt: new Date().toISOString(),
-      startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
-      browserSessions: 1,
-      pageReloads: 0,
-    initializationTargetMilliseconds: 30_000,
+    startup: { milliseconds: startup.now, wasmInitializationMilliseconds: startupProfile.workers.filter(worker => worker.kind === "initialize").reduce((sum, worker) => sum + (worker.finished ?? startup.now) - worker.started, 0), workers: startupProfile.workers, requests: startupProfile.requests },
+    browserSessions: 1,
+    pageReloads: 0,
+    initializationTargetMilliseconds: INITIALIZATION_TARGET_MILLISECONDS,
     sampleMillisecondsPerMap: SAMPLE_MILLISECONDS,
     maps,
   }
@@ -380,4 +381,12 @@ test("profiles exact headed cold initialization for all three configured TF2 map
   console.log(`PLAYSRC_THREE_MAP_REPORT ${JSON.stringify({ path: reportPath, maps: maps.map(map => ({ target: map.target, milliseconds: (map.milliseconds as { initializationExcludingDownload: number }).initializationExcludingDownload })) })}`)
   await pageCdp.detach()
   await browserCdp.detach()
+  if (process.env.PLAYSRC_THREE_MAP_CAPTURE !== "before") {
+    for (const row of maps) {
+      expect(
+        (row.milliseconds as { initializationExcludingDownload: number }).initializationExcludingDownload,
+        `${row.target} exceeded the exact 10-second cold initialization budget`,
+      ).toBeLessThan(INITIALIZATION_TARGET_MILLISECONDS)
+    }
+  }
 })

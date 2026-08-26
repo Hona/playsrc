@@ -2259,21 +2259,14 @@ export async function mapDerivedKey(
   profile: 0 | 1,
   renderLevel: 0 | 1 | 2,
   compilerSha256: string,
-  configuration: readonly Uint8Array[],
+  resourceRootSha256: string,
 ): Promise<string> {
-  if (!HASH.test(bspSha256) || !HASH.test(compilerSha256) || (renderLevel === 2) !== (profile === 1))
-    throw new Tf2CodecError("BSP, compiler, or render profile identity is invalid")
-  if (configuration.length < 1 || configuration.length > 64) throw new Tf2CodecError("map resource sections are invalid")
-  const hashes: string[] = []
-  for (const section of configuration) {
-    if (!(section instanceof Uint8Array) || section.byteLength < 1 || section.byteLength > 512 * 1024 * 1024) {
-      throw new Tf2CodecError("map resource section byte length is invalid")
-    }
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", section))
-    hashes.push(Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join(""))
+  if (!HASH.test(bspSha256) || !HASH.test(compilerSha256) || !HASH.test(resourceRootSha256)
+    || (renderLevel === 2) !== (profile === 1)) {
+    throw new Tf2CodecError("BSP, compiler, resource root, or render profile identity is invalid")
   }
   const identity = new TextEncoder().encode(
-    `playsrc-map-runtime-10\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${hashes.join("\n")}\n`,
+    `playsrc-map-runtime-12\n${bspSha256}\n${compilerSha256}\n${resourceRootSha256}\n${profile}\n${renderLevel}\n`,
   )
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", identity))
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
