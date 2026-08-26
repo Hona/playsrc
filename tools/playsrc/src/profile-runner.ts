@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, openSync } from "node:fs"
+import { closeSync, openSync, watch } from "node:fs"
 import { mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
@@ -96,29 +96,47 @@ export async function acquireHeadedProfileLock(
   const started = Date.now()
   const token = randomUUID()
   let announcement = started
-  while (Date.now() - started < maximumWaitMilliseconds) {
-    try {
-      const file = await open(lockPath, "wx", 0o600)
-      try { await file.writeFile(`${JSON.stringify({ token, pid: process.pid, profile, startedAt: new Date().toISOString() })}\n`) }
-      finally { await file.close() }
-      return Object.freeze({ token, milliseconds: Date.now() - started })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  let revision = 0
+  let awaken: (() => void) | undefined
+  const observer = watch(path.dirname(lockPath), (_event, filename) => {
+    if (filename?.toString() !== path.basename(lockPath)) return
+    revision += 1
+    awaken?.()
+  })
+  try {
+    while (Date.now() - started < maximumWaitMilliseconds) {
+      const observed = revision
       try {
-        const owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number }
-        if (Number.isSafeInteger(owner.pid) && !isAlive(owner.pid!)) { await unlink(lockPath).catch(() => undefined); continue }
-      } catch (failure) {
-        if ((failure as NodeJS.ErrnoException).code !== "ENOENT") {
-          const metadata = await stat(lockPath).catch(() => null)
-          if (metadata && Date.now() - metadata.mtimeMs > 10_000) throw new Error("Machine-wide headed profile lock is malformed")
+        const file = await open(lockPath, "wx", 0o600)
+        try { await file.writeFile(`${JSON.stringify({ token, pid: process.pid, profile, startedAt: new Date().toISOString() })}\n`) }
+        finally { await file.close() }
+        return Object.freeze({ token, milliseconds: Date.now() - started })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+        try {
+          const owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number }
+          if (Number.isSafeInteger(owner.pid) && !isAlive(owner.pid!)) { await unlink(lockPath).catch(() => undefined); continue }
+        } catch (failure) {
+          if ((failure as NodeJS.ErrnoException).code !== "ENOENT") {
+            const metadata = await stat(lockPath).catch(() => null)
+            if (metadata && Date.now() - metadata.mtimeMs > 10_000) throw new Error("Machine-wide headed profile lock is malformed")
+          }
         }
+        if (Date.now() - announcement >= 10_000) {
+          announcement = Date.now()
+          console.error(`[performance] waiting for exclusive headed profile: ${profile}`)
+        }
+        if (revision !== observed) continue
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, Math.min(250, Math.max(1, maximumWaitMilliseconds - (Date.now() - started))))
+          awaken = () => { clearTimeout(timer); resolve() }
+        })
+        awaken = undefined
       }
-      if (Date.now() - announcement >= 10_000) {
-        announcement = Date.now()
-        console.error(`[performance] waiting for exclusive headed profile: ${profile}`)
-      }
-      await Bun.sleep(25)
     }
+  } finally {
+    awaken = undefined
+    observer.close()
   }
   throw new Error(`Timed out waiting for the machine-wide headed profile lock after ${maximumWaitMilliseconds} ms`)
 }

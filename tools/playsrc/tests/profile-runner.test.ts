@@ -61,6 +61,21 @@ describe("bounded headed profile orchestration", () => {
     await expect(acquireHeadedProfileLock(pathname, "gameplay", 180_001)).rejects.toThrow("three-minute bound")
   })
 
+  test("hands a live machine-wide lock directly to the next waiter without a polling delay", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-profile-handoff-"))
+    directories.push(directory)
+    const pathname = path.join(directory, "chromium-profile.lock")
+    const first = await acquireHeadedProfileLock(pathname, "hud")
+    const waiting = acquireHeadedProfileLock(pathname, "gameplay", 2_000)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const released = performance.now()
+    await releaseHeadedProfileLock(pathname, first.token)
+    const second = await waiting
+    expect(performance.now() - released).toBeLessThan(100)
+    expect(second.token).not.toBe(first.token)
+    await releaseHeadedProfileLock(pathname, second.token)
+  })
+
   test("binds shared build and source snapshots to exact checked repository inputs", async () => {
     const [build, source] = await Promise.all([rustBuildIdentity(), profileSourceIdentity()])
     expect(build).toMatch(/^[0-9a-f]{64}$/)
