@@ -2374,13 +2374,11 @@ fn encode_model_poses(
     world: &mut ModelPoseWorld<'_>,
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&7u32.to_le_bytes());
+    out.extend_from_slice(&8u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
         BTreeMap::<(String, usize, u32, u32), playsrc_studio_model::SampledPose>::new();
-    let mut encoded_geometry = BTreeMap::<(String, usize, u32, u32, usize), u32>::new();
-    let mut geometry_count = 0_u32;
     for request in requests {
         let model = models.get(&request.model).ok_or(())?;
         let bodygroups = if let Some(body) = request.packed_body {
@@ -2561,8 +2559,6 @@ fn encode_model_poses(
                     part.opaque_primitives.len(),
                     Some(&state),
                     world,
-                    &mut encoded_geometry,
-                    &mut geometry_count,
                 )?;
                 part_count = part_count.checked_add(1).ok_or(())?;
             }
@@ -2696,8 +2692,6 @@ fn encode_model_poses(
                 selected.len(),
                 legacy_view.as_ref(),
                 world,
-                &mut encoded_geometry,
-                &mut geometry_count,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         }
@@ -2765,8 +2759,6 @@ fn encode_model_pose_part(
     opaque_count: usize,
     view: Option<&ViewOutput>,
     world: &mut ModelPoseWorld<'_>,
-    encoded_geometry: &mut BTreeMap<(String, usize, u32, u32, usize), u32>,
-    geometry_count: &mut u32,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
     out.extend_from_slice(&request.sample_tick.to_le_bytes());
@@ -2894,21 +2886,35 @@ fn encode_model_pose_part(
         out.extend_from_slice(&event.options);
         pbytes(out, &event.name)?;
     }
+    let mut palette = if request.attachments_only {
+        Vec::new()
+    } else {
+        selected
+            .iter()
+            .flat_map(|selection| {
+                model.geometry[selection.primitive]
+                    .vertices
+                    .iter()
+                    .flat_map(|vertex| {
+                        vertex.bones[..usize::from(vertex.bone_count)]
+                            .iter()
+                            .copied()
+                    })
+            })
+            .collect::<Vec<_>>()
+    };
+    palette.sort_unstable();
+    palette.dedup();
+    out.extend_from_slice(&u32::try_from(palette.len()).map_err(|_| ())?.to_le_bytes());
+    for bone in palette {
+        let matrix = pose.skinning_matrices.get(usize::from(bone)).ok_or(())?;
+        for value in matrix.0 {
+            out.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
     out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
     for (selected_index, selected) in selected.iter().enumerate() {
         let primitive = model.geometry.get(selected.primitive).ok_or(())?;
-        let geometry_key = (role == 0).then(|| {
-            (
-                model.identity.clone(),
-                sequence,
-                cycle.to_bits(),
-                request.elapsed.to_bits(),
-                selected.primitive,
-            )
-        });
-        let reference = geometry_key
-            .as_ref()
-            .and_then(|key| encoded_geometry.get(key).copied());
         out.extend_from_slice(
             &u32::try_from(selected.primitive)
                 .map_err(|_| ())?
@@ -2924,32 +2930,7 @@ fn encode_model_pose_part(
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
-        out.extend_from_slice(&[
-            u8::from(selected_index >= opaque_count),
-            u8::from(reference.is_some()),
-            0,
-            0,
-        ]);
-        out.resize(out.len().next_multiple_of(4), 0);
-        if let Some(reference) = reference {
-            out.extend_from_slice(&reference.to_le_bytes());
-            continue;
-        }
-        let (positions, normals, tangents) = posed_vertices(model, primitive, pose)?;
-        for values in positions.iter().chain(&normals) {
-            for value in values {
-                out.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-        for values in &tangents {
-            for value in values {
-                out.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-        if let Some(key) = geometry_key {
-            encoded_geometry.insert(key, *geometry_count);
-        }
-        *geometry_count = geometry_count.checked_add(1).ok_or(())?;
+        out.extend_from_slice(&[u8::from(selected_index >= opaque_count), 0, 0, 0]);
     }
     out.extend_from_slice(
         &u32::try_from(pose.attachments.len())
@@ -8205,10 +8186,60 @@ fn resolve_models(
             {
                 let primitive = model.geometry.get(selected.primitive).ok_or(())?;
                 let (positions, normals, _) = posed_vertices(model, primitive, &pose)?;
+                let mut bone_palette = primitive
+                    .vertices
+                    .iter()
+                    .flat_map(|vertex| {
+                        vertex.bones[..usize::from(vertex.bone_count)]
+                            .iter()
+                            .copied()
+                            .map(u16::from)
+                    })
+                    .collect::<Vec<_>>();
+                bone_palette.sort_unstable();
+                bone_palette.dedup();
                 primitives.push(playsrc_map::RuntimeModelPrimitive {
                     material: selected.material,
                     positions,
                     normals,
+                    bind_positions: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.position.0.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    bind_normals: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.normal.0.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    bind_tangents: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.tangent.map(|value| f32::from_bits(value.0)))
+                        .collect(),
+                    bone_indices: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| {
+                            let mut indices = [0_u16; 4];
+                            for influence in 0..usize::from(vertex.bone_count) {
+                                indices[influence] = u16::from(vertex.bones[influence]);
+                            }
+                            indices
+                        })
+                        .collect(),
+                    bone_weights: primitive
+                        .vertices
+                        .iter()
+                        .map(|vertex| {
+                            let mut weights = [0.0_f32; 4];
+                            for influence in 0..usize::from(vertex.bone_count) {
+                                weights[influence] = f32::from_bits(vertex.weights[influence].0);
+                            }
+                            weights
+                        })
+                        .collect(),
+                    bone_palette,
                     uv: primitive
                         .vertices
                         .iter()

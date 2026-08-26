@@ -24,7 +24,6 @@ import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameI
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { createParticleQuadWriter } from "./particle-geometry"
-import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
@@ -252,6 +251,7 @@ export {
 const MAX_EFFECTS = 4_096
 const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
+const SOURCE_MODEL_BIND_GEOMETRY = new WeakMap<THREE.BufferGeometry, Readonly<{ geometry: THREE.BufferGeometry; palette: Uint16Array }>>()
 
 type Canvas = HTMLCanvasElement | OffscreenCanvas
 
@@ -277,12 +277,11 @@ export type ModelItem = Readonly<{
   viewModel?: boolean
   pose?: Readonly<{
     viewmodel?: null | Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back"; reflected: boolean; drawDisposition: "draw" | "suppressed-success" | "suppressed" }>
+    boneMatrices: Float32Array
     primitives: readonly Readonly<{
       primitive: number
       material: number
-      positions: Float32Array
-      normals: Float32Array
-      tangents: Float32Array
+      vertexCount: number
       translucent:boolean
     }>[]
   }>
@@ -3024,6 +3023,17 @@ class RendererOwner implements Renderer {
           geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
           geometry.computeBoundingSphere()
           disposables.add(geometry)
+          const bindGeometry = new THREE.BufferGeometry()
+          bindGeometry.setAttribute("position", new THREE.BufferAttribute(primitive.bindPositions, 3))
+          bindGeometry.setAttribute("normal", new THREE.BufferAttribute(primitive.bindNormals, 3))
+          bindGeometry.setAttribute("tangent", new THREE.BufferAttribute(primitive.bindTangents, 4))
+          bindGeometry.setAttribute("skinIndex", new THREE.BufferAttribute(primitive.boneIndices, 4))
+          bindGeometry.setAttribute("skinWeight", new THREE.BufferAttribute(primitive.boneWeights, 4))
+          bindGeometry.setAttribute("uv", geometry.getAttribute("uv"))
+          bindGeometry.setIndex(geometry.getIndex())
+          bindGeometry.boundingSphere = geometry.boundingSphere
+          disposables.add(bindGeometry)
+          SOURCE_MODEL_BIND_GEOMETRY.set(geometry, Object.freeze({ geometry: bindGeometry, palette: primitive.bonePalette }))
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
           if (materialState?.noDraw) continue
@@ -4671,7 +4681,7 @@ class RendererOwner implements Renderer {
   #applyPose(
     instance: THREE.Group,
     pose: NonNullable<ModelItem["pose"]>,
-    retainGeometry: boolean,
+    _retainGeometry: boolean,
     retainedMeshes?: THREE.Mesh[],
   ): THREE.Mesh[] {
     const meshes = retainedMeshes ?? []
@@ -4679,15 +4689,66 @@ class RendererOwner implements Renderer {
     if (meshes.length !== pose.primitives.length) {
       throw new RenderingError("IdentityMismatch", "posed model primitive count differs")
     }
+    if (pose.boneMatrices.length % 12 !== 0 || pose.boneMatrices.length === 0 || pose.boneMatrices.length > 256 * 12) {
+      throw new RenderingError("MalformedInput", "authored model bone matrices are invalid")
+    }
+    let skeleton = instance.userData.sourceSkeleton as THREE.Skeleton | undefined
+    if (!skeleton) {
+      const count = pose.boneMatrices.length / 12
+      const bones = Array.from({ length: count }, () => {
+        const bone = new THREE.Bone()
+        bone.matrixAutoUpdate = false
+        bone.matrixWorldAutoUpdate = false
+        return bone
+      })
+      skeleton = new THREE.Skeleton(bones, Array.from({ length: count }, () => new THREE.Matrix4()))
+      instance.userData.sourceSkeleton = skeleton
+    }
+    if (skeleton.bones.length * 12 !== pose.boneMatrices.length) {
+      throw new RenderingError("IdentityMismatch", "authored model bone count differs")
+    }
+    for (let bone = 0; bone < skeleton.bones.length; bone += 1) {
+      const offset = bone * 12
+      skeleton.bones[bone]!.matrixWorld.set(
+        pose.boneMatrices[offset]!, pose.boneMatrices[offset + 1]!, pose.boneMatrices[offset + 2]!, pose.boneMatrices[offset + 3]!,
+        pose.boneMatrices[offset + 4]!, pose.boneMatrices[offset + 5]!, pose.boneMatrices[offset + 6]!, pose.boneMatrices[offset + 7]!,
+        pose.boneMatrices[offset + 8]!, pose.boneMatrices[offset + 9]!, pose.boneMatrices[offset + 10]!, pose.boneMatrices[offset + 11]!,
+        0, 0, 0, 1,
+      )
+    }
+    const matrixBytes = skeleton.bones.length * 64
+    if (this.#uploadEvidence) {
+      this.#uploadEvidence.poseAttributes += 1
+      this.#uploadEvidence.poseUploadBytes += matrixBytes
+    }
+    this.#instrumentation?.poseUpload(matrixBytes)
     for (let primitive = 0; primitive < meshes.length; primitive += 1) {
-      const object = meshes[primitive]!
+      let object = meshes[primitive]!
       const posed = pose.primitives[primitive]!
-      object.userData.posedPrimitive = posed.primitive
       if (
         posed.material !== object.userData.primitiveMaterial
-        || posed.positions.length !== object.geometry.getAttribute("position").count * 3
-        || posed.normals.length !== object.geometry.getAttribute("normal").count * 3
+        || posed.vertexCount !== object.geometry.getAttribute("position").count
       ) throw new RenderingError("IdentityMismatch", "posed model primitive differs from its template")
+      if (!(object instanceof THREE.SkinnedMesh)) {
+        const authored = SOURCE_MODEL_BIND_GEOMETRY.get(object.geometry)
+        if (!authored || authored.palette.some((bone) => bone >= skeleton!.bones.length)) {
+          throw new RenderingError("IdentityMismatch", "authored model bone palette differs from its skeleton")
+        }
+        const skinned = new THREE.SkinnedMesh(authored.geometry, object.material)
+        skinned.userData = { ...object.userData }
+        skinned.frustumCulled = false
+        skinned.bind(skeleton, new THREE.Matrix4())
+        const parent = object.parent
+        if (!parent) throw new RenderingError("MissingInput", "posed model mesh parent is unavailable")
+        const index = parent.children.indexOf(object)
+        parent.remove(object)
+        parent.add(skinned)
+        parent.children.splice(parent.children.indexOf(skinned), 1)
+        parent.children.splice(index, 0, skinned)
+        object = skinned
+        meshes[primitive] = object
+      }
+      object.userData.posedPrimitive = posed.primitive
       if (object.userData.dynamicMaterial !== true) {
         object.material = Array.isArray(object.material) ? object.material.map((material) => material.clone()) : object.material.clone()
         object.userData.dynamicMaterial = true
@@ -4700,28 +4761,6 @@ class RendererOwner implements Renderer {
       } else {
         object.material.transparent = posed.translucent
         object.material.depthWrite = !posed.translucent
-      }
-      if (retainGeometry && object.userData.dynamicGeometry === true) {
-        const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
-        const normal = object.geometry.getAttribute("normal") as THREE.BufferAttribute
-        const tangent = object.geometry.getAttribute("tangent") as THREE.BufferAttribute | undefined
-        for (const [attribute, values] of [[position, posed.positions], [normal, posed.normals], ...(tangent ? [[tangent, posed.tangents] as const] : [])] as const) {
-          const update = synchronizeDynamicAttribute(attribute, values)
-          if (this.#uploadEvidence) {
-            this.#uploadEvidence.poseAttributes += 1
-            this.#uploadEvidence.poseUploadBytes += update.bytes
-            if (!update.changed) this.#uploadEvidence.unchangedPoseAttributes += 1
-          }
-          this.#instrumentation?.poseUpload(update.bytes)
-        }
-      } else {
-        const geometry = object.geometry.clone()
-        geometry.setAttribute("position", new THREE.BufferAttribute(posed.positions.slice(), 3).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("normal", new THREE.BufferAttribute(posed.normals.slice(), 3).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("tangent", new THREE.BufferAttribute(posed.tangents.slice(), 4).setUsage(THREE.DynamicDrawUsage))
-        object.geometry = geometry
-        object.userData.dynamicGeometry = true
-        this.#instrumentation?.poseUpload(posed.positions.byteLength + posed.normals.byteLength + posed.tangents.byteLength)
       }
     }
     return meshes
@@ -4784,8 +4823,10 @@ class RendererOwner implements Renderer {
 
   #disposeDynamicInstance(instance: THREE.Group): void {
     instance.parent?.remove(instance)
+    const skeletons = new Set<THREE.Skeleton>()
     instance.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return
+      if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton)
       if (object.userData.dynamicMaterial === true) {
         if (Array.isArray(object.material)) {
           for (const material of object.material) material.dispose()
@@ -4795,6 +4836,7 @@ class RendererOwner implements Renderer {
       }
       if (object.userData.dynamicGeometry === true) object.geometry.dispose()
     })
+    for (const skeleton of skeletons) skeleton.dispose()
   }
 
   #applyDynamicModelLighting(
