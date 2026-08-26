@@ -2703,6 +2703,13 @@ fn encode_model_poses(
     Ok(out)
 }
 
+fn canonical_bone_palette(bones: impl IntoIterator<Item = u8>) -> Vec<u8> {
+    let mut palette = bones.into_iter().collect::<Vec<_>>();
+    palette.sort_unstable();
+    palette.dedup();
+    palette
+}
+
 fn viewmodel_phase_code(value: playsrc_studio_model::ViewModelPhase) -> u8 {
     match value {
         playsrc_studio_model::ViewModelPhase::Draw => 0,
@@ -2886,25 +2893,20 @@ fn encode_model_pose_part(
         out.extend_from_slice(&event.options);
         pbytes(out, &event.name)?;
     }
-    let mut palette = if request.attachments_only {
+    let palette = if request.attachments_only {
         Vec::new()
     } else {
-        selected
-            .iter()
-            .flat_map(|selection| {
-                model.geometry[selection.primitive]
-                    .vertices
-                    .iter()
-                    .flat_map(|vertex| {
-                        vertex.bones[..usize::from(vertex.bone_count)]
-                            .iter()
-                            .copied()
-                    })
-            })
-            .collect::<Vec<_>>()
+        canonical_bone_palette(selected.iter().flat_map(|selection| {
+            model.geometry[selection.primitive]
+                .vertices
+                .iter()
+                .flat_map(|vertex| {
+                    vertex.bones[..usize::from(vertex.bone_count)]
+                        .iter()
+                        .copied()
+                })
+        }))
     };
-    palette.sort_unstable();
-    palette.dedup();
     out.extend_from_slice(&u32::try_from(palette.len()).map_err(|_| ())?.to_le_bytes());
     for bone in palette {
         let matrix = pose.skinning_matrices.get(usize::from(bone)).ok_or(())?;
@@ -8186,18 +8188,15 @@ fn resolve_models(
             {
                 let primitive = model.geometry.get(selected.primitive).ok_or(())?;
                 let (positions, normals, _) = posed_vertices(model, primitive, &pose)?;
-                let mut bone_palette = primitive
-                    .vertices
-                    .iter()
-                    .flat_map(|vertex| {
+                let bone_palette =
+                    canonical_bone_palette(primitive.vertices.iter().flat_map(|vertex| {
                         vertex.bones[..usize::from(vertex.bone_count)]
                             .iter()
                             .copied()
-                            .map(u16::from)
-                    })
-                    .collect::<Vec<_>>();
-                bone_palette.sort_unstable();
-                bone_palette.dedup();
+                    }))
+                    .into_iter()
+                    .map(u16::from)
+                    .collect();
                 primitives.push(playsrc_map::RuntimeModelPrimitive {
                     material: selected.material,
                     positions,
@@ -13822,6 +13821,19 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_bone_palettes_are_canonical_sparse_and_bounded_by_source_bone_ids() {
+        assert_eq!(
+            canonical_bone_palette([19, 4, 255, 4, 0, 19]),
+            vec![0, 4, 19, 255]
+        );
+        assert!(canonical_bone_palette([]).is_empty());
+        assert_eq!(
+            canonical_bone_palette((0_u8..=255).rev()),
+            (0_u8..=255).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn static_model_ownership_ends_without_releasing_dynamic_or_replacement_models() {
