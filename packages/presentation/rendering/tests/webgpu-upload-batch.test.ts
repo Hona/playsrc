@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { WebGpuUploadBatch, type UploadBatchBackend } from "../src/webgpu-upload-batch"
+import { WebGpuSubmissionBatch } from "../src/webgpu-submission-batch"
 
 function fixture() {
   const writes: { buffer: any; offset: number; bytes: number[] }[] = []
@@ -129,5 +130,28 @@ describe("persistent WebGPU frame upload batching", () => {
     expect(state.copies).toHaveLength(0)
     expect(state.submissions).toEqual([["render"]])
     batch.dispose()
+  })
+
+  test("preserves upload-before-draw ordering while combining adjacent clean render submissions", () => {
+    const state = fixture()
+    const submissions = new WebGpuSubmissionBatch(state.queue)
+    const uploads = new WebGpuUploadBatch(state.backend)
+    const binding = { buffer: Uint32Array.from([1]), updateRanges: [{ start: 0, count: 1 }] }
+    state.buffer(binding)
+    submissions.begin()
+    state.backend.updateBinding(binding)
+    state.queue.submit(["world"])
+    state.queue.submit(["viewmodel"])
+    binding.buffer[0] = 2
+    state.backend.updateBinding(binding)
+    state.queue.submit(["hud"])
+    submissions.finish()
+    expect(state.submissions).toEqual([
+      [{ upload: true }, "world", "viewmodel"],
+      [{ upload: true }, "hud"],
+    ])
+    expect(state.writes).toHaveLength(2)
+    uploads.dispose()
+    submissions.dispose()
   })
 })
