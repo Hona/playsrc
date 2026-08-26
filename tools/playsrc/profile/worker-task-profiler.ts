@@ -47,10 +47,12 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
     const task = state.current
     if (!state.active || !task) return originalPost.call(this, message, ...rest)
     // Read byte lengths before transfer detaches ownership. Never retain payloads/views.
+    const shared = typeof SharedArrayBuffer === "function" && message?.output instanceof SharedArrayBuffer
     const response = {
       requestId: message?.id, kind: message?.kind,
-      bytes: message?.outputs?.reduce((sum: number, output: ArrayBuffer) => sum + output.byteLength, 0)
+      bytes: shared ? 0 : message?.outputs?.reduce((sum: number, output: ArrayBuffer) => sum + output.byteLength, 0)
         ?? message?.output?.byteLength ?? message?.payload?.byteLength ?? 0,
+      sharedBytes: shared ? message.byteLength ?? 0 : 0,
       timings: message?.timings ?? null,
       started: host.performance.now(), finished: null as number | null,
     }
@@ -60,7 +62,8 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
   }
   // The game supplies only allocation counters, not module/heap references.
   host.__playsrcWorkerProfileMemory = (linearBytes: number, liveBytes: number, highWaterBytes: number) => {
-    if (state.active && state.current) state.current.memory.push({ at: host.performance.now(), linearBytes, liveBytes, highWaterBytes })
+    // usize counters cross the WASM32 ABI as signed JS i32 results.
+    if (state.active && state.current) state.current.memory.push({ at: host.performance.now(), linearBytes, liveBytes: liveBytes >>> 0, highWaterBytes: highWaterBytes >>> 0 })
   }
   host.__playsrcWorkerTasks = {
     stop() {

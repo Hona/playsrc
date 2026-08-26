@@ -21,6 +21,21 @@ function worker() {
 }
 
 describe("injected Worker task profiling", () => {
+  test("counts only the borrowed lease span, never the whole shared heap as transferred traffic", () => {
+    const { host, sent } = worker()
+    host.onmessage = (event: any) => {
+      host.__playsrcWorkerProfileMemory(4_294_967_296, -2, -1)
+      host.postMessage({ id: event.data.id, kind: "models", output: new SharedArrayBuffer(1024), byteOffset: 128, byteLength: 48, lease: 5 }, [])
+    }
+    installWorkerTaskProfiler(host)
+    host.onmessage({ data: { id: 7, kind: "models" } })
+    const task = host.__playsrcWorkerTasks.stop().tasks[0]
+    expect(task.responses[0]).toMatchObject({ bytes: 0, sharedBytes: 48 })
+    expect(task.responses[0]).not.toHaveProperty("output")
+    expect(sent[0].output.byteLength).toBe(1024)
+    expect(task.memory[0]).toMatchObject({ linearBytes: 4_294_967_296, liveBytes: 4_294_967_294, highWaterBytes: 4_294_967_295 })
+  })
+
   test("retains task IDs, clocks, execution, transfer bytes and memory without retaining/detaching a second view", () => {
     const { host, marks, sent } = worker()
     const original = host.onmessage
