@@ -1,10 +1,10 @@
 import preact from "@preact/preset-vite"
-import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin, type UserConfig } from "vite"
 import { generationPlugin } from "./generation-plugin"
+import { applicationBuildIdentity } from "../../../tools/playsrc/src/build-identity"
 
 function localRuntime(ensureCoherentBuild?: () => Promise<void>): Plugin {
   return {
@@ -46,7 +46,7 @@ export function tf2ViteConfiguration(
     const configuration = process.env.PLAYSRC_BROWSER_CONFIG ? JSON.parse(process.env.PLAYSRC_BROWSER_CONFIG) : undefined
     const applicationBuild = process.env.PLAYSRC_APPLICATION_BUILD
       ?? configuration?.applicationBuild
-      ?? (deployment ? createHash("sha256").update(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim()).digest("hex") : undefined)
+      ?? (deployment ? await applicationBuildIdentity() : undefined)
     if (!applicationBuild || !/^[0-9a-f]{64}$/.test(applicationBuild)) {
       throw new Error("TF2 application bundle build identity is unavailable")
     }

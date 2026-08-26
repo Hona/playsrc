@@ -265,7 +265,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   const lockPath = path.join(evidence, "chromium-profile.lock")
   // The release matrix includes multiple real map loads. Do not spend its entire
   // hard deadline waiting and then kill a partially executed headed matrix.
-  const maximumWait = Math.min(MAX_RUN_MILLISECONDS - (Date.now() - started), profile === "application-upgrade" && !playwright.includes("--grep") ? 10_000 : MAX_RUN_MILLISECONDS)
+  const maximumWait = Math.min(MAX_RUN_MILLISECONDS - (Date.now() - started), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : MAX_RUN_MILLISECONDS)
   if (maximumWait < 1) throw new Error(`${profile} exhausted its headed profile deadline before acquiring the machine-wide lock`)
   const lock = await acquireHeadedProfileLock(lockPath, profile, maximumWait)
   const locked = Date.now()

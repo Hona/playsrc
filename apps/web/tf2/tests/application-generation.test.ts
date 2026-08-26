@@ -88,6 +88,8 @@ describe("authenticated application generation recovery", () => {
       visible: () => true, whenVisible: async () => {}, reload: () => { reloads += 1 },
     })
     await expect(recovery.ensure("b".repeat(64))).rejects.toThrow("recovery state is invalid")
+    record = JSON.stringify(Array(4).fill(`${"a".repeat(64)}:${"b".repeat(64)}`))
+    await expect(recovery.ensure("b".repeat(64))).rejects.toThrow("recovery state is invalid")
     record = null
     for (const build of ["b", "c", "d"]) await recovery.ensure(build.repeat(64))
     await expect(recovery.ensure("e".repeat(64))).rejects.toThrow("did not converge")

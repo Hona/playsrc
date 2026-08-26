@@ -9,7 +9,7 @@ import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
-import { invalidateRustBuildIdentity } from "./build-identity"
+import { applicationBuildIdentity, invalidateRustBuildIdentity } from "./build-identity"
 import { createDevelopmentBuildCoherence } from "./development-coherence"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
@@ -31,19 +31,6 @@ export class DevelopmentError extends Error {
     super(message)
     this.name = "DevelopmentError"
   }
-}
-
-async function publicCommitIdentity(): Promise<string> {
-  const child = Bun.spawn(["git", "rev-parse", "HEAD"], {
-    cwd: repositoryRoot,
-    stdout: "pipe",
-    stderr: "ignore",
-  })
-  const value = (await new Response(child.stdout).text()).trim()
-  if ((await child.exited) !== 0 || !/^[0-9a-f]{40}$/.test(value)) {
-    throw new DevelopmentError("BuildFailed", "public application commit identity is unavailable")
-  }
-  return new Bun.CryptoHasher("sha256").update(value).digest("hex")
 }
 
 async function waitReady(url: string): Promise<void> {
@@ -134,7 +121,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       wasmMilliseconds = Math.round(performance.now() - began)
       return artifact
     })(),
-    publicCommitIdentity(),
+    applicationBuildIdentity(),
     import("../../../apps/web/tf2/vite.config"),
     (async () => {
       const began = performance.now()
@@ -213,7 +200,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   let publicationMilliseconds = 0
   let viteCreationMilliseconds = 0
   let closed = false
-  const coherence = createDevelopmentBuildCoherence(applicationBuild, publicCommitIdentity, async (identity) => {
+  const coherence = createDevelopmentBuildCoherence(applicationBuild, applicationBuildIdentity, async (identity) => {
     const replacementStarted = performance.now()
     invalidateRustBuildIdentity()
     const [replacementWasmPath] = await Promise.all([
