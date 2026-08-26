@@ -9,7 +9,7 @@ import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, re
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
-import { prepareProfileBrowser, browserLease, browserLaunchIdentity, acquireBrowserRetirementLock } from "../src/profile-browser"
+import { prepareProfileBrowser, browserLease, browserLaunchIdentity, acquireBrowserRetirementLock, profileNodeExecutable } from "../src/profile-browser"
 import { ProfilePhases } from "../profile/profile-phases"
 
 const directories: string[] = []
@@ -241,6 +241,7 @@ describe("bounded headed profile orchestration", () => {
   })
 
   test("reuses only a live leased browser with exact launch and executable identity", async () => {
+    expect(path.basename(profileNodeExecutable())).toMatch(/^node(?:\.exe)?$/)
     const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-browser-reuse-"))
     directories.push(directory)
     const filename = path.join(directory, "browser.json")

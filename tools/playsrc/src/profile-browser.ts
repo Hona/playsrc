@@ -18,13 +18,17 @@ async function optionalJson(filename: string): Promise<any> {
   }
 }
 
-export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<string> {
+export function profileNodeExecutable(): string {
   const node = Bun.which("node")
   if (!node) throw new Error("The supported Playwright WebSocket server requires Node on PATH")
+  return node
+}
+
+export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<string> {
   return createHash("sha256").update(JSON.stringify(launch))
     .update(await fileFingerprint(import.meta.filename))
     .update(await fileFingerprint(path.join(import.meta.dir, "profile-browser-server.cjs")))
-    .update(await fileFingerprint(node))
+    .update(await fileFingerprint(profileNodeExecutable()))
     .update(await fileFingerprint(path.join(repositoryRoot, "node_modules/@playwright/test/package.json")))
     .update(await fileFingerprint(path.join(repositoryRoot, "bun.lock"))).digest("hex")
 }
@@ -104,7 +108,7 @@ if (import.meta.main) {
   const [filename, token, encoded] = process.argv.slice(2)
   if (!filename || !path.isAbsolute(filename) || !token || !encoded) throw new Error("Missing headed browser lease")
   const launch = JSON.parse(encoded) as BrowserLaunch
-  const child = spawn(Bun.which("node")!, [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { stdio: ["pipe", "pipe", "inherit"] })
+  const child = spawn(profileNodeExecutable(), [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { stdio: ["pipe", "pipe", "inherit"] })
   const exited = new Promise<void>((resolve, reject) => {
     child.once("error", reject)
     child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Headed browser server exited with ${code}`)))
