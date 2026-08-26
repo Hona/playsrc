@@ -2,8 +2,76 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { decodeScreenshot } from "./screenshot-pixels"
 
 const CLASSES = ["scout", "soldier", "pyro", "demoman", "heavyweapons", "engineer", "medic", "sniper", "spy"] as const
+
+test("persisted bot settings preserve repeated three-map RED class admission and real world pixels", async ({ page }, testInfo) => {
+  const failures: string[] = []
+  page.on("pageerror", (error) => failures.push(error.message))
+  page.on("console", (message) => {
+    if (/MissingScenario|TransitionFailed|game-advance|FATAL:/u.test(message.text())) failures.push(message.text())
+  })
+  await page.addInitScript(() => {
+    const commands: Array<{ generation: number; configuration: number; selectors: number }> = []
+    ;(globalThis as any).__playsrcAdmissionCommands = commands
+    const original = Worker.prototype.postMessage
+    Worker.prototype.postMessage = function (message: any, transfer?: any) {
+      if (message?.command instanceof ArrayBuffer && message.command.byteLength >= 48) {
+        const bytes = new DataView(message.command)
+        commands.push({ generation: message.generation, configuration: bytes.getUint32(44, true), selectors: bytes.getUint32(32, true) })
+      }
+      return original.call(this, message, transfer)
+    }
+  })
+  await page.goto("/", { waitUntil: "domcontentloaded", timeout: 30_000 })
+  const main = page.locator("main")
+  await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
+  await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+  await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
+  const dialog = page.locator(".local-match-layer").getByRole("dialog", { name: "CREATE SERVER" })
+  await dialog.locator("[data-vgui-name='MapList']").click()
+  await page.getByRole("option", { name: "jump_beef" }).click()
+  await dialog.getByRole("tab", { name: "GAME" }).click()
+  await dialog.locator("[data-vgui-name='NumPlayersTextEntry']").fill("5")
+  await dialog.getByRole("button", { name: "Start" }).click()
+
+  for (const [index, map] of ["jump_beef", "ctf_2fort", "pl_upward", "jump_beef"].entries()) {
+    if (index > 0) {
+      await page.keyboard.press("Backquote")
+      const entry = page.locator("[aria-label='Console command']")
+      await entry.fill(`map ${map}`)
+      await entry.press("Enter")
+    }
+    await expect.poll(async () => ({
+      phase: await main.getAttribute("data-phase"),
+      team: await main.getAttribute("data-team-selection-visible"),
+      detail: await main.getAttribute("data-detail"),
+    }), { timeout: 45_000 }).toMatchObject({ team: "true" })
+    if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+    await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+    if (await main.getAttribute("data-class-selection-visible") === "true") await page.keyboard.press("Digit2")
+    await expect(main).toHaveAttribute("data-class-selection-visible", "false")
+    await expect.poll(async () => (await main.getAttribute("data-hud-probe"))?.split(":")[1], { timeout: 10_000 }).toBe("3")
+    const pixels = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot())
+    let visible = 0
+    for (let offset = 0; offset < pixels.pixels.length; offset += pixels.channels) {
+      if (pixels.pixels[offset]! > 8 || pixels.pixels[offset + 1]! > 8 || pixels.pixels[offset + 2]! > 8) visible += 1
+    }
+    expect(visible, `${map} visible world pixels`).toBeGreaterThan(20_000)
+    expect(await main.getAttribute("data-hud-probe")).not.toContain("unknown")
+    expect(failures).toEqual([])
+    const generation = Number(await main.getAttribute("data-generation"))
+    const commands = await page.evaluate((current) =>
+      (globalThis as any).__playsrcAdmissionCommands.filter((command: any) => command.generation === current), generation)
+    if (map === "jump_beef") expect(commands.every((command: any) => command.configuration === 0)).toBe(true)
+    await testInfo.attach(`admission-${index}-${map}`, {
+      body: JSON.stringify({ generation, visiblePixels: visible, commands: commands.length, failures }),
+      contentType: "application/json",
+    })
+  }
+})
 
 test("authored TF2 class selection shows real model pixels and preserves gameplay transitions", async ({ page }) => {
   const local = await loadLocalConfig()
