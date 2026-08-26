@@ -173,6 +173,24 @@ describe("TF2 projectile presentation contract", () => {
     expect(fact.velocity).toEqual([-100, 500, 9])
   })
 
+  test("retains an authored projectile trail when its compact identity equals the local launcher", () => {
+    const base = catalog()
+    const trail = { position: [2, 3, 4] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }
+    const muzzle = { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }
+    const resources: ProjectileResourceCatalog = Object.freeze({
+      ...base,
+      localOwnerIdentity: 1,
+      attachments: new Map([[1, new Set(["trail", "backblast"])]]),
+      attachmentTransforms: new Map([[1, new Map([["trail", trail], ["backblast", muzzle]])]]),
+      fireAttachmentTransforms: new Map([[1, new Map([["backblast", muzzle]])]]),
+    })
+    const fact = rocket({ identity: 1, ownerIdentity: 1, launcherIdentity: 1 })
+    const result = createProjectilePresentationMapper(resources).map(frame(1n, [fact], [event(fact, "fire", 1n)]))
+    expect(result.particles.map((request) => request.kind === "start" && [request.system, request.attachment])).toEqual([
+      ["rockettrail", { entityIdentity: 1, name: "trail" }],
+    ])
+  })
+
   test("preserves sticky spin and VPhysics orientation through stick, arm, and explosion", () => {
     const mapper = createProjectilePresentationMapper(catalog())
     const flying = sticky("flying")
