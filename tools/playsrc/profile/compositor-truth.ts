@@ -1,6 +1,6 @@
 import { summarizeFrameTimes } from "./profile-window"
 
-export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; args?: Record<string, any> }>
+export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; dur?: number; args?: Record<string, any> }>
 
 const PRESENTATION_EVENTS = ["PresentationFeedback", "Display::FrameDisplayed", "FramePresented"] as const
 

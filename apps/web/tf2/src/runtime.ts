@@ -580,7 +580,6 @@ export class Tf2Application {
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
-  #hudScoreboardIdentity = ""
   #publishedScoreboard?: Tf2HudScoreboard
   #publishedScoreboardProbe = "unavailable"
   #scoreboardVisible = false
@@ -1918,7 +1917,6 @@ export class Tf2Application {
     if (!this.#uiResources || !this.#presentationRandom || !this.#artifacts) throw new Error("TF2 HUD resources are unavailable")
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
-    this.#hudScoreboardIdentity = ""
     this.#scoreboardVisible = false
     if (this.#hudIntegration) {
       this.#hudIntegration.reset("map-replaced")
@@ -2211,10 +2209,10 @@ export class Tf2Application {
       | Number(snapshot.weapon !== null) << 6
       | Number(this.#scoreboardVisible) << 7
       | Number(this.#scoreboardPingAsText) << 8
-    const scoreboardIdentity = `${snapshot.team}:${snapshot.scoreboard.redScore}:${snapshot.scoreboard.blueScore}:${snapshot.scoreboard.redCount}:${snapshot.scoreboard.blueCount}:${snapshot.scoreboard.players.map((player) => `${player.identity},${player.team},${player.class},${Number(player.alive)},${player.score},${player.kills},${player.deaths},${player.captures},${player.damage}`).join(";")}`
-    if (this.#hudContext && this.#hudContextIdentity === identity && this.#hudScoreboardIdentity === scoreboardIdentity) return this.#hudContext
+    const previousScoreboard = this.#hudContext?.scoreboard.kind === "available" ? this.#hudContext.scoreboard.value : undefined
+    const scoreboard = adaptTf2Scoreboard(snapshot.scoreboard, snapshot.team, this.#scoreboardVisible, this.#mapIdentity, this.#scoreboardPingAsText, previousScoreboard)
+    if (this.#hudContext && this.#hudContextIdentity === identity && previousScoreboard === scoreboard) return this.#hudContext
     this.#hudContextIdentity = identity
-    this.#hudScoreboardIdentity = scoreboardIdentity
     this.#hudContext = Object.freeze({
       playerIdentity: 1,
       liveHudSuppressed: classSelection || this.#view.teamSelectionVisible === true,
@@ -2236,13 +2234,7 @@ export class Tf2Application {
         ...tf2CrosshairHudValues(this.#crosshairSettings),
         weaponScale: 1,
       }),
-      scoreboard: tf2HudAvailable<Tf2HudScoreboard>(adaptTf2Scoreboard(
-        snapshot.scoreboard,
-        snapshot.team,
-        this.#scoreboardVisible,
-        this.#mapIdentity,
-        this.#scoreboardPingAsText,
-      )),
+      scoreboard: tf2HudAvailable<Tf2HudScoreboard>(scoreboard),
       freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
       playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
     })

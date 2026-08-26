@@ -4938,37 +4938,48 @@ class SourceVguiRuntime implements VguiRuntime {
         const changed = this.presentationSignatures.get(panel.id) !== signature
         if (changed) {
           this.presentationSignatures.set(panel.id, signature)
+          const style = (property: string, value: string): void => {
+            const declaration = panel.element.style as unknown as Record<string, string>
+            if (declaration[property] !== value) declaration[property] = value
+          }
+          const attribute = (name: string, value: string): void => {
+            if (panel.element.getAttribute(name) !== value) panel.element.setAttribute(name, value)
+          }
+          const data = (name: string, value: string): void => {
+            if (panel.element.dataset[name] !== value) panel.element.dataset[name] = value
+          }
           const relativeX = panel.popup || panel.parent === null ? panel.absoluteBounds.x : panel.bounds.x + this.requirePanel(panel.parent).inset.left
           const relativeY = panel.popup || panel.parent === null ? panel.absoluteBounds.y : panel.bounds.y + this.requirePanel(panel.parent).inset.top
-          panel.element.style.left = `${relativeX}px`
-          panel.element.style.top = `${relativeY}px`
-          panel.element.style.width = `${panel.bounds.width}px`
-          panel.element.style.height = `${panel.bounds.height}px`
-          panel.element.style.zIndex = panel.popup || panel.parent === null ? "0" : String(panel.z)
-          panel.element.style.display = panel.effectivelyVisible ? "block" : "none"
-          panel.element.style.visibility = panel.effectivelyVisible ? "visible" : "hidden"
-          panel.element.style.pointerEvents = panel.effectivelyVisible && panel.mouseInput ? "auto" : "none"
+          style("left", `${relativeX}px`)
+          style("top", `${relativeY}px`)
+          style("width", `${panel.bounds.width}px`)
+          style("height", `${panel.bounds.height}px`)
+          style("zIndex", panel.popup || panel.parent === null ? "0" : String(panel.z))
+          style("display", panel.effectivelyVisible ? "block" : "none")
+          style("visibility", panel.effectivelyVisible ? "visible" : "hidden")
+          style("pointerEvents", panel.effectivelyVisible && panel.mouseInput ? "auto" : "none")
           const clipTop = Math.max(0, panel.clip.y - panel.absoluteBounds.y)
           const clipLeft = Math.max(0, panel.clip.x - panel.absoluteBounds.x)
           const clipRight = Math.max(0, panel.absoluteBounds.x + panel.absoluteBounds.width - panel.clip.x - panel.clip.width)
           const clipBottom = Math.max(0, panel.absoluteBounds.y + panel.absoluteBounds.height - panel.clip.y - panel.clip.height)
-          panel.element.style.clipPath = `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`
-          panel.element.hidden = !panel.effectivelyVisible
-          panel.element.setAttribute("aria-hidden", panel.effectivelyVisible ? "false" : "true")
-          panel.element.setAttribute("aria-disabled", panel.enabled ? "false" : "true")
-          panel.element.setAttribute("aria-label", panel.accessibleName)
+          style("clipPath", `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`)
+          if (panel.element.hidden !== !panel.effectivelyVisible) panel.element.hidden = !panel.effectivelyVisible
+          attribute("aria-hidden", panel.effectivelyVisible ? "false" : "true")
+          attribute("aria-disabled", panel.enabled ? "false" : "true")
+          attribute("aria-label", panel.accessibleName)
           if (["Frame", "MessageBox", "QueryBox"].some((name) => sameName(panel.sourceControl, name))) {
-            panel.element.setAttribute("aria-modal", this.applicationModal === panel.id ? "true" : "false")
+            attribute("aria-modal", this.applicationModal === panel.id ? "true" : "false")
           }
-          if (panel.accessibleDescription) panel.element.setAttribute("aria-description", panel.accessibleDescription)
-          else panel.element.removeAttribute("aria-description")
-          panel.element.tabIndex = panel.registration.focusable && panel.keyboardInput && panel.enabled ? panel.tabPosition > 0 ? panel.tabPosition : 0 : -1
-          panel.element.dataset.focused = this.keyFocus === panel.id ? "true" : "false"
-          panel.element.dataset.armed = panel.armed ? "true" : "false"
-          panel.element.dataset.depressed = panel.depressed ? "true" : "false"
-          panel.element.dataset.selected = panel.selected ? "true" : "false"
-          if (panel.frameInteraction) panel.element.dataset.interaction = panel.frameInteraction
-          else delete panel.element.dataset.interaction
+          if (panel.accessibleDescription) attribute("aria-description", panel.accessibleDescription)
+          else if (panel.element.getAttribute("aria-description") !== null) panel.element.removeAttribute("aria-description")
+          const tabIndex = panel.registration.focusable && panel.keyboardInput && panel.enabled ? panel.tabPosition > 0 ? panel.tabPosition : 0 : -1
+          if (panel.element.tabIndex !== tabIndex) panel.element.tabIndex = tabIndex
+          data("focused", this.keyFocus === panel.id ? "true" : "false")
+          data("armed", panel.armed ? "true" : "false")
+          data("depressed", panel.depressed ? "true" : "false")
+          data("selected", panel.selected ? "true" : "false")
+          if (panel.frameInteraction) data("interaction", panel.frameInteraction)
+          else if (panel.element.dataset.interaction !== undefined) delete panel.element.dataset.interaction
           this.publishControlDom(panel)
         }
         if (!panel.effectivelyVisible && !changed) return
@@ -5007,7 +5018,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const control = panel.sourceControl
     if (sameName(control, "TextEntry") || sameName(control, "ComboBox")) {
       const input = panel.element as HTMLInputElement | HTMLTextAreaElement
-      input.value = panel.text
+      if (input.value !== panel.text) input.value = panel.text
       if (panel.element.tagName.toLowerCase() === "input") (input as HTMLInputElement).type = panel.textHidden ? "password" : "text"
       else panel.element.style.setProperty("-webkit-text-security", panel.textHidden ? "disc" : "none")
       input.readOnly = !panel.editable
@@ -5020,7 +5031,7 @@ class SourceVguiRuntime implements VguiRuntime {
         input.setSelectionRange(start, panel.selectionEnd)
       } catch {}
     } else if (["Label", "Button", "CheckButton", "RadioButton", "MenuItem", "URLLabel", "FrameSystemButton", "Divider"].some((name) => sameName(control, name))) {
-      panel.element.textContent = panel.text
+      if (panel.element.textContent !== panel.text) panel.element.textContent = panel.text
     }
     if (sameName(control, "CheckButton") || sameName(control, "RadioButton")) panel.element.setAttribute("aria-checked", panel.checked ? "true" : "false")
     if (sameName(control, "Button") || sameName(control, "MenuItem")) panel.element.setAttribute("aria-pressed", panel.selected ? "true" : "false")
@@ -5047,8 +5058,9 @@ class SourceVguiRuntime implements VguiRuntime {
     if (sameName(control, "Label")) {
       const associate = panel.properties.get("associate")
       const target = associate ? this.findByName(this.rootPanel, associate) : null
-      if (target) panel.element.setAttribute("aria-controls", target.element.id)
-      else panel.element.removeAttribute("aria-controls")
+      if (target) {
+        if (panel.element.getAttribute("aria-controls") !== target.element.id) panel.element.setAttribute("aria-controls", target.element.id)
+      } else if (panel.element.getAttribute("aria-controls") !== null) panel.element.removeAttribute("aria-controls")
     }
     this.publishItemDom(panel)
     this.reapplyPanelPresentation(panel)

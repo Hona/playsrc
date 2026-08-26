@@ -221,7 +221,7 @@ class Integration implements Tf2HudIntegration {
   readonly #publishedValues = new Map<string, string>()
   readonly #localization: ReadonlyMap<string, string>
   readonly #scoreboardProperties: ReadonlyMap<string, string>
-  #scoreboardFingerprint = ""
+  #publishedScoreboard?: Tf2HudScoreboard
   #modelPanel: Tf2HudModelPanel | null = null
   #modelPanelFingerprint = ""
   readonly #deathNotices: Array<{ panel: VguiPanelId; expires: bigint }> = []
@@ -860,9 +860,8 @@ class Integration implements Tf2HudIntegration {
   }
 
   #publishScoreboard(value: Tf2HudScoreboard): void {
-    const fingerprint = JSON.stringify(value)
-    if (this.#scoreboardFingerprint === fingerprint) return
-    this.#scoreboardFingerprint = fingerprint
+    if (this.#publishedScoreboard === value) return
+    this.#publishedScoreboard = value
     const root = this.#panels.get("scoreinfo")
     if (root === undefined) throw new Error("TF2 scoreboard authored root is absent")
     const widths = {
@@ -1085,7 +1084,7 @@ class Integration implements Tf2HudIntegration {
       this.#captureBaseBounds()
       if (this.#binding) {
         this.#publishedValues.clear()
-        this.#scoreboardFingerprint = ""
+        this.#publishedScoreboard = undefined
         this.#applyValues(this.#binding)
       }
     })
@@ -1186,7 +1185,7 @@ class Integration implements Tf2HudIntegration {
       })
       const binding = bindTf2Hud(Object.freeze({ previous: unavailable, snapshot, events: Object.freeze([]) }))
       this.#publishedValues.clear()
-      this.#scoreboardFingerprint = ""
+      this.#publishedScoreboard = undefined
       this.#applyValues(binding)
       this.#previous = unavailable
       this.#binding = null

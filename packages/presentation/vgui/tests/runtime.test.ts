@@ -205,6 +205,23 @@ describe("generic Source VGUI runtime", () => {
     expect(runtime.snapshot().frame).toBe(1)
   })
 
+  test("retains unchanged label text and accessibility attributes when only authored geometry changes", () => {
+    const { root, runtime } = setup()
+    const panel = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "StableLabel" }).panel!
+    operation(runtime, { kind: "mutate-control", panel, mutation: { text: "125" } })
+    const element = descendants(root).find((candidate) => candidate.dataset.vguiPanel === String(panel))!
+    const attributes = element.attributeWrites
+    const text = element.textWrites
+    operation(runtime, { kind: "set-bounds", panel, bounds: { x: 20, y: 30, width: 100, height: 24 } })
+    expect(element.textContent).toBe("125")
+    expect(element.textWrites).toBe(text)
+    expect(element.attributeWrites).toBe(attributes)
+    expect(element.style.left).toBe("20px")
+    operation(runtime, { kind: "mutate-control", panel, mutation: { text: "100" } })
+    expect(element.textContent).toBe("100")
+    expect(element.textWrites).toBe(text + 1)
+  })
+
   test("admits stale callback timestamps without reversing the shared monotonic frame clock", () => {
     const { root, runtime, time } = setup(emptyAnimations, [], 10)
     const entry = operation(runtime, {
