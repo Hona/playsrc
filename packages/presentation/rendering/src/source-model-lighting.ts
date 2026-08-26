@@ -147,6 +147,11 @@ export type SourceModelSurface = Readonly<{
   diffuseWarp?: THREE.Texture
   exponentTexture?: THREE.Texture
   phong?: SourceModelPhongState | null
+  eye?: Readonly<{
+    ambientOcclusion?: THREE.Texture
+    ambientOcclusionColor: readonly [number, number, number]
+    glossiness: number
+  }>
   environment?: Readonly<{
     texture: THREE.CubeTexture
     tint: readonly [number, number, number]
@@ -206,7 +211,12 @@ export function sourceModelSurfaceNode(
 ): any {
   const normal = TSL.normalWorld.normalize()
   const eye = uniforms.cameraPosition.sub(TSL.positionWorld).normalize()
-  let result = base.rgb.mul(sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp))
+  let lighting = sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp)
+  if (state.eye?.ambientOcclusion) {
+    const occlusion = TSL.texture(state.eye.ambientOcclusion, TSL.uv()).rgb
+    lighting = lighting.mul(TSL.mix(TSL.vec3(...state.eye.ambientOcclusionColor), TSL.vec3(1), occlusion))
+  }
+  let result = base.rgb.mul(lighting)
   const phong = state.phong
   if (phong) {
     const exponentSample = state.exponentTexture ? TSL.texture(state.exponentTexture, TSL.uv()) : undefined
@@ -263,10 +273,12 @@ export function sourceModelSurfaceNode(
   }
   if (state.environment) {
     const reflection = normal.mul(normal.dot(eye).mul(2)).sub(eye)
-    result = result.add(TSL.cubeTexture(state.environment.texture, reflection).rgb
+    let reflected = TSL.cubeTexture(state.environment.texture, reflection).rgb
       .mul(TSL.vec3(...state.environment.tint))
-      .mul(base.a)
-      .mul(state.environment.scale))
+      .mul(state.environment.scale)
+    if (state.eye) reflected = reflected.mul(state.eye.glossiness).mul(lighting)
+    else reflected = reflected.mul(base.a)
+    result = result.add(reflected)
   }
   return TSL.vec4(result.mul(exposure), base.a)
 }

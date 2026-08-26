@@ -926,9 +926,17 @@ type ModelPanelMaterialAnimation = Readonly<{
 type ModelLightingScene = Readonly<{
   materials: ReadonlyMap<string, ModelMaterialInput> | undefined
   environment: EnvironmentInput | undefined
-  textures: ReadonlyMap<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>
+  textures: ReadonlyMap<string, ModelLightingTextures>
   cubemaps: ReadonlyMap<number, THREE.CubeTexture>
   exposure: ReturnType<typeof TSL.uniform>
+}>
+
+type ModelLightingTextures = Readonly<{
+  warp?: THREE.Texture
+  exponent?: THREE.Texture
+  iris?: THREE.Texture
+  ambientOcclusion?: THREE.Texture
+  environment?: THREE.CubeTexture
 }>
 
 type SceneResources = {
@@ -938,7 +946,7 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
-  modelLightingTextures: ReadonlyMap<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>
+  modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
   modelPanelMaterialAnimations: ReadonlyMap<string, readonly ModelPanelMaterialAnimation[]>
   modelOccurrenceInstances:Map<number,THREE.Group>
   modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
@@ -2060,7 +2068,7 @@ class RendererOwner implements Renderer {
     const staticPropInstances: StaticPropResource[] = []
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
-    const modelLightingTextures = new Map<string, Readonly<{ warp?: THREE.Texture; exponent?: THREE.Texture; iris?: THREE.Texture }>>()
+    const modelLightingTextures = new Map<string, ModelLightingTextures>()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
@@ -2171,6 +2179,27 @@ class RendererOwner implements Renderer {
       if (!input) throw new RenderingError("MissingInput", `authored model texture ${binding.logicalPath} is unavailable`)
       const texture = retainAuthoredTexture(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
       return Object.freeze({texture,input})
+    }
+    const createModelCubemap = (identity: string): THREE.CubeTexture | undefined => {
+      const material = request.modelMaterials?.get(identity.toLowerCase())
+      const binding = material?.bindings.find((value) => value.kind === "material" && value.role === 12)
+      if (!binding) return undefined
+      if (binding.colorRead === "format-dependent") {
+        throw new RenderingError("MissingInput", `model cubemap ${binding.logicalPath} lacks a resolved color interpretation`)
+      }
+      const input = request.authoredTextures?.get(binding.logicalPath.toLowerCase())
+      if (!input) throw new RenderingError("MissingInput", `authored model cubemap ${binding.logicalPath} is unavailable`)
+      const key = `model-cubemap:${input.sourceSha256}:${binding.colorRead}`
+      let texture = authoredGpu.get(key)
+      if (!texture) {
+        texture = textureFromAuthoredCubemap(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace)
+        authoredGpu.set(key, texture)
+        disposables.add(texture)
+      }
+      if (!(texture instanceof THREE.CubeTexture)) {
+        throw new RenderingError("IdentityMismatch", `authored model cubemap ${binding.logicalPath} differs`)
+      }
+      return texture
     }
     const createWorldTexture = (
       source: Readonly<{ logicalPath: string; width: number; height: number }>,
@@ -2688,7 +2717,19 @@ class RendererOwner implements Renderer {
              const warp = createModelTexture(resolved.logicalPath, 6, "model")?.texture
              const exponent = createModelTexture(resolved.logicalPath, 5, "model")?.texture
              const iris = typedMaterial.shader === "eye-refract" || typedMaterial.shader === "eyes" ? baseTexture?.texture : undefined
-             if (warp || exponent || iris) modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({ warp, exponent, iris }))
+             const ambientOcclusion = typedMaterial.shader === "eye-refract"
+               ? createModelTexture(resolved.logicalPath, 10, "model")?.texture
+               : undefined
+             const environment = createModelCubemap(resolved.logicalPath)
+             if (warp || exponent || iris || ambientOcclusion || environment) {
+               modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({
+                 warp,
+                 exponent,
+                 iris,
+                 ambientOcclusion,
+                 environment,
+               }))
+             }
            }
           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
@@ -4344,6 +4385,8 @@ class RendererOwner implements Renderer {
             halfLambert?: boolean
             phong?: SourceModelPhongState | null
             dilation?: number
+            ambientOcclusionColor?: readonly [number, number, number]
+            glossiness?: number
           }>
           if (typeof state.halfLambert !== "boolean") {
             throw new RenderingError("MissingInput", `model half-Lambert state ${identity} is unavailable`)
@@ -4353,16 +4396,16 @@ class RendererOwner implements Renderer {
             tint: readonly [number, number, number]
           }> | null
           let environment: Readonly<{ texture: THREE.CubeTexture; tint: readonly [number, number, number]; scale: number }> | undefined
-          if (environmentState && input.localEnvironment) {
-            const selected = resources.environment?.cubemapFacts.find((fact) =>
+          if (environmentState && (textures?.environment || input.localEnvironment)) {
+            const selected = input.localEnvironment && resources.environment?.cubemapFacts.find((fact) =>
               fact.logicalPath.toLowerCase() === input.localEnvironment,
             )
-            const texture = selected && resources.cubemaps.get(selected.index)
+            const texture = textures?.environment ?? (selected && resources.cubemaps.get(selected.index))
             if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
             environment = Object.freeze({
               texture,
               tint: Object.freeze(environmentState.tint.map(sourceShaderGammaToLinear)) as readonly [number, number, number],
-              scale: this.configuration.lightingProfile === "hdr" ? 16 : 1,
+              scale: authored.shader === "eye-refract" ? 1 : this.configuration.lightingProfile === "hdr" ? 16 : 1,
             })
           }
           let base = material.colorNode ?? TSL.vec4(1, 1, 1, 1)
@@ -4385,6 +4428,13 @@ class RendererOwner implements Renderer {
             exponentTexture: textures?.exponent,
             phong: state.phong,
             environment,
+            ...(authored.shader === "eye-refract" ? {
+              eye: {
+                ambientOcclusion: textures?.ambientOcclusion,
+                ambientOcclusionColor: state.ambientOcclusionColor!,
+                glossiness: state.glossiness!,
+              },
+            } : {}),
           }, resources.exposure)
           material.needsUpdate = true
         }

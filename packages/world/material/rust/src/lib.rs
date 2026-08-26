@@ -473,6 +473,11 @@ pub fn resolve_for_environment(
                 gamma_color_read,
                 sprite_card,
             );
+            if role == TextureRole::Environment
+                && document.root.key.bytes.eq_ignore_ascii_case(b"EyeRefract")
+            {
+                request.color_read = TextureColorRead::Srgb;
+            }
             textures.push(request);
         }
     }
@@ -2190,6 +2195,29 @@ mod tests {
                 .unwrap()
                 .lighting,
             LightingModel::VertexLit
+        );
+
+        let hdr_eye = material(
+            br#"EyeRefract {
+                "$iris" "models/player/shared/eye-iris-blue"
+                "$envmap" "models/player/shared/eye-reflection-cubemap-"
+                "$corneatexture" "models/player/shared/eye-cornea"
+            }"#,
+            SelectionEnvironment {
+                hdr_mode: HdrMode::Integer,
+                model: true,
+                ..SelectionEnvironment::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            hdr_eye
+                .textures
+                .iter()
+                .find(|texture| texture.role == TextureRole::Environment)
+                .unwrap()
+                .color_read,
+            TextureColorRead::Srgb,
         );
     }
 
