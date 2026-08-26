@@ -392,6 +392,58 @@ impl Actor {
     }
 }
 
+struct ActorFrame {
+    actors: [Actor; MAX_BOTS + 1],
+    count: usize,
+    teams: [[u8; MAX_BOTS + 1]; 2],
+    team_counts: [usize; 2],
+}
+
+impl ActorFrame {
+    fn insert(&mut self, actor: Actor) {
+        let index = self.count;
+        self.actors[index] = actor;
+        self.count += 1;
+        if actor.alive && matches!(actor.team, PlayerTeam::Red | PlayerTeam::Blue) {
+            let team = team_index(actor.team);
+            self.teams[team][self.team_counts[team]] = index as u8;
+            self.team_counts[team] += 1;
+        }
+    }
+
+    fn all(&self) -> &[Actor] {
+        &self.actors[..self.count]
+    }
+
+    fn enemies(&self, team: PlayerTeam) -> impl Iterator<Item = Actor> + '_ {
+        let enemy = 1 - team_index(team);
+        self.teams[enemy][..self.team_counts[enemy]]
+            .iter()
+            .map(|index| self.actors[usize::from(*index)])
+    }
+
+    fn get(&self, identity: u32) -> Option<Actor> {
+        self.all()
+            .binary_search_by_key(&identity, |actor| actor.identity)
+            .ok()
+            .map(|index| self.actors[index])
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SupplyFacts {
+    area: u32,
+    closest_team: Option<PlayerTeam>,
+}
+
+#[derive(Clone, Copy)]
+struct SupplyRoute {
+    team: PlayerTeam,
+    start: u32,
+    goal: u32,
+    travel: Option<f32>,
+}
+
 #[derive(Clone, Debug)]
 struct Bot {
     identity: u32,
@@ -1010,6 +1062,10 @@ impl BotWorld {
         }
         let actors = self.actors(human, tick);
         let mut attacks = Vec::new();
+        let mut supply_facts = Vec::new();
+        let mut supply_routes = Vec::new();
+        let mut activities = Vec::<ActivityEvent>::new();
+        let mut ammo = Vec::<AmmoEvent>::new();
         let mesh = &self.mesh;
         let scenario = &mut self.scenario;
         let spawns = &self.spawns;
@@ -1032,12 +1088,8 @@ impl BotWorld {
                 bot.next_target_tick = tick + ticks(TARGET_SELECTION_INTERVAL, self.tick_interval);
                 let mut visible = [None; MAX_BOTS + 1];
                 let mut visible_count = 0;
-                for actor in actors.iter().copied() {
-                    if actor.identity != bot.identity
-                        && actor.alive
-                        && bot.team.is_enemy(actor.team)
-                        && visible_actor(world, bot, actor)
-                    {
+                for actor in actors.enemies(bot.team) {
+                    if visible_actor(world, bot, actor) {
                         visible[visible_count] = Some(actor);
                         visible_count += 1;
                     }
@@ -1063,12 +1115,9 @@ impl BotWorld {
                     .min_by(|left, right| threat_order(bot, *left, *right))
                     .map(|actor| actor.identity);
             }
-            let threat = bot.target.and_then(|identity| {
-                actors
-                    .iter()
-                    .copied()
-                    .find(|actor| actor.identity == identity && actor.alive)
-            });
+            let threat = bot
+                .target
+                .and_then(|identity| actors.get(identity).filter(|actor| actor.alive));
             select_weapon(bot, threat, tick, self.tick_interval);
             let authoritative =
                 objectives.and_then(|world| world.bot_objective(bot.identity, bot.team));
@@ -1108,6 +1157,9 @@ impl BotWorld {
                         &actors,
                         supplies,
                         crate::pickup::MapPickupKind::Health,
+                        &mut supply_facts,
+                        &mut supply_routes,
+                        &mut self.path_scratch,
                     )
                     .map(|target| (ObjectiveKind::GetHealth, target.position))
                 }
@@ -1124,6 +1176,9 @@ impl BotWorld {
                         &actors,
                         supplies,
                         crate::pickup::MapPickupKind::Ammo,
+                        &mut supply_facts,
+                        &mut supply_routes,
+                        &mut self.path_scratch,
                     )
                     .map(|target| (ObjectiveKind::GetAmmo, target.position))
                 }
@@ -1311,10 +1366,7 @@ impl BotWorld {
                 && tick > due
             {
                 bot.pending_melee = None;
-                if let Some(victim) = actors
-                    .iter()
-                    .copied()
-                    .find(|actor| actor.identity == target && actor.alive)
+                if let Some(victim) = actors.get(target).filter(|actor| actor.alive)
                     && distance(bot.movement.position, victim.position)
                         <= ballistics::MELEE_RANGE + ballistics::MELEE_HULL_RADIUS
                 {
@@ -1342,8 +1394,8 @@ impl BotWorld {
                     && (!is_melee(active_weapon) || range < MELEE_FIRE_RANGE)
                     && line_of_fire_clear(world, bot_eye(bot), target)
             });
-            let mut activities = Vec::<ActivityEvent>::new();
-            let mut ammo = Vec::<AmmoEvent>::new();
+            activities.clear();
+            ammo.clear();
             let eye_position = bot_eye(bot);
             let state = bot
                 .loadout
@@ -1764,8 +1816,8 @@ impl BotWorld {
             .collect()
     }
 
-    fn actors(&self, human: Human, tick: u64) -> Vec<Actor> {
-        std::iter::once(Actor {
+    fn actors(&self, human: Human, tick: u64) -> ActorFrame {
+        let player = Actor {
             identity: crate::PLAYER_IDENTITY,
             class: human.class,
             team: human.team,
@@ -1773,9 +1825,16 @@ impl BotWorld {
             position: human.position,
             velocity: human.velocity,
             firing_at: None,
-        })
-        .chain(self.bots.values().map(|bot| {
-            Actor {
+        };
+        let mut frame = ActorFrame {
+            actors: [player; MAX_BOTS + 1],
+            count: 0,
+            teams: [[0; MAX_BOTS + 1]; 2],
+            team_counts: [0; 2],
+        };
+        frame.insert(player);
+        for bot in self.bots.values() {
+            frame.insert(Actor {
                 identity: bot.identity,
                 class: bot.class,
                 team: bot.team,
@@ -1786,9 +1845,9 @@ impl BotWorld {
                     .last_fire_tick
                     .filter(|fired| tick.saturating_sub(*fired) <= ticks(1.0, self.tick_interval))
                     .and(bot.target),
-            }
-        }))
-        .collect()
+            });
+        }
+        frame
     }
 
     pub(crate) fn synchronize_objectives(
@@ -1850,9 +1909,12 @@ fn sync_bot_ammo(bot: &mut Bot) {
 fn select_supply(
     mesh: &Mesh,
     bot: &Bot,
-    actors: &[Actor],
+    actors: &ActorFrame,
     supplies: &[SupplyTarget],
     wanted: crate::pickup::MapPickupKind,
+    facts: &mut Vec<Option<Option<SupplyFacts>>>,
+    routes: &mut Vec<SupplyRoute>,
+    scratch: &mut PathScratch,
 ) -> Option<SupplyTarget> {
     let ratio = bot.health.current as f32 / bot.class.data().maximum_health as f32;
     let range = if wanted == crate::pickup::MapPickupKind::Health {
@@ -1866,13 +1928,34 @@ fn select_supply(
     } else {
         AMMO_SEARCH_RANGE
     };
+    let start = mesh.nearest_area(bot.movement.position)?.identity;
+    if facts.is_empty() {
+        facts.resize(supplies.len(), None);
+    }
     supplies
         .iter()
         .copied()
-        .filter(|supply| supply.kind.is_none_or(|kind| kind == wanted))
-        .filter(|supply| supply.team.is_none_or(|team| team == bot.team))
-        .filter_map(|supply| {
-            let area = mesh.nearest_area(supply.position)?;
+        .enumerate()
+        .filter(|(_, supply)| supply.kind.is_none_or(|kind| kind == wanted))
+        .filter(|(_, supply)| supply.team.is_none_or(|team| team == bot.team))
+        .filter_map(|(index, supply)| {
+            let facts = (*facts[index].get_or_insert_with(|| {
+                let area = mesh.nearest_area(supply.position)?;
+                let closest_team = actors
+                    .all()
+                    .iter()
+                    .filter(|actor| actor.alive)
+                    .min_by(|left, right| {
+                        distance(left.position, supply.position)
+                            .total_cmp(&distance(right.position, supply.position))
+                    })
+                    .map(|actor| actor.team);
+                Some(SupplyFacts {
+                    area: area.identity,
+                    closest_team,
+                })
+            }))?;
+            let area = mesh.area(facts.area)?;
             if supply.kind.is_none() {
                 let required = if bot.team == PlayerTeam::Red {
                     TF_NAV_SPAWN_ROOM_RED
@@ -1883,40 +1966,51 @@ fn select_supply(
                     return None;
                 }
             }
-            let closest = actors
-                .iter()
-                .filter(|actor| actor.alive)
-                .min_by(|left, right| {
-                    distance(left.position, supply.position)
-                        .total_cmp(&distance(right.position, supply.position))
-                });
-            if closest.is_some_and(|actor| bot.team.is_enemy(actor.team)) {
+            if facts
+                .closest_team
+                .is_some_and(|team| bot.team.is_enemy(team))
+            {
                 return None;
             }
-            let start = mesh.nearest_area(bot.movement.position)?;
-            let path = mesh.build_path(
-                start.identity,
-                area.identity,
-                |from, destination, direction, length| {
-                    path_cost(
-                        from,
-                        destination,
-                        direction,
-                        length,
-                        PathContext {
-                            team: bot.team,
-                            bot_identity: bot.identity,
-                            now: 0.0,
-                            route: Route::Fastest,
+            let travel = if let Some(route) = routes.iter().find(|route| {
+                route.team == bot.team && route.start == start && route.goal == area.identity
+            }) {
+                route.travel
+            } else {
+                let travel = mesh
+                    .build_path_with_scratch(
+                        start,
+                        area.identity,
+                        scratch,
+                        |from, destination, direction, length| {
+                            path_cost(
+                                from,
+                                destination,
+                                direction,
+                                length,
+                                PathContext {
+                                    team: bot.team,
+                                    bot_identity: bot.identity,
+                                    now: 0.0,
+                                    route: Route::Fastest,
+                                },
+                            )
                         },
                     )
-                },
-            )?;
-            let travel = path
-                .windows(2)
-                .filter_map(|pair| Some((mesh.area(pair[0])?, mesh.area(pair[1])?)))
-                .map(|(left, right)| distance(left.center(), right.center()))
-                .sum::<f32>();
+                    .map(|path| {
+                        path.windows(2)
+                            .filter_map(|pair| Some((mesh.area(pair[0])?, mesh.area(pair[1])?)))
+                            .map(|(left, right)| distance(left.center(), right.center()))
+                            .sum::<f32>()
+                    });
+                routes.push(SupplyRoute {
+                    team: bot.team,
+                    start,
+                    goal: area.identity,
+                    travel,
+                });
+                travel
+            }?;
             (travel <= range).then_some((supply, travel))
         })
         .min_by(|left, right| {
@@ -2841,6 +2935,135 @@ mod tests {
         let ammo = crate::pickup::map_pickup_definition(b"item_ammopack_small").unwrap();
         assert!(world.grant_pickup(2, ammo).unwrap() >= 4);
         assert_eq!(world.snapshots()[0].weapon.unwrap().reserve, 5);
+    }
+
+    #[test]
+    fn indexed_actor_perception_matches_reference_order_for_full_mixed_roster() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(19).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 23,
+                    class: None,
+                    team: None,
+                    difficulty: Difficulty::Expert,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Medic,
+                &mut random,
+            )
+            .unwrap();
+        for (index, bot) in world.bots.values_mut().enumerate() {
+            if index % 5 == 0 {
+                bot.lifecycle = PlayerLifecycle::Dying;
+            }
+            bot.last_fire_tick = (index % 3 == 0).then_some(11);
+            bot.target = (index % 3 == 0).then_some(crate::PLAYER_IDENTITY);
+        }
+
+        for human in [
+            Human {
+                team: PlayerTeam::Red,
+                class: PlayerClass::Medic,
+                alive: true,
+                position: [40.0, 50.0, 1.0],
+                velocity: [0.0; 3],
+            },
+            Human {
+                team: PlayerTeam::Spectator,
+                class: PlayerClass::Spy,
+                alive: false,
+                position: [40.0, 50.0, 1.0],
+                velocity: [0.0; 3],
+            },
+        ] {
+            let actors = world.actors(human, 12);
+            for team in [PlayerTeam::Red, PlayerTeam::Blue] {
+                let reference: Vec<_> = actors
+                    .all()
+                    .iter()
+                    .filter(|actor| actor.alive && team.is_enemy(actor.team))
+                    .map(|actor| actor.identity)
+                    .collect();
+                let indexed: Vec<_> = actors.enemies(team).map(|actor| actor.identity).collect();
+                assert_eq!(indexed, reference);
+            }
+            for actor in actors.all() {
+                let indexed = actors.get(actor.identity).unwrap();
+                assert_eq!(indexed.identity, actor.identity);
+                assert_eq!(indexed.firing_at, actor.firing_at);
+            }
+            assert!(actors.get(u32::MAX).is_none());
+        }
+    }
+
+    #[test]
+    fn immutable_supply_facts_and_fastest_routes_preserve_selection_and_reuse_paths() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(7).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 4,
+                    class: Some(PlayerClass::Soldier),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Expert,
+                },
+                PlayerTeam::Blue,
+                PlayerClass::Scout,
+                &mut random,
+            )
+            .unwrap();
+        for bot in world.bots.values_mut() {
+            bot.health.current = 40;
+        }
+        let supplies = [
+            SupplyTarget {
+                identity: 82,
+                kind: Some(crate::pickup::MapPickupKind::Health),
+                team: None,
+                position: [125.0, 50.0, 1.0],
+            },
+            SupplyTarget {
+                identity: 80,
+                kind: Some(crate::pickup::MapPickupKind::Health),
+                team: None,
+                position: [125.0, 50.0, 1.0],
+            },
+            SupplyTarget {
+                identity: 81,
+                kind: Some(crate::pickup::MapPickupKind::Ammo),
+                team: None,
+                position: [175.0, 50.0, 1.0],
+            },
+        ];
+        let actors = world.actors(human_far(), 1);
+        let mut facts = Vec::new();
+        let mut routes = Vec::new();
+        let mut scratch = PathScratch::default();
+        for bot in world.bots.values() {
+            let chosen = select_supply(
+                &world.mesh,
+                bot,
+                &actors,
+                &supplies,
+                crate::pickup::MapPickupKind::Health,
+                &mut facts,
+                &mut routes,
+                &mut scratch,
+            )
+            .unwrap();
+            assert_eq!(chosen.identity, 80);
+            assert_eq!(routes.len(), 1);
+        }
+        assert!(facts[0].is_some());
+        assert!(facts[1].is_some());
+        assert!(facts[2].is_none());
     }
 
     #[test]
