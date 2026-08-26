@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
+import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, parseResourceSet, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
 
 const hash = (value: string) => value.repeat(64)
 const chunk = Object.freeze({
@@ -54,6 +54,22 @@ describe("resource graph", () => {
     expect(() => parseResourceGraph({ ...graph, chunks: [chunk, second] })).toThrow()
     expect(() => parseResourceGraph({ ...graph, chunks: [chunk, { ...chunk, encodedSha256: hash("4") }] })).toThrow()
     expect(() => parseResourceGraphBytes(new TextEncoder().encode(JSON.stringify(graph, null, 2)))).toThrow("resource graph is not canonical JSON")
+  })
+
+  test("keeps gameplay source texture and model bytes on their shared decoded section", () => {
+    const path = new TextEncoder().encode("materials/a.vtf")
+    const section = new Uint8Array(new SharedArrayBuffer(20 + path.byteLength + 3))
+    const view = new DataView(section.buffer)
+    section.set([0x50, 0x53, 0x52, 0x45])
+    view.setUint32(4, 1, true)
+    view.setUint32(8, 1, true)
+    view.setUint32(12, path.byteLength, true)
+    section.set(path, 16)
+    view.setUint32(16 + path.byteLength, 3, true)
+    section.set([4, 5, 6], 20 + path.byteLength)
+    const texture = parseResourceSet(section).get("materials/a.vtf")!
+    expect(texture.buffer).toBe(section.buffer)
+    expect([...texture]).toEqual([4, 5, 6])
   })
 
   test("bounds a synthetic 100-map catalog selection without loading every map", () => {

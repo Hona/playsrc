@@ -269,7 +269,9 @@ export function encodeResourceBatch(chunks: readonly EncodedResourceChunk[]): Ui
 }
 
 export function parseResourceSet(bytes: Uint8Array): ReadonlyMap<string, Uint8Array> {
-  if (bytes.byteLength < 12 || new TextDecoder().decode(bytes.subarray(0, 4)) !== "PSRE") throw new Error("resource set is malformed")
+  if (bytes.byteLength < 12 || bytes[0] !== 0x50 || bytes[1] !== 0x53 || bytes[2] !== 0x52 || bytes[3] !== 0x45) {
+    throw new Error("resource set is malformed")
+  }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (view.getUint32(4, true) !== 1) throw new Error("resource set version is invalid")
   const count = view.getUint32(8, true)
@@ -288,7 +290,8 @@ export function parseResourceSet(bytes: Uint8Array): ReadonlyMap<string, Uint8Ar
   const result = new Map<string, Uint8Array>()
   let prior = ""
   for (let index = 0; index < count; index += 1) {
-    const logicalPath = decoder.decode(field())
+    const path = field()
+    const logicalPath = decoder.decode(path.buffer instanceof SharedArrayBuffer ? path.slice() : path)
     if (!logicalPath || logicalPath <= prior || logicalPath !== logicalPath.toLowerCase()) throw new Error("resource set identity is malformed")
     prior = logicalPath
     result.set(logicalPath, field())

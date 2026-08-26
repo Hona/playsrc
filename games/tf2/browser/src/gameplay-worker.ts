@@ -155,7 +155,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
 
 function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resources" }>): void {
   const exports = wasm
-  if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024) {
+  if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024
+    || typeof request.shared !== "boolean") {
     fail(request.id, "MalformedRequest")
     return
   }
@@ -209,16 +210,18 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
     fail(request.id, "InternalFailure")
     return
   }
-  let bytes: Uint8Array
+  let bytes: Uint8Array<ArrayBuffer | SharedArrayBuffer>
   try {
-    bytes = new Uint8Array(exports.memory.buffer, pointer, length).slice()
+    bytes = new Uint8Array(request.shared ? new SharedArrayBuffer(length) : new ArrayBuffer(length))
+    bytes.set(new Uint8Array(exports.memory.buffer, pointer, length))
   } finally {
     exports.playsrc_free(pointer, length)
   }
-  post({ id: request.id, kind: "resources", bytes: bytes.buffer }, [bytes.buffer])
+  post({ id: request.id, kind: "resources", bytes: bytes.buffer },
+    bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : [])
 }
 
-function allocateCopy(exports: WasmExports, bytes: ArrayBuffer): number {
+function allocateCopy(exports: WasmExports, bytes: ArrayBuffer | SharedArrayBuffer): number {
   const pointer = exports.playsrc_alloc(bytes.byteLength) >>> 0
   new Uint8Array(exports.memory.buffer, pointer, bytes.byteLength).set(new Uint8Array(bytes))
   return pointer
@@ -294,7 +297,8 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     !Array.isArray(request.configuration) ||
     request.configuration.length < 1 ||
     request.configuration.length > MAX_CONFIGURATION_SECTIONS ||
-    request.configuration.some((section) => !(section instanceof ArrayBuffer) || section.byteLength < 12 || section.byteLength > MAX_MESSAGE_BYTES) ||
+    request.configuration.some((section) => !(section instanceof ArrayBuffer || section instanceof SharedArrayBuffer)
+      || section.byteLength < 12 || section.byteLength > MAX_MESSAGE_BYTES) ||
     request.configuration.reduce((total, section) => total + section.byteLength, 0) > MAX_CONFIGURATION_BYTES ||
     typeof request.includeMap !== "boolean" ||
     (request.presentation !== undefined && (
