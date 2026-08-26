@@ -108,6 +108,11 @@ describe("bounded durable cross-process compositor evidence", () => {
     expect(() => decodeRawTrace(gzipSync(JSON.stringify({ traceEvents: [null] })))).toThrow("format")
   })
 
+  test("retains a complete ten-second 24-player trace beyond one million events without raising byte caps", () => {
+    const events = Array.from({ length: 1_045_840 }, () => ({ name: "RunTask" }))
+    expect(decodeRawTrace(gzipSync(JSON.stringify({ traceEvents: events })))).toHaveLength(events.length)
+  })
+
   test("drains bounded raw CDP bytes after sampling and always closes the stream", async () => {
     const calls: string[] = []
     const send = async (method: string) => { calls.push(method); return method === "IO.read" ? { data: "YWJjZA==", base64Encoded: true, eof: true } : {} }
