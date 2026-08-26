@@ -261,39 +261,43 @@ pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
             .push(resource);
     }
 
-    let mut packed = Vec::with_capacity(groups.len());
-    for ((roles, _, _), mut resources) in groups {
-        resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-        let references = resources.iter().collect::<Vec<_>>();
-        let (decoded, entries) = decoded_chunk(&references)?;
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
-        encoder
-            .write_all(&decoded)
-            .map_err(|_| GraphError::IntegrityFailure)?;
-        let compressed = encoder.finish().map_err(|_| GraphError::IntegrityFailure)?;
-        let (codec, encoded) = if compressed.len().saturating_mul(100)
-            <= decoded.len().saturating_mul(COMPRESSION_PERCENT)
-        {
-            (Codec::Deflate, compressed)
-        } else {
-            (Codec::Identity, decoded.clone())
-        };
-        if encoded.len() > MAX_CHUNK_BYTES {
-            return Err(GraphError::BoundExceeded);
-        }
-        packed.push(PackedChunk {
-            descriptor: ChunkDescriptor {
-                codec,
-                encoded_byte_length: encoded.len().to_string(),
-                encoded_sha256: hex_hash(&encoded),
-                decoded_byte_length: decoded.len().to_string(),
-                decoded_sha256: hex_hash(&decoded),
-                roles,
-                entries,
-            },
-            encoded,
-        });
-    }
+    let groups = groups.into_iter().collect::<Vec<_>>();
+    let results = groups
+        .into_par_iter()
+        .map(|((roles, _, _), mut resources)| {
+            resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+            let references = resources.iter().collect::<Vec<_>>();
+            let (decoded, entries) = decoded_chunk(&references)?;
+            let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+            encoder
+                .write_all(&decoded)
+                .map_err(|_| GraphError::IntegrityFailure)?;
+            let compressed = encoder.finish().map_err(|_| GraphError::IntegrityFailure)?;
+            let (codec, encoded) = if compressed.len().saturating_mul(100)
+                <= decoded.len().saturating_mul(COMPRESSION_PERCENT)
+            {
+                (Codec::Deflate, compressed)
+            } else {
+                (Codec::Identity, decoded.clone())
+            };
+            if encoded.len() > MAX_CHUNK_BYTES {
+                return Err(GraphError::BoundExceeded);
+            }
+            Ok(PackedChunk {
+                descriptor: ChunkDescriptor {
+                    codec,
+                    encoded_byte_length: encoded.len().to_string(),
+                    encoded_sha256: hex_hash(&encoded),
+                    decoded_byte_length: decoded.len().to_string(),
+                    decoded_sha256: hex_hash(&decoded),
+                    roles,
+                    entries,
+                },
+                encoded,
+            })
+        })
+        .collect::<Vec<Result<PackedChunk, GraphError>>>();
+    let mut packed = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     packed.sort_by(|left, right| {
         left.descriptor
             .encoded_sha256
@@ -621,6 +625,69 @@ mod tests {
                 .iter()
                 .all(|chunk| chunk.descriptor.codec == Codec::Deflate)
         );
+    }
+
+    #[test]
+    fn parallel_packing_preserves_every_serial_chunk_byte_and_descriptor() {
+        let resources = (0..192)
+            .map(|index| {
+                resource(
+                    &format!("materials/{}/{index}.vtf", index % 7),
+                    if index % 3 == 0 { "menu" } else { "gameplay" },
+                    (0..8_192)
+                        .map(|offset| ((index * 31 + offset * 17) % 251) as u8)
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut groups = BTreeMap::<(Vec<String>, u8, String), Vec<Resource>>::new();
+        for resource in resources.clone() {
+            let roles = resource.roles.iter().cloned().collect::<Vec<_>>();
+            groups
+                .entry((
+                    roles,
+                    hash(resource.logical_path.as_bytes())[0] >> 2,
+                    String::new(),
+                ))
+                .or_default()
+                .push(resource);
+        }
+        let mut expected = groups
+            .into_iter()
+            .map(|((roles, _, _), mut resources)| {
+                resources.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+                let references = resources.iter().collect::<Vec<_>>();
+                let (decoded, entries) = decoded_chunk(&references).unwrap();
+                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+                encoder.write_all(&decoded).unwrap();
+                let compressed = encoder.finish().unwrap();
+                let (codec, encoded) = if compressed.len().saturating_mul(100)
+                    <= decoded.len().saturating_mul(COMPRESSION_PERCENT)
+                {
+                    (Codec::Deflate, compressed)
+                } else {
+                    (Codec::Identity, decoded.clone())
+                };
+                PackedChunk {
+                    descriptor: ChunkDescriptor {
+                        codec,
+                        encoded_byte_length: encoded.len().to_string(),
+                        encoded_sha256: hex_hash(&encoded),
+                        decoded_byte_length: decoded.len().to_string(),
+                        decoded_sha256: hex_hash(&decoded),
+                        roles,
+                        entries,
+                    },
+                    encoded,
+                }
+            })
+            .collect::<Vec<_>>();
+        expected.sort_by(|left, right| {
+            left.descriptor
+                .encoded_sha256
+                .cmp(&right.descriptor.encoded_sha256)
+        });
+        assert_eq!(pack(resources).unwrap(), expected);
     }
 
     #[test]

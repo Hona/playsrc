@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
@@ -320,7 +321,7 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
 
   const child = Bun.spawn([generatorPath, target], {
     cwd: repositoryRoot,
-    env: environment,
+    env: { ...environment, RAYON_NUM_THREADS: String(Math.max(1, Math.min(4, os.availableParallelism()))) },
     stdout: "pipe",
     stderr: "inherit",
   })
