@@ -151,12 +151,25 @@ async function verifyOwner(metadata: OwnerMetadata, identity: string, target: st
   } catch { return false }
 }
 
-async function stopOwner(metadataPath: string, metadata: OwnerMetadata): Promise<void> {
+export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000): Promise<void> {
   if (isAlive(metadata.pid)) {
-    await writeLease(metadataPath, metadata.token, 0)
-    const deadline = Date.now() + 5_000
-    while (isAlive(metadata.pid) && Date.now() < deadline) await Bun.sleep(50)
-    if (isAlive(metadata.pid)) throw new Error("Shared headed profile development owner did not stop within 5000 ms")
+    console.error(`[performance] retiring development owner pid=${metadata.pid} target=${metadata.target} by checked lease`)
+    const deadline = Date.now() + maximumMilliseconds
+    let announcement = Date.now()
+    while (isAlive(metadata.pid) && Date.now() < deadline) {
+      const current = await readOwner(metadataPath)
+      if (current && current.token !== metadata.token) throw new Error("Shared development owner changed during retirement")
+      // Older runners may have an in-flight heartbeat after releasing the
+      // machine lock. Keep this checked retirement request authoritative until
+      // the lease monitor observes it; never signal another worker's PID.
+      await writeLease(metadataPath, metadata.token, 0)
+      if (Date.now() - announcement >= 5_000) {
+        announcement = Date.now()
+        console.error(`[performance] waiting for development owner retirement pid=${metadata.pid} target=${metadata.target} alive=true`)
+      }
+      await Bun.sleep(50)
+    }
+    if (isAlive(metadata.pid)) throw new Error(`Shared headed profile development owner pid=${metadata.pid} remained live through its ${maximumMilliseconds} ms retirement budget; no process was killed`)
   }
   const current = await readOwner(metadataPath)
   if (current?.token === metadata.token) await rm(metadataPath, { force: true })
@@ -176,7 +189,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
     await writeLease(metadataPath, current.token, MAX_RUN_MILLISECONDS)
     return Object.freeze({ metadata: current, reused: true, milliseconds: Date.now() - started })
   }
-  if (current) await stopOwner(metadataPath, current)
+  if (current) await stopOwner(metadataPath, current, Math.max(1, remaining()))
   const token = randomUUID()
   await writeLease(metadataPath, token, MAX_RUN_MILLISECONDS)
   const logPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", `profile-owner-${token}.log`)

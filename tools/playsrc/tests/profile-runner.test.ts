@@ -5,7 +5,7 @@ import path from "node:path"
 import { headedProfileConfiguration } from "../profile/profile-config"
 import { headedProfileTarget } from "../profile/profile-target"
 import { buildCacheDirectory, rustBuildIdentity } from "../src/build-identity"
-import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred } from "../src/profile-runner"
+import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred, stopOwner } from "../src/profile-runner"
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
@@ -289,6 +289,29 @@ describe("bounded headed profile orchestration", () => {
     const idle = await acquireBrowserRetirementLock(browser, "other-browser")
     expect(idle?.token).toBeDefined()
     await releaseHeadedProfileLock(pathname, idle!.token)
+  })
+
+  test("development retirement survives an old runner's late heartbeat without killing it", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-owner-retirement-"))
+    directories.push(directory)
+    const filename = path.join(directory, "owner.json")
+    const child = Bun.spawn([process.execPath, "-e", `import{readFile}from"node:fs/promises";console.log("ready");setInterval(async()=>{try{const lease=JSON.parse(await readFile(${JSON.stringify(`${filename}.lease`)},"utf8"));if(lease.expiresAt<=Date.now())process.exit(0)}catch{}},250)`], { stdout: "pipe", stderr: "pipe" })
+    let lateHeartbeat: ReturnType<typeof setTimeout> | undefined
+    try {
+      const reader = child.stdout.getReader()
+      await reader.read()
+      reader.releaseLock()
+      const metadata = { schema: "playsrc-profile-owner-v1" as const, token: "owner", pid: child.pid, identity: "source", target: "map", repository: directory, url: "http://127.0.0.1", startup: {} }
+      await writeFile(filename, JSON.stringify(metadata))
+      lateHeartbeat = setTimeout(() => { void browserLease(filename, "owner", 60_000) }, 75)
+      await stopOwner(filename, metadata, 1_000)
+      expect(await child.exited).toBe(0)
+      await expect(readFile(filename)).rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      if (lateHeartbeat) clearTimeout(lateHeartbeat)
+      child.kill()
+      await child.exited
+    }
   })
 
   test("retains failed operation duration rather than dropping its timing", async () => {
