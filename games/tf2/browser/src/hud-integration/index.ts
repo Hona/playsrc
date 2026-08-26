@@ -4,4 +4,5 @@ export type {
   Tf2HudIntegrationDiagnostic,
   Tf2HudIntegrationRequest,
   Tf2HudIntegrationSnapshot,
+  Tf2HudModelPanel,
 } from "./runtime"

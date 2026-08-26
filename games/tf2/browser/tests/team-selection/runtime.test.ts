@@ -39,15 +39,17 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
       expect(snapshot.panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeTrue()
     }
     expect(models.at(-1)?.map(({ name, model, fov, origin, angles }) => ({ name, model, fov, origin, angles }))).toEqual([
-      { name: "MenuBG", model: "models/vgui/UI_team01.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
-      { name: "bluedoor", model: "models/vgui/UI_team01_blue.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
-      { name: "reddoor", model: "models/vgui/UI_team01_red.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
-      { name: "autodoor", model: "models/vgui/UI_team01_random.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
-      { name: "spectate", model: "models/vgui/UI_team01_spectate.mdl", fov: 20, origin: [305, 0, -34], angles: [0, 180, 0] },
+      { name: "MenuBG", model: "models/vgui/UI_team01.mdl", fov: 20, origin: [290, 0, -34], angles: [0, 180, 0] },
+      { name: "bluedoor", model: "models/vgui/UI_team01_blue.mdl", fov: 20, origin: [290, 0, -34], angles: [0, 180, 0] },
+      { name: "reddoor", model: "models/vgui/UI_team01_red.mdl", fov: 20, origin: [290, 0, -34], angles: [0, 180, 0] },
+      { name: "autodoor", model: "models/vgui/UI_team01_random.mdl", fov: 20, origin: [290, 0, -34], angles: [0, 180, 0] },
+      { name: "spectate", model: "models/vgui/UI_team01_spectate.mdl", fov: 20, origin: [290, 0, -34], angles: [0, 180, 0] },
     ])
     for (const name of ["teambutton0", "teambutton1", "teambutton2", "teambutton3"]) {
       expect(snapshot.panels.find((panel) => panel.name === name)?.text).toBe("")
     }
+    expect(snapshot.panels.find((panel) => panel.name === "BlueCount")?.bounds.y).toBe(79)
+    expect(snapshot.panels.find((panel) => panel.name === "TeamMenuSelect")?.bounds).toMatchObject({ x: 45, y: 660 })
     expect(snapshot.panels.find((panel) => panel.name === "CancelButton")?.effectivelyVisible).toBeFalse()
   })
 

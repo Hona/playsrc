@@ -131,6 +131,7 @@ const resources: Tf2VguiResources = Object.freeze({
   localization: Object.freeze({ identity: "resource/tf_english.txt", revision: "hud-vertical-layout", language: "english", tokens: Object.freeze([]) }),
   animations: Object.freeze({ identity: "scripts/hudanimations-manifest.txt", revision: "hud-vertical-layout", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
   activeConditions: Object.freeze(["WIN32"]),
+  resolutionSuffixes: Object.freeze([]),
   customControls,
   diagnostics: Object.freeze([]),
   document(logicalPath) {

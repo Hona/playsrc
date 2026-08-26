@@ -8,6 +8,8 @@ export default headedProfileConfiguration({
     ? "upward-outdoor.profile.ts"
     : process.env.PROFILE_SCENARIOS === "main-menu"
       ? "main-menu-inventory.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "hud-layout"
+      ? "hud-layout.profile.ts"
     : process.env.PROFILE_SCENARIOS === "local-practice"
       ? "local-practice-match.profile.ts"
       : process.env.PROFILE_SCENARIOS === "upward-floor"

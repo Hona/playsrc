@@ -1850,7 +1850,7 @@ export class Tf2Application {
     const renderer = this.#renderer
     const revision = this.#classSelectionRenderRevision
     const generation = this.#generation
-    const panels = this.#classSelectionModelPanels.map((panel) => Object.freeze({
+    const panels = this.#classSelectionModelPanels.map((panel, index) => Object.freeze({
       identity: panel.name,
       model: panel.model,
       skin: panel.skin,
@@ -1858,6 +1858,7 @@ export class Tf2Application {
       origin: panel.origin,
       angles: panel.angles,
       bounds: panel.bounds,
+      background: index === 0 ? "opaque" as const : "transparent" as const,
     }))
     this.#classSelectionRenderTask = renderer.renderModelPanels(panels)
       .then((result) => {
@@ -1984,7 +1985,7 @@ export class Tf2Application {
           this.#teamSelectionPoses.set(selected.panel, item)
         }
       }
-      const panels = authored.map((panel) => {
+      const panels = authored.map((panel, index) => {
         const pose = this.#teamSelectionPoses.get(panel.name)
         return Object.freeze({
           identity: panel.name,
@@ -1994,6 +1995,7 @@ export class Tf2Application {
           origin: panel.origin,
           angles: panel.angles,
           bounds: panel.bounds,
+          background: index === 0 ? "opaque" as const : "transparent" as const,
           presentationTimeSeconds: now,
           ...(pose ? { pose: Object.freeze({ primitives: pose.primitives }) } : {}),
         })
@@ -3121,6 +3123,8 @@ export class Tf2Application {
       ...this.#gameplayTraces(this.#snapshot),
       ...this.#snapshotProbes(this.#snapshot),
     })
+    if (this.#snapshot.team !== 2 && this.#snapshot.team !== 3) await this.#showTeamSelection()
+    else this.#showClassSelection(true)
   }
 
   #applyInitialView(loaded: LoadedGame): void {
@@ -3809,6 +3813,17 @@ export class Tf2Application {
       sky3d,
       deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
     })
+    if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
+    const hudModel=this.#hudIntegration?.modelPanel()
+    let hudModelMilliseconds=0
+    if(hudModel){
+      const result=await renderer.renderModelPanels([Object.freeze({
+        identity:"classmodelpanel",model:hudModel.model,skin:hudModel.skin,
+        horizontalFov4By3:hudModel.fov,origin:hudModel.origin,angles:hudModel.angles,
+        bounds:hudModel.bounds,background:"transparent" as const,presentationTimeSeconds,
+      })])
+      hudModelMilliseconds=result.milliseconds
+    }
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
     if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
     this.#canvasDiagnostics.publish(this.#canvas, rendered)
@@ -3869,7 +3884,7 @@ export class Tf2Application {
         waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotBytes.byteLength}`,
-        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
+        performanceDetailProbe:JSON.stringify({tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}),
         displayFrame:this.#displayFrame,
         displayViewRevision:viewRevision,
         displayPreparedRevision:prepared.revision,

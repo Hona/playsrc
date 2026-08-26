@@ -182,7 +182,7 @@ class Integration implements Tf2TeamSelectionIntegration {
       apply(this.#runtime, {
         kind: "replace-resource", parent: 1,
         document: document(this.#source, "frame", [shallow(frame)]),
-        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: request.resources.resolutionSuffixes },
       })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#owner, proportional: true })
       const children = this.#source.root.children.filter((node) => node !== frame
@@ -190,7 +190,7 @@ class Integration implements Tf2TeamSelectionIntegration {
       apply(this.#runtime, {
         kind: "replace-resource", parent: this.#owner,
         document: document(this.#source, "controls", children.map(shallow)),
-        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+        selection: { activeConditions: request.resources.activeConditions, resolutionSuffixes: request.resources.resolutionSuffixes },
       })
       for (const name of MODEL_NAMES) {
         const panel = find(this.#runtime, name, this.#owner)
@@ -318,7 +318,7 @@ class Integration implements Tf2TeamSelectionIntegration {
       const model = authored && object(authored, "model")
       const snapshot = this.#runtime.snapshot().panels.find((node) => node.name === name)
       if (!authored || !model || !snapshot) throw new Error(`TF2 team selection authored model descriptor is unavailable: ${name}`)
-      const originX = scalar(model, "origin_x_hidef") ?? scalar(model, "origin_x")
+      const originX = scalar(model, "origin_x")
       if (originX === null || !Number.isFinite(Number(originX))) throw new Error(`TF2 team selection authored origin is invalid: ${name}`)
       const animation = this.#animations.get(name) ?? "idle_enabled"
       const authoredAnimation = model.children.find((child) => child.name.toLowerCase() === "animation"
