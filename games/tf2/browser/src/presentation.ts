@@ -43,6 +43,7 @@ export type Tf2AudioRequest = Readonly<{
     sourceClass: string
   }>
   samples: Readonly<{ volume: number; pitch: number; wave: number; soundLevel: number }>
+  overrides?: Readonly<{ volume?: number; pitch?: number }>
 }>
 
 export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
