@@ -192,7 +192,7 @@ async function digest(value: Uint8Array): Promise<string> {
 }
 
 describe("browser asset adapters", () => {
-  test("reuses one authenticated persistent immutable authority across browser generations without native duplicate caching", async () => {
+  test("preserves authenticated HTTP cache migration and reuses persistent immutable bytes across browser generations", async () => {
     const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
     const fake = new FakeIndexedDb()
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
@@ -212,7 +212,7 @@ describe("browser asset adapters", () => {
       const cold = createImmutableObjectAcquirer({ fetcher, cache: async () => coldCache, onCacheEvent: (event) => events.push(event.kind) })
       expect(await cold("http://127.0.0.1:4321/", descriptor)).toEqual(bytes)
       expect(requests).toBe(1)
-      expect(modes).toEqual(["no-store"])
+      expect(modes).toEqual(["force-cache"])
       const objectWrites = fake.writes.objects
       coldCache.close()
 
@@ -238,8 +238,10 @@ describe("browser asset adapters", () => {
     const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
     let requests = 0
     const events: string[] = []
-    const fetcher = (async () => {
+    const modes: Array<RequestCache | undefined> = []
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       requests += 1
+      modes.push(init?.cache)
       const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
       Object.defineProperty(response, "url", { value: url })
       return response
@@ -252,6 +254,7 @@ describe("browser asset adapters", () => {
       const acquire = createImmutableObjectAcquirer({ fetcher, cache: async () => cache, onCacheEvent: (event) => events.push(event.kind) })
       expect(await acquire("http://127.0.0.1:4321/", descriptor)).toEqual(bytes)
       expect(requests).toBe(1)
+      expect(modes).toEqual(["no-store"])
       expect(events).toEqual(["corrupt", "miss", "write"])
       expect(await cache.read(sha256)).toEqual({ bytes, sha256 })
       cache.close()
