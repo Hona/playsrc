@@ -41,6 +41,7 @@
     "profile:engineer": "bun tools/playsrc/src/profile-runner.ts engineer",
     "profile:local-practice": "bun tools/playsrc/src/profile-runner.ts local-practice",
     "profile:application-lifecycle": "bun tools/playsrc/src/profile-runner.ts application-lifecycle",
+    "profile:application-upgrade": "bun tools/playsrc/src/profile-runner.ts application-upgrade",
     "profile:map-load": "bun tools/playsrc/src/profile-runner.ts map-load",
     "profile:cold-map": "bun tools/playsrc/src/profile-runner.ts cold-map",
     "profile:three-map-load": "bun tools/playsrc/src/profile-runner.ts three-map-load",

@@ -1,4 +1,4 @@
-import { copyFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { createDeployedBrowserConfiguration, parseTf2Release, TF2_APPLICATION_ORIGIN } from "../../../apps/web/tf2/src/deployment"
 import { applyCloudflareInfrastructure, validateCloudflareInfrastructure } from "./cloudflare-infra"
@@ -38,7 +38,7 @@ export async function buildStaticSite(target: string | undefined): Promise<strin
   await rm(DIST_DIRECTORY, { recursive: true, force: true })
   const child = Bun.spawn([process.execPath, "run", "build"], {
     cwd: APP_DIRECTORY,
-    env: process.env,
+    env: { ...process.env, PLAYSRC_APPLICATION_BUILD: applicationBuild },
     stdout: "inherit",
     stderr: "inherit",
   })
@@ -59,11 +59,11 @@ export async function buildStaticSite(target: string | undefined): Promise<strin
       release,
     }, null, 2)}\n`),
   ])
-  await verifyStaticTree()
+  await verifyStaticTree(applicationBuild)
   return applicationBuild
 }
 
-async function verifyStaticTree(): Promise<void> {
+async function verifyStaticTree(applicationBuild: string): Promise<void> {
   for (const relative of ["index.html", "404.html", "_headers", "release.json", "tf2/index.html", "tf2/playsrc-config.json"]) {
     const metadata = await stat(path.join(DIST_DIRECTORY, relative))
     if (!metadata.isFile() || metadata.size < 1) throw new DeploymentError(`static deployment file ${relative} is unavailable`)
@@ -71,6 +71,12 @@ async function verifyStaticTree(): Promise<void> {
   const entries = await readdir(path.join(DIST_DIRECTORY, "tf2", "assets"))
   if (!entries.some((entry) => entry.endsWith(".js")) || !entries.some((entry) => entry.endsWith(".css"))) {
     throw new DeploymentError("TF2 static deployment assets are incomplete")
+  }
+  for (const prefix of ["index-", "gameplay-worker-"]) {
+    const matches = entries.filter((entry) => entry.startsWith(prefix) && entry.endsWith(".js"))
+    if (matches.length !== 1 || !(await readFile(path.join(DIST_DIRECTORY, "tf2", "assets", matches[0]!), "utf8")).includes(applicationBuild)) {
+      throw new DeploymentError(`TF2 ${prefix.slice(0, -1)} bundle application generation differs`)
+    }
   }
 }
 
