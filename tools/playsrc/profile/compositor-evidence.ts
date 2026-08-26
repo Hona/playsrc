@@ -4,6 +4,7 @@ import path from "node:path"
 import { gunzipSync, gzipSync } from "node:zlib"
 import type { CDPSession } from "@playwright/test"
 import { TRACE_START, TRACE_END, activeGameplayTraceWindow, chromiumPresentationEventName, type ChromiumTraceEvent } from "./compositor-truth"
+import { attributeCompositorEvidence } from "./compositor-attribution"
 
 export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
   "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "blink.user_timing",
@@ -217,7 +218,8 @@ export async function replayCompositorEvidence(filename: string) {
   try { events = decodeRawTrace(trace) } catch (error) { if (manifest.complete) throw error }
   const analysis = analyzeCompositorEvidence(events, probes)
   if (JSON.stringify(analysis) !== JSON.stringify(manifest.analysis)) throw new Error("Trace replay does not match retained analysis")
-  return { complete: manifest.complete, identity: manifest.identity, errors: manifest.errors, analysis }
+  return { complete: manifest.complete, identity: manifest.identity, errors: manifest.errors, analysis,
+    attribution: attributeCompositorEvidence(events, probes, analysis) }
 }
 
 if (import.meta.main) {
