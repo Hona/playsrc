@@ -259,7 +259,7 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     console.log(`TF2_APPLICATION_UPGRADE ${JSON.stringify(report)}`)
   } catch (error) {
     const terminal = await page.evaluate(() => ({ detail: document.querySelector<HTMLElement>("main")?.dataset.detail, phase: document.querySelector<HTMLElement>("main")?.dataset.phase, output: document.querySelector("[aria-label='Console output']")?.textContent })).catch(() => null)
-    console.log(`GENERATION_FAILURE ${JSON.stringify({ terminal, error: String(error) })}`)
+    console.log(`GENERATION_FAILURE ${JSON.stringify({ terminal, activationDelays: server.state.activationDelays, error: String(error) })}`)
     throw error
   } finally {
     await oldTab?.close()
