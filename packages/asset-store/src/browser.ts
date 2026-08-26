@@ -281,6 +281,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
     if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
     let started = performance.now()
     let retained: VerifiedDerivedObject | undefined
+    let corrupted = false
     try {
       retained = await cache.read(transfer.descriptor.sha256)
       if (retained && (retained.sha256 !== transfer.descriptor.sha256 || retained.bytes.byteLength !== Number(transfer.descriptor.byteLength))) {
@@ -289,6 +290,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
     } catch (error) {
       if (!(error instanceof BrowserAssetError) || error.code !== "IntegrityFailure") throw error
       reportCache("corrupt", transfer.descriptor, started)
+      corrupted = true
       await cache.remove(transfer.descriptor.sha256)
       retained = undefined
     }
@@ -300,7 +302,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
       return retained.bytes
     }
     reportCache("miss", transfer.descriptor, started)
-    const bytes = await fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, progress, "no-store")
+    const bytes = await fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, progress, corrupted ? "no-store" : "force-cache")
     if (transfer.controller.signal.aborted) throw new BrowserAssetError("Cancelled", "immutable object request was cancelled")
     started = performance.now()
     verifiedAdmissionEvidence.set(bytes, transfer.descriptor.sha256)

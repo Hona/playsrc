@@ -41,6 +41,7 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
   const target = configured.defaultTarget
   const roster = Number(process.env.PROFILE_UPGRADE_ROSTER ?? 0)
   const switchOnly = process.env.PROFILE_UPGRADE_SWITCH_ONLY === "1"
+  const cacheOnly = process.env.PROFILE_UPGRADE_CACHE_ONLY === "1"
   const archived = await Promise.all(ARCHIVED_GENERATIONS.map((fixture) => archivedGeneration(fixture)))
   const currentConfiguration = { ...configured, renderLevel: 2 as const,
     ...(!roster ? { targets: archived[1]!.configuration.targets, catalog: archived[1]!.configuration.catalog } : {}),
@@ -127,22 +128,40 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     await production.goto("https://playsrc.online/tf2", { waitUntil: "domcontentloaded", timeout: 20_000 })
     services.push({ origin: "production", ...await serviceState(production) })
     await production.close()
-    for (const fixture of switchOnly ? [current] : fixtures) {
+    for (const fixture of switchOnly ? [current] : cacheOnly ? [fixtures[1]!, current] : fixtures) {
       console.log(`GENERATION_STAGE exact ${fixture.name} ${target}`)
       server.select(fixture)
       server.state.workerDelayMilliseconds = fixture === current ? 250 : 0
       const started = Date.now()
+      const initialRequests = server.state.requests.length
       await navigate(page)
       await ready(page)
-      transitions.push({ generation: fixture.name, applicationBuild: fixture.configuration.applicationBuild, wasm: fixture.configuration.wasm.sha256, resourceRoot: fixture.configuration.targets.find((candidate) => candidate.target === target)!.objects.resources.sha256, readyMilliseconds: Date.now() - started, bots: Number(await page.locator("main").getAttribute("data-bot-count")) })
+      const immutableNetworkRequests = server.state.requests.slice(initialRequests).filter((request) => request.pathname.startsWith("/objects/"))
+      if (fixture === current && !switchOnly) {
+        const root = fixture.configuration.targets.find((candidate) => candidate.target === target)!.objects.resources.sha256
+        expect(immutableNetworkRequests.some((request) => request.pathname.endsWith(root))).toBe(false)
+      }
+      transitions.push({ generation: fixture.name, applicationBuild: fixture.configuration.applicationBuild, wasm: fixture.configuration.wasm.sha256, resourceRoot: fixture.configuration.targets.find((candidate) => candidate.target === target)!.objects.resources.sha256, immutableNetworkRequests: immutableNetworkRequests.length, readyMilliseconds: Date.now() - started, bots: Number(await page.locator("main").getAttribute("data-bot-count")) })
+      if (fixture.name === "v0.0.9") {
+        // Establish an authenticated, actually resident legacy HTTP object before
+        // migration. Do not assume the browser retained the entire map past its
+        // own bounded disk-cache eviction policy.
+        const root = fixture.configuration.targets.find((candidate) => candidate.target === target)!.objects.resources
+        expect(await page.evaluate(async (descriptor) => {
+          const response = await fetch(`/objects/sha256/${descriptor.sha256}`, { cache: "force-cache" })
+          const bytes = await response.arrayBuffer()
+          const actual = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+          return response.ok && bytes.byteLength === Number(descriptor.byteLength) && actual === descriptor.sha256
+        }, root)).toBe(true)
+      }
     }
     services.push({ origin: "fixture", ...await serviceState(page) })
     const retained = await immutableInventory(page)
     expect(retained.length).toBeGreaterThan(100)
     // Exercise three real stale-configuration responses. Ready must reset only the
     // completed episode, not forgive a repeatedly mismatching startup.
-    const staleConfigurations = switchOnly ? [] : [fixtures[0]!, fixtures[1]!, fixtures[0]!]
-    if (!roster && !switchOnly) staleConfigurations.push({ ...current, name: "same-build-stale-wasm", configuration: { ...current.configuration, wasm: fixtures[0]!.configuration.wasm } })
+    const staleConfigurations = switchOnly ? [] : cacheOnly ? [fixtures[1]!] : [fixtures[0]!, fixtures[1]!, fixtures[0]!]
+    if (!roster && !switchOnly && !cacheOnly) staleConfigurations.push({ ...current, name: "same-build-stale-wasm", configuration: { ...current.configuration, wasm: fixtures[0]!.configuration.wasm } })
     for (const stale of staleConfigurations) {
       console.log(`GENERATION_STAGE recover ${stale.name}`)
       server.state.configurations.push(stale)
@@ -153,6 +172,18 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
       recoveries.push(Date.now() - started)
       expect(server.state.requests.slice(startRequests).filter((request) => request.pathname.startsWith("/objects/"))).toEqual([])
       expect(await immutableInventory(page)).toEqual(retained)
+    }
+    if (cacheOnly) {
+      expect(errors).toEqual([])
+      const report = { mode: "authenticated-legacy-http-to-persistent-cas", target, roster, transitions, services,
+        warmCas: { records: retained.length, bytes: retained.reduce((total, record) => total + record.byteLength, 0), unchanged: true },
+        recoveries, failures: errors, wallMilliseconds: Date.now() - wall }
+      const directory = path.join(local.sourceCacheDir, "profiles", "application-upgrade")
+      await mkdir(directory, { recursive: true })
+      await writeFile(path.join(directory, `${target}-cache-migration.json`), JSON.stringify(report, null, 2))
+      await testInfo.attach("authenticated-warm-migration-ready", { body: await page.screenshot(), contentType: "image/png" })
+      console.log(`TF2_CACHE_MIGRATION ${JSON.stringify(report)}`)
+      return
     }
     // An independent old tab keeps its authentic module/WASM generation while a
     // newer tab opens and reloads against the same origin and IDB database.
