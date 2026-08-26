@@ -52,6 +52,7 @@ function processMemory(processes: readonly BrowserProcess[]) {
 
 test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible frames and residency", async ({ page, context, browser }, testInfo) => {
   test.setTimeout(150_000)
+  const wallStarted = Date.now()
   const seconds = profileSampleSeconds()
   const fullRoster = process.env.PROFILE_2FORT_FULL_ROSTER === "1"
   const label = process.env.PROFILE_2FORT_LABEL ?? "latest"
@@ -415,10 +416,13 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   }
   visit(sampled.head)
   allocationRows.sort((left, right) => right.bytes - left.bytes)
-  const workerCalls = Object.fromEntries([...new Set(state.rpcs.map((record) => record.kind))].sort().map((kind) => {
-    const records = state.rpcs.filter((record) => record.kind === kind)
+  const summarizeWorkerCalls = (entries: readonly RpcRecord[]) => Object.fromEntries([...new Set(entries.map((record) => record.kind))].sort().map((kind) => {
+    const records = entries.filter((record) => record.kind === kind)
     return [kind, { calls: records.length, views: records.reduce((total, record) => total + (record.views ?? 0), 0), sharedDispatches: records.filter(record => record.sharedDispatch).length, sentBytes: records.reduce((total, record) => total + record.sentBytes, 0), receivedBytes: records.reduce((total, record) => total + record.receivedBytes, 0), transferredBytes: records.reduce((total, record) => total + record.transferredBytes, 0), latency: summarizeDistribution(records.flatMap((record) => record.finished === undefined ? [] : [record.finished - record.started])), timings: Object.fromEntries([...new Set(records.flatMap(record => Object.keys(record.timings ?? {})))].map(key => [key, summarizeDistribution(records.flatMap(record => typeof record.timings?.[key] === "number" ? [record.timings[key]!] : []))])) }]
   }))
+  const workerCalls = summarizeWorkerCalls(state.rpcs)
+  const workerCallsByStage = Object.fromEntries([...new Set(state.rpcs.map(record => record.stage))].sort()
+    .map(stage => [stage, summarizeWorkerCalls(state.rpcs.filter(record => record.stage === stage))]))
   const gpuOutdoor = Object.fromEntries(Object.entries(state.gpu).map(([name, value]) => [name, value - ((route.firstGpu as Record<string, number>)[name] ?? 0)]))
   const transferOutdoor = Object.fromEntries(Object.entries(state.transfer).map(([name, value]) => [name, value - ((route.firstTransfer as Record<string, number>)[name] ?? 0)]))
   const uploadOutdoor = Object.fromEntries(Object.entries(state.modelParticleUploads ?? {}).map(([name, value]) => [name,
@@ -430,6 +434,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     headed: true,
     target: "ctf_2fort",
     sampleSeconds: seconds,
+    totalWallMilliseconds: Date.now() - wallStarted,
     loading: { bspBytes: bsp.byteLength, prefetchedBspRequests: memoryBspRequests, networkDownloadMilliseconds, initializationExcludingDownloadMilliseconds: playableAt - started - networkDownloadMilliseconds, downloadedBytes: downloads.reduce((total, download) => total + download.bytes, 0), mapToTeamMenuMilliseconds: teamMenuAt - started, soldierSelectionMilliseconds: playableAt - soldierStarted, mapToSoldierPlayableMilliseconds: playableAt - started, phases: state.load },
     simulation: { ticksPerSecond, firstTick: route.firstTick, finalTick: route.finalTick, bots: route.bots },
     actualVisibleFrames: {
@@ -452,7 +457,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
       },
       modelParticleUploads: uploadOutdoor,
     },
-    worker: { calls: workerCalls, transfer: { total: state.transfer, outdoor: transferOutdoor } },
+    worker: { calls: workerCalls, stages: workerCallsByStage, transfer: { total: state.transfer, outdoor: transferOutdoor } },
     allocations: { sampledBytes: allocationRows.reduce((total, entry) => total + entry.bytes, 0), perVisibleFrameBytes: allocationRows.reduce((total, entry) => total + entry.bytes, 0) / Math.max(1, state.frames.length), top: allocationRows.slice(0, 25) },
     longTasks: summarizeDistribution(state.longTasks.filter((task) => task.stage === "outdoor").map((task) => task.duration)),
     panels: { count: state.panels, classModel: state.hud?.classModel ?? null },
