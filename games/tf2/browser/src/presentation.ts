@@ -626,9 +626,9 @@ export function createParticleBatchEncoder() {
             || request.system.length === 0
             || !Array.isArray(request.controlPoints)
             || request.controlPoints.length < 1
-            || request.controlPoints.length > 31
+            || request.controlPoints.length > 2
             || request.controlPoints.some((control, index) => !particleControlPoint(control)
-              || control.index !== index || control.ownerIdentity !== request.ownerIdentity)
+              || control.index !== index || (index===0&&control.ownerIdentity !== request.ownerIdentity))
             || (request.attachment !== null && (
               !uint32(request.attachment.entityIdentity)
               || !["backblast", "muzzle", "trail"].includes(request.attachment.name)
@@ -647,9 +647,7 @@ export function createParticleBatchEncoder() {
             }
             systems.set(request.system, encoded)
           }
-          length += 16 + encoded.byteLength + (request.controlPoints.length === 1
-            ? 32
-            : 4 + request.controlPoints.length * 36)
+          length += 16 + encoded.byteLength + request.controlPoints.length * 32
         } else if (request.kind === "set-control-point") {
           if (!particleControlPoint(request.controlPoint)) {
             throw new ProjectilePresentationError("MalformedFact", "particle control-point request is invalid")
@@ -684,9 +682,7 @@ export function createParticleBatchEncoder() {
       let at = 32
       for (let index = 0; index < requests.length; index += 1) {
         const request = requests[index]!
-        bytes[at] = request.kind === "start"
-          ? request.controlPoints.length === 1 ? 1 : 5
-          : request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
+        bytes[at] = request.kind === "start"?1:request.kind === "set-control-point" ? 2 : request.kind === "set-flame-control-point" ? 4 : 3
         bytes[at + 1] = request.kind === "stop" && request.immediate ? 1 : 0
         bytes[at + 2] = request.kind === "start" ? request.controlPoints.length
           : request.kind === "set-control-point" ? request.controlPoint.index : 0
@@ -702,15 +698,6 @@ export function createParticleBatchEncoder() {
           bytes.set(system, at + 16)
           at += 16 + system.byteLength
           for (const control of request.controlPoints) {
-          if (request.controlPoints.length > 1) {
-            view.setUint32(at, request.controlPoints.length, true)
-            at += 4
-          }
-          for (const control of request.controlPoints) {
-            if (request.controlPoints.length > 1) {
-              bytes[at] = control.index
-              at += 4
-            }
             control.position.forEach((value, index) => view.setFloat32(at + index * 4, value, true))
             control.orientation.forEach((value, index) => view.setFloat32(at + 12 + index * 4, value, true))
             view.setUint32(at + 28, control.ownerIdentity, true)

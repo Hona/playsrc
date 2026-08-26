@@ -511,5 +511,6 @@ test("joins Source tracer cadence, both endpoint control points, blood LOD and a
   const tracer = result.particles[0]!
   expect(tracer.kind === "start" && tracer.controlPoints.map(point => point.position)).toEqual([muzzle, [128, 0, 64]])
   const encoded = createParticleBatchEncoder().encode(22n, [0, 0, 0], result.particles)
-  expect(encoded[32]).toBe(5)
+  expect(encoded[32]).toBe(1)
+  expect(encoded[34]).toBe(2)
 })

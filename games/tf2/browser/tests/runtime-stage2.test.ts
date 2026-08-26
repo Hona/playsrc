@@ -429,10 +429,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 132
+    const objectiveOffset = prior.byteLength - 136
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
-    const roundOffset = prior.byteLength - 60
+    const roundOffset = prior.byteLength - 64
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
     bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)

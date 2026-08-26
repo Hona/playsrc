@@ -12663,7 +12663,7 @@ fn decode_particle_transaction(
         prior_timestamp = timestamp_seconds;
         let effect_identity = r.u32()?;
         let command = match kind {
-            1 | 5 => {
+            1 => {
                 let seed = r.u64()?;
                 let owner = match r.u32()? {
                     u32::MAX => None,
@@ -12674,25 +12674,6 @@ fn decode_particle_transaction(
                 for index in 0..controls {
                     control_points.push(r.cp(index)?);
                 }
-                let control_points = if kind == 5 {
-                    let count = usize::try_from(r.u32()?).map_err(|_| ())?;
-                    if !(2..=31).contains(&count) {
-                        return Err(());
-                    }
-                    let mut points = Vec::with_capacity(count);
-                    for expected in 0..count {
-                        let index = r.u8()?;
-                        if usize::from(index) != expected || r.take(3)? != [0, 0, 0] {
-                            return Err(());
-                        }
-                        let mut point = r.cp()?;
-                        point.index = index;
-                        points.push(point);
-                    }
-                    points
-                } else {
-                    vec![r.cp()?]
-                };
                 playsrc_particle::EventCommand::Create {
                     effect_identity,
                     definition,
@@ -13531,8 +13512,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x13\0\0\0");
-        assert_eq!(encoded.len(), 1032);
-        assert_eq!(encoded.len(), 1024);
+        assert_eq!(encoded.len(), 1036);
         assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[972..980], b"PGRL\x01\0\0\0");
         assert_eq!(
