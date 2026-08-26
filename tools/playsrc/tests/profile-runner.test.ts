@@ -57,6 +57,7 @@ describe("bounded headed profile orchestration", () => {
     await expect(releaseHeadedProfileLock(pathname, "not-the-owner")).rejects.toThrow("ownership changed")
     await releaseHeadedProfileLock(pathname, acquired.token)
     await expect(readFile(pathname)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(acquireHeadedProfileLock(pathname, "gameplay", 180_001)).rejects.toThrow("three-minute bound")
   })
 
   test("binds shared build and source snapshots to exact checked repository inputs", async () => {
