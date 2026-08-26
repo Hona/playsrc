@@ -405,8 +405,90 @@ pub struct Snapshot {
     world: [u8; 32],
     identity: u64,
     objects: Arc<[SnapshotRecord]>,
+    broadphase: Arc<[BroadphaseNode]>,
     limits: SnapshotLimits,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BroadphaseNode {
+    bounds: Hull,
+    start: usize,
+    end: usize,
+    right: usize,
+}
+
+impl BroadphaseNode {
+    fn build(objects: &[SnapshotRecord], nodes: &mut Vec<Self>, start: usize, end: usize) -> usize {
+        let identity = nodes.len();
+        let mut bounds = objects[start].bounds;
+        for object in &objects[start + 1..end] {
+            for axis in 0..3 {
+                bounds.mins[axis] = bounds.mins[axis].min(object.bounds.mins[axis]);
+                bounds.maxs[axis] = bounds.maxs[axis].max(object.bounds.maxs[axis]);
+            }
+        }
+        nodes.push(Self {
+            bounds,
+            start,
+            end,
+            right: 0,
+        });
+        if end - start > 8 {
+            let middle = start + (end - start) / 2;
+            Self::build(objects, nodes, start, middle);
+            nodes[identity].right = Self::build(objects, nodes, middle, end);
+        }
+        identity
+    }
+}
+
+struct BroadphaseCandidates<'a> {
+    snapshot: &'a Snapshot,
+    bounds: Hull,
+    pending: [usize; usize::BITS as usize],
+    pending_count: usize,
+    next: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for BroadphaseCandidates<'a> {
+    type Item = &'a SnapshotRecord;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.next < self.end {
+                let object = &self.snapshot.objects[self.next];
+                self.next += 1;
+                if bounds_intersect(self.bounds, object.bounds) {
+                    return Some(object);
+                }
+                continue;
+            }
+            if self.pending_count == 0 {
+                return None;
+            }
+            self.pending_count -= 1;
+            let identity = self.pending[self.pending_count];
+            let node = self.snapshot.broadphase[identity];
+            if !bounds_intersect(self.bounds, node.bounds) {
+                continue;
+            }
+            if node.right == 0 {
+                self.next = node.start;
+                self.end = node.end;
+            } else {
+                self.pending[self.pending_count] = node.right;
+                self.pending[self.pending_count + 1] = identity + 1;
+                self.pending_count += 2;
+            }
+        }
+    }
+}
+
+fn bounds_intersect(left: Hull, right: Hull) -> bool {
+    (0..3).all(|axis| left.mins[axis] <= right.maxs[axis] && left.maxs[axis] >= right.mins[axis])
+}
+
 impl Snapshot {
     pub fn compile(
         world: &World,
@@ -512,10 +594,15 @@ impl Snapshot {
                 bounds,
             });
         }
+        let mut broadphase = Vec::new();
+        if !objects.is_empty() {
+            BroadphaseNode::build(&objects, &mut broadphase, 0, objects.len());
+        }
         Ok(Self {
             world: world.identity,
             identity,
             objects: objects.into(),
+            broadphase: broadphase.into(),
             limits,
         })
     }
@@ -529,6 +616,7 @@ impl Snapshot {
             world: self.world,
             identity,
             objects: Arc::clone(&self.objects),
+            broadphase: Arc::clone(&self.broadphase),
             limits: self.limits,
         }
     }
@@ -608,6 +696,17 @@ impl Snapshot {
         self.objects
             .iter()
             .find(|object| object.identity == identity)
+    }
+
+    fn candidates(&self, bounds: Hull) -> BroadphaseCandidates<'_> {
+        BroadphaseCandidates {
+            snapshot: self,
+            bounds,
+            pending: [0; usize::BITS as usize],
+            pending_count: usize::from(!self.broadphase.is_empty()),
+            next: 0,
+            end: 0,
+        }
     }
 }
 
@@ -730,7 +829,10 @@ impl World {
         }
 
         let mut visits = 0_usize;
-        for object in snapshot.objects.iter() {
+        for object in snapshot.candidates(Hull {
+            mins: point,
+            maxs: point,
+        }) {
             if !object.enabled
                 || object.role == ObjectRole::Entity && !object.volume_contents
                 || point
@@ -959,7 +1061,15 @@ impl World {
         let mut object_trace = miss(request.start, dynamic_end);
         object_trace.world = self.identity;
         let mut visits = 0_usize;
-        for object in snapshot.objects.iter() {
+        let swept_bounds = Hull {
+            mins: std::array::from_fn(|axis| {
+                request.start[axis].min(dynamic_end[axis]) + request.hull.mins[axis]
+            }),
+            maxs: std::array::from_fn(|axis| {
+                request.start[axis].max(dynamic_end[axis]) + request.hull.maxs[axis]
+            }),
+        };
+        for object in snapshot.candidates(swept_bounds) {
             if !object.enabled
                 || request.scope == TraceScope::EntitiesOnly
                     && object.role == ObjectRole::StaticProp

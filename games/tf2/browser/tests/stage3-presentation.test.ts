@@ -230,7 +230,7 @@ test("encodes historical attachment-only fire samples without extra model transa
     .toThrow(ProjectilePresentationError)
 })
 
-test("decodes exact interleaved PMPO vertex planes and rejects non-finite or truncated geometry", () => {
+test("decodes exact aligned PMPO vertex planes without copying and rejects non-finite or truncated geometry", () => {
   const output: number[] = [0x50, 0x4d, 0x50, 0x4f]
   const u32 = (value: number): void => {
     const bytes = new Uint8Array(4)
@@ -247,7 +247,7 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(6)
+  u32(7)
   u32(1)
   u32(9)
   u32(7)
@@ -271,7 +271,8 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
   u32(6)
   u32(2)
   output.push(1, 0, 0, 0)
-  ;[1, 2, 3, 0, 0, 1, 4, 5, 6, 1, 7, 8, 9, 0, 1, 0, 10, 11, 12, -1].forEach(f32)
+  while (output.length % Float32Array.BYTES_PER_ELEMENT !== 0) output.push(0)
+  ;[1, 2, 3, 7, 8, 9, 0, 0, 1, 0, 1, 0, 4, 5, 6, 1, 10, 11, 12, -1].forEach(f32)
   u32(0)
   u32(0)
   u32(0)
@@ -283,6 +284,9 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
   expect([...primitive.positions]).toEqual([1, 2, 3, 7, 8, 9])
   expect([...primitive.normals]).toEqual([0, 0, 1, 0, 1, 0])
   expect([...primitive.tangents]).toEqual([4, 5, 6, 1, 10, 11, 12, -1])
+  expect(primitive.positions.buffer).toBe(bytes.buffer)
+  expect(primitive.normals.buffer).toBe(bytes.buffer)
+  expect(primitive.tangents.buffer).toBe(bytes.buffer)
   expect(primitive.translucent).toBe(true)
   const invalid = bytes.slice()
   new DataView(invalid.buffer).setFloat32(invalid.byteLength - 84, Number.NaN, true)

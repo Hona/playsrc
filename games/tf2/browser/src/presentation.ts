@@ -529,8 +529,9 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
+  if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 6) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 7) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -570,39 +571,20 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       if (translucent > 1 || u8() || u8() || u8()) {
         throw new ProjectilePresentationError("MalformedFact", "primitive opacity")
       }
+      while (at % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        if (u8() !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose vertex alignment")
+      }
       ensure(vertices * 40)
-      const positions = new Float32Array(vertices * 3)
-      const normals = new Float32Array(vertices * 3)
-      const tangents = new Float32Array(vertices * 4)
-      for (let vertex = 0; vertex < vertices; vertex += 1) {
-        const position = vertex * 3
-        const tangent = vertex * 4
-        const x = view.getFloat32(at, true)
-        const y = view.getFloat32(at + 4, true)
-        const z = view.getFloat32(at + 8, true)
-        const nx = view.getFloat32(at + 12, true)
-        const ny = view.getFloat32(at + 16, true)
-        const nz = view.getFloat32(at + 20, true)
-        const tx = view.getFloat32(at + 24, true)
-        const ty = view.getFloat32(at + 28, true)
-        const tz = view.getFloat32(at + 32, true)
-        const tw = view.getFloat32(at + 36, true)
-        if (
-          !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) ||
-          !Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) ||
-          !Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz) || !Number.isFinite(tw)
-        ) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
-        positions[position] = x
-        positions[position + 1] = y
-        positions[position + 2] = z
-        normals[position] = nx
-        normals[position + 1] = ny
-        normals[position + 2] = nz
-        tangents[tangent] = tx
-        tangents[tangent + 1] = ty
-        tangents[tangent + 2] = tz
-        tangents[tangent + 3] = tw
-        at += 40
+      const positions = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
+      at += positions.byteLength
+      const normals = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
+      at += normals.byteLength
+      const tangents = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 4)
+      at += tangents.byteLength
+      for (const values of [positions, normals, tangents]) {
+        for (let index = 0; index < values.length; index += 1) {
+          if (!Number.isFinite(values[index]!)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
+        }
       }
       return Object.freeze({ primitive, material, positions, normals, tangents, translucent: translucent === 1 })
     }))

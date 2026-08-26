@@ -1580,6 +1580,49 @@ mod tests {
     }
 
     #[test]
+    fn hierarchical_snapshot_broad_phase_keeps_source_order_across_nested_partitions() {
+        let world = World::empty();
+        let objects = (0_u64..257)
+            .map(|identity| {
+                if matches!(identity, 17 | 128 | 255) {
+                    box_object(identity + 1, [0.0, -1.0, -1.0], [2.0, 1.0, 1.0])
+                } else {
+                    let position = 1_000.0 + identity as f32 * 8.0;
+                    box_object(
+                        identity + 1,
+                        [position, -1.0, -1.0],
+                        [position + 2.0, 1.0, 1.0],
+                    )
+                }
+            })
+            .collect();
+        let snapshot = Snapshot::compile(&world, 12, objects, SnapshotLimits::default()).unwrap();
+        let candidates = std::cell::RefCell::new(Vec::new());
+        let trace = world
+            .trace_snapshot_hull(
+                &snapshot,
+                SnapshotTraceRequest {
+                    start: [-10.0, 2.0, 0.0],
+                    end: [10.0, 2.0, 0.0],
+                    hull: Hull {
+                        mins: [0.0, -1.0, 0.0],
+                        maxs: [0.0; 3],
+                    },
+                    mask: 1,
+                    scope: TraceScope::Everything,
+                    ignored: &[],
+                },
+                |candidate| {
+                    candidates.borrow_mut().push(candidate.identity);
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(*candidates.borrow(), [18, 129, 256]);
+        assert!(matches!(trace.hit, Some(Hit::Object { identity: 18, .. })));
+    }
+
+    #[test]
     fn physics_convexes_preserve_feature_contents_and_transform() {
         let vertices = vec![
             [-1.0, -1.0, -1.0],
