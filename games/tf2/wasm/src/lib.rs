@@ -3929,27 +3929,8 @@ pub extern "C" fn playsrc_visibility_output_length(handle: u32) -> usize {
     with(handle, |slot| slot.visibility_output.len()).unwrap_or(0)
 }
 #[unsafe(no_mangle)]
-/// # Safety
-/// `pointer` must identify writable bytes of at least `capacity`.
-pub unsafe extern "C" fn playsrc_visibility_output_copy(
-    handle: u32,
-    pointer: *mut u8,
-    capacity: usize,
-) -> usize {
-    with(handle, |slot| {
-        if capacity < slot.visibility_output.len() {
-            return 0;
-        }
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                slot.visibility_output.as_ptr(),
-                pointer,
-                slot.visibility_output.len(),
-            )
-        };
-        slot.visibility_output.len()
-    })
-    .unwrap_or(0)
+pub extern "C" fn playsrc_visibility_output_pointer(handle: u32) -> *const u8 {
+    with(handle, |slot| slot.visibility_output.as_ptr()).unwrap_or(std::ptr::null())
 }
 #[unsafe(no_mangle)]
 /// # Safety
