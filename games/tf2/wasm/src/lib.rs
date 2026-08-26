@@ -1171,7 +1171,11 @@ unsafe fn compile_map(
                         "playsrc-map-runtime-hdr-1"
                     }
                 } else {
-                    "playsrc-map-runtime-2"
+                    if displacement_runtime {
+                        "playsrc-map-runtime-3"
+                    } else {
+                        "playsrc-map-runtime-2"
+                    }
                 },
                 configuration_sha256,
                 materials: &resolved_materials,

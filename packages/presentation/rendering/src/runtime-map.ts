@@ -1125,6 +1125,7 @@ function buildLdrLightmap(
         rgba[target + 3] = 1
       }
     }
+    copyGutters(rgba, layout.width, placement, layout.gutter)
   }
   return Object.freeze({
     width: layout.width,
@@ -1182,11 +1183,11 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const decoder = new TextDecoder("utf-8", { fatal: true })
   if (new TextDecoder().decode(reader.take(4)) !== "PSMP") throw new RuntimeMapError("runtime map identity is invalid")
   const schema = reader.u32()
-  if (schema !== 6 && schema !== 7 && schema !== 8) throw new RuntimeMapError("runtime map schema is invalid")
+  if (schema !== 6 && schema !== 7 && schema !== 8 && schema !== 9) throw new RuntimeMapError("runtime map schema is invalid")
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
-  if ((schema === 6 && lightingProfile !== 0) || ((schema === 7 || schema === 8) && lightingProfile !== 1)) {
+  if (((schema === 6 || schema === 9) && lightingProfile !== 0) || ((schema === 7 || schema === 8) && lightingProfile !== 1)) {
     throw new RuntimeMapError("runtime map lighting profile differs from its schema")
   }
   const materialCount = bounded(reader.u32(), MAX_MATERIALS, "material count")
@@ -1233,14 +1234,14 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const normals = reader.f32Array(vertexCount * 3)
     const uv = reader.f32Array(vertexCount * 2)
     const lightmapUv = reader.f32Array(vertexCount * 2)
-    const displacementAlpha = schema === 8 ? reader.f32Array(vertexCount) : new Float32Array(vertexCount)
+    const displacementAlpha = schema === 8 || schema === 9 ? reader.f32Array(vertexCount) : new Float32Array(vertexCount)
     const indices = reader.u32Array(triangleCount * 3)
     if (indices.some((value) => value >= vertexCount)) throw new RuntimeMapError("runtime map triangle index is invalid")
     const lightOffset = reader.i32()
     const styles = Object.freeze([reader.u8(), reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number, number]
     const lightmapWidth = Math.max(1, reader.i32() + 1)
     const lightmapHeight = Math.max(1, reader.i32() + 1)
-    if (schema === 8) {
+    if (schema === 8 || schema === 9) {
       const displacement = reader.u8(), power = reader.u8()
       zeros(reader.take(2), "runtime displacement reserved")
       if (displacement > 1 || (displacement === 0 && power !== 0)) throw new RuntimeMapError("runtime displacement disposition is invalid")
@@ -1296,7 +1297,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
 
   let lighting: RuntimeLighting
   let ldrBytes: Uint8Array | undefined
-  if (schema === 6) {
+  if (schema === 6 || schema === 9) {
     ldrBytes = reader.take(lightingSampleCount * 4).slice()
     lighting = Object.freeze({ profile: "ldr", samples: ldrBytes })
   } else {
@@ -1306,7 +1307,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const resolvedCount = reader.u32()
   if (resolvedCount !== materials.length) throw new RuntimeMapError("runtime material payload count is invalid")
   for (let index = 0; index < resolvedCount; index += 1) {
-    materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 8)
+    materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 8 || schema === 9)
   }
 
   const models: RuntimeModel[] = []
@@ -1317,7 +1318,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const modelMaterials: RuntimeMaterial[] = []
     for (let material = 0; material < modelMaterialCount; material += 1) {
       const materialPath = utf8(reader, decoder, "runtime model material path")
-      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 8))
+      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 8 || schema === 9))
     }
     const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
     const primitives: RuntimeModelPrimitive[] = []
@@ -1352,7 +1353,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
 
-  const lightmapLayout = packLightmaps(lightmapRecords, schema === 7 || schema === 8 ? 1 : 0)
+  const lightmapLayout = packLightmaps(lightmapRecords, schema === 7 || schema === 8 || schema === 9 ? 1 : 0)
   const lightingKinds = lighting.profile === "hdr"
     ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
     : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))
