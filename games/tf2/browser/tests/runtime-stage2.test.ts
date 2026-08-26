@@ -872,6 +872,27 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(publication.snapshot.entityEvents.map(event => event.sequence)).toEqual([7n, 8n, 9n])
   })
 
+  test("multiple publications commit as one response and reject overlapping replacement runs", () => {
+    const first = rosterSnapshot(7n, 15, 1), second = rosterSnapshot(8n, 15, 1)
+    const a = new Uint8Array(snapshotPacket(1n, [first])), b = new Uint8Array(snapshotPacket(2n, [second], first))
+    const response = new Uint8Array(a.length + b.length - 16)
+    response.set(a); response.set(b.subarray(16), a.length)
+    new DataView(response.buffer).setUint32(8, 2, true)
+    const stream = new SimulationSnapshotStream()
+    const malformed = response.slice()
+    // The first publication is valid; corrupt the base tick of the second.
+    new DataView(malformed.buffer).setBigUint64(a.length + 56, 99n, true)
+    expect(() => stream.decode(malformed.buffer)).toThrow("WorkerFailed")
+    expect(stream.tick).toBe(0n); expect(stream.metrics.responses).toBe(0)
+    expect(stream.decode(response.buffer).map(publication => publication.snapshot.tick)).toEqual([7n, 8n])
+    const third = rosterSnapshot(9n, 15, 1), overlapping = snapshotPacket(3n, [third], second)
+    const view = new DataView(overlapping)
+    const firstRunStart = view.getUint32(80, true)
+    view.setUint32(89, firstRunStart, true)
+    expect(() => stream.decode(overlapping)).toThrow("WorkerFailed")
+    expect(stream.tick).toBe(2n)
+  })
+
   test("client generation replacement cancels stale decodes and shutdown drains pending snapshot ownership", async () => {
     let listener: ((event: MessageEvent<WorkerResponse>) => void) | undefined
     const requests: WorkerRequest[] = []
