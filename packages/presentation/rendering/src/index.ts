@@ -4361,7 +4361,7 @@ class RendererOwner implements Renderer {
             if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
             environment = Object.freeze({
               texture,
-              tint: environmentState.tint,
+              tint: Object.freeze(environmentState.tint.map(sourceShaderGammaToLinear)) as readonly [number, number, number],
               scale: this.configuration.lightingProfile === "hdr" ? 16 : 1,
             })
           }

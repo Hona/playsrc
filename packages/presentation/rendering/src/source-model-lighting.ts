@@ -1,3 +1,5 @@
+// Source model, eye, and static-vertex lighting behavior is adapted from Valve Source SDK 2013;
+// see LICENSE.source-sdk-2013.
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import type { ModelEyeState, ModelLightingInput } from "./model-lighting"

@@ -57,8 +57,19 @@ impl SurfaceLightingWorld {
         {
             return Err(SurfaceLightError::InvalidInput);
         }
-        let LightingSamples::LinearRgb32(samples) = &map.lighting.samples else {
-            return Err(SurfaceLightError::InvalidInput);
+        let samples = match &map.lighting.samples {
+            LightingSamples::LinearRgb32(samples) => samples.clone(),
+            LightingSamples::RgbExp32(samples) => samples
+                .iter()
+                .map(|sample| {
+                    let scale = 2.0_f32.powi(sample[3] as i8 as i32) / 255.0;
+                    [
+                        f32::from(sample[0]) * scale,
+                        f32::from(sample[1]) * scale,
+                        f32::from(sample[2]) * scale,
+                    ]
+                })
+                .collect(),
         };
         let mut node_faces = BTreeSet::new();
         for node in &visibility.nodes {
@@ -111,7 +122,7 @@ impl SurfaceLightingWorld {
             visibility: visibility.clone(),
             detail_faces,
             face_light,
-            samples: samples.clone(),
+            samples,
             water_materials,
             sky_ambient,
         })

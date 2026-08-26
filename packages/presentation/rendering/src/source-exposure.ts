@@ -1,3 +1,5 @@
+// Source integer-HDR histogram behavior is adapted from Valve Source SDK 2013;
+// see LICENSE.source-sdk-2013.
 const HISTOGRAM_BUCKETS = 16
 const QUERY_SWEEP_FRAMES = 16
 
