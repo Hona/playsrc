@@ -4,6 +4,7 @@ import path from "node:path"
 import { encodeResourceBatch, parseResourceGraph } from "@playsrc/asset-store/graph"
 import { loadLocalConfig } from "../src/config"
 import { acquireMap } from "../src/targets"
+import { buildCollisionReplay } from "../src/collision-replay-build"
 import { summarizeDistribution } from "./gameui-profile"
 import { parseGameplayReplay, REPLAY_BYTES } from "./gameplay-replay"
 
@@ -159,7 +160,10 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
 }
 
 if (import.meta.main) {
-  const [manifest, wasm, mode] = process.argv.slice(2)
-  if (!manifest || !wasm || (mode && mode !== "--ticks")) throw new Error("Usage: bun tools/playsrc/profile/replay-gameplay.ts <sha256.replay.json> <collision-replay.wasm> [--ticks]")
+  const [identity, mode] = process.argv.slice(2)
+  if (!identity || !/^[0-9a-f]{64}$/u.test(identity) || (mode && mode !== "--ticks")) throw new Error("Usage: bun run replay:gameplay <replay-manifest-sha256> [--ticks]")
+  const config = await loadLocalConfig()
+  const manifest = path.join(config.sourceCacheDir, "profiles", "upward-training-bots", "compositor-evidence", `${identity}.replay.json`)
+  const wasm = await buildCollisionReplay(config)
   console.log(JSON.stringify(await replayGameplay(manifest, wasm, mode === "--ticks"), null, 2))
 }

@@ -39,6 +39,14 @@ The class profile also gates actual gameplay silence inside presentation pairs
 that cross sample boundaries. Stopping capture cannot hide the already elapsed
 gameplay portion of a stall; collection-only portions remain separately labeled.
 
+## Authoritative gameplay replay
+
+The all-class profile can retain a bounded 4 MiB / 16,384-record Rust-owner journal. Its checkpoint is the deterministic compiled-map initial state, identified by the exact configured BSP, collision world, and resource set; every subsequent team/position/course mutation and admitted host command is recorded from construction onward. Sample markers separate the construction prefix. Merged per-tick commands, complete tick/event hashes, host publication hashes, and snapshot acknowledgements are retained without asset bytes, heap dumps, or engine references.
+
+`bun run replay:gameplay <replay-manifest-sha256>` builds the opt-in CPU/WASM diagnostic with the configured toolchain and verifies the fresh transcript against direct convex sweeps and retained acceleration. `--ticks` also replays the recorded authoritative commands in 2/3/4/6-tick work groups, without changing simulated time or event order. This is not a browser-frame benchmark or a reconstruction of older traces that lack commands. The direct-sweep reference shares the current object hierarchy; counts distinguish object candidates, convex clippings, clip-plane visits, and vertex projections.
+
+Incremental journals and compressed native stream prefixes survive incomplete capture; missing boundaries, loss, overflow, failed reads, or timeout remain failures. Their local progress files never certify a passing measurement. No artifacts are uploaded automatically.
+
 Windows local runs require the runner to be in the active, unlocked physical console session before server preparation and browser launch. `bun tools/playsrc/profile/windows-desktop.ts` reads WTS session evidence without changing settings or starting a browser; unknown, locked, remote, and session-zero states fail closed. This preflight is not proof that the display stays visible: the gameplay visibility/focus checks still apply. Remote CDP adapters must establish that gate on the browser host.
 
 Upward/class-switch/combat reports include bounded, exact-PID process-memory snapshots outside the marked sample. Windows reports working set and private committed bytes separately; macOS/Linux report RSS, not invented private bytes. These are boundary values, **not peaks or private working sets**. Missing/exited processes make totals null and retain an error. Remote CDP never looks up browser PIDs on the runner's machine.
