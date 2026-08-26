@@ -130,3 +130,21 @@ test("two candidates, cancel, reload and late messages never resurrect retired r
     expect(freed.toSorted()).toEqual([100, 200, 300])
   }
 })
+
+test("residency snapshots stay constant between ownership changes and invalidate atomically", () => {
+  const owners = new ResourceGenerations(() => {})
+  owners.adopt(1, section(10))
+  owners.get(1)!.sha256 = HASH
+  const first = owners.residency()
+  expect(owners.residency()).toBe(first)
+  expect(owners.retain(2, 1, 4)).toBe(false)
+  expect(owners.residency()).toBe(first)
+  expect(owners.retain(2, 1, 0)).toBe(true)
+  expect(owners.residency()).toEqual({ uniqueBytes: 32, referencedBytes: 64, sharedBytes: 32,
+    generations: [1, 2].map((generation) => ({ generation, exclusiveBytes: 0, sharedBytes: 32, bytes: [32] })) })
+  owners.release(2)
+  expect(owners.residency()).toEqual(first)
+  expect(owners.residency()).not.toBe(first)
+  owners.release(1)
+  expect(owners.residency()).toEqual({ uniqueBytes: 0, referencedBytes: 0, sharedBytes: 0, generations: [] })
+})

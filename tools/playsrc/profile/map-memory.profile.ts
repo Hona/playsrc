@@ -142,7 +142,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
              resourceBytes: owned?.resourceBytes ?? null,
              resourceReferencedBytes: owned?.resourceReferencedBytes ?? null,
              sharedResourceBytes: owned?.sharedResourceBytes ?? null,
-            resourceSections: owned?.resourceSections ?? null,
+             resourceSections: /^(?:resources|loaded|activated|discarded|shutdown|initialized|failed)/.test(message.kind) ? owned?.resourceSections ?? null : undefined,
             heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
            };
          }
@@ -198,13 +198,16 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     class ProfiledWorker extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
+        let resourceSections: unknown = null
         this.addEventListener("message", (event) => {
           const entries = buffers(event.data)
+          const memory = event.data?.__playsrcProfileMemory
+          if (memory?.resourceSections !== undefined) resourceSections = memory.resourceSections
           state.worker.push({
             at: performance.now(),
             kind: event.data?.kind ?? "unknown",
             bytes: entries.reduce((total, entry) => total + entry.byteLength, 0),
-            memory: event.data?.__playsrcProfileMemory ?? null,
+            memory: memory ? { ...memory, resourceSections } : null,
             timings: event.data?.kind === "loaded" ? event.data.timings : undefined,
           })
         })
