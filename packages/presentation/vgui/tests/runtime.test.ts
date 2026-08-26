@@ -222,6 +222,27 @@ describe("generic Source VGUI runtime", () => {
     expect(element.textWrites).toBe(text + 1)
   })
 
+  test("retains simple label paint when text changes without resetting its styles or flex layout", () => {
+    const { root, runtime } = setup()
+    const panel = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "RetainedPaint" }).panel!
+    operation(runtime, { kind: "mutate-control", panel, mutation: { text: "125" } })
+    const label = descendants(root).find(element => element.dataset.vguiPanel === String(panel))!
+    const writes = label.style.writes
+    operation(runtime, { kind: "mutate-control", panel, mutation: { text: "124" } })
+    expect(label.textContent).toBe("124")
+    expect(label.getAttribute("aria-label")).toBe("124")
+    expect(label.style.display).toBe("flex")
+    expect(label.style.writes).toBe(writes)
+    operation(runtime, { kind: "mutate-control", panel, mutation: { foregroundColor: [255, 40, 20, 128] } })
+    expect(label.style.color).toBe("rgba(255, 40, 20, 0.5019607843137255)")
+    expect(label.style.writes).toBeGreaterThan(writes)
+    const colored = label.style.writes
+    operation(runtime, { kind: "mutate-control", panel, mutation: { text: "123" } })
+    expect(label.style.writes).toBe(colored)
+    operation(runtime, { kind: "set-panel-state", panel, enabled: false })
+    expect(label.style.textShadow).not.toBe("none")
+  })
+
   test("retains authored pixels, clipping, accessibility, and panel order across every supported browser display scale", () => {
     const { root, runtime } = setup()
     const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "RetainedForeground" }).panel!

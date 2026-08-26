@@ -58,6 +58,8 @@ const URL = /^https?:\/\//u
 const EMPTY_INSETS = Object.freeze({ left: 0, top: 0, right: 0, bottom: 0 })
 const TRANSPARENT: Rgba = Object.freeze([0, 0, 0, 0])
 const WHITE: Rgba = Object.freeze([255, 255, 255, 255])
+const LABEL_CONTROLS = new Set(["label", "button", "checkbutton", "radiobutton", "framesystembutton", "menuitem", "urllabel"])
+const RETAINED_PAINT_CONTROLS = new Set(["label", "imagepanel", "scalableimagepanel", "panel", "editablepanel"])
 
 const BASE_ANIMATION_VARIABLES: readonly VguiAnimationVariable[] = Object.freeze([
   Object.freeze({ name: "alpha", converter: "float" as const, defaultValue: "255" }),
@@ -678,6 +680,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly rasterGenerations = new Map<string, number>()
   private readonly rasterSignatures = new Map<string, string>()
   private readonly presentationSignatures = new Map<VguiPanelId, string>()
+  private readonly paintSignatures = new Map<VguiPanelId, string>()
   private readonly popups: VguiPanelId[] = []
   private readonly pendingPressedKeys = new Set<string>()
   private readonly pendingReleasedKeys = new Set<string>()
@@ -1293,6 +1296,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private installScheme(scheme: VguiScheme): void {
+    this.paintSignatures.clear()
     this.scheme = scheme
     this.colors.clear()
     this.settings.clear()
@@ -1908,6 +1912,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     panel.chromeElements.clear()
     this.presentationSignatures.delete(panel.id)
+    this.paintSignatures.delete(panel.id)
     this.panels.delete(panel.id)
     this.addTrace("panel-delete", panel.id, panel.name)
   }
@@ -2449,8 +2454,20 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private reapplyPanelPresentation(panel: PanelState): void {
     const sourceControl = panel.sourceControl
-    const labelDerived = ["Label", "Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem", "URLLabel"]
-      .some((name) => sameName(sourceControl, name))
+    const labelDerived = LABEL_CONTROLS.has(asciiFold(sourceControl))
+    // Geometry, text, accessibility and authored animation clocks are published
+    // independently. Retain the paint of simple controls when its inputs agree;
+    // composite controls rebuild layered backgrounds in presentControlGeometry.
+    const paintSignature = RETAINED_PAINT_CONTROLS.has(asciiFold(sourceControl)) ? JSON.stringify([
+      this.viewport.width, this.viewport.height, this.viewport.devicePixelRatio,
+      panel.control, panel.sourceControl, [...panel.properties], panel.proportional,
+      panel.bounds.width, panel.bounds.height, panel.enabled, panel.armed, panel.depressed, panel.selected,
+      panel.font, panel.border, panel.image, panel.drawColor, panel.fillColor, panel.imageFill,
+      panel.foregroundColor, [...panel.animationValues], this.keyFocus === panel.id,
+      Boolean(panel.text || panel.bodyText || panel.items.length),
+      panel.chromeElements.size ? panel.text : null,
+    ]) : null
+    if (paintSignature !== null && this.paintSignatures.get(panel.id) === paintSignature) return
     if (sameName(sourceControl, "FrameSystemButton")) {
       const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
       if (configured && this.images.has(asciiFold(configured))) panel.image = configured
@@ -2576,6 +2593,7 @@ class SourceVguiRuntime implements VguiRuntime {
     const presentationBorder = this.presentationBorder(panel)
     if (presentationBorder) this.presentBorder(panel, presentationBorder)
     if (panel.image) this.presentImage(panel, this.images.get(asciiFold(panel.image))!)
+    if (paintSignature !== null) this.paintSignatures.set(panel.id, paintSignature)
   }
 
   private presentationBorder(panel: PanelState): VguiBorder | null {
@@ -2832,11 +2850,10 @@ class SourceVguiRuntime implements VguiRuntime {
     rect: VguiRect = Object.freeze({ x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height }),
   ): void {
     if (!image.material || rect.width <= 0 || rect.height <= 0) return
-    let raster = panel.chromeElements.get(key) as HTMLImageElement | undefined
+    let raster = panel.chromeElements.get(key) as HTMLCanvasElement | undefined
     if (!raster) {
       if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
-      raster = this.document.createElement("img")
-      raster.alt = ""
+      raster = this.document.createElement("canvas")
       raster.dataset.vguiRaster = key
       raster.style.position = "absolute"
       raster.style.pointerEvents = "none"
@@ -2881,6 +2898,7 @@ class SourceVguiRuntime implements VguiRuntime {
     })).catch((error) => {
       if (!this.destroyed && this.rasterGenerations.get(identity) === generation) {
         this.rasterSignatures.delete(identity)
+        this.paintSignatures.delete(panel.id)
         this.recordDiagnostic("DomFailure", "frame", `${panel.name}:${key}:${error instanceof Error ? error.message : "raster"}`)
       }
     })
@@ -4962,7 +4980,7 @@ class SourceVguiRuntime implements VguiRuntime {
           style("width", `${panel.bounds.width}px`)
           style("height", `${panel.bounds.height}px`)
           style("zIndex", panel.popup || panel.parent === null ? "0" : String(panel.z))
-          style("display", panel.effectivelyVisible ? "block" : "none")
+          style("display", LABEL_CONTROLS.has(asciiFold(panel.sourceControl)) ? "flex" : panel.effectivelyVisible ? "block" : "none")
           style("visibility", panel.effectivelyVisible ? "visible" : "hidden")
           style("pointerEvents", panel.effectivelyVisible && panel.mouseInput ? "auto" : "none")
           const clipTop = Math.max(0, panel.clip.y - panel.absoluteBounds.y)
@@ -5721,6 +5739,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.imageRasterizer.destroy()
     this.rasterGenerations.clear()
     this.rasterSignatures.clear()
+    this.paintSignatures.clear()
     for (const record of this.listeners.splice(0).reverse()) record.target.removeEventListener(record.type, record.listener, record.options)
     if (this.capture !== null) {
       const panel = this.panels.get(this.capture)

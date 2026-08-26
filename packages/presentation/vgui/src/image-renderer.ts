@@ -1,5 +1,4 @@
 import type { Rgba } from "./contract"
-import { vguiRasterDataUrl } from "./raster-png"
 import type {
   VguiImageMaterialPresentation,
   VguiImageMaterialTexture,
@@ -306,7 +305,9 @@ export class VguiRasterCache<Value> {
 export class VguiImageRasterizer {
   readonly #document: Document
   readonly #textures = new VguiRasterCache<Promise<VguiImageRasterTexturePixels>>()
-  readonly #renders = new VguiRasterCache<Promise<string>>()
+  readonly #renders = new VguiRasterCache<Promise<Uint8ClampedArray>>()
+  readonly #presented = new WeakMap<HTMLCanvasElement, string>()
+  readonly #pending = new WeakMap<HTMLCanvasElement, object>()
   #destroyed = false
 
   constructor(document: Document) { this.#document = document }
@@ -343,28 +344,33 @@ export class VguiImageRasterizer {
     return loading
   }
 
-  async render(image: HTMLImageElement, request: VguiImageRasterRequest): Promise<void> {
+  async render(canvas: HTMLCanvasElement, request: VguiImageRasterRequest): Promise<void> {
     const signature = JSON.stringify(request)
+    const publication = {}
+    this.#pending.set(canvas, publication)
+    if (this.#presented.get(canvas) === signature && canvas.width === request.width && canvas.height === request.height) return
     let rendering = this.#renders.get(signature)
     if (!rendering) {
       rendering = (async () => {
         const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
         const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
-        const pixels = await shadeVguiImageIncrementally(
+        return shadeVguiImageIncrementally(
           request,
           new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])),
           () => new Promise<void>(resolve => setTimeout(resolve, 0)),
         )
-        return vguiRasterDataUrl(request.width, request.height, pixels)
       })()
       this.#renders.set(signature, rendering, request.width * request.height * 4)
       void rendering.catch(() => this.#renders.delete(signature))
     }
-    const source = await rendering
-    if (this.#destroyed || !image.isConnected) return
-    if (image.width !== request.width) image.width = request.width
-    if (image.height !== request.height) image.height = request.height
-    if (image.src !== source) image.src = source
+    const pixels = await rendering
+    if (this.#destroyed || !canvas.isConnected || this.#pending.get(canvas) !== publication) return
+    if (canvas.width !== request.width) canvas.width = request.width
+    if (canvas.height !== request.height) canvas.height = request.height
+    const context = canvas.getContext("2d")
+    if (!context) throw new Error("VGUI presentation canvas is unavailable")
+    context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
+    this.#presented.set(canvas, signature)
   }
 
   destroy(): void {
