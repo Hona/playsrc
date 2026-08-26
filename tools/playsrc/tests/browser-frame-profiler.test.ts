@@ -41,6 +41,21 @@ describe("opt-in structured browser frame profiler", () => {
     new browser.GPURenderBundleEncoder().finish()
     expect(state.currentPass).toEqual({ submissions: 1, commandBuffers: 2, renderPasses: 1 })
     expect(state.counters).toMatchObject({ submissions: 1, commandBuffers: 2, renderPasses: 1, queueWriteCalls: 1, queueWriteBytes: 12, textures: 1, buffers: 1, shaderModules: 1, renderPipelines: 1, bundleEncodes: 1 })
+    expect(state.queueWrites.histogram).toEqual({ "1-16": 1 })
+    expect(state.queueWrites.phases["outside-pass"]).toEqual({ calls: 1, bytes: 12 })
+    expect(state.queueWrites.resources.unlabeled).toMatchObject({ calls: 1, bytes: 12, minimumOffset: 0, maximumOffset: 12 })
+    expect(state.queueWrites.stacks[0]).toMatchObject({ call: 1, resource: "unlabeled", bytes: 12 })
+  })
+
+  test("attributes actual typed-array write ranges to their visible phase and GPU resource", () => {
+    const browser = host()
+    const state = installBrowserFrameProfiler(browser)
+    state.active = true
+    state.currentPass = { identity: "world" }
+    ;(new browser.GPUQueue().writeBuffer as any)({ label: "bindingBuffer_model" }, 16, new Float32Array(12), 2, 4)
+    expect(state.counters).toMatchObject({ queueWriteCalls: 1, queueWriteBytes: 16 })
+    expect(state.queueWrites.phases.world).toEqual({ calls: 1, bytes: 16 })
+    expect(state.queueWrites.resources.bindingBuffer_model).toEqual({ calls: 1, bytes: 16, minimumOffset: 16, maximumOffset: 32 })
   })
 
   test("feature-detects long animation frames and preserves script, function, layout and completed-frame attribution", () => {

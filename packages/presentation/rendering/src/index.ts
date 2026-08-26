@@ -28,6 +28,7 @@ import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
+import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
@@ -1489,6 +1490,7 @@ class RendererOwner implements Renderer {
   #skyWorldVisibilityIdentity?: string
   #restoreOrderedBundles?: () => void
   #restoreNodeBuilderInstrumentation?: () => void
+  #uploadBatch?: WebGpuUploadBatch
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
@@ -1916,6 +1918,7 @@ class RendererOwner implements Renderer {
           profiler,
         )
       }
+      this.#uploadBatch = new WebGpuUploadBatch(backend.backend as unknown as UploadBatchBackend)
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
       this.#framePresentation = new WebGpuFramePresentation(backend as unknown as FramePresentationBackend<THREE.RenderTarget>)
       this.#camera.coordinateSystem = backend.coordinateSystem
@@ -1946,6 +1949,8 @@ class RendererOwner implements Renderer {
       }
       return backend
     } catch (error) {
+      this.#uploadBatch?.dispose()
+      this.#uploadBatch = undefined
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
       this.#restoreNodeBuilderInstrumentation?.()
@@ -5161,6 +5166,8 @@ class RendererOwner implements Renderer {
       }
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
+      this.#uploadBatch?.dispose()
+      this.#uploadBatch = undefined
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
       this.#exposureSampler?.dispose()
@@ -5263,6 +5270,8 @@ class RendererOwner implements Renderer {
     }
     this.#restoreOrderedBundles?.()
     this.#restoreOrderedBundles = undefined
+    this.#uploadBatch?.dispose()
+    this.#uploadBatch = undefined
     this.#restoreNodeBuilderInstrumentation?.()
     this.#restoreNodeBuilderInstrumentation = undefined
     this.#exposureSampler?.dispose()
