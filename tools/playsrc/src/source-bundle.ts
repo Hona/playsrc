@@ -252,12 +252,13 @@ const producers = new Map<string, Promise<SourceBundleProducer>>()
 
 export async function prepareSourceBundleProducer(config: LocalConfig): Promise<SourceBundleProducer> {
   const identity = await rustBuildIdentity()
-  const prior = producers.get(identity)
+  const producerIdentity = `${config.sourceCacheDir}\0${identity}\0${sha256(await readFile(path.join(repositoryRoot, "tools/source-bundle/tf2-ui.generated.json")))}`
+  const prior = producers.get(producerIdentity)
   if (prior) return prior
   const operation = (async (): Promise<SourceBundleProducer> => {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
-  const environment = { ...process.env, ...rustEnvironment(config.sourceCacheDir) }
+  const environment = { ...process.env, ...rustEnvironment(config.sourceCacheDir), CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS }
   const filename = process.platform === "win32" ? "playsrc-source-bundle.exe" : "playsrc-source-bundle"
   const generatorPath = path.join(buildCacheDirectory(config.sourceCacheDir, identity), filename)
   let available = false
@@ -301,8 +302,8 @@ export async function prepareSourceBundleProducer(config: LocalConfig): Promise<
     .digest("hex")
   return Object.freeze({ executable: generatorPath, generatorSha256, environment })
   })()
-  producers.set(identity, operation)
-  try { return await operation } catch (error) { producers.delete(identity); throw error }
+  producers.set(producerIdentity, operation)
+  try { return await operation } catch (error) { producers.delete(producerIdentity); throw error }
 }
 
 export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {

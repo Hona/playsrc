@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "./config"
 import { startDevelopment } from "./dev"
+import { generatedProfileIdentity } from "./profile-identity"
 
 type OwnerLease = Readonly<{ schema: "playsrc-profile-owner-lease-v1"; token: string; expiresAt: number }>
 
@@ -62,6 +63,7 @@ try {
       url: owner.url,
       readyAt: new Date().toISOString(),
       startup: owner.startup,
+      generatedIdentity: await generatedProfileIdentity(),
     })
     const temporary = `${metadataPath}.${process.pid}.tmp`
     try {

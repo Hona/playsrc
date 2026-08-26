@@ -18,7 +18,7 @@ import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 
-test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context }, testInfo) => {
+test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
   const seconds = profileSampleSeconds()
   const createServer = process.env.PROFILE_STARTUP_CREATE_SERVER === "1"
@@ -28,9 +28,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
-  const directory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots")
+  const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   await mkdir(directory, { recursive: true })
-  const sourceFingerprint = await profileSourceIdentity()
+  const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await profileSourceIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   await page.addInitScript(installBrowserFrameProfiler)
@@ -156,6 +156,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     launch: any
   }> = []
   const loadPractice = async (cache: "cold" | "warm") => {
+    profilePhases.enter(`map-${cache}`)
     const started = Date.now()
     const previousRequests = network.requests
     const previousBytes = network.responseBytes
@@ -293,6 +294,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1") await loadPractice("warm")
   const finalLoad = loads.at(-1)!
   const { readyMilliseconds, playerCount, launch } = finalLoad
+  profilePhases.enter("pre-sample")
   const expectedBots = playerCount - 1
 
   const combat = process.env.PROFILE_PARTICLE_COMBAT === "1"
@@ -350,6 +352,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
+  profilePhases.enter("sample")
   const measurementPromise = page.evaluate(async ({ duration, startMark, endMark }) => {
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
@@ -555,6 +558,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })() : Promise.resolve()
   const sample = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
+  profilePhases.enter("trace-drain")
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
   const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
@@ -584,6 +588,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
   }
   const sourceFingerprintAfter = await profileSourceIdentity()
+  profilePhases.enter("trace-analysis-retention")
   let workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", ...workerCapture, unsampledTargets: workerCpu?.unsampledTargets ?? [] }))
   if (workerBytes.byteLength > TRACE_LIMITS.probeBytes) {
     workerCapture.error = "Worker CPU evidence exceeds its byte bound"
@@ -601,6 +606,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
   console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
+  profilePhases.enter("diagnostics-and-pixels")
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
   const collected = await supplemental
@@ -797,6 +803,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
   }
+  profilePhases.enter("export")
   await Promise.all([
     writeFile(path.join(directory, `${label}.json`), `${JSON.stringify(report, null, 2)}\n`),
     writeFile(path.join(directory, `${label}.cpuprofile`), `${JSON.stringify(cpuProfile)}\n`),
