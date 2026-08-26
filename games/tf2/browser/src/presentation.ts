@@ -13,6 +13,8 @@ const SOURCE_WORLD_NEAR = 7
 const SOURCE_MAP_EXTENT = 16_384
 const SOURCE_MAP_EXTENT_DIAGONAL = Math.fround(1.73205080757)
 const UTF8_ENCODER = new TextEncoder()
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true })
+const EMPTY_POSE_VALUES: readonly never[] = Object.freeze([])
 const POSE_TEXT_CACHE_LIMIT = 256
 const POSE_TEXT_CACHE_MAXIMUM_BYTES = 1024
 const POSE_TEXT_CACHE = new Map<string, Uint8Array>()
@@ -530,14 +532,14 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 7) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (UTF8_DECODER.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 7) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
     i32 = () => { ensure(4); const value = view.getInt32(at, true); at += 4; return value },
     f32 = () => { ensure(4); const value = view.getFloat32(at, true); at += 4; if (!Number.isFinite(value)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar"); return value },
-    text = () => { const length = u32(); ensure(length); const value = decoder.decode(bytes.subarray(at, at + length)); at += length; return value }
+    text = () => { const length = u32(); ensure(length); const value = UTF8_DECODER.decode(bytes.subarray(at, at + length)); at += length; return value }
   const output: PosedModel[] = []
   const geometry: Readonly<{ positions: Float32Array; normals: Float32Array; tangents: Float32Array }>[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
@@ -553,16 +555,17 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
     if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
     const previousCycle = f32(), cycle = f32()
-    const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=Array.from({length:15},f32),passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags")
+    const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=present===1?new Array<number>(15):null;for(let index=0;index<15;index+=1){const value=f32();if(values)values[index]=value}const passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags")
     const phase=u8(),drawDisposition=u8(),suppression=u8(),reflected=u8(),frontFace=u8(),cullFace=u8(),restoredCull=u8(),reserved=u8()
     if(phase>5||drawDisposition>2||suppression>12||reflected>1||frontFace>1||cullFace!==0||restoredCull>1||reserved||
       (drawDisposition===0)!==(suppression===0))throw new ProjectilePresentationError("MalformedFact","viewmodel frame state")
-    const valuesArray=(limit:number)=>{const count=u32();if(count>limit)throw new ProjectilePresentationError("BoundExceeded","viewmodel frame values");return Object.freeze(Array.from({length:count},u32))}
+    const valuesArray=(limit:number)=>{const count=u32();if(count>limit)throw new ProjectilePresentationError("BoundExceeded","viewmodel frame values");return count===0?EMPTY_POSE_VALUES:Object.freeze(Array.from({length:count},u32))}
     const handBodygroups=valuesArray(64),itemBodygroups=valuesArray(64),mutationCount=u32();if(mutationCount>64)throw new ProjectilePresentationError("BoundExceeded","viewmodel bodygroup mutations")
-    const itemBodygroupMutations=Object.freeze(Array.from({length:mutationCount},()=>Object.freeze({event:u32(),bodygroup:u32(),value:i32(),name:text()})))
+    const itemBodygroupMutations=mutationCount===0?EMPTY_POSE_VALUES:Object.freeze(Array.from({length:mutationCount},()=>Object.freeze({event:u32(),bodygroup:u32(),value:i32(),name:text()})))
     if(present===0&&(phase||drawDisposition||suppression||reflected||frontFace||cullFace||restoredCull||handBodygroups.length||itemBodygroups.length||itemBodygroupMutations.length))throw new ProjectilePresentationError("MalformedFact","absent viewmodel frame state")
-    const viewmodel=present===0?null:Object.freeze({transform:Object.freeze({origin:vector(values.slice(0,3)),angles:vector(values.slice(3,6))}),projection:Object.freeze({unscaledHorizontalFov4By3:values[6]!,horizontalFov:values[7]!,aspectRatio:values[8]!,near:values[9]!,far:values[10]!}),depthRange:Object.freeze(values.slice(11,13)) as readonly[number,number],restoredDepthRange:Object.freeze(values.slice(13,15)) as readonly[number,number],passRestored:passRestored===1,depthRestored:depthRestored===1,itemTranslucent:itemTranslucent===1,phase:(["draw","primary-fire","reload-start","reload-insert-or-loop","reload-finish","idle"] as const)[phase]!,drawDisposition:(["draw","suppressed-success","suppressed"] as const)[drawDisposition]!,suppression:suppression===0?null:suppression,reflected:reflected===1,frontFace:frontFace===0?"clockwise" as const:"counter-clockwise" as const,cullFace:"back" as const,restoredCullMode:restoredCull===0?"counter-clockwise" as const:"clockwise" as const,handBodygroups,itemBodygroups,itemBodygroupMutations})
-    const events = Object.freeze(Array.from({ length: u32() }, () => {
+    const viewmodel=values===null?null:Object.freeze({transform:Object.freeze({origin:vector(values.slice(0,3)),angles:vector(values.slice(3,6))}),projection:Object.freeze({unscaledHorizontalFov4By3:values[6]!,horizontalFov:values[7]!,aspectRatio:values[8]!,near:values[9]!,far:values[10]!}),depthRange:Object.freeze(values.slice(11,13)) as readonly[number,number],restoredDepthRange:Object.freeze(values.slice(13,15)) as readonly[number,number],passRestored:passRestored===1,depthRestored:depthRestored===1,itemTranslucent:itemTranslucent===1,phase:(["draw","primary-fire","reload-start","reload-insert-or-loop","reload-finish","idle"] as const)[phase]!,drawDisposition:(["draw","suppressed-success","suppressed"] as const)[drawDisposition]!,suppression:suppression===0?null:suppression,reflected:reflected===1,frontFace:frontFace===0?"clockwise" as const:"counter-clockwise" as const,cullFace:"back" as const,restoredCullMode:restoredCull===0?"counter-clockwise" as const:"clockwise" as const,handBodygroups,itemBodygroups,itemBodygroupMutations})
+    const eventCount = u32()
+    const events = eventCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: eventCount }, () => {
       const index = u32(), eventCycle = f32(), event = i32(), eventType = i32(); ensure(64)
       const options = bytes.slice(at, at + 64); at += 64
       return Object.freeze({ index, cycle: eventCycle, event, eventType, options, name: text() })
@@ -601,7 +604,8 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       }
       return Object.freeze({ primitive, material, ...retained, translucent: translucent === 1 })
     }))
-    const attachments = Object.freeze(Array.from({ length: u32() }, () => {
+    const attachmentCount = u32()
+    const attachments = attachmentCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: attachmentCount }, () => {
       const name = text(), worldAligned = u8(); if (worldAligned > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model attachment")
       const matrix = new Float32Array(12); for (let index = 0; index < 12; index++) matrix[index] = f32()
       return Object.freeze({ name, worldAligned: worldAligned === 1, matrix })
@@ -616,7 +620,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const lightingOrigin = vector([f32(), f32(), f32()])
       const cameraPosition = vector([f32(), f32(), f32()])
       const ambientCube = Object.freeze(Array.from({ length: 6 }, () => vector([f32(), f32(), f32()]))) as ModelLightingInput["ambientCube"]
-      const localLights = Object.freeze(Array.from({ length: localCount }, (): ModelLocalLight => {
+      const localLights = localCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: localCount }, (): ModelLocalLight => {
         const kind = u8()
         if (kind > 2 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model local light")
         return Object.freeze({
@@ -645,7 +649,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     }
     const eyeCount = u32()
     if (eyeCount > primitives.length) throw new ProjectilePresentationError("BoundExceeded", "model eye-state count")
-    const eyes = Object.freeze(Array.from({ length: eyeCount }, (): ModelEyeState => {
+    const eyes = eyeCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: eyeCount }, (): ModelEyeState => {
       const primitive = u32(), mesh = u32(), eyeball = u32(), texture = u32()
       const worldOrigin = vector([f32(), f32(), f32()])
       const authoredUp = vector([f32(), f32(), f32()])

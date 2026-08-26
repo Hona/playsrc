@@ -643,6 +643,41 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     playerClassUsePlayerModel: false,
   })
 
+  test("reuses the final canonical event-batch snapshot instead of rebuilding its immutable player graph", () => {
+    const source = compactSnapshot(7n)
+    const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)
+    const subsequent = adaptSessionHud(availablePrevious(publication.snapshot), compactPublication(compactSnapshot(8n)), context)
+
+    expect(subsequent.previous.kind).toBe("available")
+    if (subsequent.previous.kind === "available") expect(subsequent.previous.value).toBe(publication.snapshot)
+    expect(subsequent.snapshot.tick).toBe(8n)
+  })
+
+  test("retains one validated immutable scoreboard across consecutive 23-bot HUD publications", () => {
+    const roster = Object.freeze(Array.from({ length: 24 }, (_, index) => Object.freeze({
+      identity: index + 1, name: `Player ${index + 1}`, team: index % 2 === 0 ? 2 as const : 3 as const,
+      connection: "connected" as const, score: 0, alive: true, class: tf2HudAvailable(3 as const),
+      ping: unavailable<number>(), killstreak: 0, activeDominations: 0, relationship: "none" as const,
+      counters: unavailable<Tf2ScoreboardCounters>(),
+    })))
+    const scoreboard: Tf2HudScoreboard = Object.freeze({
+      visible: false, mapName: "pl_upward", gameType: tf2HudAvailable("#Gametype_Escort" as const),
+      pingAsText: false,
+      red: Object.freeze({ team: 2, localizedName: "RED", score: 0, playerCount: 12 }),
+      blue: Object.freeze({ team: 3, localizedName: "BLU", score: 0, playerCount: 12 }),
+      players: roster, spectators: Object.freeze([]), waitingToPlay: Object.freeze([]),
+      selectedPlayer: tf2HudAvailable(1),
+    })
+    const first = bindTf2Hud({ previous: unavailable("initial"), snapshot: snapshot(1n, { scoreboard: tf2HudAvailable(scoreboard) }), events: [] })
+    const second = bindTf2Hud({ previous: availablePrevious(first.facts), snapshot: snapshot(2n, { scoreboard: tf2HudAvailable(scoreboard) }), events: [] })
+
+    expect(second.scoreboard.kind).toBe("available")
+    if (first.scoreboard.kind === "available" && second.scoreboard.kind === "available") {
+      expect(second.scoreboard.value).toBe(first.scoreboard.value)
+      expect(second.scoreboard.value.players).toBe(first.scoreboard.value.players)
+    }
+  })
+
   test("publishes authored health and ammo pickup notifications only for the local player", () => {
     const priorSource = compactSnapshot(1n, {
       health: 100,

@@ -28,7 +28,12 @@ describe("headed gameplay profile windows", () => {
       p99Milliseconds: 40,
       maximumMilliseconds: 40,
       over16Milliseconds: 3,
+      over20Milliseconds: 2,
       over33Milliseconds: 2,
+      over50Milliseconds: 0,
+      over100Milliseconds: 0,
+      over250Milliseconds: 0,
+      over1000Milliseconds: 0,
     })
     expect(summarizeFrameTimes([])).toEqual({
       frames: 0,
@@ -37,8 +42,21 @@ describe("headed gameplay profile windows", () => {
       p99Milliseconds: 0,
       maximumMilliseconds: 0,
       over16Milliseconds: 0,
+      over20Milliseconds: 0,
       over33Milliseconds: 0,
+      over50Milliseconds: 0,
+      over100Milliseconds: 0,
+      over250Milliseconds: 0,
+      over1000Milliseconds: 0,
     })
     expect(() => summarizeFrameTimes([Number.NaN])).toThrow("frame-time sample is invalid")
+  })
+
+  test("preserves every seconds-per-frame stall in exact tail buckets and quantiles", () => {
+    expect(summarizeFrameTimes([16, 20.001, 33.334, 50.001, 100.001, 250.001, 1000.001])).toMatchObject({
+      frames: 7, maximumMilliseconds: 1000.001, p99Milliseconds: 1000.001,
+      over20Milliseconds: 6, over33Milliseconds: 5, over50Milliseconds: 4,
+      over100Milliseconds: 3, over250Milliseconds: 2, over1000Milliseconds: 1,
+    })
   })
 })

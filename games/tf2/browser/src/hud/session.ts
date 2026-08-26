@@ -441,9 +441,9 @@ export function adaptSessionHud(
     rolling = current
   }
 
-  const snapshot = canonicalSnapshot(publication.snapshot, context)
-  if (rolling?.tick !== snapshot.tick) {
+  if (rolling?.tick !== publication.snapshot.tick) {
     throw new Tf2HudBindingError("InconsistentPublication", "compact final snapshot does not match its final event batch")
   }
+  const snapshot = rolling
   return Object.freeze({ previous, snapshot, events: Object.freeze(events) })
 }

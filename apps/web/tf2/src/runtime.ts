@@ -561,6 +561,8 @@ export class Tf2Application {
   #hudContext?: SessionHudContext
   #hudContextIdentity = -1
   #hudScoreboardIdentity = ""
+  #publishedScoreboard?: Tf2HudScoreboard
+  #publishedScoreboardProbe = "unavailable"
   #scoreboardVisible = false
   #scoreboardPingAsText = false
   #playerClassUsePlayerModel = true
@@ -4729,19 +4731,12 @@ export class Tf2Application {
       const healthPanel = hudPanel("PlayerStatusHealthImage")
       const ammoPanel = hudPanel("HudWeaponAmmo")
       const weaponPanel = hudPanel("modelpanel0")
-      this.#set({
-        hudProbe: hudPlayer ? `${hudHealth}:${hudPlayer.class.kind === "available" ? hudPlayer.class.value : "unavailable"}:${hudWeaponIdentity ?? "unavailable"}:${hudWeapon?.clip.kind === "available" ? hudWeapon.clip.value : "unavailable"}:${hudWeapon?.reserve.kind === "available" ? hudWeapon.reserve.value : "unavailable"}` : "unavailable",
-        hudAnimationTrace: hudProbe?.animationTrace.join("|"),
-        hudOperationProbe: healthPanel && ammoPanel && weaponPanel
-          ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
-          : "unavailable",
-        hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
-        scoreboardVisible: this.#scoreboardVisible,
-        scoreboardProbe: hud?.scoreboard.kind === "available" ? JSON.stringify({
-          map: hud.scoreboard.value.mapName,
-          red: hud.scoreboard.value.red,
-          blue: hud.scoreboard.value.blue,
-          players: hud.scoreboard.value.players.map((player) => ({
+      const scoreboard = hud?.scoreboard.kind === "available" ? hud.scoreboard.value : undefined
+      if (scoreboard !== this.#publishedScoreboard) {
+        this.#publishedScoreboard = scoreboard
+        this.#publishedScoreboardProbe = scoreboard ? JSON.stringify({
+          map: scoreboard.mapName, red: scoreboard.red, blue: scoreboard.blue,
+          players: scoreboard.players.map((player) => ({
             identity: player.identity, name: player.name, team: player.team,
             class: player.class.kind === "available" ? player.class.value : null,
             score: player.score, alive: player.alive,
@@ -4750,9 +4745,18 @@ export class Tf2Application {
             deaths: player.counters.kind === "available" ? player.counters.value.deaths : null,
             captures: player.counters.kind === "available" ? player.counters.value.captures : null,
             damage: player.counters.kind === "available" ? player.counters.value.damage : null,
-          })),
-          spectators: hud.scoreboard.value.spectators,
-        }) : "unavailable",
+          })), spectators: scoreboard.spectators,
+        }) : "unavailable"
+      }
+      this.#set({
+        hudProbe: hudPlayer ? `${hudHealth}:${hudPlayer.class.kind === "available" ? hudPlayer.class.value : "unavailable"}:${hudWeaponIdentity ?? "unavailable"}:${hudWeapon?.clip.kind === "available" ? hudWeapon.clip.value : "unavailable"}:${hudWeapon?.reserve.kind === "available" ? hudWeapon.reserve.value : "unavailable"}` : "unavailable",
+        hudAnimationTrace: hudProbe?.animationTrace.join("|"),
+        hudOperationProbe: healthPanel && ammoPanel && weaponPanel
+          ? `${healthPanel.state.imageFill}:${healthPanel.bounds.x},${healthPanel.bounds.y},${healthPanel.bounds.width},${healthPanel.bounds.height}:${healthPanel.state.drawColor.join(",")}:${healthPanel.state.foregroundColor?.join(",") ?? "none"}:${ammoPanel.state.scalarProperties.reloadPhase ?? "none"}:${weaponPanel.state.scalarProperties.weaponIdentity ?? "none"}`
+          : "unavailable",
+        hudPresentationProbe: hudProbe && hud ? this.#hudPresentationObservation(hudProbe, hud) : "unavailable",
+        scoreboardVisible: this.#scoreboardVisible,
+        scoreboardProbe: this.#publishedScoreboardProbe,
         fireEvents: this.#fireEvents,
         explosionEvents: this.#explosionEvents,
         objectiveProbe: snapshot.objectives ? `${snapshot.objectives.redCaptures}:${snapshot.objectives.blueCaptures}:${snapshot.objectives.captureLimit}:${snapshot.objectives.winner??0}:${snapshot.objectives.flags.map(flag=>`${flag.identity},${flag.team},${flag.status},${flag.carrier??0},${flag.returnDeadline??-1}`).join("|")}` : undefined,
@@ -5040,6 +5044,8 @@ export class Tf2Application {
     this.#pointerMovementX+=movementX
     this.#viewRevision+=1
     this.#mouseViewRevision+=1
+    const profiler=browserFrameProfiler() as ReturnType<typeof browserFrameProfiler>&{input?:{at:number;revision:number;kind:string}[]}
+    if(profiler?.active)profiler.input?.push({at:performance.now(),revision:this.#mouseViewRevision,kind:"mouse"})
   }
 
   readonly #blur = (): void => this.#neutral()

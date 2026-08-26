@@ -36,6 +36,11 @@ export function summarizeFrameTimes(values: readonly number[]) {
     p99Milliseconds: rounded(percentile(0.99)),
     maximumMilliseconds: rounded(sorted.at(-1) ?? 0),
     over16Milliseconds: sorted.filter((value) => value > 1_000 / 60).length,
+    over20Milliseconds: sorted.filter((value) => value > 20).length,
     over33Milliseconds: sorted.filter((value) => value > 1_000 / 30).length,
+    over50Milliseconds: sorted.filter((value) => value > 50).length,
+    over100Milliseconds: sorted.filter((value) => value > 100).length,
+    over250Milliseconds: sorted.filter((value) => value > 250).length,
+    over1000Milliseconds: sorted.filter((value) => value > 1_000).length,
   })
 }
