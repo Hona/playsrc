@@ -28,6 +28,7 @@
     "profile:gameplay": "bun tools/playsrc/src/profile-runner.ts gameplay",
     "profile:frame-budget": "bun tools/playsrc/src/profile-runner.ts frame-budget",
     "profile:upward-outdoors": "bun tools/playsrc/src/profile-runner.ts upward-outdoors",
+    "profile:sky-coherence": "bun tools/playsrc/src/profile-runner.ts sky-coherence",
     "profile:2fort": "bun tools/playsrc/src/profile-runner.ts 2fort",
     "profile:2fort-full-match": "bun tools/playsrc/src/profile-runner.ts 2fort-full-match",
     "profile:bots": "bun tools/playsrc/src/profile-runner.ts bots",
