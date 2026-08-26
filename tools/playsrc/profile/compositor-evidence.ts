@@ -11,7 +11,7 @@ export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
   "disabled-by-default-gpu.service", "disabled-by-default-gpu.dawn", "disabled-by-default-viz.debug",
   "devtools.timeline", "v8", "disabled-by-default-v8.gc",
 ])
-export const TRACE_LIMITS = Object.freeze({ browserKilobytes: 128 * 1024, compressedBytes: 32 * 1024 * 1024, decodedBytes: 256 * 1024 * 1024, events: 1_000_000, probeBytes: 32 * 1024 * 1024 })
+export const TRACE_LIMITS = Object.freeze({ browserKilobytes: 128 * 1024, compressedBytes: 32 * 1024 * 1024, decodedBytes: 256 * 1024 * 1024, events: 1_500_000, probeBytes: 32 * 1024 * 1024 })
 export type RawTraceEvent = ChromiumTraceEvent & { pid?: number; tid?: number; ph?: string; cat?: string }
 export type TraceJoin = Readonly<{ kind: string; at: number; end?: number; detail?: unknown }>
 export type TraceProbes = Readonly<{ started: number; ended: number; joins: readonly TraceJoin[]; dropped: number }>
@@ -138,8 +138,9 @@ export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, s
 export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBytes): RawTraceEvent[] {
   const raw = gunzipSync(bytes, { maxOutputLength: limit })
   const value = JSON.parse(raw.toString("utf8")) as { traceEvents?: RawTraceEvent[] }
-  if (!Array.isArray(value.traceEvents) || value.traceEvents.length > TRACE_LIMITS.events
-    || value.traceEvents.some(event => !event || typeof event !== "object" || Array.isArray(event))) throw new Error("Raw trace event bound or format is invalid")
+  if (!Array.isArray(value.traceEvents)
+    || value.traceEvents.some(event => !event || typeof event !== "object" || Array.isArray(event))) throw new Error("Raw trace event format is invalid")
+  if (value.traceEvents.length > TRACE_LIMITS.events) throw new Error(`Raw trace has ${value.traceEvents.length} events, exceeding ${TRACE_LIMITS.events}`)
   return value.traceEvents
 }
 

@@ -4,8 +4,11 @@ import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { activeGameplayTraceWindow, summarizeActivePresentationSilence, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 
-test("authored Engineer build menus, stock objects and headed building pixels", async ({ page }, testInfo) => {
+test("authored Engineer build menus, stock objects and headed building pixels", async ({ page, context }, testInfo) => {
+  await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => { ;(globalThis as typeof globalThis & { __playsrcProfile?: object }).__playsrcProfile = {} })
   await page.goto("/")
   await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu", { timeout: 120_000 })
@@ -132,17 +135,34 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   await testInfo.attach("headed-authored-constructed-sentry", { body: built, contentType: "image/png" })
 
   const seconds = profileSampleSeconds()
+  const cdp = await context.newCDPSession(page)
+  const traceEvents: ChromiumTraceEvent[] = []
+  cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value))
+  await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,blink.user_timing", options: "record-as-much-as-possible" })
   const measurement = await page.evaluate(async (duration) => {
     const root = document.querySelector<HTMLElement>("main")!
     const started = performance.now(), firstTick = Number(root.dataset.snapshotTick)
+    performance.mark("playsrc-active-gameplay-start")
+    ;(globalThis as any).__playsrcFrameProfiler.active = true
     let previous = started
     const frames: number[] = []
     await new Promise<void>(resolve => {
       const frame = (now: number) => { frames.push(now - previous); previous = now; if (now - started >= duration * 1000) resolve(); else requestAnimationFrame(frame) }
       requestAnimationFrame(frame)
     })
+    performance.mark("playsrc-active-gameplay-end")
+    ;(globalThis as any).__playsrcFrameProfiler.active = false
     return { seconds: (performance.now() - started) / 1000, firstTick, lastTick: Number(root.dataset.snapshotTick), frames }
   }, seconds)
+  const traceComplete = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
+  await cdp.send("Tracing.end")
+  await traceComplete
+  const traceDirectory = path.join((await loadLocalConfig()).sourceCacheDir, "evidence", "tf2-engineer-buildings")
+  await mkdir(traceDirectory, { recursive: true })
+  await writeFile(path.join(traceDirectory, "engineer.trace.json"), JSON.stringify({ traceEvents }))
+  const window = activeGameplayTraceWindow(traceEvents)
+  const compositor = summarizeCompositorTruth(traceEvents, measurement.seconds * 1000, window)
+  const silence = summarizeActivePresentationSilence(traceEvents, window)
   expect(measurement.lastTick - measurement.firstTick).toBeGreaterThan(seconds * 60)
   await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.buildings[0]?.phase), { timeout: 12_000 }).toBe(1)
   await page.keyboard.down("w")
@@ -225,11 +245,15 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   let changedBuildingPixels=0,redBuildingPixels=0
   for(let y=120;y<Math.min(presentPixels.height-80,600);y+=1)for(let x=280;x<Math.min(presentPixels.width-280,1000);x+=1){const offset=(y*presentPixels.width+x)*presentPixels.channels;const delta=Math.abs(presentPixels.pixels[offset]!-removedPixels.pixels[offset]!)+Math.abs(presentPixels.pixels[offset+1]!-removedPixels.pixels[offset+1]!)+Math.abs(presentPixels.pixels[offset+2]!-removedPixels.pixels[offset+2]!);if(delta>36){changedBuildingPixels+=1;if(presentPixels.pixels[offset]!>presentPixels.pixels[offset+2]!+8)redBuildingPixels+=1}}
   expect(changedBuildingPixels).toBeGreaterThan(100)
-  const report = { schema: "playsrc-tf2-headed-engineer-buildings-v2", headed: true, targets: ["pl_upward", "ctf_2fort"], input: "native-pointer-lock-and-trusted-mouse", buildings: objects, pixels:{changedBuildingPixels,redBuildingPixels,authoredIcons},
+  const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
+  const report = { schema: "playsrc-tf2-headed-engineer-buildings-v2", headed: true, targets: ["pl_upward", "ctf_2fort"], compositor, silence, losses, input: "native-pointer-lock-and-trusted-mouse", buildings: objects, pixels:{changedBuildingPixels,redBuildingPixels,authoredIcons},
     simulation: { seconds: Number(measurement.seconds.toFixed(3)), ticksPerSecond: Number(((measurement.lastTick - measurement.firstTick) / measurement.seconds).toFixed(2)) },
     frames: summarizeFrameTimes(measurement.frames), screenshots: ["authored-build-menu", "sentry-blueprint", "constructed-sentry", "destroyed-sentry"] }
   const local = await loadLocalConfig(), directory = path.join(local.sourceCacheDir, "evidence", "tf2-engineer-buildings")
   await mkdir(directory, { recursive: true })
   await Promise.all([writeFile(path.join(directory, "pl_upward-engineer.json"), `${JSON.stringify(report, null, 2)}\n`), writeFile(path.join(directory, "build-menu.png"), menu), writeFile(path.join(directory, "sentry-blueprint.png"), blueprint), writeFile(path.join(directory, "sentry-built.png"), built), writeFile(path.join(directory, "sentry-destroyed.png"), removed)])
   console.log(`[engineer-buildings] ${JSON.stringify(report)}`)
+  expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
+  expect(silence.maximumActiveSilenceMilliseconds).toBeLessThan(250)
+  expect(losses).toEqual([])
 })
