@@ -42,8 +42,9 @@ export class SharedTextureResidency<T extends OwnedResource> {
     return value
   }
 
-  select(sequence: string, frame: number, consumer: string, create: () => T): T {
-    if (!sequence || !consumer || !Number.isSafeInteger(frame) || frame < 0) {
+  select(sequence: string, frame: number, consumer: string, create: () => T, authoredFrameCount = this.#maximumFrames): T {
+    if (!sequence || !consumer || !Number.isSafeInteger(frame) || frame < 0
+      || !Number.isSafeInteger(authoredFrameCount) || authoredFrameCount < 1) {
       throw new Error("animated texture selection is invalid")
     }
     const identity = `${sequence}:${frame}`
@@ -68,7 +69,7 @@ export class SharedTextureResidency<T extends OwnedResource> {
     if (frames) {
       frames.delete(identity)
       frames.add(identity)
-      while (frames.size > this.#maximumFrames) {
+      while (frames.size > Math.max(this.#maximumFrames, authoredFrameCount)) {
         let candidate: string | undefined
         for (const key of frames) {
           const entry = this.#resources.get(key)

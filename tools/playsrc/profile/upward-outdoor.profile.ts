@@ -26,7 +26,7 @@ type FrameRecord = {
   detail: Record<string, number>
 }
 
-test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page, context }, testInfo) => {
+test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ page, context }, testInfo) => {
   const seconds = profileSampleSeconds()
   await page.addInitScript(() => {
     let pointerLockElement: Element | null = null
@@ -56,7 +56,12 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
       rpcs: [] as RpcRecord[],
       frames: [] as FrameRecord[],
       longTasks: [] as { at: number; duration: number }[],
-      gpu: { submissions: 0, commandBuffers: 0, buffers: 0, textures: 0 },
+      input: { started: 0, displayed: 0 },
+      workerQueueMaximum: 0,
+      gpu: {
+        submissions: 0, submitCalls: 0, commandBuffers: 0, buffers: 0, textures: 0,
+        destroyedBuffers: 0, destroyedTextures: 0, renderPasses: 0, computePasses: 0,
+      },
     }
     ;(window as any).__playsrcProfile = state
 
@@ -85,6 +90,7 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
           }
           this.records.set(message.id, record)
           state.rpcs.push(record)
+          state.workerQueueMaximum = Math.max(state.workerQueueMaximum, this.records.size)
         }
         super.postMessage(message, transferOrOptions as any)
       }
@@ -98,7 +104,10 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
         configurable: true,
         writable: true,
         value(this: unknown, ...arguments_: any[]) {
-          if (state.active) state.gpu[counter] += counter === "submissions" ? arguments_[0]?.length ?? 0 : 1
+          if (state.active) {
+            state.gpu[counter] += counter === "submissions" ? arguments_[0]?.length ?? 0 : 1
+            if (counter === "submissions") state.gpu.submitCalls += 1
+          }
           return original.apply(this, arguments_)
         },
       })
@@ -107,6 +116,10 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     instrument((globalThis as any).GPUCommandEncoder, "finish", "commandBuffers")
     instrument((globalThis as any).GPUDevice, "createBuffer", "buffers")
     instrument((globalThis as any).GPUDevice, "createTexture", "textures")
+    instrument((globalThis as any).GPUBuffer, "destroy", "destroyedBuffers")
+    instrument((globalThis as any).GPUTexture, "destroy", "destroyedTextures")
+    instrument((globalThis as any).GPUCommandEncoder, "beginRenderPass", "renderPasses")
+    instrument((globalThis as any).GPUCommandEncoder, "beginComputePass", "computePasses")
 
     try {
       new PerformanceObserver((list) => {
@@ -125,6 +138,9 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
         const profile = (window as any).__playsrcProfile
         const detail = root?.dataset.performanceDetail
         const displayFrame = Number(canvas?.dataset.displayFrame ?? 0)
+        if (state.input.started !== 0 && state.input.displayed === 0 && displayFrame > state.startedDisplayFrame) {
+          state.input.displayed = now
+        }
         const completedDetail = detail && displayFrame > state.startedDisplayFrame ? JSON.parse(detail) : {}
         const sky = canvas?.dataset.sky3dPass
         const skyPass = sky ? JSON.parse(sky) : null
@@ -171,14 +187,15 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     await chooseTf2Team(page, "blue")
   }
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready")
-  await command("noclip")
   if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
-  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode === "1", undefined, { timeout: 30_000, polling: 20 })
+  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode !== "1", undefined, { timeout: 30_000, polling: 20 })
 
   const canvas = page.locator("canvas.world-canvas")
   await expect(canvas).toBeVisible()
   await canvas.click()
   await page.waitForFunction(() => document.pointerLockElement?.classList.contains("world-canvas"), undefined, { timeout: 5_000 })
+  await page.mouse.move(420, 320)
+  await page.mouse.move(470, 320, { steps: 3 })
   const before = await canvas.screenshot()
   const initial = await page.evaluate(() => {
     const root = document.querySelector<HTMLElement>("main")!
@@ -205,6 +222,7 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
   const metricsBefore = await cdp.send("Performance.getMetrics")
   await cdp.send("Profiler.start")
 
+  await page.keyboard.down("w")
   const route = await page.evaluate(async (durationSeconds) => {
     const state = (window as any).__playsrcProfile as {
       active: boolean
@@ -220,10 +238,10 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     const start = readPosition()
     const candidates = state.coverageSamples
       .map((sample) => ({ ...sample, distance: distance(start, sample.position) }))
-      .filter((sample) => sample.distance > 950 && sample.distance < durationSeconds * 450 && sample.position[2] > start[2] + 96)
-      .sort((left, right) => (right.position[2] - start[2]) - (left.position[2] - start[2]) || left.distance - right.distance)
+      .filter((sample) => sample.distance > 450 && sample.distance < durationSeconds * 320 && Math.abs(sample.position[2] - start[2]) < 160)
+      .sort((left, right) => right.distance - left.distance)
     const target = candidates[0]
-    if (!target) throw new Error("authored Upward outdoor-terrain noclip route is unavailable")
+    if (!target) throw new Error("authored Upward grounded walking route is unavailable")
 
     const turn = (goal: readonly number[]) => {
       const position = readPosition()
@@ -247,8 +265,8 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     state.started = performance.now()
     state.startedTick = Number(root.dataset.snapshotTick ?? 0)
     state.startedDisplayFrame = Number(document.querySelector<HTMLCanvasElement>("canvas.world-canvas")?.dataset.displayFrame ?? 0)
+    ;(state as any).input.started = state.started
     state.active = true
-    dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }))
     let lastTurn = state.started
     try {
       while (performance.now() - state.started < durationSeconds * 1_000) {
@@ -261,7 +279,6 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
         }
       }
     } finally {
-      dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }))
       state.active = false
     }
     const end = readPosition()
@@ -275,6 +292,7 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
       phase: root.dataset.phase,
     }
   }, seconds)
+  await page.keyboard.up("w")
 
   const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
   const allocationProfile = (await cdp.send("HeapProfiler.stopSampling") as {
@@ -285,8 +303,14 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
   const after = await canvas.screenshot()
   const state = await page.evaluate(() => {
     const profile = (window as any).__playsrcProfile
-    return { frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu }
-  }) as { frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number }[]; gpu: Record<string, number> }
+    return {
+      frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu,
+      input: profile.input, workerQueueMaximum: profile.workerQueueMaximum,
+    }
+  }) as {
+    frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number }[]
+    gpu: Record<string, number>; input: { started: number; displayed: number }; workerQueueMaximum: number
+  }
 
   const allocationRows: { function: string; url: string; bytes: number }[] = []
   const visitAllocation = (node: { callFrame: { functionName: string; url: string }; selfSize: number; children: any[] }) => {
@@ -312,6 +336,9 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     .filter((frame) => Number.isFinite(frame.detail.total))
     .map((frame) => [frame.displayFrame, frame])).values()]
   const frameTimes = summarizeFrameTimes(state.frames.map((frame) => frame.interval))
+  const presentedIntervals = summarizeFrameTimes(displayedFrames.map((frame, index) =>
+    index === 0 ? frame.at - (state.frames[0]?.at ?? frame.at) : frame.at - displayedFrames[index - 1]!.at))
+  const presentedFramesPerSecond = Number((displayedFrames.length / route.elapsedMilliseconds * 1_000).toFixed(3))
   const frameWork = summarizeFrameTimes(displayedFrames.map((frame) => frame.detail.total!))
   const fields = ["models", "projectiles", "visibility", "particleWorker", "particleDecode", "audio", "dynamicItems", "world", "viewmodel", "render", "total"]
   const timings = Object.fromEntries(fields.map((name) => [name, summarizeDistribution(displayedFrames.flatMap((frame) => Number.isFinite(frame.detail[name]) ? [frame.detail[name]!] : []))]))
@@ -325,6 +352,10 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     route,
     ticksPerSecond,
     frameIntervals: frameTimes,
+    presentedFrameIntervals: presentedIntervals,
+    presentedFramesPerSecond,
+    inputToDisplayMilliseconds: state.input.displayed === 0 ? null : Number((state.input.displayed - state.input.started).toFixed(3)),
+    workerQueueMaximum: state.workerQueueMaximum,
     frameWork,
     displayedFrames: displayedFrames.length,
     timings,
@@ -378,6 +409,10 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
     frames: frameTimes,
     frameWork,
     displayedFrames: displayedFrames.length,
+    presentedFramesPerSecond,
+    presentedFrameIntervals: presentedIntervals,
+    inputToDisplayMilliseconds: report.inputToDisplayMilliseconds,
+    workerQueueMaximum: state.workerQueueMaximum,
     outdoorFrames: report.visibility.outdoorFrames,
     staticProps: report.visibility.staticProps,
     gpu: state.gpu,
@@ -387,10 +422,11 @@ test("profile headed BLU spawn-to-outdoor Upward noclip terrain", async ({ page,
   })}`)
 
   expect(route.elapsedMilliseconds).toBeGreaterThanOrEqual(seconds * 1_000)
-  expect(route.traveled).toBeGreaterThan(700)
+  expect(route.traveled).toBeGreaterThan(120)
   expect(ticksPerSecond).toBeGreaterThan(55)
   expect(state.frames.length).toBeGreaterThan(20)
   expect(displayedFrames.length).toBeGreaterThan(20)
+  expect(report.inputToDisplayMilliseconds).not.toBeNull()
   expect(report.visibility.outdoorFrames).toBeGreaterThan(0)
   expect(report.visibility.drawSurfaces.max).toBeGreaterThan(0)
   expect(report.gpu.submissions).toBeGreaterThan(0)
