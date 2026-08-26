@@ -124,10 +124,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const completed = measurement.frames as Array<{ at: number; tick: number; detail: Record<string, number>; renderer: { passes: Array<{ submissions: number }> } }>
   const compositor=measurement.compositorFrames as Array<{at:number;submittedAt:number;submissionMilliseconds:number}>
   const intervals = completed.slice(1).map((frame, index) => frame.at - completed[index]!.at)
-  const workers = measurement.worker as Array<{ kind: string; started: number; finished?: number; bytes: number; receivedBytes?: number; timings?: Record<string, number> }>
+  const workers = measurement.worker as Array<{ kind: string; started: number; finished?: number; bytes: number; receivedBytes?: number; views?: number; sharedDispatch?: boolean; timings?: Record<string, number> }>
   const worker = Object.fromEntries([...new Set(workers.map(item => item.kind))].sort().map(kind => {
     const records = workers.filter(item => item.kind === kind)
-    return [kind, { calls: records.length, bytes: records.reduce((sum, item) => sum + item.bytes, 0), receivedBytes: records.reduce((sum, item) => sum + (item.receivedBytes ?? 0), 0), milliseconds: summarizeDistribution(records.flatMap(item => item.finished === undefined ? [] : [item.finished - item.started])), timings: Object.fromEntries([...new Set(records.flatMap(item => Object.keys(item.timings ?? {})))].map(key => [key, summarizeDistribution(records.flatMap(item => typeof item.timings?.[key] === "number" ? [item.timings[key]!] : []))])) }]
+    return [kind, { calls: records.length, views: records.reduce((sum, item) => sum + (item.views ?? 0), 0), sharedDispatches: records.filter(item => item.sharedDispatch).length, bytes: records.reduce((sum, item) => sum + item.bytes, 0), receivedBytes: records.reduce((sum, item) => sum + (item.receivedBytes ?? 0), 0), milliseconds: summarizeDistribution(records.flatMap(item => item.finished === undefined ? [] : [item.finished - item.started])), timings: Object.fromEntries([...new Set(records.flatMap(item => Object.keys(item.timings ?? {})))].map(key => [key, summarizeDistribution(records.flatMap(item => typeof item.timings?.[key] === "number" ? [item.timings[key]!] : []))])) }]
   }))
   const decoded = decodeScreenshot(after)
   let nonBlack = 0
@@ -167,7 +167,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     browser: { ...report.browser, gpu: { devices: report.browser.gpu?.devices ?? null, featureStatus: report.browser.gpu?.featureStatus ?? null }, storage: { ...report.browser.storage, navigation: undefined } },
     frameIntervals: report.frameIntervals, frameWork: report.frameWork, simulation: report.simulation,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
-      calls: value.calls, maximumMilliseconds: value.milliseconds.max,
+      calls: value.calls, views: value.views, sharedDispatches: value.sharedDispatches, bytes: value.bytes, receivedBytes: value.receivedBytes,
+      queue: value.timings.queueMilliseconds ?? null, maximumMilliseconds: value.milliseconds.max,
       transactMaximumMilliseconds: value.timings.transactMilliseconds?.max ?? 0,
     }])),
     gpuSubmissionsPerCompletedFrame: report.gpu.submissionsPerCompletedFrame,

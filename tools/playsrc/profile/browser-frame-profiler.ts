@@ -82,7 +82,8 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = host.performance.now()
-          record.receivedBytes = event.data?.output?.byteLength ?? event.data?.payload?.byteLength ?? 0
+          record.receivedBytes = event.data?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
+            ?? event.data?.output?.byteLength ?? event.data?.payload?.byteLength ?? 0
           if (event.data?.timings) record.timings = event.data.timings
           this.records.delete(event.data.id)
           state.counters.workerPending = Math.max(0, state.counters.workerPending - 1)
@@ -92,15 +93,19 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
         if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string") {
           const started=host.performance.now()
-          const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean)=>{
-            const record={kind,started,bytes,pending:state.counters.workerPending,sharedDispatch}
+          const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean,views?:number)=>{
+            const record={kind,started,bytes,pending:state.counters.workerPending,sharedDispatch,...(views===undefined?{}:{views})}
             this.records.set(id,record)
             state.worker.push(record)
             state.counters.workerPending+=1
             state.counters.workerMaximumPending=Math.max(state.counters.workerMaximumPending,state.counters.workerPending)
           }
-          register(message.id,message.kind,message.command?.byteLength??message.batch?.byteLength??message.bsp?.byteLength??0,false)
-          if(message.kind==="models"&&Number.isSafeInteger(message.visibility?.id))register(message.visibility.id,"visibility",0,true)
+          const views=Array.isArray(message.views)?message.views.length:undefined
+          register(message.id,message.kind,message.command?.byteLength??message.batch?.byteLength??message.bsp?.byteLength??(views??0)*56,false,views)
+          if(message.kind==="models"&&Number.isSafeInteger(message.visibility?.id)){
+            const companionViews=Array.isArray(message.visibility.views)?message.visibility.views.length:0
+            register(message.visibility.id,"visibility",companionViews*56,true,companionViews)
+          }
         }
         super.postMessage(message, transferOrOptions as any)
       }

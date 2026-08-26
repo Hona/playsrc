@@ -82,15 +82,15 @@ describe("opt-in structured browser frame profiler", () => {
     const state = installBrowserFrameProfiler(browser)
     state.active = true
     const worker = new browser.Worker("gameplay.js")
-    worker.postMessage({ id: 8, kind: "models", batch: new Uint8Array(24), visibility: { id: 9 } })
+    worker.postMessage({ id: 8, kind: "models", batch: new Uint8Array(24), visibility: { id: 9, views: [{}, {}] } })
     expect(state.worker).toMatchObject([
       { kind: "models", bytes: 24, pending: 0, sharedDispatch: false },
-      { kind: "visibility", bytes: 0, pending: 1, sharedDispatch: true },
+      { kind: "visibility", bytes: 112, pending: 1, sharedDispatch: true, views: 2 },
     ])
     expect(state.counters.workerMaximumPending).toBe(2)
     worker.listener!({ data: { id: 8, output: new ArrayBuffer(48) } })
-    worker.listener!({ data: { id: 9, output: new ArrayBuffer(32), timings: { queueMilliseconds: 7 } } })
-    expect(state.worker[1]).toMatchObject({ receivedBytes: 32, timings: { queueMilliseconds: 7 } })
+    worker.listener!({ data: { id: 9, outputs: [new ArrayBuffer(32), new ArrayBuffer(16)], timings: { queueMilliseconds: 7 } } })
+    expect(state.worker[1]).toMatchObject({ receivedBytes: 48, timings: { queueMilliseconds: 7 } })
     expect(state.counters.workerPending).toBe(0)
   })
 

@@ -116,7 +116,6 @@ import { DisplayBackpressure } from "./display-backpressure"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
 import { tokenizeSourceCommand } from "./console-command"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
-import { ExactSkyVisibilityCache, type SkyVisibilityIdentity } from "./visibility-cache"
 import { currentPresentedCamera, presentCamera } from "./presented-camera"
 import {
   ApplicationFrameClock,
@@ -436,6 +435,7 @@ type PreparedPresentation=Readonly<{
   snapshot:Snapshot
   publication:SimulationPublication
   visibility:VisibilityResult
+  skyVisibility?:VisibilityResult
   visibilityPosition:readonly[number,number,number]
   visibilityYaw:number
   visibilityPitch:number
@@ -632,7 +632,6 @@ export class Tf2Application {
   #lastRenderedPreparedRevision=0
   #lastRenderedViewRevision=0
   #lastRenderedTick?:bigint
-  readonly #skyVisibility = new ExactSkyVisibilityCache<VisibilityResult>()
   readonly #canvasDiagnostics = new CanvasFrameDiagnostics()
   #displayFrame=0
   #displayTask?:Promise<void>
@@ -1811,7 +1810,6 @@ export class Tf2Application {
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
     this.#requiredParticleDisplayFrames.reset()
-    this.#skyVisibility.clear()
     this.#canvasDiagnostics.clear()
     this.#canvas.dataset.sky3dPass = ""
     this.#canvas.dataset.skyVisibilityDisposition = "not-visible"
@@ -4021,60 +4019,15 @@ export class Tf2Application {
       viewRevision, mouseRevision, snapRevision, tick: prepared.snapshot.tick,
     }, skyController)
     const camera = presentedCamera.main
-    let skyRequest: Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> | undefined
-    const prepareSky = (): Promise<Readonly<{ camera: Camera; visibility: VisibilityResult }>> => {
-      if (!skyController || !presentedCamera.sky || !presentedCamera.controller) throw new Error("Authored 3D-sky controller disappeared")
-      const skyCamera = presentedCamera.sky
-      const controller = presentedCamera.controller
-      const identity: SkyVisibilityIdentity = {
-        generation,
-        viewportRevision: viewport.revision,
-        tick: prepared.snapshot.tick,
-        position: skyCamera.position,
-        origin: controller.origin,
-        scale: controller.scale,
-        area: controller.area,
-        yawDegrees: skyCamera.yawDegrees,
-        pitchDegrees: skyCamera.pitchDegrees,
-        verticalFovDegrees: skyCamera.verticalFovDegrees,
-        near: skyCamera.near,
-        far: skyCamera.far,
-      }
-      const cached = this.#skyVisibility.read(identity)
-      if (cached) return Promise.resolve({ camera: skyCamera, visibility: cached })
-      this.#wasmCalls.visibility += 1
-      const request = client.visibility(generation, {
-        position: skyCamera.position,
-        visibilityPosition: controller.origin,
-        areaFilter: controller.area,
-        yawDegrees: skyCamera.yawDegrees,
-        pitchDegrees: skyCamera.pitchDegrees,
-        verticalFovDegrees: skyCamera.verticalFovDegrees,
-        aspectRatio,
-        near: skyCamera.near,
-        far: skyCamera.far,
-        presentationTimeSeconds,
-      }).then((result) => {
-        if (result.areas.some((area) => area !== controller.area)) {
-          throw new Error("3D-sky visibility escaped its authored area")
-        }
-        if (!this.#closed && generation === this.#generation && this.#presentationViewport?.revision === viewport.revision) {
-          this.#skyVisibility.write(identity, result)
-        }
-        return { camera: skyCamera, visibility: result }
-      })
-      void request.catch(() => {})
-      return request
-    }
-    if (selectAuthoredSky(prepared.visibility.sky, skyController !== null)) skyRequest = prepareSky()
     let visibility = prepared.visibility
+    let skyVisibility = prepared.skyVisibility
     const viewChanged = prepared.viewportRevision !== viewport.revision
       || camera.position.some((value, index) => value !== prepared.visibilityPosition[index])
       || camera.yawDegrees !== prepared.visibilityYaw
       || camera.pitchDegrees !== prepared.visibilityPitch
     if (viewChanged) {
       this.#wasmCalls.visibility += 1
-      visibility = await client.visibility(generation, {
+      const mainView = {
         position: camera.position,
         yawDegrees: camera.yawDegrees,
         pitchDegrees: camera.pitchDegrees,
@@ -4083,15 +4036,23 @@ export class Tf2Application {
         near: camera.near,
         far: camera.far,
         presentationTimeSeconds,
-      })
+      }
+      const controller = presentedCamera.controller, skyCamera = presentedCamera.sky
+      const views = controller && skyCamera ? [mainView, {
+        position: skyCamera.position, visibilityPosition: controller.origin, areaFilter: controller.area,
+        yawDegrees: skyCamera.yawDegrees, pitchDegrees: skyCamera.pitchDegrees,
+        verticalFovDegrees: skyCamera.verticalFovDegrees, aspectRatio,
+        near: skyCamera.near, far: skyCamera.far, presentationTimeSeconds,
+      }] : [mainView]
+      ;[visibility, skyVisibility] = await client.visibilityViews(generation, views)
     }
     let sky3d: Frame["sky3d"]
     if (selectAuthoredSky(visibility.sky, skyController !== null)) {
-      if (!skyController) throw new Error("Authored 3D-sky controller disappeared")
-      const result = await (skyRequest ?? prepareSky())
+      if (!skyController || !presentedCamera.sky || !skyVisibility) throw new Error("Authored 3D-sky visibility is unavailable")
+      if (skyVisibility.areas.some(area => area !== skyController.area)) throw new Error("3D-sky visibility escaped its authored area")
       sky3d = Object.freeze({
-        camera: result.camera,
-        visibility: Object.freeze({ ...result.visibility, surfaces: result.visibility.drawSurfaces }),
+        camera: presentedCamera.sky,
+        visibility: Object.freeze({ ...skyVisibility, surfaces: skyVisibility.drawSurfaces }),
         fog: skyController.fog,
       })
     }
@@ -4507,8 +4468,7 @@ export class Tf2Application {
         }
       }
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body,lighting:worldModelLighting(occurrence.origin,occurrence.angles)})]})
-      this.#wasmCalls.visibility++
-      const visibility=await client.visibility(generation,{
+      const mainVisibilityView={
         position:camera.position,
         yawDegrees:camera.yawDegrees,
         pitchDegrees:camera.pitchDegrees,
@@ -4517,7 +4477,19 @@ export class Tf2Application {
         near:camera.near,
         far:camera.far,
         presentationTimeSeconds:Number(snapshot.tick)*0.015,
-      })
+      }
+      const skyController=this.#skyController(this.#artifacts)
+      const preparedCamera=presentCamera(camera,{generation,viewportRevision:viewport.revision,preparedRevision:this.#preparedRevision+1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,tick:snapshot.tick},skyController)
+      const skyCamera=preparedCamera.sky
+      const visibilityViews=skyController&&skyCamera?[mainVisibilityView,{
+        position:skyCamera.position,visibilityPosition:skyController.origin,areaFilter:skyController.area,
+        yawDegrees:skyCamera.yawDegrees,pitchDegrees:skyCamera.pitchDegrees,verticalFovDegrees:skyCamera.verticalFovDegrees,
+        aspectRatio:mainVisibilityView.aspectRatio,near:skyCamera.near,far:skyCamera.far,
+        presentationTimeSeconds:mainVisibilityView.presentationTimeSeconds,
+      }]:[mainVisibilityView]
+      this.#wasmCalls.visibility++
+      const [visibility,skyVisibility]=await client.visibilityViews(generation,visibilityViews)
+      if(!visibility)throw new Error("Main-world visibility transaction returned no result")
       if(!ownsGeneration())return
       const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
       const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
@@ -4688,6 +4660,7 @@ export class Tf2Application {
         snapshot,
         publication,
         visibility,
+        skyVisibility,
         visibilityPosition:camera.position,
         visibilityYaw:camera.yawDegrees,
         visibilityPitch:camera.pitchDegrees,

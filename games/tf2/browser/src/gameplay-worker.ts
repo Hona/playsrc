@@ -798,46 +798,46 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
-  const view = request.view
-  const visibilityPosition=view.visibilityPosition??view.position
-  if (view.position.length !== 3 || !view.position.every(Number.isFinite) || visibilityPosition.length!==3||!visibilityPosition.every(Number.isFinite) ||
-    ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,view.areaFilter??-1].every(Number.isFinite) ||
-    (view.areaFilter!==undefined&&(!Number.isSafeInteger(view.areaFilter)||view.areaFilter<0||view.areaFilter>511))||
-    view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.far <= view.near || view.presentationTimeSeconds < 0) {
+  if (!Array.isArray(request.views) || request.views.length < 1 || request.views.length > 2 || request.views.some(view => {
+    const visibilityPosition = view.visibilityPosition ?? view.position
+    return view.position.length !== 3 || !view.position.every(Number.isFinite) || visibilityPosition.length !== 3 || !visibilityPosition.every(Number.isFinite)
+      || ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds, view.areaFilter ?? -1].every(Number.isFinite)
+      || (view.areaFilter !== undefined && (!Number.isSafeInteger(view.areaFilter) || view.areaFilter < 0 || view.areaFilter > 511))
+      || view.verticalFovDegrees <= 0 || view.verticalFovDegrees >= 180 || view.aspectRatio <= 0 || view.near <= 0 || view.far <= view.near || view.presentationTimeSeconds < 0
+  })) {
     fail(request.id, "MalformedRequest")
     return
   }
-  const inputCopyStarted = performance.now()
   const pointer = value.exports.playsrc_alloc(56) >>> 0
-  new Float32Array(value.exports.memory.buffer, pointer, 14).set([
-    ...visibilityPosition,...view.position, view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees,
-    view.aspectRatio, view.near, view.far, view.presentationTimeSeconds,view.areaFilter??-1,
-  ])
-  const inputCopyMilliseconds = performance.now() - inputCopyStarted
-  const transactStarted = performance.now()
-  const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
-  const transactMilliseconds = performance.now() - transactStarted
-  value.exports.playsrc_free(pointer, 56)
-  if (ok !== 1) {
-    fail(request.id, "TransitionFailed",203)
-    return
-  }
-  const length = value.exports.playsrc_visibility_output_length(value.handle)
-  if (length < 80 || length > 4 * 1024 * 1024) {
-    fail(request.id, "InternalFailure", 818)
-    return
-  }
-  const outputCopyStarted = performance.now()
-  const outputPointer = value.exports.playsrc_alloc(length) >>> 0
-  if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
-    value.exports.playsrc_free(outputPointer, length)
-    fail(request.id, "InternalFailure", 819)
-    return
-  }
-  const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
-  value.exports.playsrc_free(outputPointer, length)
-  const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "visibility", generation: request.generation, output, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [output])
+  let inputCopyMilliseconds = 0, transactMilliseconds = 0, outputCopyMilliseconds = 0
+  const outputs: ArrayBuffer[] = []
+  try {
+    for (const view of request.views) {
+      const inputCopyStarted = performance.now()
+      new Float32Array(value.exports.memory.buffer, pointer, 14).set([
+        ...(view.visibilityPosition ?? view.position), ...view.position, view.yawDegrees, view.pitchDegrees,
+        view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds, view.areaFilter ?? -1,
+      ])
+      inputCopyMilliseconds += performance.now() - inputCopyStarted
+      const transactStarted = performance.now()
+      const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
+      transactMilliseconds += performance.now() - transactStarted
+      if (ok !== 1) { fail(request.id, "TransitionFailed", 203); return }
+      const length = value.exports.playsrc_visibility_output_length(value.handle)
+      if (length < 80 || length > 4 * 1024 * 1024) { fail(request.id, "InternalFailure", 818); return }
+      const outputCopyStarted = performance.now()
+      const outputPointer = value.exports.playsrc_alloc(length) >>> 0
+      try {
+        if (value.exports.playsrc_visibility_output_copy(value.handle, outputPointer, length) !== length) {
+          fail(request.id, "InternalFailure", 819)
+          return
+        }
+        outputs.push(new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer)
+      } finally { value.exports.playsrc_free(outputPointer, length) }
+      outputCopyMilliseconds += performance.now() - outputCopyStarted
+    }
+  } finally { value.exports.playsrc_free(pointer, 56) }
+  post({ id: request.id, kind: "visibility", generation: request.generation, outputs, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, outputs)
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
@@ -900,7 +900,7 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
             kind: "visibility",
             generation: request.generation,
             queuedAt: companion.queuedAt,
-            view: companion.view,
+            views: companion.views,
           })
         } catch {
           fail(companion.id, "InternalFailure", 904)
