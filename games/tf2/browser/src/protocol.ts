@@ -21,6 +21,7 @@ export type WorkerRequest = WorkerEnvelope & (
       id: number
       kind: "decode-resources"
       chunks: readonly Readonly<{ descriptor: ArrayBuffer; bytes: ArrayBuffer }>[]
+      shared: boolean
     }>
   | Readonly<{
       id: number
@@ -28,7 +29,7 @@ export type WorkerRequest = WorkerEnvelope & (
       generation: number
       profile: 0 | 1
       bsp: ArrayBuffer
-      configuration: readonly ArrayBuffer[]
+      configuration: readonly (ArrayBuffer | SharedArrayBuffer)[]
       includeMap: boolean
       presentation?: ArrayBuffer
     }>
@@ -88,7 +89,7 @@ export type WorkerTransactionTimings = Readonly<{
 
 export type WorkerResponse =
   | Readonly<{ id: number; kind: "initialized" }>
-  | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer | SharedArrayBuffer }>
   | Readonly<{
       id: number
       kind: "loaded"

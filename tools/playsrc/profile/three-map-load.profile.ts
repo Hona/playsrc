@@ -20,6 +20,7 @@ type BrowserProfile = {
     postMilliseconds?: number
     requestBytes: number
     transferredBytes: number
+    sharedBytes?: number
     responseBytes?: number
     payloadSha256?: string
     presentationSha256?: string
@@ -165,7 +166,8 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       })
     }
 
-    const byteLength = (value: unknown): number => value instanceof ArrayBuffer ? value.byteLength : ArrayBuffer.isView(value) ? value.byteLength : 0
+    const byteLength = (value: unknown): number => value instanceof ArrayBuffer || value instanceof SharedArrayBuffer
+      ? value.byteLength : ArrayBuffer.isView(value) ? value.byteLength : 0
     const NativeWorker = globalThis.Worker
     class ProfiledWorker extends NativeWorker {
       readonly records = new Map<number, BrowserProfile["workers"][number]>()
@@ -192,12 +194,16 @@ test("profiles exact headed cold initialization for all three configured TF2 map
           return
         }
         const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? []
-        const record = {
-          kind: message.kind,
-          started: performance.now(),
-          requestBytes: byteLength(message.wasm) + byteLength(message.bsp) + byteLength(message.configuration) + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
-            + (Array.isArray(message.chunks) ? message.chunks.reduce((total: number, chunk: { descriptor?: unknown; bytes?: unknown }) => total + byteLength(chunk.descriptor) + byteLength(chunk.bytes), 0) : 0),
-          transferredBytes: transfer.reduce((total, value) => total + byteLength(value), 0),
+          const record = {
+            kind: message.kind,
+            started: performance.now(),
+            requestBytes: byteLength(message.wasm) + byteLength(message.bsp) + byteLength(message.configuration) + byteLength(message.presentation) + byteLength(message.batch) + byteLength(message.command)
+              + (Array.isArray(message.configuration) ? message.configuration.reduce((total: number, section: unknown) => total + byteLength(section), 0) : 0)
+              + (Array.isArray(message.chunks) ? message.chunks.reduce((total: number, chunk: { descriptor?: unknown; bytes?: unknown }) => total + byteLength(chunk.descriptor) + byteLength(chunk.bytes), 0) : 0),
+            transferredBytes: transfer.reduce((total, value) => total + byteLength(value), 0),
+            sharedBytes: Array.isArray(message.configuration)
+              ? message.configuration.reduce((total: number, section: unknown) => total + (section instanceof SharedArrayBuffer ? section.byteLength : 0), 0)
+              : 0,
         } as BrowserProfile["workers"][number]
         this.records.set(message.id, record)
         state.workers.push(record)
@@ -498,7 +504,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
     const row = {
       target: target.target,
       identities: { bsp: target.objects.bsp, resources: target.objects.resources, wasm: configuration.wasm, payloadSha256: worker!.payloadSha256, presentationSha256: worker!.presentationSha256 },
-      bytes: { bsp: Number(target.objects.bsp.byteLength), resources: Number(target.objects.resources.byteLength), payload: load.mapBytes, presentation: load.presentationBytes, downloaded: downloadBytes, workerRequest: worker!.requestBytes, workerTransferred: worker!.transferredBytes, workerResponse: worker!.responseBytes ?? 0, hashed: profile.hashes.reduce((sum, value) => sum + value.bytes, 0), gpuUploaded: after.gpu.uploadBytes - before.gpu.uploadBytes },
+      bytes: { bsp: Number(target.objects.bsp.byteLength), resources: Number(target.objects.resources.byteLength), payload: load.mapBytes, presentation: load.presentationBytes, downloaded: downloadBytes, workerRequest: worker!.requestBytes, workerTransferred: worker!.transferredBytes, workerShared: worker!.sharedBytes ?? 0, workerResponse: worker!.responseBytes ?? 0, hashed: profile.hashes.reduce((sum, value) => sum + value.bytes, 0), gpuUploaded: after.gpu.uploadBytes - before.gpu.uploadBytes },
       cache: { derivedBeforeBytes: before.storage.usage ?? null, derivedAfterBytes: after.storage.usage ?? null, databasesBefore: before.databases, map: load.mapCache, presentation: load.presentationCache, httpTransfers: profile.resources.filter(resource => resource.transferBytes > 0).length, httpHits: profile.resources.filter(resource => resource.transferBytes === 0).length },
       milliseconds: {
         totalWall: Number((ready - started).toFixed(3)),

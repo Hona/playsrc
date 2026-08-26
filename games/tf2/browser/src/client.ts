@@ -212,8 +212,8 @@ export class Tf2WorkerClient {
     if (response.kind !== "initialized") throw new Tf2WorkerError("WorkerFailed")
   }
 
-  async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[]): Promise<Uint8Array> {
-    if (records.length < 1 || records.length > 1_024) throw new Tf2WorkerError("BoundExceeded")
+  async decodeResources(records: readonly Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>[], shared: boolean): Promise<Uint8Array> {
+    if (records.length < 1 || records.length > 1_024 || typeof shared !== "boolean") throw new Tf2WorkerError("BoundExceeded")
     const encoder = new TextEncoder()
     let total = 12
     const chunks = records.map(({ descriptor, bytes }) => {
@@ -224,8 +224,10 @@ export class Tf2WorkerClient {
       if (total > 512 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
       return Object.freeze({ descriptor: transferredBytes(encodedDescriptor), bytes: transferredBytes(bytes) })
     })
-    const response = await this.#request({ kind: "decode-resources", chunks }, chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
-    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer) || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_SECTION_BYTES) {
+    const response = await this.#request({ kind: "decode-resources", chunks, shared }, chunks.flatMap(({ descriptor, bytes }) => [descriptor, bytes]))
+    if (response.kind !== "resources" || !(response.bytes instanceof ArrayBuffer || response.bytes instanceof SharedArrayBuffer)
+      || (response.bytes instanceof SharedArrayBuffer) !== shared
+      || response.bytes.byteLength < 12 || response.bytes.byteLength > MAX_CONFIGURATION_SECTION_BYTES) {
       throw new Tf2WorkerError("WorkerFailed")
     }
     return new Uint8Array(response.bytes)
@@ -285,7 +287,10 @@ export class Tf2WorkerClient {
     const cachedPresentationBytes = cachedPresentation?.byteLength
     let phase = performance.now()
     const bspBuffer = transferredBytes(bsp)
-    const configurationBuffers = configuration.map((section) => section.slice().buffer)
+    const configurationBuffers = configuration.map((section) => section.buffer instanceof SharedArrayBuffer
+      && section.byteOffset === 0 && section.byteLength === section.buffer.byteLength
+      ? section.buffer
+      : section.slice().buffer)
     const presentationBuffer = cachedPresentation ? transferredBytes(cachedPresentation) : undefined
     const inputCloneMilliseconds = performance.now() - phase
     phase = performance.now()
@@ -297,7 +302,8 @@ export class Tf2WorkerClient {
       configuration: configurationBuffers,
       includeMap: !cached,
       ...(presentationBuffer ? { presentation: presentationBuffer } : {}),
-    }, [bspBuffer, ...configurationBuffers, ...(presentationBuffer ? [presentationBuffer] : [])])
+    }, [bspBuffer, ...configurationBuffers.filter((section): section is ArrayBuffer => section instanceof ArrayBuffer),
+      ...(presentationBuffer ? [presentationBuffer] : [])])
     const workerLoadMilliseconds = performance.now() - phase
     try {
       if (
