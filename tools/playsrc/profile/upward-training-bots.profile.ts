@@ -206,7 +206,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     await start.click({ timeout: 5_000 })
     await expect(root).toHaveAttribute("data-team-selection-visible", "true", { timeout: 110_000 })
     const teamAdmissionMilliseconds = Date.now() - mapStarted
-    await chooseTf2Team(page, process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && cache === "warm" ? "blue" : "red")
+    await chooseTf2Team(page, process.env.PROFILE_ACCEPTANCE_STOCK_TEAM === "blue" || process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && cache === "warm" ? "blue" : "red")
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
     const readyMilliseconds = Date.now() - mapStarted
     const classSelectionMilliseconds = Date.now() - mapStarted
@@ -295,6 +295,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   await loadPractice("cold")
   if (process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1") await loadPractice("warm")
+  if (process.env.PROFILE_ACCEPTANCE_STOCK_ONLY === "1") {
+    const stock = await acceptStockLoadouts(page, directory, label)
+    const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
+    await writeFile(path.join(directory, `${label}-correctness.json`), JSON.stringify({ headed: true, loads, stock, losses, team: process.env.PROFILE_ACCEPTANCE_STOCK_TEAM, performanceSample: false }, null, 2))
+    expect(stock).toHaveLength(27)
+    expect(losses).toEqual([])
+    return
+  }
   const finalLoad = loads.at(-1)!
   const { readyMilliseconds, playerCount, launch } = finalLoad
   profilePhases.enter("pre-sample")

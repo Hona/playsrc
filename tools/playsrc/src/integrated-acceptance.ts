@@ -16,6 +16,11 @@ if (scenario === "compare") {
   process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD = "1"
   process.env.PROFILE_UPWARD_TRAINING_INTERACTION = "1"
   process.env.PROFILE_INTEGRATED_ACCEPTANCE = "1"
+  if (scenario!.startsWith("stock-")) {
+    process.env.PROFILE_ACCEPTANCE_STOCK_ONLY = "1"
+    process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD = "0"
+    process.env.PROFILE_ACCEPTANCE_STOCK_TEAM = ["1", "1.25"].includes(plan.dpr) ? "red" : "blue"
+  }
   process.env.PROFILE_UPWARD_TRAINING_LABEL ??= `acceptance-${scenario}-${Date.now()}`
   process.exitCode = await runHeadedProfile([plan.profile, ...arguments_])
 }

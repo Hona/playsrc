@@ -131,8 +131,6 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   expect(constructing.object).toEqual({ kind: 2, mode: 0 })
   expect(constructing.owner).toBe(1)
   expect(constructing.team).toBe(2)
-  const built = await page.locator(".world-canvas").screenshot()
-  await testInfo.attach("headed-authored-constructed-sentry", { body: built, contentType: "image/png" })
 
   const seconds = profileSampleSeconds()
   const cdp = await context.newCDPSession(page)
@@ -171,11 +169,23 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   await page.mouse.click(pointerX, 360)
   await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.buildings[0]?.upgradeMetal), { timeout: 3_000 }).toBe(25)
   await expect(page.locator("main")).toHaveAttribute("data-engineer-metal", "45")
+  await expect(page.locator("main")).toHaveAttribute("data-viewmodel-activity", /IDLE/, { timeout: 5000 })
+  await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 1 })
+  await page.waitForFunction(() => (globalThis as any).__playsrcProfile.worldLighting?.revision === 1)
+  const sentrySamples = await page.evaluate(identity => (globalThis as any).__playsrcProfile.worldLighting.worldGeometry.samples.filter((sample: any) => sample.identity === identity), constructing.identity)
+  expect(sentrySamples.length, "constructed sentry has visible world-depth samples").toBeGreaterThan(0)
+  const built = await page.locator(".world-canvas").screenshot()
+  await testInfo.attach("headed-authored-constructed-sentry", { body: built, contentType: "image/png" })
 
   await page.keyboard.press("Digit5")
   await expect(page.locator("main")).toHaveAttribute("data-engineer-menu", "destroy")
   await page.keyboard.press("Digit1")
   await expect(page.locator("main")).toHaveAttribute("data-building-count", "0")
+  await page.keyboard.press("Digit3")
+  await expect(page.locator("main")).toHaveAttribute("data-viewmodel-activity", /IDLE/, { timeout: 5000 })
+  await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 2 })
+  await page.waitForFunction(() => (globalThis as any).__playsrcProfile.worldLighting?.revision === 2)
+  expect(await page.evaluate(identity => (globalThis as any).__playsrcProfile.worldLighting.worldGeometry.samples.some((sample: any) => sample.identity === identity), constructing.identity)).toBe(false)
   const removed = await page.locator(".world-canvas").screenshot()
   await testInfo.attach("headed-sentry-destroyed", { body: removed, contentType: "image/png" })
   const objects: Array<{ team: number; object: { kind: number; mode: number }; metalBefore: number; metalAfter: number; position: number[] }> = [{
@@ -243,8 +253,16 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   ])
   const presentPixels=decodeScreenshot(built),removedPixels=decodeScreenshot(removed)
   let changedBuildingPixels=0,redBuildingPixels=0
-  for(let y=120;y<Math.min(presentPixels.height-80,600);y+=1)for(let x=280;x<Math.min(presentPixels.width-280,1000);x+=1){const offset=(y*presentPixels.width+x)*presentPixels.channels;const delta=Math.abs(presentPixels.pixels[offset]!-removedPixels.pixels[offset]!)+Math.abs(presentPixels.pixels[offset+1]!-removedPixels.pixels[offset+1]!)+Math.abs(presentPixels.pixels[offset+2]!-removedPixels.pixels[offset+2]!);if(delta>36){changedBuildingPixels+=1;if(presentPixels.pixels[offset]!>presentPixels.pixels[offset+2]!+8)redBuildingPixels+=1}}
-  expect(changedBuildingPixels).toBeGreaterThan(100)
+  for (const sample of sentrySamples) {
+    const centerX = Math.round((sample.x + 1) * presentPixels.width / 2)
+    const centerY = Math.round((1 - sample.y) * presentPixels.height / 2)
+    for (let y = centerY - 4; y < centerY + 4; y++) for (let x = centerX - 4; x < centerX + 4; x++) {
+      const offset = (y * presentPixels.width + x) * presentPixels.channels
+      const delta = Math.abs(presentPixels.pixels[offset]! - removedPixels.pixels[offset]!) + Math.abs(presentPixels.pixels[offset + 1]! - removedPixels.pixels[offset + 1]!) + Math.abs(presentPixels.pixels[offset + 2]! - removedPixels.pixels[offset + 2]!)
+      if (delta > 36) { changedBuildingPixels++; if (presentPixels.pixels[offset]! > presentPixels.pixels[offset + 2]! + 8) redBuildingPixels++ }
+    }
+  }
+  expect(changedBuildingPixels, "visible sentry pixels disappear at unchanged-camera depth witnesses").toBeGreaterThan(Math.max(8, sentrySamples.length * 4))
   const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
   const report = { schema: "playsrc-tf2-headed-engineer-buildings-v2", headed: true, targets: ["pl_upward", "ctf_2fort"], compositor, silence, losses, input: "native-pointer-lock-and-trusted-mouse", buildings: objects, pixels:{changedBuildingPixels,redBuildingPixels,authoredIcons},
     simulation: { seconds: Number(measurement.seconds.toFixed(3)), ticksPerSecond: Number(((measurement.lastTick - measurement.firstTick) / measurement.seconds).toFixed(2)) },
