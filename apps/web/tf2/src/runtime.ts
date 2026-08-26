@@ -1224,10 +1224,39 @@ export class Tf2Application {
     for (const role of roles) for (const chunk of chunksForRole(graph, role)) chunks.set(chunk.encodedSha256, chunk)
     const groups = partitionResourceChunkDescriptors([...chunks.values()], 32 * 1024 * 1024)
     const generation = roles.includes("gameplay") ? this.#generation + 1 : undefined
+    const graphTarget = generation === undefined ? undefined : this.#configuration.targets.find((target) => target.target === graph.target && target.contentBuild === graph.contentBuild)
+    if (generation !== undefined && !graphTarget) throw new Error("Authenticated gameplay resource graph target is unavailable")
+    const resourceIdentityKey = graphTarget
+      ? bytesToHex(sha256(new TextEncoder().encode(`playsrc-tf2-authenticated-resource-identity-v1\0${graphTarget.objects.resources.sha256}\0${roles.toSorted().join(",")}`)))
+      : undefined
+    const expectedResourceBytes = 12 + [...chunks.values()].flatMap((chunk) => chunk.entries)
+      .reduce((total, entry) => total + 8 + new TextEncoder().encode(entry.logicalPath).byteLength + Number(entry.byteLength), 0)
+    const retainedIdentity = resourceIdentityKey ? (async () => {
+      try {
+        const retained = await this.#cache!.read(resourceIdentityKey)
+        if (!retained) return undefined
+        const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(retained.bytes)) as Record<string, unknown>
+        if (Object.keys(parsed).sort().join("\0") !== "byteLength\0sha256"
+          || parsed.byteLength !== expectedResourceBytes || typeof parsed.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(parsed.sha256)) {
+          throw new Error("Authenticated gameplay resource identity differs")
+        }
+        return Object.freeze({ byteLength: parsed.byteLength as number, sha256: parsed.sha256 })
+      } catch {
+        await this.#cache!.remove(resourceIdentityKey)
+        return undefined
+      }
+    })() : undefined
     const sections: Uint8Array[] = []
+    const timeline = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+    const spans = timeline ? (timeline.startupSpans ??= []) as Array<Record<string, unknown>> : undefined
+    const span = (kind: string, started: number, extra: Record<string, unknown> = {}): void => {
+      spans?.push({ kind, roles: roles.join(","), started, finished: performance.now(), ...extra })
+    }
     const acquire = (group: readonly ResourceChunkDescriptor[]) => Promise.all(group.map(async (chunk) => {
       const object = resourceChunkObject(chunk)
+      const started = performance.now()
       const bytes = await this.#acquireObject(object, signal, roles.includes("startup") ? "critical" : "normal")
+      span("chunk-acquire", started, { bytes: bytes.byteLength, identity: chunk.encodedSha256 })
       return Object.freeze({ descriptor: chunk, bytes })
     }))
     let next = acquire(groups[0]!)
@@ -1236,8 +1265,11 @@ export class Tf2Application {
         const records = await next
         if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
         if (index + 1 < groups.length) next = acquire(groups[index + 1]!)
+        let started = performance.now()
         const section = await this.#client!.decodeResources(records, generation)
+        span("resource-decode", started, { group: index, bytes: section.byteLength })
         sections.push(section)
+        started = performance.now()
         for (const [logicalPath, bytes] of parseResourceSet(section)) {
           const existing = destination.get(logicalPath)
           if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
@@ -1245,8 +1277,18 @@ export class Tf2Application {
           }
           destination.set(logicalPath, bytes)
         }
+        span("resource-index", started, { group: index, bytes: section.byteLength })
       }
-      return generation === undefined ? undefined : await this.#client!.finalizeResources(generation, sections)
+      if (generation === undefined) return undefined
+      const identity = await retainedIdentity
+      const started = performance.now()
+      const resources = await this.#client!.finalizeResources(generation, sections, identity)
+      if (resources.byteLength !== expectedResourceBytes) throw new Error("Authenticated gameplay resource length differs")
+      span("resource-finalize", started, { bytes: resources.byteLength, groups: sections.length, cached: Boolean(identity) })
+      if (!identity) {
+        await this.#cache!.write(resourceIdentityKey!, null, new TextEncoder().encode(JSON.stringify({ byteLength: resources.byteLength, sha256: resources.sha256 })))
+      }
+      return resources
     } catch (error) {
       if (generation !== undefined) await this.#client?.releaseResources(generation).catch(() => {})
       throw error
@@ -1712,6 +1754,20 @@ export class Tf2Application {
       finishLoadPhase("rendererCreate")
       this.#resizeRenderer()
       this.#advanceLoading("creating-client-world")
+      const AudioContextConstructor = window.AudioContext
+      if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
+      const audioContext = new AudioContextConstructor()
+      this.#audioContext = audioContext
+      const audioPaths = this.#artifacts.audio.documents.some((document) => document.logicalPath === "scripts/game_sounds_vo.txt")
+        ? [...SOUND_PATHS, ...CTF_SOUND_PATHS]
+        : SOUND_PATHS
+      const audioStarted = performance.now()
+      const audioResourcesReady = Promise.all(audioPaths.map(async (identity) => {
+        const bytes = this.#dependencyEntries.get(identity)
+        if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
+        const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
+        return Object.freeze({ identity, buffer })
+      }))
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
         payloadSha256: this.#loaded.payloadSha256,
@@ -1740,22 +1796,13 @@ export class Tf2Application {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
       finishLoadPhase("rendererLoadMap")
-      const AudioContextConstructor = window.AudioContext
-      if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
-      const audioContext = new AudioContextConstructor()
-      const audioPaths = this.#artifacts.audio.documents.some((document) => document.logicalPath === "scripts/game_sounds_vo.txt")
-        ? [...SOUND_PATHS, ...CTF_SOUND_PATHS]
-        : SOUND_PATHS
-      const audioResources = await Promise.all(
-        audioPaths.map(async (identity) => {
-          const bytes = this.#dependencyEntries.get(identity)
-          if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
-          const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
-          return Object.freeze({ identity, buffer })
-        }),
-      )
+      const audioResources = await audioResourcesReady
+      const startupProfile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+      if (startupProfile) {
+        const spans = (startupProfile.startupSpans ??= []) as Array<Record<string, unknown>>
+        spans.push({ kind: "audio-decode", started: audioStarted, finished: performance.now(), resources: audioResources.length })
+      }
       this.#audio = createAudioSystem(audioContext, audioResources)
-      this.#audioContext = audioContext
       this.#audioBuffers = new Map(audioResources.map((resource) => [resource.identity, resource.buffer]))
       this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
         logicalPath: document.logicalPath,

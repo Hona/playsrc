@@ -270,7 +270,7 @@ class PipelineWorker implements WorkerLike {
           this.#respond({ id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 })
           return
         }
-        void digest(first).then((sha256) => this.#respond({
+        void (request.authenticatedIdentity ? Promise.resolve(request.authenticatedIdentity.sha256) : digest(first)).then((sha256) => this.#respond({
           id: request.id,
           kind: "resources-finalized",
           generation: request.generation,
@@ -580,6 +580,21 @@ describe("TF2 Worker transport ownership", () => {
     const staged = await client.stage(5, Uint8Array.of(1), 0, resources, KEY)
     expect(staged.payload).toEqual(MAP)
     expect(worker.requests.at(-1)).not.toHaveProperty("configuration")
+    await client.shutdown()
+  })
+
+  test("reuses an authenticated generation-bound source identity without accepting mismatched sections or a substituted response", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const input = new Uint8Array(12).fill(7)
+    const section = await client.decodeResources([{ descriptor: RESOURCE_CHUNK, bytes: input }], 8)
+    const identity = { byteLength: section.byteLength, sha256: await digest(section) }
+    expect(await client.finalizeResources(8, [section], identity)).toMatchObject(identity)
+    expect(worker.requests.at(-1)).toMatchObject({ kind: "finalize-resources", generation: 8, authenticatedIdentity: identity })
+    await expect(client.finalizeResources(8, [section], { ...identity, byteLength: identity.byteLength + 1 }))
+      .rejects.toMatchObject({ code: "BoundExceeded" })
+    await expect(client.finalizeResources(8, [section], { ...identity, sha256: "invalid" }))
+      .rejects.toMatchObject({ code: "BoundExceeded" })
     await client.shutdown()
   })
 
