@@ -9,7 +9,14 @@ import { divideProfileWindow, profileSampleSeconds, summarizeFrameTimes } from "
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
 
-const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
+const ALL_TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
+const selectedTarget = process.env.PROFILE_MAP_SANITY_TARGET
+if (selectedTarget && !ALL_TARGETS.includes(selectedTarget as typeof ALL_TARGETS[number])) {
+  throw new Error(`PROFILE_MAP_SANITY_TARGET is not a configured map: ${selectedTarget}`)
+}
+const TARGETS = selectedTarget
+  ? ALL_TARGETS.filter((target) => target === selectedTarget)
+  : ALL_TARGETS
 
 type GeometrySample = Readonly<{
   x: number
@@ -19,6 +26,31 @@ type GeometrySample = Readonly<{
   primitive: number | null
   object: number | null
   material: string | null
+  lightmap: readonly [number, number, number] | null
+}>
+
+type LightingObservation = Readonly<{
+  revision: number
+  profile: "ldr" | "hdr"
+  exposure: Readonly<{ current: number; goal: number; submittedHistograms: number }>
+  viewmodel: null | Readonly<{
+    origin: readonly [number, number, number]
+    ambientCube: readonly (readonly [number, number, number])[]
+    localLights: readonly Readonly<{ kind: string; color: readonly [number, number, number] }>[]
+    environment: string | null
+  }>
+  models: readonly Readonly<{ identity: number; origin: readonly [number, number, number]; localLights: number }>[]
+  geometry: Readonly<{
+    samples: readonly Readonly<{
+      x: number
+      y: number
+      identity: number
+      material: string
+      modelDepth: number
+      worldDepth: number | null
+    }>[]
+  }>
+  depthIsolated: boolean
 }>
 
 type CheckpointGeometry = Readonly<{
@@ -44,7 +76,7 @@ async function consoleCommand(page: Page, entry: Locator, command: string): Prom
   await entry.press("Enter")
 }
 
-function visiblePixels(png: Buffer, hits: readonly GeometrySample[]) {
+function visiblePixels(png: Buffer, hits: readonly Readonly<{ x: number; y: number }>[]) {
   const image = decodeScreenshot(png)
   let nonBackgroundPixels = 0
   let totalLuma = 0
@@ -247,6 +279,37 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       if (pixels.nonBackgroundPixels < pixels.measuredPixels / 4 || pixels.meanLuma <= 4) {
         throw new Error(`${target} ${checkpoint.kind} has no visible authored world pixels: ${JSON.stringify(pixels)}`)
       }
+      revision += 1
+      await page.evaluate((value) => {
+        ;(globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = value
+      }, revision)
+      await page.waitForFunction((value) =>
+        (globalThis as any).__playsrcProfile?.worldLighting?.revision === value,
+      revision, { timeout: 20_000, polling: 10 })
+      const lighting = await page.evaluate(() => (globalThis as any).__playsrcProfile.worldLighting) as LightingObservation
+      if (lighting.profile !== "hdr" || !lighting.viewmodel || !lighting.depthIsolated) {
+        throw new Error(`${target} ${checkpoint.kind} lacks exact HDR viewmodel lighting or world-depth isolation`)
+      }
+      const ambient = lighting.viewmodel.ambientCube.reduce((sum, side) =>
+        sum + side[0] * 0.2125 + side[1] * 0.7154 + side[2] * 0.0721, 0) / 6
+      if (!Number.isFinite(ambient) || ambient <= 0) {
+        throw new Error(`${target} ${checkpoint.kind} has no authored BSP leaf ambient cube`)
+      }
+      const launcher = lighting.geometry.samples.filter((sample) => sample.material.toLowerCase().includes("rocket"))
+      if (launcher.length === 0) {
+        throw new Error(`${target} ${checkpoint.kind} has no visible authored Soldier rocket-launcher depth`)
+      }
+      const weaponPixels = visiblePixels(screenshot, launcher)
+      if (weaponPixels.meanLuma <= 8 || weaponPixels.nonBackgroundPixels < weaponPixels.measuredPixels / 2) {
+        throw new Error(`${target} ${checkpoint.kind} Soldier launcher remains nearly black: ${JSON.stringify(weaponPixels)}`)
+      }
+      const authoredIrradiance = hits.filter((hit) => hit.lightmap !== null).map((hit) => {
+        const [red, green, blue] = hit.lightmap!
+        return red * 0.2125 + green * 0.7154 + blue * 0.0721
+      })
+      if (authoredIrradiance.length === 0 || authoredIrradiance.every((value) => value <= 0)) {
+        throw new Error(`${target} ${checkpoint.kind} has no selected authored world lightmap exposure`)
+      }
       await writeFile(path.join(output, `${target}-${checkpoint.kind}.png`), screenshot)
       observations.push({
         kind: checkpoint.kind,
@@ -259,6 +322,24 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
         waterPasses: geometry.waterPasses,
         tick: geometry.tick,
         pixels,
+        lighting: {
+          profile: lighting.profile,
+          exposure: lighting.exposure,
+          ambientLuminance: Number(ambient.toFixed(6)),
+          localLights: lighting.viewmodel.localLights.length,
+          environment: lighting.viewmodel.environment,
+          lightmapLuminance: {
+            minimum: Number(Math.min(...authoredIrradiance).toFixed(6)),
+            maximum: Number(Math.max(...authoredIrradiance).toFixed(6)),
+          },
+          launcher: {
+            samples: launcher.length,
+            depthRange: [Math.min(...launcher.map((sample) => sample.modelDepth)), Math.max(...launcher.map((sample) => sample.modelDepth))],
+            worldDepth: launcher.map((sample) => sample.worldDepth).filter((depth) => depth !== null),
+            pixels: weaponPixels,
+          },
+          depthIsolated: lighting.depthIsolated,
+        },
       })
     }
 
@@ -297,11 +378,11 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
   }
 
   const coverage = new Set(maps.flatMap((map) => (map.checkpoints as { kind: string }[]).map((checkpoint) => checkpoint.kind)))
-  for (const kind of ["spawn", "outdoor-terrain", "floor", "water", "bridge", "objective"]) {
+  if (!selectedTarget) for (const kind of ["spawn", "outdoor-terrain", "floor", "water", "bridge", "objective"]) {
     expect(coverage.has(kind), `authored ${kind} camera checkpoint`).toBe(true)
   }
   const report = {
-    schema: "playsrc-tf2-headed-map-sanity-v1",
+    schema: "playsrc-tf2-headed-map-sanity-v2",
     headed: true,
     startupMovie: "skipped",
     viewport: { width: 1280, height: 720 },

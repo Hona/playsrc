@@ -3966,6 +3966,28 @@ export class Tf2Application {
     if(profile){
       this.#canvas.dataset.displayCameraPosition=camera.position.join(",")
       const displayedViewmodel=models?.find(model=>model.viewModel)
+      const lightingRevision = profile.worldLightingEvidenceRevision
+      if (Number.isSafeInteger(lightingRevision)
+        && lightingRevision !== (profile.worldLighting as { revision?: number } | undefined)?.revision) {
+        profile.worldLighting = Object.freeze({
+          revision: lightingRevision,
+          profile: renderer.configuration.lightingProfile,
+          exposure: rendered.exposure,
+          viewmodel: displayedViewmodel?.modelLighting ? Object.freeze({
+            origin: displayedViewmodel.modelLighting.lightingOrigin,
+            ambientCube: displayedViewmodel.modelLighting.ambientCube,
+            localLights: displayedViewmodel.modelLighting.localLights,
+            environment: displayedViewmodel.modelLighting.localEnvironment,
+          }) : null,
+          models: models?.filter((model) => !model.viewModel && model.modelLighting).map((model) => Object.freeze({
+            identity: model.identity,
+            origin: model.modelLighting!.lightingOrigin,
+            localLights: model.modelLighting!.localLights.length,
+          })) ?? [],
+          geometry: renderer.captureViewModelEvidence(camera),
+          depthIsolated: rendered.viewModelPass?.worldDepthCleared ?? false,
+        })
+      }
       if(displayedViewmodel?.angles){
         const worldViewmodel=composeViewmodelTransform({position:displayedViewmodel.position,angles:displayedViewmodel.angles},camera)
         this.#canvas.dataset.displayViewmodelPitch=String(worldViewmodel.angles[0])
@@ -4151,6 +4173,18 @@ export class Tf2Application {
       const authoritativeCamera=tf2Camera(snapshot,this.#yaw,this.#pitch)
       const presentedEye=this.#predictedEye.sample(publication.interpolation)
       const camera=presentedEye?Object.freeze({...authoritativeCamera,position:presentedEye}):authoritativeCamera
+      const worldModelLighting = (
+        origin: readonly [number, number, number],
+        angles: readonly [number, number, number],
+      ): NonNullable<ModelPoseRequest["lighting"]> => Object.freeze({
+        origin,
+        angles,
+        cameraPosition: camera.position,
+      })
+      const viewModelLighting = worldModelLighting(
+        camera.position,
+        Object.freeze([camera.pitchDegrees, camera.yawDegrees, 0]),
+      )
       if(!ownsGeneration())return
       const viewport=this.#viewport(),view={aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far}
       const historicalViewmodels: ModelPoseRequest[] = []
@@ -4178,7 +4212,7 @@ export class Tf2Application {
       const viewmodel=mapViewmodel(snapshot)
       const currentFire=publication.eventBatches.at(-1)?.snapshot.projectileEvents.find((event)=>event.type==="fire"&&event.ownerIdentity===1)
       if(currentFire&&(!currentFire.launcherPose||!viewmodel))throw new Error(`TF2 fire-tick launcher pose unavailable: ${currentFire.tick}:${currentFire.projectile}`)
-      const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
+      const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,lighting:viewModelLighting,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
       let watchRequest: ModelPoseRequest | undefined
       if (snapshot.class !== 8) {
         this.#watchActivity = undefined
@@ -4221,11 +4255,12 @@ export class Tf2Application {
               skin: snapshot.team === 2 ? 0 : 1,
               lod: 0,
               bodygroups: Object.freeze(watch.bodygroupCounts.map(() => 0)),
+              lighting: viewModelLighting,
             })
           }
         }
       }
-      const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body})]})
+      const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body,lighting:worldModelLighting(occurrence.origin,occurrence.angles)})]})
       const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
       const botRequests=livingBots.map(bot=>{
         const model=tf2ClassPresentation(bot.class).model
@@ -4236,7 +4271,7 @@ export class Tf2Application {
         const activity=`ACT_MP_${moving?"RUN":"STAND"}_${role}`
         if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
-        return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})
+        return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(bot.position,Object.freeze([0,bot.yawDegrees,0]))})
       })
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
         if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
@@ -4245,7 +4280,7 @@ export class Tf2Application {
         const activity=flag.status===1?"idle":"spin"
         if(!artifact.sequences.some(sequence=>sequence.label.toLowerCase()===activity))throw new Error(`Authored TF2 intelligence sequence unavailable: ${flag.model}:${activity}`)
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
-        return [Object.freeze({identity:OBJECTIVE_MODEL_IDENTITY_BASE+flag.identity,model:flag.model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:flag.skin,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})]
+        return [Object.freeze({identity:OBJECTIVE_MODEL_IDENTITY_BASE+flag.identity,model:flag.model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:flag.skin,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(flag.position,flag.angles)})]
       })
       const buildingRequests=snapshot.buildings.map(building=>{
         const model=buildingModel(building),artifact=this.#artifacts!.models.get(model)
@@ -4254,9 +4289,9 @@ export class Tf2Application {
         const selected=artifact.sequences.find(sequence=>sequence.activity===desired)??artifact.sequences.find(sequence=>sequence.activity==="ACT_OBJ_IDLE")??artifact.sequences[0]
         if(!selected)throw new Error(`Authored TF2 building activity unavailable: ${model}:${desired}`)
         const elapsed=Math.max(0,Number(snapshot.tick-building.startedTick)*SIMULATION_SAMPLE_INTERVAL_SECONDS)
-        return Object.freeze({identity:building.identity,model,activity:selected.activity||selected.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:building.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})
+        return Object.freeze({identity:building.identity,model,activity:selected.activity||selected.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:building.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(building.position,Object.freeze([0,building.yawDegrees,0]))})
       })
-      const placementRequest=snapshot.placement?(()=>{const placement=snapshot.placement!,model=blueprintModel(placement.object),artifact=this.#artifacts!.models.get(model),sequence=artifact?.sequences[0];if(!artifact||!sequence)throw new Error(`Authored TF2 building blueprint unavailable: ${model}`);const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS;return Object.freeze({identity:BUILDING_BLUEPRINT_IDENTITY,model,activity:sequence.activity||sequence.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:snapshot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0))})})():undefined
+      const placementRequest=snapshot.placement?(()=>{const placement=snapshot.placement!,model=blueprintModel(placement.object),artifact=this.#artifacts!.models.get(model),sequence=artifact?.sequences[0];if(!artifact||!sequence)throw new Error(`Authored TF2 building blueprint unavailable: ${model}`);const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS;return Object.freeze({identity:BUILDING_BLUEPRINT_IDENTITY,model,activity:sequence.activity||sequence.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:snapshot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(placement.position,Object.freeze([0,placement.yawDegrees,0]))})})():undefined
       const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       this.#wasmCalls.visibility++;const visibilityRequest=client.visibility(generation,{
@@ -4354,11 +4389,11 @@ export class Tf2Application {
         maximumCombatDecals:Number(this.#settings?.snapshot().settings.current.mp_decals??200),
         models: Object.freeze([
           ...projectileModels(presentation.models),
-          ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose})}),
-          ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose})}),
-          ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose})}),
-          ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2?0:1,pose})}),
-          ...(blueprintPose&&snapshot.placement?[Object.freeze({identity:blueprintPose.identity,model:blueprintPose.model,position:snapshot.placement.position,angles:Object.freeze([0,snapshot.placement.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:snapshot.team===2?0:1,pose:blueprintPose})]:[]),
+          ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose,modelLighting:pose.lighting!})}),
+          ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose,modelLighting:pose.lighting!})}),
+          ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!})}),
+          ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2?0:1,pose,modelLighting:pose.lighting!})}),
+          ...(blueprintPose&&snapshot.placement?[Object.freeze({identity:blueprintPose.identity,model:blueprintPose.model,position:snapshot.placement.position,angles:Object.freeze([0,snapshot.placement.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:snapshot.team===2?0:1,pose:blueprintPose,modelLighting:blueprintPose.lighting!})]:[]),
           ...viewmodelPoses.map((pose, index) => Object.freeze({
             ...viewmodel!.item,
             identity: viewmodel!.item.identity + index,
@@ -4367,6 +4402,7 @@ export class Tf2Application {
             position:pose.viewmodel!.transform.origin,angles:pose.viewmodel!.transform.angles,
             viewModelProjection:Object.freeze({kind:"viewmodel" as const,horizontalFov4By3:pose.viewmodel!.projection.unscaledHorizontalFov4By3,near:pose.viewmodel!.projection.near,depthRange:pose.viewmodel!.depthRange,drawsAfterWorld:true,opaqueBeforeTranslucent:true,optionalViewSpaceYReflection:pose.viewmodel!.reflected}),
             pose,
+            modelLighting: pose.lighting!,
           })),
           ...(watchPose ? [Object.freeze({
             identity: watchPose.identity,
@@ -4378,6 +4414,7 @@ export class Tf2Application {
             viewModel: true,
             viewModelProjection: Object.freeze({ kind: "viewmodel" as const, horizontalFov4By3: watchPose.viewmodel!.projection.unscaledHorizontalFov4By3, near: watchPose.viewmodel!.projection.near, depthRange: watchPose.viewmodel!.depthRange, drawsAfterWorld: true, opaqueBeforeTranslucent: true, optionalViewSpaceYReflection: false }),
             pose: watchPose,
+            modelLighting: watchPose.lighting!,
           })] : []),
         ]),
         brushModels: snapshot.entityPresentation,

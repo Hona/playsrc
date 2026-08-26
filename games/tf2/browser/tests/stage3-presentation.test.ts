@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the fire-tick PMRQ v6 contract", () => {
+test("encodes each Unicode model/activity exactly once into the lit fire-tick PMRQ v7 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,7 +132,7 @@ test("encodes each Unicode model/activity exactly once into the fire-tick PMRQ v
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(6)
+  expect(view.getUint32(4, true)).toBe(7)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getBigUint64(16, true)).toBe(0n)
   expect(view.getUint32(56, true)).toBe(new TextEncoder().encode(request.model).byteLength)
@@ -216,7 +216,7 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(5)
+  u32(6)
   u32(1)
   u32(9)
   u32(7)
@@ -241,6 +241,7 @@ test("decodes exact interleaved PMPO vertex planes and rejects non-finite or tru
   u32(2)
   output.push(1, 0, 0, 0)
   ;[1, 2, 3, 0, 0, 1, 4, 5, 6, 1, 7, 8, 9, 0, 1, 0, 10, 11, 12, -1].forEach(f32)
+  u32(0)
   u32(0)
   const bytes = Uint8Array.from(output)
   const pose = decodeModelPoseOutput(bytes)[0]!

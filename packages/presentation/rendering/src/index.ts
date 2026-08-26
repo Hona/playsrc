@@ -46,6 +46,14 @@ import {
 } from "./model-lighting"
 import { buildSourceSkyGeometry } from "./source-environment"
 import { createSourceLightmappedEnvironmentNode, type SourceLightmappedEnvironmentNode } from "./source-lightmapped"
+import { SourceExposureSampler } from "./source-exposure"
+import {
+  createSourceModelLightingUniforms,
+  sourceModelLightingNode,
+  sourceStaticVertexLightingNode,
+  updateSourceModelLightingUniforms,
+  type SourceModelLightingUniforms,
+} from "./source-model-lighting"
 import {
   createSourceViewFogUniforms,
   createSourceWaterFogUniforms,
@@ -781,6 +789,7 @@ export type GeometryEvidence = Readonly<{
     primitive: number | null
     object: number | null
     material: string | null
+    lightmap: readonly [number, number, number] | null
   }>[]
 }>
 
@@ -789,6 +798,18 @@ export type WaterTargetEvidence = Readonly<{
   y: number
   reflection: readonly [number, number, number, number]
   refraction: readonly [number, number, number, number]
+}>
+
+export type ModelGeometryEvidence = Readonly<{
+  sceneGeneration: number
+  samples: readonly Readonly<{
+    x: number
+    y: number
+    identity: number
+    material: string
+    modelDepth: number
+    worldDepth: number | null
+  }>[]
 }>
 
 export interface Renderer {
@@ -800,6 +821,7 @@ export interface Renderer {
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
+  captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
@@ -1327,6 +1349,7 @@ class RendererOwner implements Renderer {
   readonly #canvas: Canvas
   readonly #powerPreference: "low-power" | "high-performance" | undefined
   readonly #exposure: ExposureController
+  #exposureSampler?: SourceExposureSampler
   #lifecycle: RendererLifecycle = "Initializing"
   #deviceGeneration = 0
   #sceneGeneration = 0
@@ -1345,8 +1368,8 @@ class RendererOwner implements Renderer {
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
-  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; seen: number }>()
-  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; seen: number }>()
+  #viewModelInstances = new Map<number, { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; seen: number }>()
+  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; seen: number }>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
@@ -1471,7 +1494,7 @@ class RendererOwner implements Renderer {
         raycaster.setFromCamera(new THREE.Vector2(x, y), this.#camera)
         const intersection = raycaster.intersectObjects(meshes, false)[0]
         if (!intersection || intersection.faceIndex === undefined) {
-          samples.push(Object.freeze({ x, y, disposition: "background", family: null, depth: null, primitive: null, object: null, material: null }))
+          samples.push(Object.freeze({ x, y, disposition: "background", family: null, depth: null, primitive: null, object: null, material: null, lightmap: null }))
           continue
         }
         const mesh = intersection.object as THREE.Mesh
@@ -1486,6 +1509,7 @@ class RendererOwner implements Renderer {
             primitive: Number.isSafeInteger(mesh.userData.sourcePrimitive) ? Number(mesh.userData.sourcePrimitive) : null,
             object: prop.identity,
             material: String(mesh.userData.materialIdentity),
+            lightmap: null,
           }))
           continue
         }
@@ -1503,6 +1527,14 @@ class RendererOwner implements Renderer {
           }
         }
         if (sourceTriangle < 0) throw new RenderingError("InvalidState", "visible primitive identity is unavailable")
+        const atlas = this.#active.map.lightmap!
+        const uv = intersection.uv1
+        const lightmap = uv ? (() => {
+          const sampleX = Math.max(0, Math.min(atlas.width - 1, Math.floor(uv.x * atlas.width)))
+          const sampleY = Math.max(0, Math.min(atlas.height - 1, Math.floor(uv.y * atlas.height)))
+          const offset = (sampleY * atlas.width + sampleX) * 4
+          return Object.freeze([atlas.flat[offset]!, atlas.flat[offset + 1]!, atlas.flat[offset + 2]!]) as readonly [number, number, number]
+        })() : null
         samples.push(Object.freeze({
           x,
           y,
@@ -1512,6 +1544,44 @@ class RendererOwner implements Renderer {
           primitive: batch.faces[sourceTriangle]!,
           object,
           material: String(batch.mesh.userData.materialIdentity),
+          lightmap,
+        }))
+      }
+    }
+    return Object.freeze({ sceneGeneration: this.#sceneGeneration, samples: Object.freeze(samples) })
+  }
+
+  captureViewModelEvidence(camera: Camera): ModelGeometryEvidence {
+    if (!this.#active || this.#lifecycle !== "Ready") {
+      throw new RenderingError("InvalidState", "renderer viewmodel evidence is unavailable")
+    }
+    this.#setCamera(camera)
+    this.#scene.updateMatrixWorld(true)
+    const viewRay = new THREE.Raycaster()
+    viewRay.layers.set(1)
+    const worldRay = new THREE.Raycaster()
+    const world = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const samples: ModelGeometryEvidence["samples"][number][] = []
+    for (const y of [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6]) {
+      for (const x of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
+        viewRay.setFromCamera(new THREE.Vector2(x, y), this.#viewCamera)
+        const hit = viewRay.intersectObjects(this.#viewModels.children, true)[0]
+        if (!hit || samples.length >= 12) continue
+        let owner: THREE.Object3D | null = hit.object
+        while (owner && !Number.isSafeInteger(owner.userData.identity)) owner = owner.parent
+        if (!owner) throw new RenderingError("IdentityMismatch", "viewmodel evidence has no authored owner")
+        let worldDepth: number | null = null
+        if (samples.length < 2) {
+          worldRay.setFromCamera(new THREE.Vector2(x, y), this.#camera)
+          worldDepth = worldRay.intersectObjects(world, false)[0]?.distance ?? null
+        }
+        samples.push(Object.freeze({
+          x,
+          y,
+          identity: owner.userData.identity,
+          material: String(hit.object.userData.materialIdentity),
+          modelDepth: hit.distance,
+          worldDepth,
         }))
       }
     }
@@ -1592,6 +1662,13 @@ class RendererOwner implements Renderer {
         ) {
           throw new Error("canvas configuration mismatch")
         }
+      }
+      if (this.configuration.lightingProfile === "hdr" && backend.backend.device && context) {
+        this.#exposureSampler = new SourceExposureSampler(
+          backend.backend.device,
+          context,
+          this.configuration.canvasFormat,
+        )
       }
       return backend
     } catch (error) {
@@ -2604,7 +2681,7 @@ class RendererOwner implements Renderer {
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
             if(!material){
               material=original.clone()
-              const base=original.colorNode??TSL.vec4(1,1,1,1),rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?TSL.attribute("staticLighting","vec4").bgra.rgb:runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform)
+              const base=original.colorNode??TSL.vec4(1,1,1,1),rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?sourceStaticVertexLightingNode():runtimeStaticLightingNode(map,props,propIndex)).mul(exposureUniform)
               const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
               material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
@@ -3115,6 +3192,8 @@ class RendererOwner implements Renderer {
           for (const waterMesh of this.#active.waterMeshes) waterMesh.mesh.visible = false
         }
       }
+      const sampledHistogram = this.#exposureSampler?.take()
+      if (sampledHistogram) this.#exposure.submit(sampledHistogram)
       if (frame.exposureHistogram) this.#exposure.submit(frame.exposureHistogram)
       const exposure =
         this.configuration.lightingProfile === "hdr"
@@ -3168,6 +3247,10 @@ class RendererOwner implements Renderer {
         }
         const overlay = frame.visibility?.water.visibleWater?.overlay
         if (overlay) this.#renderUnderwaterOverlay(overlay)
+        this.#exposureSampler?.sample(
+          Math.floor(this.#viewportWidth * this.#devicePixelRatio),
+          Math.floor(this.#viewportHeight * this.#devicePixelRatio),
+        )
       }
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
       return Object.freeze({
@@ -4057,6 +4140,7 @@ class RendererOwner implements Renderer {
       if (!item.pose) throw new RenderingError("MalformedInput", "viewmodel pose is missing")
       const meshes = this.#applyPose(instance, item.pose, false)
       const root = new THREE.Group()
+      root.userData.identity = item.identity
       root.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
       root.add(instance)
       root.traverse((object) => object.layers.set(1))
@@ -4066,6 +4150,7 @@ class RendererOwner implements Renderer {
     } else if (item.pose) {
       this.#applyPose(retained.instance, item.pose, true, retained.meshes)
     }
+    this.#applyDynamicModelLighting(retained, item)
     const frameState = item.pose?.viewmodel
     if (!frameState) throw new RenderingError("MalformedInput", "complete viewmodel frame state is missing")
     const encoded = this.#active!.loadRequest.modelFacing?.get(item.model.toLowerCase())
@@ -4106,6 +4191,49 @@ class RendererOwner implements Renderer {
       }
       if (object.userData.dynamicGeometry === true) object.geometry.dispose()
     })
+  }
+
+  #applyDynamicModelLighting(
+    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms },
+    item: ModelItem,
+  ): void {
+    const input = item.modelLighting
+    if (!input) return
+    let uniforms = retained.lighting
+    if (!uniforms) {
+      uniforms = createSourceModelLightingUniforms()
+      retained.lighting = uniforms
+      const meshes = retained.meshes ?? []
+      if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
+      for (const mesh of meshes) {
+        const identity = String(mesh.userData.materialIdentity).toLowerCase()
+        const authored = this.#active!.loadRequest.modelMaterials?.get(identity)
+        if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture") continue
+        if (mesh.userData.dynamicMaterial !== true) {
+          mesh.material = Array.isArray(mesh.material)
+            ? mesh.material.map((material) => material.clone())
+            : mesh.material.clone()
+          mesh.userData.dynamicMaterial = true
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        for (const material of materials) {
+          if (!(material instanceof THREE.MeshBasicNodeMaterial)) {
+            throw new RenderingError("UnsupportedFeature", `model lighting shader ${identity} is unavailable`)
+          }
+          const state = authored.state as Readonly<{ halfLambert?: boolean }>
+          if (typeof state.halfLambert !== "boolean") {
+            throw new RenderingError("MissingInput", `model half-Lambert state ${identity} is unavailable`)
+          }
+          const base = material.colorNode ?? TSL.vec4(1, 1, 1, 1)
+          material.colorNode = TSL.vec4(
+            base.rgb.mul(sourceModelLightingNode(uniforms, state.halfLambert)).mul(this.#active!.exposureUniform),
+            base.a,
+          )
+          material.needsUpdate = true
+        }
+      }
+    }
+    updateSourceModelLightingUniforms(uniforms, input)
   }
 
   #placeDynamicInstance(instance: THREE.Group, order: number): void {
@@ -4212,6 +4340,7 @@ class RendererOwner implements Renderer {
         if (item.pose) {
           retained.meshes = this.#applyPose(retained.instance, item.pose, retained.meshes !== undefined, retained.meshes)
         }
+        this.#applyDynamicModelLighting(retained, item)
         if (item.angles) sourceTransform(retained.instance, item.position, item.angles)
         else {
           retained.instance.position.set(...item.position)
@@ -4404,6 +4533,8 @@ class RendererOwner implements Renderer {
       }
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
+      this.#exposureSampler?.dispose()
+      this.#exposureSampler = undefined
       oldBackend.dispose()
       this.#backend = await this.#createBackend()
       this.#deviceGeneration += 1
@@ -4501,6 +4632,8 @@ class RendererOwner implements Renderer {
     }
     this.#restoreOrderedBundles?.()
     this.#restoreOrderedBundles = undefined
+    this.#exposureSampler?.dispose()
+    this.#exposureSampler = undefined
     this.#backend.dispose()
     try {
       this.#backend.backend.context?.unconfigure()

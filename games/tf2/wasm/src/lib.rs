@@ -504,6 +504,12 @@ fn presentation_model_cache()
 }
 
 #[derive(Clone, Copy)]
+struct StudioModelLightingMetadata {
+    position: playsrc_studio_model::Vector3,
+    attachment: i32,
+}
+
+#[derive(Clone, Copy)]
 struct PresentationInputs<'a, 'source> {
     canonical: &'a playsrc_map::CanonicalMap,
     bsp: &'a playsrc_bsp::Bsp,
@@ -532,6 +538,8 @@ struct Slot {
     combat_decals: Option<CombatDecalWorld>,
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    model_lighting_metadata: BTreeMap<String, StudioModelLightingMetadata>,
+    model_lighting_world: Option<playsrc_map::ModelLightingWorld>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
@@ -1105,7 +1113,7 @@ unsafe fn compile_map(
             additional_model_roots: &static_model_roots,
         };
         let (
-            (presentation, studio_models, model_material_opacity, environment),
+            (presentation, studio_models, model_lighting_metadata, model_material_opacity, environment),
             presentation_metrics,
             _presentation_ledger,
         ) = if let Some(cached) = cached_presentation {
@@ -1212,6 +1220,7 @@ unsafe fn compile_map(
             samples: runtime.map.lighting.ambient_samples.clone(),
             lights: runtime.map.lighting.world_lights.clone(),
         };
+        let model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
         let visibility = runtime.visibility;
         let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
             .map_err(|_| 3_u32)?;
@@ -1332,6 +1341,8 @@ unsafe fn compile_map(
             particle_lighting,
             decals,
             studio_models,
+            model_lighting_metadata,
+            model_lighting_world,
             model_material_opacity,
             environment,
             visibility,
@@ -1371,6 +1382,8 @@ unsafe fn compile_map(
             particle_lighting,
             decals,
             studio_models,
+            model_lighting_metadata,
+            model_lighting_world,
             model_material_opacity,
             environment,
             visibility,
@@ -1395,6 +1408,8 @@ unsafe fn compile_map(
             combat_decals: Some(decals),
             particle_output: Vec::new(),
             studio_models,
+            model_lighting_metadata,
+            model_lighting_world: Some(model_lighting_world),
             model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
@@ -1435,6 +1450,8 @@ unsafe fn compile_map(
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_lighting_metadata: BTreeMap::new(),
+            model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
@@ -1855,6 +1872,23 @@ struct ModelPoseRequest {
     packed_body: Option<i32>,
     bodygroups: Vec<usize>,
     item_bodygroups: Vec<usize>,
+    lighting: Option<ModelPoseLightingRequest>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ModelPoseLightingRequest {
+    origin: [f32; 3],
+    angles: [f32; 3],
+    camera: [f32; 3],
+}
+
+struct ModelPoseWorld<'a> {
+    metadata: &'a BTreeMap<String, StudioModelLightingMetadata>,
+    lighting: &'a mut playsrc_map::ModelLightingWorld,
+    visibility: &'a playsrc_visibility::World,
+    collision: &'a playsrc_collision::World,
+    snapshot: &'a playsrc_collision::Snapshot,
+    cubemaps: &'a [playsrc_map::CubemapSample],
 }
 
 #[unsafe(no_mangle)]
@@ -1882,11 +1916,36 @@ pub unsafe extern "C" fn playsrc_model_transact(
     if slot.generation != generation {
         return 0;
     }
+    let Some(gameplay) = slot.gameplay_world.as_ref() else {
+        return 0;
+    };
+    let snapshot = gameplay.snapshot();
+    let Some(lighting) = slot.model_lighting_world.as_mut() else {
+        return 0;
+    };
+    let Some(visibility) = slot.visibility.as_ref() else {
+        return 0;
+    };
+    let Some(collision) = slot.collision.as_ref() else {
+        return 0;
+    };
+    let Some(environment) = slot.environment.as_ref() else {
+        return 0;
+    };
+    let mut world = ModelPoseWorld {
+        metadata: &slot.model_lighting_metadata,
+        lighting,
+        visibility,
+        collision,
+        snapshot: &snapshot,
+        cubemaps: &environment.world.cubemaps,
+    };
     let Ok(output) = encode_model_poses(
         &slot.studio_models,
         &slot.model_material_opacity,
         &mut slot.viewmodel_bob,
         &requests,
+        &mut world,
     ) else {
         return 0;
     };
@@ -1925,7 +1984,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 6 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 7 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2033,6 +2092,30 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let item_bodygroups = (0..item_bodygroup_count)
             .map(|_| reader.u32().map(|value| value as usize))
             .collect::<Result<Vec<_>, _>>()?;
+        let has_lighting = reader.u8()?;
+        if has_lighting > 1 || reader.take(3)? != [0; 3] {
+            return Err(());
+        }
+        let lighting_origin = [reader.f32()?, reader.f32()?, reader.f32()?];
+        let lighting_angles = [reader.f32()?, reader.f32()?, reader.f32()?];
+        let lighting_camera = [reader.f32()?, reader.f32()?, reader.f32()?];
+        let lighting = if has_lighting == 1 {
+            Some(ModelPoseLightingRequest {
+                origin: lighting_origin,
+                angles: lighting_angles,
+                camera: lighting_camera,
+            })
+        } else {
+            if lighting_origin
+                .into_iter()
+                .chain(lighting_angles)
+                .chain(lighting_camera)
+                .any(|value| value != 0.0)
+            {
+                return Err(());
+            }
+            None
+        };
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
             identity,
@@ -2057,6 +2140,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             packed_body,
             bodygroups,
             item_bodygroups,
+            lighting,
         });
     }
     (reader.at == bytes.len()).then_some(requests).ok_or(())
@@ -2197,9 +2281,10 @@ fn encode_model_poses(
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     requests: &[ModelPoseRequest],
+    world: &mut ModelPoseWorld<'_>,
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&5u32.to_le_bytes());
+    out.extend_from_slice(&6u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     for request in requests {
@@ -2381,6 +2466,7 @@ fn encode_model_poses(
                     &selected,
                     part.opaque_primitives.len(),
                     Some(&state),
+                    world,
                 )?;
                 part_count = part_count.checked_add(1).ok_or(())?;
             }
@@ -2498,6 +2584,7 @@ fn encode_model_poses(
                 &selected,
                 selected.len(),
                 legacy_view.as_ref(),
+                world,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         }
@@ -2564,6 +2651,7 @@ fn encode_model_pose_part(
     selected: &[playsrc_studio_model::SelectedPrimitive],
     opaque_count: usize,
     view: Option<&ViewOutput>,
+    world: &mut ModelPoseWorld<'_>,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
     out.extend_from_slice(&request.sample_tick.to_le_bytes());
@@ -2745,7 +2833,134 @@ fn encode_model_pose_part(
             out.extend_from_slice(&value.0.to_le_bytes());
         }
     }
+    encode_model_lighting(out, request, model, pose, world)?;
     Ok(())
+}
+
+fn encode_model_lighting(
+    out: &mut Vec<u8>,
+    request: &ModelPoseRequest,
+    model: &playsrc_studio_model::PresentationModel,
+    pose: &playsrc_studio_model::SampledPose,
+    world: &mut ModelPoseWorld<'_>,
+) -> Result<(), ()> {
+    let Some(request) = request.lighting else {
+        out.extend_from_slice(&[0; 4]);
+        return Ok(());
+    };
+    let metadata = *world.metadata.get(&model.identity).ok_or(())?;
+    let vector = |values: [f32; 3]| {
+        playsrc_studio_model::Vector3(
+            values.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+        )
+    };
+    let transform = playsrc_studio_model::source_entity_transform(
+        vector(request.origin),
+        vector(request.angles),
+    )
+    .map_err(|_| ())?;
+    let posed = if metadata.attachment == 0 {
+        None
+    } else {
+        Some(playsrc_studio_model::apply_entity_transform(model, pose, transform).map_err(|_| ())?)
+    };
+    let origin = playsrc_studio_model::source_model_lighting_origin(
+        metadata.position,
+        metadata.attachment,
+        transform,
+        posed.as_ref(),
+        &model.identity,
+    )
+    .map_err(|_| ())?
+    .0
+    .map(|value| f32::from_bits(value.0));
+    let state = world
+        .lighting
+        .sample(origin, world.visibility, world.collision, world.snapshot)?;
+    let lights = state
+        .local_lights
+        .iter()
+        .filter_map(|selected| material_world_light(&selected.light))
+        .collect::<Result<Vec<_>, ()>>()?;
+    if lights.len() > playsrc_studio_model::MAX_MODEL_LOCAL_LIGHTS {
+        return Err(());
+    }
+    out.extend_from_slice(&[1, lights.len() as u8, 1, 0]);
+    for value in state.origin.into_iter().chain(request.camera) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in state.ambient_cube.iter().flatten() {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for light in lights {
+        out.extend_from_slice(&[light.kind, 0, 0, 0]);
+        for value in light
+            .color
+            .into_iter()
+            .chain(light.position)
+            .chain(light.direction)
+            .chain([light.range, light.falloff])
+            .chain(light.attenuation)
+            .chain([light.theta, light.phi])
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    let environment = playsrc_map::select_cubemap(world.cubemaps, state.origin, None)
+        .ok()
+        .map_or("", |cubemap| cubemap.logical_path.as_str());
+    pbytes(out, environment.as_bytes())
+}
+
+struct MaterialWorldLight {
+    kind: u8,
+    color: [f32; 3],
+    position: [f32; 3],
+    direction: [f32; 3],
+    range: f32,
+    falloff: f32,
+    attenuation: [f32; 3],
+    theta: f32,
+    phi: f32,
+}
+
+fn material_world_light(light: &playsrc_map::WorldLight) -> Option<Result<MaterialWorldLight, ()>> {
+    let (kind, attenuation, theta, phi, falloff) = match light.kind {
+        0 => (2, [0.0, 0.0, 1.0], std::f32::consts::PI, std::f32::consts::PI, 1.0),
+        1 => (
+            0,
+            [light.constant_attenuation, light.linear_attenuation, light.quadratic_attenuation],
+            0.0,
+            0.0,
+            0.0,
+        ),
+        2 => (
+            2,
+            [light.constant_attenuation, light.linear_attenuation, light.quadratic_attenuation],
+            2.0 * light.stop_dot.acos(),
+            2.0 * light.stop_dot2.acos(),
+            if light.exponent == 0.0 { 1.0 } else { light.exponent },
+        ),
+        3 => (1, [1.0, 0.0, 0.0], 0.0, 0.0, 0.0),
+        4 | 5 => return None,
+        _ => return Some(Err(())),
+    };
+    let attenuation = if attenuation == [0.0; 3] {
+        [1.0, 0.0, 0.0]
+    } else {
+        attenuation
+    };
+    Some(Ok(MaterialWorldLight {
+        kind,
+        color: light.intensity,
+        position: light.origin,
+        direction: light.normal,
+        range: light.radius,
+        falloff,
+        attenuation,
+        theta,
+        phi,
+    }))
 }
 #[derive(Clone, Copy)]
 struct WorldFrustumPlane {
@@ -3811,6 +4026,8 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.particle_sheets = BTreeMap::new();
     slot.particle_output = Vec::new();
     slot.studio_models = BTreeMap::new();
+    slot.model_lighting_metadata = BTreeMap::new();
+    slot.model_lighting_world = None;
     slot.model_material_opacity = BTreeMap::new();
     slot.viewmodel_bob = BTreeMap::new();
     slot.model_output = Vec::new();
@@ -8003,7 +8220,7 @@ fn compile_static_prop_section(
             {
                 continue;
             }
-            let (end, direction, ratio) = direct_light_ray(origin, light)?;
+            let (end, direction, ratio) = playsrc_map::source_world_light_ray(origin, light)?;
             if ratio <= 0.0
                 || (light.kind != 0
                     && light.intensity.into_iter().fold(0.0_f32, f32::max) * ratio < 0.0002)
@@ -8084,7 +8301,7 @@ fn compile_static_prop_section(
             if !admitted {
                 continue;
             }
-            let angle = direct_light_angle(light, *direction)?;
+            let angle = playsrc_map::source_world_light_angle(light, *direction)?;
             let illumination = ratio * dot(light.intensity, [0.299, 0.587, 0.114]);
             let record = RuntimeLight {
                 source: u32::try_from(*light_index).map_err(|_| ())?,
@@ -8095,7 +8312,7 @@ fn compile_static_prop_section(
                 intensity: light.intensity,
             };
             if light.kind != 0 && illumination < 0.0002 {
-                add_light_to_cube(
+                playsrc_map::add_world_light_to_cube(
                     &mut ambient_cube,
                     *direction,
                     light.intensity,
@@ -8116,14 +8333,14 @@ fn compile_static_prop_section(
                     .world_lights
                     .get(demoted.source as usize)
                     .ok_or(())?;
-                add_light_to_cube(
+                playsrc_map::add_world_light_to_cube(
                     &mut ambient_cube,
                     demoted.direction,
                     demoted.intensity,
-                    demoted.ratio * direct_light_angle(demoted_source, demoted.direction)?,
+                    demoted.ratio * playsrc_map::source_world_light_angle(demoted_source, demoted.direction)?,
                 )?;
             } else {
-                add_light_to_cube(
+                playsrc_map::add_world_light_to_cube(
                     &mut ambient_cube,
                     *direction,
                     light.intensity,
@@ -8287,190 +8504,11 @@ fn compile_static_prop_section(
     })
 }
 
-fn direct_light_ray(
-    origin: [f32; 3],
-    light: &playsrc_map::WorldLight,
-) -> Result<([f32; 3], [f32; 3], f32), ()> {
-    if !(0..=5).contains(&light.kind) {
-        return Err(());
-    }
-    if light.kind == 3 {
-        let direction = light.normal.map(|value| -value);
-        return Ok((
-            add3(
-                origin,
-                scale3(direction, playsrc_map::SOURCE_AMBIENT_RAY_LENGTH),
-            ),
-            direction,
-            1.0,
-        ));
-    }
-    let delta = sub3(light.origin, origin);
-    let distance_squared = dot(delta, delta);
-    let distance = distance_squared.sqrt();
-    if !distance.is_finite() || distance == 0.0 {
-        return Err(());
-    }
-    let direction = scale3(delta, distance.recip());
-    let (cache_minimum, cache_maximum) = lightcache_bounds(origin);
-    let cache_delta = sub3(cache_maximum, origin);
-    let sphere_radius = dot(cache_delta, cache_delta).sqrt();
-    if matches!(light.kind, 1 | 2) {
-        let closest = std::array::from_fn(|axis| {
-            light.origin[axis].clamp(cache_minimum[axis], cache_maximum[axis])
-        });
-        let closest_delta = sub3(closest, light.origin);
-        if dot(closest_delta, closest_delta) > light.radius * light.radius {
-            return Ok((light.origin, direction, 0.0));
-        }
-    }
-    if light.kind == 2 {
-        let sine = (1.0 - light.stop_dot2 * light.stop_dot2).max(0.0).sqrt();
-        if !sphere_intersects_cone(
-            origin,
-            sphere_radius,
-            light.origin,
-            light.normal,
-            sine,
-            light.stop_dot2,
-        )? {
-            return Ok((light.origin, direction, 0.0));
-        }
-    } else if light.kind == 0
-        && (distance > sphere_radius + light.radius
-            || !sphere_intersects_cone(
-                origin,
-                sphere_radius,
-                light.origin,
-                light.normal,
-                1.0,
-                0.0,
-            )?)
-    {
-        return Ok((light.origin, direction, 0.0));
-    }
-    let ratio = match light.kind {
-        0 => {
-            if light.radius != 0.0 && distance > light.radius {
-                0.0
-            } else {
-                distance_squared.max(1.0).recip()
-            }
-        }
-        1 | 2 => (light.constant_attenuation
-            + light.linear_attenuation * distance
-            + light.quadratic_attenuation * distance_squared)
-            .recip(),
-        4 => (light.linear_attenuation - distance).max(0.0),
-        _ => 0.0,
-    };
-    if !ratio.is_finite() {
-        return Err(());
-    }
-    Ok((light.origin, direction, ratio))
-}
-
-fn lightcache_bounds(origin: [f32; 3]) -> ([f32; 3], [f32; 3]) {
-    let sizes = [32.0, 32.0, 128.0];
-    let minimum = std::array::from_fn(|axis| {
-        let cell = (origin[axis].abs() as i32) / sizes[axis] as i32;
-        if origin[axis] >= 0.0 {
-            cell as f32 * sizes[axis]
-        } else {
-            -((cell + 1) as f32) * sizes[axis]
-        }
-    });
-    let maximum = std::array::from_fn(|axis| minimum[axis] + sizes[axis]);
-    (minimum, maximum)
-}
-
-fn sphere_intersects_cone(
-    center: [f32; 3],
-    radius: f32,
-    origin: [f32; 3],
-    normal: [f32; 3],
-    sine: f32,
-    cosine: f32,
-) -> Result<bool, ()> {
-    if !sine.is_finite() || sine <= 0.0 {
-        return Err(());
-    }
-    let back = sub3(origin, scale3(normal, radius / sine));
-    let delta = sub3(center, back);
-    let length = dot(delta, delta).sqrt();
-    if dot(normal, delta) >= length * cosine {
-        let delta = sub3(center, origin);
-        let length = dot(delta, delta).sqrt();
-        if -dot(normal, delta) >= length * sine {
-            return Ok(length <= radius);
-        }
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-fn direct_light_angle(light: &playsrc_map::WorldLight, direction: [f32; 3]) -> Result<f32, ()> {
-    let value = match light.kind {
-        0 => (-dot(direction, light.normal)).max(0.0),
-        1 | 4 => 1.0,
-        2 => {
-            let cone = -dot(direction, light.normal);
-            if cone <= light.stop_dot2 {
-                0.0
-            } else if cone >= light.stop_dot {
-                1.0
-            } else {
-                let value = (cone - light.stop_dot2) / (light.stop_dot - light.stop_dot2);
-                if light.exponent == 0.0 || light.exponent == 1.0 {
-                    value
-                } else {
-                    value.powf(light.exponent)
-                }
-            }
-        }
-        3 => 1.0,
-        _ => 0.0,
-    };
-    value.is_finite().then_some(value).ok_or(())
-}
-
-fn add_light_to_cube(
-    cube: &mut [[f32; 3]; 6],
-    direction: [f32; 3],
-    intensity: [f32; 3],
-    ratio: f32,
-) -> Result<(), ()> {
-    for (face, axis) in cube.iter_mut().zip([
-        [1., 0., 0.],
-        [-1., 0., 0.],
-        [0., 1., 0.],
-        [0., -1., 0.],
-        [0., 0., 1.],
-        [0., 0., -1.],
-    ]) {
-        let weight = dot(axis, direction);
-        if weight > 0.0 {
-            for channel in 0..3 {
-                face[channel] += ratio * weight * intensity[channel];
-                if !face[channel].is_finite() {
-                    return Err(());
-                }
-            }
-        }
-    }
-    Ok(())
-}
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0].mul_add(b[0], a[1].mul_add(b[1], a[2] * b[2]))
 }
 fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
 }
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     dot(sub3(a, b), sub3(a, b)).sqrt()
@@ -9951,6 +9989,7 @@ fn decoded_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<Decoded
 type CompiledPresentation = (
     Vec<u8>,
     BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    BTreeMap<String, StudioModelLightingMetadata>,
     BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     RuntimeEnvironment,
 );
@@ -10254,11 +10293,23 @@ fn load_cached_presentation(
     phase_started = phase_finished;
     let model_material_opacity =
         model_material_opacity(&models, bundle, decoders, profile, None).map_err(|_| 7_u32)?;
+    let metadata = models
+        .iter()
+        .map(|(identity, artifact)| {
+            (
+                identity.clone(),
+                StudioModelLightingMetadata {
+                    position: artifact.illumination_position,
+                    attachment: artifact.illumination_attachment,
+                },
+            )
+        })
+        .collect();
     let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
-    let output = (Vec::new(), models, model_material_opacity, environment);
+    let output = (Vec::new(), models, metadata, model_material_opacity, environment);
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[5] = phase_finished.saturating_sub(phase_started);
     Ok((output, metrics, PresentationSizeLedger::default()))
@@ -10892,6 +10943,18 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         profile,
         Some(&prepared_model_materials),
     )?;
+    let metadata = models
+        .iter()
+        .map(|(identity, artifact)| {
+            (
+                identity.clone(),
+                StudioModelLightingMetadata {
+                    position: artifact.illumination_position,
+                    attachment: artifact.illumination_attachment,
+                },
+            )
+        })
+        .collect();
     let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
@@ -10984,7 +11047,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             .count(),
     };
     Ok((
-        (out, models, model_material_opacity, environment),
+        (out, models, metadata, model_material_opacity, environment),
         metrics,
         ledger,
     ))
@@ -13603,18 +13666,18 @@ mod tests {
             texture_info: -1,
             owner: -1,
         };
-        let (_, direction, ratio) = direct_light_ray([0.0; 3], &light).unwrap();
+        let (_, direction, ratio) = playsrc_map::source_world_light_ray([0.0; 3], &light).unwrap();
         assert_eq!(direction, [1.0, 0.0, 0.0]);
         assert_eq!(ratio, 1.0 / 4097.0);
         light.kind = 2;
-        assert_eq!(direct_light_angle(&light, direction).unwrap(), 1.0);
+        assert_eq!(playsrc_map::source_world_light_angle(&light, direction).unwrap(), 1.0);
         light.normal = [1.0, 0.0, 0.0];
-        assert_eq!(direct_light_angle(&light, direction).unwrap(), 0.0);
+        assert_eq!(playsrc_map::source_world_light_angle(&light, direction).unwrap(), 0.0);
         light.kind = 1;
         light.radius = 1.0;
-        assert_eq!(direct_light_ray([0.0; 3], &light).unwrap().2, 0.0);
+        assert_eq!(playsrc_map::source_world_light_ray([0.0; 3], &light).unwrap().2, 0.0);
         assert_eq!(
-            lightcache_bounds([-0.5, 32.0, -128.5]),
+            playsrc_map::source_lightcache_bounds([-0.5, 32.0, -128.5]),
             ([-32.0, 32.0, -256.0], [0.0, 64.0, -128.0])
         );
     }
@@ -13704,6 +13767,8 @@ mod tests {
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_lighting_metadata: BTreeMap::new(),
+            model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
@@ -13761,6 +13826,8 @@ mod tests {
             combat_decals: None,
             particle_output: Vec::new(),
             studio_models: BTreeMap::new(),
+            model_lighting_metadata: BTreeMap::new(),
+            model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),

@@ -11,8 +11,10 @@ mod area_portals;
 pub use area_portals::compile_area_portal_state;
 mod static_props;
 mod surface_lighting;
+mod model_lighting;
 pub use static_props::{StaticPropModel, StaticPropOccurrence, StaticProps};
 pub use surface_lighting::*;
+pub use model_lighting::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialReference {
     pub index: usize,

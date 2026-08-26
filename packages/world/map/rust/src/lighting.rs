@@ -256,7 +256,7 @@ pub(crate) fn compile_lighting(
         });
     }
 
-    let world_lights = parse_world_lights(world_lump.bytes(bsp), limits, world_slot)?;
+    let world_lights = parse_world_lights(world_lump.bytes(bsp), limits, world_slot, profile)?;
     let ambient_indexes = parse_ambient_indexes(ambient_index_lump.bytes(bsp))?;
     let rgbexp_scales = rgbexp_scales();
     let ambient_samples =
@@ -391,6 +391,7 @@ fn parse_world_lights(
     bytes: &[u8],
     limits: LightingLimits,
     slot: usize,
+    profile: LightingProfile,
 ) -> Result<Vec<WorldLight>, Error> {
     if !bytes.len().is_multiple_of(WORLD_LIGHT_BYTES) {
         return Err(error(ErrorCode::InvalidLightingProfile, Some(slot)));
@@ -419,7 +420,7 @@ fn parse_world_lights(
                 finite(record, 68, index)?,
                 finite(record, 72, index)?,
             ];
-            Ok(WorldLight {
+            let mut light = WorldLight {
                 origin,
                 intensity,
                 normal,
@@ -436,9 +437,57 @@ fn parse_world_lights(
                 flags: i32_at(record, 76),
                 texture_info: i32_at(record, 80),
                 owner: i32_at(record, 84),
-            })
+            };
+            if matches!(light.kind, 1 | 2)
+                && light.constant_attenuation == 0.0
+                && light.linear_attenuation == 0.0
+                && light.quadratic_attenuation == 0.0
+            {
+                light.quadratic_attenuation = 1.0;
+            }
+            if light.kind == 2 && light.exponent == 0.0 {
+                light.exponent = 1.0;
+            }
+            if light.radius < 1.0 {
+                light.radius = source_world_light_radius(&light, profile);
+            }
+            if !light.radius.is_finite() || light.radius < 0.0 {
+                return Err(error(ErrorCode::InvalidLightingProfile, Some(index)));
+            }
+            Ok(light)
         })
         .collect()
+}
+
+fn source_world_light_radius(light: &WorldLight, profile: LightingProfile) -> f32 {
+    let minimum = if profile == LightingProfile::Hdr {
+        0.03 * 0.5
+    } else {
+        0.03
+    };
+    let intensity = light
+        .intensity
+        .into_iter()
+        .map(|channel| channel * channel)
+        .sum::<f32>()
+        .sqrt();
+    if light.quadratic_attenuation == 0.0 {
+        if light.linear_attenuation == 0.0 {
+            2_000.0
+        } else {
+            (intensity / minimum - light.constant_attenuation) / light.linear_attenuation
+        }
+    } else {
+        let a = light.quadratic_attenuation;
+        let b = light.linear_attenuation;
+        let c = light.constant_attenuation - intensity / minimum;
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant < 0.0 {
+            2_000.0
+        } else {
+            ((-b + discriminant.sqrt()) / (2.0 * a)).max(0.0)
+        }
+    }
 }
 
 fn parse_ambient_indexes(bytes: &[u8]) -> Result<Vec<AmbientIndex>, Error> {
@@ -474,7 +523,7 @@ fn parse_ambient_samples(
                     record[at],
                     record[at + 1],
                     record[at + 2],
-                    scales[record[at + 3] as usize],
+                    scales[record[at + 3] as usize] * 255.0,
                 )
             }),
             position: [record[24], record[25], record[26]],
@@ -984,6 +1033,16 @@ mod tests {
                 assert_eq!(cached, direct, "Source RGBExp32 exponent {exponent}");
             }
         }
+    }
+
+    #[test]
+    fn leaf_ambient_cubes_use_source_vector_units_instead_of_lightmap_units() {
+        let mut bytes = [0_u8; AMBIENT_SAMPLE_BYTES];
+        bytes[..4].copy_from_slice(&[128, 64, 32, (-2_i8) as u8]);
+        let parsed = parse_ambient_samples(&bytes, LightingLimits::default(), &rgbexp_scales())
+            .unwrap();
+        assert_eq!(parsed[0].cube[0], [32.0, 16.0, 8.0]);
+        assert_eq!(rgbexp(128, 64, 32, -2), [32.0 / 255.0, 16.0 / 255.0, 8.0 / 255.0]);
     }
 
     #[test]
