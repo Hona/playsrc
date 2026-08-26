@@ -12,6 +12,8 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     longTasks: [] as any[],
     longAnimationFrames: [] as any[],
     gpuTimestamps: [] as { frame: number; milliseconds: number }[],
+    gpuOperations: [] as { kind: string; at: number; returned?: number; end?: number; failed?: boolean; resource?: number; label?: string; bytes?: number; phase?: string }[],
+    gpuOperationsDropped: 0,
     losses: [] as any[],
     queueWrites: {
       histogram: {} as Record<string, number>,
@@ -101,6 +103,44 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     ["createRenderPipeline", "renderPipelines"], ["createRenderPipelineAsync", "renderPipelines"],
     ["createComputePipeline", "computePipelines"], ["createComputePipelineAsync", "computePipelines"],
   ] as const) wrap(host.GPUDevice, method, () => { state.counters[counter] += 1 })
+
+  // Native promises and queue ordering stay owned by the application. Observe, never await a fence.
+  const resources = new WeakMap<object, number>()
+  let nextResource = 0
+  for (const [owner, methods] of [
+    [host.GPUQueue, ["submit", "writeBuffer", "writeTexture", "copyExternalImageToTexture", "onSubmittedWorkDone"]],
+    [host.GPUBuffer, ["mapAsync"]],
+    [host.GPUDevice, ["createRenderPipeline", "createRenderPipelineAsync"]],
+    [host.GPUCanvasContext, ["configure", "unconfigure"]],
+  ] as const) for (const method of methods) {
+    const original = owner?.prototype?.[method]
+    if (typeof original !== "function") continue
+    Object.defineProperty(owner.prototype, method, { configurable: true, writable: true, value(this: any, ...arguments_: any[]) {
+      if (!state.active) return original.apply(this, arguments_)
+      if (state.gpuOperations.length >= 16_384) { state.gpuOperationsDropped += 1; return original.apply(this, arguments_) }
+      const record: typeof state.gpuOperations[number] = { kind: method, at: host.performance.now(), phase: state.currentPass?.identity }
+      const resource = method === "writeBuffer" ? arguments_[0] : this
+      if (resource && typeof resource === "object") {
+        if (!resources.has(resource)) resources.set(resource, ++nextResource)
+        record.resource = resources.get(resource)
+        if (typeof resource.label === "string") record.label = resource.label.slice(0, 128)
+      }
+      if (method === "writeBuffer") {
+        const data = arguments_[2], offset = arguments_[3] ?? 0, size = arguments_[4]
+        const elementBytes = ArrayBuffer.isView(data) ? (data as any).BYTES_PER_ELEMENT ?? 1 : 1
+        record.bytes = size === undefined ? data.byteLength - offset * elementBytes : size * elementBytes
+      }
+      state.gpuOperations.push(record)
+      try {
+        const result = original.apply(this, arguments_)
+        record.returned = host.performance.now()
+        if (method === "mapAsync" || method === "onSubmittedWorkDone" || method === "createRenderPipelineAsync") {
+          void result.then(() => { record.end = host.performance.now() }, () => { record.end = host.performance.now(); record.failed = true })
+        } else record.end = record.returned
+        return result
+      } catch (error) { record.end = host.performance.now(); record.failed = true; throw error }
+    } })
+  }
 
   const NativeWorker = host.Worker
   if (typeof NativeWorker === "function") {

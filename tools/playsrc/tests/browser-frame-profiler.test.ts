@@ -58,6 +58,55 @@ describe("opt-in structured browser frame profiler", () => {
     expect(state.queueWrites.resources.bindingBuffer_model).toEqual({ calls: 1, bytes: 16, minimumOffset: 16, maximumOffset: 32 })
   })
 
+  test("retains async queue/readback timing without taking ownership of the native promise", async () => {
+    let now = 20
+    let finish!: () => void
+    let reject!: (error: Error) => void
+    const nativeReadback = new Promise<void>(resolve => { finish = resolve })
+    const nativeFence = new Promise<void>((_resolve, fail) => { reject = fail })
+    class GPUBuffer { mapAsync() { return nativeReadback } }
+    class GPUQueue { submit() {} writeBuffer() {} onSubmittedWorkDone() { return nativeFence } }
+    const browser = { ...host(), GPUBuffer, GPUQueue, performance: { now: () => now } }
+    const state = installBrowserFrameProfiler(browser)
+    state.active = true
+    expect(new browser.GPUBuffer().mapAsync()).toBe(nativeReadback)
+    expect(new browser.GPUQueue().onSubmittedWorkDone()).toBe(nativeFence)
+    expect(state.gpuOperations.map((record: any) => record.end)).toEqual([undefined, undefined])
+    now = 525
+    finish(); reject(new Error("device lost"))
+    await nativeReadback
+    await expect(nativeFence).rejects.toThrow("device lost")
+    expect(state.gpuOperations).toMatchObject([{ kind: "mapAsync", at: 20, end: 525 }, { kind: "onSubmittedWorkDone", at: 20, end: 525, failed: true }])
+  })
+
+  test("bounds GPU probes explicitly without stopping native queue work", () => {
+    const browser = host()
+    const state = installBrowserFrameProfiler(browser)
+    const queue = new browser.GPUQueue()
+    queue.submit([])
+    expect(state.gpuOperations).toHaveLength(0)
+    state.active = true
+    for (let index = 0; index < 16_390; index += 1) queue.submit([])
+    expect(state.gpuOperations).toHaveLength(16_384)
+    expect(state.gpuOperationsDropped).toBe(6)
+    expect(state.counters.submissions).toBe(16_390)
+  })
+
+  test("preserves native throws, exact upload ranges, and stable resource identity", () => {
+    const failure = new Error("invalid pipeline")
+    class GPUDevice { createRenderPipeline() { throw failure } }
+    const browser = { ...host(), GPUDevice }
+    const state = installBrowserFrameProfiler(browser)
+    state.active = true
+    expect(() => new browser.GPUDevice().createRenderPipeline()).toThrow(failure)
+    const queue = new browser.GPUQueue(), buffer = { label: "palette" }
+    ;(queue.writeBuffer as any)(buffer, 0, new Float32Array(12), 2, 4)
+    ;(queue.writeBuffer as any)(buffer, 0, new Float32Array(12), 2)
+    expect(state.gpuOperations[0]).toMatchObject({ kind: "createRenderPipeline", failed: true })
+    expect(state.gpuOperations.slice(1)).toMatchObject([{ bytes: 16, label: "palette" }, { bytes: 40, label: "palette" }])
+    expect(state.gpuOperations[1].resource).toBe(state.gpuOperations[2].resource)
+  })
+
   test("feature-detects long animation frames and preserves script, function, layout and completed-frame attribution", () => {
     const browser = host(["long-animation-frame", "longtask"])
     const state = installBrowserFrameProfiler(browser)

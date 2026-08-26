@@ -3,10 +3,12 @@ import { spawnSync } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
+import { profileSourceIdentity } from "../src/profile-runner"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
-import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, type TraceJoin } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
@@ -32,6 +34,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots")
   await mkdir(directory, { recursive: true })
+  const sourceFingerprint = await profileSourceIdentity()
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
+  if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => {
     performance.setResourceTimingBufferSize(4096)
@@ -316,8 +321,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
   const residentBefore = processResidentMemory(processBefore?.processInfo)
-  const traceEvents: ChromiumTraceEvent[] = []
-  cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value as ChromiumTraceEvent[]))
+  const browserVersion = await browserCdp.send("Browser.getVersion")
+  const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
+  const availableCategories = (await browserCdp.send("Tracing.getCategories")).categories
+  const traceFinished = new Promise<{ stream?: string; dataLossOccurred: boolean }>(resolve => browserCdp.once("Tracing.tracingComplete", resolve))
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
@@ -326,9 +333,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
   if (!exerciseClasses) await page.keyboard.down("w")
-  await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc,blink.user_timing", options: "record-as-much-as-possible" })
-  const performanceBefore = (await cdp.send("Performance.getMetrics")).metrics
-  const measurementPromise = page.evaluate(async (duration) => {
+  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
+  const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
+  const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
+  const measurementPromise = page.evaluate(async ({ duration, startMark, endMark }) => {
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
     const instrumentation = (globalThis as any).__playsrcFrameProfiler
@@ -337,7 +346,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
     const started = performance.now()
-    performance.mark("playsrc-active-gameplay-start")
+    performance.mark(startMark, { startTime: started })
     const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean }> = []
     const mark = (phase: string, detail: { playerClass?: number; key?: string; visible?: boolean } = {}) => {
       lifecycle.push({ at: Number((performance.now() - started).toFixed(3)), phase, ...detail })
@@ -346,6 +355,17 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const pointerdown = () => mark("weapon-fire")
     document.addEventListener("keydown", keydown, true)
     surface.addEventListener("pointerdown", pointerdown, true)
+    let ended = started
+    const browserLifecycle: Array<{ at: number; kind: string; visible: boolean; focused: boolean; width: number; height: number; dpr: number }> = []
+    const state = (kind: string) => browserLifecycle.push({ at: performance.now(), kind, visible: document.visibilityState === "visible", focused: document.hasFocus(), width: innerWidth, height: innerHeight, dpr: devicePixelRatio })
+    const visibility = () => state("visibility")
+    const focus = () => state("focus")
+    const resize = () => state("resize")
+    document.addEventListener("visibilitychange", visibility)
+    window.addEventListener("focus", focus)
+    window.addEventListener("blur", focus)
+    window.addEventListener("resize", resize)
+    state("start")
     const classSwitches: Array<{ at: number; playerClass: number; completedFrames: number; textures: number; pipelines: number; buffers: number; queueWriteBytes: number; workerCalls: number }> = []
     let previousClass = Number((main.dataset.hudProbe ?? "").split(":")[1])
     const mutations = { total: 0, attributes: 0, text: 0, children: 0, rootAttributes: 0, hud: 0, style: 0 }
@@ -407,17 +427,21 @@ test("profile authored headed Upward offline-practice default roster and actual 
         if (main.dataset.phase !== "Ready") throw new Error(`Upward training left gameplay: ${main.dataset.phase}: ${main.dataset.detail}`)
       }
     } finally {
-      performance.mark("playsrc-active-gameplay-end")
-      instrumentation.active = false
-      classObserver.disconnect()
-      mutationObserver.disconnect()
+      ended = performance.now()
+      performance.mark(endMark, { startTime: ended })
+      state("end")
+      instrumentation.active = false; classObserver.disconnect(); mutationObserver.disconnect()
+      document.removeEventListener("visibilitychange", visibility)
+      window.removeEventListener("focus", focus)
+      window.removeEventListener("blur", focus)
+      window.removeEventListener("resize", resize)
       document.removeEventListener("keydown", keydown, true)
       surface.removeEventListener("pointerdown", pointerdown, true)
     }
-    const elapsed = performance.now() - started
+    const elapsed = ended - started
     const position = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     return {
-      elapsed, started, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
+      elapsed, started, ended, browserLifecycle, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
       visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
@@ -429,6 +453,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
+      gpuOperations: instrumentation.gpuOperations, gpuOperationsDropped: instrumentation.gpuOperationsDropped,
       screen: {
         css: { width: surface.clientWidth, height: surface.clientHeight },
         physical: { width: surface.width, height: surface.height },
@@ -439,7 +464,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
-  }, seconds)
+  }, { duration: seconds, startMark: TRACE_START, endMark: TRACE_END })
   const exercisedClasses: string[] = []
   let visibleScoreboardRows: number | null = null
   const exercise = async () => {
@@ -501,18 +526,53 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await combatCommand(`joinclass ${identity}`)
     }
   })() : Promise.resolve()
-  const [measurement] = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
-  const performanceAfter = (await cdp.send("Performance.getMetrics")).metrics
-  const traceFinished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
-  await cdp.send("Tracing.end")
-  if (!exerciseClasses) await page.keyboard.up("w")
-  await traceFinished
-  const cpuProfile = (await cdp.send("Profiler.stop") as { profile: CpuProfile }).profile
-  const allocationProfile = (await cdp.send("HeapProfiler.stopSampling")).profile
+  const sample = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
+    .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
+  const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
+  const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
+  await browserCdp.send("Tracing.end")
+  // Stop samplers now, but a detached renderer or failed optional sampler must not discard the browser trace.
+  const supplemental = Promise.all([cdp.send("Profiler.stop"), cdp.send("HeapProfiler.stopSampling"),
+    cdp.send("Runtime.getHeapUsage"), browserCdp.send("SystemInfo.getProcessInfo")])
+    .then(value => ({ value, error: null }), error => ({ value: null, error: String(error) }))
+  if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
+  const completion = await traceFinished
+  const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream) : { bytes: new Uint8Array(), complete: false }
+  const joins: TraceJoin[] = []
+  const measured = sample.measurement
+  if (measured) {
+    for (const record of measured.gpuOperations) joins.push({ kind: "gpu", at: record.at, end: record.end ?? measured.ended, detail: record })
+    for (const record of measured.lifecycle) joins.push({ kind: "class-lifecycle", at: measured.started + record.at, detail: record })
+    for (const record of measured.browserLifecycle) joins.push({ kind: "browser-lifecycle", at: record.at, detail: record })
+    for (const record of measured.classSwitches) joins.push({ kind: "class", at: measured.started + record.at, detail: record })
+    for (const record of measured.particleSamples) joins.push({ kind: "particles", at: measured.started + record.at, detail: record })
+    for (const record of measured.frames) joins.push({ kind: "completed-frame", at: record.at, detail: record })
+    for (const record of measured.worker) joins.push({ kind: "worker", at: record.started, end: record.finished ?? measured.ended, detail: record })
+    for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
+  }
+  const sourceFingerprintAfter = await profileSourceIdentity()
+  const evidence = await retainCompositorEvidence({ directory: path.join(directory, "compositor-evidence"), raw: raw.bytes,
+    complete: raw.complete, dataLossOccurred: completion.dataLossOccurred,
+    identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
+      sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
+      gpu: system?.gpu ?? null, availableCategories, viewport: measured?.viewport ?? null,
+      origin: new URL(page.url()).origin, localProductionBundle, label, headed: true, target, launch,
+      sampleError: sample.error, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
+    probes: { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured?.gpuOperationsDropped ?? 1 } })
+  // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
+  await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
+  console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
+  if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
+  const collected = await supplemental
+  if (!collected.value) throw new Error(`Optional profiling extraction failed; compositor evidence retained: ${collected.error}`)
+  const [cpuResult, allocationResult, heapAfter, processAfter] = collected.value
+  const cpuProfile = cpuResult.profile as CpuProfile
+  const allocationProfile = allocationResult.profile
+  const residentAfter = processResidentMemory(processAfter.processInfo)
+  const measurement = measured
+  const traceEvents: ChromiumTraceEvent[] = evidence.events
+  const exactTraceWindow = evidence.manifest.analysis.window
   const allocations = (node: { selfSize: number; children: any[] }): number => node.selfSize + node.children.reduce((total, child) => total + allocations(child), 0)
-  const heapAfter = await cdp.send("Runtime.getHeapUsage")
-  const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
-  const residentAfter = processResidentMemory(processAfter?.processInfo)
   const wasmWorkers = await Promise.all(page.workers().map(async (worker) => ({
     url: worker.url(),
     ...await (worker.url().includes("gameplay-worker") ? worker.evaluate(() => ({
@@ -550,11 +610,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     if (decoded.pixels[index]! > 16 || decoded.pixels[index + 1]! > 16 || decoded.pixels[index + 2]! > 16) nonBlack += 1
   }
   const actualFrames = measurement.lastFrame - measurement.firstFrame
-  const traceWindow = activeGameplayTraceWindow(traceEvents)
   const tails = attributeFrameTails({
     frames: completed, workers, inputs: measurement.input, longAnimationFrames: measurement.longAnimationFrames,
     trace: traceEvents, cpu: cpuProfile,
-    traceOffsetMicroseconds: traceWindow.startedMicroseconds - measurement.started * 1_000,
+    traceOffsetMicroseconds: exactTraceWindow?.offsetMicroseconds ?? 0,
   })
   const gpuProcessBefore = processBefore?.processInfo.find(process => process.type === "GPU")
   const gpuProcessAfter = processAfter?.processInfo.find(process => process.type === "GPU")
@@ -569,9 +628,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, loads, totalWallMilliseconds: Date.now() - wallStarted,
     animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
-    compositor: { ...summarizeCompositorTruth(traceEvents, measurement.elapsed, traceWindow), stalls: analyzeCompositorStalls(traceEvents, traceWindow, measurement.lifecycle) },
+    compositor: { ...summarizeCompositorTruth(exactTraceWindow ? traceEvents : [], measurement.elapsed, exactTraceWindow ?? undefined),
+      stalls: exactTraceWindow ? analyzeCompositorStalls(traceEvents, exactTraceWindow, measurement.lifecycle) : [] },
+    compositorIncludingSetupAndCollection: clockBefore !== undefined && clockAfter !== undefined && clockAfter > clockBefore ? {
+      elapsedMilliseconds: (clockAfter - clockBefore) * 1_000,
+      ...summarizeCompositorTruth(traceEvents, (clockAfter - clockBefore) * 1_000, { startedMicroseconds: clockBefore * 1_000_000, endedMicroseconds: clockAfter * 1_000_000 }),
+    } : null,
+    compositorEvidence: { ...evidence.artifact, complete: evidence.manifest.complete, errors: evidence.manifest.errors,
+      issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
-    browser: { platform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, residentBefore, residentAfter }, network, storage, userMachineEvidence: false },
+    browser: { platform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, residentBefore, residentAfter }, network, storage, userMachineEvidence: false },
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     presentationDom: {
       ...measurement.dom,
@@ -718,6 +784,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   expect(report.screen.visibility).toBe("visible")
   expect(report.gpu.losses).toHaveLength(0)
+  expect(report.compositorEvidence.complete).toBe(true)
+  expect(sourceFingerprintAfter).toBe(sourceFingerprint)
   if (process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1") expect(report.compositor.evidence).toBe("chromium-compositor-presentation-trace")
   if (process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1") {
     expect(report.applicationCompletedFramesPerSecond).toBeGreaterThanOrEqual(55)

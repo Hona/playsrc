@@ -4,18 +4,25 @@ export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; dur?: nu
 
 const PRESENTATION_EVENTS = ["PresentationFeedback", "Display::FrameDisplayed", "FramePresented"] as const
 
+export const TRACE_START = "playsrc-active-gameplay-start"
+export const TRACE_END = "playsrc-active-gameplay-end"
+
 export function activeGameplayTraceWindow(events: readonly ChromiumTraceEvent[]): Readonly<{ startedMicroseconds: number; endedMicroseconds: number }> {
-  const started = events.find(event => event.name === "playsrc-active-gameplay-start" && Number.isFinite(event.ts))?.ts
-  const ended = events.find(event => event.name === "playsrc-active-gameplay-end" && Number.isFinite(event.ts))?.ts
+  const started = events.find(event => event.name === TRACE_START && Number.isFinite(event.ts))?.ts
+  const ended = events.find(event => event.name === TRACE_END && Number.isFinite(event.ts))?.ts
   if (started === undefined || ended === undefined || ended < started) throw new Error("Chromium trace does not contain ordered active gameplay marks")
   return Object.freeze({ startedMicroseconds: started, endedMicroseconds: ended })
+}
+
+export function chromiumPresentationEventName(events: readonly ChromiumTraceEvent[]) {
+  return PRESENTATION_EVENTS.find(name => events.some(event => event.name === name))
 }
 
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
   if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0) throw new Error("Compositor sampling duration must be positive")
   if (window && (!Number.isFinite(window.startedMicroseconds) || !Number.isFinite(window.endedMicroseconds) || window.endedMicroseconds < window.startedMicroseconds)) throw new Error("Compositor sampling window is invalid")
   const sampled = events.filter(event => Number.isFinite(event.ts) && (!window || event.ts! >= window.startedMicroseconds && event.ts! <= window.endedMicroseconds))
-  const eventName = PRESENTATION_EVENTS.find(name => sampled.some(event => event.name === name))
+  const eventName = chromiumPresentationEventName(sampled)
   const presentations = eventName ? sampled.filter(event => event.name === eventName) : []
   const timestamps = [...new Set(presentations.map(event => event.ts!))].sort((left, right) => left - right)
   const intervals = timestamps.slice(1).map((timestamp, index) => (timestamp - timestamps[index]!) / 1_000)
@@ -36,7 +43,7 @@ export function analyzeCompositorStalls(
   minimumMilliseconds = 50,
 ) {
   const sampled = events.filter(event => Number.isFinite(event.ts) && event.ts! >= window.startedMicroseconds && event.ts! <= window.endedMicroseconds)
-  const name = PRESENTATION_EVENTS.find(candidate => sampled.some(event => event.name === candidate))
+  const name = chromiumPresentationEventName(sampled)
   if (!name) return []
   const timestamps = [...new Set(sampled.filter(event => event.name === name).map(event => event.ts!))].sort((left, right) => left - right)
   return timestamps.slice(1).flatMap((ended, index) => {
