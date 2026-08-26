@@ -116,6 +116,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
   await mkdir(output, { recursive: true })
   const gpuValidationErrors: string[] = []
   page.on("console", (message) => {
+    if (message.text().startsWith("[map-replacement]")) console.log(message.text())
     if (/GPUValidationError|Destroyed texture/.test(message.text())) gpuValidationErrors.push(message.text())
   })
 
@@ -361,17 +362,22 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       })
     }
 
+    console.log(`[map-lighting] ${target}:sampling seconds=${windows[index]}`)
     const measured = await page.evaluate(async (minimumMilliseconds) => {
       const main = document.querySelector<HTMLElement>("main")!
       const started = performance.now()
       const firstTick = Number(main.dataset.snapshotTick)
       const frames: number[] = []
       let previous = started
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        const watchdog = setTimeout(() => reject(new Error("headed animation-frame sampling stalled")), minimumMilliseconds + 10_000)
         const frame = (now: number): void => {
           if (now > previous) frames.push(now - previous)
           previous = now
-          if (now - started >= minimumMilliseconds) resolve()
+          if (now - started >= minimumMilliseconds) {
+            clearTimeout(watchdog)
+            resolve()
+          }
           else requestAnimationFrame(frame)
         }
         requestAnimationFrame(frame)
@@ -385,6 +391,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       throw new Error(`${target} fixed simulation cadence regressed: ${simulationHz.toFixed(2)} Hz`)
     }
     const frameDistribution = summarizeFrameTimes(measured.frames)
+    console.log(`[map-lighting] ${target}:frames p95=${frameDistribution.p95Milliseconds} hz=${simulationHz.toFixed(2)}`)
     if (frameDistribution.p95Milliseconds > 20) {
       throw new Error(`${target} authored lighting regressed headed frame p95: ${frameDistribution.p95Milliseconds} ms`)
     }
@@ -403,6 +410,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     if (adapted.submittedHistograms < 1 || adapted.current < 0.5 || adapted.current > 2) {
       throw new Error(`${target} has no real headed-frame HDR histogram or bounded Source exposure: ${JSON.stringify(adapted)}`)
     }
+    console.log(`[map-lighting] ${target}:histograms submitted=${adapted.submittedHistograms} exposure=${adapted.current.toFixed(4)}`)
     allFrames.push(...measured.frames)
     let playerModel: Record<string, unknown> | undefined
     if (target === "ctf_2fort") {
@@ -471,7 +479,9 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     let ldr: Record<string, unknown> | undefined
     if ((!selectedTarget || process.env.PROFILE_MAP_SANITY_LDR === "1") && target === "pl_upward") {
       const generation = Number(await root.getAttribute("data-generation"))
+      console.log(`[map-lighting] pl_upward:ldr-replacing generation=${generation}`)
       await consoleCommand(page, entry, "mat_hdr_level 0")
+      console.log("[map-lighting] pl_upward:ldr-command-submitted")
       await page.waitForFunction((previous) => {
         const main = document.querySelector<HTMLElement>("main")
         return main?.dataset.phase === "Failed"
