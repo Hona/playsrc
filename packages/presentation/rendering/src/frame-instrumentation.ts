@@ -5,6 +5,8 @@ export type RendererPassProfile = {
   renderPasses: number
   drawCalls: number
   milliseconds: number
+  renderPipelines: number
+  nodeBuilderMisses: number
 }
 
 export type RendererMemoryProfile = Readonly<{
@@ -89,14 +91,18 @@ export class RendererFrameInstrumentation {
   pass<T>(identity: string, callback: () => T): T {
     if (!this.#profile.active) return callback()
     const prior = this.#profile.currentPass
-    const pass: RendererPassProfile = { identity, submissions: 0, commandBuffers: 0, renderPasses: 0, drawCalls: 0, milliseconds: 0 }
+    const pass: RendererPassProfile = { identity, submissions: 0, commandBuffers: 0, renderPasses: 0, drawCalls: 0, milliseconds: 0, renderPipelines: 0, nodeBuilderMisses: 0 }
     const draws = this.#info.render.drawCalls
+    const pipelines = this.#profile.counters.renderPipelines ?? 0
+    const misses = this.#profile.counters.nodeBuilderMisses ?? 0
     const started = performance.now()
     this.#profile.currentPass = pass
     try {
       return callback()
     } finally {
       pass.drawCalls = this.#info.render.drawCalls - draws
+      pass.renderPipelines = (this.#profile.counters.renderPipelines ?? 0) - pipelines
+      pass.nodeBuilderMisses = (this.#profile.counters.nodeBuilderMisses ?? 0) - misses
       pass.milliseconds = performance.now() - started
       this.#passes.push(pass)
       this.#profile.currentPass = prior
@@ -150,4 +156,20 @@ export class RendererFrameInstrumentation {
       this.#info.reset()
     }
   }
+}
+
+export function installNodeBuilderInstrumentation(
+  manager: { _createNodeBuilder: (...arguments_: any[]) => any },
+  profile: BrowserFrameProfiler,
+): () => void {
+  const original = manager._createNodeBuilder
+  if (typeof original !== "function") throw new Error("WebGPU node-builder instrumentation backend is unavailable")
+  manager._createNodeBuilder = function (...arguments_: any[]): any {
+    if (!profile.active) return original.apply(this, arguments_)
+    profile.counters.nodeBuilderMisses = (profile.counters.nodeBuilderMisses ?? 0) + 1
+    const started = performance.now()
+    try { return original.apply(this, arguments_) }
+    finally { profile.counters.nodeBuilderMilliseconds = (profile.counters.nodeBuilderMilliseconds ?? 0) + performance.now() - started }
+  }
+  return () => { manager._createNodeBuilder = original }
 }
