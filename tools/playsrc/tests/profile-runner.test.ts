@@ -17,6 +17,7 @@ describe("bounded headed profile orchestration", () => {
   test("accepts exact profile identities and rejects hidden browser execution", () => {
     expect(parseHeadedProfile(["gameplay", "--headed"])).toEqual({ profile: "gameplay", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["map-memory", "--headed"])).toEqual({ profile: "map-memory", fresh: false, playwright: [] })
+    expect(parseHeadedProfile(["2fort", "--fresh"])).toEqual({ profile: "2fort", fresh: true, playwright: [] })
     expect(parseHeadedProfile(["2fort-bots", "--fresh", "--output", "/evidence"])).toEqual({
       profile: "2fort-bots",
       fresh: true,
@@ -48,6 +49,7 @@ describe("bounded headed profile orchestration", () => {
     expect(headedProfileTarget({})).toBe("jump_beef")
     expect(headedProfileTarget({ PROFILE_CTF_BOTS: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_2FORT_VISUAL: "1" })).toBe("ctf_2fort")
+    expect(headedProfileTarget({ PROFILE_2FORT_MEMORY: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_COMBAT_IMPACTS: "1" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "local-practice" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "2fort-match" })).toBe("ctf_2fort")

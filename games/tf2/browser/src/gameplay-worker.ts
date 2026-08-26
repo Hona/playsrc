@@ -162,6 +162,10 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     }
     await initThreadPool(request.threads)
     wasm = candidate
+    Object.defineProperty(scope, "__playsrcWorkerMemory", {
+      configurable: true,
+      get: () => Object.freeze({ linearBytes: candidate.memory.buffer.byteLength, shared: candidate.memory.buffer instanceof SharedArrayBuffer }),
+    })
     post({ id: request.id, kind: "initialized" })
   } catch {
     fail(request.id, "WasmUnavailable")

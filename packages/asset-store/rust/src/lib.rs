@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+use std::sync::Mutex;
 
 use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use rayon::prelude::*;
@@ -328,10 +330,15 @@ fn u64_at(bytes: &[u8], offset: &mut usize) -> Result<usize, GraphError> {
     usize::try_from(u64::from_le_bytes(field)).map_err(|_| GraphError::BoundExceeded)
 }
 
-pub fn decode(
+struct VerifiedChunk<'encoded> {
+    bytes: Cow<'encoded, [u8]>,
+    entries: Vec<(String, usize, usize)>,
+}
+
+fn verified_chunk<'encoded>(
     descriptor: &ChunkDescriptor,
-    encoded: &[u8],
-) -> Result<Vec<DecodedEntry>, GraphError> {
+    encoded: &'encoded [u8],
+) -> Result<VerifiedChunk<'encoded>, GraphError> {
     if encoded.len().to_string() != descriptor.encoded_byte_length
         || hex_hash(encoded) != descriptor.encoded_sha256
     {
@@ -345,14 +352,14 @@ pub fn decode(
         return Err(GraphError::BoundExceeded);
     }
     let decoded = match descriptor.codec {
-        Codec::Identity => encoded.to_vec(),
+        Codec::Identity => Cow::Borrowed(encoded),
         Codec::Deflate => {
             let mut output = Vec::with_capacity(expected_decoded);
             DeflateDecoder::new(encoded)
                 .take((MAX_CHUNK_BYTES + 1) as u64)
                 .read_to_end(&mut output)
                 .map_err(|_| GraphError::MalformedChunk)?;
-            output
+            Cow::Owned(output)
         }
     };
     if decoded.len() != expected_decoded || hex_hash(&decoded) != descriptor.decoded_sha256 {
@@ -415,13 +422,13 @@ pub fn decode(
             logical_path,
             entry_offset,
             entry_length,
-            entry_hash.to_vec(),
+            <[u8; 32]>::try_from(entry_hash).map_err(|_| GraphError::MalformedChunk)?,
         ));
     }
     if records.first().is_none_or(|record| record.1 != cursor) {
         return Err(GraphError::MalformedChunk);
     }
-    let mut output = Vec::with_capacity(count);
+    let mut entries = Vec::with_capacity(count);
     let mut next_offset = cursor;
     for (logical_path, entry_offset, entry_length, expected_hash) in records {
         if entry_offset != next_offset {
@@ -433,19 +440,34 @@ pub fn decode(
         let bytes = decoded
             .get(entry_offset..end)
             .ok_or(GraphError::MalformedChunk)?;
-        if hash(bytes).as_slice() != expected_hash {
+        if hash(bytes) != expected_hash {
             return Err(GraphError::IntegrityFailure);
         }
-        output.push(DecodedEntry {
-            logical_path,
-            bytes: bytes.to_vec(),
-        });
+        entries.push((logical_path, entry_offset, entry_length));
         next_offset = end;
     }
     if next_offset != decoded.len() {
         return Err(GraphError::MalformedChunk);
     }
-    Ok(output)
+    Ok(VerifiedChunk {
+        bytes: decoded,
+        entries,
+    })
+}
+
+pub fn decode(
+    descriptor: &ChunkDescriptor,
+    encoded: &[u8],
+) -> Result<Vec<DecodedEntry>, GraphError> {
+    let verified = verified_chunk(descriptor, encoded)?;
+    Ok(verified
+        .entries
+        .into_iter()
+        .map(|(logical_path, offset, length)| DecodedEntry {
+            logical_path,
+            bytes: verified.bytes[offset..offset + length].to_vec(),
+        })
+        .collect())
 }
 
 pub fn encode_batch(chunks: &[PackedChunk]) -> Result<Vec<u8>, GraphError> {
@@ -467,7 +489,7 @@ pub fn encode_batch(chunks: &[PackedChunk]) -> Result<Vec<u8>, GraphError> {
     Ok(output)
 }
 
-pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
+fn batch_chunks(bytes: &[u8]) -> Result<Vec<(ChunkDescriptor, &[u8])>, GraphError> {
     if bytes.len() < 12 || &bytes[..4] != b"PSGB" {
         return Err(GraphError::MalformedChunk);
     }
@@ -508,7 +530,11 @@ pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
     if offset != bytes.len() {
         return Err(GraphError::MalformedChunk);
     }
-    let decoded = chunks
+    Ok(chunks)
+}
+
+pub fn decode_batch(bytes: &[u8]) -> Result<Vec<DecodedEntry>, GraphError> {
+    let decoded = batch_chunks(bytes)?
         .par_iter()
         .map(|(descriptor, encoded)| decode(descriptor, encoded))
         .collect::<Result<Vec<_>, _>>()?;
@@ -558,7 +584,91 @@ pub fn encode_resource_set(entries: &[DecodedEntry]) -> Result<Vec<u8>, GraphErr
 }
 
 pub fn decode_to_resource_set(batch: &[u8]) -> Result<Vec<u8>, GraphError> {
-    encode_resource_set(&decode_batch(batch)?)
+    let chunks = batch_chunks(batch)?;
+    let entry_count = chunks.iter().try_fold(0usize, |count, (descriptor, _)| {
+        count
+            .checked_add(descriptor.entries.len())
+            .ok_or(GraphError::BoundExceeded)
+    })?;
+    if entry_count == 0 || entry_count > MAX_GRAPH_ENTRIES {
+        return Err(GraphError::BoundExceeded);
+    }
+
+    let mut order = chunks
+        .iter()
+        .enumerate()
+        .flat_map(|(chunk, (descriptor, _))| {
+            descriptor
+                .entries
+                .iter()
+                .enumerate()
+                .map(move |(entry, descriptor)| (chunk, entry, descriptor))
+        })
+        .collect::<Vec<_>>();
+    order.sort_by(|left, right| left.2.logical_path.cmp(&right.2.logical_path));
+
+    let capacity = order.iter().try_fold(12usize, |total, (_, _, entry)| {
+        let length = entry
+            .byte_length
+            .parse::<usize>()
+            .map_err(|_| GraphError::IntegrityFailure)?;
+        total
+            .checked_add(8)
+            .and_then(|value| value.checked_add(entry.logical_path.len()))
+            .and_then(|value| value.checked_add(length))
+            .ok_or(GraphError::BoundExceeded)
+    })?;
+    let mut output = Vec::with_capacity(capacity);
+    output.extend_from_slice(b"PSRE");
+    output.extend_from_slice(&1u32.to_le_bytes());
+    write_u32(&mut output, entry_count)?;
+    let mut destinations = chunks
+        .iter()
+        .map(|(descriptor, _)| vec![(0usize, 0usize); descriptor.entries.len()])
+        .collect::<Vec<_>>();
+    for (chunk, entry, descriptor) in order {
+        let length = descriptor
+            .byte_length
+            .parse::<usize>()
+            .map_err(|_| GraphError::IntegrityFailure)?;
+        write_u32(&mut output, descriptor.logical_path.len())?;
+        output.extend_from_slice(descriptor.logical_path.as_bytes());
+        write_u32(&mut output, length)?;
+        destinations[chunk][entry] = (output.len(), length);
+        output.resize(output.len() + length, 0);
+    }
+
+    let destination = Mutex::new(output.as_mut_slice());
+    chunks
+        .par_iter()
+        .enumerate()
+        .map(|(chunk, (descriptor, encoded))| {
+            let verified = verified_chunk(descriptor, encoded)?;
+            let mut destination = destination
+                .lock()
+                .map_err(|_| GraphError::IntegrityFailure)?;
+            for (entry, (_, source, length)) in verified.entries.iter().enumerate() {
+                let (offset, expected) = destinations[chunk][entry];
+                if *length != expected {
+                    return Err(GraphError::IntegrityFailure);
+                }
+                destination[offset..offset + length]
+                    .copy_from_slice(&verified.bytes[*source..source + length]);
+            }
+            Ok(())
+        })
+        .collect::<Result<Vec<_>, GraphError>>()?;
+    drop(destination);
+
+    let mut identities = BTreeSet::new();
+    for (descriptor, _) in &chunks {
+        for entry in &descriptor.entries {
+            if !identities.insert(&entry.logical_path) {
+                return Err(GraphError::DuplicateIdentity);
+            }
+        }
+    }
+    Ok(output)
 }
 
 pub fn read_resource_set(
@@ -758,6 +868,38 @@ mod tests {
         let set = decode_to_resource_set(&batch).unwrap();
         assert_eq!(&set[..4], b"PSRE");
         assert_eq!(u32::from_le_bytes(set[8..12].try_into().unwrap()), 2);
+        assert_eq!(
+            set,
+            encode_resource_set(&decode_batch(&batch).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn parallel_resource_set_preserves_interleaved_chunk_order_and_integrity() {
+        let chunks = pack(
+            (0..96)
+                .map(|index| {
+                    resource(
+                        &format!("materials/{:03}.vtf", 95 - index),
+                        if index % 2 == 0 { "gameplay" } else { "menu" },
+                        vec![index as u8; 4096 + index],
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        let batch = encode_batch(&chunks).unwrap();
+        assert_eq!(
+            decode_to_resource_set(&batch).unwrap(),
+            encode_resource_set(&decode_batch(&batch).unwrap()).unwrap(),
+        );
+
+        let mut damaged = batch.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            decode_to_resource_set(&damaged),
+            Err(GraphError::IntegrityFailure)
+        );
     }
 
     #[test]

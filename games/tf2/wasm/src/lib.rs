@@ -740,7 +740,7 @@ fn encode_simulation_publications(
     publications: &[playsrc_simulation::Publication],
 ) -> Option<Vec<u8>> {
     let mut output = b"PSIM".to_vec();
-    output.extend_from_slice(&1_u32.to_le_bytes());
+    output.extend_from_slice(&2_u32.to_le_bytes());
     output.extend_from_slice(&u32::try_from(publications.len()).ok()?.to_le_bytes());
     output.extend_from_slice(&0_u32.to_le_bytes());
     for publication in publications {
@@ -755,7 +755,13 @@ fn encode_simulation_publications(
                 .to_le_bytes(),
         );
         output.extend_from_slice(&u32::try_from(publication.events.len()).ok()?.to_le_bytes());
-        output.extend_from_slice(&publication.snapshot);
+        if publication
+            .events
+            .last()
+            .is_none_or(|event| event.bytes != publication.snapshot)
+        {
+            return None;
+        }
         for event in &publication.events {
             output.extend_from_slice(&event.host_tick.to_le_bytes());
             output.extend_from_slice(&u32::try_from(event.bytes.len()).ok()?.to_le_bytes());
