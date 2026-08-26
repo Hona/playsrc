@@ -15,6 +15,15 @@ const MAX_RUN_MILLISECONDS = 175_000
 const OWNER_IDLE_MILLISECONDS = 60_000
 const HEARTBEAT_MILLISECONDS = 2_000
 
+export class ProfileCapacityDeferred extends Error {}
+
+// Admission is outside Ready and the sample. A queued cold build can consume
+// almost the entire command cap; retain that prepared build rather than launch
+// a browser with too little time for startup, map admission and extraction.
+export function requireBrowserBudget(milliseconds: number): void {
+  if (milliseconds < 30_000) throw new ProfileCapacityDeferred(`Only ${milliseconds} ms remain after queue/build; reserve 30000 ms for the headed workflow. Exact preparation is retained; retry without --fresh.`)
+}
+
 const PROFILES = Object.freeze({
   gameplay: { config: "playwright.profile.config.ts", target: "jump_beef" },
   "frame-budget": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "frame-budget" } },
@@ -225,9 +234,11 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let identity: string | null = null
   let configuredIdentity: string | null = null
   let generatedIdentity: string | null = null
+  let currentPhase = "queue"
   const attempts: Array<{ phase: string; durationMilliseconds: number; complete: boolean }> = []
   const measure = async <T>(phase: string, action: () => Promise<T>): Promise<T> => {
     const began = Date.now()
+    currentPhase = phase
     let complete = false
     try { const result = await action(); complete = true; return result }
     finally { attempts.push({ phase, durationMilliseconds: Date.now() - began, complete }) }
@@ -273,6 +284,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         console.error(`[performance] queued ${profile} position=${state.position}/${state.waiting} holder=${state.holder?.profile ?? "publishing"} pid=${state.holder?.pid ?? "unknown"} alive=${state.holderAlive} age=${state.holderAgeMilliseconds ?? "unknown"}ms wait=${state.elapsedMilliseconds}ms; no build/browser started`)
       },
     })
+    progress = setInterval(() => console.error(`[performance] ${profile} phase=${currentPhase} total=${Date.now() - started}ms queued=${lock!.milliseconds}ms remaining=${remaining()}ms`), 10_000)
     const identityStarted = Date.now()
     identity = await measure("source-identity", () => profileSourceIdentity())
     configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target))
@@ -283,6 +295,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity())
     }
     if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
+    requireBrowserBudget(remaining())
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
       const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
@@ -298,7 +311,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     }, HEARTBEAT_MILLISECONDS)
     cancellation.signal.throwIfAborted()
     browserStarted = Date.now()
-    progress = setInterval(() => console.error(`[performance] ${profile} total=${Date.now() - started}ms queued=${lock!.milliseconds}ms browser=${Date.now() - browserStarted!}ms`), 10_000)
+    currentPhase = "headed-browser"
     const command = [
       process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? (profile === "application-upgrade" ? "node" : process.execPath),
       path.join(repositoryRoot, "node_modules", "@playwright", "test", "cli.js"),
@@ -345,7 +358,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   } catch (error) {
     exitCode = 1
     failure ??= error instanceof Error ? error.message : String(error)
-    if (!lock && (error instanceof ProfileQueueTimeout || timedOut)) {
+    if (error instanceof ProfileCapacityDeferred || !lock && (error instanceof ProfileQueueTimeout || timedOut)) {
       outcome = "deferred"
       exitCode = 75
       console.error(`[performance] capacity deferred (not a dead holder or failed gameplay): ${failure}. Retry when the queue has capacity.`)
@@ -361,7 +374,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     if (browserStarted) browserMilliseconds = Date.now() - browserStarted
     await heartbeatWrites
     try {
-      if (owner) await writeLease(metadataPath, owner.metadata.token, outcome === "passed" ? OWNER_IDLE_MILLISECONDS : 0)
+      if (owner) await writeLease(metadataPath, owner.metadata.token, outcome === "passed" || outcome === "deferred" ? OWNER_IDLE_MILLISECONDS : 0)
       if (browser) await browserLease(browserPath, browser.token, OWNER_IDLE_MILLISECONDS)
     } finally {
       if (lock) await releaseHeadedProfileLock(lockPath, lock.token)
