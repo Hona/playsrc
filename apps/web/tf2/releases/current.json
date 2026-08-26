@@ -5,8 +5,8 @@
     "wasm": {
       "kind": "derived-object",
       "mediaType": "application/octet-stream",
-      "byteLength": "5314142",
-      "sha256": "9adaf2ae3c0f92f0f967b44a0f594a2ace2965327e5f13a13465f77c74878e81"
+      "byteLength": "5316658",
+      "sha256": "f98848112dfb7307cbba703349d81e14fcf85ca3f1c6f51034cee9404998a9ca"
     },
     "catalog": {
       "kind": "catalog",
@@ -59,8 +59,8 @@
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4599988",
-          "sha256": "6000d3280f0fa2d32baedfcf668c1bf8ed0ba77899002c5ac6d94be9fae6f960"
+          "byteLength": "4599973",
+          "sha256": "abfe0a208318bd499f0e98cd700820dbb135e182909253eccca31e5b10f0f73e"
         }
       }
     },
