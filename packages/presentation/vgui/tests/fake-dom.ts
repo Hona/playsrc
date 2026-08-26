@@ -104,6 +104,8 @@ export class FakeElement {
   value = ""
   scrollTop = 0
   appendCalls = 0
+  attributeWrites = 0
+  textWrites = 0
   private ownText = ""
   private readonly attributes = new Map<string, string>()
   private readonly listeners = new Map<string, FakeListener[]>()
@@ -123,6 +125,7 @@ export class FakeElement {
   }
 
   set textContent(value: string) {
+    this.textWrites += 1
     for (const child of this.children) child.parentElement = null
     this.children.length = 0
     this.ownText = String(value ?? "")
@@ -184,6 +187,7 @@ export class FakeElement {
   }
 
   setAttribute(name: string, value: string): void {
+    this.attributeWrites += 1
     const text = String(value)
     this.attributes.set(name, text)
     if (name === "id") this.id = text
@@ -195,6 +199,7 @@ export class FakeElement {
   }
 
   removeAttribute(name: string): void {
+    this.attributeWrites += 1
     this.attributes.delete(name)
     if (name === "id") this.id = ""
   }

@@ -29,15 +29,29 @@ export function adaptTf2Scoreboard(
   visible: boolean,
   mapName: string,
   pingAsText: boolean,
+  previous?: Tf2HudScoreboard,
 ): Tf2HudScoreboard {
   const players: Tf2ScoreboardPlayer[] = []
   const spectators: string[] = []
+  const retained = previous === undefined ? undefined : new Map(previous.players.map((player) => [player.identity, player]))
   for (const player of authority.players) {
     if (player.team === 0 || player.team === 1) {
       spectators.push(player.name)
       continue
     }
     const enemy = (localTeam === 2 && player.team === 3) || (localTeam === 3 && player.team === 2)
+    const prior = retained?.get(player.identity)
+    const priorCounters = prior?.counters.kind === "available" ? prior.counters.value : undefined
+    const visibleClass = !enemy && localTeam !== 0
+    if (prior !== undefined && prior.name === player.name && prior.team === player.team
+      && prior.score === player.score && prior.alive === player.alive
+      && (visibleClass ? prior.class.kind === "available" && prior.class.value === player.class : prior.class.kind === "unavailable")
+      && (player.fake ? prior.ping.kind === "available" && prior.ping.value === "bot" : prior.ping.kind === "unavailable")
+      && priorCounters?.kills === player.kills && priorCounters.deaths === player.deaths
+      && priorCounters.captures === player.captures && priorCounters.damage === player.damage) {
+      players.push(prior)
+      continue
+    }
     players.push(Object.freeze({
       identity: player.identity,
       name: player.name,
@@ -54,6 +68,15 @@ export function adaptTf2Scoreboard(
     }))
   }
   players.sort((left, right) => right.score - left.score || right.identity - left.identity)
+  if (previous !== undefined && previous.visible === visible && previous.mapName === mapName
+    && previous.pingAsText === pingAsText && previous.red.score === authority.redScore
+    && previous.red.playerCount === authority.redCount && previous.blue.score === authority.blueScore
+    && previous.blue.playerCount === authority.blueCount
+    && previous.players.length === players.length && previous.players.every((player, index) => player === players[index])
+    && previous.spectators.length === spectators.length && previous.spectators.every((name, index) => name === spectators[index])
+    && (localTeam === 2 || localTeam === 3 ? previous.selectedPlayer.kind === "available" && previous.selectedPlayer.value === 1 : previous.selectedPlayer.kind === "unavailable")) {
+    return previous
+  }
   return Object.freeze({
     visible,
     mapName,
