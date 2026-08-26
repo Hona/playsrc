@@ -69,10 +69,14 @@ export class SharedTextureResidency<T extends OwnedResource> {
       frames.delete(identity)
       frames.add(identity)
       while (frames.size > this.#maximumFrames) {
-        const candidate = [...frames].find((key) => {
+        let candidate: string | undefined
+        for (const key of frames) {
           const entry = this.#resources.get(key)
-          return entry !== undefined && !entry.pinned && entry.consumers.size === 0
-        })
+          if (entry !== undefined && !entry.pinned && entry.consumers.size === 0) {
+            candidate = key
+            break
+          }
+        }
         if (!candidate) break
         const entry = this.#resources.get(candidate)!
         frames.delete(candidate)
