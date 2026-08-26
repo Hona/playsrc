@@ -186,7 +186,10 @@ test("headed authored three-map Soldier, bots, water, HUD, combat, and full-prop
   const work: number[] = []
   for (const [index, target] of TARGETS.entries()) {
     if (index > 0) {
-      await page.reload({ waitUntil: "load", timeout: 30_000 })
+      const origin = new URL(page.url()).origin
+      await page.goto("about:blank", { waitUntil: "load", timeout: 30_000 })
+      await cdp.send("Storage.clearDataForOrigin", { origin, storageTypes: "indexeddb" })
+      await page.goto("/", { waitUntil: "load", timeout: 30_000 })
       await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 120_000 })
     }
     await command(page, entry, `map ${target}`)
@@ -425,7 +428,16 @@ test("headed authored three-map Soldier, bots, water, HUD, combat, and full-prop
       allocations: { heapBefore, heapAfter, sampledBytes: allocationRows.reduce((sum, value) => sum + value.bytes, 0), top: allocationRows.slice(0, 20) },
       browserMetrics: Object.fromEntries(metricsAfter.metrics.map((metric) => [metric.name, Number((metric.value - (baseline.get(metric.name) ?? 0)).toFixed(6))])),
     })
-    console.log(`PLAYSRC_FRAME_BUDGET ${JSON.stringify({ target, viewpoints: observations.map((value) => ({ viewpoint: value.viewpoint, fps: value.achievedFps, simulationHz: value.simulationHz, frames: value.frames, work: value.frameWork, gpu: value.gpu })) })}`)
+    console.log(`PLAYSRC_FRAME_BUDGET ${JSON.stringify({ target, viewpoints: observations.map((value) => ({
+      viewpoint: value.viewpoint,
+      fps: value.achievedFps,
+      simulationHz: value.simulationHz,
+      frames: value.frames,
+      work: value.frameWork,
+      timings: Object.fromEntries(Object.entries(value.timings as Record<string, { p95: number }>).map(([name, timing]) => [name, timing.p95])),
+      visibleProps: (value.visibility as Record<string, { p95: number }>).staticProps!.p95,
+      gpu: value.gpu,
+    })) })}`)
   }
 
   const report = {
