@@ -542,34 +542,39 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const positions = new Float32Array(vertices * 3)
       const normals = new Float32Array(vertices * 3)
       const tangents = new Float32Array(vertices * 4)
+      const positionBits = new Uint32Array(positions.buffer)
+      const normalBits = new Uint32Array(normals.buffer)
+      const tangentBits = new Uint32Array(tangents.buffer)
       for (let vertex = 0; vertex < vertices; vertex += 1) {
         const position = vertex * 3
         const tangent = vertex * 4
-        const x = view.getFloat32(at, true)
-        const y = view.getFloat32(at + 4, true)
-        const z = view.getFloat32(at + 8, true)
-        const nx = view.getFloat32(at + 12, true)
-        const ny = view.getFloat32(at + 16, true)
-        const nz = view.getFloat32(at + 20, true)
-        const tx = view.getFloat32(at + 24, true)
-        const ty = view.getFloat32(at + 28, true)
-        const tz = view.getFloat32(at + 32, true)
-        const tw = view.getFloat32(at + 36, true)
+        const x = view.getUint32(at, true)
+        const y = view.getUint32(at + 4, true)
+        const z = view.getUint32(at + 8, true)
+        const nx = view.getUint32(at + 12, true)
+        const ny = view.getUint32(at + 16, true)
+        const nz = view.getUint32(at + 20, true)
+        const tx = view.getUint32(at + 24, true)
+        const ty = view.getUint32(at + 28, true)
+        const tz = view.getUint32(at + 32, true)
+        const tw = view.getUint32(at + 36, true)
         if (
-          !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) ||
-          !Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) ||
-          !Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz) || !Number.isFinite(tw)
+          (x & 0x7f80_0000) === 0x7f80_0000 || (y & 0x7f80_0000) === 0x7f80_0000 ||
+          (z & 0x7f80_0000) === 0x7f80_0000 || (nx & 0x7f80_0000) === 0x7f80_0000 ||
+          (ny & 0x7f80_0000) === 0x7f80_0000 || (nz & 0x7f80_0000) === 0x7f80_0000 ||
+          (tx & 0x7f80_0000) === 0x7f80_0000 || (ty & 0x7f80_0000) === 0x7f80_0000 ||
+          (tz & 0x7f80_0000) === 0x7f80_0000 || (tw & 0x7f80_0000) === 0x7f80_0000
         ) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
-        positions[position] = x
-        positions[position + 1] = y
-        positions[position + 2] = z
-        normals[position] = nx
-        normals[position + 1] = ny
-        normals[position + 2] = nz
-        tangents[tangent] = tx
-        tangents[tangent + 1] = ty
-        tangents[tangent + 2] = tz
-        tangents[tangent + 3] = tw
+        positionBits[position] = x
+        positionBits[position + 1] = y
+        positionBits[position + 2] = z
+        normalBits[position] = nx
+        normalBits[position + 1] = ny
+        normalBits[position + 2] = nz
+        tangentBits[tangent] = tx
+        tangentBits[tangent + 1] = ty
+        tangentBits[tangent + 2] = tz
+        tangentBits[tangent + 3] = tw
         at += 40
       }
       return Object.freeze({ primitive, material, positions, normals, tangents, translucent: translucent === 1 })

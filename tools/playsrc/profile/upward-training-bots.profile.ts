@@ -118,7 +118,19 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
   await testInfo.attach("headed-upward-default-training-bots", { body: JSON.stringify(report), contentType: "application/json" })
-  console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify(report)}`)
+  console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
+    label, activeBots: report.activeBots, teams: report.teams,
+    completedFrames: report.completedFrames, presentedFramesPerSecond: report.presentedFramesPerSecond,
+    frameIntervals: report.frameIntervals, frameWork: report.frameWork, simulation: report.simulation,
+    worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, {
+      calls: value.calls, maximumMilliseconds: value.milliseconds.max,
+      transactMaximumMilliseconds: value.timings.transactMilliseconds?.max ?? 0,
+    }])),
+    gpuSubmissionsPerCompletedFrame: report.gpu.submissionsPerCompletedFrame,
+    memory: report.memory, readyMilliseconds, totalWallMilliseconds: report.totalWallMilliseconds,
+    traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
+    cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
+  })}`)
   expect(report.activeBots).toBe(expectedBots)
   expect(report.teams.red + report.teams.blue).toBe(playerCount)
   expect(report.completedFrames).toBeGreaterThan(0)
