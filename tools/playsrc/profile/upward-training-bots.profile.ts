@@ -329,6 +329,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
 
   const canvas = page.locator("canvas.world-canvas")
+  await replay?.ready()
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses) await canvas.click({ position: { x: 300, y: 250 } })
   const cdp = await context.newCDPSession(page)
@@ -359,6 +360,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   // Never enter an active sample that the shared runner's total deadline would
   // necessarily truncate. The construction/command journal is already durable.
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
+  if (!Number.isFinite(totalDeadline)) throw new Error("Invalid bounded profile deadline")
   if (totalDeadline - Date.now() < seconds * 1000 + 20_000) throw new Error("Insufficient bounded capture/retention time after lock and startup; partial replay retained")
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
@@ -368,10 +370,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
   await cdp.send("Profiler.start")
   if (!exerciseClasses) await page.keyboard.down("w")
+  await replay?.mark(0)
   await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
     traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
-  await workerCpu?.start()
-  await replay?.mark(0)
   const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
   await mkdir(path.dirname(rawPartial), { recursive: true })
   await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
@@ -406,6 +407,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     interrupted = true
     await Promise.allSettled([finishNative(), replay?.stop(false)])
   }
+  await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
   profilePhases.enter("sample-and-readback")

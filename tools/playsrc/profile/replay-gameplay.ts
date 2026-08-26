@@ -18,7 +18,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   const manifestBytes = await readFile(manifestPath)
   require(path.basename(manifestPath) === `${hash(manifestBytes)}.replay.json`, "Replay manifest hash mismatch")
   const manifest = JSON.parse(manifestBytes.toString())
-  require(manifest.schema === "playsrc-gameplay-replay-v1" && manifest.complete && manifest.bytes <= REPLAY_BYTES
+  require(manifest.schema === "playsrc-gameplay-replay-v1" && manifest.complete && /^[0-9a-f]{64}$/u.test(manifest.sha256) && manifest.bytes <= REPLAY_BYTES
     && manifest.file === `${manifest.sha256}.replay.bin`, "Replay manifest is incomplete or invalid")
   const bytes = await readFile(path.join(path.dirname(manifestPath), manifest.file))
   require(bytes.length === manifest.bytes && hash(bytes) === manifest.sha256, "Replay journal hash mismatch")
