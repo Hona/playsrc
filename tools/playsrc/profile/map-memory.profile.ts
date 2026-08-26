@@ -103,9 +103,12 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       };
       const __playsrcNativePost = globalThis.postMessage.bind(globalThis);
       globalThis.postMessage = function (message, transfer) {
-        if (message && typeof message === "object") message.__playsrcProfileMemory = {
-          wasmLinearBytes: globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null,
-          heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
+         if (message && typeof message === "object") message.__playsrcProfileMemory = {
+           wasmLinearBytes: globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null,
+           allocatorLiveBytes: globalThis.__playsrcWorkerMemory?.liveBytes ?? null,
+           allocatorHighWaterBytes: globalThis.__playsrcWorkerMemory?.highWaterBytes ?? null,
+           resourceBytes: globalThis.__playsrcWorkerMemory?.resourceBytes ?? null,
+           heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
         };
         return __playsrcNativePost(message, transfer);
       };
@@ -470,6 +473,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           mainHeapReadyBytes: heap.usedSize,
           mainHeapReadyBackingBytes: heap.backingStorageSize,
           wasmLinearBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.wasmLinearBytes ?? 0))),
+          wasmAllocatorLiveBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.allocatorLiveBytes ?? 0))),
+          wasmAllocatorHighWaterBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.allocatorHighWaterBytes ?? 0))),
+          wasmResourceBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.resourceBytes ?? 0))),
         },
         gpu: observed.gpu,
         indexedDb: observed.indexedDb,

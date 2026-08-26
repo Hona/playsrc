@@ -22,6 +22,8 @@ type WasmExports = Readonly<{
   playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
+  playsrc_memory_bytes(index: number): number
+  playsrc_compile_memory_bytes(handle: number, index: number): number
   playsrc_texture_inspection_count(handle: number, index: number): number
   playsrc_model_cache_count(handle: number, index: number): number
   playsrc_result_length(handle: number): number
@@ -122,6 +124,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_compile_map,
         candidate.playsrc_compile_map_cached,
         candidate.playsrc_compile_metric_milliseconds,
+        candidate.playsrc_memory_bytes,
+        candidate.playsrc_compile_memory_bytes,
         candidate.playsrc_result_length,
         candidate.playsrc_result_error,
         candidate.playsrc_result_copy,
@@ -164,7 +168,13 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     wasm = candidate
     Object.defineProperty(scope, "__playsrcWorkerMemory", {
       configurable: true,
-      get: () => Object.freeze({ linearBytes: candidate.memory.buffer.byteLength, shared: candidate.memory.buffer instanceof SharedArrayBuffer }),
+      get: () => Object.freeze({
+        linearBytes: candidate.memory.buffer.byteLength,
+        liveBytes: candidate.playsrc_memory_bytes(0),
+        highWaterBytes: candidate.playsrc_memory_bytes(1),
+        resourceBytes: [...resourceSets.values()].reduce((total, retained) => total + retained.sections.reduce((sum, section) => sum + section.length, 0), 0),
+        shared: candidate.memory.buffer instanceof SharedArrayBuffer,
+      }),
     })
     post({ id: request.id, kind: "initialized" })
   } catch {
@@ -546,6 +556,9 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       modelCacheHits: exports.playsrc_model_cache_count(candidate, 0),
       modelCacheMisses: exports.playsrc_model_cache_count(candidate, 1),
       wasmLinearMemoryBytes: exports.memory.buffer.byteLength,
+      wasmAllocatorLiveBytes: exports.playsrc_memory_bytes(0),
+      wasmAllocatorHighWaterBytes: exports.playsrc_memory_bytes(1),
+      wasmCompileOwnerBytes: Array.from({ length: 12 }, (_, index) => exports.playsrc_compile_memory_bytes(candidate, index)),
       resourceSections: configuration.sections.length,
       resourceBytes: request.configurationBytes,
       totalMilliseconds: performance.now() - started,

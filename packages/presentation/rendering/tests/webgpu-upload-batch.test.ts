@@ -100,4 +100,34 @@ describe("persistent WebGPU frame upload batching", () => {
     state.backend.updateAttribute(attribute)
     expect(state.originals.attributes).toBe(2)
   })
+
+  test("drops retired binding destinations before their staged copy can invalidate the GPU queue", () => {
+    const state = fixture()
+    const batch = new WebGpuUploadBatch(state.backend)
+    const staleBinding = { buffer: Uint32Array.from([1]), updateRanges: [] }
+    const liveBinding = { buffer: Uint32Array.from([2]), updateRanges: [] }
+    const stale = state.buffer(staleBinding)
+    const live = state.buffer(liveBinding)
+    state.backend.updateBinding(staleBinding)
+    state.backend.updateBinding(liveBinding)
+    stale.destroy()
+    state.queue.submit(["render"])
+    expect(state.copies).toEqual([{ sourceOffset: 4, destination: live, destinationOffset: 0, size: 4 }])
+    expect(state.submissions).toEqual([[{ upload: true }, "render"]])
+    batch.dispose()
+  })
+
+  test("submits an unchanged render without creating staging after every pending destination is destroyed", () => {
+    const state = fixture()
+    const batch = new WebGpuUploadBatch(state.backend)
+    const binding = { buffer: Uint32Array.from([1]), updateRanges: [] }
+    const destination = state.buffer(binding)
+    state.backend.updateBinding(binding)
+    destination.destroy()
+    state.queue.submit(["render"])
+    expect(state.allocated).toHaveLength(0)
+    expect(state.copies).toHaveLength(0)
+    expect(state.submissions).toEqual([["render"]])
+    batch.dispose()
+  })
 })

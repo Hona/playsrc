@@ -1,5 +1,10 @@
 mod gameplay_protocol;
+mod memory;
 pub mod static_prop_artifact;
+
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOCATOR: memory::MeasuredAllocator = memory::MeasuredAllocator;
 
 #[cfg(all(target_arch = "wasm32", feature = "threaded"))]
 pub use wasm_bindgen_rayon::init_thread_pool;
@@ -490,6 +495,20 @@ struct CachedPresentationModel {
     eyes: Vec<playsrc_studio_model::EyeDefinition>,
 }
 
+fn release_static_only_models<'a, T>(
+    models: &mut BTreeMap<String, T>,
+    static_identities: impl IntoIterator<Item = &'a str>,
+    dynamic_identities: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let mut released = std::collections::BTreeSet::new();
+    for identity in static_identities {
+        if !dynamic_identities.contains(identity) && models.remove(identity).is_some() {
+            released.insert(identity.to_owned());
+        }
+    }
+    released
+}
+
 type PresentationModelCacheKey = (String, u8, u8);
 
 fn presentation_model_cache()
@@ -558,6 +577,7 @@ struct Slot {
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Vec<u8>,
     compile_metrics: [u64; 17],
+    memory_metrics: [usize; 12],
     texture_inspections: [u32; 2],
     model_cache: [u32; 2],
 }
@@ -999,19 +1019,22 @@ unsafe fn compile_map(
         playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     let mut phase_started = compile_started;
     let mut compile_metrics = [0_u64; 17];
+    let mut memory_metrics = [0_usize; 12];
+    memory_metrics[0] = memory::live_bytes();
     let bsp_bytes = if bsp_length == 0 {
         &[]
     } else {
         unsafe { std::slice::from_raw_parts(bsp_pointer, bsp_length) }
     };
     let result = (|| {
-        let bsp = playsrc_bsp::parse(
+        let mut bsp = playsrc_bsp::parse(
             bsp_bytes,
             playsrc_bsp::Profile::Source2013V20,
             playsrc_bsp::Limits::default(),
         )
         .map_err(|_| 1_u32)?;
         let bsp_sha: [u8; 32] = Sha256::digest(bsp_bytes).into();
+        memory_metrics[1] = memory::live_bytes();
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[0] = phase_finished.saturating_sub(phase_started);
@@ -1054,6 +1077,9 @@ unsafe fn compile_map(
         let visibility_world =
             playsrc_map::attach_displacement_visibility(&canonical, &visibility_world)
                 .map_err(|_| 3_u32)?;
+        bsp.release_lump_payload(8);
+        bsp.release_lump_payload(53);
+        memory_metrics[2] = memory::live_bytes();
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[1] = phase_finished.saturating_sub(phase_started);
@@ -1068,6 +1094,7 @@ unsafe fn compile_map(
         )
         .map_err(|_| 3_u32)?;
         canonical.collision_world_identity = collision_world.identity;
+        memory_metrics[3] = memory::live_bytes();
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[2] = phase_finished.saturating_sub(phase_started);
@@ -1112,9 +1139,9 @@ unsafe fn compile_map(
         let (
             (
                 presentation,
-                studio_models,
-                model_lighting_metadata,
-                model_material_opacity,
+                mut studio_models,
+                mut model_lighting_metadata,
+                mut model_material_opacity,
                 environment,
             ),
             presentation_metrics,
@@ -1124,6 +1151,9 @@ unsafe fn compile_map(
         } else {
             compile_presentation(presentation_inputs).map_err(|_| 9_u32)?
         };
+        memory_metrics[4] = memory::live_bytes();
+        drop(bsp);
+        memory_metrics[10] = memory::live_bytes();
         compile_metrics[11..17].copy_from_slice(&presentation_metrics);
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -1138,6 +1168,38 @@ unsafe fn compile_map(
             &canonical.static_props,
         )
         .map_err(|_| 8_u32)?;
+        memory_metrics[5] = memory::live_bytes();
+        let studio_model_checksums = studio_models
+            .iter()
+            .map(|(identity, model)| (identity.clone(), model.checksum))
+            .collect();
+        let dynamic_entity_models = entity_graph
+            .entities
+            .iter()
+            .map(authored_entity_model)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| 8_u32)?
+            .into_iter()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        let released_static_models = release_static_only_models(
+            &mut studio_models,
+            canonical
+                .static_props
+                .models
+                .iter()
+                .map(|model| model.logical_path.as_str()),
+            &dynamic_entity_models,
+        );
+        for identity in released_static_models {
+            model_lighting_metadata.remove(&identity);
+            model_material_opacity.remove(&identity);
+        }
+        presentation_model_cache()
+            .lock()
+            .expect("presentation model cache")
+            .retain(|_, entry| entry.model.strong_count() > 0);
+        memory_metrics[11] = memory::live_bytes();
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[5] = phase_finished.saturating_sub(phase_started);
@@ -1199,6 +1261,9 @@ unsafe fn compile_map(
                 3_u32
             }
         })?;
+        memory_metrics[6] = memory::live_bytes();
+        drop(runtime_models);
+        drop(model_occurrences);
         let coverage = encode_profile_coverage(
             &runtime.map.lighting,
             &runtime.visibility,
@@ -1211,10 +1276,6 @@ unsafe fn compile_map(
         compile_metrics[7] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let spawn = spawn(&runtime.entities).ok_or(4_u32)?;
-        let studio_model_checksums = studio_models
-            .iter()
-            .map(|(identity, model)| (identity.clone(), model.checksum))
-            .collect();
         let collision_templates = collision_object_templates(
             &runtime.map,
             &runtime.entities,
@@ -1262,6 +1323,7 @@ unsafe fn compile_map(
         .map_err(|_| 5_u32)?;
         let gameplay_world =
             SharedWorld::new(collision.clone(), initial_collision, impact_surfaces);
+        memory_metrics[7] = memory::live_bytes();
         let model_bounds = collision
             .models
             .iter()
@@ -1315,7 +1377,7 @@ unsafe fn compile_map(
             let mesh = playsrc_nav::parse(
                 bytes,
                 playsrc_nav::Profile::TeamFortress2,
-                Some(u32::try_from(bsp_bytes.len()).map_err(|_| 11_u32)?),
+                Some(u32::try_from(bsp_length).map_err(|_| 11_u32)?),
                 playsrc_nav::Limits::default(),
             )
             .map_err(|_| 11_u32)?;
@@ -1327,6 +1389,8 @@ unsafe fn compile_map(
             noclip_allowed: true,
             ..playsrc_tf2::MovementModifiers::default()
         });
+        memory_metrics[8] = memory::live_bytes();
+        memory_metrics[9] = memory::high_water_bytes();
         let phase_finished =
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[9] = phase_finished.saturating_sub(phase_started);
@@ -1432,6 +1496,7 @@ unsafe fn compile_map(
             session: Some(session),
             snapshot: Vec::new(),
             compile_metrics,
+            memory_metrics,
             texture_inspections,
             model_cache: [
                 PRESENTATION_MODEL_CACHE_HITS.load(Ordering::Relaxed),
@@ -1474,6 +1539,7 @@ unsafe fn compile_map(
             session: None,
             snapshot: Vec::new(),
             compile_metrics,
+            memory_metrics,
             texture_inspections: [0; 2],
             model_cache: [0; 2],
         },
@@ -1637,6 +1703,23 @@ pub extern "C" fn playsrc_compile_metric_milliseconds(handle: u32, index: usize)
             .map_or(0.0, |value| *value as f64 / 1_000_000.0)
     })
     .unwrap_or(0.0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_memory_bytes(index: usize) -> usize {
+    match index {
+        0 => memory::live_bytes(),
+        1 => memory::high_water_bytes(),
+        _ => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_compile_memory_bytes(handle: u32, index: usize) -> usize {
+    with(handle, |slot| {
+        slot.memory_metrics.get(index).copied().unwrap_or(0)
+    })
+    .unwrap_or(0)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_texture_inspection_count(handle: u32, index: usize) -> u32 {
@@ -13710,6 +13793,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn static_model_ownership_ends_without_releasing_dynamic_or_replacement_models() {
+        let static_model = Arc::new(vec![1_u8; 4096]);
+        let released_source = Arc::downgrade(&static_model);
+        let dynamic_model = Arc::new(vec![2_u8; 2048]);
+        let retained_source = Arc::downgrade(&dynamic_model);
+        let mut models = BTreeMap::from([
+            ("models/props/static.mdl".to_owned(), static_model),
+            ("models/props/shared.mdl".to_owned(), dynamic_model),
+            ("models/player/soldier.mdl".to_owned(), Arc::new(vec![3_u8])),
+        ]);
+        let dynamic = std::collections::BTreeSet::from(["models/props/shared.mdl".to_owned()]);
+        let released = release_static_only_models(
+            &mut models,
+            ["models/props/static.mdl", "models/props/shared.mdl"],
+            &dynamic,
+        );
+        assert_eq!(
+            released,
+            std::collections::BTreeSet::from(["models/props/static.mdl".to_owned()])
+        );
+        assert!(released_source.upgrade().is_none());
+        assert!(retained_source.upgrade().is_some());
+
+        let replacement = Arc::new(vec![4_u8; 1024]);
+        let replacement_source = Arc::downgrade(&replacement);
+        models.insert("models/props/static.mdl".to_owned(), replacement);
+        assert!(replacement_source.upgrade().is_some());
+        release_static_only_models(
+            &mut models,
+            ["models/props/static.mdl"],
+            &std::collections::BTreeSet::new(),
+        );
+        assert!(replacement_source.upgrade().is_none());
+        assert!(retained_source.upgrade().is_some());
+    }
+
+    #[test]
     fn decoded_resource_ownership_moves_without_another_wasm_allocation() {
         *resource_output().lock().unwrap() = vec![1, 2, 3, 4];
         assert_eq!(playsrc_resource_length(), 4);
@@ -14299,6 +14419,7 @@ mod tests {
             session: None,
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
+            memory_metrics: [0; 12],
             texture_inspections: [0; 2],
             model_cache: [0; 2],
         });
@@ -14358,6 +14479,7 @@ mod tests {
             session: None,
             snapshot: Vec::new(),
             compile_metrics: [0; 17],
+            memory_metrics: [0; 12],
             texture_inspections: [0; 2],
             model_cache: [0; 2],
         };
