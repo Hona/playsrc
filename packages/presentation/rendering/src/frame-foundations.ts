@@ -149,9 +149,20 @@ export class SourceViewStack {
   push(state: ViewState): ViewState {
     validateViewState(state)
     if (this.#states.length >= this.#maximumDepth) throw new FrameContractError("view-stack depth is exceeded")
-    const retained = structuredClone(state) as ViewState
+    const retained = Object.freeze({
+      ...state,
+      viewport: Object.freeze([...state.viewport]) as ViewState["viewport"],
+      depthStencil: Object.freeze({
+        ...state.depthStencil,
+        depthRange: Object.freeze([...state.depthStencil.depthRange]) as DepthStencilState["depthRange"],
+      }),
+      clips: Object.freeze(state.clips.map((clip) => Object.freeze({
+        ...clip,
+        normal: Object.freeze([...clip.normal]) as ClipPlane["normal"],
+      }))),
+    }) satisfies ViewState
     this.#states.push(retained)
-    return structuredClone(retained) as ViewState
+    return retained
   }
 
   pop(expectedIdentity: string): ViewState | null {
@@ -159,12 +170,12 @@ export class SourceViewStack {
     if (!current || current.identity !== expectedIdentity) throw new FrameContractError("view-stack pop identity differs")
     this.#states.pop()
     const prior = this.#states.at(-1)
-    return prior ? structuredClone(prior) as ViewState : null
+    return prior ?? null
   }
 
   current(): ViewState | null {
     const current = this.#states.at(-1)
-    return current ? structuredClone(current) as ViewState : null
+    return current ?? null
   }
 
   get depth(): number {

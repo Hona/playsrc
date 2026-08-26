@@ -4353,8 +4353,14 @@ export class Tf2Application {
       }
       this.#recordCrouch(snapshot)
       this.#recordAuthorityBlockers(snapshot)
-      const activeWeapon=snapshot.loadout.find(value=>value.weapon===snapshot.weapon),reloadObservation=activeWeapon&&`${snapshot.tick}:${activeWeapon.weapon}:${activeWeapon.clip}/${activeWeapon.reserve}:${activeWeapon.reload}`
-      if(reloadObservation&&this.#reloadHistory.at(-1)!==reloadObservation){this.#reloadHistory.push(reloadObservation);if(this.#reloadHistory.length>128)this.#reloadHistory.shift()}
+      const activeWeapon=snapshot.loadout.find(value=>value.weapon===snapshot.weapon)
+      if(activeWeapon){
+        const reloadState=`${activeWeapon.weapon}:${activeWeapon.clip}/${activeWeapon.reserve}:${activeWeapon.reload}`
+        if(!this.#reloadHistory.at(-1)?.endsWith(`:${reloadState}`)){
+          this.#reloadHistory.push(`${snapshot.tick}:${reloadState}`)
+          if(this.#reloadHistory.length>128)this.#reloadHistory.shift()
+        }
+      }
       for (const event of snapshot.projectileEvents) {
         if (event.type === "fire") {this.#fireEvents += 1;this.#fireTickHistory.push(`${event.kind}:${event.tick}:${event.position.join(",")}`);if(this.#fireTickHistory.length>128)this.#fireTickHistory.shift()}
         if (event.type === "explode") this.#explosionEvents += 1
@@ -4736,13 +4742,19 @@ export class Tf2Application {
           ? this.#view.viewmodelActivities
           : Object.freeze([...this.#viewmodelActivities]),
         viewmodelSequences: this.#viewmodelSequences(this.#artifacts, snapshot.class),
-        crouchHistory: Object.freeze([...this.#crouchHistory]),
+        crouchHistory: this.#view.crouchHistory?.length === this.#crouchHistory.length
+          && this.#view.crouchHistory.at(-1) === this.#crouchHistory.at(-1)
+          ? this.#view.crouchHistory
+          : Object.freeze([...this.#crouchHistory]),
         viewmodelTimelineProbes: this.#view.viewmodelTimelineProbes,
         ...this.#gameplayTraces(snapshot),
         ...this.#snapshotProbes(snapshot),
         simulationProbe: `${publication.hostFrame}:${publication.firstHostTick}-${publication.lastHostTick}:${publication.selectedTicks}:${publication.snapshotBytes.byteLength}:${publication.eventBatches.reduce((n,e)=>n+e.bytes.byteLength,0)}`,
         brushModelProbe: `${snapshot.entityPresentation.entityRevision}:${snapshot.entityPresentation.collisionRevision}:${snapshot.entityPresentation.models.length}:${snapshot.entityPresentation.models.filter(model=>model.draw).length}`,
-        reloadHistory:Object.freeze([...this.#reloadHistory]),
+        reloadHistory: this.#view.reloadHistory?.length === this.#reloadHistory.length
+          && this.#view.reloadHistory.at(-1) === this.#reloadHistory.at(-1)
+          ? this.#view.reloadHistory
+          : Object.freeze([...this.#reloadHistory]),
         fireTickHistory: this.#view.fireTickHistory?.length === this.#fireTickHistory.length
           && this.#view.fireTickHistory.at(-1) === this.#fireTickHistory.at(-1)
           ? this.#view.fireTickHistory

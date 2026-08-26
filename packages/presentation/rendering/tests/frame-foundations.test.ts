@@ -65,6 +65,23 @@ describe("view stack and frame graph", () => {
     expect(() => stack.pop("wrong")).toThrow(/identity/i)
   })
 
+  test("retains one immutable defensive view snapshot across stack observations", () => {
+    const stack = new SourceViewStack(2)
+    const viewport: [number, number, number, number] = [0, 0, 320, 180]
+    const normal: [number, number, number] = [0, 0, 1]
+    const original = { ...view("main"), viewport, clips: [{ normal, distance: 20, keep: "positive" as const }] }
+    const retained = stack.push(original)
+    viewport[2] = 1
+    normal[2] = 0
+    expect(retained.viewport[2]).toBe(320)
+    expect(retained.clips[0]?.normal[2]).toBe(1)
+    expect(stack.current()).toBe(retained)
+    expect(Object.isFrozen(retained.depthStencil.depthRange)).toBe(true)
+    expect(Object.isFrozen(retained.clips[0]?.normal)).toBe(true)
+    stack.push(view("reflection"))
+    expect(stack.pop("reflection")).toBe(retained)
+  })
+
   test("executes the fixed phase order and rolls staged work back in reverse on failure", async () => {
     const success = await executeFrameGraph(() => ({}))
     expect(success.phases).toEqual(FRAME_PHASES)

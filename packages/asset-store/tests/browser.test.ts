@@ -30,6 +30,7 @@ class FakeTransaction {
   constructor(
     readonly stores: Map<string, Map<string, Record<string, unknown>>>,
     readonly inventories: { objects: number; metadata: number },
+    readonly writes: { objects: number; metadata: number },
   ) {}
 
   objectStore(name = "objects"): IDBObjectStore {
@@ -65,11 +66,15 @@ class FakeTransaction {
       add: (record: Record<string, unknown>) => request(() => {
         const key = record.key as string
         if (records.has(key)) throw new Error("ConstraintError")
+        if (name === "objects") this.writes.objects += 1
+        else if (name === "metadata") this.writes.metadata += 1
         records.set(key, record)
         return key
       }),
       put: (record: Record<string, unknown>) => request(() => {
         const key = record.key as string
+        if (name === "objects") this.writes.objects += 1
+        else if (name === "metadata") this.writes.metadata += 1
         records.set(key, record)
         return key
       }),
@@ -129,6 +134,7 @@ class FakeIndexedDb {
   readonly metadata = new Map<string, Map<string, Record<string, unknown>>>()
   readonly versions = new Map<string, number>()
   readonly inventories = { objects: 0, metadata: 0 }
+  readonly writes = { objects: 0, metadata: 0 }
 
   open(name: string, version = 1): IDBOpenDBRequest {
     const request: FakeRequest<IDBDatabase> & {
@@ -149,7 +155,7 @@ class FakeIndexedDb {
       const stores = new Map<string, Map<string, Record<string, unknown>>>([["objects", records]])
       const metadata = this.metadata.get(name)
       if (metadata) stores.set("metadata", metadata)
-      const upgrade = new FakeTransaction(stores, this.inventories)
+      const upgrade = new FakeTransaction(stores, this.inventories, this.writes)
       request.result = {
         createObjectStore: (storeName: string) => {
           if (storeName === "objects") return upgrade.objectStore("objects")
@@ -158,7 +164,7 @@ class FakeIndexedDb {
           if (storeName === "metadata") this.metadata.set(name, entries)
           return upgrade.objectStore(storeName)
         },
-        transaction: () => new FakeTransaction(stores, this.inventories) as unknown as IDBTransaction,
+        transaction: () => new FakeTransaction(stores, this.inventories, this.writes) as unknown as IDBTransaction,
         close: () => {},
         onversionchange: null,
       } as unknown as IDBDatabase
@@ -304,23 +310,25 @@ describe("browser asset adapters", () => {
       await cache.write(untouchedKey, await digest(untouchedBytes), untouchedBytes)
       expect(await cache.read(firstKey)).toEqual({ bytes: firstBytes, sha256: await digest(firstBytes) })
       const records = fake.databases.get("verified-read-recency")!
-      expect(records.get(firstKey)?.storedAt).toBe(101)
+      const metadata = fake.metadata.get("verified-read-recency")!
+      expect(metadata.get(firstKey)?.storedAt).toBe(101)
+      expect(records.get(firstKey)?.storedAt).toBe(100)
       expect(records.get(untouchedKey)?.storedAt).toBe(100)
       expect(await cache.read(firstKey)).toEqual({ bytes: firstBytes, sha256: await digest(firstBytes) })
-      expect(records.get(firstKey)?.storedAt).toBe(102)
+      expect(metadata.get(firstKey)?.storedAt).toBe(102)
       expect(planDerivedCacheEviction(
-        [...records.values()].map((record) => ({ key: record.key as string, byteLength: record.byteLength as number, storedAt: record.storedAt as number })),
+        [...metadata.values()].map((record) => ({ key: record.key as string, byteLength: record.byteLength as number, storedAt: record.storedAt as number })),
         { key: "4".repeat(64), byteLength: 1 },
         8,
         3,
       )).toEqual([untouchedKey])
 
       expect(await cache.read(missingKey)).toBeUndefined()
-      expect(records.get(firstKey)?.storedAt).toBe(102)
+      expect(metadata.get(firstKey)?.storedAt).toBe(102)
       const first = records.get(firstKey)!
       records.set(firstKey, { ...first, bytes: new Blob([new TextEncoder().encode("111X")]) })
       await expect(cache.read(firstKey)).rejects.toMatchObject({ code: "IntegrityFailure" })
-      expect(records.get(firstKey)?.storedAt).toBe(102)
+      expect(metadata.get(firstKey)?.storedAt).toBe(102)
       cache.close()
     } finally {
       now.mockRestore()
@@ -340,12 +348,16 @@ describe("browser asset adapters", () => {
         const value = new Uint8Array(128).fill(index)
         await cache.write(key, await digest(value), value)
       }
+      const admissionInventories = fake.inventories.metadata
+      const admissionObjectWrites = fake.writes.objects
       for (let index = 1; index <= 6; index += 1) {
         const expected = new Uint8Array(128).fill(index)
         expect(await cache.read(index.toString(16).repeat(64))).toEqual({ bytes: expected, sha256: await digest(expected) })
       }
       expect(fake.inventories.objects).toBe(0)
-      expect(fake.inventories.metadata).toBeGreaterThan(0)
+      expect(fake.inventories.metadata).toBe(admissionInventories)
+      expect(fake.writes.objects).toBe(admissionObjectWrites)
+      expect(fake.writes.metadata).toBe(admissionObjectWrites + 6)
       cache.close()
     } finally {
       if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
@@ -375,6 +387,33 @@ describe("browser asset adapters", () => {
       expect(await cache.read(key)).toEqual({ bytes: value, sha256: await digest(value) })
       expect(fake.databases.get("preserved-version-one")?.get(key)?.bytes).toBe(blob)
       expect(fake.inventories.objects).toBe(0)
+      cache.close()
+    } finally {
+      if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
+      else delete (globalThis as { indexedDB?: IDBFactory }).indexedDB
+    }
+  })
+
+  test("rejects mismatched recency metadata without rewriting its verified Blob", async () => {
+    const indexedDbDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    const fake = new FakeIndexedDb()
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fake })
+    try {
+      const cache = await openDerivedObjectCache("malformed-recency-metadata")
+      await cache.write(sha256, sha256, bytes)
+      const stored = fake.databases.get("malformed-recency-metadata")!.get(sha256)!
+      const writes = fake.writes.objects
+      fake.metadata.get("malformed-recency-metadata")!.set(sha256, {
+        key: sha256,
+        byteLength: bytes.byteLength + 1,
+        storedAt: stored.storedAt,
+      })
+      await expect(cache.read(sha256)).rejects.toMatchObject({
+        code: "IntegrityFailure",
+        message: "derived cache recency metadata is malformed",
+      })
+      expect(fake.writes.objects).toBe(writes)
+      expect(fake.databases.get("malformed-recency-metadata")!.get(sha256)).toBe(stored)
       cache.close()
     } finally {
       if (indexedDbDescriptor) Object.defineProperty(globalThis, "indexedDB", indexedDbDescriptor)
