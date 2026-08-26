@@ -53,7 +53,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
   const persistStatus = () => writeFile(progress, JSON.stringify({ schema: "playsrc-gameplay-replay-progress-v1", complete: false, bytes: offset, checkpoint, error: failure }))
   await persistStatus()
   const capture = async (stop = false) => {
-    if (!worker || failure) return
+    if (!worker || (failure && !stop)) return
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const result = await Promise.race([
@@ -61,6 +61,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Replay owner read exceeded 3 seconds")), 3000) }),
       ])
       if (!result) return
+      if (typeof result.base64 !== "string" || result.base64.length > Math.ceil(REPLAY_BYTES / 3) * 4 || !Number.isSafeInteger(result.length) || result.length > REPLAY_BYTES) throw new Error("Replay stream byte bound exceeded")
       const bytes = Buffer.from(result.base64, "base64")
       if (result.offset !== offset || offset + bytes.length !== result.length || result.length > REPLAY_BYTES) throw new Error("Replay stream identity mismatch")
       if (checkpoint && JSON.stringify(checkpoint) !== JSON.stringify(result.checkpoint)) throw new Error("Replay checkpoint changed")
@@ -83,23 +84,36 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
   }
   page.on("worker", attach)
   let busy = false
-  const timer = setInterval(() => {
+  let timer: ReturnType<typeof setInterval> | undefined
+  const poll = () => {
     if (busy || stopped) return
     busy = true
     pending = pending.then(() => capture()).finally(() => { busy = false })
-  }, 1000)
+  }
   let result: Promise<any> | undefined
   return {
-    async mark(mark: number) {
+    async ready() {
+      // Initial WASM compilation is synchronous and can legitimately outlast a
+      // short diagnostic RPC. Keep the owner journal in Rust until Ready; do
+      // not queue reads behind compilation and misclassify it as capture loss.
       await pending
-      if (!worker || failure) throw new Error(failure ?? "Replay owner absent")
-      await worker.evaluate(mark => (globalThis as any).__playsrcGameplayReplay.mark(mark), mark)
+      await capture()
+      if (!checkpoint || failure) throw new Error(failure ?? "Replay initial checkpoint absent at Ready")
+      timer = setInterval(poll, 1000)
+    },
+    mark(mark: number) {
+      const marked = pending.then(async () => {
+        if (!worker || failure) throw new Error(failure ?? "Replay owner absent")
+        await worker.evaluate(mark => (globalThis as any).__playsrcGameplayReplay.mark(mark), mark)
+      })
+      pending = marked.catch(error => { failure = String(error) })
+      return marked
     },
     stop(complete = true) {
       if (result) return result
       result = (async () => {
       stopped = true
-      clearInterval(timer)
+      if (timer) clearInterval(timer)
       page.off("worker", attach)
       await pending
       await capture(true)

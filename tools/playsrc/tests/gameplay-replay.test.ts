@@ -75,3 +75,49 @@ test("replay capture is bounded, incremental, durable and stop is idempotent", a
     expect(JSON.parse(await readFile(path.join(directory, "test.replay-progress.json"), "utf8")).complete).toBe(true)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
+
+test("the owner journal waits for Ready and serializes boundary marks before final drain", async () => {
+  const directory = await mkdtemp(path.join(process.cwd(), ".replay-test-"))
+  let attach: ((worker: any) => void) | undefined
+  const page = { on(_event: string, fn: typeof attach) { attach = fn }, off() {} }
+  const bytes = fixture(), calls: string[] = []
+  let release: (() => void) | undefined
+  try {
+    const journal = await startGameplayReplayJournal(page as any, directory, "ordered")
+    attach!({ url: () => "http://local/gameplay-worker.ts", async evaluate(_fn: unknown, args: any) {
+      if (typeof args === "number") { calls.push("mark"); await new Promise<void>(resolve => { release = resolve }); return }
+      if (!args) return
+      calls.push(args.stop ? "stop" : "read")
+      return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 1 }, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
+    } })
+    expect(calls).toEqual([])
+    await journal.ready()
+    const marked = journal.mark(0)
+    await Promise.resolve()
+    const stopped = journal.stop()
+    expect(calls).toEqual(["read", "mark"])
+    release!()
+    await marked
+    expect((await stopped).complete).toBe(true)
+    expect(calls).toEqual(["read", "mark", "stop"])
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test("failed incremental reads can retain a final recovered prefix but never pass", async () => {
+  const directory = await mkdtemp(path.join(process.cwd(), ".replay-test-"))
+  let attach: ((worker: any) => void) | undefined
+  const page = { on(_event: string, fn: typeof attach) { attach = fn }, off() {} }
+  const bytes = fixture()
+  try {
+    const journal = await startGameplayReplayJournal(page as any, directory, "failed")
+    attach!({ url: () => "http://local/gameplay-worker.ts", async evaluate(_fn: unknown, args: any) {
+      if (!args) return
+      if (!args.stop) throw new Error("transport failed")
+      return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 1 }, offset: 0, length: bytes.length, complete: true, base64: bytes.toString("base64") }
+    } })
+    await expect(journal.ready()).rejects.toThrow("transport failed")
+    const retained = await journal.stop()
+    expect(retained.complete).toBe(false)
+    expect((await readFile(path.join(directory, retained.file))).equals(bytes)).toBe(true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
