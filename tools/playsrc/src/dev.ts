@@ -105,6 +105,9 @@ export type DevelopmentOwner = Readonly<{
   startup: Readonly<{
     mapMilliseconds: number
     buildMilliseconds: number
+    wasmMilliseconds: number
+    sourceProducerMilliseconds: number
+    sourceBundles: readonly Readonly<{ target: string; prepareMilliseconds: number; publishMilliseconds: number }>[]
     publicationMilliseconds: number
     viteCreationMilliseconds: number
     listenerMilliseconds: number
@@ -120,20 +123,32 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   if (!TF2_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
   const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
   const mapReady = performance.now()
+  let wasmMilliseconds = 0
+  let sourceProducerMilliseconds = 0
   const [wasmPath, applicationBuild, { tf2ViteConfiguration }, sourceBundles] = await Promise.all([
-    buildTf2Wasm(config),
+    (async () => {
+      const began = performance.now()
+      const artifact = await buildTf2Wasm(config)
+      wasmMilliseconds = Math.round(performance.now() - began)
+      return artifact
+    })(),
     publicCommitIdentity(),
     import("../../../apps/web/tf2/vite.config"),
     (async () => {
+      const began = performance.now()
       await prepareSourceBundleProducer(config)
+      sourceProducerMilliseconds = Math.round(performance.now() - began)
       return Promise.all(TF2_TARGET_NAMES.map(async (name) => {
+        const prepareStarted = performance.now()
         const sourceBundle = await buildSourceBundle(config, name)
+        const prepareMilliseconds = Math.round(performance.now() - prepareStarted)
+        const publishStarted = performance.now()
         await Promise.all([
           publishFile(config, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
           publishFile(config, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
           ...sourceBundle.graph.chunks.map((chunk) => publishFile(config, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
         ])
-        return Object.freeze({ name, sourceBundle })
+        return Object.freeze({ name, sourceBundle, prepareMilliseconds, publishMilliseconds: Math.round(performance.now() - publishStarted) })
       }))
     })(),
   ])
@@ -272,6 +287,10 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       startup: Object.freeze({
         mapMilliseconds: Math.round(mapReady - started),
         buildMilliseconds: Math.round(buildReady - mapReady),
+        wasmMilliseconds,
+        sourceProducerMilliseconds,
+        sourceBundles: Object.freeze(sourceBundles.map(({ name, prepareMilliseconds, publishMilliseconds }) =>
+          Object.freeze({ target: name, prepareMilliseconds, publishMilliseconds }))),
         publicationMilliseconds,
         viteCreationMilliseconds,
         listenerMilliseconds: Math.round(ready - listenerStarted),
