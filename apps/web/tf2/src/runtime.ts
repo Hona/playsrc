@@ -1127,7 +1127,7 @@ export class Tf2Application {
     }))
     const sections: Uint8Array[] = []
     for (const chunks of partitionResourceChunks(records)) {
-      const section = await this.#client!.decodeResources(chunks)
+      const section = await this.#client!.decodeResources(chunks, roles.includes("gameplay"))
       for (const [logicalPath, bytes] of parseResourceSet(section)) {
         const existing = destination.get(logicalPath)
         if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
@@ -1549,7 +1549,7 @@ export class Tf2Application {
         profile,
         this.#renderLevel,
         this.#configuration.wasm.sha256,
-        this.#dependencies,
+        this.#activeTarget.objects.resources.sha256,
       )
       finishLoadPhase("derivedKey")
       this.#set({ detail: "Compiling direct map authority" })
@@ -3034,7 +3034,7 @@ export class Tf2Application {
       profile,
       this.#renderLevel,
       this.#configuration?.wasm.sha256 ?? "",
-      candidate?.dependencies ?? this.#dependencies,
+      candidate?.target.objects.resources.sha256 ?? this.#activeTarget!.objects.resources.sha256,
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
