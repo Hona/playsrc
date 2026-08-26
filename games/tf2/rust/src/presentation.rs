@@ -5,9 +5,9 @@ use playsrc_studio_model::{
     PresentationDependencyResponse, PresentationDependencyRole, PresentationLimits,
     PresentationModel, PresentationModelBuild, PresentationProfile, Profile,
     TextureDisposition as StudioTextureDisposition, TextureRole as StudioTextureRole, VtxVariant,
-    build_presentation_model, load_authored,
+    build_presentation_model, load_authored, retain_authored_source,
 };
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelPresentationError {
@@ -112,11 +112,13 @@ fn load_model(
     resource_hashes: &BTreeMap<String, [u8; 32]>,
 ) -> Result<Box<Document>, ModelPresentationError> {
     let path = identity.to_ascii_lowercase();
-    let mdl = Arc::<[u8]>::from(
-        *resources
-            .get(&path)
-            .ok_or(ModelPresentationError::Missing)?,
-    );
+    let bytes = *resources
+        .get(&path)
+        .ok_or(ModelPresentationError::Missing)?;
+    let sha256 = *resource_hashes
+        .get(&path)
+        .ok_or(ModelPresentationError::Invalid)?;
+    let mdl = retain_authored_source(&path, bytes, sha256);
     let mut responses = Vec::new();
     loop {
         match load_authored(

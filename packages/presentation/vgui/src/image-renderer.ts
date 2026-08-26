@@ -62,48 +62,35 @@ const linearToSrgb = (value: number): number => value <= 0.0031308
 
 function wrap(value: number): number { return value - Math.floor(value) }
 
-function texel(texture: VguiImageRasterTexturePixels, x: number, y: number): readonly [number, number, number, number] {
+function texel(texture: VguiImageRasterTexturePixels, x: number, y: number, channel: number): number {
   const wrappedX = ((x % texture.width) + texture.width) % texture.width
   const wrappedY = ((y % texture.height) + texture.height) % texture.height
-  const offset = (wrappedY * texture.width + wrappedX) * 4
-  const red = texture.rgba[offset]! / 255
-  const green = texture.rgba[offset + 1]! / 255
-  const blue = texture.rgba[offset + 2]! / 255
-  return [
-    texture.colorRead === "srgb" ? srgbToLinear(red) : red,
-    texture.colorRead === "srgb" ? srgbToLinear(green) : green,
-    texture.colorRead === "srgb" ? srgbToLinear(blue) : blue,
-    texture.rgba[offset + 3]! / 255,
-  ]
+  const value = texture.rgba[(wrappedY * texture.width + wrappedX) * 4 + channel]! / 255
+  return channel !== 3 && texture.colorRead === "srgb" ? srgbToLinear(value) : value
 }
 
-function sample(texture: VguiImageRasterTexturePixels, u: number, v: number): readonly [number, number, number, number] {
+function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, output: Float64Array): void {
   const wrappedU = wrap(u)
   const wrappedV = wrap(v)
-  if (!texture.filtered) return texel(texture, Math.floor(wrappedU * texture.width), Math.floor(wrappedV * texture.height))
+  if (!texture.filtered) {
+    const x = Math.floor(wrappedU * texture.width)
+    const y = Math.floor(wrappedV * texture.height)
+    for (let channel = 0; channel < 4; channel += 1) output[channel] = texel(texture, x, y, channel)
+    return
+  }
   const x = wrappedU * texture.width - 0.5
   const y = wrappedV * texture.height - 0.5
   const x0 = Math.floor(x)
   const y0 = Math.floor(y)
   const fx = x - x0
   const fy = y - y0
-  const topLeft = texel(texture, x0, y0)
-  const topRight = texel(texture, x0 + 1, y0)
-  const bottomLeft = texel(texture, x0, y0 + 1)
-  const bottomRight = texel(texture, x0 + 1, y0 + 1)
-  return [
-    mix(mix(topLeft[0], topRight[0], fx), mix(bottomLeft[0], bottomRight[0], fx), fy),
-    mix(mix(topLeft[1], topRight[1], fx), mix(bottomLeft[1], bottomRight[1], fx), fy),
-    mix(mix(topLeft[2], topRight[2], fx), mix(bottomLeft[2], bottomRight[2], fx), fy),
-    mix(mix(topLeft[3], topRight[3], fx), mix(bottomLeft[3], bottomRight[3], fx), fy),
-  ]
-}
-
-function rotated(u: number, v: number, rotation: 0 | 1 | 2 | 3): readonly [number, number] {
-  if (rotation === 1) return [v, 1 - u]
-  if (rotation === 2) return [1 - u, 1 - v]
-  if (rotation === 3) return [1 - v, u]
-  return [u, v]
+  for (let channel = 0; channel < 4; channel += 1) {
+    output[channel] = mix(
+      mix(texel(texture, x0, y0, channel), texel(texture, x0 + 1, y0, channel), fx),
+      mix(texel(texture, x0, y0 + 1, channel), texel(texture, x0 + 1, y0 + 1, channel), fx),
+      fy,
+    )
+  }
 }
 
 function slicedCoordinate(position: number, destination: number, source: number, sourceCorner: number, drawCorner: number): number {
@@ -114,25 +101,6 @@ function slicedCoordinate(position: number, destination: number, source: number,
   const centerDraw = Math.max(0, destination - drawCorner * 2)
   const centerSource = Math.max(0, source - sourceCorner * 2)
   return (sourceCorner + (centerDraw > 0 ? (position - drawCorner) / centerDraw * centerSource : 0)) / source
-}
-
-function coordinates(request: VguiImageRasterRequest, x: number, y: number): readonly [number, number] {
-  if (request.geometry.kind === "stretch") {
-    return rotated((x + 0.5) / request.width, (y + 0.5) / request.height, request.geometry.rotation)
-  }
-  if (request.geometry.kind === "tile") {
-    return rotated((x + 0.5) / request.material.base.width, (y + 0.5) / request.material.base.height, request.geometry.rotation)
-  }
-  if (request.geometry.kind === "crop") {
-    return [
-      mix(request.geometry.u0, request.geometry.u1, (x + 0.5) / request.width),
-      mix(request.geometry.v0, request.geometry.v1, (y + 0.5) / request.height),
-    ]
-  }
-  return [
-    slicedCoordinate(x + 0.5, request.width, request.material.base.width, request.geometry.sourceCornerWidth, request.geometry.drawCornerWidth),
-    slicedCoordinate(y + 0.5, request.height, request.material.base.height, request.geometry.sourceCornerHeight, request.geometry.drawCornerHeight),
-  ]
 }
 
 export function shadeVguiImage(
@@ -166,79 +134,146 @@ export function shadeVguiImage(
       outlineEnd1 = clamp(endMiddle + resolutionScale * (outlineEnd1 - endMiddle), 0.05, 0.99)
     }
   }
-  const tint = request.tint.map((value) => value / 255) as [number, number, number, number]
+  const tintRed = request.tint[0] / 255
+  const tintGreen = request.tint[1] / 255
+  const tintBlue = request.tint[2] / 255
+  const tintAlpha = request.tint[3] / 255
+  const color = new Float64Array(4)
+  const secondary = new Float64Array(4)
   for (let y = 0; y < request.height; y += 1) {
     for (let x = 0; x < request.width; x += 1) {
-      const [u, v] = coordinates(request, x, y)
-      let color = [...sample(baseTexture, u, v)] as [number, number, number, number]
-      if (request.material.shader === "unlit-two-texture") {
-        const second = sample(secondTexture!, u, v)
-        color = [color[0] * second[0], color[1] * second[1], color[2] * second[2], 1]
+      let u: number
+      let v: number
+      if (request.geometry.kind === "stretch" || request.geometry.kind === "tile") {
+        u = (x + 0.5) / (request.geometry.kind === "stretch" ? request.width : request.material.base.width)
+        v = (y + 0.5) / (request.geometry.kind === "stretch" ? request.height : request.material.base.height)
+        const rotation = request.geometry.rotation
+        if (rotation === 1) { const previous = u; u = v; v = 1 - previous }
+        else if (rotation === 2) { u = 1 - u; v = 1 - v }
+        else if (rotation === 3) { const previous = u; u = 1 - v; v = previous }
+      } else if (request.geometry.kind === "crop") {
+        u = mix(request.geometry.u0, request.geometry.u1, (x + 0.5) / request.width)
+        v = mix(request.geometry.v0, request.geometry.v1, (y + 0.5) / request.height)
       } else {
-        let distance = color[3]
+        u = slicedCoordinate(x + 0.5, request.width, request.material.base.width, request.geometry.sourceCornerWidth, request.geometry.drawCornerWidth)
+        v = slicedCoordinate(y + 0.5, request.height, request.material.base.height, request.geometry.sourceCornerHeight, request.geometry.drawCornerHeight)
+      }
+      sample(baseTexture, u, v, color)
+      if (request.material.shader === "unlit-two-texture") {
+        sample(secondTexture!, u, v, secondary)
+        color[0] *= secondary[0]!
+        color[1] *= secondary[1]!
+        color[2] *= secondary[2]!
+        color[3] = 1
+      } else {
+        let distance = color[3]!
         if (detailTexture) {
-          const detail = [...sample(detailTexture, u * request.material.detailScale[0], v * request.material.detailScale[1])] as [number, number, number, number]
-          detail[0] *= request.material.detailTint[0]
-          detail[1] *= request.material.detailTint[1]
-          detail[2] *= request.material.detailTint[2]
+          sample(detailTexture, u * request.material.detailScale[0], v * request.material.detailScale[1], secondary)
+          secondary[0] *= request.material.detailTint[0]
+          secondary[1] *= request.material.detailTint[1]
+          secondary[2] *= request.material.detailTint[2]
           if (request.material.distanceAlpha && request.material.distanceAlphaFromDetail) {
-            distance = detail[3]
-            detail[3] = 1
+            distance = secondary[3]!
+            secondary[3] = 1
           }
           if (request.material.detailBlendMode === 8) {
             for (let channel = 0; channel < 4; channel += 1) {
-              color[channel] = mix(color[channel]!, color[channel]! * detail[channel]!, request.material.detailBlendFactor)
+              color[channel] = mix(color[channel]!, color[channel]! * secondary[channel]!, request.material.detailBlendFactor)
             }
           } else if (request.material.detailBlendMode === 9) {
-            color[3] = mix(color[3], color[3] * detail[3], request.material.detailBlendFactor)
+            color[3] = mix(color[3]!, color[3]! * secondary[3]!, request.material.detailBlendFactor)
           }
         }
         if (request.material.distanceAlpha) {
           if (request.material.outline) {
             const factor = smooth(outlineStart0, outlineStart1, distance) * smooth(outlineEnd1, outlineEnd0, distance)
-            color = [
-              mix(color[0], request.material.outlineColor[0], factor),
-              mix(color[1], request.material.outlineColor[1], factor),
-              mix(color[2], request.material.outlineColor[2], factor),
-              mix(color[3], request.material.outlineAlpha, factor),
-            ]
+            color[0] = mix(color[0]!, request.material.outlineColor[0], factor)
+            color[1] = mix(color[1]!, request.material.outlineColor[1], factor)
+            color[2] = mix(color[2]!, request.material.outlineColor[2], factor)
+            color[3] = mix(color[3]!, request.material.outlineAlpha, factor)
           }
           const mask = request.material.softEdges ? smooth(softEnd, softStart, distance) : distance >= 0.5 ? 1 : 0
           if (request.material.softEdges || detailTexture) color[3] *= mask
           else color[3] = mask
           if (request.material.glow) {
             const glowSource = detailTexture ?? baseTexture
-            const glowSample = sample(glowSource, (u + request.material.glowX) * (detailTexture ? request.material.detailScale[0] : 1), (v + request.material.glowY) * (detailTexture ? request.material.detailScale[1] : 1))
-            const amount = smooth(request.material.glowStart, request.material.glowEnd, glowSample[3])
-            const glow = [
-              request.material.glowColor[0] * amount,
-              request.material.glowColor[1] * amount,
-              request.material.glowColor[2] * amount,
-              request.material.glowAlpha * amount,
-            ]
-            color = [0, 1, 2, 3].map((channel) => mix(glow[channel]!, color[channel]!, mask)) as [number, number, number, number]
+            sample(glowSource, (u + request.material.glowX) * (detailTexture ? request.material.detailScale[0] : 1), (v + request.material.glowY) * (detailTexture ? request.material.detailScale[1] : 1), secondary)
+            const amount = smooth(request.material.glowStart, request.material.glowEnd, secondary[3]!)
+            color[0] = mix(request.material.glowColor[0] * amount, color[0]!, mask)
+            color[1] = mix(request.material.glowColor[1] * amount, color[1]!, mask)
+            color[2] = mix(request.material.glowColor[2] * amount, color[2]!, mask)
+            color[3] = mix(request.material.glowAlpha * amount, color[3]!, mask)
           }
         }
       }
-      color[0] *= tint[0]
-      color[1] *= tint[1]
-      color[2] *= tint[2]
-      color[3] *= tint[3]
+      color[0] *= tintRed
+      color[1] *= tintGreen
+      color[2] *= tintBlue
+      color[3] *= tintAlpha
       const offset = (y * request.width + x) * 4
-      output[offset] = Math.round(clamp(linearToSrgb(color[0])) * 255)
-      output[offset + 1] = Math.round(clamp(linearToSrgb(color[1])) * 255)
-      output[offset + 2] = Math.round(clamp(linearToSrgb(color[2])) * 255)
-      output[offset + 3] = Math.round(clamp(color[3]) * 255)
+      output[offset] = Math.round(clamp(linearToSrgb(color[0]!)) * 255)
+      output[offset + 1] = Math.round(clamp(linearToSrgb(color[1]!)) * 255)
+      output[offset + 2] = Math.round(clamp(linearToSrgb(color[2]!)) * 255)
+      output[offset + 3] = Math.round(clamp(color[3]!) * 255)
     }
   }
   return output
 }
 
+export class VguiRasterCache<Value> {
+  readonly #entries = new Map<string, Readonly<{ value: Value; bytes: number }>>()
+  readonly #maximumBytes: number
+  readonly #maximumEntries: number
+  #bytes = 0
+
+  constructor(maximumBytes = 64 * 1024 * 1024, maximumEntries = 512) {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || !Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
+      throw new Error("VGUI raster cache bounds are invalid")
+    }
+    this.#maximumBytes = maximumBytes
+    this.#maximumEntries = maximumEntries
+  }
+
+  get(identity: string): Value | undefined {
+    const entry = this.#entries.get(identity)
+    if (!entry) return undefined
+    this.#entries.delete(identity)
+    this.#entries.set(identity, entry)
+    return entry.value
+  }
+
+  set(identity: string, value: Value, bytes: number): void {
+    if (!identity || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error("VGUI raster cache entry is invalid")
+    this.delete(identity)
+    if (bytes > this.#maximumBytes) return
+    this.#entries.set(identity, Object.freeze({ value, bytes }))
+    this.#bytes += bytes
+    while (this.#bytes > this.#maximumBytes || this.#entries.size > this.#maximumEntries) {
+      this.delete(this.#entries.keys().next().value!)
+    }
+  }
+
+  delete(identity: string): void {
+    const entry = this.#entries.get(identity)
+    if (!entry) return
+    this.#entries.delete(identity)
+    this.#bytes -= entry.bytes
+  }
+
+  clear(): void {
+    this.#entries.clear()
+    this.#bytes = 0
+  }
+
+  snapshot(): Readonly<{ entries: number; bytes: number }> {
+    return Object.freeze({ entries: this.#entries.size, bytes: this.#bytes })
+  }
+}
+
 export class VguiImageRasterizer {
   readonly #document: Document
-  readonly #textures = new Map<string, Promise<VguiImageRasterTexturePixels>>()
-  readonly #renders = new Map<string, Promise<Uint8ClampedArray>>()
-  readonly #bitmaps: ImageBitmap[] = []
+  readonly #textures = new VguiRasterCache<Promise<VguiImageRasterTexturePixels>>()
+  readonly #renders = new VguiRasterCache<Promise<Uint8ClampedArray>>()
   #destroyed = false
 
   constructor(document: Document) { this.#document = document }
@@ -251,14 +286,17 @@ export class VguiImageRasterizer {
       if (!response.ok) throw new Error(`VGUI image ${texture.logicalIdentity} request failed`)
       const bitmap = await createImageBitmap(await response.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" })
       if (this.#destroyed) { bitmap.close(); throw new Error("VGUI image rasterizer is destroyed") }
-      this.#bitmaps.push(bitmap)
       const canvas = this.#document.createElement("canvas")
       canvas.width = texture.width
       canvas.height = texture.height
       const context = canvas.getContext("2d", { willReadFrequently: true })
-      if (!context) throw new Error("VGUI image decode canvas is unavailable")
-      context.clearRect(0, 0, texture.width, texture.height)
-      context.drawImage(bitmap, 0, 0)
+      if (!context) { bitmap.close(); throw new Error("VGUI image decode canvas is unavailable") }
+      try {
+        context.clearRect(0, 0, texture.width, texture.height)
+        context.drawImage(bitmap, 0, 0)
+      } finally {
+        bitmap.close()
+      }
       return Object.freeze({
         width: texture.width,
         height: texture.height,
@@ -267,7 +305,8 @@ export class VguiImageRasterizer {
         colorRead: texture.colorRead,
       })
     })()
-    this.#textures.set(texture.logicalIdentity, loading)
+    this.#textures.set(texture.logicalIdentity, loading, texture.width * texture.height * 4)
+    void loading.catch(() => this.#textures.delete(texture.logicalIdentity))
     return loading
   }
 
@@ -275,13 +314,12 @@ export class VguiImageRasterizer {
     const signature = JSON.stringify(request)
     let rendering = this.#renders.get(signature)
     if (!rendering) {
-      if (this.#renders.size >= 8_192) throw new Error("VGUI raster cache reached its explicit limit")
       rendering = (async () => {
         const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
         const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
         return shadeVguiImage(request, new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])))
       })()
-      this.#renders.set(signature, rendering)
+      this.#renders.set(signature, rendering, request.width * request.height * 4)
       void rendering.catch(() => this.#renders.delete(signature))
     }
     const pixels = await rendering
@@ -290,16 +328,12 @@ export class VguiImageRasterizer {
     canvas.height = request.height
     const context = canvas.getContext("2d")
     if (!context) throw new Error("VGUI presentation canvas is unavailable")
-    const copied = new Uint8ClampedArray(pixels.length)
-    copied.set(pixels)
-    context.putImageData(new ImageData(copied, request.width, request.height), 0, 0)
+    context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
   }
 
   destroy(): void {
     if (this.#destroyed) return
     this.#destroyed = true
-    for (const bitmap of this.#bitmaps) bitmap.close()
-    this.#bitmaps.splice(0)
     this.#textures.clear()
     this.#renders.clear()
   }

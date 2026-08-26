@@ -203,6 +203,26 @@ describe("supplied VGUI font mounting", () => {
     expect(loaded).toEqual([])
   })
 
+  test("borrows the authenticated font source without duplicating its backing buffer", async () => {
+    const content = await byteSource("content", "resource/shared-font.ttf", "exact-shared-font-bytes")
+    let observed: Uint8Array | null = null
+    const result = await mountVguiFontSet({
+      identity: "test/borrowed-font-source",
+      fonts: [resolvedFont("shared-font", [content.source])],
+      byteSupplies: [content.supply],
+      profiles: [],
+    }, adapter([], {
+      async loadFace(request) {
+        observed = request.bytes
+        return Object.freeze({ identity: request.face.identity })
+      },
+    }))
+    if (!result.ok) throw new Error(result.capability.reason)
+    expect(observed).toBe(content.supply.bytes)
+    expect(observed!.buffer).toBe(content.supply.bytes.buffer)
+    result.fontSet.destroy()
+  })
+
   test("uses declared range fallback sources and reports every failed source without browser fallback", async () => {
     const lucida = local("Lucida Console")
     const tahoma = local("Tahoma")
