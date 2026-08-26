@@ -1,9 +1,10 @@
 import path from "node:path"
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { copyFile, link, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import toolchains from "../toolchains.json"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
+import { buildCacheDirectory, rustBuildIdentity } from "./build-identity"
 
 export class Tf2WasmBuildError extends Error {
   constructor(message: string) {
@@ -22,6 +23,96 @@ const THREADED_RUSTFLAGS = [
   "-C link-arg=--export=__tls_align",
   "-C link-arg=--export=__tls_base",
 ].join(" ")
+
+type WasmBuildManifest = Readonly<{
+  schema: "playsrc-threaded-wasm-build-v1"
+  identity: string
+  files: readonly Readonly<{ name: string; bytes: number }>[]
+}>
+
+async function generatedFiles(directory: string, prefix = ""): Promise<string[]> {
+  const entries = await readdir(path.join(directory, prefix), { withFileTypes: true })
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const relative = path.join(prefix, entry.name)
+    if (entry.isDirectory()) return generatedFiles(directory, relative)
+    if (!entry.isFile() || entry.name === ".playsrc-build.json") return []
+    return [relative]
+  }))
+  return nested.flat().sort()
+}
+
+async function linkFile(source: string, destination: string): Promise<void> {
+  await mkdir(path.dirname(destination), { recursive: true })
+  try {
+    await link(source, destination)
+  } catch (error) {
+    if (!["EXDEV", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error
+    await copyFile(source, destination)
+  }
+}
+
+async function readWasmManifest(directory: string, identity: string): Promise<WasmBuildManifest | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path.join(directory, ".playsrc-build.json"), "utf8")) as WasmBuildManifest
+    if (parsed.schema !== "playsrc-threaded-wasm-build-v1" || parsed.identity !== identity || !Array.isArray(parsed.files)
+      || parsed.files.length === 0 || !parsed.files.some((file) => file.name === "tf2_wasm_bg.wasm")) return null
+    for (const file of parsed.files) {
+      if (typeof file.name !== "string" || path.isAbsolute(file.name) || file.name.split(/[\\/]/u).includes("..")
+        || !Number.isSafeInteger(file.bytes) || file.bytes < 0) return null
+      const metadata = await stat(path.join(directory, file.name))
+      if (!metadata.isFile() || metadata.size !== file.bytes) return null
+    }
+    return parsed
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") || error instanceof SyntaxError) return null
+    throw error
+  }
+}
+
+async function retainThreadedBuild(config: LocalConfig, identity: string, output: string): Promise<void> {
+  const directory = path.join(buildCacheDirectory(config.sourceCacheDir, identity), "threaded-wasm")
+  if (await readWasmManifest(directory, identity)) return
+  const temporary = `${directory}.${process.pid}.${crypto.randomUUID()}.tmp`
+  await mkdir(temporary, { recursive: true })
+  try {
+    const names = await generatedFiles(output)
+    const files = await Promise.all(names.map(async (name) => {
+      await linkFile(path.join(output, name), path.join(temporary, name))
+      return Object.freeze({ name, bytes: (await stat(path.join(output, name))).size })
+    }))
+    const manifest: WasmBuildManifest = Object.freeze({ schema: "playsrc-threaded-wasm-build-v1", identity, files })
+    await writeFile(path.join(temporary, ".playsrc-build.json"), `${JSON.stringify(manifest)}\n`)
+    await mkdir(path.dirname(directory), { recursive: true })
+    try {
+      await rename(temporary, directory)
+    } catch (error) {
+      if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error
+      if (!await readWasmManifest(directory, identity)) throw new Error("shared threaded WASM build snapshot is malformed")
+    }
+    await writeFile(path.join(output, ".playsrc-build.json"), `${JSON.stringify(manifest)}\n`)
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+}
+
+async function restoreThreadedBuild(config: LocalConfig, identity: string): Promise<string | null> {
+  const output = path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated")
+  if (await readWasmManifest(output, identity)) return path.join(output, "tf2_wasm_bg.wasm")
+  const directory = path.join(buildCacheDirectory(config.sourceCacheDir, identity), "threaded-wasm")
+  const manifest = await readWasmManifest(directory, identity)
+  if (!manifest) return null
+  const temporary = `${output}.${process.pid}.${crypto.randomUUID()}.tmp`
+  await mkdir(temporary, { recursive: true })
+  try {
+    await Promise.all(manifest.files.map((file) => linkFile(path.join(directory, file.name), path.join(temporary, file.name))))
+    await writeFile(path.join(temporary, ".playsrc-build.json"), `${JSON.stringify(manifest)}\n`)
+    await rm(output, { recursive: true, force: true })
+    await rename(temporary, output)
+  } finally {
+    await rm(temporary, { recursive: true, force: true })
+  }
+  return path.join(output, "tf2_wasm_bg.wasm")
+}
 
 export async function buildThreadedTf2Wasm(
   cargo: string,
@@ -84,7 +175,14 @@ export async function buildTf2Wasm(config: LocalConfig, threaded = true): Promis
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
   const environment = rustEnvironment(config.sourceCacheDir)
   const wasmBindgen = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", process.platform === "win32" ? "wasm-bindgen.exe" : "wasm-bindgen")
-  if (threaded) return buildThreadedTf2Wasm(cargo, wasmBindgen, environment)
+  if (threaded) {
+    const identity = await rustBuildIdentity()
+    const cached = await restoreThreadedBuild(config, identity)
+    if (cached) return cached
+    const output = await buildThreadedTf2Wasm(cargo, wasmBindgen, environment)
+    await retainThreadedBuild(config, identity, path.dirname(output))
+    return output
+  }
   const child = Bun.spawn(
     [
       cargo,

@@ -663,8 +663,8 @@ impl<'a> Resolver<'a> {
 }
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
+    env::current_dir()
+        .expect("repository working directory")
         .canonicalize()
         .expect("repository root")
 }

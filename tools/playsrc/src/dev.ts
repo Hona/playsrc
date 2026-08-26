@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { AssetStoreError, descriptor, putObject, verifyObject, type ObjectDescriptor } from "@playsrc/asset-store"
+import { AssetStoreError, descriptor, objectPath, putObject, verifyObject, type ObjectDescriptor } from "@playsrc/asset-store"
 import { canonicalGraphBytes, parseResourceCatalog, resourceChunkObject } from "@playsrc/asset-store/graph"
 import { startAssetService } from "@playsrc/assets-service"
 import { createServer, type ViteDevServer } from "vite"
@@ -8,7 +8,7 @@ import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
-import { buildSourceBundle } from "./source-bundle"
+import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
@@ -56,17 +56,47 @@ async function waitReady(url: string): Promise<void> {
   throw new DevelopmentError("ReadinessFailure", `${url} did not become ready within 120000 ms`)
 }
 
-async function publishFile(root: string, expected: ObjectDescriptor, pathname: string): Promise<void> {
+type PreparedObjectStamp = Readonly<{ schema: "playsrc-prepared-object-v1"; root: string; sha256: string; byteLength: string; file: string }>
+
+const preparedFileIdentity = (value: Awaited<ReturnType<typeof stat>>): string =>
+  `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}:${value.ctimeMs}`
+
+async function publishFile(config: LocalConfig, expected: ObjectDescriptor, pathname: string): Promise<void> {
+  const destination = objectPath(config.assetDir, expected.sha256)
+  const stampPath = path.join(config.sourceCacheDir, "prepared-content", "objects", expected.sha256.slice(0, 2), `${expected.sha256}.json`)
   try {
-    await verifyObject(root, expected)
-    return
+    const [metadata, text] = await Promise.all([stat(destination), readFile(stampPath, "utf8")])
+    const stamp = JSON.parse(text) as PreparedObjectStamp
+    if (metadata.isFile() && stamp.schema === "playsrc-prepared-object-v1" && stamp.root === config.assetDir
+      && stamp.sha256 === expected.sha256 && stamp.byteLength === expected.byteLength
+      && stamp.file === preparedFileIdentity(metadata)) return
   } catch (error) {
-    if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") && !(error instanceof SyntaxError)) throw error
   }
   try {
-    await putObject(root, expected, await readFile(pathname))
+    await verifyObject(config.assetDir, expected)
   } catch (error) {
-    throw new Error(`development asset ${pathname}: ${error instanceof Error ? error.message : String(error)}`)
+    if (!(error instanceof AssetStoreError) || error.code !== "MissingObject") throw error
+    try {
+      await putObject(config.assetDir, expected, await readFile(pathname))
+    } catch (failure) {
+      throw new Error(`development asset ${pathname}: ${failure instanceof Error ? failure.message : String(failure)}`)
+    }
+  }
+  const stamp: PreparedObjectStamp = Object.freeze({
+    schema: "playsrc-prepared-object-v1",
+    root: config.assetDir,
+    sha256: expected.sha256,
+    byteLength: expected.byteLength,
+    file: preparedFileIdentity(await stat(destination)),
+  })
+  await mkdir(path.dirname(stampPath), { recursive: true })
+  const temporary = `${stampPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, `${JSON.stringify(stamp)}\n`)
+    await rename(temporary, stampPath)
+  } finally {
+    await rm(temporary, { force: true })
   }
 }
 
@@ -90,18 +120,23 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   if (!TF2_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
   const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
   const mapReady = performance.now()
-  const concurrent = Promise.all([buildTf2Wasm(config), publicCommitIdentity(), import("../../../apps/web/tf2/vite.config")])
-  const sourceBundles = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
-  for (const name of TF2_TARGET_NAMES) {
-    const sourceBundle = await buildSourceBundle(config, name)
-    await Promise.all([
-      publishFile(config.assetDir, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
-      publishFile(config.assetDir, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
-      ...sourceBundle.graph.chunks.map((chunk) => publishFile(config.assetDir, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
-    ])
-    sourceBundles.push(Object.freeze({ name, sourceBundle }))
-  }
-  const [wasmPath, applicationBuild, { tf2ViteConfiguration }] = await concurrent
+  const [wasmPath, applicationBuild, { tf2ViteConfiguration }, sourceBundles] = await Promise.all([
+    buildTf2Wasm(config),
+    publicCommitIdentity(),
+    import("../../../apps/web/tf2/vite.config"),
+    (async () => {
+      await prepareSourceBundleProducer(config)
+      return Promise.all(TF2_TARGET_NAMES.map(async (name) => {
+        const sourceBundle = await buildSourceBundle(config, name)
+        await Promise.all([
+          publishFile(config, sourceBundle.report.graphDescriptor, sourceBundle.graphPath),
+          publishFile(config, sourceBundle.report.ledgerDescriptor, sourceBundle.ledgerPath),
+          ...sourceBundle.graph.chunks.map((chunk) => publishFile(config, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
+        ])
+        return Object.freeze({ name, sourceBundle })
+      }))
+    })(),
+  ])
   const buildReady = performance.now()
   const targets = maps.map(({ name, map }, index) => {
     const sourceBundle = sourceBundles[index].sourceBundle
@@ -191,15 +226,37 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       putObject(config.assetDir, wasm, wasmBytes),
       putObject(config.assetDir, catalog, catalogBytes),
       ...maps.map(({ map }, index) => publishFile(
-        config.assetDir,
+        config,
         targets[index]!.objects.bsp,
         path.join(config.sourceCacheDir, map.decoded.cachePath),
       )),
     ])
     publicationMilliseconds = Math.round(performance.now() - publicationStarted)
     const viteStarted = performance.now()
+    const vite = tf2ViteConfiguration(ASSET_ORIGIN)
     application = await createServer({
-      ...tf2ViteConfiguration(ASSET_ORIGIN),
+      ...vite,
+      plugins: [
+        ...(vite.plugins ?? []),
+        {
+          name: "playsrc-profile-development-owner",
+          configureServer(server) {
+            server.middlewares.use("/__playsrc/profile-owner", (_request, response) => {
+              const identity = process.env.PLAYSRC_PROFILE_SOURCE_IDENTITY
+              const token = process.env.PLAYSRC_PROFILE_OWNER_TOKEN
+              if (!identity || !token) {
+                response.statusCode = 404
+                response.end()
+                return
+              }
+              response.statusCode = 200
+              response.setHeader("content-type", "application/json; charset=utf-8")
+              response.setHeader("cache-control", "no-store")
+              response.end(JSON.stringify({ schema: "playsrc-profile-owner-v1", repository: repositoryRoot, identity, token, target: targetIdentity }))
+            })
+          },
+        },
+      ],
       configFile: false,
       root: path.join(repositoryRoot, "apps", "web", "tf2"),
       logLevel: "error",
