@@ -327,6 +327,29 @@ describe("bounded headed profile orchestration", () => {
     }
   })
 
+  test("a stuck leased service requires endpoint proof before a PID-only interrupt", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-stuck-service-"))
+    directories.push(directory)
+    const filename = path.join(directory, "owner.json")
+    const child = Bun.spawn([process.execPath, "-e", 'process.once("SIGTERM",()=>process.exit(0));console.log("ready");setInterval(()=>{},1000)'], { stdout: "pipe", stderr: "pipe" })
+    const metadata = { schema: "playsrc-profile-owner-v1" as const, token: "checked-service", pid: child.pid, identity: "exact", target: "map", repository: directory, url: "", startup: {} }
+    let matches = false
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ...metadata, token: matches ? metadata.token : "foreign-service" }) })
+    metadata.url = server.url.toString()
+    try {
+      const reader = child.stdout.getReader()
+      await reader.read()
+      reader.releaseLock()
+      await writeFile(filename, JSON.stringify(metadata))
+      await expect(stopOwner(filename, { ...metadata, pid: -1 }, 10)).rejects.toThrow("invalid")
+      await expect(stopOwner(filename, metadata, 1_200)).rejects.toThrow("remained live")
+      expect(child.exitCode).toBeNull()
+      matches = true
+      await stopOwner(filename, metadata, 2_000)
+      expect(await child.exited).toBe(0)
+    } finally { server.stop(true); child.kill(); await child.exited }
+  })
+
   test("retains failed operation duration rather than dropping its timing", async () => {
     const phases = new ProfilePhases()
     phases.enter("sample")
