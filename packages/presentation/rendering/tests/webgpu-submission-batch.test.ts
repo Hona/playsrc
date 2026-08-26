@@ -1,7 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import { WebGpuSubmissionBatch, type BatchedGpuQueue } from "../src/webgpu-submission-batch"
+import { WebGpuSubmissionBatch, withImmediateGpuSubmissions, type BatchedGpuQueue } from "../src/webgpu-submission-batch"
 
 describe("ordered WebGPU queue submission batching", () => {
+  test("submits readback copies before mapAsync and restores the outer batching scope on failure", () => {
+    const operations: string[] = []
+    const queue: BatchedGpuQueue = { submit: buffers => { operations.push(`submit:${buffers.join(",")}`) }, writeBuffer() {} }
+    const batch = new WebGpuSubmissionBatch(queue)
+    batch.begin()
+    queue.submit(["world"])
+    expect(() => withImmediateGpuSubmissions(queue, () => {
+      queue.submit(["readback-copy"])
+      operations.push("mapAsync")
+      throw new Error("readback failed")
+    })).toThrow("readback failed")
+    queue.submit(["hud"])
+    expect(operations).toEqual(["submit:world", "submit:readback-copy", "mapAsync"])
+    batch.finish()
+    expect(operations.at(-1)).toBe("submit:hud")
+    batch.dispose()
+    expect(() => withImmediateGpuSubmissions(queue, () => {})).toThrow("owner is unavailable")
+  })
   test("combines adjacent ordered passes and snapshots reused submission arrays", () => {
     const operations: unknown[] = []
     const queue: BatchedGpuQueue = {

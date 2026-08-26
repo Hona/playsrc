@@ -1,6 +1,8 @@
 export function installBrowserFrameProfiler(host: any = globalThis): any {
   if (host.__playsrcFrameProfiler) return host.__playsrcFrameProfiler
 
+  const pendingShaderHashes = new Set<Promise<void>>()
+
   const state = {
     active: false,
     currentPass: null as any,
@@ -16,6 +18,12 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     gpuTimestamps: [] as { frame: number; milliseconds: number }[],
     gpuOperations: [] as { kind: string; at: number; returned?: number; end?: number; failed?: boolean; resource?: number; label?: string; bytes?: number; phase?: string }[],
     gpuOperationsDropped: 0,
+    adapters: [] as any[],
+    devices: [] as any[],
+    shaders: [] as any[],
+    shadersDropped: 0,
+    gpuIdentitiesDropped: 0,
+    flushShaderHashes: () => Promise.all([...pendingShaderHashes]),
     losses: [] as any[],
     queueWrites: {
       histogram: {} as Record<string, number>,
@@ -39,6 +47,62 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     },
   }
   Object.defineProperty(host, "__playsrcFrameProfiler", { configurable: true, value: state })
+
+  // Observe the application's actual adapter/device promises. Never request a
+  // second adapter, force a backend, or infer WebGPU identity from ANGLE.
+  const adapters = new WeakMap<object, any>()
+  const devices = new WeakMap<object, any>()
+  const resourceDevices = new WeakMap<object, number>()
+  const shaders = new WeakMap<object, any>()
+  const admittedShaders = new Set<number>()
+  let nextShader = 0
+  let nextAdapter = 0
+  let nextDevice = 0
+  const adapterInfo = (adapter: any) => {
+    const value = adapter.info
+    return Object.fromEntries(["vendor", "architecture", "device", "description", "backend", "backendType", "driver", "driverVersion", "subgroupMinSize", "subgroupMaxSize", "isFallbackAdapter"]
+      .map(key => [key, value?.[key] ?? null]))
+  }
+  for (const [owner, method] of [[host.GPU, "requestAdapter"], [host.GPUAdapter, "requestDevice"]] as const) {
+    const original = owner?.prototype?.[method]
+    if (typeof original !== "function") continue
+    Object.defineProperty(owner.prototype, method, { configurable: true, writable: true, value(this: any, ...arguments_: any[]) {
+      const requestedAt = host.performance.now()
+      const result = original.apply(this, arguments_)
+      void result.then((value: any) => {
+        if (!value) return
+        if (method === "requestAdapter") {
+          let info: any = null
+          try { info = adapterInfo(value) } catch {}
+          const record = { id: ++nextAdapter, requestedAt, returnedAt: host.performance.now(),
+            powerPreference: arguments_[0]?.powerPreference ?? null, forceFallbackAdapter: arguments_[0]?.forceFallbackAdapter ?? null,
+            isFallbackAdapter: value.isFallbackAdapter ?? info?.isFallbackAdapter ?? null, info }
+          adapters.set(value, record)
+          if (state.adapters.length < 32) state.adapters.push(record)
+          else state.gpuIdentitiesDropped += 1
+        } else {
+          const record = { id: ++nextDevice, adapter: adapters.get(this)?.id ?? null,
+            requestedAt, returnedAt: host.performance.now(), label: arguments_[0]?.label ?? "",
+            requiredFeatures: [...(arguments_[0]?.requiredFeatures ?? [])], features: value.features ? [...value.features] : null,
+            limits: Object.fromEntries(["maxBindGroups", "maxBufferSize", "maxUniformBufferBindingSize", "maxStorageBufferBindingSize", "maxVertexBuffers", "maxVertexAttributes"].map(key => [key, value.limits?.[key] ?? null])) }
+          devices.set(value, record)
+          resourceDevices.set(value, record.id)
+          if (value.queue) resourceDevices.set(value.queue, record.id)
+          if (state.devices.length < 32) state.devices.push(record)
+          else state.gpuIdentitiesDropped += 1
+          // Lifecycle failures remain observable outside the active sample.
+          value.addEventListener("uncapturederror", (event: any) => {
+            state.counters.validationErrors += 1
+            state.losses.push({ kind: "resource", device: record.id, at: host.performance.now(), message: String(event.error?.message ?? event.error) })
+          })
+          void value.lost.then((info: any) => {
+            if (info.reason !== "destroyed") state.losses.push({ kind: "device", device: record.id, at: host.performance.now(), message: info.message, reason: info.reason })
+          })
+        }
+      }, () => {})
+      return result
+    } })
+  }
 
   const wrap = (owner: any, method: string, observe: (arguments_: any[], result?: any, milliseconds?: number) => void, timed = false): void => {
     const original = owner?.prototype?.[method]
@@ -106,6 +170,33 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     ["createComputePipeline", "computePipelines"], ["createComputePipelineAsync", "computePipelines"],
   ] as const) wrap(host.GPUDevice, method, () => { state.counters[counter] += 1 })
 
+  for (const method of ["createBuffer", "createTexture", "createShaderModule", "createCommandEncoder"] as const) {
+    const original = host.GPUDevice?.prototype?.[method]
+    if (typeof original !== "function") continue
+    Object.defineProperty(host.GPUDevice.prototype, method, { configurable: true, writable: true, value(this: any, ...arguments_: any[]) {
+      const result = original.apply(this, arguments_)
+      const device = devices.get(this)?.id
+      if (result && typeof result === "object") {
+        if (device !== undefined) resourceDevices.set(result, device)
+        if (method === "createShaderModule" && typeof arguments_[0]?.code === "string") {
+          const code = arguments_[0].code as string
+          const bytes = new TextEncoder().encode(code)
+          const record = { id: ++nextShader, device: device ?? null, label: arguments_[0]?.label ?? "", bytes: bytes.byteLength,
+            literalMatrixArrayCounts: [...new Set([...code.matchAll(/array\s*<\s*mat4x4\s*<\s*f32\s*>\s*,\s*(\d+)u?\s*>/g)].map(match => Number(match[1])))],
+            sha256: null as string | null }
+          shaders.set(result, record)
+          if (host.crypto?.subtle) {
+            const pending = host.crypto.subtle.digest("SHA-256", bytes).then((hash: ArrayBuffer) => {
+              record.sha256 = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("")
+            }, () => {}).finally(() => { pendingShaderHashes.delete(pending) }) as Promise<void>
+            pendingShaderHashes.add(pending)
+          }
+        }
+      }
+      return result
+    } })
+  }
+
   // Native promises and queue ordering stay owned by the application. Observe, never await a fence.
   const resources = new WeakMap<object, number>()
   let nextResource = 0
@@ -120,7 +211,26 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     Object.defineProperty(owner.prototype, method, { configurable: true, writable: true, value(this: any, ...arguments_: any[]) {
       if (!state.active) return original.apply(this, arguments_)
       if (state.gpuOperations.length >= 16_384) { state.gpuOperationsDropped += 1; return original.apply(this, arguments_) }
-      const record: typeof state.gpuOperations[number] = { kind: method, at: host.performance.now(), phase: state.currentPass?.identity }
+      const record: typeof state.gpuOperations[number] & { device?: number | null; vertexShader?: number | null; fragmentShader?: number | null; sampleCount?: number; targetFormats?: string[]; topology?: string } = { kind: method, at: host.performance.now(), phase: state.currentPass?.identity, device: resourceDevices.get(this) ?? null }
+      if (method === "configure") {
+        const device = resourceDevices.get(arguments_[0]?.device)
+        if (device !== undefined) { resourceDevices.set(this, device); record.device = device }
+      }
+      if (method === "createRenderPipeline" || method === "createRenderPipelineAsync") {
+        const descriptor = arguments_[0]
+        for (const [stage, field] of [["vertex", "vertexShader"], ["fragment", "fragmentShader"]] as const) {
+          const shader = shaders.get(descriptor?.[stage]?.module)
+          record[field] = shader?.id ?? null
+          if (shader && !admittedShaders.has(shader.id)) {
+            admittedShaders.add(shader.id)
+            if (state.shaders.length < 1024) state.shaders.push(shader)
+            else state.shadersDropped += 1
+          }
+        }
+        record.sampleCount = descriptor?.multisample?.count ?? 1
+        record.targetFormats = (descriptor?.fragment?.targets ?? []).map((target: any) => target?.format ?? null)
+        record.topology = descriptor?.primitive?.topology ?? "triangle-list"
+      }
       const resource = method === "writeBuffer" ? arguments_[0] : this
       if (resource && typeof resource === "object") {
         if (!resources.has(resource)) resources.set(resource, ++nextResource)
@@ -227,23 +337,6 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
         }
       }
       return consoleError.apply(this, arguments_)
-    }
-  }
-
-  // Losses are lifecycle evidence, not sample counters: startup and map
-  // replacement failures must not disappear while active sampling is off.
-  const requestDevice = host.GPUAdapter?.prototype?.requestDevice
-  if (typeof requestDevice === "function") {
-    host.GPUAdapter.prototype.requestDevice = async function(this: any, ...arguments_: any[]) {
-      const device = await requestDevice.apply(this, arguments_)
-      device.addEventListener("uncapturederror", (event: any) => {
-        state.counters.validationErrors += 1
-        state.losses.push({ kind: "resource", at: host.performance.now(), message: String(event.error?.message ?? event.error) })
-      })
-      void device.lost.then((info: any) => {
-        if (info.reason !== "destroyed") state.losses.push({ kind: "device", at: host.performance.now(), message: info.message, reason: info.reason })
-      })
-      return device
     }
   }
 

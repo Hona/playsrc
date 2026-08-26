@@ -4670,15 +4670,17 @@ export class Tf2Application {
       const worldModelLighting = (
         origin: readonly [number, number, number],
         angles: readonly [number, number, number],
+        lightingCamera: Camera = visibilityCamera,
       ): NonNullable<ModelPoseRequest["lighting"]> => Object.freeze({
         origin,
         angles,
-        cameraPosition: camera.position,
-        cameraAngles: Object.freeze([camera.pitchDegrees, camera.yawDegrees, 0]),
+        cameraPosition: lightingCamera.position,
+        cameraAngles: Object.freeze([lightingCamera.pitchDegrees, lightingCamera.yawDegrees, 0]),
       })
       const viewModelLighting = worldModelLighting(
         camera.position,
         Object.freeze([camera.pitchDegrees, camera.yawDegrees, 0]),
+        camera,
       )
       if(!ownsGeneration())return
       const viewport=this.#viewport(),view={aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),farPlane:camera.far}
@@ -4787,7 +4789,7 @@ export class Tf2Application {
         bot.team===2?0:1,
         bot.position,
         [0,bot.yawDegrees,0],
-        camera,
+        visibilityCamera,
         visibility.water.passes,
       ))
       const botRequests=visibleBots.map(bot=>{

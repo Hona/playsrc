@@ -1,3 +1,5 @@
+import { sharedUpload } from "./shared-upload"
+
 type UploadRange = Readonly<{ start: number; count: number }>
 
 type UploadArray = ArrayBuffer | ArrayBufferView
@@ -39,10 +41,21 @@ export type UploadBatchBackend = {
 }
 
 type PendingCopy = { destination: UploadBuffer; sourceOffset: number; destinationOffset: number; size: number }
+type SharedUpload = NonNullable<ReturnType<typeof sharedUpload>>
+type StagedSource = Readonly<{ offset: number; revision: number; start: number; size: number }>
 
 const COPY_SRC = 0x04
 const COPY_DST = 0x08
 const INITIAL_CAPACITY = 65_536
+const BATCHES = new WeakMap<UploadBatchBackend, WebGpuUploadBatch>()
+
+// Used by headed parity capture to draw the identical scene with the native
+// full-buffer transport, without changing shaders, poses, or retained shadows.
+export function withReferenceGpuUploads<T>(backend: UploadBatchBackend, draw: () => T): T {
+  const batch = BATCHES.get(backend)
+  if (!batch) throw new Error("WebGPU reference upload owner is unavailable")
+  return batch.reference(draw)
+}
 
 function bytesOf(array: UploadArray): Uint8Array {
   return ArrayBuffer.isView(array)
@@ -66,6 +79,8 @@ export class WebGpuUploadBatch {
   readonly #trackedDestinations = new WeakSet<UploadBuffer>()
   readonly #copies: PendingCopy[] = []
   readonly #retired = new Set<UploadBuffer>()
+  readonly #sharedDestinations = new WeakMap<UploadBuffer, Readonly<{ source: SharedUpload; revision: number }>>()
+  readonly #sources = new Map<SharedUpload, StagedSource[]>()
   #bytes = new Uint8Array(INITIAL_CAPACITY)
   #length = 0
   #staging?: UploadBuffer
@@ -81,6 +96,7 @@ export class WebGpuUploadBatch {
     this.#submitDescriptor = Object.getOwnPropertyDescriptor(this.#queue, "submit")
     this.#updateBinding = backend.updateBinding
     this.#updateAttribute = backend.updateAttribute
+    BATCHES.set(backend, this)
     backend.updateBinding = binding => this.#binding(binding)
     backend.updateAttribute = attribute => this.#attribute(attribute)
     Object.defineProperty(this.#queue, "submit", {
@@ -93,12 +109,42 @@ export class WebGpuUploadBatch {
     })
   }
 
+  reference<T>(draw: () => T): T {
+    if (this.#copies.length) throw new Error("reference GPU draw requires submitted staged uploads")
+    const binding = this.#backend.updateBinding
+    const attribute = this.#backend.updateAttribute
+    this.#backend.updateBinding = value => sharedUpload(value.buffer)
+      ? this.#updateBinding.call(this.#backend, value)
+      : binding(value)
+    try { return draw() }
+    finally {
+      this.#backend.updateBinding = binding
+      this.#backend.updateAttribute = attribute
+    }
+  }
+
   #binding(binding: UploadBinding): void {
     const destination = this.#backend.get(binding).buffer
     if (!destination) return this.#updateBinding.call(this.#backend, binding)
+    const buffer = binding.buffer
+    const shared = sharedUpload(buffer)
+    if (shared && binding.updateRanges.length === 0) {
+      const prior = this.#sharedDestinations.get(destination)
+      if (prior?.source === shared && prior.revision === shared.revision) return
+      const bytes = bytesOf(buffer)
+      if (prior?.source === shared && prior.revision === shared.revision - 1 && shared.ranges.length) {
+        for (const range of shared.ranges) this.#stage(destination, range.start, bytes, range.start, range.count, shared)
+      } else {
+        this.#stage(destination, 0, bytes, 0, bytes.length, shared)
+      }
+      this.#sharedDestinations.set(destination, { source: shared, revision: shared.revision })
+      this.#shadows.delete(destination)
+      return
+    }
+    this.#sharedDestinations.delete(destination)
     const bytes = bytesOf(binding.buffer)
     let shadow = this.#shadows.get(destination)
-    const initial = shadow === undefined
+    const initial = shadow === undefined || shadow.length !== bytes.length
     if (!shadow || shadow.length !== bytes.length) {
       shadow = new Uint8Array(bytes.length)
       this.#shadows.set(destination, shadow)
@@ -133,6 +179,8 @@ export class WebGpuUploadBatch {
       this.#updateAttribute.call(this.#backend, attribute)
       return
     }
+    this.#sharedDestinations.delete(metadata.buffer)
+    this.#shadows.delete(metadata.buffer)
     const bytes = bytesOf(identity.array)
     const elementSize = ArrayBuffer.isView(identity.array) ? (identity.array as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1 : 1
     if (!identity.updateRanges.length) {
@@ -146,7 +194,7 @@ export class WebGpuUploadBatch {
     identity.clearUpdateRanges()
   }
 
-  #stage(destination: UploadBuffer, destinationOffset: number, source: Uint8Array, sourceOffset: number, size: number): void {
+  #stage(destination: UploadBuffer, destinationOffset: number, source: Uint8Array, sourceOffset: number, size: number, shared?: SharedUpload): void {
     if (!size) return
     if (destinationOffset % 4 !== 0 || size % 4 !== 0 || sourceOffset < 0 || sourceOffset + size > source.length) {
       throw new Error("WebGPU upload range violates its exact four-byte buffer bounds")
@@ -165,8 +213,10 @@ export class WebGpuUploadBatch {
       })
     }
     const prior = this.#copies.at(-1)
-    if (prior && prior.destination === destination && prior.destinationOffset === destinationOffset && prior.size === size) {
-      this.#bytes.set(source.subarray(sourceOffset, sourceOffset + size), prior.sourceOffset)
+    const sources = shared && this.#sources.get(shared)
+    const existing = sources?.find(entry => entry.revision === shared!.revision && entry.start <= sourceOffset && entry.start + entry.size >= sourceOffset + size)
+    if (existing) {
+      this.#copies.push({ destination, sourceOffset: existing.offset + sourceOffset - existing.start, destinationOffset, size })
       return
     }
     const required = this.#length + size
@@ -177,10 +227,15 @@ export class WebGpuUploadBatch {
       this.#bytes = expanded
     }
     this.#bytes.set(source.subarray(sourceOffset, sourceOffset + size), this.#length)
-    if (prior && prior.destination === destination && prior.destinationOffset + prior.size === destinationOffset) {
+    if (prior && prior.destination === destination && prior.destinationOffset + prior.size === destinationOffset && prior.sourceOffset + prior.size === this.#length) {
       prior.size += size
     } else {
       this.#copies.push({ destination, sourceOffset: this.#length, destinationOffset, size })
+    }
+    if (shared) {
+      const entry = { offset: this.#length, revision: shared.revision, start: sourceOffset, size }
+      if (sources) sources.push(entry)
+      else this.#sources.set(shared, [entry])
     }
     this.#length = required
   }
@@ -190,7 +245,11 @@ export class WebGpuUploadBatch {
       if (this.#copies[index]!.destination === destination) this.#copies.splice(index, 1)
     }
     this.#shadows.delete(destination)
-    if (!this.#copies.length) this.#length = 0
+    this.#sharedDestinations.delete(destination)
+    if (!this.#copies.length) {
+      this.#length = 0
+      this.#sources.clear()
+    }
   }
 
   #flush(): unknown | undefined {
@@ -215,12 +274,14 @@ export class WebGpuUploadBatch {
     const command = encoder.finish()
     this.#copies.length = 0
     this.#length = 0
+    this.#sources.clear()
     return command
   }
 
   dispose(): void {
     if (this.#disposed) return
     this.#disposed = true
+    BATCHES.delete(this.#backend)
     this.#backend.updateBinding = this.#updateBinding
     this.#backend.updateAttribute = this.#updateAttribute
     if (this.#submitDescriptor) Object.defineProperty(this.#queue, "submit", this.#submitDescriptor)
@@ -235,5 +296,6 @@ export class WebGpuUploadBatch {
     else destroy()
     this.#copies.length = 0
     this.#length = 0
+    this.#sources.clear()
   }
 }

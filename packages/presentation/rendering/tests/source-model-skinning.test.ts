@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "../src/source-model-skinning"
+import { bindSourceModelMesh, createSourceModelSkeleton, sourceModelBoneCount, updateSourceModelSkeleton } from "../src/source-model-skinning"
+import { sharedUpload } from "../src/shared-upload"
 
 describe("authored Source GPU bone skinning", () => {
   const matrices = Float32Array.from([
@@ -28,7 +29,13 @@ describe("authored Source GPU bone skinning", () => {
     parent.add(mesh)
     parent.updateMatrixWorld(true)
     expect(mesh.bindMatrixInverse.elements).toEqual(new THREE.Matrix4().elements)
-    expect(updateSourceModelSkeleton(skeleton, matrices)).toBe(128)
+    expect(updateSourceModelSkeleton(skeleton, matrices)).toBe(0)
+    const changed = matrices.slice()
+    changed[3] = 11
+    expect(updateSourceModelSkeleton(skeleton, changed)).toBe(64)
+    expect(sharedUpload(skeleton.boneMatrices)?.ranges).toEqual([{ start: 0, count: 64 }])
+    expect(skeleton.bones[0]!.matrixWorld.elements[12]).toBe(11)
+    expect(updateSourceModelSkeleton(skeleton, changed)).toBe(0)
     skeleton.dispose()
     geometry.dispose()
   })
@@ -47,9 +54,51 @@ describe("authored Source GPU bone skinning", () => {
     const second = createSourceModelSkeleton(new Float32Array(97 * 12))
     expect(first.bones).toHaveLength(128)
     expect(second.bones).toHaveLength(128)
-    expect(updateSourceModelSkeleton(first, new Float32Array(65 * 12))).toBe(128 * 64)
+    expect(sourceModelBoneCount(first)).toBe(65)
+    expect(sourceModelBoneCount(second)).toBe(97)
+    expect(() => sourceModelBoneCount(new THREE.Skeleton())).toThrow("owner is unavailable")
+    expect(updateSourceModelSkeleton(first, new Float32Array(65 * 12))).toBe(0)
+    const changed = new Float32Array(65 * 12)
+    changed[64 * 12] = 1
+    expect(updateSourceModelSkeleton(first, changed)).toBe(64)
+    expect(sharedUpload(first.boneMatrices)?.ranges).toEqual([{ start: 64 * 64, count: 64 }])
     expect(() => updateSourceModelSkeleton(first, new Float32Array(97 * 12))).toThrow("count differs")
     first.dispose()
     second.dispose()
+  })
+
+  test("changes every authored matrix without losing exact row-major transforms", () => {
+    const skeleton = createSourceModelSkeleton(matrices)
+    const changed = matrices.slice()
+    changed[0] = -2
+    changed[23] = 19
+    expect(updateSourceModelSkeleton(skeleton, changed)).toBe(128)
+    expect(sharedUpload(skeleton.boneMatrices)?.ranges).toEqual([{ start: 0, count: 128 }])
+    expect(skeleton.bones[0]!.matrixWorld.elements[0]).toBe(-2)
+    expect(skeleton.bones[1]!.matrixWorld.elements[14]).toBe(19)
+    skeleton.dispose()
+  })
+
+  test("publishes consecutive Source poses before any render and never retimes them during render/compute passes", () => {
+    const skeleton = createSourceModelSkeleton(matrices)
+    const first = skeleton.boneMatrices.slice()
+    expect(first[12]).toBe(10)
+    const changed = matrices.slice()
+    changed[3] = 37
+    updateSourceModelSkeleton(skeleton, changed)
+    expect(skeleton.boneMatrices[12]).toBe(37)
+    changed[3] = -12
+    updateSourceModelSkeleton(skeleton, changed)
+    expect(skeleton.boneMatrices[12]).toBe(-12)
+    const revision = sharedUpload(skeleton.boneMatrices)!.revision
+    const published = skeleton.boneMatrices.slice()
+    for (let pass = 0; pass < 4; pass += 1) skeleton.update()
+    expect(skeleton.boneMatrices).toEqual(published)
+    expect(sharedUpload(skeleton.boneMatrices)!.revision).toBe(revision)
+    const reference = new THREE.Skeleton(skeleton.bones, skeleton.boneInverses)
+    reference.update()
+    expect(skeleton.boneMatrices).toEqual(reference.boneMatrices)
+    reference.dispose()
+    skeleton.dispose()
   })
 })

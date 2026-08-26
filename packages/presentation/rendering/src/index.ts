@@ -43,6 +43,7 @@ import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation, withSourceModelPanelTargetViewport } from "./model-panel"
 import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "./source-model-skinning"
 import { modelNormalEvidence, visibleModelIntersection } from "./model-normal-evidence"
+import { resizeSampledRenderTargets } from "./render-target-resize"
 import { modelIntersectsViewFrustum } from "./model-visibility"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
@@ -1638,12 +1639,12 @@ class RendererOwner implements Renderer {
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     const profile = browserFrameProfiler()
-    if (result && profile?.capabilities.timestampQuery && ++this.#timestampFrame % 32 === 0 && !this.#timestampPending) {
+    if (profile?.capabilities.timestampQuery && ++this.#timestampFrame % 32 === 0 && !this.#timestampPending) {
       this.#timestampPending = true
       const frame = this.#timestampFrame
       this.#pass("gpu-timestamp-resolve", () => {
         void this.#backend.resolveTimestampsAsync("render").then((milliseconds: unknown) => {
-          if (typeof milliseconds === "number" && Number.isFinite(milliseconds) && milliseconds > 0) {
+          if (result && typeof milliseconds === "number" && Number.isFinite(milliseconds) && milliseconds > 0) {
             profile.gpuTimestamps?.push({ frame, milliseconds })
           }
         }).catch((error: unknown) => {
@@ -2003,6 +2004,8 @@ class RendererOwner implements Renderer {
     } catch (error) {
       this.#uploadBatch?.dispose()
       this.#uploadBatch = undefined
+      this.#framePresentation?.dispose()
+      this.#framePresentation = undefined
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
       this.#restoreNodeBuilderInstrumentation?.()
@@ -2415,6 +2418,7 @@ class RendererOwner implements Renderer {
       const retained = kind === "reflection" ? reflectionTarget : refractionTarget
       if (retained) return retained
       const target = disposables.add(new THREE.RenderTarget(targetWidth, targetHeight, { depthBuffer: true }))
+      target.texture.name = `playsrc-water-${kind}-${sceneGeneration}`
       target.texture.colorSpace = THREE.NoColorSpace
       if (kind === "reflection") reflectionTarget = target
       else refractionTarget = target
@@ -4724,18 +4728,20 @@ class RendererOwner implements Renderer {
       throw new RenderingError("MalformedInput", `authored model bone matrices are invalid: ${pose.model}:${pose.identity} meshes=${meshes.length} matrices=${pose.boneMatrices.length}`)
     }
     let skeleton = instance.userData.sourceSkeleton as THREE.Skeleton | undefined
+    const created = !skeleton
     if (!skeleton) {
       skeleton = createSourceModelSkeleton(pose.boneMatrices)
       instance.userData.sourceSkeleton = skeleton
     }
     let matrixBytes: number
-    try { matrixBytes = updateSourceModelSkeleton(skeleton, pose.boneMatrices) }
+    try { matrixBytes = created ? skeleton.bones.length * 16 * Float32Array.BYTES_PER_ELEMENT : updateSourceModelSkeleton(skeleton, pose.boneMatrices) }
     catch { throw new RenderingError("IdentityMismatch", "authored model bone count differs") }
     if (this.#uploadEvidence) {
-      this.#uploadEvidence.poseAttributes += 1
+      if (matrixBytes === 0) this.#uploadEvidence.unchangedPoseAttributes += 1
+      else this.#uploadEvidence.poseAttributes += 1
       this.#uploadEvidence.poseUploadBytes += matrixBytes
     }
-    this.#instrumentation?.poseUpload(matrixBytes)
+    if (matrixBytes !== 0) this.#instrumentation?.poseUpload(matrixBytes)
     for (let primitive = 0; primitive < meshes.length; primitive += 1) {
       let object = meshes[primitive]!
       const posed = pose.primitives[primitive]!
@@ -5181,8 +5187,9 @@ class RendererOwner implements Renderer {
       physicalWidth: Math.floor(this.#cssWidth * this.#devicePixelRatio),
       physicalHeight: Math.floor(this.#cssHeight * this.#devicePixelRatio),
     })
+    this.#framePresentation?.abandon()
     try {
-      if(this.#active&&width>0&&height>0){this.#active.reflectionTarget?.setSize(width,height);this.#active.refractionTarget?.setSize(width,height)}
+      if (this.#active && width > 0 && height > 0) resizeSampledRenderTargets([this.#active.reflectionTarget, this.#active.refractionTarget], width, height, target => this.#backend.initRenderTarget(target))
       this.#backend.setPixelRatio(devicePixelRatio)
       this.#backend.setSize(cssWidth, cssHeight, false)
       if (this.#active) {
@@ -5202,7 +5209,7 @@ class RendererOwner implements Renderer {
       this.#pacing.suspend(this.#suspended)
       this.#attachmentGeneration += 1
     } catch (error) {
-      if(this.#active&&prior.physicalWidth>0&&prior.physicalHeight>0){this.#active.reflectionTarget?.setSize(prior.physicalWidth,prior.physicalHeight);this.#active.refractionTarget?.setSize(prior.physicalWidth,prior.physicalHeight)}
+      if (this.#active && prior.physicalWidth > 0 && prior.physicalHeight > 0) resizeSampledRenderTargets([this.#active.reflectionTarget, this.#active.refractionTarget], prior.physicalWidth, prior.physicalHeight, target => this.#backend.initRenderTarget(target))
       this.#backend.setPixelRatio(prior.devicePixelRatio)
       this.#backend.setSize(prior.cssWidth,prior.cssHeight,false)
       this.#viewportWidth=prior.viewportWidth;this.#viewportHeight=prior.viewportHeight;this.#cssWidth=prior.cssWidth;this.#cssHeight=prior.cssHeight;this.#devicePixelRatio=prior.devicePixelRatio;this.#suspended=prior.suspended;this.#camera.aspect=prior.aspect;this.#viewCamera.aspect=prior.aspect;this.#camera.updateProjectionMatrix();this.#viewCamera.updateProjectionMatrix()
@@ -5250,6 +5257,9 @@ class RendererOwner implements Renderer {
     this.#lifecycle = "Recovering"
     this.#loadOrdinal += 1
     this.stopFramePacing()
+    // Pending framebuffer output belongs to this generation. Drain its queue
+    // without presenting it before any target/material can be retired.
+    this.#framePresentation?.abandon()
     const active = this.#active
     this.#active = undefined
     this.#clearDynamic(this.#effects)
@@ -5361,6 +5371,7 @@ class RendererOwner implements Renderer {
     this.#lifecycle = "Disposed"
     this.#loadOrdinal += 1
     this.stopFramePacing()
+    this.#framePresentation?.abandon()
     this.#clearDynamic(this.#effects)
     this.#dynamicModelInstances.clear()
     this.#dynamicBrushInstances.clear()
@@ -5395,6 +5406,8 @@ class RendererOwner implements Renderer {
     this.#restoreOrderedBundles = undefined
     this.#uploadBatch?.dispose()
     this.#uploadBatch = undefined
+    this.#framePresentation?.dispose()
+    this.#framePresentation = undefined
     this.#restoreNodeBuilderInstrumentation?.()
     this.#restoreNodeBuilderInstrumentation = undefined
     this.#restoreBufferNames?.()

@@ -6,6 +6,14 @@ export type BatchedGpuQueue = {
   onSubmittedWorkDone?(...arguments_: any[]): Promise<void>
 }
 
+const QUEUES = new WeakMap<BatchedGpuQueue, WebGpuSubmissionBatch>()
+
+export function withImmediateGpuSubmissions<T>(queue: BatchedGpuQueue, operation: () => T): T {
+  const batch = QUEUES.get(queue)
+  if (!batch) throw new Error("WebGPU submission owner is unavailable")
+  return batch.immediate(operation)
+}
+
 /** Preserve queue-timeline ordering while combining adjacent render submissions. */
 export class WebGpuSubmissionBatch {
   readonly #queue: BatchedGpuQueue
@@ -18,6 +26,7 @@ export class WebGpuSubmissionBatch {
       throw new Error("WebGPU submission queue is unavailable")
     }
     this.#queue = queue
+    QUEUES.set(queue, this)
     this.#replace("submit", (buffers: readonly unknown[]) => {
       if (!this.#active) return this.#originals.get("submit")!.call(this.#queue, buffers)
       // Three.js reuses and clears its submission array after submit returns.
@@ -43,6 +52,14 @@ export class WebGpuSubmissionBatch {
     this.#active = true
   }
 
+  immediate<T>(operation: () => T): T {
+    this.flush()
+    const active = this.#active
+    this.#active = false
+    try { return operation() }
+    finally { this.#active = active }
+  }
+
   flush(): void {
     if (this.#pending.length === 0) return
     const buffers = this.#pending.splice(0)
@@ -56,6 +73,7 @@ export class WebGpuSubmissionBatch {
 
   dispose(): void {
     this.finish()
+    QUEUES.delete(this.#queue)
     for (const [method, original] of this.#originals) {
       Object.defineProperty(this.#queue, method, { configurable: true, writable: true, value: original })
     }
