@@ -4,6 +4,7 @@ export type SkyVisibilityIdentity = Readonly<{
   tick: bigint
   position: readonly [number, number, number]
   origin: readonly [number, number, number]
+  scale: number
   area: number
   yawDegrees: number
   pitchDegrees: number
@@ -21,6 +22,7 @@ export function sameSkyVisibilityIdentity(left: SkyVisibilityIdentity, right: Sk
     && left.viewportRevision === right.viewportRevision
     && left.tick === right.tick
     && left.area === right.area
+    && Object.is(left.scale, right.scale)
     && Object.is(left.yawDegrees, right.yawDegrees)
     && Object.is(left.pitchDegrees, right.pitchDegrees)
     && Object.is(left.verticalFovDegrees, right.verticalFovDegrees)

@@ -24,6 +24,7 @@ describe("bounded headed profile orchestration", () => {
       playwright: ["--output", "/evidence"],
     })
     expect(parseHeadedProfile(["2fort-visual", "--headed"])).toEqual({ profile: "2fort-visual", fresh: false, playwright: [] })
+    expect(parseHeadedProfile(["sky-coherence", "--headed"])).toEqual({ profile: "sky-coherence", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["2fort-match"])).toEqual({
       profile: "2fort-match",
       fresh: false,
@@ -54,6 +55,7 @@ describe("bounded headed profile orchestration", () => {
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "local-practice" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "2fort-match" })).toBe("ctf_2fort")
     expect(headedProfileTarget({ PROFILE_MEDIC_WEAPONS: "1" })).toBe("pl_upward")
+    expect(headedProfileTarget({ PROFILE_SKY_COHERENCE: "1" })).toBe("pl_upward")
     expect(headedProfileTarget({ PROFILE_SCENARIOS: "demoman" })).toBe("pl_upward")
     expect(headedProfileTarget({}, "pl_upward")).toBe("pl_upward")
   })

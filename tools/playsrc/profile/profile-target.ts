@@ -7,7 +7,7 @@ export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env
     || ["local-practice", "2fort-match"].includes(environment.PROFILE_SCENARIOS ?? "")) {
     return "ctf_2fort"
   }
-  if (environment.PROFILE_COMBAT === "1" || environment.PROFILE_UPWARD_OUTDOORS === "1" || environment.PROFILE_ROUND_RULES === "1"
+  if (environment.PROFILE_COMBAT === "1" || environment.PROFILE_UPWARD_OUTDOORS === "1" || environment.PROFILE_SKY_COHERENCE === "1" || environment.PROFILE_ROUND_RULES === "1"
     || environment.PROFILE_PICKUPS === "1" || environment.PROFILE_MATERIAL_ANIMATION === "1" || environment.PROFILE_TRACKTRAIN === "1"
     || environment.PROFILE_MEDIC_WEAPONS === "1" || ["demoman", "scoreboard", "upward-floor"].includes(environment.PROFILE_SCENARIOS ?? "")) {
     return "pl_upward"
