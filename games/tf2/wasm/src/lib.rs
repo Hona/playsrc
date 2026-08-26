@@ -492,7 +492,6 @@ struct PresentationInputs<'a, 'source> {
     graph: &'a playsrc_entity::Graph,
     bundle: &'a BTreeMap<String, &'source [u8]>,
     decoders: &'a TextureDecoders<'source>,
-    model_resources: &'a BTreeMap<String, Arc<[u8]>>,
     resource_hashes: &'a BTreeMap<String, [u8; 32]>,
     map_materials: &'a [playsrc_material::Material],
     particle_presentation: &'a BTreeMap<String, CompiledParticlePresentation>,
@@ -910,15 +909,6 @@ unsafe fn compile_map(
             .par_iter()
             .map(|(identity, bytes)| (identity.clone(), Sha256::digest(bytes).into()))
             .collect::<BTreeMap<_, _>>();
-        let model_resource_bytes = resources
-            .par_iter()
-            .filter(|(identity, _)| {
-                [".mdl", ".vvd", ".vtx", ".ani", ".phy"]
-                    .iter()
-                    .any(|suffix| identity.ends_with(suffix))
-            })
-            .map(|(identity, bytes)| (identity.clone(), Arc::<[u8]>::from(*bytes)))
-            .collect::<BTreeMap<_, _>>();
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
@@ -984,7 +974,6 @@ unsafe fn compile_map(
             graph: &entity_graph,
             bundle: &resources,
             decoders: &decoders,
-            model_resources: &model_resource_bytes,
             resource_hashes: &resource_hashes,
             map_materials: &map_materials,
             particle_presentation: &particle_presentation,
@@ -1411,15 +1400,6 @@ pub fn diagnose_presentation_bound(
         .iter()
         .map(|(identity, bytes)| (identity.clone(), Sha256::digest(bytes).into()))
         .collect::<BTreeMap<_, _>>();
-    let model_resources = resources
-        .iter()
-        .filter(|(identity, _)| {
-            [".mdl", ".vvd", ".vtx", ".ani", ".phy"]
-                .iter()
-                .any(|suffix| identity.ends_with(suffix))
-        })
-        .map(|(identity, bytes)| (identity.clone(), Arc::<[u8]>::from(*bytes)))
-        .collect::<BTreeMap<_, _>>();
     let bsp = playsrc_bsp::parse(
         bsp_bytes,
         playsrc_bsp::Profile::Source2013V20,
@@ -1464,7 +1444,6 @@ pub fn diagnose_presentation_bound(
         graph: &entities,
         bundle: &resources,
         decoders: &decoders,
-        model_resources: &model_resources,
         resource_hashes: &resource_hashes,
         map_materials: &map_materials,
         particle_presentation: &particle_presentation,
@@ -7533,7 +7512,6 @@ fn posed_vertices(
 fn build_model_presentation(
     identity: &str,
     bundle: &BTreeMap<String, &[u8]>,
-    model_resources: &BTreeMap<String, Arc<[u8]>>,
     resource_hashes: &BTreeMap<String, [u8; 32]>,
     profile: playsrc_map::LightingProfile,
     presentation_profile: playsrc_studio_model::PresentationProfile,
@@ -7541,7 +7519,6 @@ fn build_model_presentation(
     let built = playsrc_tf2::presentation::build_model(
         identity,
         bundle,
-        model_resources,
         resource_hashes,
         profile == playsrc_map::LightingProfile::Hdr,
         presentation_profile,
@@ -9676,6 +9653,13 @@ struct DecodedTexture {
     rgba: Vec<u8>,
 }
 
+struct ReferencedDirectionalTexture {
+    logical_path: String,
+    width: u32,
+    height: u32,
+    source_sha256: [u8; 32],
+}
+
 fn decoded_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<DecodedTexture, ()> {
     let plane = decoders
         .decoder(path)?
@@ -9769,7 +9753,7 @@ fn cached_presentation_models(
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 13
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 14
         || static_prop_artifact::decode_section(static_prop_artifact::section_from_presentation(
             bytes,
         )?)
@@ -9846,7 +9830,6 @@ fn load_cached_presentation(
         graph,
         bundle,
         decoders,
-        model_resources,
         resource_hashes,
         map_materials,
         particle_presentation: _,
@@ -9974,12 +9957,11 @@ fn load_cached_presentation(
         return Err(3);
     }
     let models = model_headers
-        .into_par_iter()
+        .into_iter()
         .map(|(identity, presentation_profile, expected_hash)| {
             let artifact = build_model_presentation(
                 &identity,
                 bundle,
-                model_resources,
                 resource_hashes,
                 profile,
                 presentation_profile,
@@ -10029,7 +10011,7 @@ fn load_cached_presentation(
 #[allow(clippy::too_many_arguments)]
 fn presentation_capacity(
     models: &[(String, Box<CompiledPresentationModel>)],
-    directional: &[(String, u8, DecodedTexture)],
+    directional: &[(String, u8, ReferencedDirectionalTexture)],
     particles: &BTreeMap<String, CompiledParticlePresentation>,
     particle_materials: &[String],
     environment: &[u8],
@@ -10055,8 +10037,7 @@ fn presentation_capacity(
         }
     }
     for (identity, _, texture) in directional {
-        add(76 + identity.len() + texture.logical_path.len())?;
-        add(texture.rgba.len())?;
+        add(72 + identity.len() + texture.logical_path.len())?;
     }
     for identity in particle_materials {
         add(4 + identity.len())?;
@@ -10119,7 +10100,6 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         graph,
         bundle,
         decoders,
-        model_resources,
         resource_hashes,
         map_materials,
         particle_presentation,
@@ -10230,8 +10210,6 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     roots.extend(additional_model_roots.iter().cloned());
     let models = roots
         .into_iter()
-        .collect::<Vec<_>>()
-        .into_par_iter()
         .map(|id| {
             let presentation_profile = if matches!(
                 id.as_str(),
@@ -10278,7 +10256,6 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             let artifact = build_model_presentation(
                 &id,
                 bundle,
-                model_resources,
                 resource_hashes,
                 profile,
                 presentation_profile,
@@ -10336,10 +10313,16 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             .as_ref()
             .ok_or(())?
             .to_ascii_lowercase();
+        let metadata = decoders.metadata(&path)?;
         directional.push((
             identity,
             u8::from(material.features.ss_bump),
-            decoded_texture(&path, decoders)?,
+            ReferencedDirectionalTexture {
+                logical_path: path.clone(),
+                width: u32::from(metadata.width),
+                height: u32::from(metadata.height),
+                source_sha256: *resource_hashes.get(&path).ok_or(())?,
+            },
         ));
     }
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
@@ -10389,7 +10372,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     let mut out = Vec::new();
     out.try_reserve_exact(capacity).map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&13u32.to_le_bytes());
+    out.extend_from_slice(&14u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
@@ -10581,9 +10564,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         pbytes(&mut out, texture.logical_path.as_bytes())?;
         out.extend_from_slice(&texture.width.to_le_bytes());
         out.extend_from_slice(&texture.height.to_le_bytes());
-        let hash: [u8; 32] = Sha256::digest(texture.rgba.as_slice()).into();
-        out.extend_from_slice(&hash);
-        pbytes(&mut out, &texture.rgba)?;
+        out.extend_from_slice(&texture.source_sha256);
         for value in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0] {
             out.extend_from_slice(&value.to_le_bytes())
         }
@@ -11938,7 +11919,9 @@ fn compile_environment_artifact(
             if texture.disposition == playsrc_material::TextureDisposition::Source
                 && (material.selected_textures.contains(&texture.role)
                     || texture.role == playsrc_material::TextureRole::Base2
-                    || texture.role == playsrc_material::TextureRole::Detail)
+                    || texture.role == playsrc_material::TextureRole::Detail
+                    || texture.role == playsrc_material::TextureRole::Bump
+                    || texture.role == playsrc_material::TextureRole::Normal)
             {
                 environment_texture_paths.insert(
                     texture
@@ -13245,7 +13228,7 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&13_u32.to_le_bytes());
+        bytes.extend_from_slice(&14_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
