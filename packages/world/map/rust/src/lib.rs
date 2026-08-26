@@ -173,6 +173,12 @@ pub struct RuntimeModelPrimitive {
     pub material: usize,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    pub bind_positions: Vec<[f32; 3]>,
+    pub bind_normals: Vec<[f32; 3]>,
+    pub bind_tangents: Vec<[f32; 4]>,
+    pub bone_indices: Vec<[u16; 4]>,
+    pub bone_weights: Vec<[f32; 4]>,
+    pub bone_palette: Vec<u16>,
     pub uv: Vec<[f32; 2]>,
     pub triangles: Vec<[u32; 3]>,
 }
@@ -664,6 +670,32 @@ pub fn assemble_prepared_runtime(
             if primitive.material >= model.materials.len()
                 || primitive.positions.len() != primitive.normals.len()
                 || primitive.positions.len() != primitive.uv.len()
+                || primitive.positions.len() != primitive.bind_positions.len()
+                || primitive.positions.len() != primitive.bind_normals.len()
+                || primitive.positions.len() != primitive.bind_tangents.len()
+                || primitive.positions.len() != primitive.bone_indices.len()
+                || primitive.positions.len() != primitive.bone_weights.len()
+                || primitive.bone_palette.len() > 256
+                || primitive
+                    .bone_palette
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+                || primitive
+                    .bone_indices
+                    .iter()
+                    .zip(&primitive.bone_weights)
+                    .any(|(indices, weights)| {
+                        weights
+                            .iter()
+                            .any(|weight| !weight.is_finite() || *weight < 0.0)
+                            || weights.iter().enumerate().any(|(index, weight)| {
+                                *weight != 0.0
+                                    && primitive
+                                        .bone_palette
+                                        .binary_search(&indices[index])
+                                        .is_err()
+                            })
+                    })
                 || primitive
                     .triangles
                     .iter()
@@ -777,7 +809,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             f32v(&mut out, uv[0]);
             f32v(&mut out, uv[1]);
         }
-        if matches!(schema, 8 | 9) {
+        if matches!(schema, 8 | 9 | 10 | 11) {
             for alpha in &s.alpha {
                 f32v(&mut out, *alpha);
             }
@@ -791,7 +823,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         out.extend_from_slice(&s.light_styles);
         i32v(&mut out, s.lightmap_size[0]);
         i32v(&mut out, s.lightmap_size[1]);
-        if matches!(schema, 8 | 9) {
+        if matches!(schema, 8 | 9 | 10 | 11) {
             if let Some(displacement) = &s.displacement {
                 out.push(1);
                 out.push(displacement.power);
@@ -854,7 +886,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
     if !materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         u32v(&mut out, materials.len() as u32);
         for material in materials {
-            materialv(&mut out, material, matches!(schema, 8 | 9));
+            materialv(&mut out, material, matches!(schema, 8 | 9 | 10 | 11));
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -864,7 +896,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
             u32v(&mut out, model.materials.len() as u32);
             for material in &model.materials {
                 bytesv(&mut out, material.logical_path.as_bytes());
-                materialv(&mut out, material, matches!(schema, 8 | 9));
+                materialv(&mut out, material, matches!(schema, 8 | 9 | 10 | 11));
             }
             u32v(&mut out, model.primitives.len() as u32);
             for primitive in &model.primitives {
@@ -880,6 +912,35 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
                     for value in normal {
                         f32v(&mut out, *value);
                     }
+                }
+                for position in &primitive.bind_positions {
+                    for value in position {
+                        f32v(&mut out, *value);
+                    }
+                }
+                for normal in &primitive.bind_normals {
+                    for value in normal {
+                        f32v(&mut out, *value);
+                    }
+                }
+                for tangent in &primitive.bind_tangents {
+                    for value in tangent {
+                        f32v(&mut out, *value);
+                    }
+                }
+                for indices in &primitive.bone_indices {
+                    for index in indices {
+                        out.extend_from_slice(&index.to_le_bytes());
+                    }
+                }
+                for weights in &primitive.bone_weights {
+                    for weight in weights {
+                        f32v(&mut out, *weight);
+                    }
+                }
+                u32v(&mut out, primitive.bone_palette.len() as u32);
+                for index in &primitive.bone_palette {
+                    out.extend_from_slice(&index.to_le_bytes());
                 }
                 for uv in &primitive.uv {
                     f32v(&mut out, uv[0]);
@@ -923,11 +984,17 @@ fn runtime_schema(
         .iter()
         .any(|surface| surface.displacement.is_some());
     if map.lighting_profile == LightingProfile::Hdr {
-        if displaced { 8 } else { 7 }
+        if !models.is_empty() {
+            10
+        } else if displaced {
+            8
+        } else {
+            7
+        }
     } else if displaced && !models.is_empty() {
-        9
+        11
     } else if !models.is_empty() {
-        6
+        11
     } else if !materials.is_empty() {
         2
     } else {
@@ -977,11 +1044,11 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
         length.records(surface.normals.len(), 12)?;
         length.records(surface.uv.len(), 8)?;
         length.records(surface.lightmap_uv.len(), 8)?;
-        if matches!(schema, 8 | 9) {
+        if matches!(schema, 8 | 9 | 10 | 11) {
             length.records(surface.alpha.len(), 4)?;
         }
         length.records(surface.triangles.len(), 12)?;
-        if matches!(schema, 8 | 9) {
+        if matches!(schema, 8 | 9 | 10 | 11) {
             if let Some(displacement) = &surface.displacement {
                 length.add(176)?;
                 length.records(displacement.triangle_tags.len(), 2)?;
@@ -998,7 +1065,7 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
     if !context.materials.is_empty() || map.lighting_profile == LightingProfile::Hdr {
         length.add(4)?;
         for material in context.materials {
-            add_material_length(&mut length, material, matches!(schema, 8 | 9))?;
+            add_material_length(&mut length, material, matches!(schema, 8 | 9 | 10 | 11))?;
         }
     }
     if !context.models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
@@ -1008,13 +1075,20 @@ fn serialized_length(context: &SerializationContext<'_>, schema: u32) -> Result<
             length.add(4)?;
             for material in &model.materials {
                 length.field(material.logical_path.len())?;
-                add_material_length(&mut length, material, matches!(schema, 8 | 9))?;
+                add_material_length(&mut length, material, matches!(schema, 8 | 9 | 10 | 11))?;
             }
             length.add(4)?;
             for primitive in &model.primitives {
                 length.add(12)?;
                 length.records(primitive.positions.len(), 12)?;
                 length.records(primitive.normals.len(), 12)?;
+                length.records(primitive.bind_positions.len(), 12)?;
+                length.records(primitive.bind_normals.len(), 12)?;
+                length.records(primitive.bind_tangents.len(), 16)?;
+                length.records(primitive.bone_indices.len(), 8)?;
+                length.records(primitive.bone_weights.len(), 16)?;
+                length.add(4)?;
+                length.records(primitive.bone_palette.len(), 2)?;
                 length.records(primitive.uv.len(), 8)?;
                 length.records(primitive.triangles.len(), 12)?;
             }

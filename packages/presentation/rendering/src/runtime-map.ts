@@ -71,6 +71,12 @@ export type RuntimeModelPrimitive = Readonly<{
   material: number
   positions: Float32Array
   normals: Float32Array
+  bindPositions: Float32Array
+  bindNormals: Float32Array
+  bindTangents: Float32Array
+  boneIndices: Uint16Array
+  boneWeights: Float32Array
+  bonePalette: Uint16Array
   uv: Float32Array
   indices: Uint32Array
 }>
@@ -1220,11 +1226,11 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const decoder = new TextDecoder("utf-8", { fatal: true })
   if (new TextDecoder().decode(reader.take(4)) !== "PSMP") throw new RuntimeMapError("runtime map identity is invalid")
   const schema = reader.u32()
-  if (schema !== 6 && schema !== 7 && schema !== 8 && schema !== 9) throw new RuntimeMapError("runtime map schema is invalid")
+  if (schema !== 6 && schema !== 7 && schema !== 8 && schema !== 9 && schema !== 10 && schema !== 11) throw new RuntimeMapError("runtime map schema is invalid")
   const bspVersion = reader.u32()
   const mapRevision = reader.u32()
   const lightingProfile = reader.u8()
-  if (((schema === 6 || schema === 9) && lightingProfile !== 0) || ((schema === 7 || schema === 8) && lightingProfile !== 1)) {
+  if (((schema === 6 || schema === 9 || schema === 11) && lightingProfile !== 0) || ((schema === 7 || schema === 8 || schema === 10) && lightingProfile !== 1)) {
     throw new RuntimeMapError("runtime map lighting profile differs from its schema")
   }
   const materialCount = bounded(reader.u32(), MAX_MATERIALS, "material count")
@@ -1271,14 +1277,14 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const normals = reader.f32Array(vertexCount * 3)
     const uv = reader.f32Array(vertexCount * 2)
     const lightmapUv = reader.f32Array(vertexCount * 2)
-    const displacementAlpha = schema === 8 || schema === 9 ? reader.f32Array(vertexCount) : new Float32Array(vertexCount)
+    const displacementAlpha = schema === 8 || schema === 9 || schema === 10 || schema === 11 ? reader.f32Array(vertexCount) : new Float32Array(vertexCount)
     const indices = reader.u32Array(triangleCount * 3)
     if (indices.some((value) => value >= vertexCount)) throw new RuntimeMapError("runtime map triangle index is invalid")
     const lightOffset = reader.i32()
     const styles = Object.freeze([reader.u8(), reader.u8(), reader.u8(), reader.u8()]) as readonly [number, number, number, number]
     const lightmapWidth = Math.max(1, reader.i32() + 1)
     const lightmapHeight = Math.max(1, reader.i32() + 1)
-    if (schema === 8 || schema === 9) {
+    if (schema === 8 || schema === 9 || schema === 10 || schema === 11) {
       const displacement = reader.u8(), power = reader.u8()
       zeros(reader.take(2), "runtime displacement reserved")
       if (displacement > 1 || (displacement === 0 && power !== 0)) throw new RuntimeMapError("runtime displacement disposition is invalid")
@@ -1334,7 +1340,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
 
   let lighting: RuntimeLighting
   let ldrBytes: Uint8Array | undefined
-  if (schema === 6 || schema === 9) {
+  if (schema === 6 || schema === 9 || schema === 11) {
     ldrBytes = reader.take(lightingSampleCount * 4).slice()
     lighting = Object.freeze({ profile: "ldr", samples: ldrBytes })
   } else {
@@ -1344,7 +1350,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const resolvedCount = reader.u32()
   if (resolvedCount !== materials.length) throw new RuntimeMapError("runtime material payload count is invalid")
   for (let index = 0; index < resolvedCount; index += 1) {
-    materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 8 || schema === 9)
+    materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 8 || schema === 9 || schema === 10 || schema === 11)
   }
 
   const models: RuntimeModel[] = []
@@ -1355,7 +1361,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const modelMaterials: RuntimeMaterial[] = []
     for (let material = 0; material < modelMaterialCount; material += 1) {
       const materialPath = utf8(reader, decoder, "runtime model material path")
-      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 8 || schema === 9))
+      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 8 || schema === 9 || schema === 10 || schema === 11))
     }
     const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
     const primitives: RuntimeModelPrimitive[] = []
@@ -1366,10 +1372,41 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
       if (material >= modelMaterialCount) throw new RuntimeMapError("model material index is invalid")
       const positions = reader.f32Array(vertices * 3)
       const normals = reader.f32Array(vertices * 3)
+      if (schema !== 10 && schema !== 11) throw new RuntimeMapError("authored model skinning contract is unavailable")
+      const bindPositions = reader.f32Array(vertices * 3)
+      const bindNormals = reader.f32Array(vertices * 3)
+      const bindTangents = reader.f32Array(vertices * 4)
+      const boneIndexBytes = reader.take(vertices * 8)
+      const boneIndices = new Uint16Array(vertices * 4)
+      const boneIndexView = new DataView(boneIndexBytes.buffer, boneIndexBytes.byteOffset, boneIndexBytes.byteLength)
+      for (let index = 0; index < boneIndices.length; index += 1) boneIndices[index] = boneIndexView.getUint16(index * 2, true)
+      const boneWeights = reader.f32Array(vertices * 4)
+      const paletteLength = bounded(reader.u32(), 256, "model bone palette count")
+      const bonePalette = new Uint16Array(paletteLength)
+      for (let index = 0; index < paletteLength; index += 1) {
+        bonePalette[index] = reader.u16()
+        if (index > 0 && bonePalette[index]! <= bonePalette[index - 1]!) throw new RuntimeMapError("model bone palette is not canonical")
+      }
+      for (let vertex = 0; vertex < vertices; vertex += 1) {
+        for (let influence = 0; influence < 4; influence += 1) {
+          const weight = boneWeights[vertex * 4 + influence]!
+          if (weight < 0 || (weight !== 0 && !bonePalette.includes(boneIndices[vertex * 4 + influence]!))) {
+            throw new RuntimeMapError("model bone influence is invalid")
+          }
+        }
+      }
       const uv = reader.f32Array(vertices * 2)
       const indices = reader.u32Array(triangles * 3)
       if (indices.some((value) => value >= vertices)) throw new RuntimeMapError("model triangle index is invalid")
-      primitives.push(Object.freeze({ material, positions, normals, uv, indices }))
+      primitives.push(Object.freeze({ material, positions, normals, bindPositions, bindNormals, bindTangents, boneIndices, boneWeights, bonePalette, uv, indices }))
+    }
+    const modelPalette = Uint16Array.from([...new Set(primitives.flatMap((primitive) => Array.from(primitive.bonePalette)))].sort((left, right) => left - right))
+    const paletteIndices = new Map(Array.from(modelPalette, (bone, index) => [bone, index] as const))
+    for (const primitive of primitives) {
+      for (let index = 0; index < primitive.boneIndices.length; index += 1) {
+        if (primitive.boneWeights[index] !== 0) primitive.boneIndices[index] = paletteIndices.get(primitive.boneIndices[index]!)!
+      }
+      for (let index = 0; index < primitive.bonePalette.length; index += 1) primitive.bonePalette[index] = paletteIndices.get(primitive.bonePalette[index]!)!
     }
     models.push(Object.freeze({ logicalPath, materials: Object.freeze(modelMaterials), primitives: Object.freeze(primitives) }))
   }
@@ -1384,13 +1421,13 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     modelOccurrences.push(Object.freeze({ entity, model, position, angles }))
   }
 
-  if (schema === 7 || schema === 8) {
+  if (schema === 7 || schema === 8 || schema === 10) {
     const descriptor = parseHdrProfile(reader, decoder, commonSurfaces, lightingSampleCount)
     lighting = Object.freeze({ profile: "hdr", samples: lighting.samples as Float32Array, descriptor })
   }
   if (reader.offset !== input.byteLength) throw new RuntimeMapError("runtime map has trailing bytes")
 
-  const lightmapLayout = packLightmaps(lightmapRecords, schema === 7 || schema === 8 || schema === 9 ? 1 : 0)
+  const lightmapLayout = packLightmaps(lightmapRecords, schema === 7 || schema === 8 || schema === 9 || schema === 10 || schema === 11 ? 1 : 0)
   const lightingKinds = lighting.profile === "hdr"
     ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
     : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))

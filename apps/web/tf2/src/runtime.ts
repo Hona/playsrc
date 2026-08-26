@@ -3649,7 +3649,7 @@ export class Tf2Application {
       model: model.model,
       sequence: model.sequence,
       primitives: model.primitives.length,
-      vertices: model.primitives.reduce((total, primitive) => total + primitive.positions.length / 3, 0),
+      vertices: model.primitives.reduce((total, primitive) => total + primitive.vertexCount, 0),
     })))
   }
 

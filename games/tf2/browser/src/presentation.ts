@@ -398,9 +398,7 @@ export type ModelPoseRequest = Readonly<{
 export type PosedPrimitive = Readonly<{
   primitive: number
   material: number
-  positions: Float32Array
-  normals: Float32Array
-  tangents: Float32Array
+  vertexCount: number
   translucent:boolean
 }>
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
@@ -420,6 +418,7 @@ export type PosedModel = Readonly<{
   looping: boolean
   previousCycle: number
   cycle: number
+  boneMatrices: Float32Array
   events: readonly Readonly<{ index: number; cycle: number; event: number; eventType: number; options: Uint8Array; name: string }>[]
   primitives: readonly PosedPrimitive[]
   attachments: readonly PosedAttachment[]
@@ -533,7 +532,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (UTF8_DECODER.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 7) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (UTF8_DECODER.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 8) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -541,7 +540,6 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     f32 = () => { ensure(4); const value = view.getFloat32(at, true); at += 4; if (!Number.isFinite(value)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar"); return value },
     text = () => { const length = u32(); ensure(length); const value = UTF8_DECODER.decode(bytes.subarray(at, at + length)); at += length; return value }
   const output: PosedModel[] = []
-  const geometry: Readonly<{ positions: Float32Array; normals: Float32Array; tangents: Float32Array }>[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
     const identity = u32()
     ensure(8)
@@ -570,39 +568,17 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const options = bytes.slice(at, at + 64); at += 64
       return Object.freeze({ index, cycle: eventCycle, event, eventType, options, name: text() })
     }))
+    const boneCount = u32()
+    if (boneCount > 256) throw new ProjectilePresentationError("BoundExceeded", "model bone matrix count")
+    ensure(boneCount * 48)
+    const boneMatrices = new Float32Array(boneCount * 12)
+    for (let index = 0; index < boneMatrices.length; index += 1) boneMatrices[index] = f32()
     const primitives = Object.freeze(Array.from({ length: u32() }, () => {
       const primitive = u32(), material = u32(), vertices = u32(), translucent = u8(), reference = u8()
-      if (translucent > 1 || reference > 1 || u8() || u8()) {
+      if (translucent > 1 || reference !== 0 || u8() || u8()) {
         throw new ProjectilePresentationError("MalformedFact", "primitive opacity")
       }
-      while (at % Float32Array.BYTES_PER_ELEMENT !== 0) {
-        if (u8() !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose vertex alignment")
-      }
-      let retained: Readonly<{ positions: Float32Array; normals: Float32Array; tangents: Float32Array }>
-      if (reference) {
-        const index = u32()
-        const previous = geometry[index]
-        if (!previous || previous.positions.length !== vertices * 3) {
-          throw new ProjectilePresentationError("MalformedFact", "model pose geometry reference")
-        }
-        retained = previous
-      } else {
-        ensure(vertices * 40)
-        const positions = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
-        at += positions.byteLength
-        const normals = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
-        at += normals.byteLength
-        const tangents = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 4)
-        at += tangents.byteLength
-        for (const values of [positions, normals, tangents]) {
-          for (let index = 0; index < values.length; index += 1) {
-            if (!Number.isFinite(values[index]!)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
-          }
-        }
-        retained = { positions, normals, tangents }
-        geometry.push(retained)
-      }
-      return Object.freeze({ primitive, material, ...retained, translucent: translucent === 1 })
+      return Object.freeze({ primitive, material, vertexCount: vertices, translucent: translucent === 1 })
     }))
     const attachmentCount = u32()
     const attachments = attachmentCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: attachmentCount }, () => {
@@ -658,7 +634,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
         irisU: row(), irisV: row(), glintU: row(), glintV: row() })
     }))
     if (attachmentMode === 1 && (primitives.length !== 0 || eyes.length !== 0)) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments, lighting, eyes, viewmodel }))
+    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)

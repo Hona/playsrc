@@ -502,7 +502,7 @@ export async function verifyTf2Wasm(
     require(hdr.sha256 === nativeHdr.sha256, "ctf_2fort native/WASM payload SHA-256 differs")
     require(hdr.derivedSha256 === nativeHdr.derivedSha256, "ctf_2fort native/WASM derived identity differs")
     const runtime = parseRuntimeMap(hdr.payload)
-    require(runtime.schema === 8 && runtime.displacementSurfaces === 232, "ctf_2fort displacement runtime coverage differs")
+    require(runtime.schema === 10 && runtime.displacementSurfaces === 232, "ctf_2fort displacement runtime coverage differs")
     require(runtime.materials.every((material) => !material.baseTexture || !Object.hasOwn(material.baseTexture, "rgba")),
       "ctf_2fort world textures duplicate authored source planes")
     const presentationLength = exports.playsrc_presentation_length(hdr.handle)
@@ -551,7 +551,7 @@ export async function verifyTf2Wasm(
     require(hdr.sha256 === nativeHdr.sha256, "pl_upward native/WASM payload SHA-256 differs")
     require(hdr.derivedSha256 === nativeHdr.derivedSha256, "pl_upward native/WASM derived identity differs")
     const runtime = parseRuntimeMap(hdr.payload)
-    require(runtime.schema === 8 && runtime.displacementSurfaces === 558, "pl_upward displacement runtime coverage differs")
+    require(runtime.schema === 10 && runtime.displacementSurfaces === 558, "pl_upward displacement runtime coverage differs")
     const wall = runtime.materials.find((material) => material.logicalPath.toLowerCase() === "materials/brick/wall028.vmt")
     require(wall?.detail?.texture.logicalPath.toLowerCase() === "materials/overlays/detail001.vtf"
       && wall.detail.scale[0] === Math.fround(1.1) && wall.detail.scale[1] === Math.fround(2.3)
@@ -996,7 +996,8 @@ export async function verifyTf2Wasm(
     displayPoses[1].model === "models/weapons/c_models/c_soldier_arms.mdl" &&
     displayPoses[0].model === "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl" &&
     displayPoses.every((pose) => pose.sampleTick===5n&&pose.activity === "ACT_PRIMARY_VM_DRAW" && pose.primitives.length > 0 &&
-      pose.primitives.every((primitive) => primitive.tangents.length / 4 === primitive.positions.length / 3)),
+      pose.boneMatrices.length > 0 && pose.boneMatrices.length % 12 === 0 &&
+      pose.primitives.every((primitive) => primitive.vertexCount > 0)),
   "fixed StudioModel viewmodel pose output differs")
   const visibilityProbe=(values:readonly number[])=>{
     require(values.length===10,"fixed-camera visibility input differs")
