@@ -43,36 +43,35 @@ test("authored Engineer build menus, stock objects and headed building pixels", 
   await page.waitForFunction(() => (document.querySelector<HTMLElement>("main")?.dataset.placement ?? "").startsWith("2:0:"), undefined, { timeout: 30_000 })
   const blueprint = await page.locator(".world-canvas").screenshot()
   await testInfo.attach("headed-authored-sentry-blueprint", { body: blueprint, contentType: "image/png" })
-  const invalidSpawn=(await page.locator("main").getAttribute("data-placement"))?.startsWith("2:0:0:")===true
-  await page.keyboard.press("Backquote")
-  if(invalidSpawn){await entry.fill("noclip");await entry.press("Enter")}
-  await entry.fill("+attack");await entry.press("Enter")
-  await page.keyboard.press("Backquote")
-  if(invalidSpawn){
-    await expect(page.locator("main")).toHaveAttribute("data-movement-mode","1")
-    const departure=await page.evaluate(async()=>{
-      const root=document.querySelector<HTMLElement>("main")!
-      const position=()=>(root.dataset.cameraPosition??"").split(",").map(Number)
-      const initial=position()
-      const target=initial[0]!<0?[-1780,-1536]:initial[1]!>1000?[512,1230]:[810,490]
-      const order=initial[0]!>=0&&initial[1]!>1000?[0,1]:[1,0]
-      for(const axis of order){
-        if(root.dataset.buildingCount==="1")break
-        const current=position()[axis]!,increasing=target[axis]!>current
-        const keys=axis===0?(increasing?["KeyW","KeyA"]:["KeyS","KeyD"]):(increasing?["KeyS","KeyA"]:["KeyW","KeyD"])
-        for(const code of keys)dispatchEvent(new KeyboardEvent("keydown",{code,key:code.slice(3).toLowerCase(),bubbles:true}))
-        const began=performance.now()
-        try{while(root.dataset.buildingCount!=="1"&&(increasing?position()[axis]!<target[axis]!-8:position()[axis]!>target[axis]!+8)){if(performance.now()-began>5000)throw new Error(`axis=${axis};position=${position().join(",")}`);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))}}
-        finally{for(const code of keys)dispatchEvent(new KeyboardEvent("keyup",{code,key:code.slice(3).toLowerCase(),bubbles:true}))}
+  await page.bringToFront()
+  await page.locator(".world-canvas").click({ position: { x: 640, y: 360 } })
+  await expect(page.locator("main")).toHaveAttribute("data-pointer-locked", "true", { timeout: 5_000 })
+  if ((await page.locator("main").getAttribute("data-placement"))?.startsWith("2:0:0:")) {
+    const initial = (await page.locator("main").getAttribute("data-camera-position"))!.split(",").map(Number)
+    const target = initial[0]! < 0 ? [-1780, -1536] : initial[1]! > 1000 ? [512, 1230] : [810, 560]
+    const order = initial[0]! >= 0 && initial[1]! > 1000 ? [0, 1] : [1, 0]
+    for (const axis of order) {
+      if ((await page.locator("main").getAttribute("data-placement"))?.startsWith("2:0:1:")) break
+      const current = Number((await page.locator("main").getAttribute("data-camera-position"))!.split(",")[axis])
+      const increasing = target[axis]! > current
+      const keys = axis === 0 ? increasing ? ["w", "a"] : ["s", "d"] : increasing ? ["s", "a"] : ["w", "d"]
+      for (const key of keys) await page.keyboard.down(key)
+      try {
+        await page.waitForFunction(({ axis, target, increasing }) => {
+          const root = document.querySelector<HTMLElement>("main")!
+          const value = Number(root.dataset.cameraPosition?.split(",")[axis])
+          return root.dataset.placement?.startsWith("2:0:1:") || (increasing ? value >= target - 8 : value <= target + 8)
+        }, { axis, target: target[axis]!, increasing }, { timeout: 8_000, polling: 50 })
+      } catch {
+        throw new Error(`Ordinary walking did not reach valid authored ground: axis=${axis}; initial=${initial}; current=${await page.locator("main").getAttribute("data-camera-position")}; placement=${await page.locator("main").getAttribute("data-placement")}`)
+      } finally {
+        for (const key of keys) await page.keyboard.up(key)
       }
-      return{position:position(),placement:root.dataset.placement,target,buildings:root.dataset.buildingCount}
-    })
-    if(departure.buildings!=="1")throw new Error(`Engineer could not place on an authored surface: ${JSON.stringify(departure)}`)
+    }
   }
+  await expect(page.locator("main")).toHaveAttribute("data-placement", /^2:0:1:/)
+  await page.mouse.click(640, 360)
   await expect(page.locator("main")).toHaveAttribute("data-building-count", "1",{timeout:5000})
-  await page.keyboard.press("Backquote")
-  await entry.fill("-attack");await entry.press("Enter")
-  await page.keyboard.press("Backquote")
   await expect(page.locator("main")).toHaveAttribute("data-engineer-metal", "70")
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile?.buildings?.length === 1)
   const constructing = await page.evaluate(() => (globalThis as any).__playsrcProfile.buildings[0])

@@ -16,7 +16,7 @@ pub const REPAIR_HEALTH_PER_METAL: u16 = 3;
 pub const SENTRY_RANGE: f32 = 1100.0;
 pub const SENTRY_DAMAGE: i32 = 16;
 const MASK_SOLID: u32 = playsrc_collision::MASK_SOLID;
-const MASK_BRUSH: u32 = 0x0000_400b;
+const MASK_BRUSH: u32 = 0x0001_400b;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]

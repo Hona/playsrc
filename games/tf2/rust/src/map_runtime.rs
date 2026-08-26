@@ -349,9 +349,12 @@ struct MapPickup {
 
 #[derive(Clone, Debug)]
 struct BuildingExclusion {
+    source: u32,
     model: usize,
     origin: [f32; 3],
+    bounds: Option<([f32; 3], [f32; 3])>,
     team: Option<u8>,
+    enabled: bool,
     allow_sentry: bool,
     allow_dispenser: bool,
     allow_teleporters: bool,
@@ -452,6 +455,13 @@ impl MapRuntime {
                         .collect(),
                 },
                 playsrc_entity::ExternalClassBinding {
+                    classname: b"func_nobuild".to_vec(),
+                    inputs: [b"SetActive".as_slice(), b"SetInactive", b"ToggleActive"]
+                        .into_iter()
+                        .map(<[u8]>::to_vec)
+                        .collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
                     classname: b"team_round_timer".to_vec(),
                     inputs: [
                         b"Enable".as_slice(),
@@ -504,6 +514,7 @@ impl MapRuntime {
             external_brush_models: [
                 b"func_regenerate".as_slice(),
                 b"func_respawnroom",
+                b"func_nobuild",
                 b"func_capturezone",
             ]
             .into_iter()
@@ -704,13 +715,18 @@ impl MapRuntime {
                         },
                     );
                 }
-            } else if class(entity, b"func_nobuild") && !boolean(entity, b"StartDisabled", false) {
+            } else if class(entity, b"func_nobuild") {
+                let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
+                let model = entity
+                    .bsp_model_index
+                    .ok_or_else(|| invalid(entity.index))?;
                 building_exclusions.push(BuildingExclusion {
-                    model: entity
-                        .bsp_model_index
-                        .ok_or_else(|| invalid(entity.index))?,
+                    source,
+                    model,
                     origin: vector(entity, b"origin", Some([0.0; 3]))?,
+                    bounds: volume_bounds.get(&model).copied(),
                     team: source_team(entity)?,
+                    enabled: !boolean(entity, b"StartDisabled", false),
                     allow_sentry: boolean(entity, b"AllowSentry", false),
                     allow_dispenser: boolean(entity, b"AllowDispenser", false),
                     allow_teleporters: boolean(entity, b"AllowTeleporters", false),
@@ -1083,7 +1099,8 @@ impl MapRuntime {
             position[2] + object.hull().maxs[2] * 0.5,
         ];
         for value in &self.building_exclusions {
-            if value
+            if !value.enabled
+                || value
                 .team
                 .is_some_and(|number| number != team.source_number())
             {
@@ -1096,7 +1113,9 @@ impl MapRuntime {
             };
             if !allowed {
                 for test in [position, center] {
-                    if world.overlaps_model_hull(value.model, value.origin, test, point)? {
+                    if bounds_may_overlap(value.bounds, value.origin, test, point)
+                        && world.overlaps_model_hull(value.model, value.origin, test, point)?
+                    {
                         return Ok(false);
                     }
                 }
@@ -1107,7 +1126,9 @@ impl MapRuntime {
                 continue;
             }
             for test in [position, center] {
-                if world.overlaps_model_hull(volume.model, volume.origin, test, point)? {
+                if volume_may_overlap(volume, volume.origin, test, point)
+                    && world.overlaps_model_hull(volume.model, volume.origin, test, point)?
+                {
                     return Ok(false);
                 }
             }
@@ -1853,6 +1874,19 @@ impl MapRuntime {
                                 VolumeKind::Generic => {}
                             }
                         }
+                        if let Some(exclusion) = self
+                            .building_exclusions
+                            .iter_mut()
+                            .find(|exclusion| exclusion.source == source)
+                        {
+                            if input.eq_ignore_ascii_case(b"SetActive") {
+                                exclusion.enabled = true;
+                            } else if input.eq_ignore_ascii_case(b"SetInactive") {
+                                exclusion.enabled = false;
+                            } else if input.eq_ignore_ascii_case(b"ToggleActive") {
+                                exclusion.enabled = !exclusion.enabled;
+                            }
+                        }
                     }
                     RuntimeRequest::BrushState { .. } => {}
                 },
@@ -1893,7 +1927,16 @@ impl MapRuntime {
 }
 
 fn volume_may_overlap(volume: &Volume, origin: [f32; 3], position: [f32; 3], hull: Hull) -> bool {
-    volume.bounds.is_none_or(|(minimum, maximum)| {
+    bounds_may_overlap(volume.bounds, origin, position, hull)
+}
+
+fn bounds_may_overlap(
+    bounds: Option<([f32; 3], [f32; 3])>,
+    origin: [f32; 3],
+    position: [f32; 3],
+    hull: Hull,
+) -> bool {
+    bounds.is_none_or(|(minimum, maximum)| {
         (0..3).all(|axis| {
             position[axis] + hull.maxs[axis] >= origin[axis] + minimum[axis]
                 && position[axis] + hull.mins[axis] <= origin[axis] + maximum[axis]
@@ -2069,6 +2112,125 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(true)
         }
+    }
+
+    #[test]
+    fn authored_no_build_zones_preserve_team_object_points_and_disabled_input_edges() {
+        let graph = playsrc_entity::parse(
+            br#"
+{"classname" "func_nobuild" "targetname" "red_sentry" "model" "*1" "TeamNum" "2" "AllowDispenser" "1" "AllowTeleporters" "1"}
+{"classname" "func_nobuild" "targetname" "disabled" "model" "*2" "StartDisabled" "1"}
+"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![
+                ModelBounds {
+                    model: 1,
+                    mins: [0.0, 0.0, 0.0],
+                    maxs: [100.0, 100.0, 32.0],
+                },
+                ModelBounds {
+                    model: 2,
+                    mins: [200.0, 0.0, 0.0],
+                    maxs: [300.0, 100.0, 100.0],
+                },
+            ],
+        )
+        .unwrap();
+        let collision = AlwaysOverlap;
+        let sentry = crate::building::Object::SENTRY;
+        assert!(!map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [50.0, 50.0, 0.0])
+            .unwrap());
+        assert!(map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Blue, [50.0, 50.0, 0.0])
+            .unwrap());
+        for object in [
+            crate::building::Object::DISPENSER,
+            crate::building::Object::ENTRANCE,
+            crate::building::Object::EXIT,
+        ] {
+            assert!(map
+                .building_position_allowed(&collision, object, crate::PlayerTeam::Red, [50.0, 50.0, 0.0])
+                .unwrap());
+        }
+        assert!(map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [100.01, 50.0, 0.0])
+            .unwrap());
+        assert!(!map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [50.0, 50.0, -33.0])
+            .unwrap());
+        assert!(map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
+            .unwrap());
+
+        let disabled = graph.entities[1].index as u32;
+        map.input(1, disabled, b"SetActive", Variant::Void).unwrap();
+        assert!(!map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
+            .unwrap());
+        map.input(2, disabled, b"ToggleActive", Variant::Void).unwrap();
+        assert!(map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
+            .unwrap());
+        map.input(3, disabled, b"SetActive", Variant::Void).unwrap();
+        map.input(4, disabled, b"SetInactive", Variant::Void).unwrap();
+        assert!(map
+            .building_position_allowed(&collision, sentry, crate::PlayerTeam::Red, [250.0, 50.0, 0.0])
+            .unwrap());
+    }
+
+    #[test]
+    fn active_respawn_rooms_reject_both_build_points_for_either_team_only_inside_bounds() {
+        let graph = playsrc_entity::parse(
+            br#"{"classname" "func_respawnroom" "targetname" "red_spawn" "model" "*1" "TeamNum" "2"}"#,
+            playsrc_entity::Limits::default(),
+        )
+        .unwrap();
+        let mut map = MapRuntime::compile(
+            &graph,
+            0.015,
+            1,
+            vec![ModelBounds {
+                model: 1,
+                mins: [10.0, 10.0, 20.0],
+                maxs: [90.0, 90.0, 30.0],
+            }],
+        )
+        .unwrap();
+        for team in [crate::PlayerTeam::Red, crate::PlayerTeam::Blue] {
+            assert!(!map
+                .building_position_allowed(
+                    &AlwaysOverlap,
+                    crate::building::Object::SENTRY,
+                    team,
+                    [50.0, 50.0, -8.0],
+                )
+                .unwrap());
+            assert!(map
+                .building_position_allowed(
+                    &AlwaysOverlap,
+                    crate::building::Object::SENTRY,
+                    team,
+                    [90.01, 50.0, 20.0],
+                )
+                .unwrap());
+        }
+        map.input(1, graph.entities[0].index as u32, b"SetInactive", Variant::Void)
+            .unwrap();
+        assert!(map
+            .building_position_allowed(
+                &AlwaysOverlap,
+                crate::building::Object::SENTRY,
+                crate::PlayerTeam::Red,
+                [50.0, 50.0, 20.0],
+            )
+            .unwrap());
     }
 
     #[test]
