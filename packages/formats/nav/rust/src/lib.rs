@@ -284,6 +284,8 @@ pub struct PathScratch {
     costs: Vec<f32>,
     parents: Vec<Option<usize>>,
     closed: Vec<bool>,
+    generations: Vec<u32>,
+    generation: u32,
     queue: BinaryHeap<OpenArea>,
 }
 
@@ -428,20 +430,28 @@ impl Mesh {
         }
         let goal_position = self.areas[goal_index].center();
         scratch.costs.resize(self.areas.len(), f32::INFINITY);
-        scratch.costs.fill(f32::INFINITY);
         scratch.parents.resize(self.areas.len(), None);
-        scratch.parents.fill(None);
         scratch.closed.resize(self.areas.len(), false);
-        scratch.closed.fill(false);
+        scratch.generations.resize(self.areas.len(), 0);
+        scratch.generation = scratch.generation.wrapping_add(1);
+        if scratch.generation == 0 {
+            scratch.generations.fill(0);
+            scratch.generation = 1;
+        }
         scratch.queue.clear();
         let PathScratch {
             costs,
             parents,
             closed,
+            generations,
+            generation,
             queue,
         } = scratch;
         let mut order = 0_u64;
         costs[start_index] = 0.0;
+        parents[start_index] = None;
+        closed[start_index] = false;
+        generations[start_index] = *generation;
         queue.push(OpenArea {
             index: start_index,
             total: distance(self.areas[start_index].center(), goal_position),
@@ -481,12 +491,13 @@ impl Mesh {
                     }
                     let next_cost =
                         (costs[current.index] + edge).max(costs[current.index] * 1.00001 + 0.00001);
-                    if costs[next_index] <= next_cost {
+                    if generations[next_index] == *generation && costs[next_index] <= next_cost {
                         continue;
                     }
                     costs[next_index] = next_cost;
                     parents[next_index] = Some(current.index);
                     closed[next_index] = false;
+                    generations[next_index] = *generation;
                     order += 1;
                     queue.push(OpenArea {
                         index: next_index,
@@ -1119,6 +1130,62 @@ mod tests {
                 .then_some(length)),
             Some(vec![1, 3, 4])
         );
+    }
+
+    #[test]
+    fn retained_path_scratch_preserves_exact_routes_across_searches_and_generation_wrap() {
+        let bytes = fixture(&[
+            (
+                [0.0, 0.0, 0.0],
+                [50.0, 50.0, 0.0],
+                [vec![], vec![2], vec![3], vec![]],
+                0,
+            ),
+            (
+                [50.0, 0.0, 0.0],
+                [100.0, 50.0, 0.0],
+                [vec![], vec![], vec![4], vec![1]],
+                0,
+            ),
+            (
+                [0.0, 50.0, 0.0],
+                [50.0, 100.0, 0.0],
+                [vec![1], vec![4], vec![], vec![]],
+                0,
+            ),
+            (
+                [50.0, 50.0, 0.0],
+                [100.0, 100.0, 0.0],
+                [vec![2], vec![], vec![], vec![3]],
+                0,
+            ),
+        ]);
+        let mesh = parse(&bytes, Profile::TeamFortress2, Some(128), Limits::default()).unwrap();
+        let mut scratch = PathScratch::default();
+        assert_eq!(
+            mesh.build_path_with_scratch(1, 4, &mut scratch, |_, _, _, length| Some(length)),
+            Some(vec![1, 2, 4])
+        );
+        assert_eq!(
+            mesh.build_path_with_scratch(1, 4, &mut scratch, |_, next, _, length| (next.identity
+                != 2)
+                .then_some(length)),
+            Some(vec![1, 3, 4])
+        );
+        assert_eq!(
+            mesh.build_path_with_scratch(4, 1, &mut scratch, |_, _, _, length| Some(length)),
+            Some(vec![4, 2, 1])
+        );
+        assert_eq!(
+            mesh.build_path_with_scratch(1, 4, &mut scratch, |_, _, _, _| None),
+            None
+        );
+        scratch.generation = u32::MAX;
+        assert_eq!(
+            mesh.build_path_with_scratch(1, 4, &mut scratch, |_, _, _, length| Some(length)),
+            Some(vec![1, 2, 4])
+        );
+        assert_eq!(scratch.generation, 1);
     }
 
     #[test]

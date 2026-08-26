@@ -3163,6 +3163,63 @@ mod tests {
     }
 
     #[test]
+    fn default_upward_offline_practice_keeps_fifteen_active_payload_bots_on_both_teams() {
+        for human_team in [PlayerTeam::Red, PlayerTeam::Blue] {
+            let mut world =
+                BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+            let mut random = UniformRandomStream::from_seed(0).unwrap();
+            world
+                .configure(Configuration {
+                    quota: 15,
+                    maximum_players: 24,
+                    mode: QuotaMode::Normal,
+                    difficulty: Difficulty::Easy,
+                    join_after_player: true,
+                    auto_vacate: false,
+                    offline_practice: true,
+                })
+                .unwrap();
+            for admission in 0..15 {
+                let tick = admission * 17;
+                assert!(
+                    world
+                        .maintain_quota(tick, human_team, PlayerClass::Soldier, 0, 0, &mut random)
+                        .unwrap()
+                );
+                world
+                    .advance(&Floor, tick, human_far(), &[], &mut random, None)
+                    .unwrap();
+            }
+            let bots = world.snapshots();
+            assert_eq!(bots.len(), 15);
+            assert_eq!(
+                bots.iter()
+                    .filter(|bot| bot.team == PlayerTeam::Red)
+                    .count()
+                    + usize::from(human_team == PlayerTeam::Red),
+                8
+            );
+            assert_eq!(
+                bots.iter()
+                    .filter(|bot| bot.team == PlayerTeam::Blue)
+                    .count()
+                    + usize::from(human_team == PlayerTeam::Blue),
+                8
+            );
+            assert!(bots.iter().all(|bot| {
+                bot.area.is_some()
+                    && bot.difficulty == Difficulty::Easy
+                    && bot.objective
+                        == if bot.team == PlayerTeam::Blue {
+                            ObjectiveKind::PayloadPush
+                        } else {
+                            ObjectiveKind::PayloadGuard
+                        }
+            }));
+        }
+    }
+
+    #[test]
     fn source_quota_modes_honor_fill_match_vacancy_and_balanced_removal() {
         for (mode, expected) in [
             (QuotaMode::Normal, 3),
