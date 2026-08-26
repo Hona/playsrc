@@ -42,14 +42,6 @@ export type DerivedRecord = Readonly<{
 export type DerivedCacheMetadata = Readonly<{ key: string; byteLength: number; storedAt: number }>
 export type VerifiedDerivedObject = Readonly<{ bytes: Uint8Array; sha256: string }>
 
-function sameDerivedRecordMetadata(left: DerivedRecord, right: DerivedRecord): boolean {
-  return left.key === right.key
-    && left.byteLength === right.byteLength
-    && left.sha256 === right.sha256
-    && left.storedAt === right.storedAt
-    && left.bytes.size === right.bytes.size
-}
-
 export function planDerivedCacheEviction(
   records: readonly DerivedCacheMetadata[],
   incoming: Readonly<{ key: string; byteLength: number }>,
@@ -283,6 +275,7 @@ export async function openDerivedObjectCache(
   }
   const database = await requestResult(request,"open")
   database.onversionchange = () => database.close()
+  let latestReadRecency = 0
   const stores = (mode: IDBTransactionMode): [IDBObjectStore, IDBObjectStore, IDBTransaction] => {
     try {
       const transaction = database.transaction(["objects", "metadata"], mode)
@@ -292,34 +285,29 @@ export async function openDerivedObjectCache(
     }
   }
   const refreshVerifiedRecency = async (verified: DerivedRecord): Promise<void> => {
-    const [objects, metadata, transaction] = stores("readwrite")
+    const [, metadata, transaction] = stores("readwrite")
     const done = transactionDone(transaction, "read recency transaction")
-    const [current, inventory] = await Promise.all([
-      requestResult(objects.get(verified.key), "read recency request") as Promise<DerivedRecord | undefined>,
-      requestResult(metadata.getAll(), "read recency inventory request") as Promise<DerivedCacheMetadata[]>,
-    ])
-    if (!current || !sameDerivedRecordMetadata(current, verified)) {
+    const current = await requestResult(metadata.get(verified.key), "read recency metadata request") as DerivedCacheMetadata | undefined
+    if (!current) {
       await done
       return
     }
-    if (inventory.some((record) => !Number.isSafeInteger(record.storedAt) || record.storedAt < 0)) {
+    if (current.key !== verified.key || current.byteLength !== verified.byteLength
+      || !Number.isSafeInteger(current.storedAt) || current.storedAt < verified.storedAt) {
       try { transaction.abort() } catch {}
       await done.catch(() => {})
-      throw new BrowserAssetError("IntegrityFailure", "derived cache recency inventory is malformed")
+      throw new BrowserAssetError("IntegrityFailure", "derived cache recency metadata is malformed")
     }
     const now = Date.now()
-    const maximum = inventory.reduce((value, record) => Math.max(value, record.storedAt), 0)
-    const storedAt = Math.max(now, maximum + 1)
+    const storedAt = Math.max(now, latestReadRecency + 1, current.storedAt + 1)
     if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(storedAt)) {
       try { transaction.abort() } catch {}
       await done.catch(() => {})
       throw new BrowserAssetError("BoundExceeded", "derived cache recency exceeds its bound")
     }
-    await Promise.all([
-      requestResult(objects.put({ ...current, storedAt } satisfies DerivedRecord), "read recency write request"),
-      requestResult(metadata.put({ key: current.key, byteLength: current.byteLength, storedAt } satisfies DerivedCacheMetadata), "read recency metadata write request"),
-    ])
+    await requestResult(metadata.put({ key: current.key, byteLength: current.byteLength, storedAt } satisfies DerivedCacheMetadata), "read recency metadata write request")
     await done
+    latestReadRecency = Math.max(latestReadRecency, storedAt)
   }
   const cache: DerivedObjectCache = {
     async read(key: string): Promise<VerifiedDerivedObject | undefined> {

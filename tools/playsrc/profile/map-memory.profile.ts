@@ -130,6 +130,15 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         destroyedTextures: 0,
         formats: {} as Record<string, number>,
       },
+      indexedDb: {
+        objectReads: 0,
+        objectWrites: 0,
+        objectWriteBytes: 0,
+        metadataInventories: 0,
+        metadataWrites: 0,
+      },
+      longTasks: [] as number[],
+      garbageCollections: [] as number[],
     }
     ;(globalThis as any).__playsrcMemoryProfile = state
     ;(globalThis as any).__playsrcProfile = {}
@@ -170,6 +179,33 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
     }
     Object.defineProperty(window, "Worker", { configurable: true, value: ProfiledWorker })
+
+    for (const operation of ["get", "getAll", "add", "put"] as const) {
+      const original = IDBObjectStore.prototype[operation]
+      Object.defineProperty(IDBObjectStore.prototype, operation, {
+        configurable: true,
+        writable: true,
+        value(this: IDBObjectStore, ...arguments_: any[]) {
+          if (this.name === "objects") {
+            if (operation === "get") state.indexedDb.objectReads += 1
+            if (operation === "add" || operation === "put") {
+              state.indexedDb.objectWrites += 1
+              state.indexedDb.objectWriteBytes += arguments_[0]?.bytes instanceof Blob ? arguments_[0].bytes.size : 0
+            }
+          } else if (this.name === "metadata") {
+            if (operation === "getAll") state.indexedDb.metadataInventories += 1
+            if (operation === "add" || operation === "put") state.indexedDb.metadataWrites += 1
+          }
+          return Reflect.apply(original, this, arguments_)
+        },
+      })
+    }
+    for (const [type, destination] of [["longtask", state.longTasks], ["gc", state.garbageCollections]] as const) {
+      if (!PerformanceObserver.supportedEntryTypes.includes(type)) continue
+      new PerformanceObserver((entries) => {
+        for (const entry of entries.getEntries()) destination.push(entry.duration)
+      }).observe({ type, buffered: true })
+    }
 
     const gpuTextureBytes = (descriptor: any): number => {
       const size = typeof descriptor.size === "number" ? [descriptor.size, 1, 1]
@@ -356,6 +392,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           gpu: profile.gpu,
           transfers: profile.transfers,
           worker: profile.worker,
+          indexedDb: profile.indexedDb,
+          longTasks: profile.longTasks,
+          garbageCollections: profile.garbageCollections,
           assets: (globalThis as any).__playsrcProfile.memoryAssets,
           geometry: (globalThis as any).__playsrcProfile.geometryEvidence,
         }
@@ -393,7 +432,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           count,
           firstTick: first,
           lastTick: Number(root.dataset.snapshotTick),
+          displayedFramesPerSecond: count * 1_000 / (performance.now() - start),
           frameP95Milliseconds: ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.95))] ?? 0,
+          frameP99Milliseconds: ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.99))] ?? 0,
           maximumFrameMilliseconds: ordered.at(-1) ?? 0,
         }
       }, sampleWindows[index]! * 1_000)
@@ -428,6 +469,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           wasmLinearBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.wasmLinearBytes ?? 0))),
         },
         gpu: observed.gpu,
+        indexedDb: observed.indexedDb,
+        responsiveness: {
+          longTasks: observed.longTasks.length,
+          maximumLongTaskMilliseconds: Math.max(0, ...observed.longTasks),
+          garbageCollections: observed.garbageCollections.length,
+          maximumGarbageCollectionMilliseconds: Math.max(0, ...observed.garbageCollections),
+        },
         transfers: observed.transfers,
         worker: observed.worker.filter((record: any) => ["resources", "loaded"].includes(record.kind)),
         load: observed.load,
