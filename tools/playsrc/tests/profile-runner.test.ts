@@ -47,6 +47,20 @@ describe("bounded headed profile orchestration", () => {
     expect((config.webServer as { timeout: number }).timeout).toBe(175_000)
   })
 
+  test("profiles the exact production origin without starting or substituting a development server", () => {
+    const previous = process.env.PLAYSRC_PROFILE_ORIGIN
+    process.env.PLAYSRC_PROFILE_ORIGIN = "https://playsrc.online"
+    try {
+      const config = headedProfileConfiguration({ match: "upward-training-bots.profile.ts" })
+      expect(config.use?.baseURL).toBe("https://playsrc.online")
+      expect(config.use?.headless).toBe(false)
+      expect(config.webServer).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.PLAYSRC_PROFILE_ORIGIN
+      else process.env.PLAYSRC_PROFILE_ORIGIN = previous
+    }
+  })
+
   test("selects each exact authored profile map without a duplicate fallback authority", () => {
     expect(headedProfileTarget({})).toBe("jump_beef")
     expect(headedProfileTarget({ PROFILE_CTF_BOTS: "1" })).toBe("ctf_2fort")

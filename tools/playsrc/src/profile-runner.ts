@@ -279,14 +279,16 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let playwrightPhases: unknown = null
   const timingPath = path.join(evidence, "phase-reports", `${profile}-${process.pid}.json`)
   try {
-    owner = await prepareOwner(config, identity, target, fresh, metadataPath, remaining)
-    const ownerToken = owner.metadata.token
-    heartbeat = setInterval(() => {
-      void writeLease(metadataPath, ownerToken, MAX_RUN_MILLISECONDS).catch((error) => {
-        heartbeatFailure = error instanceof Error ? error : new Error(String(error))
-        child?.kill("SIGTERM")
-      })
-    }, HEARTBEAT_MILLISECONDS)
+    if (!process.env.PLAYSRC_PROFILE_ORIGIN) {
+      owner = await prepareOwner(config, identity, target, fresh, metadataPath, remaining)
+      const ownerToken = owner.metadata.token
+      heartbeat = setInterval(() => {
+        void writeLease(metadataPath, ownerToken, MAX_RUN_MILLISECONDS).catch((error) => {
+          heartbeatFailure = error instanceof Error ? error : new Error(String(error))
+          child?.kill("SIGTERM")
+        })
+      }, HEARTBEAT_MILLISECONDS)
+    }
     const browserStarted = Date.now()
     progress = setInterval(() => console.error(`[performance] ${profile} running ${Math.round((Date.now() - locked) / 1_000)}s`), 10_000)
     deadline = setTimeout(() => { timedOut = true; child?.kill("SIGTERM") }, Math.max(0, remaining()))
@@ -336,7 +338,6 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       }
     } finally {
       await releaseHeadedProfileLock(lockPath, lock.token)
-      if (owner) {
         const finished = Date.now()
         const report = Object.freeze({
           schema: "playsrc-browser-profile-run-v3",
@@ -353,9 +354,10 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
             configurationMilliseconds,
             sourceIdentityMilliseconds,
             lockWaitMilliseconds: lock.milliseconds,
-            ownerMilliseconds: owner.milliseconds,
-            ownerReused: owner.reused,
-            ownerStartup: owner.metadata.startup,
+            ownerMilliseconds: owner?.milliseconds ?? 0,
+            ownerReused: owner?.reused ?? false,
+            ownerStartup: owner?.metadata.startup ?? null,
+            origin: process.env.PLAYSRC_PROFILE_ORIGIN ?? "development-owner",
             headedBrowserMilliseconds: browserMilliseconds,
             playwright: playwrightPhases,
             cleanupMilliseconds: finished - cleanupStarted,
@@ -363,8 +365,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         })
         const filename = `${profile}-${new Date(started).toISOString().replaceAll(":", "-")}-${process.pid}.json`
         await writeFile(path.join(evidence, filename), `${JSON.stringify(report, null, 2)}\n`)
-        console.error(`[performance] ${profile} total=${report.elapsedMilliseconds}ms owner=${owner.milliseconds}ms reused=${owner.reused} headed=${browserMilliseconds}ms cleanup=${report.phases.cleanupMilliseconds}ms`)
-      }
+        console.error(`[performance] ${profile} total=${report.elapsedMilliseconds}ms owner=${owner?.milliseconds ?? 0}ms reused=${owner?.reused ?? false} headed=${browserMilliseconds}ms cleanup=${report.phases.cleanupMilliseconds}ms`)
     }
   }
 }
