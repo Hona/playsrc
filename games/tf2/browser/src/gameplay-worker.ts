@@ -201,6 +201,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
           .filter((section) => section.references > 1).reduce((total, section) => total + section.length, 0),
         resourceSections: [...resourceSets.entries()].map(([generation, retained]) => Object.freeze({
           generation,
+          owner: active?.generation === generation ? "active" : pending?.generation === generation ? "pending" : "admitting",
+          exclusiveBytes: retained.sections.filter((section) => section.references === 1).reduce((sum, section) => sum + section.length, 0),
+          sharedBytes: retained.sections.filter((section) => section.references > 1).reduce((sum, section) => sum + section.length, 0),
           bytes: retained.sections.map((section) => section.length),
         })),
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,

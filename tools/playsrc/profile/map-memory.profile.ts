@@ -23,6 +23,8 @@ type MemorySample = Readonly<{
   processes: readonly ProcessMemory[]
   residentBytes: number
   privateBytes: number | null
+  browser?: Record<string, unknown>
+  js?: Readonly<{ usedSize: number; backingStorageSize?: number }>
 }>
 
 async function residentProcesses(processes: readonly BrowserProcess[], macosSampler?: string): Promise<readonly ProcessMemory[]> {
@@ -52,6 +54,7 @@ async function residentProcesses(processes: readonly BrowserProcess[], macosSamp
 }
 
 test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready residency", async ({ page, browser }, testInfo) => {
+  const wallStarted = performance.now()
   const requested = process.env.PROFILE_MEMORY_TARGET
   const requestedSequence = process.env.PROFILE_MEMORY_SEQUENCE?.split(",")
   const requestedBots = Number(process.env.PROFILE_MEMORY_BOTS ?? 0)
@@ -85,10 +88,22 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     try {
       const snapshot = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
       const processes = await residentProcesses(snapshot.processInfo, macosSampler)
+      const [js, browserState] = await Promise.all([
+        pageCdp.send("Runtime.getHeapUsage"),
+        page.evaluate(() => {
+          const state = (globalThis as any).__playsrcMemoryProfile
+          return state ? {
+            phase: (globalThis as any).__playsrcProfile?.mapResidencyPhase,
+            gpu: { ...state.gpu }, worker: state.worker.at(-1)?.memory,
+          } : undefined
+        }),
+      ])
       timeline.push(Object.freeze({
         at: performance.now(),
         target,
         phase,
+        browser: browserState,
+        js,
         processes,
         residentBytes: processes.reduce((total, entry) => total + entry.residentBytes, 0),
         privateBytes: processes.every((entry) => entry.privateBytes !== null)
@@ -154,6 +169,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         peakStagingBytes: 0,
         destroyedBuffers: 0,
         destroyedTextures: 0,
+        queuedWriteBytes: 0,
+        peakQueuedWriteBytes: 0,
+        pendingSubmissions: 0,
+        peakPendingSubmissions: 0,
         formats: {} as Record<string, number>,
       },
       indexedDb: {
@@ -265,7 +284,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const descriptor = arguments_[0]
       const result = original.apply(receiver, arguments_)
       const bytes = Number(descriptor.size)
-      const staging = (Number(descriptor.usage) & 1) !== 0 || descriptor.mappedAtCreation === true
+      let staging = descriptor.mappedAtCreation === true
       state.gpu.bufferBytes += bytes
       state.gpu.peakBufferBytes = Math.max(state.gpu.peakBufferBytes, state.gpu.bufferBytes)
       if (staging) {
@@ -273,6 +292,12 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         state.gpu.peakStagingBytes = Math.max(state.gpu.peakStagingBytes, state.gpu.stagingBytes)
       }
       let destroyed = false
+      const unmap = result.unmap
+      result.unmap = function () {
+        const value = unmap.call(this)
+        if (staging && !destroyed) { state.gpu.stagingBytes -= bytes; staging = false }
+        return value
+      }
       const destroy = result.destroy
       result.destroy = function () {
         if (!destroyed) {
@@ -308,15 +333,38 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
       return result
     })
+    const unsentWrites = new WeakMap<object, number>()
+    const queuedWrite = (queue: object, bytes: number) => {
+      unsentWrites.set(queue, (unsentWrites.get(queue) ?? 0) + bytes)
+      state.gpu.queuedWriteBytes += bytes
+      state.gpu.peakQueuedWriteBytes = Math.max(state.gpu.peakQueuedWriteBytes, state.gpu.queuedWriteBytes)
+    }
+    instrument((globalThis as any).GPUQueue, "submit", (original, receiver, arguments_) => {
+      const value = original.apply(receiver, arguments_)
+      const bytes = unsentWrites.get(receiver) ?? 0
+      unsentWrites.set(receiver, 0)
+      state.gpu.pendingSubmissions += 1
+      state.gpu.peakPendingSubmissions = Math.max(state.gpu.peakPendingSubmissions, state.gpu.pendingSubmissions)
+      const complete = () => { state.gpu.queuedWriteBytes -= bytes; state.gpu.pendingSubmissions -= 1 }
+      void receiver.onSubmittedWorkDone().then(complete, complete)
+      return value
+    })
     instrument((globalThis as any).GPUQueue, "writeBuffer", (original, receiver, arguments_) => {
       const value = arguments_[2]
-      state.gpu.uploadedBufferBytes += Number(arguments_[4] ?? (ArrayBuffer.isView(value) ? value.byteLength : value?.byteLength ?? 0))
-      return original.apply(receiver, arguments_)
+      const scalar = value?.BYTES_PER_ELEMENT ?? 1
+      const bytes = arguments_[4] === undefined ? value.byteLength - (arguments_[3] ?? 0) * scalar : arguments_[4] * scalar
+      const result = original.apply(receiver, arguments_)
+      state.gpu.uploadedBufferBytes += bytes
+      queuedWrite(receiver, bytes)
+      return result
     })
     instrument((globalThis as any).GPUQueue, "writeTexture", (original, receiver, arguments_) => {
       const value = arguments_[1]
-      state.gpu.uploadedTextureBytes += Number(value?.byteLength ?? 0)
-      return original.apply(receiver, arguments_)
+      const result = original.apply(receiver, arguments_)
+      const bytes = Number(value?.byteLength ?? 0)
+      state.gpu.uploadedTextureBytes += bytes
+      queuedWrite(receiver, bytes)
+      return result
     })
   })
 
@@ -374,6 +422,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         const gpu = (globalThis as any).__playsrcMemoryProfile.gpu
         gpu.peakBufferBytes = gpu.bufferBytes
         gpu.peakTextureBytes = gpu.textureBytes
+        gpu.peakStagingBytes = gpu.stagingBytes
+        gpu.peakQueuedWriteBytes = gpu.queuedWriteBytes
+        gpu.peakPendingSubmissions = gpu.pendingSubmissions
         return performance.now()
       })
       const started = performance.now()
@@ -459,6 +510,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         const evidence = (globalThis as any).__playsrcProfile?.geometryEvidence
         return evidence?.revision === revision && evidence.target === identity && evidence.finalReady === true
       }, { revision, identity }, { timeout: 30_000 })
+      const firstPlayableMilliseconds = performance.now() - started
       const capture = await page.locator("canvas.world-canvas").screenshot()
       const image = decodeScreenshot(capture)
       let visible = 0
@@ -485,6 +537,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
            mountedFontFaces: document.fonts.size,
           assets: (globalThis as any).__playsrcProfile.memoryAssets,
           geometry: (globalThis as any).__playsrcProfile.geometryEvidence,
+          owners: ((globalThis as any).__playsrcProfile.mapResidency ?? []).filter((entry: any) => entry.at >= started),
         }
       }, browserStarted)
       const admitted = new Set(observed.geometry.visibility.drawSurfaces)
@@ -547,6 +600,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       maps.push({
         target: identity,
         readyMilliseconds: Number(readyMilliseconds.toFixed(3)),
+        firstPlayableMilliseconds,
+        owners: observed.owners,
+        compileAllocatorPhases: ["inputs", "bsp-parsed", "canonical-collision-pvs", "materials", "presentation", "runtime-models", "canonical-serialized", "collision-decals", "game-session", "allocator-high-water", "bsp-released", "static-models-released"]
+          .map((phase, index) => ({ phase, liveBytes: observed.load?.client?.wasmCompileOwnerBytes?.[index] ?? null })),
         generation: observed.generation,
         playerClass: observed.playerClass,
         bots,
@@ -587,6 +644,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           mainHeapBeforeBackingBytes: before.backingStorageSize,
           mainHeapReadyBytes: heap.usedSize,
           mainHeapReadyBackingBytes: heap.backingStorageSize,
+          mainHeapPeakBytes: Math.max(before.usedSize, heap.usedSize, ...own.map((entry) => entry.js?.usedSize ?? 0)),
+          mainBackingPeakBytes: Math.max(before.backingStorageSize ?? 0, heap.backingStorageSize ?? 0, ...own.map((entry) => entry.js?.backingStorageSize ?? 0)),
           wasmLinearBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.wasmLinearBytes ?? 0))),
           wasmAllocatorLiveBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.allocatorLiveBytes ?? 0))),
           wasmAllocatorHighWaterBytes: Math.max(0, ...observed.worker.map((record: any) => Number(record.memory?.allocatorHighWaterBytes ?? 0))),
@@ -681,6 +740,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       headed: true,
       startupMovie: "skipped",
       requestedActiveSeconds: sampleSeconds,
+      totalWallMilliseconds: performance.now() - wallStarted,
+      memoryAttribution: "OS resident/private pages are per process; phase-aligned owner ranges, allocator totals, mapped GPU bytes and outstanding queue writes are separate logical counters, not additive private-page estimates",
       platform: process.platform,
       architecture: process.arch,
       gpu: system.gpu ?? null,
