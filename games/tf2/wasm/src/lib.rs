@@ -540,6 +540,7 @@ struct Slot {
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
+    visibility_candidates: Option<playsrc_visibility::CandidateSet>,
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
     environment: Option<RuntimeEnvironment>,
@@ -1411,6 +1412,8 @@ unsafe fn compile_map(
             model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
+            visibility_candidates: playsrc_visibility::CandidateSet::compile(&visibility, 0, &[])
+                .ok(),
             visibility: Some(visibility),
             area_state: Some(area_state),
             visibility_output: Vec::new(),
@@ -1453,6 +1456,7 @@ unsafe fn compile_map(
             viewmodel_bob: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
+            visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
             environment: None,
@@ -3475,19 +3479,17 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     if slot.generation != generation {
         return 0;
     }
-    let (Some(world), Some(area), Some(environment)) = (
+    let (Some(world), Some(candidates), Some(area), Some(environment)) = (
         slot.visibility.as_ref(),
+        slot.visibility_candidates.as_ref(),
         slot.area_state.as_ref(),
         slot.environment.as_ref(),
     ) else {
         return 0;
     };
-    let Ok(candidates) = playsrc_visibility::CandidateSet::compile(world, 0, &[]) else {
-        return 0;
-    };
     let Ok(view) = world.view(
         area,
-        &candidates,
+        candidates,
         &playsrc_visibility::ViewQuery {
             origins: vec![visibility_position],
             bypass_pvs: false,
@@ -4300,6 +4302,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.viewmodel_bob = BTreeMap::new();
     slot.model_output = Vec::new();
     slot.visibility = None;
+    slot.visibility_candidates = None;
     slot.area_state = None;
     slot.visibility_output = Vec::new();
     slot.environment = None;

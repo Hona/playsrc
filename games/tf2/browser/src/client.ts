@@ -22,7 +22,7 @@ type QueuedModels = {
   id: number
   generation: number
   batch: ArrayBuffer
-  visibility?: { id: number; queuedAt: number; view: VisibilityView }
+  visibility?: { id: number; queuedAt: number; views: readonly VisibilityView[] }
 }
 
 export type WorkerLike = Readonly<{
@@ -586,24 +586,48 @@ export class Tf2WorkerClient {
   }
 
   async visibility(generation: number, input: VisibilityView): Promise<VisibilityResult> {
+    return (await this.visibilityViews(generation, [input]))[0]!
+  }
+
+  async visibilityViews(generation: number, inputs: readonly VisibilityView[]): Promise<readonly VisibilityResult[]> {
+    if (inputs.length < 1 || inputs.length > 2) throw new Tf2WorkerError("BoundExceeded")
+    const unique: VisibilityView[] = []
+    const indexes = inputs.map(input => {
+      const match = unique.findIndex(view => view.position.every((value, index) => Object.is(value, input.position[index]))
+        && (view.visibilityPosition ?? view.position).every((value, index) => Object.is(value, (input.visibilityPosition ?? input.position)[index]))
+        && Object.is(view.areaFilter, input.areaFilter)
+        && Object.is(view.yawDegrees, input.yawDegrees) && Object.is(view.pitchDegrees, input.pitchDegrees)
+        && Object.is(view.verticalFovDegrees, input.verticalFovDegrees) && Object.is(view.aspectRatio, input.aspectRatio)
+        && Object.is(view.near, input.near) && Object.is(view.far, input.far)
+        && Object.is(view.presentationTimeSeconds, input.presentationTimeSeconds))
+      if (match !== -1) return match
+      unique.push(input)
+      return unique.length - 1
+    })
     let requested: Promise<WorkerResponse>
     const queued = this.#queuedModels
     if (queued && queued.generation === generation && !queued.visibility) {
       const companion = this.#reserve()
-      queued.visibility = { id: companion.id, queuedAt: queuedAt(), view: input }
+      queued.visibility = { id: companion.id, queuedAt: queuedAt(), views: unique }
       requested = companion.response
       this.#flushModels()
     } else {
-      requested = this.#request({ kind: "visibility", generation, view: input })
+      requested = this.#request({ kind: "visibility", generation, views: unique })
     }
     const response = await requested
     if (
       response.kind !== "visibility" ||
       response.generation !== generation ||
-      !(response.output instanceof ArrayBuffer)
+      !Array.isArray(response.outputs) || response.outputs.length !== unique.length ||
+      response.outputs.some(output => !(output instanceof ArrayBuffer))
     )
       throw new Tf2WorkerError("WorkerFailed")
-    const bytes = new Uint8Array(response.output), view = new DataView(response.output), decoder=new TextDecoder("utf-8",{fatal:true})
+    const results = response.outputs.map(output => this.#decodeVisibility(output))
+    return Object.freeze(indexes.map(index => results[index]!))
+  }
+
+  #decodeVisibility(output: ArrayBuffer): VisibilityResult {
+    const bytes = new Uint8Array(output), view = new DataView(output), decoder=new TextDecoder("utf-8",{fatal:true})
     if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 6)
       throw new Tf2WorkerError("WorkerFailed")
     let at=76
@@ -611,7 +635,7 @@ export class Tf2WorkerClient {
     const indices = (count: number): Uint32Array => {
       require(count * Uint32Array.BYTES_PER_ELEMENT)
       if (LITTLE_ENDIAN && at % Uint32Array.BYTES_PER_ELEMENT === 0) {
-        const values = new Uint32Array(response.output, at, count)
+        const values = new Uint32Array(output, at, count)
         at += count * Uint32Array.BYTES_PER_ELEMENT
         return values
       }

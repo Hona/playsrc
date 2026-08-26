@@ -223,20 +223,20 @@ class PipelineWorker implements WorkerLike {
         const output = new Uint8Array([0x50, 0x4d, 0x50, 0x4f]).buffer
         this.#respond({ id: request.id, kind: "models", generation: request.generation, output, timings: TIMINGS }, [output])
         if (request.visibility) {
-          const visibility = visibilityOutput(this.animatedWorldMaterial)
+          const outputs = request.visibility.views.map(() => visibilityOutput(this.animatedWorldMaterial))
           this.#respond({
             id: request.visibility.id,
             kind: "visibility",
             generation: request.generation,
-            output: visibility,
+            outputs,
             timings: TIMINGS,
-          }, [visibility])
+          }, outputs)
         }
         return
       }
       case "visibility": {
-        const output = visibilityOutput(this.animatedWorldMaterial)
-        this.#respond({ id: request.id, kind: "visibility", generation: request.generation, output, timings: TIMINGS }, [output])
+        const outputs = request.views.map(() => visibilityOutput(this.animatedWorldMaterial))
+        this.#respond({ id: request.id, kind: "visibility", generation: request.generation, outputs, timings: TIMINGS }, outputs)
         return
       }
       case "particles": {
@@ -422,7 +422,7 @@ describe("TF2 Worker transport ownership", () => {
     const visibility = client.visibility(2, VIEW).then((value) => { order.push("visibility"); return value })
     const [posed, visible] = await Promise.all([models, visibility])
     expect(worker.requests.map((request) => request.kind)).toEqual(["models"])
-    expect(worker.requests[0]).toMatchObject({ visibility: { view: VIEW } })
+    expect(worker.requests[0]).toMatchObject({ visibility: { views: [VIEW] } })
     expect(batch.byteLength).toBe(0)
     expect(posed).toEqual(Uint8Array.from([0x50, 0x4d, 0x50, 0x4f]))
     expect([...visible.surfaces]).toEqual([4, 9])
@@ -453,6 +453,44 @@ describe("TF2 Worker transport ownership", () => {
       0, 0, 1, 0,
       0, 0, 0, 1,
     ])
+    await client.shutdown()
+  })
+
+  test("publishes distinct authored main and sky views atomically in one model companion", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const sky = { ...VIEW, position: [8, 9, 10] as const, visibilityPosition: [1, 2, 3] as const, areaFilter: 7 }
+    const models = client.models(2, new Uint8Array(12))
+    const views = client.visibilityViews(2, [VIEW, sky])
+    const [, results] = await Promise.all([models, views])
+    expect(worker.requests).toHaveLength(1)
+    expect(worker.requests[0]).toMatchObject({ kind: "models", visibility: { views: [VIEW, sky] } })
+    expect(results).toHaveLength(2)
+    expect(results[0]).not.toBe(results[1])
+    await client.shutdown()
+  })
+
+  test("deduplicates only exactly equivalent multi-view identities", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    const equivalent = { ...VIEW, position: [...VIEW.position] as [number, number, number] }
+    const [first, second] = await client.visibilityViews(2, [VIEW, equivalent])
+    expect(first).toBe(second)
+    expect(worker.requests[0]).toMatchObject({ kind: "visibility", views: [VIEW] })
+    await client.visibilityViews(2, [VIEW, { ...VIEW, presentationTimeSeconds: VIEW.presentationTimeSeconds + 1 }])
+    expect(worker.requests[1]).toMatchObject({ views: [VIEW, { presentationTimeSeconds: VIEW.presentationTimeSeconds + 1 }] })
+    await expect(client.visibilityViews(2, [])).rejects.toMatchObject({ code: "BoundExceeded" })
+    await expect(client.visibilityViews(2, [VIEW, VIEW, VIEW])).rejects.toMatchObject({ code: "BoundExceeded" })
+    await client.shutdown()
+  })
+
+  test("rejects malformed multi-view publication without exposing a partial result", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    worker.failure = { kind: "failure", code: "TransitionFailed", detail: 203 }
+    const client = new Tf2WorkerClient(worker, new MemoryCache())
+    await expect(client.visibilityViews(2, [VIEW, { ...VIEW, areaFilter: 7 }]))
+      .rejects.toMatchObject({ code: "TransitionFailed", detail: 203 })
+    worker.failure = undefined
     await client.shutdown()
   })
 

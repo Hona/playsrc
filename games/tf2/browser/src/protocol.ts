@@ -55,9 +55,9 @@ export type WorkerRequest = WorkerEnvelope & (
       kind: "models"
       generation: number
       batch: ArrayBuffer
-      visibility?: Readonly<{ id: number; queuedAt: number; view: VisibilityView }>
+      visibility?: Readonly<{ id: number; queuedAt: number; views: readonly VisibilityView[] }>
     }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; view: VisibilityView }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; views: readonly VisibilityView[] }>
   | Readonly<{
       id: number
       kind: "observe"
@@ -150,7 +150,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "position-set"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; outputs: readonly ArrayBuffer[]; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number; reason?: string }>
