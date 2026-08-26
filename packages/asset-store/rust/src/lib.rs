@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Mutex;
 
-use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
+use flate2::{Compression, write::DeflateEncoder};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -150,7 +150,7 @@ pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, GraphError> {
 fn valid_logical_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= MAX_LOGICAL_PATH_BYTES
-        && path == path.to_ascii_lowercase()
+        && !path.bytes().any(|byte| byte.is_ascii_uppercase())
         && !path.starts_with('/')
         && !path.ends_with('/')
         && !path.contains('\\')
@@ -332,15 +332,23 @@ fn u64_at(bytes: &[u8], offset: &mut usize) -> Result<usize, GraphError> {
 
 struct VerifiedChunk<'encoded> {
     bytes: Cow<'encoded, [u8]>,
-    entries: Vec<(String, usize, usize)>,
+    entries: Vec<(usize, usize)>,
 }
 
 fn verified_chunk<'encoded>(
     descriptor: &ChunkDescriptor,
     encoded: &'encoded [u8],
 ) -> Result<VerifiedChunk<'encoded>, GraphError> {
+    verify_chunk(descriptor, encoded, false)
+}
+
+fn verify_chunk<'encoded>(
+    descriptor: &ChunkDescriptor,
+    encoded: &'encoded [u8],
+    authenticated_encoded: bool,
+) -> Result<VerifiedChunk<'encoded>, GraphError> {
     if encoded.len().to_string() != descriptor.encoded_byte_length
-        || hex_hash(encoded) != descriptor.encoded_sha256
+        || (!authenticated_encoded && hex_hash(encoded) != descriptor.encoded_sha256)
     {
         return Err(GraphError::IntegrityFailure);
     }
@@ -354,15 +362,31 @@ fn verified_chunk<'encoded>(
     let decoded = match descriptor.codec {
         Codec::Identity => Cow::Borrowed(encoded),
         Codec::Deflate => {
-            let mut output = Vec::with_capacity(expected_decoded);
-            DeflateDecoder::new(encoded)
-                .take((MAX_CHUNK_BYTES + 1) as u64)
-                .read_to_end(&mut output)
-                .map_err(|_| GraphError::MalformedChunk)?;
+            let mut output = vec![0; expected_decoded];
+            let (decoded, result) = zlib_rs::decompress_slice(
+                &mut output,
+                encoded,
+                zlib_rs::InflateConfig { window_bits: -15 },
+            );
+            if result == zlib_rs::ReturnCode::BufError || decoded.len() != expected_decoded {
+                return Err(GraphError::IntegrityFailure);
+            }
+            if result != zlib_rs::ReturnCode::Ok {
+                return Err(GraphError::MalformedChunk);
+            }
             Cow::Owned(output)
         }
     };
-    if decoded.len() != expected_decoded || hex_hash(&decoded) != descriptor.decoded_sha256 {
+    if decoded.len() != expected_decoded
+        || match descriptor.codec {
+            // Identity chunks have already authenticated these exact bytes above. Their
+            // decoded identity must therefore equal the verified encoded identity.
+            Codec::Identity => descriptor.decoded_sha256 != descriptor.encoded_sha256,
+            Codec::Deflate => {
+                !authenticated_encoded && hex_hash(&decoded) != descriptor.decoded_sha256
+            }
+        }
+    {
         return Err(GraphError::IntegrityFailure);
     }
     if decoded.len() < CHUNK_HEADER_BYTES || &decoded[..4] != b"PSCH" {
@@ -377,7 +401,7 @@ fn verified_chunk<'encoded>(
         return Err(GraphError::BoundExceeded);
     }
     let mut records = Vec::with_capacity(count);
-    let mut prior = None::<String>;
+    let mut prior = None::<&str>;
     for expected in &descriptor.entries {
         let path_length = u32_at(&decoded, &mut cursor)?;
         if path_length == 0 || path_length > MAX_LOGICAL_PATH_BYTES {
@@ -391,15 +415,12 @@ fn verified_chunk<'encoded>(
                 .get(cursor..path_end)
                 .ok_or(GraphError::MalformedChunk)?,
         )
-        .map_err(|_| GraphError::MalformedIdentity)?
-        .to_owned();
+        .map_err(|_| GraphError::MalformedIdentity)?;
         cursor = path_end;
-        if !valid_logical_path(&logical_path)
-            || prior.as_ref().is_some_and(|value| value >= &logical_path)
-        {
+        if !valid_logical_path(&logical_path) || prior.is_some_and(|value| value >= logical_path) {
             return Err(GraphError::MalformedIdentity);
         }
-        prior = Some(logical_path.clone());
+        prior = Some(logical_path);
         let entry_offset = u64_at(&decoded, &mut cursor)?;
         let entry_length = u64_at(&decoded, &mut cursor)?;
         let hash_end = cursor.checked_add(32).ok_or(GraphError::MalformedChunk)?;
@@ -419,18 +440,17 @@ fn verified_chunk<'encoded>(
             return Err(GraphError::IntegrityFailure);
         }
         records.push((
-            logical_path,
             entry_offset,
             entry_length,
             <[u8; 32]>::try_from(entry_hash).map_err(|_| GraphError::MalformedChunk)?,
         ));
     }
-    if records.first().is_none_or(|record| record.1 != cursor) {
+    if records.first().is_none_or(|record| record.0 != cursor) {
         return Err(GraphError::MalformedChunk);
     }
     let mut entries = Vec::with_capacity(count);
     let mut next_offset = cursor;
-    for (logical_path, entry_offset, entry_length, expected_hash) in records {
+    for (entry_offset, entry_length, expected_hash) in records {
         if entry_offset != next_offset {
             return Err(GraphError::MalformedChunk);
         }
@@ -443,7 +463,7 @@ fn verified_chunk<'encoded>(
         if hash(bytes) != expected_hash {
             return Err(GraphError::IntegrityFailure);
         }
-        entries.push((logical_path, entry_offset, entry_length));
+        entries.push((entry_offset, entry_length));
         next_offset = end;
     }
     if next_offset != decoded.len() {
@@ -463,8 +483,9 @@ pub fn decode(
     Ok(verified
         .entries
         .into_iter()
-        .map(|(logical_path, offset, length)| DecodedEntry {
-            logical_path,
+        .enumerate()
+        .map(|(index, (offset, length))| DecodedEntry {
+            logical_path: descriptor.entries[index].logical_path.clone(),
             bytes: verified.bytes[offset..offset + length].to_vec(),
         })
         .collect())
@@ -584,6 +605,17 @@ pub fn encode_resource_set(entries: &[DecodedEntry]) -> Result<Vec<u8>, GraphErr
 }
 
 pub fn decode_to_resource_set(batch: &[u8]) -> Result<Vec<u8>, GraphError> {
+    decode_resource_set(batch, false)
+}
+
+/// Decode chunks whose descriptors and encoded bytes have already been authenticated
+/// together against the selected immutable resource-graph root. Every decoded header,
+/// path, range, entry digest, and payload remains independently verified.
+pub fn decode_authenticated_resource_set(batch: &[u8]) -> Result<Vec<u8>, GraphError> {
+    decode_resource_set(batch, true)
+}
+
+fn decode_resource_set(batch: &[u8], authenticated_encoded: bool) -> Result<Vec<u8>, GraphError> {
     let chunks = batch_chunks(batch)?;
     let entry_count = chunks.iter().try_fold(0usize, |count, (descriptor, _)| {
         count
@@ -643,11 +675,11 @@ pub fn decode_to_resource_set(batch: &[u8]) -> Result<Vec<u8>, GraphError> {
         .par_iter()
         .enumerate()
         .map(|(chunk, (descriptor, encoded))| {
-            let verified = verified_chunk(descriptor, encoded)?;
+            let verified = verify_chunk(descriptor, encoded, authenticated_encoded)?;
             let mut destination = destination
                 .lock()
                 .map_err(|_| GraphError::IntegrityFailure)?;
-            for (entry, (_, source, length)) in verified.entries.iter().enumerate() {
+            for (entry, (source, length)) in verified.entries.iter().enumerate() {
                 let (offset, expected) = destinations[chunk][entry];
                 if *length != expected {
                     return Err(GraphError::IntegrityFailure);
@@ -858,6 +890,86 @@ mod tests {
     }
 
     #[test]
+    fn identity_chunks_reuse_only_the_exact_authenticated_encoded_digest() {
+        let mut state = 0x9e37_79b9_u32;
+        let bytes = (0..16_384)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect::<Vec<_>>();
+        let chunk = pack(vec![resource("materials/noise.vtf", "gameplay", bytes)])
+            .unwrap()
+            .remove(0);
+        assert_eq!(chunk.descriptor.codec, Codec::Identity);
+        assert_eq!(
+            chunk.descriptor.encoded_sha256,
+            chunk.descriptor.decoded_sha256
+        );
+        assert!(decode(&chunk.descriptor, &chunk.encoded).is_ok());
+
+        let mut descriptor = chunk.descriptor.clone();
+        descriptor.decoded_sha256.replace_range(..1, "f");
+        if descriptor.decoded_sha256 == chunk.descriptor.decoded_sha256 {
+            descriptor.decoded_sha256.replace_range(..1, "0");
+        }
+        assert_eq!(
+            decode(&descriptor, &chunk.encoded),
+            Err(GraphError::IntegrityFailure)
+        );
+    }
+
+    #[test]
+    fn bounded_raw_deflate_preserves_exact_bytes_and_rejects_corrupt_identities() {
+        let chunk = pack(vec![resource(
+            "materials/compressed.vtf",
+            "gameplay",
+            (0..65_536).map(|index| (index % 251) as u8).collect(),
+        )])
+        .unwrap()
+        .remove(0);
+        assert_eq!(chunk.descriptor.codec, Codec::Deflate);
+
+        let mut legacy = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::DeflateDecoder::new(chunk.encoded.as_slice()),
+            &mut legacy,
+        )
+        .unwrap();
+        let verified = verified_chunk(&chunk.descriptor, &chunk.encoded).unwrap();
+        assert_eq!(verified.bytes.as_ref(), legacy.as_slice());
+
+        let mut descriptor = chunk.descriptor.clone();
+        descriptor.decoded_byte_length = (legacy.len() - 1).to_string();
+        assert_eq!(
+            decode(&descriptor, &chunk.encoded),
+            Err(GraphError::IntegrityFailure)
+        );
+
+        let mut descriptor = chunk.descriptor.clone();
+        descriptor.entries[0].sha256.replace_range(..1, "f");
+        if descriptor.entries[0].sha256 == chunk.descriptor.entries[0].sha256 {
+            descriptor.entries[0].sha256.replace_range(..1, "0");
+        }
+        assert_eq!(
+            decode(&descriptor, &chunk.encoded),
+            Err(GraphError::IntegrityFailure)
+        );
+
+        let mut truncated = chunk.encoded.clone();
+        truncated.truncate(truncated.len() / 2);
+        let mut descriptor = chunk.descriptor.clone();
+        descriptor.encoded_byte_length = truncated.len().to_string();
+        descriptor.encoded_sha256 = hex_hash(&truncated);
+        assert!(matches!(
+            decode(&descriptor, &truncated),
+            Err(GraphError::MalformedChunk | GraphError::IntegrityFailure)
+        ));
+    }
+
+    #[test]
     fn batch_decodes_to_one_sorted_resource_set() {
         let chunks = pack(vec![
             resource("materials/b.vmt", "gameplay", vec![2; 8_192]),
@@ -893,6 +1005,10 @@ mod tests {
             decode_to_resource_set(&batch).unwrap(),
             encode_resource_set(&decode_batch(&batch).unwrap()).unwrap(),
         );
+        assert_eq!(
+            decode_authenticated_resource_set(&batch).unwrap(),
+            decode_to_resource_set(&batch).unwrap(),
+        );
 
         let mut damaged = batch.clone();
         *damaged.last_mut().unwrap() ^= 1;
@@ -900,6 +1016,10 @@ mod tests {
             decode_to_resource_set(&damaged),
             Err(GraphError::IntegrityFailure)
         );
+        assert!(matches!(
+            decode_authenticated_resource_set(&damaged),
+            Err(GraphError::MalformedChunk | GraphError::IntegrityFailure)
+        ));
     }
 
     #[test]
