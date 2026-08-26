@@ -3,16 +3,17 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { type LocalConfig, repositoryRoot } from "./config"
 import { fileFingerprint } from "./file-fingerprint"
-import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
+import type { Tf2ContentBuildContract } from "@playsrc/game-tf2-browser/content-build"
 
 export async function configuredProfileIdentity(config: LocalConfig, target: string): Promise<string> {
+  const content = JSON.parse(await readFile(path.join(repositoryRoot, "games/tf2/content-build.json"), "utf8")) as Tf2ContentBuildContract
   const hash = createHash("sha256").update(JSON.stringify(config)).update(target)
   const inputs = [
-    ["gameinfo.txt", TF2_CONTENT_BUILD.gameinfoSha256],
-    ["tf2_misc_dir.vpk", TF2_CONTENT_BUILD.archiveIndexes.tf2Misc],
-    ["tf2_textures_dir.vpk", TF2_CONTENT_BUILD.archiveIndexes.tf2Textures],
-    ["tf2_sound_misc_dir.vpk", TF2_CONTENT_BUILD.archiveIndexes.tf2SoundMisc],
-    ["tf2_sound_vo_english_dir.vpk", TF2_CONTENT_BUILD.archiveIndexes.tf2SoundVoEnglish],
+    ["gameinfo.txt", content.gameinfoSha256],
+    ["tf2_misc_dir.vpk", content.archiveIndexes.tf2Misc],
+    ["tf2_textures_dir.vpk", content.archiveIndexes.tf2Textures],
+    ["tf2_sound_misc_dir.vpk", content.archiveIndexes.tf2SoundMisc],
+    ["tf2_sound_vo_english_dir.vpk", content.archiveIndexes.tf2SoundVoEnglish],
   ] as const
   for (const [name, expected] of inputs) {
     const digest = await fileFingerprint(path.join(config.tf2Dir, name))

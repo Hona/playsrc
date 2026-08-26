@@ -11,6 +11,7 @@ import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
 import { prepareProfileBrowser, browserLease, browserLaunchIdentity, acquireBrowserRetirementLock, profileNodeExecutable } from "../src/profile-browser"
 import { ProfilePhases } from "../profile/profile-phases"
+import { repositoryRoot } from "../src/config"
 
 const directories: string[] = []
 
@@ -54,6 +55,18 @@ describe("bounded headed profile orchestration", () => {
     expect(Array.isArray(config.webServer)).toBe(false)
     expect((config.webServer as { reuseExistingServer: boolean; timeout: number }).reuseExistingServer).toBe(true)
     expect((config.webServer as { timeout: number }).timeout).toBe(175_000)
+  })
+
+  test("the supported Node runner can load the actual scenario without opening a browser", async () => {
+    const child = Bun.spawn([profileNodeExecutable(), path.join(repositoryRoot, "node_modules/@playwright/test/cli.js"), "test", "--config=playwright.profile.config.ts", "--list"], {
+      cwd: repositoryRoot,
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("PROFILE_") && !name.startsWith("PLAYSRC_PROFILE_"))), PROFILE_SCENARIOS: "upward-training-bots" },
+      stdout: "pipe", stderr: "pipe",
+    })
+    const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(errors).toBe("")
+    expect(code).toBe(0)
+    expect(output).toContain("upward-training-bots.profile.ts")
   })
 
   test("profiles the exact production origin without starting or substituting a development server", () => {
