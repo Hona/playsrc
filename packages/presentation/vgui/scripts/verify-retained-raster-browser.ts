@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { chromium } from "@playwright/test"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
-import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "../../../../tools/playsrc/src/profile-runner"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "../../../../tools/playsrc/src/profile-lock"
 import { decodeScreenshot } from "../../../../tools/playsrc/profile/screenshot-pixels"
 
 const config = await loadLocalConfig()
