@@ -1,6 +1,6 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
 import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
-import type { Camera, Effect } from "@playsrc/rendering"
+import type { Camera, Effect, ModelLightingInput, ModelLocalLight } from "@playsrc/rendering"
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
@@ -372,6 +372,11 @@ export type ModelPoseRequest = Readonly<{
   lod: number
   bodygroups: readonly number[]
   itemBodygroups?: readonly number[]
+  lighting?: Readonly<{
+    origin: Vector3
+    angles: Vector3
+    cameraPosition: Vector3
+  }>
 }>
 export type PosedPrimitive = Readonly<{
   primitive: number
@@ -401,6 +406,7 @@ export type PosedModel = Readonly<{
   events: readonly Readonly<{ index: number; cycle: number; event: number; eventType: number; options: Uint8Array; name: string }>[]
   primitives: readonly PosedPrimitive[]
   attachments: readonly PosedAttachment[]
+  lighting: ModelLightingInput | null
   viewmodel:null|Readonly<{transform:Readonly<{origin:Vector3;angles:Vector3}>;projection:Readonly<{unscaledHorizontalFov4By3:number;horizontalFov:number;aspectRatio:number;near:number;far:number}>;depthRange:readonly[number,number];restoredDepthRange:readonly[number,number];passRestored:boolean;depthRestored:boolean;itemTranslucent:boolean;phase:"draw"|"primary-fire"|"reload-start"|"reload-insert-or-loop"|"reload-finish"|"idle";drawDisposition:"draw"|"suppressed-success"|"suppressed";suppression:number|null;reflected:boolean;frontFace:"clockwise"|"counter-clockwise";cullFace:"back";restoredCullMode:"counter-clockwise"|"clockwise";handBodygroups:readonly number[];itemBodygroups:readonly number[];itemBodygroupMutations:readonly Readonly<{event:number;bodygroup:number;value:number;name:string}>[]}>
 }>
 
@@ -411,14 +417,14 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = UTF8_ENCODER.encode(request.model)
     const item = UTF8_ENCODER.encode(request.itemModel ?? "")
     const activity = UTF8_ENCODER.encode(request.activity)
-    length += 108 + model.length + item.length + activity.length +
+    length += 148 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     return { request, model, item, activity }
   })
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 6, true)
+  view.setUint32(4, 7, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -472,6 +478,17 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     for (const value of request.bodygroups) { view.setUint32(at, value, true); at += 4 }
     view.setUint32(at, request.itemBodygroups?.length ?? 0, true); at += 4
     for (const value of request.itemBodygroups ?? []) { view.setUint32(at, value, true); at += 4 }
+    const lighting = request.lighting
+    if (lighting && (!finite(lighting.origin) || !finite(lighting.angles) || !finite(lighting.cameraPosition))) {
+      throw new ProjectilePresentationError("MalformedFact", "model lighting request")
+    }
+    bytes[at] = Number(lighting !== undefined)
+    at += 4
+    for (const value of [...(lighting?.origin ?? [0, 0, 0]), ...(lighting?.angles ?? [0, 0, 0]),
+      ...(lighting?.cameraPosition ?? [0, 0, 0])]) {
+      view.setFloat32(at, value, true)
+      at += 4
+    }
   }
   return bytes
 }
@@ -479,7 +496,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
 export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] {
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), decoder = new TextDecoder("utf-8", { fatal: true })
-  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 5) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (decoder.decode(bytes.subarray(0, 4)) !== "PMPO" || view.getUint32(4, true) !== 6) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -560,8 +577,45 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       const matrix = new Float32Array(12); for (let index = 0; index < 12; index++) matrix[index] = f32()
       return Object.freeze({ name, worldAligned: worldAligned === 1, matrix })
     }))
+    const hasLighting = u8(), localCount = u8(), ambientLight = u8(), lightingReserved = u8()
+    if (hasLighting > 1 || localCount > 4 || ambientLight > 1 || lightingReserved ||
+      (hasLighting === 0 && (localCount !== 0 || ambientLight !== 0))) {
+      throw new ProjectilePresentationError("MalformedFact", "model world lighting")
+    }
+    let lighting: ModelLightingInput | null = null
+    if (hasLighting) {
+      const lightingOrigin = vector([f32(), f32(), f32()])
+      const cameraPosition = vector([f32(), f32(), f32()])
+      const ambientCube = Object.freeze(Array.from({ length: 6 }, () => vector([f32(), f32(), f32()]))) as ModelLightingInput["ambientCube"]
+      const localLights = Object.freeze(Array.from({ length: localCount }, (): ModelLocalLight => {
+        const kind = u8()
+        if (kind > 2 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model local light")
+        return Object.freeze({
+          kind: (["point", "directional", "spot"] as const)[kind]!,
+          color: vector([f32(), f32(), f32()]),
+          position: vector([f32(), f32(), f32()]),
+          direction: vector([f32(), f32(), f32()]),
+          range: f32(),
+          falloff: f32(),
+          attenuation: vector([f32(), f32(), f32()]),
+          theta: f32(),
+          phi: f32(),
+        })
+      }))
+      const environment = text()
+      lighting = Object.freeze({
+        lightingOrigin,
+        ambientCube,
+        localLights,
+        cameraPosition,
+        localEnvironment: environment || null,
+        ambientLight: ambientLight === 1,
+        staticLightVertex: false,
+        staticLightTexel: false,
+      })
+    }
     if (attachmentMode === 1 && primitives.length !== 0) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments,viewmodel }))
+    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments, lighting, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)

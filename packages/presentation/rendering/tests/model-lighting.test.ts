@@ -13,6 +13,7 @@ import {
   type ModelLightingInput,
   type ModelLocalLight,
 } from "../src/model-lighting"
+import { sourceStaticVertexLighting } from "../src/source-model-lighting"
 
 const cube = [
   [1, 0, 0], [2, 0, 0], [0, 3, 0], [0, 4, 0], [0, 0, 5], [0, 0, 6],
@@ -65,6 +66,11 @@ describe("explicit Source model lighting", () => {
     expect(() => validateModelLightingInput(input([point, point, point, point, point]))).toThrow(/invalid/i)
     expect(() => validateModelLightingInput({ ...input(), localEnvironment: "Materials/Test.vtf" })).toThrow(/invalid/i)
     expect(() => evaluateLocalLight(point, [0, 0, 10], [0, 0, 1], false)).toThrow(/coincides/i)
+  })
+
+  test("decodes authored static vertex colors with Source overbright before shader gamma", () => {
+    expect(sourceStaticVertexLighting([0.5, 0.25, 0])).toEqual([1, 0.5 ** 2.2, 0])
+    expect(sourceStaticVertexLighting([1, 1, 1])).toEqual([2 ** 2.2, 2 ** 2.2, 2 ** 2.2])
   })
 })
 

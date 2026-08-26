@@ -230,8 +230,8 @@ export function evaluateLocalLight(
     if (light.kind === "spot") {
       const direction = normalized(light.direction, "spot-light direction")
       const cosine = dot(direction, [-lightDirection[0], -lightDirection[1], -lightDirection[2]])
-      const theta = Math.cos(light.theta)
-      const phi = Math.cos(light.phi)
+      const theta = Math.cos(light.theta * 0.5)
+      const phi = Math.cos(light.phi * 0.5)
       const reciprocalSpread = theta - phi > 1e-10 ? 1 / (theta - phi) : 1
       const prePower = Math.max(0.0001, (cosine - phi) * reciprocalSpread)
       attenuation *= saturate(prePower ** light.falloff)
