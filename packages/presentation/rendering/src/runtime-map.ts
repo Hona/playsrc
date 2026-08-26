@@ -302,14 +302,15 @@ class Reader {
 
   f32Array(length: number): Float32Array {
     const bytes = this.take(length * Float32Array.BYTES_PER_ELEMENT)
-    const result = LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
-      ? new Float32Array(bytes.buffer, bytes.byteOffset, length).slice()
-      : new Float32Array(length)
-    if (!(LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0)) {
-      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-      for (let index = 0; index < length; index += 1) result[index] = view.getFloat32(index * Float32Array.BYTES_PER_ELEMENT, true)
+    let result: Float32Array
+    if (LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+      result = new Float32Array(bytes.buffer, bytes.byteOffset, length)
+    } else {
+      result = new Float32Array(length)
+      if (LITTLE_ENDIAN) new Uint8Array(result.buffer).set(bytes)
+      else for (let index = 0; index < length; index += 1) result[index] = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(index * 4, true)
     }
-    for (let index = 0; index < length; index += 1) {
+    for (let index = 0; index < result.length; index += 1) {
       if (!Number.isFinite(result[index]!)) throw new RuntimeMapError("runtime map contains a non-finite scalar")
     }
     return result
@@ -318,11 +319,11 @@ class Reader {
   u32Array(length: number): Uint32Array {
     const bytes = this.take(length * Uint32Array.BYTES_PER_ELEMENT)
     if (LITTLE_ENDIAN && bytes.byteOffset % Uint32Array.BYTES_PER_ELEMENT === 0) {
-      return new Uint32Array(bytes.buffer, bytes.byteOffset, length).slice()
+      return new Uint32Array(bytes.buffer, bytes.byteOffset, length)
     }
     const result = new Uint32Array(length)
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    for (let index = 0; index < length; index += 1) result[index] = view.getUint32(index * Uint32Array.BYTES_PER_ELEMENT, true)
+    if (LITTLE_ENDIAN) new Uint8Array(result.buffer).set(bytes)
+    else for (let index = 0; index < length; index += 1) result[index] = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(index * 4, true)
     return result
   }
 
@@ -331,15 +332,76 @@ class Reader {
   }
 }
 
+class TypedAccumulator<T extends Float32Array | Uint32Array> {
+  #values: T
+  #length = 0
+
+  constructor(private readonly constructor_: { new (length: number): T }) {
+    this.#values = new constructor_(0)
+  }
+
+  get length(): number { return this.#length }
+
+  #reserve(count: number): number {
+    const offset = this.#length
+    const required = offset + count
+    if (required > this.#values.length) {
+      let capacity = Math.max(64, this.#values.length)
+      while (capacity < required) capacity = Math.max(capacity + 1, Math.ceil(capacity * 1.5))
+      const replacement = new this.constructor_(capacity)
+      replacement.set(this.#values.subarray(0, this.#length))
+      this.#values = replacement
+    }
+    this.#length = required
+    return offset
+  }
+
+  append(values: ArrayLike<number>): void {
+    const offset = this.#reserve(values.length)
+    this.#values.set(values, offset)
+  }
+
+  appendOffset(values: Uint32Array, offset: number): void {
+    const start = this.#reserve(values.length)
+    for (let index = 0; index < values.length; index += 1) this.#values[start + index] = values[index]! + offset
+  }
+
+  fill(value: number, count: number): void {
+    const offset = this.#reserve(count)
+    this.#values.fill(value, offset, offset + count)
+  }
+
+  set(index: number, value: number): void {
+    this.#values[index] = value
+  }
+
+  finish(): T {
+    return this.#values.subarray(0, this.#length) as T
+  }
+}
+
 type MutableBatch = {
-  positions: number[]
-  normals: number[]
-  uv: number[]
-  lightmapUv: number[]
-  displacementAlpha: number[]
-  vertexFaces: number[]
-  indices: number[]
-  faces: number[]
+  positions: TypedAccumulator<Float32Array>
+  normals: TypedAccumulator<Float32Array>
+  uv: TypedAccumulator<Float32Array>
+  lightmapUv: TypedAccumulator<Float32Array>
+  displacementAlpha: TypedAccumulator<Float32Array>
+  vertexFaces: TypedAccumulator<Uint32Array>
+  indices: TypedAccumulator<Uint32Array>
+  faces: TypedAccumulator<Uint32Array>
+}
+
+function createMutableBatch(): MutableBatch {
+  return {
+    positions: new TypedAccumulator(Float32Array),
+    normals: new TypedAccumulator(Float32Array),
+    uv: new TypedAccumulator(Float32Array),
+    lightmapUv: new TypedAccumulator(Float32Array),
+    displacementAlpha: new TypedAccumulator(Float32Array),
+    vertexFaces: new TypedAccumulator(Uint32Array),
+    indices: new TypedAccumulator(Uint32Array),
+    faces: new TypedAccumulator(Uint32Array),
+  }
 }
 
 type CommonSurface = Readonly<{
@@ -354,7 +416,7 @@ type LightmapRecord = {
   surface: CommonSurface
   batch: MutableBatch
   uvStart: number
-  uv: number[]
+  uv: Float32Array
 }
 
 function bounded(value: number, maximum: number, field: string): number {
@@ -891,10 +953,10 @@ function packLightmaps(records: readonly LightmapRecord[], gutter: number): Runt
   for (const record of records) {
     const placement = placements.get(record.surface.face)!
     for (let vertex = 0; vertex < record.uv.length / 2; vertex += 1) {
-      record.batch.lightmapUv[record.uvStart + vertex * 2] =
-        (placement.x + record.uv[vertex * 2]! + 0.5) / MAX_ATLAS_DIMENSION
-      record.batch.lightmapUv[record.uvStart + vertex * 2 + 1] =
-        (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / height
+      record.batch.lightmapUv.set(record.uvStart + vertex * 2,
+        (placement.x + record.uv[vertex * 2]! + 0.5) / MAX_ATLAS_DIMENSION)
+      record.batch.lightmapUv.set(record.uvStart + vertex * 2 + 1,
+        (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / height)
     }
   }
   return Object.freeze({ width: MAX_ATLAS_DIMENSION, height, gutter, placements })
@@ -1109,10 +1171,9 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     }
   }
 
-  const batches = Array.from({ length: materialCount }, (): MutableBatch => ({
-    positions: [], normals: [], uv: [], lightmapUv: [], displacementAlpha: [], vertexFaces: [], indices: [], faces: [],
-  }))
-  const brushTables=new Map<number,MutableBatch[]>(),brushCounts=new Map<number,number>()
+  const batches = new Map<number, MutableBatch>()
+  const brushTables = new Map<number, Map<number, MutableBatch>>()
+  const brushCounts = new Map<number, number>()
   const commonSurfaces: CommonSurface[] = []
   const lightmapRecords: LightmapRecord[] = []
   let totalVertices = 0
@@ -1175,19 +1236,24 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     const common = Object.freeze({ face, lightOffset, styles, lightmapWidth, lightmapHeight })
     commonSurfaces.push(common)
     if(draw===0)continue
-    let table=batches;if(model!==0){table=brushTables.get(model)??Array.from({length:materialCount},():MutableBatch=>({positions:[],normals:[],uv:[],lightmapUv:[],displacementAlpha:[],vertexFaces:[],indices:[],faces:[]}));brushTables.set(model,table)}
-    const batch=table[material]!
+    let table = batches
+    if (model !== 0) {
+      table = brushTables.get(model) ?? new Map<number, MutableBatch>()
+      brushTables.set(model, table)
+    }
+    const batch = table.get(material) ?? createMutableBatch()
+    table.set(material, batch)
     const base = batch.positions.length / 3
-    for (const value of positions) batch.positions.push(value)
-    for (const value of normals) batch.normals.push(value)
-    for (const value of uv) batch.uv.push(value)
+    batch.positions.append(positions)
+    batch.normals.append(normals)
+    batch.uv.append(uv)
     const uvStart = batch.lightmapUv.length
-    for (let value = 0; value < lightmapUv.length; value += 1) batch.lightmapUv.push(0)
-    for (const value of displacementAlpha) batch.displacementAlpha.push(value)
-    for (let vertex = 0; vertex < vertexCount; vertex += 1) batch.vertexFaces.push(face)
-    lightmapRecords.push({ surface: common, batch, uvStart, uv: [...lightmapUv] })
-    for (const value of indices) batch.indices.push(value + base)
-    for (let triangle = 0; triangle < triangleCount; triangle += 1) batch.faces.push(face)
+    batch.lightmapUv.fill(0, lightmapUv.length)
+    batch.displacementAlpha.append(displacementAlpha)
+    batch.vertexFaces.fill(face, vertexCount)
+    lightmapRecords.push({ surface: common, batch, uvStart, uv: lightmapUv })
+    batch.indices.appendOffset(indices, base)
+    batch.faces.fill(face, triangleCount)
     if(model===0)drawableSurfaces+=1;else brushCounts.set(model,(brushCounts.get(model)??0)+1)
   }
 
@@ -1253,17 +1319,26 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
   const lightingKinds = lighting.profile === "hdr"
     ? new Map(lighting.descriptor.surfaces.map((surface) => [surface.face, surface.kind === "unlit" ? 0 : surface.kind === "flat" ? 1 : surface.kind === "directional-normal" ? 2 : 3]))
     : new Map(commonSurfaces.map((surface) => [surface.face, surface.lightOffset < 0 ? 0 : 1]))
-  const freeze=(table:readonly MutableBatch[])=>table.flatMap((batch, material): RuntimeBatch[] => batch.indices.length === 0 ? [] : [Object.freeze({
-    material,
-    positions: new Float32Array(batch.positions),
-    normals: new Float32Array(batch.normals),
-    uv: new Float32Array(batch.uv),
-    lightmapUv: new Float32Array(batch.lightmapUv),
-    displacementAlpha: new Float32Array(batch.displacementAlpha),
-    lightmapKind: Float32Array.from(batch.vertexFaces, (face) => lightingKinds.get(face) ?? 0),
-    indices: new Uint32Array(batch.indices),
-    faces: new Uint32Array(batch.faces),
-  })]);const frozenBatches=freeze(batches);const brushModels=Object.freeze([...brushTables].sort(([a],[b])=>a-b).map(([index,table])=>Object.freeze({index,batches:Object.freeze(freeze(table)),drawableSurfaces:brushCounts.get(index)??0})))
+  const freeze = (table: ReadonlyMap<number, MutableBatch>): RuntimeBatch[] => [...table.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([material, batch]) => Object.freeze({
+      material,
+      positions: batch.positions.finish(),
+      normals: batch.normals.finish(),
+      uv: batch.uv.finish(),
+      lightmapUv: batch.lightmapUv.finish(),
+      displacementAlpha: batch.displacementAlpha.finish(),
+      lightmapKind: Float32Array.from(batch.vertexFaces.finish(), (face) => lightingKinds.get(face) ?? 0),
+      indices: batch.indices.finish(),
+      faces: batch.faces.finish(),
+    }))
+  const frozenBatches = freeze(batches)
+  const brushModels = Object.freeze([...brushTables].sort(([left], [right]) => left - right)
+    .map(([index, table]) => Object.freeze({
+      index,
+      batches: Object.freeze(freeze(table)),
+      drawableSurfaces: brushCounts.get(index) ?? 0,
+    })))
   const staticHdrStyles = lighting.profile === "hdr"
     && lighting.descriptor.surfaces.every((surface) => surface.styles.slice(0, surface.styleCount).every((style) => style === 0))
   const lightmap = lighting.profile === "ldr"

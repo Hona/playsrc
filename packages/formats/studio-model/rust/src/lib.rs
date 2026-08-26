@@ -1,8 +1,8 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt,
     ops::Range,
-    sync::Arc,
 };
 
 mod eye;
@@ -146,11 +146,11 @@ pub struct DependencyRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DependencyResponse {
+pub struct DependencyResponse<'a> {
     pub requester: String,
     pub role: DependencyRole,
     pub logical_path: String,
-    pub bytes: Option<Arc<[u8]>>,
+    pub bytes: Option<Cow<'a, [u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -679,9 +679,9 @@ struct VtxGroup {
     triangles: Vec<[u32; 3]>,
 }
 
-struct LoadContext<'a> {
+struct LoadContext<'a, 'source> {
     vtx_variant: VtxVariant,
-    responses: &'a [DependencyResponse],
+    responses: &'a [DependencyResponse<'source>],
     limits: Limits,
     included_models: usize,
     dependency_count: usize,
@@ -692,7 +692,7 @@ pub fn load(
     profile: Profile,
     vtx_variant: VtxVariant,
     mdl_bytes: &[u8],
-    responses: &[DependencyResponse],
+    responses: &[DependencyResponse<'_>],
     limits: Limits,
 ) -> Result<Load, Error> {
     let mut context = LoadContext {
@@ -711,12 +711,12 @@ pub fn load(
     )
 }
 
-fn load_with_chain<'a>(
+fn load_with_chain(
     identity: String,
     profile: Profile,
     mdl_bytes: &[u8],
     mut dependency_chain: Vec<String>,
-    context: &mut LoadContext<'a>,
+    context: &mut LoadContext<'_, '_>,
 ) -> Result<Load, Error> {
     let limits = context.limits;
     let responses = context.responses;
@@ -3531,7 +3531,7 @@ fn safe_canonical_path_byte(byte: u8) -> bool {
     safe_stored_path_byte(byte) && !byte.is_ascii_uppercase()
 }
 
-fn response_matches(response: &DependencyResponse, request: &DependencyRequest) -> bool {
+fn response_matches(response: &DependencyResponse<'_>, request: &DependencyRequest) -> bool {
     response.requester == request.requester
         && response.role == request.role
         && response.logical_path == request.logical_path
@@ -3880,12 +3880,15 @@ mod tests {
         bytes
     }
 
-    fn response(request: &DependencyRequest, bytes: Option<Vec<u8>>) -> DependencyResponse {
+    fn response(
+        request: &DependencyRequest,
+        bytes: Option<Vec<u8>>,
+    ) -> DependencyResponse<'static> {
         DependencyResponse {
             requester: request.requester.clone(),
             role: request.role,
             logical_path: request.logical_path.clone(),
-            bytes: bytes.map(Arc::from),
+            bytes: bytes.map(Cow::Owned),
         }
     }
 

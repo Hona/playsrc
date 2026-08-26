@@ -139,7 +139,7 @@ function snapshot(): ArrayBuffer {
 function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(68+state.length*2),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,1,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);data.set(state,56);const at=56+state.length;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);data.set(state,at+12);return output}
 
 class MemoryCache implements DerivedObjectCache {
-  async read(): Promise<Uint8Array | undefined> { return undefined }
+  async read(): Promise<undefined> { return undefined }
   async write(): Promise<string> { return "0".repeat(64) }
   async remove(): Promise<void> {}
   close(): void {}

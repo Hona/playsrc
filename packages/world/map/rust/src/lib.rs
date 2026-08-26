@@ -189,7 +189,7 @@ pub struct RuntimeModelOccurrence {
 }
 pub struct RuntimeAssembly<'a> {
     pub compiler_identity: &'a str,
-    pub configuration: &'a [u8],
+    pub configuration_sha256: [u8; 32],
     pub materials: &'a [RuntimeMaterial],
     pub profile_materials: &'a [RuntimeProfileMaterial],
     pub inputs: &'a [RuntimeInput],
@@ -606,7 +606,7 @@ pub fn assemble_prepared_runtime(
 ) -> Result<Runtime, Error> {
     let RuntimeAssembly {
         compiler_identity,
-        configuration,
+        configuration_sha256,
         materials: resolved_materials,
         profile_materials,
         inputs,
@@ -682,7 +682,6 @@ pub fn assemble_prepared_runtime(
     }) {
         return Err(error(ErrorCode::InvalidReference, None));
     }
-    let configuration_sha256 = Sha256::digest(configuration).into();
     let serialization = SerializationContext {
         map: &map,
         entities: &entities,

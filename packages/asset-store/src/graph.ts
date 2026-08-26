@@ -201,27 +201,24 @@ export function chunksForRole(graph: ResourceGraph, role: string): readonly Reso
 
 export type EncodedResourceChunk = Readonly<{ descriptor: ResourceChunkDescriptor; bytes: Uint8Array }>
 
-export function partitionResourceChunks(
-  chunks: readonly EncodedResourceChunk[],
+export function partitionResourceChunkDescriptors(
+  chunks: readonly ResourceChunkDescriptor[],
   maximumBytes = 128 * 1024 * 1024,
-): readonly (readonly EncodedResourceChunk[])[] {
+): readonly (readonly ResourceChunkDescriptor[])[] {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 12 || maximumBytes > 512 * 1024 * 1024) {
     throw new Error("resource section byte bound is invalid")
   }
   if (chunks.length < 1 || chunks.length > MAX_GRAPH_CHUNKS) throw new Error("resource batch chunk bound is exceeded")
   const encoder = new TextEncoder()
-  const sections: EncodedResourceChunk[][] = []
+  const sections: ResourceChunkDescriptor[][] = []
   const identities = new Set<string>()
-  let section: EncodedResourceChunk[] = []
+  let section: ResourceChunkDescriptor[] = []
   let encodedBytes = 12
   let decodedBytes = 12
   for (const chunk of chunks) {
-    if (identities.has(chunk.descriptor.encodedSha256)) continue
-    if (chunk.bytes.byteLength !== Number(chunk.descriptor.encodedByteLength)) {
-      throw new Error("resource section encoded byte length differs")
-    }
-    const encoded = 8 + encoder.encode(JSON.stringify(chunk.descriptor)).byteLength + chunk.bytes.byteLength
-    const decoded = chunk.descriptor.entries.reduce(
+    if (identities.has(chunk.encodedSha256)) continue
+    const encoded = 8 + encoder.encode(JSON.stringify(chunk)).byteLength + Number(chunk.encodedByteLength)
+    const decoded = chunk.entries.reduce(
       (total, entry) => total + 8 + encoder.encode(entry.logicalPath).byteLength + Number(entry.byteLength),
       0,
     )
@@ -229,18 +226,33 @@ export function partitionResourceChunks(
       throw new Error("resource chunk exceeds section byte bound")
     }
     if (section.length > 0 && (encodedBytes + encoded > maximumBytes || decodedBytes + decoded > maximumBytes)) {
-      sections.push(Object.freeze(section) as EncodedResourceChunk[])
+      sections.push(Object.freeze(section) as ResourceChunkDescriptor[])
       section = []
       encodedBytes = 12
       decodedBytes = 12
     }
     section.push(chunk)
-    identities.add(chunk.descriptor.encodedSha256)
+    identities.add(chunk.encodedSha256)
     encodedBytes += encoded
     decodedBytes += decoded
   }
-  if (section.length > 0) sections.push(Object.freeze(section) as EncodedResourceChunk[])
+  if (section.length > 0) sections.push(Object.freeze(section) as ResourceChunkDescriptor[])
   return Object.freeze(sections)
+}
+
+export function partitionResourceChunks(
+  chunks: readonly EncodedResourceChunk[],
+  maximumBytes = 128 * 1024 * 1024,
+): readonly (readonly EncodedResourceChunk[])[] {
+  const records = new Map<string, EncodedResourceChunk>()
+  for (const chunk of chunks) {
+    if (chunk.bytes.byteLength !== Number(chunk.descriptor.encodedByteLength)) {
+      throw new Error("resource section encoded byte length differs")
+    }
+    records.set(chunk.descriptor.encodedSha256, chunk)
+  }
+  return Object.freeze(partitionResourceChunkDescriptors(chunks.map((chunk) => chunk.descriptor), maximumBytes)
+    .map((section) => Object.freeze(section.map((descriptor) => records.get(descriptor.encodedSha256)!))))
 }
 
 export function encodeResourceBatch(chunks: readonly EncodedResourceChunk[]): Uint8Array {

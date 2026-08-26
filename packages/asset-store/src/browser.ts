@@ -40,6 +40,7 @@ export type DerivedRecord = Readonly<{
 }>
 
 export type DerivedCacheMetadata = Readonly<{ key: string; byteLength: number; storedAt: number }>
+export type VerifiedDerivedObject = Readonly<{ bytes: Uint8Array; sha256: string }>
 
 function sameDerivedRecordMetadata(left: DerivedRecord, right: DerivedRecord): boolean {
   return left.key === right.key
@@ -78,7 +79,7 @@ export function planDerivedCacheEviction(
 }
 
 export type DerivedObjectCache = Readonly<{
-  read(key: string): Promise<Uint8Array | undefined>
+  read(key: string): Promise<VerifiedDerivedObject | undefined>
   write(key: string, expectedSha256: string | null, bytes: Uint8Array): Promise<string>
   remove(key: string): Promise<void>
   close(): void
@@ -321,7 +322,7 @@ export async function openDerivedObjectCache(
     await done
   }
   const cache: DerivedObjectCache = {
-    async read(key: string): Promise<Uint8Array | undefined> {
+    async read(key: string): Promise<VerifiedDerivedObject | undefined> {
       if (!HASH.test(key)) throw new BrowserAssetError("MalformedIdentity", "derived key is not canonical")
       const [objects, , transaction] = stores("readonly")
       const done = transactionDone(transaction,"read transaction")
@@ -330,7 +331,7 @@ export async function openDerivedObjectCache(
       if (value === undefined) return undefined
       const bytes = await bounded(verifyDerivedRecord(value, key),"derived record verification")
       await refreshVerifiedRecency(value as DerivedRecord)
-      return bytes
+      return Object.freeze({ bytes, sha256: (value as DerivedRecord).sha256 })
     },
     async write(key: string, expectedSha256: string | null, bytes: Uint8Array): Promise<string> {
       if (!HASH.test(key) || (expectedSha256 !== null && !HASH.test(expectedSha256))) {
@@ -371,7 +372,7 @@ export async function openDerivedObjectCache(
         const failure=requestError??error
         if(failure instanceof BrowserAssetError&&failure.message.includes("timed out"))throw failure
         const existing = await cache.read(key)
-        if (!existing || await bounded(sha256(existing),"existing derived hash") !== actualSha256) throw failure
+        if (!existing || existing.sha256 !== actualSha256) throw failure
       }
       return actualSha256
     },

@@ -52,7 +52,7 @@ type Exports = Readonly<{
   playsrc_resource_length(): number
   playsrc_resource_take(): number
   playsrc_free(pointer: number, length: number): void
-  playsrc_compile_map(bsp: number, length: number, profile: number, config: number, configLength: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -424,22 +424,35 @@ export async function verifyTf2Wasm(
   dependencyBytes.set(new Uint8Array(exports.memory.buffer, resourcePointer, dependencyBytes.byteLength))
   exports.playsrc_free(resourcePointer, dependencyBytes.byteLength)
   require(bspBytes.byteLength === map.decoded.byteLength, "cached BSP byte length changed")
-  require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 768 * 1024 * 1024, "resource set byte length changed")
+  require(dependencyBytes.byteLength > 0 && dependencyBytes.byteLength <= 1024 * 1024 * 1024, "resource set byte length changed")
 
+  const resourceTable = (pointer: number, bytes: Uint8Array): Readonly<{ table: number; hash: number }> => {
+    const table = exports.playsrc_alloc(8) >>> 0
+    const view = new DataView(exports.memory.buffer, table, 8)
+    view.setUint32(0, pointer, true)
+    view.setUint32(4, bytes.byteLength, true)
+    const hash = exports.playsrc_alloc(32) >>> 0
+    new Uint8Array(exports.memory.buffer, hash, 32).set(new Bun.CryptoHasher("sha256").update(bytes).digest())
+    return Object.freeze({ table, hash })
+  }
 
   const compileProfile = (profile: 0 | 1) => {
     const source = exports.playsrc_alloc(bspBytes.byteLength) >>> 0
     new Uint8Array(exports.memory.buffer, source, bspBytes.byteLength).set(bspBytes)
     const configuration = exports.playsrc_alloc(dependencyBytes.byteLength) >>> 0
     new Uint8Array(exports.memory.buffer, configuration, dependencyBytes.byteLength).set(dependencyBytes)
+    const sections = resourceTable(configuration, dependencyBytes)
     const result = exports.playsrc_compile_map(
       source,
       bspBytes.byteLength,
       profile,
-      configuration,
-      dependencyBytes.byteLength,
+      sections.table,
+      1,
+      sections.hash,
     )
     exports.playsrc_free(source, bspBytes.byteLength)
+    exports.playsrc_free(sections.table, 8)
+    exports.playsrc_free(sections.hash, 32)
     exports.playsrc_free(configuration, dependencyBytes.byteLength)
     const error = exports.playsrc_result_error(result)
     require(error === 0, `TF2 WASM profile ${profile} compilation failed with error ${error}`)
@@ -465,14 +478,18 @@ export async function verifyTf2Wasm(
     new Uint8Array(exports.memory.buffer, source, sourceBytes.byteLength).set(sourceBytes)
     const configuration = exports.playsrc_alloc(configBytes.byteLength)
     new Uint8Array(exports.memory.buffer, configuration, configBytes.byteLength).set(configBytes)
+    const sections = resourceTable(configuration, configBytes)
     const result = exports.playsrc_compile_map(
       source,
       sourceBytes.byteLength,
       profile,
-      configuration,
-      configBytes.byteLength,
+      sections.table,
+      1,
+      sections.hash,
     )
     exports.playsrc_free(source, sourceBytes.byteLength)
+    exports.playsrc_free(sections.table, 8)
+    exports.playsrc_free(sections.hash, 32)
     exports.playsrc_free(configuration, configBytes.byteLength)
     const error = exports.playsrc_result_error(result)
     require(exports.playsrc_dispose(result) === 1, "failed compilation handle disposal failed")
@@ -586,14 +603,18 @@ export async function verifyTf2Wasm(
   new Uint8Array(exports.memory.buffer, bspPointer, bspBytes.byteLength).set(bspBytes)
   const dependencyPointer = exports.playsrc_alloc(dependencyBytes.byteLength)
   new Uint8Array(exports.memory.buffer, dependencyPointer, dependencyBytes.byteLength).set(dependencyBytes)
+  const dependencySections = resourceTable(dependencyPointer, dependencyBytes)
   const handle = exports.playsrc_compile_map(
     bspPointer,
     bspBytes.byteLength,
     0,
-    dependencyPointer,
-    dependencyBytes.byteLength,
+    dependencySections.table,
+    1,
+    dependencySections.hash,
   )
   exports.playsrc_free(bspPointer, bspBytes.byteLength)
+  exports.playsrc_free(dependencySections.table, 8)
+  exports.playsrc_free(dependencySections.hash, 32)
   exports.playsrc_free(dependencyPointer, dependencyBytes.byteLength)
   const error = exports.playsrc_result_error(handle)
   require(error === 0, `TF2 WASM map compilation failed with error ${error}`)

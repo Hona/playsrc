@@ -5,7 +5,6 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 const BUILD: &str = "24207079";
@@ -2161,7 +2160,7 @@ fn load(path: &str, files: &impl ExactFiles) -> Result<studio::Document, String>
                         requester: request.requester,
                         role: request.role,
                         logical_path: request.logical_path,
-                        bytes: bytes.map(Arc::from),
+                        bytes: bytes.map(std::borrow::Cow::Owned),
                     });
                 }
             }

@@ -21,14 +21,19 @@ export type WorkerRequest = WorkerEnvelope & (
       id: number
       kind: "decode-resources"
       chunks: readonly Readonly<{ descriptor: ArrayBuffer; bytes: ArrayBuffer }>[]
+      generation?: number
     }>
+  | Readonly<{ id: number; kind: "finalize-resources"; generation: number }>
+  | Readonly<{ id: number; kind: "retain-resources"; generation: number; section: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "release-resources"; generation: number }>
   | Readonly<{
       id: number
       kind: "load"
       generation: number
       profile: 0 | 1
       bsp: ArrayBuffer
-      configuration: readonly ArrayBuffer[]
+      configurationSha256: string
+      configurationBytes: number
       includeMap: boolean
       presentation?: ArrayBuffer
     }>
@@ -89,6 +94,9 @@ export type WorkerTransactionTimings = Readonly<{
 export type WorkerResponse =
   | Readonly<{ id: number; kind: "initialized" }>
   | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "resources-finalized"; generation: number; byteLength: number; sha256: string; sections: number }>
+  | Readonly<{ id: number; kind: "resources-retained"; generation: number }>
+  | Readonly<{ id: number; kind: "resources-released"; generation: number }>
   | Readonly<{
       id: number
       kind: "loaded"
@@ -125,6 +133,11 @@ export type WorkerResponse =
         presentationSerializationMilliseconds: number
         textureDecoderRequests: number
         textureMetadataInspections: number
+        modelCacheHits: number
+        modelCacheMisses: number
+        wasmLinearMemoryBytes: number
+        resourceSections: number
+        resourceBytes: number
         totalMilliseconds: number
       }>
     }>

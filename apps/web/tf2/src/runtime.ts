@@ -1,8 +1,8 @@
 import { fetchImmutableObject, openDerivedObjectCache, type DerivedObjectCache } from "@playsrc/asset-store/browser"
-import { chunksForRole, partitionResourceChunks, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
+import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
+import { Tf2WorkerClient, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -470,9 +470,8 @@ export class Tf2Application {
   #activeTarget?: BrowserTargetConfiguration
   #loadingTarget?: BrowserTargetConfiguration
   #resourceGraph?: ResourceGraph
-  #dependencies: readonly Uint8Array[] = Object.freeze([])
+  #dependencies?: ResourceConfiguration
   #dependencyEntries = new Map<string, Uint8Array>()
-  #sharedDependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
   #renderer?: Renderer
@@ -1099,40 +1098,46 @@ export class Tf2Application {
     }
   }
 
-  async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<readonly Uint8Array[]> {
+  async #resourceSet(roles: readonly string[], signal = this.#operation.signal): Promise<ResourceConfiguration | undefined> {
     if (!this.#configuration || !this.#resourceGraph) throw new Error("Resource graph is unavailable")
     return this.#decodeResourceSet(this.#resourceGraph, roles, this.#dependencyEntries, signal)
   }
 
-  async #decodeResourceSet(graph: ResourceGraph, roles: readonly string[], destination: Map<string, Uint8Array>, signal: AbortSignal): Promise<readonly Uint8Array[]> {
+  async #decodeResourceSet(graph: ResourceGraph, roles: readonly string[], destination: Map<string, Uint8Array>, signal: AbortSignal): Promise<ResourceConfiguration | undefined> {
     if (!this.#configuration) throw new Error("Browser configuration is unavailable")
     await this.#ensureResourceRuntime(signal)
     const chunks = new Map<string, ResourceChunkDescriptor>()
     for (const role of roles) for (const chunk of chunksForRole(graph, role)) chunks.set(chunk.encodedSha256, chunk)
-    const records = await Promise.all([...chunks.values()].map(async (chunk) => {
-      let bytes = await this.#cache!.read(chunk.encodedSha256)
-      if (!bytes) {
-        const object = resourceChunkObject(chunk)
-        bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch, (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
-        await this.#cache!.write(chunk.encodedSha256, chunk.encodedSha256, bytes)
-      } else {
-        this.#trackBootstrapObject(chunk.encodedSha256, bytes.byteLength, bytes.byteLength)
-      }
+    const groups = partitionResourceChunkDescriptors([...chunks.values()], 32 * 1024 * 1024)
+    const generation = roles.includes("gameplay") ? this.#generation + 1 : undefined
+    const sections: Uint8Array[] = []
+    const acquire = (group: readonly ResourceChunkDescriptor[]) => Promise.all(group.map(async (chunk) => {
+      const object = resourceChunkObject(chunk)
+      const bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch,
+        (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
       return Object.freeze({ descriptor: chunk, bytes })
     }))
-    const sections: Uint8Array[] = []
-    for (const chunks of partitionResourceChunks(records)) {
-      const section = await this.#client!.decodeResources(chunks)
-      for (const [logicalPath, bytes] of parseResourceSet(section)) {
-        const existing = destination.get(logicalPath)
-        if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
-          throw new Error(`Conflicting resource ${logicalPath}`)
+    let next = acquire(groups[0]!)
+    try {
+      for (let index = 0; index < groups.length; index += 1) {
+        const records = await next
+        if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
+        if (index + 1 < groups.length) next = acquire(groups[index + 1]!)
+        const section = await this.#client!.decodeResources(records, generation)
+        sections.push(section)
+        for (const [logicalPath, bytes] of parseResourceSet(section)) {
+          const existing = destination.get(logicalPath)
+          if (existing && (existing.byteLength !== bytes.byteLength || bytesToHex(sha256(existing)) !== bytesToHex(sha256(bytes)))) {
+            throw new Error(`Conflicting resource ${logicalPath}`)
+          }
+          destination.set(logicalPath, bytes)
         }
-        destination.set(logicalPath, bytes)
       }
-      sections.push(section)
+      return generation === undefined ? undefined : await this.#client!.finalizeResources(generation, sections)
+    } catch (error) {
+      if (generation !== undefined) await this.#client?.releaseResources(generation).catch(() => {})
+      throw error
     }
-    return Object.freeze(sections)
   }
 
   async #prepareStartupMedia(
@@ -1144,7 +1149,7 @@ export class Tf2Application {
     this.#verifiedDependency(descriptor.manifest.logicalPath, descriptor.manifest.byteLength, descriptor.manifest.sha256)
     const bytes = this.#verifiedDependency(descriptor.browserRepresentation.logicalPath, descriptor.browserRepresentation.byteLength, descriptor.browserRepresentation.sha256)
     const video = this.#startupVideo
-    const url = URL.createObjectURL(new Blob([bytes.slice()], { type: "video/webm" }))
+    const url = URL.createObjectURL(new Blob([bytes], { type: "video/webm" }))
     let destroyed = false
     let admitted = false
     const completed = () => events.completed()
@@ -1309,7 +1314,7 @@ export class Tf2Application {
     this.#sharedBlockers.clear()
     for (const blocker of this.#blockers) this.#sharedBlockers.add(blocker)
     this.#set({ menuPreparation: "ready" })
-    this.#sharedDependencyEntries = new Map(this.#dependencyEntries)
+    this.#dependencyEntries.clear()
     this.#initializeConsole()
     const currentSettings = this.#settings.snapshot().settings.current
     this.#bindingValues.clear()
@@ -1521,7 +1526,7 @@ export class Tf2Application {
           throw new Error("Target resource graph identity differs")
         }
         this.#resourceGraph = graph
-        this.#dependencyEntries = new Map(this.#sharedDependencyEntries)
+        this.#dependencyEntries = new Map()
         this.#activeTarget = target
         this.#mapIdentity = target.target
       }
@@ -1532,6 +1537,7 @@ export class Tf2Application {
         this.#resourceSet(["gameplay"], signal),
       ])
       this.#requireOperation(operation)
+      if (!resources) throw new Error("Gameplay resource configuration is unavailable")
       this.#dependencies = resources
       finishLoadPhase("fetch")
       this.#advanceLoading("building-resource-index")
@@ -1544,7 +1550,7 @@ export class Tf2Application {
         profile,
         this.#renderLevel,
         this.#configuration.wasm.sha256,
-        this.#dependencies,
+        this.#dependencies.sha256,
       )
       finishLoadPhase("derivedKey")
       this.#set({ detail: "Compiling direct map authority" })
@@ -2830,8 +2836,9 @@ export class Tf2Application {
       this.#requireOperation(operation)
       const graph = parseResourceGraphBytes(graphBytes)
       if (graph.target !== target.target || graph.contentBuild !== target.contentBuild) throw new Error("Target resource graph identity differs")
-      const entries = new Map(this.#sharedDependencyEntries)
+      const entries = new Map<string, Uint8Array>()
       const dependencies = await this.#decodeResourceSet(graph, ["gameplay"], entries, signal)
+      if (!dependencies) throw new Error("Gameplay resource configuration is unavailable")
       this.#requireOperation(operation)
       await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries }, operation)
       if (this.#operations.current(operation)) this.#loadingTarget = undefined
@@ -2930,11 +2937,11 @@ export class Tf2Application {
     bytes: Uint8Array,
     bspSha256: string,
     name: string,
-    candidate?: Readonly<{ target: BrowserTargetConfiguration; graph: ResourceGraph; dependencies: readonly Uint8Array[]; entries: Map<string, Uint8Array> }>,
+    candidate?: Readonly<{ target: BrowserTargetConfiguration; graph: ResourceGraph; dependencies: ResourceConfiguration; entries: Map<string, Uint8Array> }>,
     operation?: ApplicationOperation,
   ): Promise<void> {
     const replaceStarted=performance.now();let replacePhase=replaceStarted;const replaceTimings:Record<string,number>={};const finishReplacePhase=(phase:string)=>{const now=performance.now();replaceTimings[phase]=now-replacePhase;replacePhase=now}
-    if (!this.#client || !this.#renderer || !this.#loaded) throw new Error("Application is not ready")
+    if (!this.#client || !this.#renderer || !this.#loaded || !this.#dependencies) throw new Error("Application is not ready")
     this.#paused = true
     this.#neutral()
     this.#predictedEye.suspend()
@@ -2954,7 +2961,7 @@ export class Tf2Application {
       profile,
       this.#renderLevel,
       this.#configuration?.wasm.sha256 ?? "",
-      candidate?.dependencies ?? this.#dependencies,
+      (candidate?.dependencies ?? this.#dependencies).sha256,
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
@@ -4655,6 +4662,42 @@ export class Tf2Application {
     if(!profile)return
     profile.coverageSamples=this.#coverageSamples
     if(this.#artifacts){
+      const authored = new Map([
+        ...this.#artifacts.environment.authoredTextures,
+        ...this.#artifacts.authoredTextures,
+      ])
+      let planes = 0, planeBytes = 0, mipLevels = 0, frames = 0, compressed = 0, compressedBytes = 0
+      for (const texture of authored.values()) {
+        mipLevels += texture.mipCount
+        frames += texture.frameCount
+        if ([13, 14, 15, 20].includes(texture.sourceFormat ?? -1)) compressed += 1
+        for (const plane of texture.planes) {
+          planes += 1
+          planeBytes += plane.rgba.byteLength
+          if ([13, 14, 15, 20].includes(texture.sourceFormat ?? -1)) compressedBytes += plane.rgba.byteLength
+        }
+      }
+      profile.memoryAssets = Object.freeze({
+        generation: this.#generation,
+        target: this.#mapIdentity,
+        resourceSections: this.#dependencies?.sections.length ?? 0,
+        resourceBytes: this.#dependencies?.byteLength ?? 0,
+        presentationBytes: this.#loaded?.presentation.byteLength ?? 0,
+        mapBytes: this.#loaded?.payload.byteLength ?? 0,
+        modelCount: this.#artifacts.models.size,
+        modelOccurrences: this.#artifacts.modelOccurrences.length,
+        staticProps: this.#artifacts.staticProps.count,
+        textures: authored.size,
+        planes,
+        planeBytes,
+        mipLevels,
+        frames,
+        compressedTextures: compressed,
+        compressedPlaneBytes: compressedBytes,
+        directionalBytes: this.#artifacts.directionalTextures.reduce((total, texture) => total
+          + (texture.authored.planes.find((plane) => plane.mip === 0 && plane.frame === 0 && plane.face === 0 && plane.slice === 0)?.rgba.byteLength ?? 0), 0),
+        particleBytes: this.#artifacts.particleTextures.reduce((total, texture) => total + texture.rgba.byteLength, 0),
+      })
       profile.materialAnimation=Object.freeze({
         generation:this.#generation,
         target:this.#mapIdentity,
@@ -4800,6 +4843,8 @@ export class Tf2Application {
     this.#teamSelection?.dispatch({ kind: "hide" })
     await this.#teamSelectionRenderTask
     this.#loaded = undefined
+    this.#dependencies = undefined
+    this.#dependencyEntries.clear()
     this.#snapshot = undefined
     this.#artifacts = undefined
     this.#viewmodels = undefined

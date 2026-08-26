@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
+import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, partitionResourceChunkDescriptors, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
 
 const hash = (value: string) => value.repeat(64)
 const chunk = Object.freeze({
@@ -54,6 +54,18 @@ describe("resource graph", () => {
     expect(() => parseResourceGraph({ ...graph, chunks: [chunk, second] })).toThrow()
     expect(() => parseResourceGraph({ ...graph, chunks: [chunk, { ...chunk, encodedSha256: hash("4") }] })).toThrow()
     expect(() => parseResourceGraphBytes(new TextEncoder().encode(JSON.stringify(graph, null, 2)))).toThrow("resource graph is not canonical JSON")
+  })
+
+  test("partitions exact graph chunks into bounded transferable decoded sections", () => {
+    const descriptors = Array.from({ length: 3 }, (_, index) => ({
+      ...chunk,
+      encodedSha256: hash(String(index + 1)),
+      entries: [{ ...chunk.entries[0]!, logicalPath: `materials/${index}.vmt`, byteLength: "260" }],
+    }))
+    expect(partitionResourceChunkDescriptors([descriptors[0]!, descriptors[0]!, descriptors[1]!, descriptors[2]!], 650))
+      .toEqual([[descriptors[0]], [descriptors[1]], [descriptors[2]]])
+    expect(() => partitionResourceChunkDescriptors([descriptors[0]!], 300)).toThrow("resource chunk exceeds")
+    expect(() => partitionResourceChunkDescriptors([], 32)).toThrow("resource batch chunk bound")
   })
 
   test("bounds a synthetic 100-map catalog selection without loading every map", () => {

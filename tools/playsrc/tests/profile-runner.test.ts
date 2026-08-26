@@ -16,6 +16,7 @@ afterEach(async () => {
 describe("bounded headed profile orchestration", () => {
   test("accepts exact profile identities and rejects hidden browser execution", () => {
     expect(parseHeadedProfile(["gameplay", "--headed"])).toEqual({ profile: "gameplay", fresh: false, playwright: [] })
+    expect(parseHeadedProfile(["map-memory", "--headed"])).toEqual({ profile: "map-memory", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["2fort-bots", "--fresh", "--output", "/evidence"])).toEqual({
       profile: "2fort-bots",
       fresh: true,
