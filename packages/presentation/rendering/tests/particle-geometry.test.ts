@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { writeParticleQuad, type ParticleQuad, type ParticleQuadCamera } from "../src/particle-geometry"
+import { createParticleQuadWriter, writeParticleQuad, type ParticleQuad, type ParticleQuadCamera } from "../src/particle-geometry"
 
 function previousQuad(item: ParticleQuad, camera: ParticleQuadCamera): Float32Array {
   const positions = new Float32Array(12)
@@ -44,6 +44,18 @@ describe("allocation-free Source Particle geometry", () => {
     const actual = new Float32Array(12)
     writeParticleQuad(base, camera, actual, 0)
     expect(actual).toEqual(previousQuad(base, camera))
+  })
+
+  test("retains exact binary32 sprite, world-oriented, and trail vertices across one shared camera basis", () => {
+    const items = [base, { ...base, orientationType: 2 }, { ...base, primitive: "trail" as const }]
+    const retained = new Float32Array(items.length * 12)
+    const independent = new Float32Array(items.length * 12)
+    const write = createParticleQuadWriter(camera)
+    items.forEach((item, index) => {
+      write(item, retained, index * 12)
+      writeParticleQuad(item, camera, independent, index * 12)
+    })
+    expect(retained).toEqual(independent)
   })
 
   test("keeps authored orientation-two Medi Gun sprites on the Source world XY plane", () => {

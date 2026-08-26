@@ -16,11 +16,38 @@ export type ParticleQuadCamera = Readonly<{
   pitchDegrees: number
 }>
 
+export type ParticleQuadWriter = (item: ParticleQuad, positions: Float32Array, offset: number) => void
+
+export function createParticleQuadWriter(camera: ParticleQuadCamera): ParticleQuadWriter {
+  const yaw = camera.yawDegrees * DEGREES_TO_RADIANS
+  const pitch = camera.pitchDegrees * DEGREES_TO_RADIANS
+  const rightX = Math.sin(yaw)
+  const rightY = -Math.cos(yaw)
+  const upX = Math.sin(pitch) * Math.cos(yaw)
+  const upY = Math.sin(pitch) * Math.sin(yaw)
+  const upZ = Math.cos(pitch)
+  return (item, positions, offset) => writeQuad(item, camera, positions, offset, rightX, rightY, upX, upY, upZ)
+}
+
 export function writeParticleQuad(
   item: ParticleQuad,
   camera: ParticleQuadCamera,
   positions: Float32Array,
   offset: number,
+): void {
+  createParticleQuadWriter(camera)(item, positions, offset)
+}
+
+function writeQuad(
+  item: ParticleQuad,
+  camera: ParticleQuadCamera,
+  positions: Float32Array,
+  offset: number,
+  cameraRightX: number,
+  cameraRightY: number,
+  cameraUpX: number,
+  cameraUpY: number,
+  cameraUpZ: number,
 ): void {
   const centerX = item.position[0]
   const centerY = item.position[1]
@@ -62,14 +89,12 @@ export function writeParticleQuad(
     return
   }
 
-  const yaw = camera.yawDegrees * DEGREES_TO_RADIANS
-  const pitch = camera.pitchDegrees * DEGREES_TO_RADIANS
   const worldOriented = item.orientationType === 2
-  const rightX = worldOriented ? 1 : Math.sin(yaw)
-  const rightY = worldOriented ? 0 : -Math.cos(yaw)
-  const upX = worldOriented ? 0 : Math.sin(pitch) * Math.cos(yaw)
-  const upY = worldOriented ? -1 : Math.sin(pitch) * Math.sin(yaw)
-  const upZ = worldOriented ? 0 : Math.cos(pitch)
+  const rightX = worldOriented ? 1 : cameraRightX
+  const rightY = worldOriented ? 0 : cameraRightY
+  const upX = worldOriented ? 0 : cameraUpX
+  const upY = worldOriented ? -1 : cameraUpY
+  const upZ = worldOriented ? 0 : cameraUpZ
   const cosine = Math.cos(item.rollRadians)
   const sine = Math.sin(item.rollRadians)
   const rolledRightX = rightX * cosine + upX * sine
