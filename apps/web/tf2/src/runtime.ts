@@ -3323,12 +3323,12 @@ export class Tf2Application {
         :material===89?["Glass.BulletImpact",4] as const
         :material===70||material===66?["Flesh.BulletImpact",5] as const
         :["Default.BulletImpact",3] as const
-      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*16384n+BigInt(ordinal)+8192n)&0xffff_ffffn),definition:selection[0],source:Object.freeze({kind:"world",identity:0,ownerIdentity:null,origin:position,radius:0,sourceClass:"world"}),samples:Object.freeze({volume:0.7,pitch:100,wave:this.#presentationRandom!.nextInteger(0,selection[1]-1),soundLevel:75})}))
+      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*16384n+BigInt(ordinal)+8192n)&0xffff_ffffn),definition:selection[0],source:Object.freeze({kind:"world",identity:0,ownerIdentity:null,origin:position,radius:0,sourceClass:"world"}),samples:Object.freeze({volume:0,pitch:0,wave:this.#presentationRandom!.nextInteger(0,selection[1]-1),soundLevel:0})}))
     }
     for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
       const event=snapshot.events[ordinal]!
       if(event.kind!==17||event.auxiliary!==1||event.values[2]!==1||event.subject===1)continue
-      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*8192n+BigInt(ordinal)+4096n)&0xffff_ffffn),definition:"TFPlayer.CritHit",source:Object.freeze({kind:"entity",identity:event.subject,ownerIdentity:event.subject,origin:snapshot.bots.find(bot=>bot.identity===event.subject)?.position??camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:1,pitch:100,wave:this.#presentationRandom!.nextInteger(0,4),soundLevel:85})}))
+      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*8192n+BigInt(ordinal)+4096n)&0xffff_ffffn),definition:"TFPlayer.CritHit",source:Object.freeze({kind:"entity",identity:event.subject,ownerIdentity:event.subject,origin:snapshot.bots.find(bot=>bot.identity===event.subject)?.position??camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:0,pitch:0,wave:this.#presentationRandom!.nextInteger(0,4),soundLevel:0})}))
     }
     const preferences=this.#settings?.snapshot().settings.current
     if(preferences&&(preferences.tf_dingalingaling===true||preferences.tf_dingalingaling_lasthit===true)){
@@ -3342,7 +3342,7 @@ export class Tf2Application {
         const minimum=Number(preferences[last?"tf_dingaling_lasthit_pitchmindmg":"tf_dingaling_pitchmindmg"]??100)
         const maximum=Number(preferences[last?"tf_dingaling_lasthit_pitchmaxdmg":"tf_dingaling_pitchmaxdmg"]??100)
         const fraction=Math.max(0,Math.min(1,(event.values[0]-10)/140))
-        incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*4096n+BigInt(ordinal))&0xffff_ffffn),definition:last?"Player.KillSoundDefaultDing":"Player.HitSoundDefaultDing",source:Object.freeze({kind:"entity",identity:1,ownerIdentity:1,origin:camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:Number(preferences[last?"tf_dingaling_lasthit_volume":"tf_dingaling_volume"]??0.75),pitch:minimum+(maximum-minimum)*fraction,wave:0,soundLevel:0})}))
+        incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*4096n+BigInt(ordinal))&0xffff_ffffn),definition:last?"Player.KillSoundDefaultDing":"Player.HitSoundDefaultDing",source:Object.freeze({kind:"entity",identity:1,ownerIdentity:1,origin:camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:0,pitch:0,wave:0,soundLevel:0}),overrides:Object.freeze({volume:Number(preferences[last?"tf_dingaling_lasthit_volume":"tf_dingaling_volume"]??0.75),pitch:minimum+(maximum-minimum)*fraction})}))
       }
     }
     if (!this.#audioRunning || !this.#audio || !this.#audioWorld || !this.#audioRegistry || !this.#audioContext || !this.#artifacts) {
@@ -3376,6 +3376,7 @@ export class Tf2Application {
         source: request.source,
         listener,
         samples: request.samples,
+        overrides: request.overrides,
         resourceDurationSeconds: buffer.duration,
         resourceLoopStartSeconds: null,
         resourceChannels: buffer.numberOfChannels,

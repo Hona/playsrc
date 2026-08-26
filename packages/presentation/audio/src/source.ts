@@ -85,6 +85,7 @@ export type StartSound = Readonly<{
   source: SoundSource
   listener: Listener
   samples: SoundSamples
+  overrides?: Readonly<{ volume?: number; pitch?: number }>
   resourceDurationSeconds: number
   resourceLoopStartSeconds: number | null
   resourceChannels: number
@@ -334,10 +335,10 @@ export class SourceAudioWorld {
       throw error("MissingResource", "selected sound wave resource is unavailable")
     }
     const resource = selected.resource
-    const volume = sampleInterval(definition.volume, event.samples.volume)
-    const pitch = Math.trunc(sampleInterval(definition.pitch, event.samples.pitch))
+    const volume = event.overrides?.volume ?? sampleInterval(definition.volume, event.samples.volume)
+    const pitch = Math.trunc(event.overrides?.pitch ?? sampleInterval(definition.pitch, event.samples.pitch))
     const soundLevel = Math.trunc(sampleInterval(definition.soundLevel, event.samples.soundLevel))
-    if (pitch <= 0 || pitch > 255 || soundLevel < 0 || soundLevel > 511) {
+    if (!Number.isFinite(volume)||volume<0||volume>1||pitch <= 0 || pitch > 255 || soundLevel < 0 || soundLevel > 511) {
       throw error("MalformedEvent", "resolved pitch or sound level is outside its encoded range")
     }
     const channel = selected.decorators.includes("stream") ? 5 : definition.channel
