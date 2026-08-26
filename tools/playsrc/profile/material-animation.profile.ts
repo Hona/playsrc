@@ -4,6 +4,7 @@ import path from "node:path"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { loadLocalConfig } from "../src/config"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 
 const WATER_MATERIAL = "materials/maps/pl_upward/water/water_hydro_cheap_dx80_7168_-2048_128.vmt"
 const SAMPLE_MILLISECONDS = profileSampleSeconds() * 1_000
@@ -25,10 +26,7 @@ test("profiles exact authored LightmappedGeneric water animation through the hea
   await command.fill("map pl_upward")
   const loadStarted = await page.evaluate(() => performance.now())
   await page.keyboard.press("Enter")
-  await page.waitForFunction(() => {
-    const root = document.querySelector<HTMLElement>("main")
-    return root?.dataset.phase === "Failed" || (root?.dataset.phase === "Ready" && root.dataset.gameui === "in-game")
-  }, undefined, { timeout: 600_000, polling: 25 })
+  await settleTf2Gameplay(page)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
   const loadFinished = await page.evaluate(() => performance.now())
   const load = JSON.parse((await page.locator("main").getAttribute("data-load-performance")) ?? "null") as {

@@ -4,6 +4,7 @@ import path from "node:path"
 import type { Page } from "@playwright/test"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 
 const PORTRAIT = "[data-vgui-runtime='tf2-hud'] [data-vgui-name='PlayerStatusClassImage']"
 const MODEL = "[data-vgui-runtime='tf2-hud'] [data-vgui-name='classmodelpanel']"
@@ -122,11 +123,11 @@ test("profile TF2 authored class HUD pixels, mode changes, and frame cadence", a
   const command = page.locator("[aria-label='Console command']")
   await command.fill("map jump_beef")
   await page.keyboard.press("Enter")
+  await settleTf2Gameplay(page)
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
-    return main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game"
-      && !!main.dataset.hudPresentationProbe && main.dataset.hudPresentationProbe !== "unavailable"
-  }, undefined, { timeout: 600_000 })
+    return !!main?.dataset.hudPresentationProbe && main.dataset.hudPresentationProbe !== "unavailable"
+  }, undefined, { timeout: 30_000 })
   await page.keyboard.press("Backquote")
   const soldier = await capturePortrait(page, "../hud/class_soldierred", path.join(directory, "soldier-red.png"))
 

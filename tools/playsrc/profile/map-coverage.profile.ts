@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { settleTf2Gameplay } from "./team-selection-evidence"
 
 test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser }, testInfo) => {
   const sampleSeconds = profileSampleSeconds()
@@ -44,7 +45,7 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   await expect(entry).toBeVisible()
   await entry.fill(`map ${secondary}`)
   await page.keyboard.press("Enter")
-  await page.waitForFunction(() => { const main = document.querySelector<HTMLElement>("main"); return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed" }, undefined, { timeout: 600_000, polling: 50 })
+  await settleTf2Gameplay(page)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
   await entry.fill("noclip")
   await page.keyboard.press("Enter")
@@ -75,7 +76,7 @@ test("profile bounded dual-map noclip gameplay coverage", async ({ page, browser
   await entry.fill(`map ${target}`)
   await page.keyboard.press("Enter")
   await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.phase === "Replacing", undefined, { timeout: 30_000, polling: 10 })
-  await page.waitForFunction(() => { const main = document.querySelector<HTMLElement>("main"); return (main?.dataset.phase === "Ready" && main.dataset.gameui === "in-game") || main?.dataset.phase === "Failed" }, undefined, { timeout: 600_000, polling: 50 })
+  await settleTf2Gameplay(page)
   expect(await page.locator("main").getAttribute("data-phase")).toBe("Ready")
   await entry.fill("noclip")
   await page.keyboard.press("Enter")
