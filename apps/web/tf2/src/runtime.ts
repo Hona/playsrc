@@ -3790,7 +3790,7 @@ export class Tf2Application {
       this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "VGUI frame failed" })
       return
     }
-    if (!this.#paused && this.#snapshot && (this.#showFps !== 0 || this.#showPos !== 0)) this.#updateDiagnostics(time)
+    if (!this.#paused && this.#snapshot && this.#showFps === 0 && this.#showPos !== 0) this.#updateDiagnostics(time)
     if (this.#paused || !this.#client || !this.#renderer) return
     if (!this.#snapshot) {
       if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
@@ -4044,6 +4044,7 @@ export class Tf2Application {
         displayPreparedRevision:prepared.revision,
       })
     else if(changedCamera(this.#view.camera,camera))this.#set({camera})
+    if(this.#showFps!==0)this.#updateDiagnostics(performance.now())
   }
 
   #updateDiagnostics(realTimeMilliseconds: number): void {
