@@ -5,6 +5,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     active: false,
     currentPass: null as any,
     completedFrames: [] as any[],
+    compositorFrames: [] as any[],
     animationCallbacks: [] as number[],
     worker: [] as any[],
     longTasks: [] as any[],
@@ -17,7 +18,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     },
     counters: {
       displayOffers: 0, displayRejectedBusy: 0, displayRejectedUnchanged: 0, displayStarted: 0,
-      displayAbandoned: 0, completedFrames: 0, submissions: 0, commandBuffers: 0,
+      displayAbandoned: 0, displayCoalesced: 0, displayRecovered: 0, completedFrames: 0, submissions: 0, commandBuffers: 0,
       renderPasses: 0, buffers: 0, textures: 0, shaderModules: 0, renderPipelines: 0,
       computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteBytes: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
@@ -89,15 +90,16 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
         if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string") {
-          const record = {
-            kind: message.kind, started: host.performance.now(),
-            bytes: message.command?.byteLength ?? message.batch?.byteLength ?? message.bsp?.byteLength ?? 0,
-            pending: state.counters.workerPending,
+          const started=host.performance.now()
+          const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean)=>{
+            const record={kind,started,bytes,pending:state.counters.workerPending,sharedDispatch}
+            this.records.set(id,record)
+            state.worker.push(record)
+            state.counters.workerPending+=1
+            state.counters.workerMaximumPending=Math.max(state.counters.workerMaximumPending,state.counters.workerPending)
           }
-          this.records.set(message.id, record)
-          state.worker.push(record)
-          state.counters.workerPending += 1
-          state.counters.workerMaximumPending = Math.max(state.counters.workerMaximumPending, state.counters.workerPending)
+          register(message.id,message.kind,message.command?.byteLength??message.batch?.byteLength??message.bsp?.byteLength??0,false)
+          if(message.kind==="models"&&Number.isSafeInteger(message.visibility?.id))register(message.visibility.id,"visibility",0,true)
         }
         super.postMessage(message, transferOrOptions as any)
       }

@@ -13,6 +13,20 @@ const SOURCE_WORLD_NEAR = 7
 const SOURCE_MAP_EXTENT = 16_384
 const SOURCE_MAP_EXTENT_DIAGONAL = Math.fround(1.73205080757)
 const UTF8_ENCODER = new TextEncoder()
+const POSE_TEXT_CACHE_LIMIT = 256
+const POSE_TEXT_CACHE_MAXIMUM_BYTES = 1024
+const POSE_TEXT_CACHE = new Map<string, Uint8Array>()
+
+function poseText(value: string): Uint8Array {
+  const cached = POSE_TEXT_CACHE.get(value)
+  if (cached !== undefined) return cached
+  const encoded = UTF8_ENCODER.encode(value)
+  if (encoded.byteLength <= POSE_TEXT_CACHE_MAXIMUM_BYTES) {
+    if (POSE_TEXT_CACHE.size === POSE_TEXT_CACHE_LIMIT) POSE_TEXT_CACHE.delete(POSE_TEXT_CACHE.keys().next().value!)
+    POSE_TEXT_CACHE.set(value, encoded)
+  }
+  return encoded
+}
 
 export type PresentationDiagnostic = Readonly<{
   code: "MissingProjectileModel" | "MissingParticleContext" | "MissingAudioContext"
@@ -416,9 +430,9 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   if (requests.length > 128) throw new ProjectilePresentationError("BoundExceeded", "model pose request count")
   let length = 12
   const encodedRequests = requests.map((request) => {
-    const model = UTF8_ENCODER.encode(request.model)
-    const item = UTF8_ENCODER.encode(request.itemModel ?? "")
-    const activity = UTF8_ENCODER.encode(request.activity)
+    const model = poseText(request.model)
+    const item = poseText(request.itemModel ?? "")
+    const activity = poseText(request.activity)
     length += 160 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     return { request, model, item, activity }
@@ -454,14 +468,24 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     at += 4
-    for (const value of [...(request.fireView?.eyePosition ?? [0, 0, 0]),
-      ...(request.fireView?.viewOrientation ?? [0, 0, 0, 0])]) {
-      view.setFloat32(at, value, true); at += 4
-    }
+    const firePosition=request.fireView?.eyePosition,fireOrientation=request.fireView?.viewOrientation
+    view.setFloat32(at,firePosition?.[0]??0,true)
+    view.setFloat32(at+4,firePosition?.[1]??0,true)
+    view.setFloat32(at+8,firePosition?.[2]??0,true)
+    view.setFloat32(at+12,fireOrientation?.[0]??0,true)
+    view.setFloat32(at+16,fireOrientation?.[1]??0,true)
+    view.setFloat32(at+20,fireOrientation?.[2]??0,true)
+    view.setFloat32(at+24,fireOrientation?.[3]??0,true)
+    at+=28
     text(model); text(item); text(activity)
     view.setFloat32(at, request.previousElapsedSeconds, true); at += 4
     view.setFloat32(at, request.elapsedSeconds, true); at += 4
-    for(const value of [request.currentTimeSeconds,request.frameTimeSeconds,request.planarSpeed,request.screenAspectRatio,request.worldFarPlane]){view.setFloat32(at,value,true);at+=4}
+    view.setFloat32(at,request.currentTimeSeconds,true)
+    view.setFloat32(at+4,request.frameTimeSeconds,true)
+    view.setFloat32(at+8,request.planarSpeed,true)
+    view.setFloat32(at+12,request.screenAspectRatio,true)
+    view.setFloat32(at+16,request.worldFarPlane,true)
+    at+=20
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
     bytes[at] = request.itemModel === undefined && !request.handsOnlyViewmodel ? 0xff : (request.phase ?? 0xff)
@@ -486,11 +510,19 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     }
     bytes[at] = Number(lighting !== undefined)
     at += 4
-    for (const value of [...(lighting?.origin ?? [0, 0, 0]), ...(lighting?.angles ?? [0, 0, 0]),
-      ...(lighting?.cameraPosition ?? [0, 0, 0]), ...(lighting?.cameraAngles ?? [0, 0, 0])]) {
-      view.setFloat32(at, value, true)
-      at += 4
-    }
+    view.setFloat32(at,lighting?.origin[0]??0,true)
+    view.setFloat32(at+4,lighting?.origin[1]??0,true)
+    view.setFloat32(at+8,lighting?.origin[2]??0,true)
+    view.setFloat32(at+12,lighting?.angles[0]??0,true)
+    view.setFloat32(at+16,lighting?.angles[1]??0,true)
+    view.setFloat32(at+20,lighting?.angles[2]??0,true)
+    view.setFloat32(at+24,lighting?.cameraPosition[0]??0,true)
+    view.setFloat32(at+28,lighting?.cameraPosition[1]??0,true)
+    view.setFloat32(at+32,lighting?.cameraPosition[2]??0,true)
+    view.setFloat32(at+36,lighting?.cameraAngles[0]??0,true)
+    view.setFloat32(at+40,lighting?.cameraAngles[1]??0,true)
+    view.setFloat32(at+44,lighting?.cameraAngles[2]??0,true)
+    at+=48
   }
   return bytes
 }
