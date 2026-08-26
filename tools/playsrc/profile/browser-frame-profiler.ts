@@ -219,14 +219,31 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
   const consoleError = host.console?.error
   if (typeof consoleError === "function") {
     host.console.error = function(this: any, ...arguments_: any[]) {
-      if (state.active) {
+      {
         const message = arguments_.map((value) => value instanceof Error ? value.message : String(value)).join(" ")
-        if (/GPUValidationError|Destroyed texture/i.test(message)) {
+        if (/GPUValidationError|Destroyed texture|device lost|context lost/i.test(message)) {
           state.counters.validationErrors += 1
           state.losses.push({ kind: "validation", at: host.performance.now(), message })
         }
       }
       return consoleError.apply(this, arguments_)
+    }
+  }
+
+  // Losses are lifecycle evidence, not sample counters: startup and map
+  // replacement failures must not disappear while active sampling is off.
+  const requestDevice = host.GPUAdapter?.prototype?.requestDevice
+  if (typeof requestDevice === "function") {
+    host.GPUAdapter.prototype.requestDevice = async function(this: any, ...arguments_: any[]) {
+      const device = await requestDevice.apply(this, arguments_)
+      device.addEventListener("uncapturederror", (event: any) => {
+        state.counters.validationErrors += 1
+        state.losses.push({ kind: "resource", at: host.performance.now(), message: String(event.error?.message ?? event.error) })
+      })
+      void device.lost.then((info: any) => {
+        if (info.reason !== "destroyed") state.losses.push({ kind: "device", at: host.performance.now(), message: info.message, reason: info.reason })
+      })
+      return device
     }
   }
 
@@ -240,11 +257,14 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     })
     host.addEventListener("unhandledrejection", (event: any) => {
       const message = String(event.reason?.message ?? event.reason ?? "")
-      if (/GPUValidationError/i.test(message)) {
+      if (/GPUValidationError|WebGPU|device lost|context lost/i.test(message)) {
         state.counters.validationErrors += 1
         state.losses.push({ kind: "validation", at: host.performance.now(), message })
       }
     })
+    host.addEventListener("webglcontextlost", () => {
+      state.losses.push({ kind: "context", at: host.performance.now(), message: "webglcontextlost" })
+    }, true)
   }
   return state
 }

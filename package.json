@@ -21,6 +21,7 @@
     "verify:displacement-visuals": "bun tools/playsrc/src/cli.ts verify displacement-visuals",
     "diagnose:presentation-bound": "bun tools/playsrc/src/diagnose-presentation-bound.ts",
     "profile:gameui": "bun tools/playsrc/src/profile-runner.ts gameui",
+    "profile:acceptance": "bun tools/playsrc/src/integrated-acceptance.ts",
     "profile:main-menu": "bun tools/playsrc/src/profile-runner.ts main-menu",
     "profile:hud": "bun tools/playsrc/src/profile-runner.ts hud",
     "profile:class-hud": "bun tools/playsrc/src/profile-runner.ts class-hud",

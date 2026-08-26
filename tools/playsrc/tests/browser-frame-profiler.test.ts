@@ -163,11 +163,11 @@ describe("opt-in structured browser frame profiler", () => {
     const browser = { ...host(), console: { error: (...arguments_: unknown[]) => logged.push(arguments_) } }
     const state = installBrowserFrameProfiler(browser)
     browser.console.error("THREE.WebGPURenderer: Uncaptured WebGPU GPUValidationError: Destroyed texture used in a submit.")
-    expect(state.counters.validationErrors).toBe(0)
+    expect(state.counters.validationErrors).toBe(1)
     state.active = true
     browser.console.error("THREE.WebGPURenderer:", new Error("GPUValidationError: Destroyed texture used in a submit."))
     expect(logged).toHaveLength(2)
-    expect(state.counters.validationErrors).toBe(1)
+    expect(state.counters.validationErrors).toBe(2)
     expect(state.losses[0]).toMatchObject({ kind: "validation", at: 20 })
     expect(state.losses[0].message).toContain("Destroyed texture")
   })
@@ -187,5 +187,20 @@ describe("opt-in structured browser frame profiler", () => {
     expect(state.worker).toHaveLength(1)
     expect(state.worker[0]).toMatchObject({ receivedBytes: 0, sharedBytes: 96 })
     expect(state.counters.workerPending).toBe(0)
+  })
+
+  test("retains unsampled device/resource failures but permits explicit teardown", async () => {
+    let lose!: (info: object) => void
+    let uncaptured!: (event: object) => void
+    const device = { lost: new Promise(resolve => { lose = resolve }), addEventListener: (_: string, listener: typeof uncaptured) => { uncaptured = listener } }
+    class GPUAdapter { async requestDevice() { return device } }
+    const browser = { ...host(), GPUAdapter }
+    const state = installBrowserFrameProfiler(browser)
+    expect(await new browser.GPUAdapter().requestDevice()).toBe(device)
+    uncaptured({ error: new Error("invalid resource") })
+    lose({ reason: "destroyed", message: "normal replacement" })
+    await Promise.resolve()
+    expect(state.losses).toHaveLength(1)
+    expect(state.losses[0]).toMatchObject({ kind: "resource", message: "invalid resource" })
   })
 })
