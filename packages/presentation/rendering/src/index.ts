@@ -2606,7 +2606,7 @@ class RendererOwner implements Renderer {
             mesh.material=material
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
-          const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.userData.staticPropSource=props.source[propIndex]
+          const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.visible=false;instance.userData.staticPropSource=props.source[propIndex]
           const box = new THREE.Box3().setFromObject(instance)
           const sphere = box.getBoundingSphere(new THREE.Sphere())
           const leafStart = props.leafOffsets[propIndex]!
