@@ -195,6 +195,7 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     const directory = path.join(local.sourceCacheDir, "profiles", "application-upgrade")
     await mkdir(directory, { recursive: true })
     await writeFile(path.join(directory, `${target}-evidence.json`), JSON.stringify(report, null, 2))
+    await writeFile(path.join(directory, `${target}-ready.png`), afterPixels)
     console.log(`TF2_APPLICATION_UPGRADE ${JSON.stringify(report)}`)
   } finally {
     await oldTab?.close()
