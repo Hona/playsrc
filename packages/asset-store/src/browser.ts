@@ -189,6 +189,142 @@ export async function fetchImmutableObject(
   return bytes
 }
 
+export type ImmutableObjectPriority = "critical" | "normal" | "background"
+
+export type ImmutableObjectAcquisition = Readonly<{
+  signal?: AbortSignal
+  priority?: ImmutableObjectPriority
+  onProgress?: (loadedBytes: number, totalBytes: number) => void
+}>
+
+export type ImmutableObjectAcquirer = (
+  origin: string,
+  descriptor: ObjectDescriptor,
+  options?: ImmutableObjectAcquisition,
+) => Promise<Uint8Array>
+
+export function createImmutableObjectAcquirer(options: Readonly<{
+  concurrency?: number
+  fetcher?: typeof fetch
+}> = {}): ImmutableObjectAcquirer {
+  const concurrency = options.concurrency ?? 8
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+    throw new BrowserAssetError("BoundExceeded", "immutable transfer concurrency exceeds its browser bound")
+  }
+  type Subscriber = {
+    signal?: AbortSignal
+    progress?: (loadedBytes: number, totalBytes: number) => void
+    resolve(bytes: Uint8Array): void
+    reject(error: unknown): void
+    abort?(): void
+  }
+  type Transfer = {
+    identity: string
+    origin: string
+    descriptor: ObjectDescriptor
+    priority: number
+    order: number
+    controller: AbortController
+    subscribers: Set<Subscriber>
+    started: boolean
+    loaded?: number
+    total?: number
+  }
+  const priorities: Record<ImmutableObjectPriority, number> = { critical: 0, normal: 1, background: 2 }
+  const transfers = new Map<string, Transfer>()
+  const queue: Transfer[] = []
+  let active = 0
+  let order = 0
+
+  const pump = (): void => {
+    while (active < concurrency && queue.length > 0) {
+      queue.sort((left, right) => left.priority - right.priority || left.order - right.order)
+      const transfer = queue.shift()!
+      if (transfer.subscribers.size === 0) continue
+      transfer.started = true
+      active += 1
+      void fetchImmutableObject(transfer.origin, transfer.descriptor, transfer.controller.signal, options.fetcher ?? fetch, (loaded, total) => {
+        transfer.loaded = loaded
+        transfer.total = total
+        for (const subscriber of transfer.subscribers) {
+          try { subscriber.progress?.(loaded, total) } catch {}
+        }
+      }).then((bytes) => {
+        const subscribers = [...transfer.subscribers]
+        transfer.subscribers.clear()
+        transfers.delete(transfer.identity)
+        active -= 1
+        pump()
+        for (const subscriber of subscribers) {
+          if (subscriber.abort) subscriber.signal?.removeEventListener("abort", subscriber.abort)
+          subscriber.resolve(bytes)
+        }
+      }, (error) => {
+        const subscribers = [...transfer.subscribers]
+        transfer.subscribers.clear()
+        transfers.delete(transfer.identity)
+        active -= 1
+        pump()
+        for (const subscriber of subscribers) {
+          if (subscriber.abort) subscriber.signal?.removeEventListener("abort", subscriber.abort)
+          subscriber.reject(error)
+        }
+      })
+    }
+  }
+
+  return (origin, descriptor, acquisition = {}) => {
+    try {
+      length(descriptor)
+      const identity = objectUrl(origin, descriptor.sha256)
+      if (acquisition.signal?.aborted) {
+        return Promise.reject(new BrowserAssetError("Cancelled", "immutable object request was cancelled"))
+      }
+      let transfer = transfers.get(identity)
+      const priority = priorities[acquisition.priority ?? "normal"]
+      if (priority === undefined) throw new BrowserAssetError("MalformedIdentity", "immutable transfer priority is invalid")
+      if (transfer && (transfer.descriptor.byteLength !== descriptor.byteLength
+        || transfer.descriptor.kind !== descriptor.kind || transfer.descriptor.mediaType !== descriptor.mediaType)) {
+        throw new BrowserAssetError("IntegrityFailure", "shared immutable object descriptors differ")
+      }
+      if (!transfer) {
+        transfer = { identity, origin, descriptor, priority, order: order++, controller: new AbortController(), subscribers: new Set(), started: false }
+        transfers.set(identity, transfer)
+        queue.push(transfer)
+      } else if (!transfer.started) transfer.priority = Math.min(transfer.priority, priority)
+
+      const current = transfer
+      const result = new Promise<Uint8Array>((resolve, reject) => {
+        const subscriber: Subscriber = { signal: acquisition.signal, progress: acquisition.onProgress, resolve, reject }
+        if (subscriber.signal) {
+          subscriber.abort = () => {
+            current.subscribers.delete(subscriber)
+            subscriber.signal!.removeEventListener("abort", subscriber.abort!)
+            reject(new BrowserAssetError("Cancelled", "immutable object request was cancelled"))
+            if (current.subscribers.size === 0) {
+              current.controller.abort()
+              if (!current.started) {
+                transfers.delete(current.identity)
+                const index = queue.indexOf(current)
+                if (index !== -1) queue.splice(index, 1)
+              }
+            }
+          }
+          subscriber.signal.addEventListener("abort", subscriber.abort, { once: true })
+        }
+        current.subscribers.add(subscriber)
+        if (current.loaded !== undefined && current.total !== undefined) {
+          try { subscriber.progress?.(current.loaded, current.total) } catch {}
+        }
+      })
+      pump()
+      return result
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+}
+
 export async function verifyDerivedRecord(
   value: unknown,
   expectedKey: string,

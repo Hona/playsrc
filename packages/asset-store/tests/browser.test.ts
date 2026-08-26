@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from "bun:test"
-import { BrowserAssetError, fetchImmutableObject, openDerivedObjectCache, planDerivedCacheEviction, verifyDerivedRecord } from "../src/browser"
+import { BrowserAssetError, createImmutableObjectAcquirer, fetchImmutableObject, openDerivedObjectCache, planDerivedCacheEviction, verifyDerivedRecord } from "../src/browser"
 import type { ObjectDescriptor } from "../src/index"
 
 const bytes = new TextEncoder().encode("immutable")
@@ -192,6 +192,90 @@ async function digest(value: Uint8Array): Promise<string> {
 }
 
 describe("browser asset adapters", () => {
+  test("shares one authenticated immutable transfer, verification, and progress between simultaneous consumers", async () => {
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    let requests = 0
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const fetcher = (async () => {
+      requests += 1
+      await blocked
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    const acquire = createImmutableObjectAcquirer({ concurrency: 2, fetcher })
+    const firstProgress: number[] = [], secondProgress: number[] = []
+    const first = acquire("http://127.0.0.1:4321/", descriptor, { onProgress: (loaded) => firstProgress.push(loaded) })
+    const second = acquire("http://127.0.0.1:4321/", descriptor, { onProgress: (loaded) => secondProgress.push(loaded) })
+    await Promise.resolve()
+    expect(requests).toBe(1)
+    release()
+    const results = await Promise.all([first, second])
+    expect(results[0]).toBe(results[1])
+    expect(firstProgress).toEqual([0, bytes.byteLength])
+    expect(secondProgress).toEqual([0, bytes.byteLength])
+    expect(requests).toBe(1)
+  })
+
+  test("bounds immutable transfer concurrency and starts queued critical objects before background chunks", async () => {
+    const values = await Promise.all(["first", "background", "critical"].map(async (text) => {
+      const value = new TextEncoder().encode(text)
+      return { value, descriptor: { ...descriptor, byteLength: String(value.byteLength), sha256: await digest(value) } }
+    }))
+    let active = 0, maximum = 0
+    const started: string[] = []
+    const releases: Array<() => void> = []
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const entry = values.find((candidate) => url.endsWith(candidate.descriptor.sha256))!
+      started.push(new TextDecoder().decode(entry.value))
+      maximum = Math.max(maximum, ++active)
+      await new Promise<void>((resolve) => releases.push(resolve))
+      active -= 1
+      const response = new Response(entry.value, { headers: { "content-length": String(entry.value.byteLength), etag: `"${entry.descriptor.sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    const acquire = createImmutableObjectAcquirer({ concurrency: 1, fetcher })
+    const first = acquire("http://127.0.0.1:4321/", values[0]!.descriptor)
+    const background = acquire("http://127.0.0.1:4321/", values[1]!.descriptor, { priority: "background" })
+    const critical = acquire("http://127.0.0.1:4321/", values[2]!.descriptor, { priority: "critical" })
+    expect(started).toEqual(["first"])
+    releases.shift()!()
+    await first
+    expect(started).toEqual(["first", "critical"])
+    releases.shift()!()
+    await critical
+    expect(started).toEqual(["first", "critical", "background"])
+    releases.shift()!()
+    await background
+    expect(maximum).toBe(1)
+  })
+
+  test("cancels one immutable subscriber without interrupting another authenticated consumer", async () => {
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    let transferSignal: AbortSignal | undefined
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      transferSignal = init?.signal ?? undefined
+      await blocked
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    const acquire = createImmutableObjectAcquirer({ concurrency: 2, fetcher })
+    const controller = new AbortController()
+    const cancelled = acquire("http://127.0.0.1:4321/", descriptor, { signal: controller.signal })
+    const retained = acquire("http://127.0.0.1:4321/", descriptor)
+    controller.abort()
+    await expect(cancelled).rejects.toMatchObject({ code: "Cancelled" })
+    expect(transferSignal?.aborted).toBe(false)
+    release()
+    expect(await retained).toEqual(bytes)
+  })
+
   test("accepts only the exact immutable response and bytes", async () => {
     const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
     const fetcher = (async () => {
