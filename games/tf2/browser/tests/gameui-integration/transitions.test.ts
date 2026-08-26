@@ -105,28 +105,126 @@ describe("TF2 GameUI Escape and pending owner operations", () => {
   test("moves the authored playlist on-screen only after Find a Game opens its right-side stack", () => {
     const { gameUi, requests } = createTf2GameUiTransitionFixture()
     const closed = gameUi.snapshot().panels.find((panel) => panel.name === "ExpandableList")!
-    expect(closed).toMatchObject({ visible: false, bounds: { x: 1280, width: 280 } })
+    expect(closed).toMatchObject({ visible: false, proportional: true, bounds: { x: 1280, width: 420 } })
     expect(gameUi.dispatch({ kind: "activate-button", button: "find-game" }).request).toEqual({ kind: "show-play-list" })
     const opened = gameUi.snapshot().panels.find((panel) => panel.name === "ExpandableList")!
-    expect(opened).toMatchObject({ visible: true, effectivelyVisible: true, bounds: { x: 1000, width: 280 } })
-    expect(opened.clip.width).toBe(280)
+    expect(opened).toMatchObject({ visible: true, effectivelyVisible: true, bounds: { x: 860, width: 420 } })
+    expect(opened.clip.width).toBe(420)
     expect(requests).toEqual([])
     expect(gameUi.snapshot().panels.find((panel) => panel.name === "TrainingEntry")?.effectivelyVisible).toBeTrue()
     expect(gameUi.snapshot().panels.find((panel) => panel.name === "CreateServerEntry")?.effectivelyVisible).toBeTrue()
   })
 
-  test("hides source-disabled promotions, account content, and overlapping duplicate settings", () => {
-    const panels = createTf2GameUiTransitionFixture().gameUi.snapshot().panels
+  test("retains every authored core Main Menu control and disables only unsupported actions", () => {
+    const { gameUi, resources } = createTf2GameUiTransitionFixture()
+    const panels = gameUi.snapshot().panels
+    const mainMenu = panels.find((panel) => panel.name === "MainMenuOverride")!
+    const root = resources.panelDocument("resource/ui/mainmenuoverride.res").roots[0]!
+    const authored = root.children.filter((node) => node.value === null && node.name !== "MainMenuOverride")
+      .map((node) => node.children.find((property) => property.name.toLowerCase() === "fieldname")?.value ?? node.name)
+    expect(panels.filter((panel) => panel.parent === mainMenu.id).map((panel) => panel.name).toSorted())
+      .toEqual(authored.toSorted())
+
     for (const name of [
-      "EventPromo", "FriendsContainer", "ShowPromoCodesButton", "CharacterSetupButton", "GeneralStoreButton",
+      "TFLogoImage", "TFCharacterImage", "FriendsContainer", "SteamFriendsList", "BackgroundFooter", "FooterLine",
+      "CharacterSetupButton", "GeneralStoreButton", "SettingsButton", "TF2SettingsButton", "NewUserForumsButton",
+      "AchievementsButton", "CommentaryButton", "CoachPlayersButton", "WorkshopButton", "ReplayButton", "ReportBugButton",
+      "MMDashboard", "TopBar", "ToggleChatButton", "FindAGameButton", "QuitButton",
+      ...Array.from({ length: 6 }, (_, index) => `PartySlot${index}`),
+    ]) expect(panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeTrue()
+
+    for (const name of [
+      "CharacterSetupButton", "GeneralStoreButton", "AchievementsButton", "CommentaryButton",
+      "CoachPlayersButton", "WorkshopButton", "ReplayButton", "ReportBugButton", "ToggleChatButton",
+    ]) expect(panels.find((panel) => panel.name === name)?.enabled, name).toBeFalse()
+
+    for (const name of ["SettingsButton", "TF2SettingsButton", "NewUserForumsButton", "FindAGameButton", "QuitButton"]) {
+      expect(panels.find((panel) => panel.name === name)?.enabled, name).toBeTrue()
+    }
+
+    for (const name of [
+      "EventPromo", "ShowPromoCodesButton", "StoreHasNewItemsImage",
       "Notifications_ShowButtonPanel", "MOTD_ShowButtonPanel", "WatchStreamButton", "QuestLogButton",
       "NoGCMessage", "NoGCImage", "RankBorder", "CycleRankTypeButton", "VRBGPanel", "VRModeButton",
-      "SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator", "PartySlot0", "QueueContainer",
+      "SettingsButtonSDK", "TF2SettingsButtonSDK", "icon_generator",
+      "ReportPlayerButton", "CallVoteButton", "MutePlayersButton", "RequestCoachButton",
     ]) {
       expect(panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeFalse()
     }
-    expect(panels.find((panel) => panel.name === "SettingsButton")?.effectivelyVisible).toBeTrue()
-    expect(panels.find((panel) => panel.name === "TF2SettingsButton")?.effectivelyVisible).toBeTrue()
+    for (const name of ["QueueContainer", "JoinPartyLobbyContainer"]) {
+      expect(panels.find((panel) => panel.name === name)).toMatchObject({ visible: true, clip: { height: 0 } })
+    }
+    expect(panels.find((panel) => panel.name === "MMDashboard")).toMatchObject({
+      proportional: true,
+      bounds: { y: -7, height: 52 },
+    })
+  })
+
+  test("builds all six authored party portraits without fabricating account or party state", () => {
+    const panels = createTf2GameUiTransitionFixture().gameUi.snapshot().panels
+    for (let index = 0; index < 6; index += 1) {
+      const slot = panels.find((panel) => panel.name === `PartySlot${index}`)!
+      expect(slot).toMatchObject({ effectivelyVisible: true, bounds: { x: 60 + index * 36, width: 36, height: 36 } })
+      const children = panels.filter((panel) => panel.parent === slot.id)
+      expect(children.map((panel) => panel.name)).toEqual([
+        "avatar", "EmptyImage", "LeaderIcon", "BannedIcon", "OutOfDateIcon", "OfflineIcon", "StatusDimmer", "InteractButton", "Spinner",
+      ])
+      expect(children.find((panel) => panel.name === "EmptyImage")?.effectivelyVisible).toBeTrue()
+      expect(children.find((panel) => panel.name === "InteractButton")).toMatchObject({ effectivelyVisible: true, enabled: false })
+      for (const name of ["avatar", "LeaderIcon", "BannedIcon", "OutOfDateIcon", "OfflineIcon", "StatusDimmer", "Spinner"]) {
+        expect(children.find((panel) => panel.name === name)?.effectivelyVisible, `${slot.name}:${name}`).toBeFalse()
+      }
+    }
+  })
+
+  test("binds every authored playlist illustration, localized description, capability, and unavailable-service indicator", () => {
+    const { gameUi } = createTf2GameUiTransitionFixture()
+    gameUi.dispatch({ kind: "activate-button", button: "find-game" })
+    const panels = gameUi.snapshot().panels
+    for (const [name, label, image, active, indicator] of [
+      ["CasualEntry", "Casual", "casual", false, "gc_dc"],
+      ["CompetitiveEntry", "Competitive", "competitive", false, "locked_icon"],
+      ["MvMEntry", "Mann vs. Machine", "mvm", false, "gc_dc"],
+      ["ServerBrowserEntry", "Community Servers", "community_server", false, null],
+      ["TrainingEntry", "Training", "training", true, null],
+      ["CreateServerEntry", "Create Server", "custom_server", true, null],
+    ] as const) {
+      const entry = panels.find((panel) => panel.name === name)!
+      const children = panels.filter((panel) => panel.parent === entry.id)
+      expect(entry.effectivelyVisible, name).toBeTrue()
+      expect(children.find((panel) => panel.name === "ModeButton"), name)
+        .toMatchObject({ effectivelyVisible: true, enabled: active, text: label })
+      expect(children.find((panel) => panel.name === "ModeImage")?.state.image, name)
+        .toBe(`main_menu/main_menu_button_${image}`)
+      expect(children.find((panel) => panel.name === "DescLabel")?.text, name).not.toStartWith("#")
+      const disabled = children.find((panel) => panel.name === "DisabledIcon")!
+      expect(disabled.visible, name).toBe(indicator !== null)
+      if (indicator !== null) {
+        expect(disabled.enabled, name).toBeFalse()
+        expect(panels.find((panel) => panel.parent === disabled.id && panel.name === "SubImage")?.state.image, name)
+          .toBe(indicator)
+      }
+    }
+    expect(panels.find((panel) => panel.name === "EventEntry")?.effectivelyVisible).toBeFalse()
+  })
+
+  test("uses GameMenu session conditions to expose authored in-game footer actions only while paused", () => {
+    const { gameUi } = createTf2GameUiTransitionFixture()
+    gameUi.dispatch({ kind: "loading-started", mapIdentity: "jump_beef" })
+    gameUi.dispatch({ kind: "loading-succeeded" })
+    gameUi.dispatch({ kind: "gameui-activated" })
+    const panels = gameUi.snapshot().panels
+    for (const name of ["ReportPlayerButton", "CallVoteButton", "MutePlayersButton", "RequestCoachButton"]) {
+      const owner = panels.find((panel) => panel.name === name)!
+      expect(owner.effectivelyVisible, name).toBeTrue()
+      expect(panels.find((panel) => panel.parent === owner.id && panel.name === "SubButton"), name)
+        .toMatchObject({ effectivelyVisible: true, enabled: false })
+    }
+    for (const name of ["CharacterSetupButton", "GeneralStoreButton", "AchievementsButton", "ReplayButton", "PartySlot0", "ToggleChatButton"]) {
+      expect(panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeTrue()
+    }
+    expect(panels.find((panel) => panel.name === "TFCharacterImage")?.effectivelyVisible).toBeFalse()
+    expect(panels.find((panel) => panel.name === "QuitButton")?.effectivelyVisible).toBeFalse()
   })
 
   test("classifies Escape in all six state contexts", () => {

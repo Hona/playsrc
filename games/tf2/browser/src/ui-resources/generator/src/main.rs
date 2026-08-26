@@ -268,6 +268,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("main-menu", "resource/ui/mainmenuoverride.res", true),
     ("main-menu", "resource/gamemenu.res", true),
     ("main-menu", "resource/ui/matchmakingdashboard.res", true),
+    ("main-menu", "resource/ui/dashboardpartymember.res", true),
     (
         "main-menu",
         "resource/ui/matchmakingdashboardplaylist.res",
@@ -1140,6 +1141,7 @@ fn is_image_key(key: &str) -> bool {
         key.as_str(),
         "image"
             | "image2"
+            | "image_name"
             | "image_hidef"
             | "image_lodef"
             | "image_minmode"

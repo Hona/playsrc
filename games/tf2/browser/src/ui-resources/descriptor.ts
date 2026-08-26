@@ -148,6 +148,7 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   find_game: ["service", "service"],
   gonext: ["application", "tf2"],
   goprev: ["application", "tf2"],
+  interact: ["service", "service"],
   join_party_match: ["service", "service"],
   leave_queue: ["service", "service"],
   manage_queues: ["service", "service"],

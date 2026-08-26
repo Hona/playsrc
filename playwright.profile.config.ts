@@ -4,6 +4,8 @@ export default defineConfig({
   testDir: "tools/playsrc/profile",
   testMatch: process.env.PROFILE_UPWARD_OUTDOORS === "1"
     ? "upward-outdoor.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "main-menu"
+      ? "main-menu-inventory.profile.ts"
     : process.env.PROFILE_SCENARIOS === "local-practice"
       ? "local-practice-match.profile.ts"
       : process.env.PROFILE_SCENARIOS === "upward-floor"

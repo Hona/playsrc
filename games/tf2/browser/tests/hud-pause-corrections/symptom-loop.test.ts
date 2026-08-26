@@ -643,7 +643,8 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(visible(pause, ["FindAGameButton", "ResumeButton", "DisconnectButton", "QuitButton", "CancelButton"]).sort()).toEqual(["DisconnectButton", "FindAGameButton", "ResumeButton"])
     expect(pause.filter((panel) => panel.name === "MainMenuOverride" && panel.effectivelyVisible)).toHaveLength(1)
     expect(visible(pause, ["TFCharacterImage"])).toEqual([])
-    expect(visible(pause, ["CharacterSetupButton", "SettingsButton", "TF2SettingsButton", "NewUserForumsButton"]).sort()).toEqual(["NewUserForumsButton", "SettingsButton", "TF2SettingsButton"])
+    expect(visible(pause, ["CharacterSetupButton", "SettingsButton", "TF2SettingsButton", "NewUserForumsButton"]).sort())
+      .toEqual(["CharacterSetupButton", "NewUserForumsButton", "SettingsButton", "TF2SettingsButton"])
     const pauseButton = (name: string) => pause.find((panel) => panel.name === name)!.bounds
     expect(pauseButton("ResumeButton").x + pauseButton("ResumeButton").width).toBeLessThan(pauseButton("FindAGameButton").x)
     expect(pauseButton("FindAGameButton").x + pauseButton("FindAGameButton").width).toBeLessThan(pauseButton("DisconnectButton").x)

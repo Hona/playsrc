@@ -55,7 +55,7 @@ export type Tf2MenuButton = Readonly<{
     | "cancel-loading"
   text: string
   sourceCommand: string
-  visibility: "visible" | "configured-hidden" | "event-conditional"
+  visibility: "visible" | "event-conditional"
   capability: Tf2MenuButtonCapability
 }>
 
@@ -97,7 +97,7 @@ const playList = panel("play-list", [
 ])
 const account = panel("account", [
   button("items", "ITEMS", "engine open_charinfo", inactive("account-items")),
-  button("store", "SHOP", "engine open_store", inactive("economy-store"), "configured-hidden"),
+  button("store", "SHOP", "engine open_store", inactive("economy-store")),
 ])
 const settings = panel("settings", [
   button("options", "Options", "OpenOptionsDialog", request("show-options")),
