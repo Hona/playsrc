@@ -1,5 +1,8 @@
 # Integrated browser acceptance
 
+Acceptance is not yet signed off. The retained runs establish specific fixes and
+partial coverage, not a completed Windows/2Fort/Engineer/all-DPR stock-input gate.
+
 `bun run profile:acceptance <scenario>` runs one visibly headed Edge scenario
 under the shared machine lock and three-minute deadline. Scenarios:
 `training-dpr1`, `training-dpr1.25`, `training-dpr1.5`, `training-dpr2`, `2fort`,
@@ -20,7 +23,8 @@ and count against the stall gate. First-playable startup timing currently means
 an application-completed frame, **not** compositor presentation. RSS is unavailable
 when the browser runs on a different host unless
 `PLAYSRC_PROFILE_PROCESS_MEMORY_EXECUTABLE` supplies that host's PID-bound byte
-counts; local PIDs must never be mistaken for remote browser PIDs.
+counts and `PLAYSRC_PROFILE_BROWSER_PLATFORM` declares its platform; local PIDs
+must never be mistaken for remote browser PIDs.
 
 `bun run profile:acceptance compare before.json after.json` refuses an improvement
 claim when browser, GPU, viewport/DPR, settings, cache path or roster differ, or
