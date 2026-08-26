@@ -9,6 +9,7 @@ export type SourceModelPanelViewport = Readonly<{
 
 export type SourceModelPanelPresentation = Readonly<{
   viewport: SourceModelPanelViewport
+  rendererViewport: SourceModelPanelViewport
   verticalFovDegrees: number
   origin: readonly [number, number, number]
 }>
@@ -42,13 +43,29 @@ export function sourceModelPanelPresentation(request: Readonly<{
   const offset = request.model.toLowerCase().startsWith("models/player/")
     ? ratio > 1.05 ? -60 : ratio < 0.95 ? 15 : 0
     : 0
-  const x = Math.max(0, Math.round(request.bounds.x * request.devicePixelRatio))
-  const y = Math.max(0, Math.round(request.bounds.y * request.devicePixelRatio))
-  const width = Math.min(Math.max(1, Math.round(request.bounds.width * request.devicePixelRatio)), request.displayWidth - x)
-  const height = Math.min(Math.max(1, Math.round(request.bounds.height * request.devicePixelRatio)), request.displayHeight - y)
+  const left = Math.round(request.bounds.x * request.devicePixelRatio)
+  const top = Math.round(request.bounds.y * request.devicePixelRatio)
+  const right = Math.round((request.bounds.x + request.bounds.width) * request.devicePixelRatio)
+  const bottom = Math.round((request.bounds.y + request.bounds.height) * request.devicePixelRatio)
+  const x = Math.max(0, left)
+  const y = Math.max(0, top)
+  const width = Math.min(request.displayWidth, right) - x
+  const height = Math.min(request.displayHeight, bottom) - y
   if (width <= 0 || height <= 0) throw new TypeError("Source model-panel viewport is outside the display")
+  const logicalPixel = (physical: number): number => {
+    const logical = physical / request.devicePixelRatio
+    return Math.floor(logical * request.devicePixelRatio) < physical
+      ? logical + Number.EPSILON * Math.max(1, logical)
+      : logical
+  }
   return Object.freeze({
     viewport: Object.freeze({ x, y, width, height }),
+    rendererViewport: Object.freeze({
+      x: logicalPixel(x),
+      y: logicalPixel(y),
+      width: logicalPixel(width),
+      height: logicalPixel(height),
+    }),
     verticalFovDegrees: sourceHorizontal4By3FovToVertical(request.horizontalFov4By3),
     origin: Object.freeze([request.origin[0] + offset, request.origin[1], request.origin[2]]) as readonly [number, number, number],
   })
