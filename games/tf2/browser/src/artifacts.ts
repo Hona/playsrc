@@ -1048,6 +1048,13 @@ function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
   return Object.freeze(output)
 }
 
+export function parseModelOccurrenceMatrices(bytes: Uint8Array): readonly ModelOccurrenceMatrix[] {
+  const reader = new Reader(bytes)
+  const occurrences = parseOccurrenceMatrices(reader)
+  if (reader.offset !== bytes.byteLength) throw new ArtifactError("PMTX trailing bytes")
+  return occurrences
+}
+
 function tuple2(r: Reader): readonly [number, number] {
   return Object.freeze([r.f32(), r.f32()])
 }

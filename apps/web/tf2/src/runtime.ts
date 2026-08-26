@@ -1203,7 +1203,7 @@ export class Tf2Application {
           this.#acquireObject(descriptor, signal, "critical"),
         ])
         this.#cache = cache
-        this.#client = new Tf2WorkerClient(new GameplayWorker(), cache)
+        this.#client = new Tf2WorkerClient(new GameplayWorker(), cache, this.#configuration!.applicationBuild)
         await this.#client.initialize(wasm, descriptor.sha256)
       })().catch((error) => {
         this.#resourceRuntime = undefined

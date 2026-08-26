@@ -106,8 +106,8 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
 }
-async function presentationKey(key: string): Promise<string> {
-  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v15\0${key}`))
+async function presentationKey(key: string, applicationBuild: string): Promise<string> {
+  return sha256(new TextEncoder().encode(`playsrc-tf2-presentation-v16\0${applicationBuild}\0${key}`))
 }
 
 function transferredBytes(bytes: Uint8Array): ArrayBuffer {
@@ -123,6 +123,7 @@ function queuedAt(): number {
 export class Tf2WorkerClient {
   readonly #worker: WorkerLike
   readonly #cache: DerivedObjectCache
+  readonly #applicationBuild: string
   readonly #pending = new Map<
     number,
     {
@@ -134,9 +135,11 @@ export class Tf2WorkerClient {
   #closed = false
   #queuedModels?: QueuedModels
 
-  constructor(worker: WorkerLike, cache: DerivedObjectCache) {
+  constructor(worker: WorkerLike, cache: DerivedObjectCache, applicationBuild: string) {
+    if (!HASH.test(applicationBuild)) throw new Tf2WorkerError("IntegrityFailure")
     this.#worker = worker
     this.#cache = cache
+    this.#applicationBuild = applicationBuild
     worker.addEventListener("message", this.#message)
     worker.addEventListener("error", this.#error)
   }
@@ -325,7 +328,7 @@ export class Tf2WorkerClient {
     })()
     const presentationRead = (async () => {
       let phase = performance.now()
-      pkey = await presentationKey(derivedKey)
+      pkey = await presentationKey(derivedKey, this.#applicationBuild)
       presentationKeyMilliseconds = performance.now() - phase
       phase = performance.now()
       try {

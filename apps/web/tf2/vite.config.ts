@@ -2,11 +2,20 @@ import preact from "@preact/preset-vite"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin, type UserConfig } from "vite"
 
-function localRuntime(): Plugin {
+function localRuntime(ensureCoherentBuild?: () => Promise<void>): Plugin {
   return {
     name: "playsrc-local-runtime",
     configureServer(server) {
-      server.middlewares.use("/playsrc-config.json", (_request, response) => {
+      server.middlewares.use("/playsrc-config.json", async (_request, response) => {
+        try {
+          await ensureCoherentBuild?.()
+        } catch (error) {
+          response.statusCode = 503
+          response.setHeader("content-type", "application/problem+json")
+          response.setHeader("cache-control", "no-store")
+          response.end(JSON.stringify({ title: error instanceof Error ? error.message : "Browser build replacement failed", status: 503 }))
+          return
+        }
         const value = process.env.PLAYSRC_BROWSER_CONFIG
         if (!value) {
           response.statusCode = 503
@@ -26,10 +35,11 @@ function localRuntime(): Plugin {
 export function tf2ViteConfiguration(
   assetOrigin = process.env.PLAYSRC_ASSET_ORIGIN,
   deployment = false,
+  ensureCoherentBuild?: () => Promise<void>,
 ): UserConfig {
   return {
     base: deployment ? "/tf2/" : "/",
-    plugins: [preact(), localRuntime()],
+    plugins: [preact(), localRuntime(ensureCoherentBuild)],
     resolve: {
       alias: {
         playsrc_metrics: fileURLToPath(new URL("../../../games/tf2/browser/src/wasm-metrics.ts", import.meta.url)),
