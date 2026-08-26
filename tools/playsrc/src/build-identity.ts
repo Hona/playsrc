@@ -5,12 +5,16 @@ import { promisify } from "node:util"
 import path from "node:path"
 import { repositoryRoot } from "./config"
 import toolchains from "../toolchains.json" with { type: "json" }
+import { fileFingerprint } from "./file-fingerprint"
 
 const BUILD_INPUTS = Object.freeze([
   "Cargo.lock",
   "Cargo.toml",
   "rust-toolchain.toml",
   "tools/playsrc/toolchains.json",
+  "tools/playsrc/src/tf2-wasm-build.ts",
+  "tools/playsrc/src/build-identity.ts",
+  ".cargo",
   ":(glob)**/*.rs",
   ":(glob)**/Cargo.toml",
 ])
@@ -54,18 +58,22 @@ export async function rustBuildIdentity(root = repositoryRoot): Promise<string> 
     if (status !== 0) throw new Error(`Rust build identity failed: ${errors.trim()}`)
     const files = [...new Set(output.split("\0").filter(Boolean))].sort()
     if (files.length === 0) throw new Error("Rust build identity has no tracked source inputs")
-    const contents = await Promise.all(files.map(async (file) => ({ file, bytes: await readFile(path.join(root, file)) })))
     const hash = createHash("sha256")
-      .update("playsrc-rust-build-v1\0")
+      .update("playsrc-rust-build-v2\0")
       .update(`${process.platform}\0${process.arch}\0${toolchains.rust.toolchain}\0${toolchains.rust.threadedToolchain}\0${toolchains.wasmBindgen.version}\0`)
-    for (const { file, bytes } of contents) hash.update(file).update("\0").update(String(bytes.byteLength)).update("\0").update(bytes)
+      .update(JSON.stringify(Object.entries(process.env).filter(([name]) => /^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTC|RUSTC_WRAPPER|CARGO_PROFILE_|CARGO_TARGET_|CC$|CXX$|AR$|CFLAGS$|CXXFLAGS$|LDFLAGS$)/u.test(name)).sort(([left], [right]) => left.localeCompare(right))))
+    // Bound filesystem concurrency when many worktrees request the same build.
+    for (let offset = 0; offset < files.length; offset += 32) {
+      const batch = files.slice(offset, offset + 32)
+      const contents = await Promise.all(batch.map(file => fileFingerprint(path.join(root, file))))
+      batch.forEach((file, index) => hash.update(file).update("\0").update(contents[index]!).update("\0"))
+    }
     return hash.digest("hex")
   })()
-  if (root === repositoryRoot) pendingIdentity = operation.catch((error) => {
+  if (root === repositoryRoot) pendingIdentity = operation.finally(() => {
     pendingIdentity = undefined
-    throw error
   })
-  return operation
+  return root === repositoryRoot ? pendingIdentity! : operation
 }
 
 export function buildCacheDirectory(sourceCacheDir: string, identity: string): string {

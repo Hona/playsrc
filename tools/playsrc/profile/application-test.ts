@@ -1,4 +1,5 @@
 import { test as base, expect } from "@playwright/test"
+import { ProfilePhases } from "./profile-phases"
 
 const headedBrowser = process.env.PLAYSRC_PROFILE_CDP_ENDPOINT
   ? base.extend<{}, { browser: import("@playwright/test").Browser }>({
@@ -23,7 +24,13 @@ export const test = headedBrowser.extend<{
   applicationDiagnostics: void
   allowRecoverableApplicationFailure: boolean
   preserveStartupMovie: boolean
+  profilePhases: ProfilePhases
 }>({
+  profilePhases: [async ({}, use, testInfo) => {
+    const phases = new ProfilePhases()
+    try { await use(phases) }
+    finally { await testInfo.attach("profile-operation-phases", { body: JSON.stringify(phases.finish(testInfo.status === "passed")), contentType: "application/json" }) }
+  }, { auto: true }],
   allowRecoverableApplicationFailure: [false, { option: true }],
   preserveStartupMovie: [false, { option: true }],
   applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure, preserveStartupMovie }, use, testInfo) => {
