@@ -796,10 +796,12 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     const stream = new SimulationSnapshotStream(), first = rosterSnapshot(7n)
     const packet = snapshotPacket(1n, [first])
     const a = stream.decode(packet)[0]!.snapshot
+    expect(stream.metrics.retainedBaselineBytes).toBe(first.byteLength)
     new Uint8Array(packet).fill(0) // stream owns its authoritative full restore
     const second = first.slice(), view = new DataView(second.buffer)
     view.setBigUint64(8, 8n, true)
     const b = stream.decode(snapshotPacket(2n, [second], first))[0]!.snapshot
+    expect(stream.metrics.retainedBaselineBytes).toBe(second.byteLength)
     expect(b.entityPresentation.models).toBe(a.entityPresentation.models)
     expect(b.bots).toBe(a.bots); expect(b.loadout).toBe(a.loadout); expect(b.scoreboard).toBe(a.scoreboard)
     expect(b.entityTransforms).toBe(a.entityTransforms); expect(b.randomState).toBe(a.randomState)
@@ -814,6 +816,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(c.entityPresentation.models[0]).not.toBe(b.entityPresentation.models[0])
     expect(c.entityPresentation.models[1]).toBe(b.entityPresentation.models[1])
     stream.close()
+    expect(stream.metrics.retainedBaselineBytes).toBe(0)
     expect(() => stream.decode(snapshotPacket(4n, [third]))).toThrow("Closed")
     expect(c.bots[0]!.identity).toBe(2)
   })
@@ -827,6 +830,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       const malformed = valid.slice(0); new DataView(malformed).setUint32(offset, 0xffff_ffff, true)
       expect(() => stream.decode(malformed)).toThrow()
       expect(stream.tick).toBe(1n)
+      expect(stream.metrics.retainedBaselineBytes).toBe(first.byteLength)
     }
     for (let size = 0; size < valid.byteLength; size++) {
       expect(() => stream.decode(valid.slice(0, size))).toThrow()
@@ -884,7 +888,9 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     new DataView(malformed.buffer).setBigUint64(a.length + 56, 99n, true)
     expect(() => stream.decode(malformed.buffer)).toThrow("WorkerFailed")
     expect(stream.tick).toBe(0n); expect(stream.metrics.responses).toBe(0)
+    expect(stream.metrics.retainedBaselineBytes).toBe(0)
     expect(stream.decode(response.buffer).map(publication => publication.snapshot.tick)).toEqual([7n, 8n])
+    expect(stream.metrics.retainedBaselineBytes).toBe(second.byteLength)
     const third = rosterSnapshot(9n, 15, 1), overlapping = snapshotPacket(3n, [third], second)
     const view = new DataView(overlapping)
     const firstRunStart = view.getUint32(80, true)

@@ -926,10 +926,10 @@ export class SimulationSnapshotStream {
   #ranges: SnapshotRanges | undefined
   #closed = false
   readonly metrics = { responses: 0, wireBytes: 0, canonicalWireBytes: 0, restoredBytes: 0, fullSnapshots: 0, deltaSnapshots: 0,
-    decodedRanges: 0, reusedRanges: 0, reusedBytes: 0, decodeMilliseconds: 0 }
+    decodedRanges: 0, reusedRanges: 0, reusedBytes: 0, decodeMilliseconds: 0, retainedBaselineBytes: 0 }
 
   get tick(): bigint { return this.#tick }
-  close(): void { this.#closed = true; this.#bytes = undefined; this.#ranges = undefined }
+  close(): void { this.#closed = true; this.#bytes = undefined; this.#ranges = undefined; this.metrics.retainedBaselineBytes = 0 }
 
   decode(buffer: ArrayBuffer): readonly SimulationPublication[] {
   if (this.#closed) throw new Tf2WorkerError("Closed")
@@ -1035,6 +1035,7 @@ export class SimulationSnapshotStream {
   }
   if (offset !== bytes.byteLength) throw new Tf2WorkerError("WorkerFailed")
   this.#tick = tick; this.#frame = frame; this.#gameTick = gameTick; this.#bytes = baseline; this.#ranges = ranges
+  this.metrics.retainedBaselineBytes = baseline?.byteLength ?? 0
   this.metrics.responses++; this.metrics.wireBytes += bytes.byteLength; this.metrics.restoredBytes += restoredBytes
   this.metrics.canonicalWireBytes += 16 + count * 40 + (fullSnapshots + deltaSnapshots) * 12 + restoredBytes
   this.metrics.fullSnapshots += fullSnapshots; this.metrics.deltaSnapshots += deltaSnapshots
