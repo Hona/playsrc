@@ -19,22 +19,23 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       displayOffers: 0, displayRejectedBusy: 0, displayRejectedUnchanged: 0, displayStarted: 0,
       displayAbandoned: 0, completedFrames: 0, submissions: 0, commandBuffers: 0,
       renderPasses: 0, buffers: 0, textures: 0, shaderModules: 0, renderPipelines: 0,
-      computePipelines: 0, bundleEncodes: 0, queueWriteBytes: 0, textureWriteBytes: 0,
+      computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteBytes: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
       workerPending: 0, workerMaximumPending: 0, validationErrors: 0,
     },
   }
   Object.defineProperty(host, "__playsrcFrameProfiler", { configurable: true, value: state })
 
-  const wrap = (owner: any, method: string, observe: (arguments_: any[], result?: any) => void): void => {
+  const wrap = (owner: any, method: string, observe: (arguments_: any[], result?: any, milliseconds?: number) => void, timed = false): void => {
     const original = owner?.prototype?.[method]
     if (typeof original !== "function") return
     Object.defineProperty(owner.prototype, method, {
       configurable: true,
       writable: true,
       value(this: any, ...arguments_: any[]) {
+        const started = timed && state.active ? host.performance.now() : 0
         const result = original.apply(this, arguments_)
-        if (state.active) observe(arguments_, result)
+        if (state.active) observe(arguments_, result, started ? host.performance.now() - started : 0)
         return result
       },
     })
@@ -57,7 +58,10 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
   wrap(host.GPUCommandEncoder, "beginComputePass", () => { state.counters.computePasses += 1 })
   wrap(host.GPUBuffer, "destroy", () => { state.counters.destroyedBuffers += 1 })
   wrap(host.GPUTexture, "destroy", () => { state.counters.destroyedTextures += 1 })
-  wrap(host.GPURenderBundleEncoder, "finish", () => { state.counters.bundleEncodes += 1 })
+  wrap(host.GPURenderBundleEncoder, "finish", (_arguments, _result, milliseconds) => {
+    state.counters.bundleEncodes += 1
+    state.counters.bundleEncodeMilliseconds += milliseconds ?? 0
+  }, true)
   for (const [method, counter] of [
     ["createBuffer", "buffers"], ["createTexture", "textures"], ["createShaderModule", "shaderModules"],
     ["createRenderPipeline", "renderPipelines"], ["createRenderPipelineAsync", "renderPipelines"],

@@ -25,7 +25,7 @@ type FrameRecord = {
   gpuSubmissions: number
   gpuCommandBuffers: number
   detail: Record<string, number>
-  renderer?: { drawCalls: number; frameCalls: number; triangles: number; memory: Record<string, number>; passes: { identity: string; submissions: number; commandBuffers: number; renderPasses: number; drawCalls: number; milliseconds: number }[]; poseUploadBytes: number; indexUploadBytes: number; bundleInvalidations: number; timestampMilliseconds: number | null }
+  renderer?: { drawCalls: number; frameCalls: number; triangles: number; memory: Record<string, number>; passes: { identity: string; submissions: number; commandBuffers: number; renderPasses: number; drawCalls: number; milliseconds: number }[]; poseUploadBytes: number; indexUploadBytes: number; indirectUploadBytes: number; bundleInvalidations: number; bundleEncodes: number; bundleEncodeMilliseconds: number; timestampMilliseconds: number | null }
 }
 
 test("profile headed grounded BLU Upward gameplay and completed multi-pass frames", async ({ page, context }, testInfo) => {
@@ -277,7 +277,10 @@ test("profile headed grounded BLU Upward gameplay and completed multi-pass frame
       triangles: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.triangles ?? 0)),
       poseUploadBytes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.poseUploadBytes ?? 0)),
       indexUploadBytes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.indexUploadBytes ?? 0)),
+      indirectUploadBytes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.indirectUploadBytes ?? 0)),
       bundleInvalidations: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.bundleInvalidations ?? 0)),
+      bundleEncodes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.bundleEncodes ?? 0)),
+      bundleEncodeMilliseconds: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.bundleEncodeMilliseconds ?? 0)),
       memory: Object.fromEntries(Object.keys(displayedFrames[0]?.renderer?.memory ?? {}).map(key =>
         [key, summarizeDistribution(displayedFrames.map(frame => frame.renderer?.memory[key] ?? 0))])),
       passes: Object.fromEntries([...new Set(displayedFrames.flatMap(frame => frame.renderer?.passes.map(pass => pass.identity) ?? []))].map(identity => {
@@ -342,6 +345,7 @@ test("profile headed grounded BLU Upward gameplay and completed multi-pass frame
     staticProps: report.visibility.staticProps,
     gpu: state.gpu,
     drawCalls: report.renderer.drawCalls,
+    worldBundles: { encodes: report.renderer.bundleEncodes, invalidations: report.renderer.bundleInvalidations, indexUploadBytes: report.renderer.indexUploadBytes, indirectUploadBytes: report.renderer.indirectUploadBytes },
     gpuMemoryBytes: report.renderer.memory.total,
     longAnimationFrames: report.longAnimationFrames.duration,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, { calls: value.calls, p95: value.milliseconds.p95 }])),
