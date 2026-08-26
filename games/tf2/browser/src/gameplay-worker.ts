@@ -303,7 +303,7 @@ function releaseResourceSet(_exports: WasmExports, generation: number): boolean 
 function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-resources" }>): void {
   const exports = wasm
   const retained = resourceSets.get(request.generation)
-  if (!exports || !canonicalId(request.generation) || !retained || retained.sections.length < 1 || retained.sections.length > 1024) {
+  if (!exports || !retained || !resourceSets.finalizable(request.generation)) {
     fail(request.id, "MalformedRequest")
     return
   }
@@ -316,8 +316,10 @@ function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-res
       fail(request.id, "MalformedRequest")
       return
     }
-    retained.byteLength = byteLength
-    retained.sha256 = identity.sha256
+    if (!resourceSets.finalize(request.generation, byteLength, identity.sha256)) {
+      fail(request.id, "StaleGeneration")
+      return
+    }
     post({ id: request.id, kind: "resources-finalized", generation: request.generation, byteLength, sha256: identity.sha256, sections: retained.sections.length })
     return
   }
@@ -331,8 +333,10 @@ function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-res
       return
     }
     const sha256 = Array.from(new Uint8Array(exports.memory.buffer, digest, 32), (value) => value.toString(16).padStart(2, "0")).join("")
-    retained.byteLength = byteLength
-    retained.sha256 = sha256
+    if (!resourceSets.finalize(request.generation, byteLength, sha256)) {
+      fail(request.id, "StaleGeneration")
+      return
+    }
     post({ id: request.id, kind: "resources-finalized", generation: request.generation, byteLength, sha256, sections: retained.sections.length })
   } finally {
     exports.playsrc_free(table, retained.sections.length * 8)
@@ -452,6 +456,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     request.bsp.byteLength < 1 ||
     request.bsp.byteLength > MAX_BSP_BYTES ||
     !configuration ||
+    !resourceSets.loadable(request.generation) ||
     !Number.isSafeInteger(request.configurationBytes) ||
     request.configurationBytes < 12 || request.configurationBytes > MAX_CONFIGURATION_BYTES ||
     !/^[0-9a-f]{64}$/.test(request.configurationSha256) ||
@@ -619,10 +624,32 @@ function requireActive(id: number, generation: number): { exports: WasmExports; 
   return { exports: wasm, handle: active.handle }
 }
 
-function readCoverage(request:Extract<WorkerRequest,{kind:"read-coverage"}>):void{if(!wasm||!pending||pending.generation!==request.generation){fail(request.id,"StaleGeneration");return}const length=wasm.playsrc_coverage_length(pending.handle);if(!Number.isSafeInteger(length)||length<12||length>4*1024*1024){fail(request.id,"InternalFailure",820);return}const pointer=wasm.playsrc_alloc(length)>>>0,copied=wasm.playsrc_coverage_copy(pending.handle,pointer,length);if(copied!==length){wasm.playsrc_free(pointer,length);fail(request.id,"InternalFailure",821);return}const payload=new Uint8Array(wasm.memory.buffer,pointer,length).slice().buffer;wasm.playsrc_free(pointer,length);post({id:request.id,kind:"coverage",generation:request.generation,payload},[payload])}
+function readCoverage(request: Extract<WorkerRequest, { kind: "read-coverage" }>): void {
+  if (!wasm || !pending || pending.generation !== request.generation || !resourceSets.loadable(request.generation)) {
+    fail(request.id, "StaleGeneration")
+    return
+  }
+  const length = wasm.playsrc_coverage_length(pending.handle)
+  if (!Number.isSafeInteger(length) || length < 12 || length > 4 * 1024 * 1024) {
+    fail(request.id, "InternalFailure", 820)
+    return
+  }
+  const pointer = wasm.playsrc_alloc(length) >>> 0
+  let payload: ArrayBuffer
+  try {
+    if (wasm.playsrc_coverage_copy(pending.handle, pointer, length) !== length) {
+      fail(request.id, "InternalFailure", 821)
+      return
+    }
+    payload = new Uint8Array(wasm.memory.buffer, pointer, length).slice().buffer
+  } finally {
+    wasm.playsrc_free(pointer, length)
+  }
+  post({ id: request.id, kind: "coverage", generation: request.generation, payload }, [payload])
+}
 
 function teamSelection(request: Extract<WorkerRequest, { kind: "team-selection" }>): void {
-  const selected = pending?.generation === request.generation
+  const selected = pending?.generation === request.generation && resourceSets.loadable(request.generation)
     ? pending
     : active?.generation === request.generation ? active : undefined
   if (!wasm || !selected) {
@@ -662,7 +689,7 @@ function teamSelection(request: Extract<WorkerRequest, { kind: "team-selection" 
 }
 
 function activate(request: Extract<WorkerRequest, { kind: "activate" }>): void {
-  if (!wasm || !pending || pending.generation !== request.generation) {
+  if (!wasm || !pending || pending.generation !== request.generation || !resourceSets.loadable(request.generation)) {
     fail(request.id, "StaleGeneration")
     return
   }
@@ -690,7 +717,7 @@ function discard(request: Extract<WorkerRequest, { kind: "discard" }>): void {
 
 function configureCourse(request: Extract<WorkerRequest, { kind: "configure-course" }>): void {
   const selected =
-    pending?.generation === request.generation
+    pending?.generation === request.generation && resourceSets.loadable(request.generation)
       ? pending
       : active?.generation === request.generation
         ? active
