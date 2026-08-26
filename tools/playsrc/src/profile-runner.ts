@@ -248,9 +248,11 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
 export async function runHeadedProfile(arguments_: readonly string[]): Promise<number> {
   const started = Date.now()
   const { profile, fresh, playwright } = parseHeadedProfile(arguments_)
+  const configurationStarted = Date.now()
   const config = await loadLocalConfig()
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
   await mkdir(evidence, { recursive: true })
+  const configurationMilliseconds = Date.now() - configurationStarted
   const identityStarted = Date.now()
   const identity = await profileSourceIdentity()
   const sourceIdentityMilliseconds = Date.now() - identityStarted
@@ -272,6 +274,8 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let timedOut = false
   let heartbeatFailure: Error | undefined
   let child: ReturnType<typeof Bun.spawn> | undefined
+  let browserMilliseconds = 0
+  let playwrightPhases: unknown = null
   const timingPath = path.join(evidence, "phase-reports", `${profile}-${process.pid}.json`)
   try {
     owner = await prepareOwner(config, identity, target, fresh, metadataPath, remaining)
@@ -313,38 +317,14 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     })
     exitCode = await child.exited
     if (heartbeatFailure) throw heartbeatFailure
-    const browserMilliseconds = Date.now() - browserStarted
-    let phases: unknown = null
-    try { phases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
+    browserMilliseconds = Date.now() - browserStarted
+    try { playwrightPhases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
-    const report = Object.freeze({
-      schema: "playsrc-browser-profile-run-v2",
-      profile,
-      command: `bun run profile:${profile} --headed`,
-      repository: repositoryRoot,
-      sourceFingerprint: identity,
-      startedAt: new Date(started).toISOString(),
-      finishedAt: new Date().toISOString(),
-      elapsedMilliseconds: Date.now() - started,
-      exitCode,
-      timedOut,
-      phases: Object.freeze({
-        sourceIdentityMilliseconds,
-        lockWaitMilliseconds: lock.milliseconds,
-        ownerMilliseconds: owner.milliseconds,
-        ownerReused: owner.reused,
-        ownerStartup: owner.metadata.startup,
-        headedBrowserMilliseconds: browserMilliseconds,
-        playwright: phases,
-      }),
-    })
-    const filename = `${profile}-${new Date(started).toISOString().replaceAll(":", "-")}-${process.pid}.json`
-    await writeFile(path.join(evidence, filename), `${JSON.stringify(report, null, 2)}\n`)
-    console.error(`[performance] ${profile} total=${report.elapsedMilliseconds}ms owner=${owner.milliseconds}ms reused=${owner.reused} headed=${browserMilliseconds}ms`)
     if (timedOut) throw new Error(`${profile} exceeded the ${MAX_RUN_MILLISECONDS} ms bounded headed profile`)
     return exitCode
   } finally {
+    const cleanupStarted = Date.now()
     if (progress) clearInterval(progress)
     if (heartbeat) clearInterval(heartbeat)
     if (deadline) clearTimeout(deadline)
@@ -355,6 +335,35 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       }
     } finally {
       await releaseHeadedProfileLock(lockPath, lock.token)
+      if (owner) {
+        const finished = Date.now()
+        const report = Object.freeze({
+          schema: "playsrc-browser-profile-run-v3",
+          profile,
+          command: `bun run profile:${profile} --headed`,
+          repository: repositoryRoot,
+          sourceFingerprint: identity,
+          startedAt: new Date(started).toISOString(),
+          finishedAt: new Date(finished).toISOString(),
+          elapsedMilliseconds: finished - started,
+          exitCode,
+          timedOut,
+          phases: Object.freeze({
+            configurationMilliseconds,
+            sourceIdentityMilliseconds,
+            lockWaitMilliseconds: lock.milliseconds,
+            ownerMilliseconds: owner.milliseconds,
+            ownerReused: owner.reused,
+            ownerStartup: owner.metadata.startup,
+            headedBrowserMilliseconds: browserMilliseconds,
+            playwright: playwrightPhases,
+            cleanupMilliseconds: finished - cleanupStarted,
+          }),
+        })
+        const filename = `${profile}-${new Date(started).toISOString().replaceAll(":", "-")}-${process.pid}.json`
+        await writeFile(path.join(evidence, filename), `${JSON.stringify(report, null, 2)}\n`)
+        console.error(`[performance] ${profile} total=${report.elapsedMilliseconds}ms owner=${owner.milliseconds}ms reused=${owner.reused} headed=${browserMilliseconds}ms cleanup=${report.phases.cleanupMilliseconds}ms`)
+      }
     }
   }
 }

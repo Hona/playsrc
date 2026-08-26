@@ -299,6 +299,7 @@ function changedRegion(before: Buffer, after: Buffer, bounds: Rectangle): number
 }
 
 test("headed Source desktop HUD retains authored positions, pixels, class lifecycle, and real-time cadence on all maps", async ({ page }, testInfo) => {
+  await page.addInitScript(() => { ;(globalThis as typeof globalThis & { __playsrcProfile?: object }).__playsrcProfile = {} })
   const local = await loadLocalConfig()
   const directory = path.join(local.sourceCacheDir, "profiles", "hud", "three-map")
   await mkdir(directory, { recursive: true })

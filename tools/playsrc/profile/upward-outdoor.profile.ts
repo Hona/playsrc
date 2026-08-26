@@ -4,6 +4,7 @@ import path from "node:path"
 import { expect, test } from "./application-test"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { loadLocalConfig } from "../src/config"
 
@@ -24,10 +25,12 @@ type FrameRecord = {
   gpuSubmissions: number
   gpuCommandBuffers: number
   detail: Record<string, number>
+  renderer?: { drawCalls: number; frameCalls: number; triangles: number; memory: Record<string, number>; passes: { identity: string; submissions: number; commandBuffers: number; renderPasses: number; drawCalls: number; milliseconds: number }[]; poseUploadBytes: number; indexUploadBytes: number; bundleInvalidations: number; timestampMilliseconds: number | null }
 }
 
-test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ page, context }, testInfo) => {
+test("profile headed grounded BLU Upward gameplay and completed multi-pass frames", async ({ page, context }, testInfo) => {
   const seconds = profileSampleSeconds()
+  await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => {
     let pointerLockElement: Element | null = null
     Object.defineProperty(document, "pointerLockElement", { configurable: true, get: () => pointerLockElement })
@@ -53,117 +56,8 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
       started: 0,
       startedTick: 0,
       startedDisplayFrame: 0,
-      rpcs: [] as RpcRecord[],
-      frames: [] as FrameRecord[],
-      longTasks: [] as { at: number; duration: number }[],
-      input: { started: 0, displayed: 0 },
-      workerQueueMaximum: 0,
-      gpu: {
-        submissions: 0, submitCalls: 0, commandBuffers: 0, buffers: 0, textures: 0,
-        destroyedBuffers: 0, destroyedTextures: 0, renderPasses: 0, computePasses: 0,
-      },
     }
     ;(window as any).__playsrcProfile = state
-
-    const NativeWorker = window.Worker
-    class ProfiledWorker extends NativeWorker {
-      readonly records = new Map<number, RpcRecord>()
-
-      constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
-          const record = this.records.get(event.data?.id)
-          if (record) {
-            record.finished = performance.now()
-            if (event.data?.timings) record.timings = event.data.timings
-            this.records.delete(event.data.id)
-          }
-        })
-      }
-
-      override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
-        if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string") {
-          const record: RpcRecord = {
-            kind: message.kind,
-            started: performance.now(),
-            bytes: message.command?.byteLength ?? message.batch?.byteLength ?? message.bsp?.byteLength ?? 0,
-          }
-          this.records.set(message.id, record)
-          state.rpcs.push(record)
-          state.workerQueueMaximum = Math.max(state.workerQueueMaximum, this.records.size)
-        }
-        super.postMessage(message, transferOrOptions as any)
-      }
-    }
-    Object.defineProperty(window, "Worker", { configurable: true, value: ProfiledWorker })
-
-    const instrument = (owner: any, method: string, counter: keyof typeof state.gpu) => {
-      const original = owner?.prototype?.[method]
-      if (typeof original !== "function") return
-      Object.defineProperty(owner.prototype, method, {
-        configurable: true,
-        writable: true,
-        value(this: unknown, ...arguments_: any[]) {
-          if (state.active) {
-            state.gpu[counter] += counter === "submissions" ? arguments_[0]?.length ?? 0 : 1
-            if (counter === "submissions") state.gpu.submitCalls += 1
-          }
-          return original.apply(this, arguments_)
-        },
-      })
-    }
-    instrument((globalThis as any).GPUQueue, "submit", "submissions")
-    instrument((globalThis as any).GPUCommandEncoder, "finish", "commandBuffers")
-    instrument((globalThis as any).GPUDevice, "createBuffer", "buffers")
-    instrument((globalThis as any).GPUDevice, "createTexture", "textures")
-    instrument((globalThis as any).GPUBuffer, "destroy", "destroyedBuffers")
-    instrument((globalThis as any).GPUTexture, "destroy", "destroyedTextures")
-    instrument((globalThis as any).GPUCommandEncoder, "beginRenderPass", "renderPasses")
-    instrument((globalThis as any).GPUCommandEncoder, "beginComputePass", "computePasses")
-
-    try {
-      new PerformanceObserver((list) => {
-        if (!state.active) return
-        for (const entry of list.getEntries()) state.longTasks.push({ at: entry.startTime, duration: entry.duration })
-      }).observe({ entryTypes: ["longtask"] })
-    } catch {}
-
-    let previous = performance.now()
-    const sample = (now: number) => {
-      const interval = now - previous
-      previous = now
-      if (state.active) {
-        const root = document.querySelector<HTMLElement>("main")
-        const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")
-        const profile = (window as any).__playsrcProfile
-        const detail = root?.dataset.performanceDetail
-        const displayFrame = Number(canvas?.dataset.displayFrame ?? 0)
-        if (state.input.started !== 0 && state.input.displayed === 0 && displayFrame > state.startedDisplayFrame) {
-          state.input.displayed = now
-        }
-        const completedDetail = detail && displayFrame > state.startedDisplayFrame ? JSON.parse(detail) : {}
-        const sky = canvas?.dataset.sky3dPass
-        const skyPass = sky ? JSON.parse(sky) : null
-        state.frames.push({
-          at: now,
-          interval,
-          position: (root?.dataset.cameraPosition ?? "").split(",").map(Number),
-          tick: Number(root?.dataset.snapshotTick ?? 0),
-          displayFrame,
-          drawSurfaces: profile.displacementVisibility?.drawSurfaces?.length ?? 0,
-          leaves: profile.displacementVisibility?.leaves?.length ?? 0,
-          props: canvas?.dataset.visibleMainStaticProps ? JSON.parse(canvas.dataset.visibleMainStaticProps).length : 0,
-          skySurfaces: skyPass?.skySurfaces ?? 0,
-          skyProps: skyPass?.skyProps ?? 0,
-          heapBytes: (performance as any).memory?.usedJSHeapSize ?? null,
-          gpuSubmissions: state.gpu.submissions,
-          gpuCommandBuffers: state.gpu.commandBuffers,
-          detail: Number(completedDetail.tick ?? -1) >= state.startedTick ? completedDetail : {},
-        })
-      }
-      requestAnimationFrame(sample)
-    }
-    requestAnimationFrame(sample)
   })
 
   await page.goto("/", { waitUntil: "load", timeout: 30_000 })
@@ -188,7 +82,7 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
   }
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready")
   if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
-  await page.waitForFunction(() => document.querySelector<HTMLElement>("main")?.dataset.movementMode !== "1", undefined, { timeout: 30_000, polling: 20 })
+  expect(await page.locator("main").getAttribute("data-movement-mode")).not.toBe("1")
 
   const canvas = page.locator("canvas.world-canvas")
   await expect(canvas).toBeVisible()
@@ -229,9 +123,9 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
       started: number
       startedTick: number
       startedDisplayFrame: number
-      frames: FrameRecord[]
       coverageSamples: CoverageSample[]
     }
+    const instrumentation = (window as any).__playsrcFrameProfiler
     const root = document.querySelector<HTMLElement>("main")!
     const readPosition = () => (root.dataset.cameraPosition ?? "").split(",").map(Number)
     const distance = (left: readonly number[], right: readonly number[]) => Math.hypot(...left.map((value, index) => value - right[index]!))
@@ -241,7 +135,7 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
       .filter((sample) => sample.distance > 450 && sample.distance < durationSeconds * 320 && Math.abs(sample.position[2] - start[2]) < 160)
       .sort((left, right) => right.distance - left.distance)
     const target = candidates[0]
-    if (!target) throw new Error("authored Upward grounded walking route is unavailable")
+    if (!target) throw new Error("authored grounded Upward gameplay route is unavailable")
 
     const turn = (goal: readonly number[]) => {
       const position = readPosition()
@@ -265,13 +159,14 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
     state.started = performance.now()
     state.startedTick = Number(root.dataset.snapshotTick ?? 0)
     state.startedDisplayFrame = Number(document.querySelector<HTMLCanvasElement>("canvas.world-canvas")?.dataset.displayFrame ?? 0)
-    ;(state as any).input.started = state.started
     state.active = true
+    instrumentation.active = true
     let lastTurn = state.started
     try {
       while (performance.now() - state.started < durationSeconds * 1_000) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
         if (root.dataset.phase !== "Ready") throw new Error(`Upward outdoor route entered ${root.dataset.phase}: ${root.dataset.detail}`)
+        if (root.dataset.movementMode === "1") throw new Error("grounded Upward profile unexpectedly entered noclip")
         const now = performance.now()
         if (now - lastTurn > 160 && distance(readPosition(), target.position) > 96) {
           turn(target.position)
@@ -280,15 +175,18 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
       }
     } finally {
       state.active = false
+      instrumentation.active = false
     }
     const end = readPosition()
     return {
+      startedMilliseconds: state.started,
       elapsedMilliseconds: Number((performance.now() - state.started).toFixed(3)),
       initial: start,
       target,
       final: end,
       traveled: Number(distance(start, end).toFixed(3)),
       terminalTick: Number(root.dataset.snapshotTick ?? 0),
+      movementMode: root.dataset.movementMode,
       phase: root.dataset.phase,
     }
   }, seconds)
@@ -302,15 +200,13 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
   const metricsAfter = await cdp.send("Performance.getMetrics")
   const after = await canvas.screenshot()
   const state = await page.evaluate(() => {
-    const profile = (window as any).__playsrcProfile
+    const profile = (window as any).__playsrcFrameProfiler
     return {
-      frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu,
-      input: profile.input, workerQueueMaximum: profile.workerQueueMaximum,
+      frames: profile.completedFrames, animationCallbacks: profile.animationCallbacks, rpcs: profile.worker,
+      longTasks: profile.longTasks, longAnimationFrames: profile.longAnimationFrames,
+      gpu: profile.counters, capabilities: profile.capabilities, losses: profile.losses, gpuTimestamps: profile.gpuTimestamps,
     }
-  }) as {
-    frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number }[]
-    gpu: Record<string, number>; input: { started: number; displayed: number }; workerQueueMaximum: number
-  }
+  }) as { frames: FrameRecord[]; animationCallbacks: number[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number }[]; longAnimationFrames: Record<string, any>[]; gpu: Record<string, number>; capabilities: Record<string, boolean>; losses: Record<string, unknown>[]; gpuTimestamps: { frame: number; milliseconds: number }[] }
 
   const allocationRows: { function: string; url: string; bytes: number }[] = []
   const visitAllocation = (node: { callFrame: { functionName: string; url: string }; selfSize: number; children: any[] }) => {
@@ -332,12 +228,10 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
         [name, summarizeDistribution(values.flatMap((record) => typeof record.timings?.[name] === "number" ? [record.timings[name]!] : []))])),
     }]
   }))
-  const displayedFrames = [...new Map(state.frames
-    .filter((frame) => Number.isFinite(frame.detail.total))
-    .map((frame) => [frame.displayFrame, frame])).values()]
-  const frameTimes = summarizeFrameTimes(state.frames.map((frame) => frame.interval))
-  const presentedIntervals = summarizeFrameTimes(displayedFrames.map((frame, index) =>
-    index === 0 ? frame.at - (state.frames[0]?.at ?? frame.at) : frame.at - displayedFrames[index - 1]!.at))
+  const displayedFrames = state.frames.filter((frame) => Number.isFinite(frame.detail.total))
+  const callbackIntervals = state.animationCallbacks.slice(1).map((value, index) => value - state.animationCallbacks[index]!)
+  const completedIntervals = displayedFrames.slice(1).map((frame, index) => frame.at - displayedFrames[index]!.at)
+  const frameTimes = summarizeFrameTimes(callbackIntervals)
   const presentedFramesPerSecond = Number((displayedFrames.length / route.elapsedMilliseconds * 1_000).toFixed(3))
   const frameWork = summarizeFrameTimes(displayedFrames.map((frame) => frame.detail.total!))
   const fields = ["models", "projectiles", "visibility", "particleWorker", "particleDecode", "audio", "dynamicItems", "world", "viewmodel", "render", "total"]
@@ -347,15 +241,17 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
   const metricDeltas = Object.fromEntries((metricsAfter.metrics as { name: string; value: number }[]).map((metric) => [metric.name, Number((metric.value - (metricValues.get(metric.name) ?? 0)).toFixed(6))]))
 
   const report = {
-    schema: "playsrc-tf2-upward-outdoor-profile-v1",
+    schema: "playsrc-tf2-upward-outdoor-profile-v2",
     sampleSeconds: seconds,
     route,
     ticksPerSecond,
     frameIntervals: frameTimes,
-    presentedFrameIntervals: presentedIntervals,
+    completedFrameIntervals: summarizeFrameTimes(completedIntervals),
+    presentedFrameIntervals: summarizeFrameTimes(completedIntervals),
     presentedFramesPerSecond,
-    inputToDisplayMilliseconds: state.input.displayed === 0 ? null : Number((state.input.displayed - state.input.started).toFixed(3)),
-    workerQueueMaximum: state.workerQueueMaximum,
+    inputToDisplayMilliseconds: displayedFrames[0] ? Number((displayedFrames[0].at - route.startedMilliseconds).toFixed(3)) : null,
+    workerQueueMaximum: state.gpu.workerMaximumPending,
+    animationCallbacks: state.animationCallbacks.length,
     frameWork,
     displayedFrames: displayedFrames.length,
     timings,
@@ -375,21 +271,53 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
     },
     worker,
     gpu: state.gpu,
+    renderer: {
+      drawCalls: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.drawCalls ?? 0)),
+      frameCalls: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.frameCalls ?? 0)),
+      triangles: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.triangles ?? 0)),
+      poseUploadBytes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.poseUploadBytes ?? 0)),
+      indexUploadBytes: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.indexUploadBytes ?? 0)),
+      bundleInvalidations: summarizeDistribution(displayedFrames.map(frame => frame.renderer?.bundleInvalidations ?? 0)),
+      memory: Object.fromEntries(Object.keys(displayedFrames[0]?.renderer?.memory ?? {}).map(key =>
+        [key, summarizeDistribution(displayedFrames.map(frame => frame.renderer?.memory[key] ?? 0))])),
+      passes: Object.fromEntries([...new Set(displayedFrames.flatMap(frame => frame.renderer?.passes.map(pass => pass.identity) ?? []))].map(identity => {
+        const passes = displayedFrames.flatMap(frame => frame.renderer?.passes.filter(pass => pass.identity === identity) ?? [])
+        return [identity, {
+          count: passes.length, submissions: passes.reduce((sum, pass) => sum + pass.submissions, 0),
+          commandBuffers: passes.reduce((sum, pass) => sum + pass.commandBuffers, 0),
+          renderPasses: passes.reduce((sum, pass) => sum + pass.renderPasses, 0),
+          drawCalls: summarizeDistribution(passes.map(pass => pass.drawCalls)),
+          milliseconds: summarizeDistribution(passes.map(pass => pass.milliseconds)),
+        }]
+      })),
+      timestamps: {
+        supported: state.capabilities.timestampQuery,
+        milliseconds: summarizeDistribution(state.gpuTimestamps.map(sample => sample.milliseconds)),
+        samples: state.gpuTimestamps,
+      },
+    },
     allocations: {
       heapBefore,
       heapAfter,
       sampledBytes: allocationRows.reduce((total, row) => total + row.bytes, 0),
       top: allocationRows.slice(0, 30),
-      heapSamples: summarizeDistribution(state.frames.flatMap((frame) => frame.heapBytes === null ? [] : [frame.heapBytes])),
+      heapSamples: summarizeDistribution([]),
     },
     longTasks: summarizeDistribution(state.longTasks.map((task) => task.duration)),
+    longAnimationFrames: {
+      supported: state.capabilities.longAnimationFrame,
+      duration: summarizeDistribution(state.longAnimationFrames.map(frame => frame.duration)),
+      blocking: summarizeDistribution(state.longAnimationFrames.map(frame => frame.blockingDuration)),
+      frames: state.longAnimationFrames,
+    },
+    losses: state.losses,
     browserMetrics: metricDeltas,
     cpu: summarizeCpuProfile(cpuProfile),
     pixels: {
       beforeSha256: createHash("sha256").update(before).digest("hex"),
       afterSha256: createHash("sha256").update(after).digest("hex"),
     },
-    worstFrames: state.frames.toSorted((left, right) => right.interval - left.interval).slice(0, 10),
+    worstFrames: displayedFrames.toSorted((left, right) => right.detail.total - left.detail.total).slice(0, 10),
   }
   const local = await loadLocalConfig(process.cwd())
   const directory = path.join(local.sourceCacheDir, "profiles", "upward-outdoors")
@@ -408,14 +336,14 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
     ticksPerSecond,
     frames: frameTimes,
     frameWork,
+    completedFrameIntervals: report.completedFrameIntervals,
     displayedFrames: displayedFrames.length,
-    presentedFramesPerSecond,
-    presentedFrameIntervals: presentedIntervals,
-    inputToDisplayMilliseconds: report.inputToDisplayMilliseconds,
-    workerQueueMaximum: state.workerQueueMaximum,
     outdoorFrames: report.visibility.outdoorFrames,
     staticProps: report.visibility.staticProps,
     gpu: state.gpu,
+    drawCalls: report.renderer.drawCalls,
+    gpuMemoryBytes: report.renderer.memory.total,
+    longAnimationFrames: report.longAnimationFrames.duration,
     worker: Object.fromEntries(Object.entries(worker).map(([kind, value]) => [kind, { calls: value.calls, p95: value.milliseconds.p95 }])),
     longTasks: report.longTasks,
     cpu: report.cpu.topSelf.slice(0, 8),
@@ -423,13 +351,19 @@ test("profile headed BLU spawn-to-outdoor Upward grounded movement", async ({ pa
 
   expect(route.elapsedMilliseconds).toBeGreaterThanOrEqual(seconds * 1_000)
   expect(route.traveled).toBeGreaterThan(120)
+  expect(route.movementMode).not.toBe("1")
   expect(ticksPerSecond).toBeGreaterThan(55)
-  expect(state.frames.length).toBeGreaterThan(20)
+  expect(state.animationCallbacks.length).toBeGreaterThan(20)
   expect(displayedFrames.length).toBeGreaterThan(20)
-  expect(report.inputToDisplayMilliseconds).not.toBeNull()
   expect(report.visibility.outdoorFrames).toBeGreaterThan(0)
   expect(report.visibility.drawSurfaces.max).toBeGreaterThan(0)
   expect(report.gpu.submissions).toBeGreaterThan(0)
+  expect(report.renderer.drawCalls.max).toBeGreaterThan(0)
+  expect(report.renderer.frameCalls.max).toBeGreaterThan(0)
+  expect(report.renderer.memory.textures.max).toBeGreaterThan(0)
+  if(report.renderer.timestamps.supported)expect(report.renderer.timestamps.milliseconds.count).toBeGreaterThan(0)
+  expect(report.gpu.validationErrors).toBe(0)
+  expect(report.losses).toEqual([])
   expect(report.worker.visibility?.calls ?? 0).toBeGreaterThan(0)
   expect(report.pixels.beforeSha256).not.toBe(report.pixels.afterSha256)
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready")
