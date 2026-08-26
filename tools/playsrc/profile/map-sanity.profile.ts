@@ -462,7 +462,7 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       console.log(`[map-lighting] ctf_2fort:soldier eyes=${model.eyes} lights=${model.localLights} luma=${pixels.meanLuma.toFixed(2)}`)
     }
     let ldr: Record<string, unknown> | undefined
-    if (!selectedTarget && target === "pl_upward") {
+    if ((!selectedTarget || process.env.PROFILE_MAP_SANITY_LDR === "1") && target === "pl_upward") {
       const generation = Number(await root.getAttribute("data-generation"))
       await consoleCommand(page, entry, "mat_hdr_level 0")
       await page.waitForFunction((previous) => {
