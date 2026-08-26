@@ -23,6 +23,19 @@ export type PresentedCamera = Readonly<{
   controller: AuthoredSkyCamera | null
 }>
 
+export function selectPresentedCamera(camera: Camera, override: Partial<Camera> | undefined): Camera {
+  return override && Array.isArray(override.position) && override.position.length === 3
+    && override.position.every(Number.isFinite)
+    && Number.isFinite(override.yawDegrees) && Number.isFinite(override.pitchDegrees)
+    ? Object.freeze({
+      ...camera,
+      position: Object.freeze([...override.position]) as readonly [number, number, number],
+      yawDegrees: override.yawDegrees!,
+      pitchDegrees: override.pitchDegrees!,
+    })
+    : camera
+}
+
 export function presentCamera(
   camera: Camera,
   revisions: PresentedCameraRevisions,
@@ -40,6 +53,27 @@ export function presentCamera(
     far: 32_768 * 1.732050807569,
   })
   return Object.freeze({ revisions: Object.freeze({ ...revisions }), main, sky, controller: authored })
+}
+
+function equalCamera(left: Camera | null, right: Camera | null): boolean {
+  return left === right || left !== null && right !== null
+    && left.position.every((value, axis) => Object.is(value, right.position[axis]))
+    && Object.is(left.yawDegrees, right.yawDegrees)
+    && Object.is(left.pitchDegrees, right.pitchDegrees)
+    && Object.is(left.verticalFovDegrees, right.verticalFovDegrees)
+    && Object.is(left.near, right.near)
+    && Object.is(left.far, right.far)
+}
+
+export function equivalentPresentedVisibility(left: PresentedCamera, right: PresentedCamera): boolean {
+  const first = left.revisions, second = right.revisions
+  if (first.generation !== second.generation || first.viewportRevision !== second.viewportRevision
+    || first.preparedRevision !== second.preparedRevision || first.tick !== second.tick
+    || !equalCamera(left.main, right.main) || !equalCamera(left.sky, right.sky)) return false
+  const original = left.controller, candidate = right.controller
+  return original === candidate || original !== null && candidate !== null
+    && original.origin.every((value, axis) => Object.is(value, candidate.origin[axis]))
+    && Object.is(original.scale, candidate.scale) && Object.is(original.area, candidate.area)
 }
 
 export function currentPresentedCamera(

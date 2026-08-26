@@ -116,7 +116,7 @@ import { DisplayBackpressure } from "./display-backpressure"
 import { CanvasFrameDiagnostics } from "./frame-diagnostics"
 import { tokenizeSourceCommand } from "./console-command"
 import { GAME_UI_FRAME_OWNER, HUD_FRAME_OWNER, LOADING_FRAME_OWNER, OPTIONS_FRAME_OWNER, visibleFrameOwners } from "./frame-owners"
-import { currentPresentedCamera, presentCamera } from "./presented-camera"
+import { currentPresentedCamera, equivalentPresentedVisibility, presentCamera, selectPresentedCamera, type PresentedCamera } from "./presented-camera"
 import {
   ApplicationFrameClock,
   ApplicationOperationLedger,
@@ -436,9 +436,7 @@ type PreparedPresentation=Readonly<{
   publication:SimulationPublication
   visibility:VisibilityResult
   skyVisibility?:VisibilityResult
-  visibilityPosition:readonly[number,number,number]
-  visibilityYaw:number
-  visibilityPitch:number
+  presentedCamera:PresentedCamera
   frame:Omit<Frame,"camera"|"visibility"|"deltaSeconds">
   modelMilliseconds:number
   projectileMilliseconds:number
@@ -4004,11 +4002,8 @@ export class Tf2Application {
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
     const geometryEvidenceRevision=profile?.geometryEvidenceRevision
     const authorityCamera=tf2Camera(prepared.snapshot,yaw,pitch)
-    const ordinaryCamera=Object.freeze({...authorityCamera,position:prepared.visibilityPosition})
-    const selectedCamera=override&&Array.isArray(override.position)&&override.position.length===3&&override.position.every(Number.isFinite)
-      &&Number.isFinite(override.yawDegrees)&&Number.isFinite(override.pitchDegrees)
-      ?Object.freeze({...ordinaryCamera,position:Object.freeze([...override.position]) as readonly[number,number,number],yawDegrees:override.yawDegrees!,pitchDegrees:override.pitchDegrees!})
-      :ordinaryCamera
+    const ordinaryCamera=Object.freeze({...authorityCamera,position:prepared.presentedCamera.main.position})
+    const selectedCamera=selectPresentedCamera(ordinaryCamera,override)
     const viewport=this.#viewport()
     const phaseStart=performance.now(),visibilityStart=phaseStart
     const presentationTimeSeconds = Number(prepared.snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS
@@ -4021,10 +4016,7 @@ export class Tf2Application {
     const camera = presentedCamera.main
     let visibility = prepared.visibility
     let skyVisibility = prepared.skyVisibility
-    const viewChanged = prepared.viewportRevision !== viewport.revision
-      || camera.position.some((value, index) => value !== prepared.visibilityPosition[index])
-      || camera.yawDegrees !== prepared.visibilityYaw
-      || camera.pitchDegrees !== prepared.visibilityPitch
+    const viewChanged = !equivalentPresentedVisibility(prepared.presentedCamera, presentedCamera)
     if (viewChanged) {
       this.#wasmCalls.visibility += 1
       const mainView = {
@@ -4379,6 +4371,9 @@ export class Tf2Application {
       const authoritativeCamera=tf2Camera(snapshot,this.#yaw,this.#pitch)
       const presentedEye=this.#predictedEye.sample(publication.interpolation)
       const camera=presentedEye?Object.freeze({...authoritativeCamera,position:presentedEye}):authoritativeCamera
+      const override=(globalThis as typeof globalThis&{__playsrcProfile?:{displacementCameraOverride?:Partial<Camera>}})
+        .__playsrcProfile?.displacementCameraOverride
+      const visibilityCamera=selectPresentedCamera(camera,override)
       const worldModelLighting = (
         origin: readonly [number, number, number],
         angles: readonly [number, number, number],
@@ -4469,17 +4464,17 @@ export class Tf2Application {
       }
       const lockerRequests=[...this.#lockerAnimations].flatMap(([identity,state])=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===identity),artifact=occurrence&&this.#artifacts!.models.get(occurrence.model);if(!occurrence||!artifact){this.#blockers.add(`TF2 regenerate model presentation unavailable: ${identity}`);return []}const closed=snapshot.tick>=state.closeTick,animation=closed?state.closeAnimation:state.openAnimation,start=closed?state.closeTick:state.openTick,elapsed=Math.max(0,Number(snapshot.tick-start)*0.015),previousTick=snapshot.tick>BigInt(publication.selectedTicks)?snapshot.tick-BigInt(publication.selectedTicks):0n,previousElapsed=Math.max(0,Number(previousTick-start)*0.015);return [Object.freeze({identity,model:occurrence.model,activity:animation,previousElapsedSeconds:Math.min(previousElapsed,elapsed),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*0.015,frameTimeSeconds:publication.selectedTicks*0.015,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:occurrence.skin,lod:0,bodygroups:Object.freeze([]),packedBody:state.body,lighting:worldModelLighting(occurrence.origin,occurrence.angles)})]})
       const mainVisibilityView={
-        position:camera.position,
-        yawDegrees:camera.yawDegrees,
-        pitchDegrees:camera.pitchDegrees,
-        verticalFovDegrees:camera.verticalFovDegrees,
+        position:visibilityCamera.position,
+        yawDegrees:visibilityCamera.yawDegrees,
+        pitchDegrees:visibilityCamera.pitchDegrees,
+        verticalFovDegrees:visibilityCamera.verticalFovDegrees,
         aspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),
-        near:camera.near,
-        far:camera.far,
+        near:visibilityCamera.near,
+        far:visibilityCamera.far,
         presentationTimeSeconds:Number(snapshot.tick)*0.015,
       }
       const skyController=this.#skyController(this.#artifacts)
-      const preparedCamera=presentCamera(camera,{generation,viewportRevision:viewport.revision,preparedRevision:this.#preparedRevision+1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,tick:snapshot.tick},skyController)
+      const preparedCamera=presentCamera(visibilityCamera,{generation,viewportRevision:viewport.revision,preparedRevision:this.#preparedRevision+1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,tick:snapshot.tick},skyController)
       const skyCamera=preparedCamera.sky
       const visibilityViews=skyController&&skyCamera?[mainVisibilityView,{
         position:skyCamera.position,visibilityPosition:skyController.origin,areaFilter:skyController.area,
@@ -4661,9 +4656,7 @@ export class Tf2Application {
         publication,
         visibility,
         skyVisibility,
-        visibilityPosition:camera.position,
-        visibilityYaw:camera.yawDegrees,
-        visibilityPitch:camera.pitchDegrees,
+        presentedCamera:preparedCamera,
         frame,
         modelMilliseconds,
         projectileMilliseconds,
