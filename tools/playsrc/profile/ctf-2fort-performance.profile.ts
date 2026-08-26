@@ -67,6 +67,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
       stage: "startup",
       rpcs: [] as RpcRecord[],
       frames: [] as FrameRecord[],
+      completedDisplays: [] as number[],
       longTasks: [] as { at: number; duration: number; stage: string }[],
       gpu: { buffers: 0, bufferBytes: 0, textures: 0, textureBytes: 0, residentTextureBytes: 0, compressedTextureBytes: 0, compressedTextures: 0, textureMipLevels: 0, pipelines: 0, submissions: 0, commandBuffers: 0, drawCalls: 0, writes: 0, writeBytes: 0 },
       transfer: { sentBytes: 0, receivedBytes: 0, transferredBytes: 0, sharedBytes: 0, receivedSharedBytes: 0, structuredCloneBytes: 0, messages: 0 },
@@ -396,8 +397,8 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   const state = await page.evaluate(() => {
     const profile = (window as any).__playsrcProfile
     const main = document.querySelector<HTMLElement>("main")!
-    return { frames: profile.frames, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu, transfer: profile.transfer, modelParticleUploads: profile.modelParticleUploads, load: JSON.parse(main.dataset.loadPerformance ?? "null"), hud: JSON.parse(main.dataset.hudPresentationProbe ?? "null"), panels: document.querySelectorAll("[data-vgui-name]").length }
-  }) as { frames: FrameRecord[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number; stage: string }[]; gpu: Record<string, number>; transfer: Record<string, number>; modelParticleUploads: Record<string, number>; load: unknown; hud: any; panels: number }
+    return { frames: profile.frames, completedDisplays: profile.completedDisplays, rpcs: profile.rpcs, longTasks: profile.longTasks, gpu: profile.gpu, transfer: profile.transfer, modelParticleUploads: profile.modelParticleUploads, load: JSON.parse(main.dataset.loadPerformance ?? "null"), hud: JSON.parse(main.dataset.hudPresentationProbe ?? "null"), panels: document.querySelectorAll("[data-vgui-name]").length }
+  }) as { frames: FrameRecord[]; completedDisplays: number[]; rpcs: RpcRecord[]; longTasks: { at: number; duration: number; stage: string }[]; gpu: Record<string, number>; transfer: Record<string, number>; modelParticleUploads: Record<string, number>; load: unknown; hud: any; panels: number }
 
   const allocationRows: { function: string; url: string; bytes: number }[] = []
   const visit = (node: { callFrame: { functionName: string; url: string }; selfSize: number; children: any[] }) => {
@@ -423,7 +424,11 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
     sampleSeconds: seconds,
     loading: { bspBytes: bsp.byteLength, prefetchedBspRequests: memoryBspRequests, networkDownloadMilliseconds, initializationExcludingDownloadMilliseconds: playableAt - started - networkDownloadMilliseconds, downloadedBytes: downloads.reduce((total, download) => total + download.bytes, 0), mapToTeamMenuMilliseconds: teamMenuAt - started, soldierSelectionMilliseconds: playableAt - soldierStarted, mapToSoldierPlayableMilliseconds: playableAt - started, phases: state.load },
     simulation: { ticksPerSecond, firstTick: route.firstTick, finalTick: route.finalTick, bots: route.bots },
-    actualVisibleFrames: { ...summarizeFrameTimes(state.frames.map((frame) => frame.interval)), firstDisplay: route.firstDisplay, finalDisplay: route.finalDisplay },
+    actualVisibleFrames: {
+      ...summarizeFrameTimes(state.completedDisplays.slice(1).map((at, index) => at - state.completedDisplays[index]!)),
+      firstDisplay: route.firstDisplay, finalDisplay: route.finalDisplay,
+      sampledAnimationFrames: state.frames.length, completedPresentations: state.completedDisplays.length,
+    },
     visibility: { surfaces: summarizeDistribution(state.frames.map((frame) => frame.surfaces)), props: summarizeDistribution(state.frames.map((frame) => frame.props)), skyProps: summarizeDistribution(state.frames.map((frame) => frame.skyProps)), totalStaticProps: props.total, configuration: props },
     drawCalls: summarizeDistribution(state.frames.map((frame) => frame.drawCalls)),
     timings: Object.fromEntries(["models", "bots", "visibility", "world", "viewmodel", "render", "total"].map((name) => [name, summarizeDistribution(state.frames.flatMap((frame) => Number.isFinite(frame.detail[name]) ? [frame.detail[name]!] : []))])),

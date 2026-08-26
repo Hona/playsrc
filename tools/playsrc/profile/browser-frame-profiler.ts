@@ -22,6 +22,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       computePipelines: 0, bundleEncodes: 0, bundleEncodeMilliseconds: 0, queueWriteBytes: 0, textureWriteBytes: 0,
       destroyedBuffers: 0, destroyedTextures: 0, computePasses: 0,
       workerPending: 0, workerMaximumPending: 0, validationErrors: 0,
+      nodeBuilderMisses: 0, nodeBuilderMilliseconds: 0, warmedPipelineVariants: 0, pipelineWarmupMilliseconds: 0,
     },
   }
   Object.defineProperty(host, "__playsrcFrameProfiler", { configurable: true, value: state })

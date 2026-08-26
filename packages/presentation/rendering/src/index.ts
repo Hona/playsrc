@@ -20,13 +20,15 @@ import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
-import { browserFrameProfiler, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
+import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { writeParticleQuad } from "./particle-geometry"
 import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
+import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
+import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
@@ -833,6 +835,7 @@ export interface Renderer {
   readonly deviceGeneration: number
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
+  prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   completeFrameProfile(): RendererFrameProfile | undefined
@@ -1006,8 +1009,8 @@ type SceneResources = {
   skyStaticProps:THREE.Group
   staticPropInstances: readonly StaticPropResource[]
   staticPropBatches: readonly Readonly<{ ownership: 0 | 1; batch: StaticPropBatch }>[]
-  reflectionTarget: THREE.RenderTarget
-  refractionTarget: THREE.RenderTarget
+  reflectionTarget: THREE.RenderTarget | null
+  refractionTarget: THREE.RenderTarget | null
   result: SceneResult
   disposed: boolean
 }
@@ -1416,6 +1419,8 @@ class RendererOwner implements Renderer {
   #sceneGeneration = 0
   #backend!: Backend
   #instrumentation?: RendererFrameInstrumentation
+  #framePresentation?: WebGpuFramePresentation<THREE.RenderTarget>
+  #pendingDepthReset = false
   #timestampFrame = 0
   #timestampPending = false
   #scene = new THREE.Scene()
@@ -1451,6 +1456,7 @@ class RendererOwner implements Renderer {
   #visibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #nextVisibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #visibleStaticSources: [readonly number[], readonly number[]] = [Object.freeze([]), Object.freeze([])]
+  #staticVisibilityInputs: [Readonly<{ scene: SceneResources; leaves: readonly number[]; camera: readonly number[]; frustumCull: boolean }> | undefined, Readonly<{ scene: SceneResources; leaves: readonly number[]; camera: readonly number[]; frustumCull: boolean }> | undefined] = [undefined, undefined]
   #visibleWorldMarkFaces = new Set<number>()
   #visibleProjectedMarkCount = 0
   #particleBatchCount=0
@@ -1473,6 +1479,7 @@ class RendererOwner implements Renderer {
   #skyWorldVisibilitySurfaces?: Uint32Array
   #skyWorldVisibilityIdentity?: string
   #restoreOrderedBundles?: () => void
+  #restoreNodeBuilderInstrumentation?: () => void
   #active?: SceneResources
   #renderBusy = false
   #loadOrdinal = 0
@@ -1542,6 +1549,8 @@ class RendererOwner implements Renderer {
   }
 
   completeFrameProfile(): RendererFrameProfile | undefined {
+    if (this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
+    this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     const profile = browserFrameProfiler()
     if (result && profile?.capabilities.timestampQuery && ++this.#timestampFrame % 32 === 0 && !this.#timestampPending) {
@@ -1562,6 +1571,37 @@ class RendererOwner implements Renderer {
 
   #pass<T>(identity: string, callback: () => T): T {
     return this.#instrumentation ? this.#instrumentation.pass(identity, callback) : callback()
+  }
+
+  #drawPass(identity: string, scene: THREE.Scene, camera: THREE.Camera): void {
+    if (!this.#pendingDepthReset) {
+      this.#pass(identity, () => this.#backend.render(scene, camera))
+      return
+    }
+    const autoClear = this.#backend.autoClear
+    const autoClearColor = this.#backend.autoClearColor
+    const autoClearDepth = this.#backend.autoClearDepth
+    const autoClearStencil = this.#backend.autoClearStencil
+    this.#pendingDepthReset = false
+    this.#backend.autoClear = true
+    this.#backend.autoClearColor = false
+    this.#backend.autoClearDepth = true
+    this.#backend.autoClearStencil = false
+    try {
+      this.#pass(identity, () => this.#backend.render(scene, camera))
+    } finally {
+      this.#backend.autoClear = autoClear
+      this.#backend.autoClearColor = autoClearColor
+      this.#backend.autoClearDepth = autoClearDepth
+      this.#backend.autoClearStencil = autoClearStencil
+    }
+  }
+
+  #resetDepth(identity: string): void {
+    this.#pass(identity, () => {
+      if (this.#framePresentation?.active) this.#pendingDepthReset = true
+      else this.#backend.clearDepth()
+    })
   }
 
   captureGeometryEvidence(camera: Camera, ownership: "main" | "sky3d" = "main"): GeometryEvidence {
@@ -1757,6 +1797,7 @@ class RendererOwner implements Renderer {
     if (
       !Number.isSafeInteger(x) || !Number.isSafeInteger(y)
       || x < 0 || y < 0
+      || !scene.reflectionTarget || !scene.refractionTarget
       || x >= scene.reflectionTarget.width || y >= scene.reflectionTarget.height
     ) {
       throw new RenderingError("MalformedInput", "Water target evidence coordinates are invalid")
@@ -1813,8 +1854,13 @@ class RendererOwner implements Renderer {
           profiler,
           (backend.backend.device as { features?: { has(feature: string): boolean } } | undefined)?.features,
         )
+        this.#restoreNodeBuilderInstrumentation = installNodeBuilderInstrumentation(
+          (backend as unknown as { _nodes: { _createNodeBuilder: (...arguments_: any[]) => any } })._nodes,
+          profiler,
+        )
       }
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
+      this.#framePresentation = new WebGpuFramePresentation(backend as unknown as FramePresentationBackend<THREE.RenderTarget>)
       this.#camera.coordinateSystem = backend.coordinateSystem
       this.#viewCamera.coordinateSystem = backend.coordinateSystem
       this.#modelPanelCamera.coordinateSystem = backend.coordinateSystem
@@ -1845,6 +1891,8 @@ class RendererOwner implements Renderer {
     } catch (error) {
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
+      this.#restoreNodeBuilderInstrumentation?.()
+      this.#restoreNodeBuilderInstrumentation = undefined
       backend.dispose()
       try {
         context?.unconfigure()
@@ -2034,6 +2082,7 @@ class RendererOwner implements Renderer {
       this.#world.add(staged.group)
       this.#world.updateMatrixWorld(true)
       try {
+        await this.#prepareReachablePipelines(staged, request.signal, ordinal)
         await this.#prepareWaterPipelines(staged, request.environment, request.signal, ordinal)
       } finally {
         this.#world.remove(staged.group)
@@ -2076,6 +2125,53 @@ class RendererOwner implements Renderer {
     }
   }
 
+  async prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void> {
+    this.#requireReady()
+    if (!this.#active) throw new RenderingError("InvalidState", "pipeline preparation has no active map")
+    if (leaves.some(leaf => !Number.isSafeInteger(leaf) || leaf < 0)) {
+      throw new RenderingError("MalformedInput", "pipeline preparation visibility leaves are invalid")
+    }
+    this.#setCamera(camera)
+    await this.#prepareReachablePipelines(this.#active, undefined, this.#loadOrdinal, leaves)
+  }
+
+  async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
+    this.#checkAbort(signal, ordinal)
+    const visibleLeaves = new Set(leaves)
+    const eligibleProps = new Set(scene.staticPropInstances.filter(prop =>
+      prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
+    ))
+    const eligibleGroups = new Set([...eligibleProps].map(prop => prop.object))
+    const eligibleSources = new Set([...eligibleProps].map(prop => prop.source))
+    const batchSources = new Map(scene.staticPropBatches.map(({ batch }) => [batch.mesh, batch.sources] as const))
+    const visibility = prepareReachablePipelineVisibility(
+      scene.group,
+      scene.waterMeshes.map(water => water.mesh),
+      [scene.projectedMarkGroup, ...(leaves ? [] : [scene.mainStaticProps, scene.skyStaticProps, scene.mainModelOccurrences])],
+      mesh => {
+        const sources = batchSources.get(mesh)
+        if (sources) return sources.some(source => eligibleSources.has(source))
+        for (let parent: THREE.Object3D | null = mesh; parent; parent = parent.parent) {
+          if (eligibleGroups.has(parent)) return true
+          if (parent === scene.mainStaticProps || parent === scene.skyStaticProps) return false
+        }
+        return true
+      },
+    )
+    const started = performance.now()
+    try {
+      await this.#backend.compileAsync(this.#scene, this.#camera)
+      this.#checkAbort(signal, ordinal)
+      const profile = browserFrameProfiler()
+      if (profile) {
+        profile.counters.warmedPipelineVariants = (profile.counters.warmedPipelineVariants ?? 0) + visibility.variants
+        profile.counters.pipelineWarmupMilliseconds = (profile.counters.pipelineWarmupMilliseconds ?? 0) + performance.now() - started
+      }
+    } finally {
+      visibility.restore()
+    }
+  }
+
   async #prepareWaterPipelines(
     scene: SceneResources,
     environment: EnvironmentInput | undefined,
@@ -2090,8 +2186,8 @@ class RendererOwner implements Renderer {
     }
     const centerX = (volume.bounds[0][0] + volume.bounds[1][0]) * 0.5
     const centerY = (volume.bounds[0][1] + volume.bounds[1][1]) * 0.5
-    this.#backend.initRenderTarget(scene.reflectionTarget)
-    this.#backend.initRenderTarget(scene.refractionTarget)
+    if (scene.reflectionTarget) this.#backend.initRenderTarget(scene.reflectionTarget)
+    if (scene.refractionTarget) this.#backend.initRenderTarget(scene.refractionTarget)
     const initializedTextures = new Set<THREE.Texture>()
     for (const water of scene.waterMaterials.values()) {
       const texture = scene.textureResidency.selected(water.normalConsumer)
@@ -2108,8 +2204,8 @@ class RendererOwner implements Renderer {
     const restoreSceneVisibility = prepareWaterPipelineVisibility(scene.group, scene.waterMeshes.map((water) => water.mesh))
     try {
       const combinations = [
-        { target: scene.reflectionTarget, height: volume.surfaceZ + depth * 0.5, keep: "above" as const },
-        { target: scene.refractionTarget, height: volume.surfaceZ + depth * 0.5, keep: "below" as const },
+        ...(scene.reflectionTarget ? [{ target: scene.reflectionTarget, height: volume.surfaceZ + depth * 0.5, keep: "above" as const }] : []),
+        ...(scene.refractionTarget ? [{ target: scene.refractionTarget, height: volume.surfaceZ + depth * 0.5, keep: "below" as const }] : []),
         { target: null, height: volume.surfaceZ + depth * 0.5, keep: null },
         { target: null, height: volume.surfaceZ - depth * 0.5, keep: "below" as const },
       ]
@@ -2196,10 +2292,17 @@ class RendererOwner implements Renderer {
     let combatDecalTexture: THREE.Texture | null = null
     const waterMeshes: WaterMeshResource[]=[]
     const targetWidth=Math.max(1,Number((this.#canvas as {width?:number}).width??1)),targetHeight=Math.max(1,Number((this.#canvas as {height?:number}).height??1))
-    const reflectionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
-    const refractionTarget=disposables.add(new THREE.RenderTarget(targetWidth,targetHeight,{depthBuffer:true}))
-    reflectionTarget.texture.colorSpace=THREE.NoColorSpace
-    refractionTarget.texture.colorSpace=THREE.NoColorSpace
+    let reflectionTarget: THREE.RenderTarget | null = null
+    let refractionTarget: THREE.RenderTarget | null = null
+    const waterTarget = (kind: "reflection" | "refraction"): THREE.RenderTarget => {
+      const retained = kind === "reflection" ? reflectionTarget : refractionTarget
+      if (retained) return retained
+      const target = disposables.add(new THREE.RenderTarget(targetWidth, targetHeight, { depthBuffer: true }))
+      target.texture.colorSpace = THREE.NoColorSpace
+      if (kind === "reflection") reflectionTarget = target
+      else refractionTarget = target
+      return target
+    }
     const waterMaterials = new Map<string, WaterMaterialResource>()
     const refractMaterials = new Map<string, RefractMaterialResource>()
     const worldMaterials = new Map<string, WorldMaterialResource>()
@@ -2482,8 +2585,8 @@ class RendererOwner implements Renderer {
         geometry,
         state: shaderState(selectedMode),
         normal: initialNormal,
-        reflection: reflectionBinding ? reflectionTarget.texture : null,
-        refraction: refractionBinding ? refractionTarget.texture : null,
+        reflection: reflectionBinding && !state.forceCheap.value ? waterTarget("reflection").texture : null,
+        refraction: refractionBinding && !state.forceCheap.value ? waterTarget("refraction").texture : null,
         cubemap,
         refractionDepthEncoding: refractionBinding && state.aboveWater.value ? "source-water-fog-alpha" : null,
         linearLightScale: exposureUniform,
@@ -2497,7 +2600,7 @@ class RendererOwner implements Renderer {
           state: shaderState("cheap"),
           normal: initialNormal,
           reflection: null,
-          refraction: refractionBinding ? refractionTarget.texture : null,
+          refraction: refractionBinding ? waterTarget("refraction").texture : null,
           cubemap,
           refractionDepthEncoding: refractionBinding && state.aboveWater.value ? "source-water-fog-alpha" : null,
           linearLightScale: exposureUniform,
@@ -3346,8 +3449,8 @@ class RendererOwner implements Renderer {
         this.#backend.setScissorTest(true)
         this.#backend.autoClear = panel.background === "opaque"
         this.#modelPanelScene.background = panel.background === "opaque" ? new THREE.Color(0x000000) : null
-        if (panel.background === "transparent") this.#pass("hud-depth-reset", () => this.#backend.clearDepth())
-        this.#pass("hud-model", () => this.#backend.render(this.#modelPanelScene, this.#modelPanelCamera))
+        if (panel.background === "transparent") this.#resetDepth("hud-depth-reset")
+        this.#drawPass("hud-model", this.#modelPanelScene, this.#modelPanelCamera)
         let primitives = 0
         retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) primitives += 1 })
         result.push({ identity: panel.identity, model: panel.model, skin: panel.skin, primitives })
@@ -3528,6 +3631,7 @@ class RendererOwner implements Renderer {
       let waterStateRestored = true
       let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
+        this.#framePresentation?.begin()
         const worldStarted=performance.now()
         sky3dPass=this.#renderSky3dPass(frame)
         const waterResult=this.#renderWaterPasses(frame,sky3dPass!==undefined)
@@ -3546,9 +3650,9 @@ class RendererOwner implements Renderer {
           try {
             const phase = executeViewModelDepthPhase({
               depthRange: viewModelDepthRange,
-              clearWorldDepth: () => this.#pass("viewmodel-depth-reset", () => this.#backend.clearDepth()),
+              clearWorldDepth: () => this.#resetDepth("viewmodel-depth-reset"),
               setDepthRange: ([minimum, maximum]) => this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight, minimum, maximum),
-              draw: () => this.#pass("viewmodel", () => this.#backend.render(this.#scene, this.#viewCamera)),
+              draw: () => this.#drawPass("viewmodel", this.#scene, this.#viewCamera),
             })
             viewModelPass = Object.freeze({
               depthRange: phase.depthRange,
@@ -3564,11 +3668,13 @@ class RendererOwner implements Renderer {
         }
         const overlay = frame.visibility?.water.visibleWater?.overlay
         if (overlay) this.#renderUnderwaterOverlay(overlay)
+        if (this.#exposureSampler && this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
         this.#exposureSampler?.sample(
           Math.floor(this.#viewportWidth * this.#devicePixelRatio),
           Math.floor(this.#viewportHeight * this.#devicePixelRatio),
         )
       }
+      if (frame.capture && this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
       return Object.freeze({
         deviceGeneration: this.#deviceGeneration,
@@ -3588,6 +3694,7 @@ class RendererOwner implements Renderer {
         capture,
       })
     } finally {
+      if (this.#renderBusy && this.#pendingDepthReset) this.#pendingDepthReset = false
       this.#renderBusy = false
     }
   }
@@ -3689,6 +3796,15 @@ class RendererOwner implements Renderer {
   #setStaticPropVisibility(leaves: readonly number[], ownership: 0 | 1, camera: Camera, frustumCull = true): void {
     const scene = this.#active
     if (!scene) return
+    const cameraIdentity = [
+      ...camera.position, camera.yawDegrees, camera.pitchDegrees,
+      camera.verticalFovDegrees, camera.near, camera.far, this.#viewportWidth, this.#viewportHeight,
+    ]
+    const previous = this.#staticVisibilityInputs[ownership]
+    if (previous?.scene === scene && previous.frustumCull === frustumCull
+      && previous.camera.every((value, index) => value === cameraIdentity[index])
+      && previous.leaves.length === leaves.length
+      && previous.leaves.every((value, index) => value === leaves[index])) return
     if (frustumCull) {
       this.#camera.updateMatrixWorld()
       this.#staticPropFrustum.setFromProjectionMatrix(this.#staticPropProjection.multiplyMatrices(
@@ -3759,6 +3875,7 @@ class RendererOwner implements Renderer {
       for (const index of next) sources.push(scene.staticPropInstances[index]!.source)
       this.#visibleStaticSources[ownership] = Object.freeze(sources)
     }
+    this.#staticVisibilityInputs[ownership] = { scene, leaves, camera: cameraIdentity, frustumCull }
   }
 
   #runtimeStaticPropScreen(): FrameResult["runtimeStaticPropScreen"] {
@@ -4105,9 +4222,9 @@ class RendererOwner implements Renderer {
       if (scene.skyGroup) scene.skyGroup.visible = true
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
-      this.#pass("sky3d", () => this.#backend.render(this.#scene, this.#camera))
+      this.#drawPass("sky3d", this.#scene, this.#camera)
       rendered = true
-      this.#pass("sky-depth-reset", () => this.#backend.clearDepth())
+      this.#resetDepth("sky-depth-reset")
     } finally {
       this.#setCamera(frame.camera)
       scene.worldBundle.visible = mainWorldVisible
@@ -4156,7 +4273,7 @@ class RendererOwner implements Renderer {
     const plan = frame.visibility?.water
     if (!plan) {
       this.#backend.autoClear = !preserveColor
-      this.#pass("main", () => this.#backend.render(this.#scene, this.#camera))
+      this.#drawPass("main", this.#scene, this.#camera)
       this.#backend.autoClear = true
       return Object.freeze({ passes: Object.freeze(["main"] as const), timings: Object.freeze([]), restored: true })
     }
@@ -4170,7 +4287,7 @@ class RendererOwner implements Renderer {
       this.#backend.autoClear = !preserveColor
       this.#scene.background = soleMain.drawSky2d ? background : null
       try {
-        this.#pass("main", () => this.#backend.render(this.#scene, this.#camera))
+        this.#drawPass("main", this.#scene, this.#camera)
       } finally {
         this.#scene.background = background
       }
@@ -4253,14 +4370,14 @@ class RendererOwner implements Renderer {
         try {
           this.#backend.setRenderTarget(
             pass.kind === "reflection"
-              ? scene.reflectionTarget
+              ? scene.reflectionTarget ?? (() => { throw new RenderingError("MissingInput", "Water reflection target was not authored") })()
               : pass.kind === "refraction"
-                ? scene.refractionTarget
-                : null,
+                ? scene.refractionTarget ?? (() => { throw new RenderingError("MissingInput", "Water refraction target was not authored") })()
+                : this.#framePresentation?.target ?? null,
           )
           this.#backend.autoClear = pass.kind === "main" && preserveColor ? false : pass.kind !== "intersection"
           const renderStarted = performance.now()
-          this.#pass(pass.kind, () => this.#backend.render(this.#scene, this.#camera))
+          this.#drawPass(pass.kind, this.#scene, this.#camera)
           renderMilliseconds = performance.now() - renderStarted
           completed.push(pass.kind)
         } finally {
@@ -4277,7 +4394,7 @@ class RendererOwner implements Renderer {
       }
     } finally {
       uniforms.enabled.value = 0
-      this.#backend.setRenderTarget(null)
+      this.#backend.setRenderTarget(this.#framePresentation?.target ?? null)
       this.#backend.autoClear = true
       this.#backend.setClearColor(previousClearColor, previousClearAlpha)
       this.#setSceneFog(previousFog as THREE.Fog | null)
@@ -4877,7 +4994,7 @@ class RendererOwner implements Renderer {
       physicalHeight: Math.floor(this.#cssHeight * this.#devicePixelRatio),
     })
     try {
-      if(this.#active&&width>0&&height>0){this.#active.reflectionTarget.setSize(width,height);this.#active.refractionTarget.setSize(width,height)}
+      if(this.#active&&width>0&&height>0){this.#active.reflectionTarget?.setSize(width,height);this.#active.refractionTarget?.setSize(width,height)}
       this.#backend.setPixelRatio(devicePixelRatio)
       this.#backend.setSize(cssWidth, cssHeight, false)
       if (this.#active) {
@@ -4897,7 +5014,7 @@ class RendererOwner implements Renderer {
       this.#pacing.suspend(this.#suspended)
       this.#attachmentGeneration += 1
     } catch (error) {
-      if(this.#active&&prior.physicalWidth>0&&prior.physicalHeight>0){this.#active.reflectionTarget.setSize(prior.physicalWidth,prior.physicalHeight);this.#active.refractionTarget.setSize(prior.physicalWidth,prior.physicalHeight)}
+      if(this.#active&&prior.physicalWidth>0&&prior.physicalHeight>0){this.#active.reflectionTarget?.setSize(prior.physicalWidth,prior.physicalHeight);this.#active.refractionTarget?.setSize(prior.physicalWidth,prior.physicalHeight)}
       this.#backend.setPixelRatio(prior.devicePixelRatio)
       this.#backend.setSize(prior.cssWidth,prior.cssHeight,false)
       this.#viewportWidth=prior.viewportWidth;this.#viewportHeight=prior.viewportHeight;this.#cssWidth=prior.cssWidth;this.#cssHeight=prior.cssHeight;this.#devicePixelRatio=prior.devicePixelRatio;this.#suspended=prior.suspended;this.#camera.aspect=prior.aspect;this.#viewCamera.aspect=prior.aspect;this.#camera.updateProjectionMatrix();this.#viewCamera.updateProjectionMatrix()
@@ -4978,6 +5095,8 @@ class RendererOwner implements Renderer {
       }
       this.#restoreOrderedBundles?.()
       this.#restoreOrderedBundles = undefined
+      this.#restoreNodeBuilderInstrumentation?.()
+      this.#restoreNodeBuilderInstrumentation = undefined
       this.#exposureSampler?.dispose()
       this.#exposureSampler = undefined
       oldBackend.dispose()
@@ -5000,6 +5119,7 @@ class RendererOwner implements Renderer {
         )
         this.#world.add(rebuilt.group)
         this.#world.updateMatrixWorld(true)
+        await this.#prepareReachablePipelines(rebuilt, undefined, this.#loadOrdinal)
         await this.#prepareWaterPipelines(
           rebuilt,
           active.loadRequest.environment,
@@ -5077,6 +5197,8 @@ class RendererOwner implements Renderer {
     }
     this.#restoreOrderedBundles?.()
     this.#restoreOrderedBundles = undefined
+    this.#restoreNodeBuilderInstrumentation?.()
+    this.#restoreNodeBuilderInstrumentation = undefined
     this.#exposureSampler?.dispose()
     this.#exposureSampler = undefined
     this.#backend.dispose()

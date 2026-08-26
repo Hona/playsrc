@@ -25,7 +25,7 @@ type FrameRecord = {
   gpuSubmissions: number
   gpuCommandBuffers: number
   detail: Record<string, number>
-  renderer?: { drawCalls: number; frameCalls: number; triangles: number; memory: Record<string, number>; passes: { identity: string; submissions: number; commandBuffers: number; renderPasses: number; drawCalls: number; milliseconds: number }[]; poseUploadBytes: number; indexUploadBytes: number; indirectUploadBytes: number; bundleInvalidations: number; bundleEncodes: number; bundleEncodeMilliseconds: number; timestampMilliseconds: number | null }
+  renderer?: { drawCalls: number; frameCalls: number; triangles: number; memory: Record<string, number>; passes: { identity: string; submissions: number; commandBuffers: number; renderPasses: number; drawCalls: number; milliseconds: number; renderPipelines: number; nodeBuilderMisses: number }[]; poseUploadBytes: number; indexUploadBytes: number; indirectUploadBytes: number; bundleInvalidations: number; bundleEncodes: number; bundleEncodeMilliseconds: number; timestampMilliseconds: number | null }
 }
 
 test("profile headed grounded BLU Upward gameplay and completed multi-pass frames", async ({ page, context }, testInfo) => {
@@ -289,6 +289,8 @@ test("profile headed grounded BLU Upward gameplay and completed multi-pass frame
           count: passes.length, submissions: passes.reduce((sum, pass) => sum + pass.submissions, 0),
           commandBuffers: passes.reduce((sum, pass) => sum + pass.commandBuffers, 0),
           renderPasses: passes.reduce((sum, pass) => sum + pass.renderPasses, 0),
+          renderPipelines: passes.reduce((sum, pass) => sum + pass.renderPipelines, 0),
+          nodeBuilderMisses: passes.reduce((sum, pass) => sum + pass.nodeBuilderMisses, 0),
           drawCalls: summarizeDistribution(passes.map(pass => pass.drawCalls)),
           milliseconds: summarizeDistribution(passes.map(pass => pass.milliseconds)),
         }]

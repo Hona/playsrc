@@ -1705,6 +1705,15 @@ export class Tf2Application {
       }
       this.#requireOperation(operation)
       this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
+      const warmupCamera=tf2Camera(this.#snapshot,this.#yaw,this.#pitch)
+      const warmupViewport=this.#viewport()
+      const warmupVisibility=await this.#client!.visibility(this.#generation,{
+        position:warmupCamera.position,yawDegrees:warmupCamera.yawDegrees,pitchDegrees:warmupCamera.pitchDegrees,
+        verticalFovDegrees:warmupCamera.verticalFovDegrees,aspectRatio:warmupViewport.width/warmupViewport.height,
+        near:warmupCamera.near,far:warmupCamera.far,presentationTimeSeconds:Number(this.#snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,
+      })
+      await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
+      this.#requireOperation(operation)
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
@@ -4092,6 +4101,7 @@ export class Tf2Application {
       })])
       hudModelMilliseconds=result.milliseconds
     }
+    const rendererProfile=renderer.completeFrameProfile()
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
     if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
     this.#canvasDiagnostics.publish(this.#canvas, rendered)
@@ -4125,8 +4135,8 @@ export class Tf2Application {
     this.#lastRenderedViewRevision=viewRevision
     this.#lastRenderedTick=prepared.snapshot.tick
     this.#displayFrame+=1
+    if(profile?.stage==="outdoor"&&Array.isArray(profile.completedDisplays))profile.completedDisplays.push(performance.now())
     const frameProfiler=browserFrameProfiler()
-    const rendererProfile=renderer.completeFrameProfile()
     const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
     if(frameProfiler?.active&&rendererProfile){
       frameProfiler.counters.completedFrames!+=1

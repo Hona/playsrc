@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { RendererFrameInstrumentation, type BrowserFrameProfiler } from "../src/frame-instrumentation"
+import { installNodeBuilderInstrumentation, RendererFrameInstrumentation, type BrowserFrameProfiler } from "../src/frame-instrumentation"
 
 function fixture(active = true) {
   let resets = 0
@@ -55,5 +55,23 @@ describe("completed multi-pass renderer instrumentation", () => {
     expect(() => instrumentation.pass("main", () => { throw new Error("failed") })).toThrow("failed")
     expect(profile.currentPass).toBeNull()
     expect(instrumentation.complete()?.passes[0]?.identity).toBe("main")
+  })
+
+  test("attributes actual node builds and pipeline creation to the conceptual pass", () => {
+    const { info, profile } = fixture()
+    profile.counters.renderPipelines = 0
+    profile.counters.nodeBuilderMisses = 0
+    const manager = { _createNodeBuilder: () => ({ shader: "authored" }) }
+    const original = manager._createNodeBuilder
+    const restore = installNodeBuilderInstrumentation(manager, profile)
+    const instrumentation = new RendererFrameInstrumentation(info, profile)
+    instrumentation.pass("main", () => {
+      manager._createNodeBuilder()
+      profile.counters.renderPipelines! += 1
+    })
+    expect(instrumentation.complete()?.passes[0]).toMatchObject({ identity: "main", renderPipelines: 1, nodeBuilderMisses: 1 })
+    expect(profile.counters.nodeBuilderMilliseconds).toBeGreaterThanOrEqual(0)
+    restore()
+    expect(manager._createNodeBuilder).toBe(original)
   })
 })
