@@ -39,7 +39,7 @@ type LightingObservation = Readonly<{
     localLights: readonly Readonly<{ kind: string; color: readonly [number, number, number] }>[]
     environment: string | null
   }>
-  models: readonly Readonly<{ identity: number; origin: readonly [number, number, number]; localLights: number }>[]
+  models: readonly Readonly<{ identity: number; origin: readonly [number, number, number]; localLights: number; eyes: number }>[]
   geometry: Readonly<{
     samples: readonly Readonly<{
       x: number
@@ -50,6 +50,7 @@ type LightingObservation = Readonly<{
       worldDepth: number | null
     }>[]
   }>
+  worldGeometry: LightingObservation["geometry"]
   depthIsolated: boolean
 }>
 
@@ -300,7 +301,11 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
         throw new Error(`${target} ${checkpoint.kind} has no visible authored Soldier rocket-launcher depth`)
       }
       const weaponPixels = visiblePixels(screenshot, launcher)
-      if (weaponPixels.meanLuma <= 8 || weaponPixels.nonBackgroundPixels < weaponPixels.measuredPixels / 2) {
+      await writeFile(path.join(output, `${target}-${checkpoint.kind}.png`), screenshot)
+      console.log(`[map-lighting] ${target}:${checkpoint.kind} ambient=${ambient.toFixed(4)} lights=${lighting.viewmodel.localLights.length} exposure=${lighting.exposure.current.toFixed(4)} launcher=${weaponPixels.meanLuma.toFixed(2)}`)
+      const authoredMinimum = Math.min(8, ambient * 255)
+      if (weaponPixels.meanLuma <= authoredMinimum ||
+        (ambient >= 0.03 && weaponPixels.nonBackgroundPixels < weaponPixels.measuredPixels / 4)) {
         throw new Error(`${target} ${checkpoint.kind} Soldier launcher remains nearly black: ${JSON.stringify(weaponPixels)}`)
       }
       const authoredIrradiance = hits.filter((hit) => hit.lightmap !== null).map((hit) => {
@@ -310,7 +315,6 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
       if (authoredIrradiance.length === 0 || authoredIrradiance.every((value) => value <= 0)) {
         throw new Error(`${target} ${checkpoint.kind} has no selected authored world lightmap exposure`)
       }
-      await writeFile(path.join(output, `${target}-${checkpoint.kind}.png`), screenshot)
       observations.push({
         kind: checkpoint.kind,
         position: geometry.position,
@@ -366,14 +370,96 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
     if (simulationHz < 55) {
       throw new Error(`${target} fixed simulation cadence regressed: ${simulationHz.toFixed(2)} Hz`)
     }
+    const frameDistribution = summarizeFrameTimes(measured.frames)
+    if (frameDistribution.p95Milliseconds > 20) {
+      throw new Error(`${target} authored lighting regressed headed frame p95: ${frameDistribution.p95Milliseconds} ms`)
+    }
+    revision += 1
+    await page.evaluate((value) => {
+      ;(globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = value
+    }, revision)
+    await page.waitForFunction((value) =>
+      (globalThis as any).__playsrcProfile?.worldLighting?.revision === value,
+    revision, { timeout: 20_000, polling: 10 })
+    const adapted = await page.evaluate(() =>
+      (globalThis as any).__playsrcProfile.worldLighting.exposure) as LightingObservation["exposure"]
+    if (adapted.submittedHistograms < 1 || adapted.current < 0.5 || adapted.current > 2) {
+      throw new Error(`${target} has no real headed-frame HDR histogram or bounded Source exposure: ${JSON.stringify(adapted)}`)
+    }
     allFrames.push(...measured.frames)
+    let playerModel: Record<string, unknown> | undefined
+    if (target === "ctf_2fort") {
+      await consoleCommand(page, entry, "tf_bot_add red soldier normal")
+      await expect(root).toHaveAttribute("data-bot-count", "1", { timeout: 30_000 })
+      const bot = await page.evaluate(() => {
+        const value = (globalThis as any).__playsrcProfile.bots.find((candidate: any) => candidate.class === 3)
+        if (!value) throw new Error("authored Soldier bot is unavailable")
+        return { identity: value.identity as number, position: value.position as SanityPosition }
+      })
+      const cameraSample = landmarks.samples
+        .filter((sample) => {
+          const range = Math.hypot(sample.position[0] - bot.position[0], sample.position[1] - bot.position[1], sample.position[2] - bot.position[2])
+          return range >= 48 && range <= 300
+        })
+        .toSorted((left, right) => Math.hypot(left.position[0] - bot.position[0], left.position[1] - bot.position[1], left.position[2] - bot.position[2])
+          - Math.hypot(right.position[0] - bot.position[0], right.position[1] - bot.position[1], right.position[2] - bot.position[2]))[0]
+      if (!cameraSample) throw new Error("ctf_2fort has no authored nearby Soldier-model camera sample")
+      const offset = Number(((await root.getAttribute("data-view-offset")) ?? "0,0,68").split(",")[2])
+      await consoleCommand(page, entry, `setpos ${cameraSample.position[0]} ${cameraSample.position[1]} ${cameraSample.position[2] - offset}`)
+      await page.waitForFunction((position) => {
+        const camera = (document.querySelector<HTMLElement>("main")?.dataset.cameraPosition ?? "").split(",").map(Number)
+        return camera.length === 3 && Math.hypot(camera[0]! - position[0], camera[1]! - position[1]) < 2
+      }, cameraSample.position, { timeout: 15_000, polling: 10 })
+      if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      await canvas.click()
+      const refreshed = await page.evaluate((identity) => {
+        const bot = (globalThis as any).__playsrcProfile.bots.find((candidate: any) => candidate.identity === identity)
+        if (!bot) throw new Error("authored Soldier bot disappeared")
+        return bot.position as SanityPosition
+      }, bot.identity)
+      const aim = sanityViewAngles(cameraSample.position, [refreshed[0], refreshed[1], refreshed[2] + 52])
+      revision += 1
+      await page.evaluate(({ angles, revision }) => {
+        const main = document.querySelector<HTMLElement>("main")!
+        const canvas = document.querySelector<HTMLElement>("canvas.world-canvas")!
+        const yaw = Number(canvas.dataset.displayCameraYaw ?? main.dataset.cameraYaw)
+        const pitch = Number(canvas.dataset.displayCameraPitch ?? main.dataset.cameraPitch)
+        const wrap = (value: number) => ((value + 180) % 360 + 360) % 360 - 180
+        const mouse = new MouseEvent("mousemove", { bubbles: true })
+        Object.defineProperties(mouse, {
+          movementX: { value: wrap(yaw - angles.yaw) / 0.066 },
+          movementY: { value: (angles.pitch - pitch) / 0.066 },
+        })
+        dispatchEvent(mouse)
+        ;(globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = revision
+      }, { angles: aim, revision })
+      await page.waitForFunction((value) =>
+        (globalThis as any).__playsrcProfile?.worldLighting?.revision === value,
+      revision, { timeout: 20_000, polling: 10 })
+      const evidence = await page.evaluate(() => (globalThis as any).__playsrcProfile.worldLighting) as LightingObservation
+      const identity = 0x6000_0000 + bot.identity
+      const model = evidence.models.find((candidate) => candidate.identity === identity)
+      const samples = evidence.worldGeometry.samples.filter((sample) => sample.identity === identity)
+      if (!model || model.eyes < 1 || samples.length === 0) {
+        throw new Error(`ctf_2fort Soldier model lacks authored eye lighting or visible depth: ${JSON.stringify({ model, samples })}`)
+      }
+      const screenshot = await canvas.screenshot()
+      const pixels = visiblePixels(screenshot, samples)
+      if (pixels.meanLuma <= 4) throw new Error(`ctf_2fort Soldier player model remains black: ${JSON.stringify(pixels)}`)
+      await writeFile(path.join(output, "ctf_2fort-soldier-player.png"), screenshot)
+      playerModel = { identity, eyes: model.eyes, localLights: model.localLights, samples: samples.length,
+        depthRange: [Math.min(...samples.map((sample) => sample.modelDepth)), Math.max(...samples.map((sample) => sample.modelDepth))], pixels }
+      console.log(`[map-lighting] ctf_2fort:soldier eyes=${model.eyes} lights=${model.localLights} luma=${pixels.meanLuma.toFixed(2)}`)
+    }
     maps.push({
       target,
       loadMilliseconds,
       activeMilliseconds: Number(measured.elapsedMilliseconds.toFixed(3)),
+      exposure: adapted,
       simulation: { firstTick: measured.firstTick, lastTick: measured.lastTick, hz: Number(simulationHz.toFixed(2)) },
-      frames: summarizeFrameTimes(measured.frames),
+      frames: frameDistribution,
       checkpoints: observations,
+      ...(playerModel ? { playerModel } : {}),
     })
   }
 

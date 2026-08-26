@@ -19,6 +19,7 @@ pub struct BuiltModelPresentation {
     pub model: Box<PresentationModel>,
     pub illumination_position: playsrc_studio_model::Vector3,
     pub illumination_attachment: i32,
+    pub eyes: Vec<playsrc_studio_model::EyeDefinition>,
 }
 
 pub fn build_model(
@@ -45,6 +46,8 @@ pub fn build_model(
                     model,
                     illumination_position: document.bounds.illumination,
                     illumination_attachment: document.illumination_attachment,
+                    eyes: playsrc_studio_model::eye_definitions(&document)
+                        .map_err(|_| ModelPresentationError::Invalid)?,
                 });
             }
             PresentationModelBuild::Needs(requests) => {

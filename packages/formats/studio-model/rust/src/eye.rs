@@ -1,5 +1,5 @@
 use crate::{
-    Document, Float32, Matrix3x4, PresentationError, PresentationErrorCode, Vector3,
+    Document, Eyeball, Float32, Matrix3x4, PresentationError, PresentationErrorCode, Vector3,
     presentation::{transform_point, values3},
 };
 
@@ -34,6 +34,38 @@ pub struct EyeDrawState {
     pub glint_v: [Float32; 4],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EyeDefinition {
+    pub body_part: usize,
+    pub submodel: usize,
+    pub mesh: usize,
+    pub eyeball: Eyeball,
+}
+
+pub fn eye_definitions(document: &Document) -> Result<Vec<EyeDefinition>, PresentationError> {
+    let mut definitions = Vec::new();
+    for part in &document.body_parts {
+        for submodel in &part.models {
+            for mesh in &submodel.meshes {
+                if mesh.material_type != 1 {
+                    continue;
+                }
+                let index = usize::try_from(mesh.material_parameter)
+                    .ok()
+                    .filter(|index| *index < submodel.eyeballs.len())
+                    .ok_or_else(|| invalid_eye(&document.identity))?;
+                definitions.push(EyeDefinition {
+                    body_part: part.index,
+                    submodel: submodel.index,
+                    mesh: mesh.index,
+                    eyeball: submodel.eyeballs[index].clone(),
+                });
+            }
+        }
+    }
+    Ok(definitions)
+}
+
 pub fn eye_draw_states(
     document: &Document,
     request: &EyeDrawRequest<'_>,
@@ -52,24 +84,53 @@ pub fn eye_draw_states(
     {
         return Err(invalid_eye(&document.identity));
     }
+    let definitions = submodel
+        .meshes
+        .iter()
+        .filter(|mesh| mesh.material_type == 1)
+        .map(|mesh| {
+            let index = usize::try_from(mesh.material_parameter)
+                .ok()
+                .filter(|index| *index < submodel.eyeballs.len())
+                .ok_or_else(|| invalid_eye(&document.identity))?;
+            Ok(EyeDefinition {
+                body_part: request.body_part,
+                submodel: request.submodel,
+                mesh: mesh.index,
+                eyeball: submodel.eyeballs[index].clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    eye_draw_states_for_definitions(&document.identity, &definitions, request)
+}
+
+pub fn eye_draw_states_for_definitions(
+    identity: &str,
+    definitions: &[EyeDefinition],
+    request: &EyeDrawRequest<'_>,
+) -> Result<Vec<EyeDrawState>, PresentationError> {
+    if request.bone_to_world.is_empty()
+        || !finite_vector(request.world_target)
+        || !finite_vector(request.view_right)
+        || !finite_vector(request.view_up)
+        || !finite_vector(request.configuration.shift)
+        || !finite(request.configuration.size)
+    {
+        return Err(invalid_eye(identity));
+    }
     let view_right =
-        normalized(values3(request.view_right)).ok_or_else(|| invalid_eye(&document.identity))?;
-    let view_up =
-        normalized(values3(request.view_up)).ok_or_else(|| invalid_eye(&document.identity))?;
+        normalized(values3(request.view_right)).ok_or_else(|| invalid_eye(identity))?;
+    let view_up = normalized(values3(request.view_up)).ok_or_else(|| invalid_eye(identity))?;
     let mut output = Vec::new();
-    for mesh in &submodel.meshes {
-        if mesh.material_type != 1 {
+    for definition in definitions {
+        if definition.body_part != request.body_part || definition.submodel != request.submodel {
             continue;
         }
-        let eye_index = usize::try_from(mesh.material_parameter)
-            .ok()
-            .filter(|index| *index < submodel.eyeballs.len())
-            .ok_or_else(|| invalid_eye(&document.identity))?;
-        let eye = &submodel.eyeballs[eye_index];
+        let eye = &definition.eyeball;
         let bone = request
             .bone_to_world
             .get(eye.bone as usize)
-            .ok_or_else(|| invalid_eye(&document.identity))?;
+            .ok_or_else(|| invalid_eye(identity))?;
         let mut local_origin = values3(eye.origin);
         for (axis, value) in local_origin.iter_mut().enumerate() {
             *value += f32::from_bits(request.configuration.shift.0[axis].0) * sign(*value);
@@ -81,17 +142,16 @@ pub fn eye_draw_states(
         } else {
             scale(rotate_vector(bone, values3(eye.forward)), -1.0)
         };
-        forward = normalized(forward).ok_or_else(|| invalid_eye(&document.identity))?;
-        up = normalized(up).ok_or_else(|| invalid_eye(&document.identity))?;
-        let mut right =
-            normalized(cross(forward, up)).ok_or_else(|| invalid_eye(&document.identity))?;
+        forward = normalized(forward).ok_or_else(|| invalid_eye(identity))?;
+        up = normalized(up).ok_or_else(|| invalid_eye(identity))?;
+        let mut right = normalized(cross(forward, up)).ok_or_else(|| invalid_eye(identity))?;
         forward = normalized(add(
             forward,
             scale(right, f32::from_bits(eye.z_offset.0) * 2.0),
         ))
-        .ok_or_else(|| invalid_eye(&document.identity))?;
-        right = normalized(cross(forward, up)).ok_or_else(|| invalid_eye(&document.identity))?;
-        up = normalized(cross(right, forward)).ok_or_else(|| invalid_eye(&document.identity))?;
+        .ok_or_else(|| invalid_eye(identity))?;
+        right = normalized(cross(forward, up)).ok_or_else(|| invalid_eye(identity))?;
+        up = normalized(cross(right, forward)).ok_or_else(|| invalid_eye(identity))?;
 
         let mut iris_scale =
             1.0 / f32::from_bits(eye.iris_scale.0) + f32::from_bits(request.configuration.size.0);
@@ -99,7 +159,7 @@ pub fn eye_draw_states(
             iris_scale = 1.0 / iris_scale;
         }
         if !iris_scale.is_finite() {
-            return Err(invalid_eye(&document.identity));
+            return Err(invalid_eye(identity));
         }
         let iris_u = projection_row(scale(right, -iris_scale), origin);
         let iris_v = projection_row(scale(up, -iris_scale), origin);
@@ -107,7 +167,7 @@ pub fn eye_draw_states(
         let glint_u = projection_row(scale(view_right, glint_scale), origin);
         let glint_v = projection_row(scale(view_up, glint_scale), origin);
         output.push(EyeDrawState {
-            mesh: mesh.index,
+            mesh: definition.mesh,
             eyeball: eye.index,
             texture: eye.texture as usize,
             world_origin: vector(origin),

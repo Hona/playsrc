@@ -485,6 +485,7 @@ struct CompiledPresentationModel {
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
     illumination_attachment: i32,
+    eyes: Vec<playsrc_studio_model::EyeDefinition>,
 }
 
 struct CachedPresentationModel {
@@ -507,6 +508,7 @@ fn presentation_model_cache()
 struct StudioModelLightingMetadata {
     position: playsrc_studio_model::Vector3,
     attachment: i32,
+    eyes: Vec<playsrc_studio_model::EyeDefinition>,
 }
 
 #[derive(Clone, Copy)]
@@ -539,7 +541,7 @@ struct Slot {
     particle_output: Vec<u8>,
     studio_models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     model_lighting_metadata: BTreeMap<String, StudioModelLightingMetadata>,
-    model_lighting_world: Option<playsrc_map::ModelLightingWorld>,
+    model_lighting_world: Option<playsrc_map::ModelLightingWorld<'static>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     model_output: Vec<u8>,
@@ -1113,7 +1115,13 @@ unsafe fn compile_map(
             additional_model_roots: &static_model_roots,
         };
         let (
-            (presentation, studio_models, model_lighting_metadata, model_material_opacity, environment),
+            (
+                presentation,
+                studio_models,
+                model_lighting_metadata,
+                model_material_opacity,
+                environment,
+            ),
             presentation_metrics,
             _presentation_ledger,
         ) = if let Some(cached) = cached_presentation {
@@ -1880,14 +1888,16 @@ struct ModelPoseLightingRequest {
     origin: [f32; 3],
     angles: [f32; 3],
     camera: [f32; 3],
+    camera_angles: [f32; 3],
 }
 
 struct ModelPoseWorld<'a> {
     metadata: &'a BTreeMap<String, StudioModelLightingMetadata>,
-    lighting: &'a mut playsrc_map::ModelLightingWorld,
+    lighting: &'a mut playsrc_map::ModelLightingWorld<'static>,
     visibility: &'a playsrc_visibility::World,
     collision: &'a playsrc_collision::World,
     snapshot: &'a playsrc_collision::Snapshot,
+    gameplay: Option<&'a playsrc_tf2::Snapshot>,
     cubemaps: &'a [playsrc_map::CubemapSample],
 }
 
@@ -1938,6 +1948,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         visibility,
         collision,
         snapshot: &snapshot,
+        gameplay: slot.latest_game_snapshot.as_ref(),
         cubemaps: &environment.world.cubemaps,
     };
     let Ok(output) = encode_model_poses(
@@ -2099,17 +2110,20 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let lighting_origin = [reader.f32()?, reader.f32()?, reader.f32()?];
         let lighting_angles = [reader.f32()?, reader.f32()?, reader.f32()?];
         let lighting_camera = [reader.f32()?, reader.f32()?, reader.f32()?];
+        let lighting_camera_angles = [reader.f32()?, reader.f32()?, reader.f32()?];
         let lighting = if has_lighting == 1 {
             Some(ModelPoseLightingRequest {
                 origin: lighting_origin,
                 angles: lighting_angles,
                 camera: lighting_camera,
+                camera_angles: lighting_camera_angles,
             })
         } else {
             if lighting_origin
                 .into_iter()
                 .chain(lighting_angles)
                 .chain(lighting_camera)
+                .chain(lighting_camera_angles)
                 .any(|value| value != 0.0)
             {
                 return Err(());
@@ -2833,7 +2847,7 @@ fn encode_model_pose_part(
             out.extend_from_slice(&value.0.to_le_bytes());
         }
     }
-    encode_model_lighting(out, request, model, pose, world)?;
+    encode_model_lighting(out, request, model, pose, selected, world)?;
     Ok(())
 }
 
@@ -2842,10 +2856,12 @@ fn encode_model_lighting(
     request: &ModelPoseRequest,
     model: &playsrc_studio_model::PresentationModel,
     pose: &playsrc_studio_model::SampledPose,
+    selected: &[playsrc_studio_model::SelectedPrimitive],
     world: &mut ModelPoseWorld<'_>,
 ) -> Result<(), ()> {
-    let Some(request) = request.lighting else {
+    let Some(lighting_request) = request.lighting else {
         out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&0_u32.to_le_bytes());
         return Ok(());
     };
     let metadata = world.metadata.get(&model.identity).ok_or(())?;
@@ -2855,8 +2871,8 @@ fn encode_model_lighting(
         )
     };
     let transform = playsrc_studio_model::source_entity_transform(
-        vector(request.origin),
-        vector(request.angles),
+        vector(lighting_request.origin),
+        vector(lighting_request.angles),
     )
     .map_err(|_| ())?;
     let posed = if metadata.attachment == 0 {
@@ -2874,9 +2890,35 @@ fn encode_model_lighting(
     .map_err(|_| ())?
     .0
     .map(|value| f32::from_bits(value.0));
-    let state = world
-        .lighting
-        .sample(origin, world.visibility, world.collision, world.snapshot)?;
+    let mut state =
+        world
+            .lighting
+            .sample(origin, world.visibility, world.collision, world.snapshot)?;
+    playsrc_map::apply_model_ambient_boost(
+        &mut state.ambient_cube,
+        &state.local_lights,
+        state.origin,
+        model.flags,
+    );
+    encode_world_lighting(out, &state, lighting_request.camera, world.cubemaps)?;
+    encode_model_eyes(
+        out,
+        request,
+        lighting_request,
+        model,
+        pose,
+        selected,
+        world,
+        transform,
+    )
+}
+
+fn encode_world_lighting(
+    out: &mut Vec<u8>,
+    state: &playsrc_map::ModelWorldLighting,
+    camera: [f32; 3],
+    cubemaps: &[playsrc_map::CubemapSample],
+) -> Result<(), ()> {
     let lights = state
         .local_lights
         .iter()
@@ -2886,7 +2928,7 @@ fn encode_model_lighting(
         return Err(());
     }
     out.extend_from_slice(&[1, lights.len() as u8, 1, 0]);
-    for value in state.origin.into_iter().chain(request.camera) {
+    for value in state.origin.into_iter().chain(camera) {
         out.extend_from_slice(&value.to_le_bytes());
     }
     for value in state.ambient_cube.iter().flatten() {
@@ -2906,10 +2948,187 @@ fn encode_model_lighting(
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
-    let environment = playsrc_map::select_cubemap(world.cubemaps, state.origin, None)
+    let environment = playsrc_map::select_cubemap(cubemaps, state.origin, None)
         .ok()
         .map_or("", |cubemap| cubemap.logical_path.as_str());
     pbytes(out, environment.as_bytes())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_model_eyes(
+    out: &mut Vec<u8>,
+    request: &ModelPoseRequest,
+    lighting: ModelPoseLightingRequest,
+    model: &playsrc_studio_model::PresentationModel,
+    pose: &playsrc_studio_model::SampledPose,
+    selected: &[playsrc_studio_model::SelectedPrimitive],
+    world: &ModelPoseWorld<'_>,
+    transform: playsrc_studio_model::Matrix3x4,
+) -> Result<(), ()> {
+    let definitions = &world.metadata.get(&model.identity).ok_or(())?.eyes;
+    let target = source_tf2_eye_target(request.identity, lighting, world.gameplay);
+    let states = source_model_eye_states(
+        model,
+        definitions,
+        pose,
+        selected,
+        transform,
+        target,
+        lighting.camera_angles,
+        false,
+    )?;
+    encode_eye_states(out, &states)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn source_model_eye_states(
+    model: &playsrc_studio_model::PresentationModel,
+    definitions: &[playsrc_studio_model::EyeDefinition],
+    pose: &playsrc_studio_model::SampledPose,
+    selected: &[playsrc_studio_model::SelectedPrimitive],
+    transform: playsrc_studio_model::Matrix3x4,
+    target: [f32; 3],
+    camera_angles: [f32; 3],
+    runtime_order: bool,
+) -> Result<Vec<(usize, playsrc_studio_model::EyeDrawState)>, ()> {
+    if definitions.is_empty() || selected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let posed =
+        playsrc_studio_model::apply_entity_transform(model, pose, transform).map_err(|_| ())?;
+    let vector = |values: [f32; 3]| {
+        playsrc_studio_model::Vector3(
+            values.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+        )
+    };
+    let yaw = camera_angles[1].to_radians();
+    let pitch = camera_angles[0].to_radians();
+    let (yaw_sine, yaw_cosine) = yaw.sin_cos();
+    let (pitch_sine, pitch_cosine) = pitch.sin_cos();
+    let view_right = [yaw_sine, -yaw_cosine, 0.0];
+    let view_up = [pitch_sine * yaw_cosine, pitch_sine * yaw_sine, pitch_cosine];
+    let mut output = Vec::new();
+    for (index, primitive) in selected.iter().enumerate() {
+        let geometry = model.geometry.get(primitive.primitive).ok_or(())?;
+        let Some(definition) = definitions.iter().find(|definition| {
+            definition.body_part == geometry.body_part
+                && definition.submodel == geometry.model
+                && definition.mesh == geometry.mesh
+        }) else {
+            continue;
+        };
+        let states = playsrc_studio_model::eye_draw_states_for_definitions(
+            &model.identity,
+            std::slice::from_ref(definition),
+            &playsrc_studio_model::EyeDrawRequest {
+                body_part: definition.body_part,
+                submodel: definition.submodel,
+                bone_to_world: &posed.bone_matrices,
+                world_target: vector(target),
+                view_right: vector(view_right),
+                view_up: vector(view_up),
+                configuration: playsrc_studio_model::EyeConfiguration {
+                    move_eyes: true,
+                    shift: vector([0.0; 3]),
+                    size: playsrc_studio_model::Float32(0),
+                },
+            },
+        )
+        .map_err(|_| ())?;
+        if states.len() != 1 {
+            return Err(());
+        }
+        output.push((
+            if runtime_order {
+                index
+            } else {
+                primitive.primitive
+            },
+            states.into_iter().next().ok_or(())?,
+        ));
+    }
+    Ok(output)
+}
+
+fn encode_eye_states(
+    out: &mut Vec<u8>,
+    states: &[(usize, playsrc_studio_model::EyeDrawState)],
+) -> Result<(), ()> {
+    out.extend_from_slice(&u32::try_from(states.len()).map_err(|_| ())?.to_le_bytes());
+    for (primitive, eye) in states {
+        for value in [*primitive, eye.mesh, eye.eyeball, eye.texture] {
+            out.extend_from_slice(&u32::try_from(value).map_err(|_| ())?.to_le_bytes());
+        }
+        for value in eye
+            .world_origin
+            .0
+            .into_iter()
+            .chain(eye.authored_up.0)
+            .chain(eye.iris_u)
+            .chain(eye.iris_v)
+            .chain(eye.glint_u)
+            .chain(eye.glint_v)
+        {
+            out.extend_from_slice(&value.0.to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn source_tf2_eye_target(
+    identity: u32,
+    request: ModelPoseLightingRequest,
+    snapshot: Option<&playsrc_tf2::Snapshot>,
+) -> [f32; 3] {
+    let yaw = request.angles[1].to_radians();
+    let pitch = request.angles[0].to_radians();
+    let (yaw_sine, yaw_cosine) = yaw.sin_cos();
+    let (pitch_sine, pitch_cosine) = pitch.sin_cos();
+    let forward = [
+        pitch_cosine * yaw_cosine,
+        pitch_cosine * yaw_sine,
+        -pitch_sine,
+    ];
+    if let Some(snapshot) = snapshot {
+        let local = (
+            1_u32,
+            snapshot.movement.position,
+            [
+                snapshot.movement.position[0] + snapshot.movement.view_offset[0],
+                snapshot.movement.position[1] + snapshot.movement.view_offset[1],
+                snapshot.movement.position[2] + snapshot.movement.view_offset[2],
+            ],
+            snapshot.health > 0.0,
+        );
+        let bot_identity = identity.checked_sub(0x6000_0000);
+        let bot = snapshot.bots.iter().map(|bot| {
+            (
+                bot.identity,
+                bot.position,
+                [
+                    bot.position[0],
+                    bot.position[1],
+                    bot.position[2] + bot.class.standing_eye_height(),
+                ],
+                bot.lifecycle == playsrc_tf2::PlayerLifecycle::Active,
+            )
+        });
+        for (candidate, position, eye, alive) in std::iter::once(local).chain(bot) {
+            if !alive || Some(candidate) == bot_identity {
+                continue;
+            }
+            let difference = sub3(position, request.origin);
+            let distance = dot(difference, difference).sqrt();
+            if distance <= 0.0 || distance > 300.0 {
+                continue;
+            }
+            let direction = difference.map(|value| value / distance);
+            if dot(forward, direction) >= 0.0 {
+                return eye;
+            }
+        }
+    }
+    std::array::from_fn(|axis| request.origin[axis] + forward[axis] * 512.0)
 }
 
 struct MaterialWorldLight {
@@ -2926,20 +3145,38 @@ struct MaterialWorldLight {
 
 fn material_world_light(light: &playsrc_map::WorldLight) -> Option<Result<MaterialWorldLight, ()>> {
     let (kind, attenuation, theta, phi, falloff) = match light.kind {
-        0 => (2, [0.0, 0.0, 1.0], std::f32::consts::PI, std::f32::consts::PI, 1.0),
+        0 => (
+            2,
+            [0.0, 0.0, 1.0],
+            std::f32::consts::PI,
+            std::f32::consts::PI,
+            1.0,
+        ),
         1 => (
             0,
-            [light.constant_attenuation, light.linear_attenuation, light.quadratic_attenuation],
+            [
+                light.constant_attenuation,
+                light.linear_attenuation,
+                light.quadratic_attenuation,
+            ],
             0.0,
             0.0,
             0.0,
         ),
         2 => (
             2,
-            [light.constant_attenuation, light.linear_attenuation, light.quadratic_attenuation],
+            [
+                light.constant_attenuation,
+                light.linear_attenuation,
+                light.quadratic_attenuation,
+            ],
             2.0 * light.stop_dot.acos(),
             2.0 * light.stop_dot2.acos(),
-            if light.exponent == 0.0 { 1.0 } else { light.exponent },
+            if light.exponent == 0.0 {
+                1.0
+            } else {
+                light.exponent
+            },
         ),
         3 => (1, [1.0, 0.0, 0.0], 0.0, 0.0, 0.0),
         4 | 5 => return None,
@@ -8027,6 +8264,7 @@ fn build_model_presentation(
         identity,
         illumination_position: built.illumination_position,
         illumination_attachment: built.illumination_attachment,
+        eyes: built.eyes,
     }))
 }
 
@@ -8074,6 +8312,12 @@ struct CompiledStaticProps {
     bytes: Vec<u8>,
     section: static_prop_artifact::Section,
     aggregate_object_count: usize,
+    model_lighting: BTreeMap<usize, CompiledModelOccurrenceLighting>,
+}
+
+struct CompiledModelOccurrenceLighting {
+    lighting: playsrc_map::ModelWorldLighting,
+    eyes: Vec<(usize, playsrc_studio_model::EyeDrawState)>,
 }
 
 fn compile_static_prop_section(
@@ -8086,25 +8330,6 @@ fn compile_static_prop_section(
     models: &[(String, Box<CompiledPresentationModel>)],
 ) -> Result<CompiledStaticProps, ()> {
     use static_prop_artifact::{Lighting, Occurrence, RuntimeLight, ViewOwnership};
-    if canonical.static_props.occurrences.is_empty() {
-        let section = static_prop_artifact::Section {
-            aggregate_sha256: [0; 32],
-            model_count: u32::try_from(models.len()).map_err(|_| ())?,
-            occurrences: Vec::new(),
-        };
-        return Ok(CompiledStaticProps {
-            bytes: static_prop_artifact::encode_section(&section)?,
-            section,
-            aggregate_object_count: 0,
-        });
-    }
-    let aggregate = static_prop_artifact::decode_aggregate(
-        bundle
-            .get(static_prop_artifact::AGGREGATE_PATH)
-            .copied()
-            .ok_or(())?,
-    )?;
-    let object_indexes = static_prop_artifact::object_indexes(&aggregate)?;
     let model_indexes = models
         .iter()
         .enumerate()
@@ -8118,20 +8343,152 @@ fn compile_static_prop_section(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
-    let checksums = model_indexes
-        .iter()
-        .map(|(identity, (_, checksum))| ((*identity).to_owned(), *checksum))
-        .collect();
-    let templates = collision_object_templates(canonical, graph, bundle, &checksums)?;
-    let snapshot = compile_collision_snapshot(
-        collision,
-        &templates,
-        1,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-    )
-    .map_err(|_| ())?;
+    let snapshot = if canonical.static_props.occurrences.is_empty() {
+        playsrc_collision::Snapshot::compile(
+            collision,
+            1,
+            Vec::new(),
+            playsrc_collision::SnapshotLimits::default(),
+        )
+        .map_err(|_| ())?
+    } else {
+        let checksums = model_indexes
+            .iter()
+            .map(|(identity, (_, checksum))| ((*identity).to_owned(), *checksum))
+            .collect();
+        let templates = collision_object_templates(canonical, graph, bundle, &checksums)?;
+        compile_collision_snapshot(
+            collision,
+            &templates,
+            1,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .map_err(|_| ())?
+    };
+    let mut model_lighting_world = playsrc_map::ModelLightingWorld::borrowed(&canonical.lighting);
+    let mut model_lighting = BTreeMap::new();
+    for entity in &graph.entities {
+        let Some(identity) = authored_entity_model(entity)? else {
+            continue;
+        };
+        let (model_index, _) = *model_indexes.get(identity.as_str()).ok_or(())?;
+        let model = &models.get(model_index as usize).ok_or(())?.1;
+        if model.illumination_attachment != 0 {
+            return Err(());
+        }
+        let vector = |values: [f32; 3]| {
+            playsrc_studio_model::Vector3(
+                values.map(|value| playsrc_studio_model::Float32(value.to_bits())),
+            )
+        };
+        let transform = playsrc_studio_model::source_entity_transform(
+            vector(entity_vector(entity, b"origin")?),
+            vector(entity_vector(entity, b"angles")?),
+        )
+        .map_err(|_| ())?;
+        let origin = playsrc_studio_model::source_model_lighting_origin(
+            model.illumination_position,
+            model.illumination_attachment,
+            transform,
+            None,
+            &identity,
+        )
+        .map_err(|_| ())?
+        .0
+        .map(|value| f32::from_bits(value.0));
+        let mut lighting = model_lighting_world.sample(origin, visibility, collision, &snapshot)?;
+        playsrc_map::apply_model_ambient_boost(
+            &mut lighting.ambient_cube,
+            &lighting.local_lights,
+            lighting.origin,
+            model.model.flags,
+        );
+        let eyes = if model.eyes.is_empty() {
+            Vec::new()
+        } else {
+            let bodygroups = model.model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
+            let pose_parameters = model
+                .model
+                .pose_parameters
+                .iter()
+                .map(|_| playsrc_studio_model::Float32(0))
+                .collect();
+            let pose = playsrc_studio_model::sample_pose(
+                &model.model,
+                &playsrc_studio_model::AnimationState {
+                    base_sequence: 0,
+                    cycle: playsrc_studio_model::Float32(0),
+                    pose_parameters,
+                    layers: Vec::new(),
+                },
+            )
+            .map_err(|_| ())?;
+            let skin = entity_scalar(entity, b"skin")
+                .map(|value| {
+                    std::str::from_utf8(value)
+                        .map_err(|_| ())?
+                        .parse::<i32>()
+                        .map_err(|_| ())
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let selected = playsrc_studio_model::select_primitives(
+                &model.model,
+                &bodygroups,
+                playsrc_studio_model::source_skin_family(skin, model.model.skins.len()),
+                0,
+            )
+            .map_err(|_| ())?;
+            let angles = entity_vector(entity, b"angles")?;
+            let eye_request = ModelPoseLightingRequest {
+                origin: entity_vector(entity, b"origin")?,
+                angles,
+                camera: origin,
+                camera_angles: angles,
+            };
+            source_model_eye_states(
+                &model.model,
+                &model.eyes,
+                &pose,
+                &selected,
+                transform,
+                source_tf2_eye_target(entity.index as u32, eye_request, None),
+                angles,
+                true,
+            )?
+        };
+        if model_lighting
+            .insert(
+                entity.index,
+                CompiledModelOccurrenceLighting { lighting, eyes },
+            )
+            .is_some()
+        {
+            return Err(());
+        }
+    }
+    if canonical.static_props.occurrences.is_empty() {
+        let section = static_prop_artifact::Section {
+            aggregate_sha256: [0; 32],
+            model_count: u32::try_from(models.len()).map_err(|_| ())?,
+            occurrences: Vec::new(),
+        };
+        return Ok(CompiledStaticProps {
+            bytes: static_prop_artifact::encode_section(&section)?,
+            section,
+            aggregate_object_count: 0,
+            model_lighting,
+        });
+    }
+    let aggregate = static_prop_artifact::decode_aggregate(
+        bundle
+            .get(static_prop_artifact::AGGREGATE_PATH)
+            .copied()
+            .ok_or(())?,
+    )?;
+    let object_indexes = static_prop_artifact::object_indexes(&aggregate)?;
     let water_materials = environment
         .world
         .water
@@ -8348,7 +8705,8 @@ fn compile_static_prop_section(
                     &mut ambient_cube,
                     demoted.direction,
                     demoted.intensity,
-                    demoted.ratio * playsrc_map::source_world_light_angle(demoted_source, demoted.direction)?,
+                    demoted.ratio
+                        * playsrc_map::source_world_light_angle(demoted_source, demoted.direction)?,
                 )?;
             } else {
                 playsrc_map::add_world_light_to_cube(
@@ -8512,6 +8870,7 @@ fn compile_static_prop_section(
         bytes,
         section,
         aggregate_object_count: aggregate.objects.len(),
+        model_lighting,
     })
 }
 
@@ -9902,6 +10261,8 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
 fn encode_model_occurrence_matrices(
     out: &mut Vec<u8>,
     graph: &playsrc_entity::Graph,
+    lighting: &BTreeMap<usize, CompiledModelOccurrenceLighting>,
+    cubemaps: &[playsrc_map::CubemapSample],
 ) -> Result<(), ()> {
     let occurrences = graph
         .entities
@@ -9912,7 +10273,7 @@ fn encode_model_occurrence_matrices(
         .filter_map(|(entity, model)| model.map(|model| (entity, model)))
         .collect::<Vec<_>>();
     out.extend_from_slice(b"PMTX");
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(occurrences.len())
             .map_err(|_| ())?
@@ -9953,6 +10314,9 @@ fn encode_model_occurrence_matrices(
         for value in matrix.0 {
             out.extend_from_slice(&value.0.to_le_bytes());
         }
+        let state = lighting.get(&entity.index).ok_or(())?;
+        encode_world_lighting(out, &state.lighting, state.lighting.origin, cubemaps)?;
+        encode_eye_states(out, &state.eyes)?;
     }
     Ok(())
 }
@@ -10312,6 +10676,7 @@ fn load_cached_presentation(
                 StudioModelLightingMetadata {
                     position: artifact.illumination_position,
                     attachment: artifact.illumination_attachment,
+                    eyes: artifact.eyes.clone(),
                 },
             )
         })
@@ -10910,7 +11275,12 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     )?;
     encode_particle_textures(&mut out, particle_presentation)?;
     encode_audio_documents(&mut out, bundle)?;
-    encode_model_occurrence_matrices(&mut out, graph)?;
+    encode_model_occurrence_matrices(
+        &mut out,
+        graph,
+        &static_props.model_lighting,
+        &environment.world.cubemaps,
+    )?;
     encode_model_materials(&mut out, &prepared_model_materials)?;
     section_ends[6] = out.len();
     for model in &canonical.brush_models {
@@ -10962,6 +11332,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 StudioModelLightingMetadata {
                     position: artifact.illumination_position,
                     attachment: artifact.illumination_attachment,
+                    eyes: artifact.eyes.clone(),
                 },
             )
         })
@@ -13681,16 +14052,41 @@ mod tests {
         assert_eq!(direction, [1.0, 0.0, 0.0]);
         assert_eq!(ratio, 1.0 / 4097.0);
         light.kind = 2;
-        assert_eq!(playsrc_map::source_world_light_angle(&light, direction).unwrap(), 1.0);
+        assert_eq!(
+            playsrc_map::source_world_light_angle(&light, direction).unwrap(),
+            1.0
+        );
         light.normal = [1.0, 0.0, 0.0];
-        assert_eq!(playsrc_map::source_world_light_angle(&light, direction).unwrap(), 0.0);
+        assert_eq!(
+            playsrc_map::source_world_light_angle(&light, direction).unwrap(),
+            0.0
+        );
         light.kind = 1;
         light.radius = 1.0;
-        assert_eq!(playsrc_map::source_world_light_ray([0.0; 3], &light).unwrap().2, 0.0);
+        assert_eq!(
+            playsrc_map::source_world_light_ray([0.0; 3], &light)
+                .unwrap()
+                .2,
+            0.0
+        );
         assert_eq!(
             playsrc_map::source_lightcache_bounds([-0.5, 32.0, -128.5]),
             ([-32.0, 32.0, -256.0], [0.0, 64.0, -128.0])
         );
+    }
+
+    #[test]
+    fn tf2_eye_targets_preserve_the_authored_forward_look_distance() {
+        let request = ModelPoseLightingRequest {
+            origin: [10.0, 20.0, 30.0],
+            angles: [0.0, 90.0, 0.0],
+            camera: [0.0; 3],
+            camera_angles: [0.0; 3],
+        };
+        let target = source_tf2_eye_target(0x6000_0002, request, None);
+        assert!((target[0] - 10.0).abs() < 0.0001);
+        assert!((target[1] - 532.0).abs() < 0.0001);
+        assert_eq!(target[2], 30.0);
     }
     #[test]
     fn sky_texture_roles_select_explicit_render_encoding() {

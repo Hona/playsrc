@@ -460,6 +460,9 @@ fn parse_world_lights(
 }
 
 fn source_world_light_radius(light: &WorldLight, profile: LightingProfile) -> f32 {
+    if light.radius != 0.0 {
+        return light.radius;
+    }
     let minimum = if profile == LightingProfile::Hdr {
         0.03 * 0.5
     } else {
@@ -523,8 +526,9 @@ fn parse_ambient_samples(
                     record[at],
                     record[at + 1],
                     record[at + 2],
-                    scales[record[at + 3] as usize] * 255.0,
+                    scales[record[at + 3] as usize],
                 )
+                .map(|value| value * 255.0)
             }),
             position: [record[24], record[25], record[26]],
         })
@@ -1039,10 +1043,13 @@ mod tests {
     fn leaf_ambient_cubes_use_source_vector_units_instead_of_lightmap_units() {
         let mut bytes = [0_u8; AMBIENT_SAMPLE_BYTES];
         bytes[..4].copy_from_slice(&[128, 64, 32, (-2_i8) as u8]);
-        let parsed = parse_ambient_samples(&bytes, LightingLimits::default(), &rgbexp_scales())
-            .unwrap();
+        let parsed =
+            parse_ambient_samples(&bytes, LightingLimits::default(), &rgbexp_scales()).unwrap();
         assert_eq!(parsed[0].cube[0], [32.0, 16.0, 8.0]);
-        assert_eq!(rgbexp(128, 64, 32, -2), [32.0 / 255.0, 16.0 / 255.0, 8.0 / 255.0]);
+        assert_eq!(
+            rgbexp(128, 64, 32, -2),
+            [32.0 / 255.0, 16.0 / 255.0, 8.0 / 255.0]
+        );
     }
 
     #[test]

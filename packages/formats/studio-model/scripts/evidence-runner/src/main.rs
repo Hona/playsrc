@@ -1666,23 +1666,28 @@ fn verify_eye_states(files: &VpkFiles) -> Result<String, String> {
             },
         )
         .map_err(|error| error.to_string())?;
-        let states = studio::eye_draw_states(
-            &document,
-            &studio::EyeDrawRequest {
-                body_part: 0,
-                submodel: 0,
-                bone_to_world: &pose.model_matrices,
-                world_target: vector([100.0, 0.0, 0.0]),
-                view_right: vector([0.0, -1.0, 0.0]),
-                view_up: vector([0.0, 0.0, 1.0]),
-                configuration: studio::EyeConfiguration {
-                    move_eyes: true,
-                    shift: vector([0.0; 3]),
-                    size: studio::Float32(0.0_f32.to_bits()),
-                },
+        let request = studio::EyeDrawRequest {
+            body_part: 0,
+            submodel: 0,
+            bone_to_world: &pose.model_matrices,
+            world_target: vector([100.0, 0.0, 0.0]),
+            view_right: vector([0.0, -1.0, 0.0]),
+            view_up: vector([0.0, 0.0, 1.0]),
+            configuration: studio::EyeConfiguration {
+                move_eyes: true,
+                shift: vector([0.0; 3]),
+                size: studio::Float32(0.0_f32.to_bits()),
             },
-        )
-        .map_err(|error| error.to_string())?;
+        };
+        let states = studio::eye_draw_states(&document, &request)
+            .map_err(|error| error.to_string())?;
+        let definitions = studio::eye_definitions(&document)
+            .map_err(|error| error.to_string())?;
+        let retained = studio::eye_draw_states_for_definitions(identity, &definitions, &request)
+            .map_err(|error| error.to_string())?;
+        if retained != states {
+            return Err(format!("{identity} retained eye definitions changed authored draw state"));
+        }
         if states.len() != expected {
             return Err(format!("{identity} eye count changed"));
         }

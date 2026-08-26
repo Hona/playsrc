@@ -1,6 +1,6 @@
 import type { ParticleRenderItem } from "@playsrc/particle"
 import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
-import type { Camera, Effect, ModelLightingInput, ModelLocalLight } from "@playsrc/rendering"
+import type { Camera, Effect, ModelEyeState, ModelLightingInput, ModelLocalLight } from "@playsrc/rendering"
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
@@ -376,6 +376,7 @@ export type ModelPoseRequest = Readonly<{
     origin: Vector3
     angles: Vector3
     cameraPosition: Vector3
+    cameraAngles: Vector3
   }>
 }>
 export type PosedPrimitive = Readonly<{
@@ -407,6 +408,7 @@ export type PosedModel = Readonly<{
   primitives: readonly PosedPrimitive[]
   attachments: readonly PosedAttachment[]
   lighting: ModelLightingInput | null
+  eyes: readonly ModelEyeState[]
   viewmodel:null|Readonly<{transform:Readonly<{origin:Vector3;angles:Vector3}>;projection:Readonly<{unscaledHorizontalFov4By3:number;horizontalFov:number;aspectRatio:number;near:number;far:number}>;depthRange:readonly[number,number];restoredDepthRange:readonly[number,number];passRestored:boolean;depthRestored:boolean;itemTranslucent:boolean;phase:"draw"|"primary-fire"|"reload-start"|"reload-insert-or-loop"|"reload-finish"|"idle";drawDisposition:"draw"|"suppressed-success"|"suppressed";suppression:number|null;reflected:boolean;frontFace:"clockwise"|"counter-clockwise";cullFace:"back";restoredCullMode:"counter-clockwise"|"clockwise";handBodygroups:readonly number[];itemBodygroups:readonly number[];itemBodygroupMutations:readonly Readonly<{event:number;bodygroup:number;value:number;name:string}>[]}>
 }>
 
@@ -417,7 +419,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = UTF8_ENCODER.encode(request.model)
     const item = UTF8_ENCODER.encode(request.itemModel ?? "")
     const activity = UTF8_ENCODER.encode(request.activity)
-    length += 148 + model.length + item.length + activity.length +
+    length += 160 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     return { request, model, item, activity }
   })
@@ -479,13 +481,13 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     view.setUint32(at, request.itemBodygroups?.length ?? 0, true); at += 4
     for (const value of request.itemBodygroups ?? []) { view.setUint32(at, value, true); at += 4 }
     const lighting = request.lighting
-    if (lighting && (!finite(lighting.origin) || !finite(lighting.angles) || !finite(lighting.cameraPosition))) {
+    if (lighting && (!finite(lighting.origin) || !finite(lighting.angles) || !finite(lighting.cameraPosition) || !finite(lighting.cameraAngles))) {
       throw new ProjectilePresentationError("MalformedFact", "model lighting request")
     }
     bytes[at] = Number(lighting !== undefined)
     at += 4
     for (const value of [...(lighting?.origin ?? [0, 0, 0]), ...(lighting?.angles ?? [0, 0, 0]),
-      ...(lighting?.cameraPosition ?? [0, 0, 0])]) {
+      ...(lighting?.cameraPosition ?? [0, 0, 0]), ...(lighting?.cameraAngles ?? [0, 0, 0])]) {
       view.setFloat32(at, value, true)
       at += 4
     }
@@ -614,8 +616,18 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
         staticLightTexel: false,
       })
     }
-    if (attachmentMode === 1 && primitives.length !== 0) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments, lighting, viewmodel }))
+    const eyeCount = u32()
+    if (eyeCount > primitives.length) throw new ProjectilePresentationError("BoundExceeded", "model eye-state count")
+    const eyes = Object.freeze(Array.from({ length: eyeCount }, (): ModelEyeState => {
+      const primitive = u32(), mesh = u32(), eyeball = u32(), texture = u32()
+      const worldOrigin = vector([f32(), f32(), f32()])
+      const authoredUp = vector([f32(), f32(), f32()])
+      const row = () => Object.freeze([f32(), f32(), f32(), f32()]) as readonly [number, number, number, number]
+      return Object.freeze({ primitive, mesh, eyeball, texture, worldOrigin, authoredUp,
+        irisU: row(), irisV: row(), glintU: row(), glintV: row() })
+    }))
+    if (attachmentMode === 1 && (primitives.length !== 0 || eyes.length !== 0)) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
+    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, events, primitives, attachments, lighting, eyes, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
