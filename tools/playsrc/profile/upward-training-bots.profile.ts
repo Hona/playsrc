@@ -352,7 +352,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
-  profilePhases.enter("sample")
+  profilePhases.enter("sample-and-readback")
   const measurementPromise = page.evaluate(async ({ duration, startMark, endMark }) => {
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
