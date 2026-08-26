@@ -22,6 +22,7 @@ import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { writeParticleQuad } from "./particle-geometry"
+import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
@@ -1427,6 +1428,14 @@ class RendererOwner implements Renderer {
   #visibleWorldMarkFaces = new Set<number>()
   #visibleProjectedMarkCount = 0
   #particleBatchCount=0
+  readonly #uploadEvidence?: {
+    poseAttributes: number
+    unchangedPoseAttributes: number
+    poseUploadBytes: number
+    particleUploadBytes: number
+    particleGeometries: number
+    retainedParticleBatches: number
+  }
   #stagedDynamic?:Readonly<{
     particles:Frame["particles"]
     models:Frame["models"]
@@ -1456,6 +1465,18 @@ class RendererOwner implements Renderer {
     this.configuration = validateRenderConfiguration(request.configuration)
     this.#canvas = request.canvas
     this.#powerPreference = request.powerPreference
+    const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+    if (profile) {
+      this.#uploadEvidence = {
+        poseAttributes: 0,
+        unchangedPoseAttributes: 0,
+        poseUploadBytes: 0,
+        particleUploadBytes: 0,
+        particleGeometries: 0,
+        retainedParticleBatches: 0,
+      }
+      profile.modelParticleUploads = this.#uploadEvidence
+    }
     this.#exposure = new ExposureController(this.configuration.exposure)
     this.#scene.matrixAutoUpdate = false
     ;(this.#scene as THREE.Scene & { fogNode?: unknown }).fogNode = sourceViewFogNode(this.#viewFogUniforms)
@@ -4148,6 +4169,7 @@ class RendererOwner implements Renderer {
   }
 
   #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
+    if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
     for(let index=0;index<capacity;index+=1){const vertex=index*4;indices.set([vertex,vertex+1,vertex+2,vertex,vertex+2,vertex+3],index*6)}
     geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
@@ -4165,6 +4187,14 @@ class RendererOwner implements Renderer {
     const uvNext = (geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).array as Float32Array
     const sheetBlend = (geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array
     const colors = (geometry.getAttribute("particleColor") as THREE.BufferAttribute).array as Float32Array
+    const dirty = [false, false, false, false]
+    const set = (array: Float32Array, offset: number, value: number, identity: number): void => {
+      const rounded = Math.fround(value)
+      if (!Object.is(array[offset], rounded)) {
+        array[offset] = rounded
+        dirty[identity] = true
+      }
+    }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
       writeParticleQuad(item, camera, positions, index * 12)
@@ -4179,23 +4209,25 @@ class RendererOwner implements Renderer {
         const colorOffset = index * 16 + vertex * 4
         const right = vertex === 1 || vertex === 2
         const bottom = vertex >= 2
-        uv[uvOffset] = current[right ? 2 : 0]
-        uv[uvOffset + 1] = current[bottom ? 3 : 1]
-        uvNext[uvOffset] = next[right ? 2 : 0]
-        uvNext[uvOffset + 1] = next[bottom ? 3 : 1]
-        sheetBlend[index * 4 + vertex] = sample.blend
-        colors[colorOffset] = red
-        colors[colorOffset + 1] = green
-        colors[colorOffset + 2] = blue
-        colors[colorOffset + 3] = item.opacity
+        set(uv, uvOffset, current[right ? 2 : 0]!, 0)
+        set(uv, uvOffset + 1, current[bottom ? 3 : 1]!, 0)
+        set(uvNext, uvOffset, next[right ? 2 : 0]!, 1)
+        set(uvNext, uvOffset + 1, next[bottom ? 3 : 1]!, 1)
+        set(sheetBlend, index * 4 + vertex, sample.blend, 2)
+        set(colors, colorOffset, red, 3)
+        set(colors, colorOffset + 1, green, 3)
+        set(colors, colorOffset + 2, blue, 3)
+        set(colors, colorOffset + 3, item.opacity, 3)
       }
     }
     const vertices = (end - start) * 4
-    for (const name of ["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const) {
+    for (const [index, name] of (["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const).entries()) {
+      if (index > 0 && !dirty[index - 1]) continue
       const attribute = geometry.getAttribute(name) as THREE.BufferAttribute
       attribute.clearUpdateRanges()
       attribute.addUpdateRange(0, vertices * attribute.itemSize)
       attribute.needsUpdate = true
+      if (this.#uploadEvidence) this.#uploadEvidence.particleUploadBytes += vertices * attribute.itemSize * Float32Array.BYTES_PER_ELEMENT
     }
     geometry.setDrawRange(0, (end - start) * 6)
   }
@@ -4259,11 +4291,10 @@ class RendererOwner implements Renderer {
       retained.mesh.renderOrder = batch.start
       retained.mesh.visible = true
     }
-    while (this.#particleBatchMeshes.length > count) {
-      const retained = this.#particleBatchMeshes.pop()!
-      this.#particles.remove(retained.mesh)
-      retained.mesh.geometry.dispose()
+    for (let index = count; index < this.#particleBatchMeshes.length; index += 1) {
+      this.#particleBatchMeshes[index]!.mesh.visible = false
     }
+    if (this.#uploadEvidence) this.#uploadEvidence.retainedParticleBatches = this.#particleBatchMeshes.length
   }
 
   #applyPose(
@@ -4303,19 +4334,19 @@ class RendererOwner implements Renderer {
         const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
         const normal = object.geometry.getAttribute("normal") as THREE.BufferAttribute
         const tangent = object.geometry.getAttribute("tangent") as THREE.BufferAttribute | undefined
-        ;(position.array as Float32Array).set(posed.positions)
-        position.needsUpdate = true
-        ;(normal.array as Float32Array).set(posed.normals)
-        normal.needsUpdate = true
-        if (tangent) {
-          ;(tangent.array as Float32Array).set(posed.tangents)
-          tangent.needsUpdate = true
+        for (const [attribute, values] of [[position, posed.positions], [normal, posed.normals], ...(tangent ? [[tangent, posed.tangents] as const] : [])] as const) {
+          const update = synchronizeDynamicAttribute(attribute, values)
+          if (this.#uploadEvidence) {
+            this.#uploadEvidence.poseAttributes += 1
+            this.#uploadEvidence.poseUploadBytes += update.bytes
+            if (!update.changed) this.#uploadEvidence.unchangedPoseAttributes += 1
+          }
         }
       } else {
         const geometry = object.geometry.clone()
-        geometry.setAttribute("position", new THREE.BufferAttribute(posed.positions.slice(), 3))
-        geometry.setAttribute("normal", new THREE.BufferAttribute(posed.normals.slice(), 3))
-        geometry.setAttribute("tangent", new THREE.BufferAttribute(posed.tangents.slice(), 4))
+        geometry.setAttribute("position", new THREE.BufferAttribute(posed.positions.slice(), 3).setUsage(THREE.DynamicDrawUsage))
+        geometry.setAttribute("normal", new THREE.BufferAttribute(posed.normals.slice(), 3).setUsage(THREE.DynamicDrawUsage))
+        geometry.setAttribute("tangent", new THREE.BufferAttribute(posed.tangents.slice(), 4).setUsage(THREE.DynamicDrawUsage))
         object.geometry = geometry
         object.userData.dynamicGeometry = true
       }
