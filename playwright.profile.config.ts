@@ -10,6 +10,8 @@ export default headedProfileConfiguration({
       ? "combat-impact.profile.ts"
     : process.env.PROFILE_UPWARD_OUTDOORS === "1"
     ? "upward-outdoor.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "upward-training-bots"
+      ? "upward-training-bots.profile.ts"
     : process.env.PROFILE_SCENARIOS === "frame-budget"
       ? "all-maps-frame-budget.profile.ts"
     : process.env.PROFILE_SCENARIOS === "main-menu"
