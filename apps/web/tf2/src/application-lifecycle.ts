@@ -60,6 +60,120 @@ export class ApplicationOperationLedger {
   }
 }
 
+type VisibilityWatchdogScheduler = Readonly<{
+  now(): number
+  schedule(callback: () => void, milliseconds: number): unknown
+  cancel(handle: unknown): void
+}>
+
+export type ApplicationVisibilityWatchdogSnapshot = Readonly<{ state: "idle" }> | Readonly<{
+  state: "running" | "suspended" | "expired"
+  phase: string
+  detail: string
+  budgetMilliseconds: number
+  remainingMilliseconds: number
+  visibleElapsedMilliseconds: number
+  hiddenElapsedMilliseconds: number
+  hiddenTransitions: number
+}>
+
+export class ApplicationVisibilityWatchdog {
+  readonly #scheduler: VisibilityWatchdogScheduler
+  #generation = 0
+  #handle?: unknown
+  #operation?: {
+    phase: string
+    detail: string
+    budget: number
+    remaining: number
+    visibleElapsed: number
+    hiddenElapsed: number
+    hiddenTransitions: number
+    changedAt: number
+    state: "running" | "suspended" | "expired"
+    timeout: () => void
+  }
+
+  constructor(scheduler: VisibilityWatchdogScheduler) {
+    this.#scheduler = scheduler
+  }
+
+  arm(phase: string, detail: string, milliseconds: number, visible: boolean, timeout: () => void): void {
+    if (!Number.isSafeInteger(milliseconds) || milliseconds < 1) {
+      throw new TypeError("Application visibility watchdog budget is invalid")
+    }
+    this.cancel()
+    this.#operation = {
+      phase,
+      detail,
+      budget: milliseconds,
+      remaining: milliseconds,
+      visibleElapsed: 0,
+      hiddenElapsed: 0,
+      hiddenTransitions: visible ? 0 : 1,
+      changedAt: this.#scheduler.now(),
+      state: visible ? "running" : "suspended",
+      timeout,
+    }
+    if (visible) this.#schedule()
+  }
+
+  visibility(visible: boolean): void {
+    const operation = this.#operation
+    if (!operation || operation.state === "expired" || visible === (operation.state === "running")) return
+    const elapsed = Math.max(0, this.#scheduler.now() - operation.changedAt)
+    operation.changedAt = this.#scheduler.now()
+    if (visible) {
+      operation.hiddenElapsed += elapsed
+      operation.state = "running"
+      this.#schedule()
+      return
+    }
+    operation.visibleElapsed += Math.min(operation.remaining, elapsed)
+    operation.remaining = Math.max(0, operation.remaining - elapsed)
+    operation.hiddenTransitions += 1
+    operation.state = "suspended"
+    if (this.#handle !== undefined) this.#scheduler.cancel(this.#handle)
+    this.#handle = undefined
+  }
+
+  cancel(): void {
+    this.#generation += 1
+    if (this.#handle !== undefined) this.#scheduler.cancel(this.#handle)
+    this.#handle = undefined
+    this.#operation = undefined
+  }
+
+  snapshot(): ApplicationVisibilityWatchdogSnapshot {
+    const operation = this.#operation
+    if (!operation) return Object.freeze({ state: "idle" })
+    return Object.freeze({
+      state: operation.state,
+      phase: operation.phase,
+      detail: operation.detail,
+      budgetMilliseconds: operation.budget,
+      remainingMilliseconds: operation.remaining,
+      visibleElapsedMilliseconds: operation.visibleElapsed,
+      hiddenElapsedMilliseconds: operation.hiddenElapsed,
+      hiddenTransitions: operation.hiddenTransitions,
+    })
+  }
+
+  #schedule(): void {
+    const operation = this.#operation
+    if (!operation || operation.state !== "running") return
+    const generation = this.#generation
+    this.#handle = this.#scheduler.schedule(() => {
+      if (generation !== this.#generation || operation !== this.#operation || operation.state !== "running") return
+      this.#handle = undefined
+      operation.visibleElapsed += operation.remaining
+      operation.remaining = 0
+      operation.state = "expired"
+      operation.timeout()
+    }, operation.remaining)
+  }
+}
+
 export type PresentationGeneration<Mapper, Encoder> = Readonly<{
   generation: number
   mapper: Mapper

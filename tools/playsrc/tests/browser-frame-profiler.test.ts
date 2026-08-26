@@ -40,7 +40,7 @@ describe("opt-in structured browser frame profiler", () => {
     new browser.GPUCommandEncoder().beginRenderPass()
     new browser.GPURenderBundleEncoder().finish()
     expect(state.currentPass).toEqual({ submissions: 1, commandBuffers: 2, renderPasses: 1 })
-    expect(state.counters).toMatchObject({ submissions: 1, commandBuffers: 2, renderPasses: 1, queueWriteBytes: 12, textures: 1, buffers: 1, shaderModules: 1, renderPipelines: 1, bundleEncodes: 1 })
+    expect(state.counters).toMatchObject({ submissions: 1, commandBuffers: 2, renderPasses: 1, queueWriteCalls: 1, queueWriteBytes: 12, textures: 1, buffers: 1, shaderModules: 1, renderPipelines: 1, bundleEncodes: 1 })
   })
 
   test("feature-detects long animation frames and preserves script, function, layout and completed-frame attribution", () => {
@@ -92,5 +92,19 @@ describe("opt-in structured browser frame profiler", () => {
     worker.listener!({ data: { id: 9, output: new ArrayBuffer(32), timings: { queueMilliseconds: 7 } } })
     expect(state.worker[1]).toMatchObject({ receivedBytes: 32, timings: { queueMilliseconds: 7 } })
     expect(state.counters.workerPending).toBe(0)
+  })
+
+  test("captures renderer-reported destroyed-texture validation errors without suppressing console output", () => {
+    const logged: unknown[][] = []
+    const browser = { ...host(), console: { error: (...arguments_: unknown[]) => logged.push(arguments_) } }
+    const state = installBrowserFrameProfiler(browser)
+    browser.console.error("THREE.WebGPURenderer: Uncaptured WebGPU GPUValidationError: Destroyed texture used in a submit.")
+    expect(state.counters.validationErrors).toBe(0)
+    state.active = true
+    browser.console.error("THREE.WebGPURenderer:", new Error("GPUValidationError: Destroyed texture used in a submit."))
+    expect(logged).toHaveLength(2)
+    expect(state.counters.validationErrors).toBe(1)
+    expect(state.losses[0]).toMatchObject({ kind: "validation", at: 20 })
+    expect(state.losses[0].message).toContain("Destroyed texture")
   })
 })

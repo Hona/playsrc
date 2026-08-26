@@ -4,6 +4,7 @@ import { encodeCommand, type BotConfiguration } from "@playsrc/game-tf2-browser/
 import {
   ApplicationFrameClock,
   ApplicationOperationLedger,
+  ApplicationVisibilityWatchdog,
   admitBotConfiguration,
   PredictedEyeInterpolation,
   composeViewmodelTransform,
@@ -13,6 +14,69 @@ import {
 } from "../src/application-lifecycle"
 
 describe("TF2 application lifecycle ownership", () => {
+  test("charges loading watchdog deadlines only while the browser document is visible", () => {
+    let now = 0
+    let identifier = 0
+    const pending = new Map<number, { deadline: number; callback: () => void }>()
+    const failures: string[] = []
+    const watchdog = new ApplicationVisibilityWatchdog({
+      now: () => now,
+      schedule: (callback, milliseconds) => {
+        const handle = ++identifier
+        pending.set(handle, { deadline: now + milliseconds, callback })
+        return handle
+      },
+      cancel: (handle) => { pending.delete(handle as number) },
+    })
+    watchdog.arm("Loading", "Loading world...", 60_000, true, () => failures.push("expired"))
+    expect(watchdog.snapshot()).toMatchObject({ state: "running", remainingMilliseconds: 60_000 })
+
+    now = 26_000
+    watchdog.visibility(false)
+    expect(pending.size).toBe(0)
+    expect(watchdog.snapshot()).toMatchObject({
+      state: "suspended", remainingMilliseconds: 34_000, visibleElapsedMilliseconds: 26_000, hiddenTransitions: 1,
+    })
+
+    now = 626_000
+    expect(failures).toEqual([])
+    watchdog.visibility(true)
+    expect(watchdog.snapshot()).toMatchObject({
+      state: "running", remainingMilliseconds: 34_000, hiddenElapsedMilliseconds: 600_000,
+    })
+    const timer = [...pending.values()][0]!
+    expect(timer.deadline).toBe(660_000)
+    now = timer.deadline
+    timer.callback()
+    expect(failures).toEqual(["expired"])
+    expect(watchdog.snapshot()).toMatchObject({ state: "expired", visibleElapsedMilliseconds: 60_000 })
+  })
+
+  test("replaces stale loading generations and starts hidden operations without a running timer", () => {
+    let now = 10
+    let identifier = 0
+    const pending = new Map<number, () => void>()
+    const failures: string[] = []
+    const watchdog = new ApplicationVisibilityWatchdog({
+      now: () => now,
+      schedule: (callback) => { const handle = ++identifier; pending.set(handle, callback); return handle },
+      cancel: (handle) => { pending.delete(handle as number) },
+    })
+    watchdog.arm("Startup", "Preparing resources", 60_000, false, () => failures.push("startup"))
+    expect(watchdog.snapshot()).toMatchObject({ state: "suspended", remainingMilliseconds: 60_000 })
+    expect(pending.size).toBe(0)
+    now = 120_010
+    watchdog.arm("Loading", "Loading world...", 60_000, true, () => failures.push("loading"))
+    const stale = [...pending.values()][0]!
+    watchdog.arm("Replacing", "Replacing world...", 60_000, true, () => failures.push("replacement"))
+    stale()
+    expect(failures).toEqual([])
+    watchdog.cancel()
+    expect(pending.size).toBe(0)
+    expect(watchdog.snapshot()).toEqual({ state: "idle" })
+    expect(() => watchdog.arm("Loading", "world", 0, true, () => {})).toThrow("watchdog budget")
+  })
+
   test("never admits persisted bot settings into a navless map's team/class Worker command", () => {
     const configuration: BotConfiguration = Object.freeze({
       quota: 6, maximumPlayers: 32, mode: "fill", difficulty: 2,
