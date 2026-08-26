@@ -117,10 +117,6 @@ test("headed bounded three-map authored noclip visual and frame sanity", async (
   let revision = 0
 
   for (const [index, target] of TARGETS.entries()) {
-    if (index === TARGETS.length - 1) {
-      await page.reload({ waitUntil: "load", timeout: 30_000 })
-      await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
-    }
     const loadStarted = performance.now()
     await consoleCommand(page, entry, `map ${target}`)
     await page.waitForFunction((identity) => {

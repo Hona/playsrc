@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
@@ -7,6 +7,7 @@ import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { parseResourceGraphBytes, type ResourceGraph } from "@playsrc/asset-store/graph"
 import toolchains from "../toolchains.json"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
+import { buildCacheDirectory, rustBuildIdentity } from "./build-identity"
 
 export type SourceBundleArtifact = Readonly<{
   graphPath: string
@@ -240,32 +241,50 @@ async function immutableBundlePaths(
   return Object.freeze({ graphPath, ledgerPath, graphObjectDirectory: paths.graphObjectDirectory })
 }
 
-export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
+type SourceBundleProducer = Readonly<{ executable: string; generatorSha256: string; environment: Record<string, string | undefined> }>
+
+const producers = new Map<string, Promise<SourceBundleProducer>>()
+
+export async function prepareSourceBundleProducer(config: LocalConfig): Promise<SourceBundleProducer> {
+  const identity = await rustBuildIdentity()
+  const prior = producers.get(identity)
+  if (prior) return prior
+  const operation = (async (): Promise<SourceBundleProducer> => {
   const executable = process.platform === "win32" ? "cargo.exe" : "cargo"
   const cargo = path.join(config.sourceCacheDir, "toolchains", "rust", "cargo", "bin", executable)
   const environment = { ...process.env, ...rustEnvironment(config.sourceCacheDir) }
-  const build = Bun.spawn([
-    cargo,
-    `+${toolchains.rust.toolchain}`,
-    "build",
-    "--profile",
-    "source-bundle",
-    "-p",
-    "playsrc-source-bundle",
-  ], {
-    cwd: repositoryRoot,
-    env: environment,
-    stdout: "ignore",
-    stderr: "inherit",
-  })
-  if (await build.exited !== 0) throw new Error("source bundle build failed")
-
-  const generatorPath = path.join(
-    repositoryRoot,
-    "target",
-    "source-bundle",
-    process.platform === "win32" ? "playsrc-source-bundle.exe" : "playsrc-source-bundle",
-  )
+  const filename = process.platform === "win32" ? "playsrc-source-bundle.exe" : "playsrc-source-bundle"
+  const generatorPath = path.join(buildCacheDirectory(config.sourceCacheDir, identity), filename)
+  let available = false
+  try { available = (await stat(generatorPath)).isFile() } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  if (!available) {
+    const build = Bun.spawn([
+      cargo,
+      `+${toolchains.rust.toolchain}`,
+      "build",
+      "--profile",
+      "source-bundle",
+      "-p",
+      "playsrc-source-bundle",
+    ], {
+      cwd: repositoryRoot,
+      env: environment,
+      stdout: "ignore",
+      stderr: "inherit",
+    })
+    if (await build.exited !== 0) throw new Error("source bundle build failed")
+    const built = path.join(repositoryRoot, "target", "source-bundle", filename)
+    await mkdir(path.dirname(generatorPath), { recursive: true })
+    const temporary = `${generatorPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+    try {
+      await copyFile(built, temporary)
+      await rename(temporary, generatorPath)
+    } finally {
+      await rm(temporary, { force: true })
+    }
+  }
   const [generatorBytes,uiManifestBytes]=await Promise.all([
     readFile(generatorPath),
     readFile(path.join(repositoryRoot,"tools/source-bundle/tf2-ui.generated.json")),
@@ -275,6 +294,14 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
     .update(generatorBytes)
     .update(uiManifestBytes)
     .digest("hex")
+  return Object.freeze({ executable: generatorPath, generatorSha256, environment })
+  })()
+  producers.set(identity, operation)
+  try { return await operation } catch (error) { producers.delete(identity); throw error }
+}
+
+export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
+  const { executable: generatorPath, generatorSha256, environment } = await prepareSourceBundleProducer(config)
   const directory = path.join(config.sourceCacheDir, "browser-bundles")
   const snapshotDirectory = path.join(directory, "generators", generatorSha256)
   const paths = Object.freeze({
