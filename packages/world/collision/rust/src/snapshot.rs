@@ -1351,8 +1351,6 @@ impl World {
                     if convex.contents & request.mask == 0 {
                         continue;
                     }
-                    #[cfg(feature = "replay-reference")]
-                    crate::replay_diagnostics::count(3, 1);
                     let query = || {
                         let temporary;
                         let prepared = if request.transform.same_bits(object.transform) {
@@ -1376,6 +1374,7 @@ impl World {
                     };
                     #[cfg(feature = "replay-reference")]
                     let mut candidate = if crate::replay_diagnostics::reference() {
+                        crate::replay_diagnostics::count(3, 1);
                         trace_convex_reference(
                             request.start,
                             request.end,
@@ -1511,6 +1510,7 @@ struct PreparedConvex {
     face_count: usize,
     source_face_count: usize,
     source_direction_count: usize,
+    axial_bounds: Hull,
 }
 
 impl PreparedConvex {
@@ -1525,6 +1525,26 @@ impl PreparedConvex {
             .copied()
             .map(|vertex| basis.point(vertex))
             .collect::<Vec<_>>();
+        // These are the same three axial support directions already required
+        // by the swept-box SAT, not an approximation to the physics solid.
+        let axial_bounds = Hull {
+            mins: std::array::from_fn(|axis| {
+                let mut normal = [0.0; 3];
+                normal[axis] = 1.0;
+                vertices
+                    .iter()
+                    .map(|&vertex| dot(vertex, normal))
+                    .fold(f32::INFINITY, f32::min)
+            }),
+            maxs: std::array::from_fn(|axis| {
+                let mut normal = [0.0; 3];
+                normal[axis] = 1.0;
+                vertices
+                    .iter()
+                    .map(|&vertex| dot(vertex, normal))
+                    .fold(f32::NEG_INFINITY, f32::max)
+            }),
+        };
         let mut directions = Vec::new();
         let mut seen = BTreeSet::new();
         let mut append = |direction, triangle| {
@@ -1572,6 +1592,7 @@ impl PreparedConvex {
             face_count,
             source_face_count: faces.len(),
             source_direction_count: faces.len() + 3 + edges.len() * 3,
+            axial_bounds,
         }
     }
 
@@ -1595,6 +1616,27 @@ impl PreparedConvex {
         }
         let center = scale(add(hull.mins, hull.maxs), 0.5);
         let extents = scale(sub(hull.maxs, hull.mins), 0.5);
+        let ray_start = add(start, center);
+        let ray_end = add(end, center);
+        if !point {
+            for axis in 0..3 {
+                let mut normal = [0.0; 3];
+                normal[axis] = 1.0;
+                let radius = dot_abs(normal, extents);
+                let upper = self.axial_bounds.maxs[axis] + radius;
+                let lower = -(self.axial_bounds.mins[axis] - radius);
+                // Strictly outside both endpoints is the original clipper's
+                // exact rejection. Do not use this extra axis for point rays.
+                if dot(ray_start, normal) - upper > 0.0 && dot(ray_end, normal) - upper > 0.0
+                    || dot(ray_start, scale(normal, -1.0)) - lower > 0.0
+                        && dot(ray_end, scale(normal, -1.0)) - lower > 0.0
+                {
+                    return Ok(miss(start, end));
+                }
+            }
+        }
+        #[cfg(feature = "replay-reference")]
+        crate::replay_diagnostics::count(3, 1);
         let directions = if point {
             &self.directions[..self.face_count]
         } else {
@@ -1615,15 +1657,7 @@ impl PreparedConvex {
                 ),
             ]
         });
-        let mut trace = clip_axes(
-            start,
-            end,
-            add(start, center),
-            add(end, center),
-            axes,
-            contents,
-            point,
-        )?;
+        let mut trace = clip_axes(start, end, ray_start, ray_end, axes, contents, point)?;
         set_convex_feature(&mut trace);
         Ok(trace)
     }
