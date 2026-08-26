@@ -43,7 +43,7 @@ export function sourceModelPanelPresentation(request: Readonly<{
     ? ratio > 1.05 ? -60 : ratio < 0.95 ? 15 : 0
     : 0
   const x = Math.max(0, Math.round(request.bounds.x * request.devicePixelRatio))
-  const y = Math.max(0, request.displayHeight - Math.round((request.bounds.y + request.bounds.height) * request.devicePixelRatio))
+  const y = Math.max(0, Math.round(request.bounds.y * request.devicePixelRatio))
   const width = Math.min(Math.max(1, Math.round(request.bounds.width * request.devicePixelRatio)), request.displayWidth - x)
   const height = Math.min(Math.max(1, Math.round(request.bounds.height * request.devicePixelRatio)), request.displayHeight - y)
   if (width <= 0 || height <= 0) throw new TypeError("Source model-panel viewport is outside the display")

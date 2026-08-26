@@ -113,7 +113,7 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
   const summaryNode = summaryResource.root.children.find((node) => node.name === "TFStatsSummary")
   const mapInfoNode = summaryResource.root.children.find((node) => node.name === "MapInfo")
   if (!summaryNode || !mapInfoNode) throw new Error("Configured TF2 map-loading summary is incomplete")
-  const selection = { activeConditions: input.resources.activeConditions, resolutionSuffixes: ["_hidef"] }
+  const selection = { activeConditions: input.resources.activeConditions, resolutionSuffixes: input.resources.resolutionSuffixes }
   const summary = mustApply(runtime, { kind: "create-panel", parent: 1, control: "EditablePanel", name: "TFStatsSummary" })!
   mustApply(runtime, { kind: "set-panel-state", panel: summary, proportional: true, mouseInput: false, keyboardInput: false })
   mustApply(runtime, {
@@ -169,7 +169,7 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
             kind: "replace-resource",
             parent: dialog,
             document: withoutFrame(document),
-            selection: { activeConditions: input.resources.activeConditions, resolutionSuffixes: ["_hidef"] },
+            selection: { activeConditions: input.resources.activeConditions, resolutionSuffixes: input.resources.resolutionSuffixes },
           })
           mustApply(runtime, { kind: "set-panel-state", panel: 1, visible: true, mouseInput: true, keyboardInput: true })
           mustApply(runtime, { kind: "set-panel-state", panel: dialog, visible: true, popup: true, mouseInput: true, keyboardInput: true })

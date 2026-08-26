@@ -144,7 +144,7 @@ export function initializeTf2EngineerPresentation(request: Readonly<{
     customControls: request.resources.customControls, reducedMotion: request.reducedMotion, onRequest: () => {} })
   if (!initialized.ok) throw new Error(`${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
   const runtime = initialized.runtime
-  const selection = { activeConditions: request.resources.activeConditions, resolutionSuffixes: ["_hidef"] }
+  const selection = { activeConditions: request.resources.activeConditions, resolutionSuffixes: request.resources.resolutionSuffixes }
   let previous: Snapshot | undefined
   let statusRootId=0,accountRootId=0,accountBackgroundId=0
   let menuFingerprint=""

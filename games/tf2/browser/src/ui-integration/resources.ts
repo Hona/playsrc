@@ -18,6 +18,7 @@ import {
   type VguiLocalization,
   type VguiResourceDocument,
   type VguiResourceNode,
+  type VguiResolvedFontRequest,
   type VguiScheme,
   type VguiSchemeDocument,
   type VguiSchemeNode,
@@ -52,6 +53,7 @@ export type Tf2VguiResources = Readonly<{
   localization: VguiLocalization
   animations: VguiAnimationScriptSet
   activeConditions: readonly string[]
+  resolutionSuffixes: readonly string[]
   customControls: readonly VguiControlRegistration[]
   gameUiBackground: Tf2GameUiBackgroundDescriptor
   diagnostics: readonly Tf2UiIntegrationDiagnostic[]
@@ -493,6 +495,23 @@ function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiContr
       focusable: false, animationVariables: Object.freeze([]), acceptedProperties: Object.freeze([]),
     }),
     Object.freeze({
+      name: "CTFHudTimeStatus", baseControl: "EditablePanel" as const, element: "div" as const, role: null,
+      focusable: false,
+      animationVariables: Object.freeze([
+        { name: "delta_item_start_y", converter: "proportional_float" as const, defaultValue: "100" },
+        { name: "delta_item_end_y", converter: "proportional_float" as const, defaultValue: "0" },
+        { name: "delta_item_x", converter: "proportional_float" as const, defaultValue: "0" },
+        { name: "PositiveColor", converter: "Color" as const, defaultValue: "0 255 0 255" },
+        { name: "NegativeColor", converter: "Color" as const, defaultValue: "255 0 0 255" },
+        { name: "delta_lifetime", converter: "float" as const, defaultValue: "2.0" },
+        { name: "delta_item_font", converter: "HFont" as const, defaultValue: "Default" },
+      ]),
+      acceptedProperties: Object.freeze([
+        "delta_item_start_y", "delta_item_end_y", "delta_item_x", "PositiveColor", "NegativeColor",
+        "delta_lifetime", "delta_item_font",
+      ]),
+    }),
+    Object.freeze({
       name: "CTFAdvancedOptionsDialog", baseControl: "EditablePanel" as const, element: "div" as const, role: "dialog",
       focusable: true,
       animationVariables: Object.freeze([
@@ -538,29 +557,34 @@ async function fontPresentations(
     supplies.push(Object.freeze({ ...file, bytes }))
   }
   const names = composedSections(descriptor, schemeIdentity, "Fonts").map((entry) => entry.name)
+  const lookups: Array<Readonly<{ identity: string; name: string; proportional: boolean }>> = []
+  const resolvedHeights = new Map<number, ReadonlyMap<string, VguiResolvedFontRequest>>()
+  const resolve = (height: number, requested: readonly Readonly<{ identity: string; name: string; proportional: boolean }>[]) => resolveVguiSchemeFonts({
+    schemeLogicalIdentity: schemeIdentity,
+    documents,
+    fontFiles: files,
+    localFonts: [],
+    context: {
+      platform,
+      viewportHeight: height,
+      language: "english",
+      minMode: false,
+      steamDeck: false,
+      surfaceFeatures: { antialias: true, dropShadow: true, outline: true },
+    },
+    lookups: requested,
+  })
   const output: VguiFontPresentation[] = []
   for (const [index, name] of names.entries()) {
     const identity = `font-${String(index + 1).padStart(4, "0")}`
-    const resolved = resolveVguiSchemeFonts({
-      schemeLogicalIdentity: schemeIdentity,
-      documents,
-      fontFiles: files,
-      localFonts: [],
-      context: {
-        platform,
-        viewportHeight,
-        language: "english",
-        minMode: false,
-        steamDeck: false,
-        surfaceFeatures: { antialias: true, dropShadow: true, outline: true },
-      },
-      lookups: [{ identity, name, proportional: schemeIdentity === "resource/clientscheme.res" }],
-    })
+    const lookup = Object.freeze({ identity, name, proportional: schemeIdentity === "resource/clientscheme.res" })
+    const resolved = resolve(viewportHeight, [lookup])
     if (!resolved.ok) {
       diagnostics.push(Object.freeze({ code: "FontUnavailable", subject: `${schemeIdentity}:${name}:${resolved.diagnostic.code}` }))
       continue
     }
     const request = resolved.fonts[0]!
+    lookups.push(lookup)
     const requiredSupplies = new Set(request.faces.flatMap((face) => face.sources.flatMap((source) => source.kind === "local" ? [] : [source.logicalIdentity])))
     const mounted = await mountVguiFontSet({
       identity: `${descriptor.identity}/${schemeIdentity}/${identity}`,
@@ -573,12 +597,19 @@ async function fontPresentations(
     const selected = capability.kind === "supported" ? capability.fonts[0] : null
     if (capability.kind === "unsupported") diagnostics.push(Object.freeze({ code: "FontUnavailable", subject: `${schemeIdentity}:${name}:${capability.reason}` }))
     const browserFamily = selected?.browserFamily ?? `playsrc-unavailable-${identity}`
-    const measure = selected && typeof document !== "undefined" ? ((text: string, wrapWidth: number | null) => {
+    const metricsCache = new Map<number, Readonly<{
+      sizePx: number
+      lineHeightPx: number
+      weight?: number
+      style?: "normal" | "italic"
+      measure?: (text: string, wrapWidth: number | null) => Readonly<{ width: number; height: number }>
+    }>>()
+    const measureFor = (height: number, weight: number) => selected && typeof document !== "undefined" ? ((text: string, wrapWidth: number | null) => {
       const canvas = document.createElement("canvas")
       const context = canvas.getContext("2d")
-      if (!context) return Object.freeze({ width: 0, height: request.requestedHeight })
-      context.font = `${request.effects.italic ? "italic " : ""}${request.weight || 400} ${request.requestedHeight}px ${JSON.stringify(browserFamily)}`
-      if (wrapWidth === null || wrapWidth <= 0) return Object.freeze({ width: context.measureText(text).width, height: request.requestedHeight })
+      if (!context) return Object.freeze({ width: 0, height })
+      context.font = `${request.effects.italic ? "italic " : ""}${weight || 400} ${height}px ${JSON.stringify(browserFamily)}`
+      if (wrapWidth === null || wrapWidth <= 0) return Object.freeze({ width: context.measureText(text).width, height })
       const words = text.split(/\s+/u)
       let lines = 1
       let width = 0
@@ -590,17 +621,51 @@ async function fontPresentations(
         else current = candidate
       }
       width = Math.max(width, context.measureText(current).width)
-      return Object.freeze({ width: Math.min(wrapWidth, width), height: lines * request.requestedHeight })
+      return Object.freeze({ width: Math.min(wrapWidth, width), height: lines * height })
     }) : undefined
+    const initialMeasure = measureFor(request.requestedHeight, request.weight)
+    const initial = Object.freeze({
+      sizePx: request.requestedHeight,
+      lineHeightPx: request.requestedHeight + (request.effects.outline ? 2 : 0),
+      ...(initialMeasure ? { measure: initialMeasure } : {}),
+    })
+    metricsCache.set(viewportHeight, initial)
+    const metricsForViewport = (height: number) => {
+      const cached = metricsCache.get(height)
+      if (cached) return cached
+      let fonts = resolvedHeights.get(height)
+      if (!fonts) {
+        const resized = resolve(height, lookups)
+        if (!resized.ok) throw new Error(`TF2 authored font is unavailable: ${schemeIdentity}:${name}:${height}`)
+        fonts = new Map(resized.fonts.map((font) => [font.identity, font]))
+        resolvedHeights.clear()
+        resolvedHeights.set(height, fonts)
+      }
+      const font = fonts.get(identity)
+      if (!font) throw new Error(`TF2 authored font is unavailable: ${schemeIdentity}:${name}:${height}`)
+      if (font.family !== request.family || font.effects.italic !== request.effects.italic) {
+        throw new Error(`TF2 authored font face changes at viewport height ${height}: ${schemeIdentity}:${name}`)
+      }
+      const measure = measureFor(font.requestedHeight, font.weight)
+      const result = Object.freeze({
+        sizePx: font.requestedHeight,
+        lineHeightPx: font.requestedHeight + (font.effects.outline ? 2 : 0),
+        weight: font.weight,
+        style: font.effects.italic ? "italic" as const : "normal" as const,
+        ...(measure ? { measure } : {}),
+      })
+      for (const previous of metricsCache.keys()) if (previous !== viewportHeight) metricsCache.delete(previous)
+      metricsCache.set(height, result)
+      return result
+    }
     output.push(Object.freeze({
       name,
       cssFamily: browserFamily,
-      sizePx: request.requestedHeight,
-      lineHeightPx: request.requestedHeight + (request.effects.outline ? 2 : 0),
+      ...initial,
       weight: request.weight,
       style: request.effects.italic ? "italic" : "normal",
       available: selected !== null,
-      ...(measure ? { measure } : {}),
+      metricsForViewport,
     }))
   }
   return Object.freeze(output)
@@ -901,7 +966,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
           diagnostics.push(Object.freeze({ code: "UnsupportedImageMaterial", subject: `${panel.source.logicalPath}:${node.name}:${child.value}` }))
           return false
         }
-        if (/(?:_lodef|_minmode)$/iu.test(child.name)) {
+        if (/(?:_hidef|_lodef|_minmode)$/iu.test(child.name)) {
           diagnostics.push(Object.freeze({ code: "UnsupportedProperty", subject: `${panel.source.logicalPath}:${node.name}:inactive-resolution:${child.name}` }))
           return false
         }
@@ -938,6 +1003,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     localization,
     animations,
     activeConditions,
+    resolutionSuffixes: Object.freeze([]),
     customControls: customControls(descriptor),
     gameUiBackground,
     diagnostics: Object.freeze(diagnostics),

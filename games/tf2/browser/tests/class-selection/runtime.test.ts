@@ -29,7 +29,7 @@ describe("authored TF2 class selection VGUI integration", () => {
       expect(snapshot.panels.some((panel) => panel.name === selected.name), selected.name).toBeTrue()
     }
     expect(models.at(-1)).toMatchObject([
-      { name: "MenuBG", model: "models/vgui/ui_class01.mdl", skin: 0, fov: 16, origin: [380, 0, -40], angles: [0, 180, 0] },
+      { name: "MenuBG", model: "models/vgui/ui_class01.mdl", skin: 0, fov: 16, origin: [365, 0, -40], angles: [0, 180, 0] },
       { name: "TFPlayerModel", model: "models/player/soldier.mdl", skin: 0, fov: 25, origin: [320, 10, -49], angles: [0, 180, 0] },
     ])
     expect(snapshot.panels.filter((panel) => ["ClassSelectionViewport", "class", "CancelButton"].includes(panel.name)).map((panel) => [panel.name, panel.visible, panel.effectivelyVisible, panel.bounds])).toEqual([
@@ -37,6 +37,8 @@ describe("authored TF2 class selection VGUI integration", () => {
       ["class", true, true, { x: 0, y: 0, width: 1280, height: 720 }],
       ["CancelButton", true, true, expect.anything()],
     ])
+    expect(snapshot.panels.find((panel) => panel.name === "scout")?.bounds).toMatchObject({ x: 190, y: -7 })
+    expect(snapshot.panels.find((panel) => panel.name === "ClassMenuSelect")?.bounds).toMatchObject({ x: 45, y: 660 })
   })
 
   test("updates team-aware authored portrait and preview without sending a gameplay command", () => {
