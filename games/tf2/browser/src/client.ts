@@ -635,7 +635,22 @@ export class Tf2WorkerClient {
     if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
       throw new Tf2WorkerError("WorkerFailed")
     }
-    return decodeSimulationPublications(response.output)
+    const profile = (globalThis as typeof globalThis & {
+      __playsrcFrameProfiler?: { active: boolean; simulation: unknown[]; simulationDropped: number }
+    }).__playsrcFrameProfiler
+    const started = profile?.active ? performance.now() : 0
+    const publications = decodeSimulationPublications(response.output)
+    if (profile?.active) {
+      if (profile.simulation.length >= 16_384) profile.simulationDropped += 1
+      else profile.simulation.push({
+        requestId: response.id, at: started, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
+        publications: publications.map(publication => ({
+          hostFrame: String(publication.hostFrame), firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick),
+          selectedTicks: publication.selectedTicks, eventBatches: publication.eventBatches.length,
+        })),
+      })
+    }
+    return publications
   }
   async particles(generation: number, batch: Uint8Array): Promise<Uint8Array> {
     if (batch.byteLength < 32 || batch.byteLength > 4 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")

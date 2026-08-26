@@ -7,7 +7,7 @@ import { TRACE_START, TRACE_END, activeGameplayTraceWindow, chromiumPresentation
 import { attributeCompositorEvidence } from "./compositor-attribution"
 
 export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
-  "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "blink.user_timing",
+  "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "toplevel.flow", "blink.user_timing",
   "disabled-by-default-gpu.service", "disabled-by-default-gpu.dawn", "disabled-by-default-viz.debug",
   "devtools.timeline", "v8", "disabled-by-default-v8.gc",
 ])
@@ -123,7 +123,7 @@ export function analyzeCompositorEvidence(events: readonly RawTraceEvent[], prob
 type BlobIdentity = Readonly<{ file: string; sha256: string; bytes: number }>
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-async function immutableBlob(directory: string, bytes: Uint8Array, suffix: string): Promise<BlobIdentity> {
+export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json"): Promise<BlobIdentity> {
   const sha256 = digest(bytes)
   const file = `${sha256}.${suffix}`
   await mkdir(directory, { recursive: true })
@@ -171,10 +171,11 @@ export async function drainTraceStream(cdp: Pick<CDPSession, "send">, stream: st
 export async function retainCompositorEvidence(options: Readonly<{
   directory: string; raw: Uint8Array; complete: boolean; dataLossOccurred: boolean;
   identity: Record<string, unknown>; probes: TraceProbes;
+  categories?: readonly string[];
 }>) {
   // Persist original bytes before parsing/analysis: malformed and overflow traces are evidence too.
   const errors: string[] = []
-  const trace = await immutableBlob(options.directory, options.raw.subarray(0, TRACE_LIMITS.compressedBytes), "trace.json.gz")
+  const trace = await retainEvidenceBlob(options.directory, options.raw.subarray(0, TRACE_LIMITS.compressedBytes), "trace.json.gz")
   if (trace.bytes !== options.raw.byteLength) errors.push("Raw trace exceeded the compressed byte bound")
   let capturedProbes = options.probes
   let probeBytes = Buffer.from(JSON.stringify(capturedProbes))
@@ -183,7 +184,7 @@ export async function retainCompositorEvidence(options: Readonly<{
     capturedProbes = { started: options.probes.started, ended: options.probes.ended, joins: [], dropped: options.probes.dropped + options.probes.joins.length }
     probeBytes = Buffer.from(JSON.stringify(capturedProbes))
   }
-  const probes = await immutableBlob(options.directory, gzipSync(probeBytes), "probes.json.gz")
+  const probes = await retainEvidenceBlob(options.directory, gzipSync(probeBytes), "probes.json.gz")
   if (!options.complete) errors.push("Trace stream exceeded its byte/time bound")
   if (options.dataLossOccurred) errors.push("Chromium reported trace data loss")
   if (options.identity.sourceUnchanged === false) errors.push("Source changed during capture")
@@ -191,13 +192,13 @@ export async function retainCompositorEvidence(options: Readonly<{
   try { events = decodeRawTrace(options.raw.subarray(0, TRACE_LIMITS.compressedBytes)) } catch (error) { errors.push(String(error)) }
   const analysis = analyzeCompositorEvidence(events, capturedProbes)
   const manifest = { schema: "playsrc-compositor-evidence-v1", identity: options.identity, limits: TRACE_LIMITS,
-    categories: COMPOSITOR_TRACE_CATEGORIES, trace, probes, complete: options.complete && !options.dataLossOccurred && !errors.length && !analysis.issues.length,
+    categories: options.categories ?? COMPOSITOR_TRACE_CATEGORIES, trace, probes, complete: options.complete && !options.dataLossOccurred && !errors.length && !analysis.issues.length,
     errors, analysis }
-  const artifact = await immutableBlob(options.directory, Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json")
+  const artifact = await retainEvidenceBlob(options.directory, Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json")
   return { artifact, manifest, events }
 }
 
-export async function replayCompositorEvidence(filename: string) {
+export async function loadCompositorEvidence(filename: string) {
   if ((await stat(filename)).size > TRACE_LIMITS.probeBytes) throw new Error("Trace manifest exceeds byte bound")
   const bytes = await readFile(filename)
   if (path.basename(filename) !== `${digest(bytes)}.manifest.json`) throw new Error("Trace manifest identity mismatch")
@@ -218,6 +219,11 @@ export async function replayCompositorEvidence(filename: string) {
   try { events = decodeRawTrace(trace) } catch (error) { if (manifest.complete) throw error }
   const analysis = analyzeCompositorEvidence(events, probes)
   if (JSON.stringify(analysis) !== JSON.stringify(manifest.analysis)) throw new Error("Trace replay does not match retained analysis")
+  return { manifest, events, probes, analysis }
+}
+
+export async function replayCompositorEvidence(filename: string) {
+  const { manifest, events, probes, analysis } = await loadCompositorEvidence(filename)
   return { complete: manifest.complete, identity: manifest.identity, errors: manifest.errors, analysis,
     attribution: attributeCompositorEvidence(events, probes, analysis) }
 }

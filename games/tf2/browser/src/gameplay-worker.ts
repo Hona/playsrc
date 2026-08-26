@@ -1034,6 +1034,12 @@ function unexpected(request: WorkerRequest, error: unknown): void {
 }
 
 function handle(request: WorkerRequest): void {
+  // Headed profiling installs this counter-only hook. Never expose a WASM owner
+  // or retain a heap view; ordinary gameplay has no observer or extra crossings.
+  const memoryProbe = (globalThis as typeof globalThis & {
+    __playsrcWorkerProfileMemory?: (linearBytes: number, liveBytes: number, highWaterBytes: number) => void
+  }).__playsrcWorkerProfileMemory
+  if (memoryProbe && wasm) memoryProbe(wasm.memory.buffer.byteLength, wasm.playsrc_memory_bytes(0), wasm.playsrc_memory_bytes(1))
   try {
     const result = dispatch(request)
     if (result instanceof Promise) {
@@ -1044,6 +1050,8 @@ function handle(request: WorkerRequest): void {
     }
   } catch (error) {
     unexpected(request, error)
+  } finally {
+    if (memoryProbe && wasm) memoryProbe(wasm.memory.buffer.byteLength, wasm.playsrc_memory_bytes(0), wasm.playsrc_memory_bytes(1))
   }
 }
 

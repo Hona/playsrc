@@ -8,6 +8,8 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     compositorFrames: [] as any[],
     animationCallbacks: [] as number[],
     worker: [] as any[],
+    simulation: [] as any[],
+    simulationDropped: 0,
     input: [] as { at: number; revision: number; kind: string }[],
     longTasks: [] as any[],
     longAnimationFrames: [] as any[],
@@ -167,7 +169,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
         if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string" && message.kind !== "release-model-output") {
           const started=host.performance.now()
           const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean,views?:number)=>{
-            const record={kind,started,bytes,pending:state.counters.workerPending,sharedDispatch,...(views===undefined?{}:{views})}
+            const record={id,kind,started,bytes,pending:state.counters.workerPending,sharedDispatch,...(views===undefined?{}:{views})}
             this.records.set(id,record)
             state.worker.push(record)
             state.counters.workerPending+=1

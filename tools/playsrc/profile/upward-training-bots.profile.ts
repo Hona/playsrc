@@ -8,12 +8,14 @@ import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
-import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, type TraceJoin } from "./compositor-evidence"
+import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, type TraceJoin } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
+import { startWorkerCpuCapture } from "./worker-cpu-profiler"
+import { attributeWorkerIncidents } from "./worker-incident-attribution"
 
 function processResidentMemory(processes: Array<{ id: number; type: string }> | undefined) {
   if (!processes?.length || process.platform === "win32") return null
@@ -31,6 +33,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const entry = createServer ? "create-server" : "training"
   const exerciseClasses = process.env.PROFILE_UPWARD_CLASS_SWITCH === "1"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
+  const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots")
   await mkdir(directory, { recursive: true })
@@ -334,6 +337,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
+  const workerCpu = exerciseClasses ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
+  const nativeScreenshot = process.env.PROFILE_NATIVE_SCREENSHOT === "1" ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
+  if (nativeScreenshot) {
+    if (process.platform !== "darwin") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
+    const captured = spawnSync("screencapture", ["-x", nativeScreenshot], { timeout: 5_000 })
+    if (captured.status !== 0) throw new Error("Native visible desktop capture failed")
+  }
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
@@ -344,6 +354,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (!exerciseClasses) await page.keyboard.down("w")
   await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
     traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
+  await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
   const measurementPromise = page.evaluate(async ({ duration, startMark, endMark }) => {
@@ -463,6 +474,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames, particleSamples,
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
+      simulationPublications: instrumentation.simulation, simulationPublicationsDropped: instrumentation.simulationDropped,
       classSwitches, lifecycle,
       dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0,
         panels, rasterImages: document.querySelectorAll("img[data-vgui-raster]").length, rasterCanvases: document.querySelectorAll("canvas[data-vgui-raster]").length,
@@ -547,6 +559,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })() : Promise.resolve()
   const sample = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
+  // Stop the real Worker sampler before ending the trace so its end clock mark
+  // remains joinable. Failure here must not discard the native browser trace.
+  const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
+    .then(captures => ({ captures, error: null }), error => ({ captures: [], error: String(error) }))
+  await workerCpu?.close().catch(() => undefined)
   const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
   await browserCdp.send("Tracing.end")
@@ -567,20 +584,28 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const record of measured.particleSamples) joins.push({ kind: "particles", at: measured.started + record.at, detail: record })
     for (const record of measured.frames) joins.push({ kind: "completed-frame", at: record.at, detail: record })
     for (const record of measured.worker) joins.push({ kind: "worker", at: record.started, end: record.finished ?? measured.ended, detail: record })
+    for (const record of measured.simulationPublications) joins.push({ kind: "simulation-publication", at: record.at, end: record.at + record.decodeMilliseconds, detail: record })
     for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
   }
   const sourceFingerprintAfter = await profileSourceIdentity()
+  let workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", ...workerCapture, unsampledTargets: workerCpu?.unsampledTargets ?? [] }))
+  if (workerBytes.byteLength > TRACE_LIMITS.probeBytes) {
+    workerCapture.error = "Worker CPU evidence exceeds its byte bound"
+    workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
+  }
+  const workerArtifact = await retainEvidenceBlob(path.join(directory, "compositor-evidence"), workerBytes, "workers.json")
   const evidence = await retainCompositorEvidence({ directory: path.join(directory, "compositor-evidence"), raw: raw.bytes,
     complete: raw.complete, dataLossOccurred: completion.dataLossOccurred,
     identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
       sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
       gpu: system?.gpu ?? null, availableCategories, viewport: measured?.viewport ?? null,
       origin: new URL(page.url()).origin, localProductionBundle, label, headed: true, target, launch,
-      sampleError: sample.error, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
-    probes: { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured?.gpuOperationsDropped ?? 1 } })
+      sampleError: sample.error, workerCpu: workerArtifact, nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
+    probes: { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped : 1 } })
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
   console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
+  if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
   const collected = await supplemental
   if (!collected.value) throw new Error(`Optional profiling extraction failed; compositor evidence retained: ${collected.error}`)
@@ -641,6 +666,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     if (decoded.pixels[index]! > 16 || decoded.pixels[index + 1]! > 16 || decoded.pixels[index + 2]! > 16) nonBlack += 1
   }
   const actualFrames = measurement.lastFrame - measurement.firstFrame
+  const workerIncidents = exactTraceWindow ? attributeWorkerIncidents(traceEvents, workerCapture.captures, exactTraceWindow, { requests: measurement.worker, publications: measurement.simulationPublications }) : []
   const tails = attributeFrameTails({
     frames: completed, workers, inputs: measurement.input, longAnimationFrames: measurement.longAnimationFrames,
     trace: traceEvents, cpu: cpuProfile,
@@ -764,12 +790,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
       sampledRetainedAllocationBytes: allocations(allocationProfile.head),
     },
     frameTails: tails,
+    workerIncidents,
+    workerEvidence: workerArtifact,
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
   }
   await Promise.all([
     writeFile(path.join(directory, `${label}.json`), `${JSON.stringify(report, null, 2)}\n`),
     writeFile(path.join(directory, `${label}.cpuprofile`), `${JSON.stringify(cpuProfile)}\n`),
+    writeFile(path.join(directory, `${evidenceLabel}.measurement.json`), `${JSON.stringify(measurement)}\n`),
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
@@ -819,6 +848,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(report.classSwitches.visibleScoreboardRows).toBe(playerCount)
     expect(report.simulation.hertz).toBeGreaterThanOrEqual(60)
     expect(report.compositor.intervals?.maximumMilliseconds).toBeLessThan(250)
+    expect(workerCapture.captures).toHaveLength(1)
+    expect(workerCapture.captures[0]!.deadlineStopped).toBe(false)
+    expect(workerIncidents[0]!.samples).toBeGreaterThan(0)
+    expect(workerIncidents[0]!.captureComplete).toBe(true)
   }
   expect(report.screen.visibility).toBe("visible")
   expect(report.gpu.losses).toHaveLength(0)
