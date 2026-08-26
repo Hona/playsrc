@@ -2296,6 +2296,8 @@ fn encode_model_poses(
     let mut output_count = 0_u32;
     let mut sampled_poses =
         BTreeMap::<(String, usize, u32, u32), playsrc_studio_model::SampledPose>::new();
+    let mut encoded_geometry = BTreeMap::<(String, usize, u32, u32, usize), u32>::new();
+    let mut geometry_count = 0_u32;
     for request in requests {
         let model = models.get(&request.model).ok_or(())?;
         let bodygroups = if let Some(body) = request.packed_body {
@@ -2476,6 +2478,8 @@ fn encode_model_poses(
                     part.opaque_primitives.len(),
                     Some(&state),
                     world,
+                    &mut encoded_geometry,
+                    &mut geometry_count,
                 )?;
                 part_count = part_count.checked_add(1).ok_or(())?;
             }
@@ -2609,6 +2613,8 @@ fn encode_model_poses(
                 selected.len(),
                 legacy_view.as_ref(),
                 world,
+                &mut encoded_geometry,
+                &mut geometry_count,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
         }
@@ -2676,6 +2682,8 @@ fn encode_model_pose_part(
     opaque_count: usize,
     view: Option<&ViewOutput>,
     world: &mut ModelPoseWorld<'_>,
+    encoded_geometry: &mut BTreeMap<(String, usize, u32, u32, usize), u32>,
+    geometry_count: &mut u32,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
     out.extend_from_slice(&request.sample_tick.to_le_bytes());
@@ -2806,7 +2814,18 @@ fn encode_model_pose_part(
     out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
     for (selected_index, selected) in selected.iter().enumerate() {
         let primitive = model.geometry.get(selected.primitive).ok_or(())?;
-        let (positions, normals, tangents) = posed_vertices(model, primitive, pose)?;
+        let geometry_key = (role == 0).then(|| {
+            (
+                model.identity.clone(),
+                sequence,
+                cycle.to_bits(),
+                request.elapsed.to_bits(),
+                selected.primitive,
+            )
+        });
+        let reference = geometry_key
+            .as_ref()
+            .and_then(|key| encoded_geometry.get(key).copied());
         out.extend_from_slice(
             &u32::try_from(selected.primitive)
                 .map_err(|_| ())?
@@ -2818,12 +2837,22 @@ fn encode_model_pose_part(
                 .to_le_bytes(),
         );
         out.extend_from_slice(
-            &u32::try_from(positions.len())
+            &u32::try_from(primitive.vertices.len())
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
-        out.extend_from_slice(&[u8::from(selected_index >= opaque_count), 0, 0, 0]);
+        out.extend_from_slice(&[
+            u8::from(selected_index >= opaque_count),
+            u8::from(reference.is_some()),
+            0,
+            0,
+        ]);
         out.resize(out.len().next_multiple_of(4), 0);
+        if let Some(reference) = reference {
+            out.extend_from_slice(&reference.to_le_bytes());
+            continue;
+        }
+        let (positions, normals, tangents) = posed_vertices(model, primitive, pose)?;
         for values in positions.iter().chain(&normals) {
             for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
@@ -2834,6 +2863,10 @@ fn encode_model_pose_part(
                 out.extend_from_slice(&value.to_le_bytes());
             }
         }
+        if let Some(key) = geometry_key {
+            encoded_geometry.insert(key, *geometry_count);
+        }
+        *geometry_count = geometry_count.checked_add(1).ok_or(())?;
     }
     out.extend_from_slice(
         &u32::try_from(pose.attachments.len())

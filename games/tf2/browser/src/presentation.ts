@@ -539,6 +539,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     f32 = () => { ensure(4); const value = view.getFloat32(at, true); at += 4; if (!Number.isFinite(value)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar"); return value },
     text = () => { const length = u32(); ensure(length); const value = decoder.decode(bytes.subarray(at, at + length)); at += length; return value }
   const output: PosedModel[] = []
+  const geometry: Readonly<{ positions: Float32Array; normals: Float32Array; tangents: Float32Array }>[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
     const identity = u32()
     ensure(8)
@@ -567,26 +568,38 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       return Object.freeze({ index, cycle: eventCycle, event, eventType, options, name: text() })
     }))
     const primitives = Object.freeze(Array.from({ length: u32() }, () => {
-      const primitive = u32(), material = u32(), vertices = u32(), translucent = u8()
-      if (translucent > 1 || u8() || u8() || u8()) {
+      const primitive = u32(), material = u32(), vertices = u32(), translucent = u8(), reference = u8()
+      if (translucent > 1 || reference > 1 || u8() || u8()) {
         throw new ProjectilePresentationError("MalformedFact", "primitive opacity")
       }
       while (at % Float32Array.BYTES_PER_ELEMENT !== 0) {
         if (u8() !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose vertex alignment")
       }
-      ensure(vertices * 40)
-      const positions = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
-      at += positions.byteLength
-      const normals = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
-      at += normals.byteLength
-      const tangents = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 4)
-      at += tangents.byteLength
-      for (const values of [positions, normals, tangents]) {
-        for (let index = 0; index < values.length; index += 1) {
-          if (!Number.isFinite(values[index]!)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
+      let retained: Readonly<{ positions: Float32Array; normals: Float32Array; tangents: Float32Array }>
+      if (reference) {
+        const index = u32()
+        const previous = geometry[index]
+        if (!previous || previous.positions.length !== vertices * 3) {
+          throw new ProjectilePresentationError("MalformedFact", "model pose geometry reference")
         }
+        retained = previous
+      } else {
+        ensure(vertices * 40)
+        const positions = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
+        at += positions.byteLength
+        const normals = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 3)
+        at += normals.byteLength
+        const tangents = new Float32Array(bytes.buffer, bytes.byteOffset + at, vertices * 4)
+        at += tangents.byteLength
+        for (const values of [positions, normals, tangents]) {
+          for (let index = 0; index < values.length; index += 1) {
+            if (!Number.isFinite(values[index]!)) throw new ProjectilePresentationError("MalformedFact", "model pose scalar")
+          }
+        }
+        retained = { positions, normals, tangents }
+        geometry.push(retained)
       }
-      return Object.freeze({ primitive, material, positions, normals, tangents, translucent: translucent === 1 })
+      return Object.freeze({ primitive, material, ...retained, translucent: translucent === 1 })
     }))
     const attachments = Object.freeze(Array.from({ length: u32() }, () => {
       const name = text(), worldAligned = u8(); if (worldAligned > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model attachment")
