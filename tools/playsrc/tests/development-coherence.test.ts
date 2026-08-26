@@ -9,7 +9,7 @@ describe("development application and WASM build coherence", () => {
     const coherence = createDevelopmentBuildCoherence("old", async () => current, async (identity) => {
       events.push(`build:${identity}`)
       await Promise.resolve()
-      published = identity
+      return () => { published = identity }
     })
 
     await coherence.ensure()
@@ -25,6 +25,7 @@ describe("development application and WASM build coherence", () => {
     const coherence = createDevelopmentBuildCoherence("old", async () => "new", async () => {
       attempts += 1
       if (attempts === 1) throw new Error("WASM producer failed")
+      return () => {}
     })
 
     await expect(coherence.ensure()).rejects.toThrow("WASM producer failed")
@@ -36,11 +37,23 @@ describe("development application and WASM build coherence", () => {
     let current = "second"
     const published: string[] = []
     const coherence = createDevelopmentBuildCoherence("first", async () => current, async (identity) => {
-      published.push(identity)
       if (identity === "second") current = "third"
+      return () => { published.push(identity) }
     })
 
     await coherence.ensure()
-    expect(published).toEqual(["second", "third"])
+    expect(published).toEqual(["third"])
+  })
+
+  test("never publishes an unstable producer or loops beyond its fixed replacement bound", async () => {
+    let revision = 0
+    let published = 0
+    const coherence = createDevelopmentBuildCoherence("initial", async () => String(revision), async () => {
+      revision += 1
+      return () => { published += 1 }
+    })
+    await expect(coherence.ensure()).rejects.toThrow("changed continuously")
+    expect(revision).toBe(8)
+    expect(published).toBe(0)
   })
 })

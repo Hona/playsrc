@@ -172,10 +172,10 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       }),
     })
   })
-  const createCatalog = () => {
+  const createCatalog = (catalogTargets = targets) => {
     const bytes = canonicalGraphBytes(parseResourceCatalog({
       application: "tf2",
-      entries: targets.map(({ target, objects }) => ({ target, resources: objects.resources }))
+      entries: catalogTargets.map(({ target, objects }) => ({ target, resources: objects.resources }))
         .toSorted((left, right) => left.target.localeCompare(right.target)),
       schema: "playsrc-resource-catalog-v1",
     }))
@@ -240,25 +240,20 @@ export async function startDevelopment(config: LocalConfig, target: string | und
       })
     }))
     await putObject(config.assetDir, replacementWasm, replacementWasmBytes)
-    const previousTargets = [...targets]
-    targets.splice(0, targets.length, ...replacements)
-    const replacementCatalog = createCatalog()
-    try {
-      await putObject(config.assetDir, replacementCatalog.descriptor, replacementCatalog.bytes)
-    } catch (error) {
-      targets.splice(0, targets.length, ...previousTargets)
-      throw error
+    const replacementCatalog = createCatalog(replacements)
+    await putObject(config.assetDir, replacementCatalog.descriptor, replacementCatalog.bytes)
+    return () => {
+      targets.splice(0, targets.length, ...replacements)
+      catalog = replacementCatalog
+      wasm = replacementWasm
+      applicationBuild = identity
+      process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
+      if (application) {
+        application.moduleGraph.invalidateAll()
+      }
+      application?.ws.send({ type: "full-reload" })
+      console.error(`playsrc dev build replaced applicationBuild=${identity} wasm=${wasm.sha256} milliseconds=${Math.round(performance.now() - replacementStarted)}`)
     }
-    catalog = replacementCatalog
-    wasm = replacementWasm
-    applicationBuild = identity
-    process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
-    if (application) {
-      application.config.define.__PLAYSRC_APPLICATION_BUILD__ = JSON.stringify(identity)
-      application.moduleGraph.invalidateAll()
-    }
-    application?.ws.send({ type: "full-reload" })
-    console.error(`playsrc dev build replaced applicationBuild=${identity} wasm=${wasm.sha256} milliseconds=${Math.round(performance.now() - replacementStarted)}`)
   })
   const restoreEnvironment = () => {
     if (previousAssetOrigin === undefined) delete process.env.PLAYSRC_ASSET_ORIGIN
@@ -350,6 +345,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
                   catalog = createCatalog()
                   await putObject(config.assetDir, catalog.descriptor, catalog.bytes)
                   process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()
+                  server.moduleGraph.invalidateAll()
                   console.error(`playsrc dev target prepared target=${name} milliseconds=${Math.round(performance.now() - started)} mapMilliseconds=${mapMilliseconds} bundleMilliseconds=${bundleMilliseconds} publicationMilliseconds=${Math.round(performance.now() - publishStarted)}`)
                 }
                 response.statusCode = 200

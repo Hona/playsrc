@@ -43,6 +43,10 @@ export async function buildStaticSite(target: string | undefined): Promise<strin
     stderr: "inherit",
   })
   if (await child.exited !== 0) throw new DeploymentError("TF2 static application build failed")
+  const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
+  if (new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex") !== release.objects.wasm.sha256) {
+    throw new DeploymentError("Release WASM differs from the browser bindings producer; refusing a mixed-generation package")
+  }
   const configuration = createDeployedBrowserConfiguration(release, applicationBuild)
   await Promise.all([
     copyFile(path.join(repositoryRoot, "apps", "web", "index.html"), path.join(DIST_DIRECTORY, "index.html")),

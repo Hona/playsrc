@@ -4,6 +4,7 @@ import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type
 import { ResourceGenerations } from "./resource-generations"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
+import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__ } from "virtual:playsrc-generation"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
 const MAX_BSP_BYTES = 512 * 1024 * 1024
@@ -11,7 +12,6 @@ const MAX_CONFIGURATION_BYTES = 1024 * 1024 * 1024
 const MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 const MAX_PRESENTATION_BYTES = 512 * 1024 * 1024
 const MAX_RESOURCE_SECTION_BYTES = 32 * 1024 * 1024
-declare const __PLAYSRC_APPLICATION_BUILD__: string
 
 type WasmExports = Readonly<{
   memory: WebAssembly.Memory
@@ -100,7 +100,8 @@ function canonicalId(value: unknown): value is number {
 }
 
 async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }>): Promise<void> {
-  if (request.applicationBuild !== __PLAYSRC_APPLICATION_BUILD__ || request.presentationSchema !== TF2_PRESENTATION_SCHEMA) {
+  if (request.applicationBuild !== __PLAYSRC_APPLICATION_BUILD__ || request.presentationSchema !== TF2_PRESENTATION_SCHEMA
+    || request.wasmSha256 !== __PLAYSRC_WASM_SHA256__) {
     fail(request.id, "GenerationMismatch")
     return
   }
