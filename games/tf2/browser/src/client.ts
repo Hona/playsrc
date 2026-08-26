@@ -622,7 +622,23 @@ export class Tf2WorkerClient {
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false
-  for (let index = 0; index < left.byteLength; index += 1) {
+  let index = 0
+  if ((left.byteOffset & 3) === (right.byteOffset & 3)) {
+    while (index < left.byteLength && ((left.byteOffset + index) & 3) !== 0) {
+      if (left[index] !== right[index]) return false
+      index += 1
+    }
+    const words = (left.byteLength - index) >>> 2
+    if (words > 0) {
+      const source = new Uint32Array(left.buffer, left.byteOffset + index, words)
+      const target = new Uint32Array(right.buffer, right.byteOffset + index, words)
+      for (let word = 0; word < words; word += 1) {
+        if (source[word] !== target[word]) return false
+      }
+      index += words * 4
+    }
+  }
+  for (; index < left.byteLength; index += 1) {
     if (left[index] !== right[index]) return false
   }
   return true
