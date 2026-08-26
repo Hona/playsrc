@@ -225,7 +225,7 @@ export type RuntimeLighting =
   | Readonly<{ profile: "hdr"; samples: Float32Array; descriptor: HdrProfile }>
 
 export type RuntimeMap = Readonly<{
-  schema: 6 | 7 | 8 | 9
+  schema: 6 | 7 | 8 | 9 | 10 | 11
   bspVersion: number
   mapRevision: number
   lightingProfile: 0 | 1
@@ -1383,14 +1383,18 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
       const boneWeights = reader.f32Array(vertices * 4)
       const paletteLength = bounded(reader.u32(), 256, "model bone palette count")
       const bonePalette = new Uint16Array(paletteLength)
+      const admittedBones = new Uint8Array(256)
       for (let index = 0; index < paletteLength; index += 1) {
         bonePalette[index] = reader.u16()
-        if (index > 0 && bonePalette[index]! <= bonePalette[index - 1]!) throw new RuntimeMapError("model bone palette is not canonical")
+        if (bonePalette[index]! > 255 || (index > 0 && bonePalette[index]! <= bonePalette[index - 1]!)) {
+          throw new RuntimeMapError("model bone palette is not canonical")
+        }
+        admittedBones[bonePalette[index]!] = 1
       }
       for (let vertex = 0; vertex < vertices; vertex += 1) {
         for (let influence = 0; influence < 4; influence += 1) {
           const weight = boneWeights[vertex * 4 + influence]!
-          if (weight < 0 || (weight !== 0 && !bonePalette.includes(boneIndices[vertex * 4 + influence]!))) {
+          if (weight < 0 || (weight !== 0 && admittedBones[boneIndices[vertex * 4 + influence]!] !== 1)) {
             throw new RuntimeMapError("model bone influence is invalid")
           }
         }

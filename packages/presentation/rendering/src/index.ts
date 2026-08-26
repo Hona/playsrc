@@ -38,6 +38,7 @@ import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } fro
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation } from "./model-panel"
+import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "./source-model-skinning"
 import { modelIntersectsViewFrustum } from "./model-visibility"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
@@ -4694,29 +4695,13 @@ class RendererOwner implements Renderer {
     }
     let skeleton = instance.userData.sourceSkeleton as THREE.Skeleton | undefined
     if (!skeleton) {
-      const count = pose.boneMatrices.length / 12
-      const bones = Array.from({ length: count }, () => {
-        const bone = new THREE.Bone()
-        bone.matrixAutoUpdate = false
-        bone.matrixWorldAutoUpdate = false
-        return bone
-      })
-      skeleton = new THREE.Skeleton(bones, Array.from({ length: count }, () => new THREE.Matrix4()))
+      skeleton = createSourceModelSkeleton(pose.boneMatrices)
       instance.userData.sourceSkeleton = skeleton
     }
     if (skeleton.bones.length * 12 !== pose.boneMatrices.length) {
       throw new RenderingError("IdentityMismatch", "authored model bone count differs")
     }
-    for (let bone = 0; bone < skeleton.bones.length; bone += 1) {
-      const offset = bone * 12
-      skeleton.bones[bone]!.matrixWorld.set(
-        pose.boneMatrices[offset]!, pose.boneMatrices[offset + 1]!, pose.boneMatrices[offset + 2]!, pose.boneMatrices[offset + 3]!,
-        pose.boneMatrices[offset + 4]!, pose.boneMatrices[offset + 5]!, pose.boneMatrices[offset + 6]!, pose.boneMatrices[offset + 7]!,
-        pose.boneMatrices[offset + 8]!, pose.boneMatrices[offset + 9]!, pose.boneMatrices[offset + 10]!, pose.boneMatrices[offset + 11]!,
-        0, 0, 0, 1,
-      )
-    }
-    const matrixBytes = skeleton.bones.length * 64
+    const matrixBytes = updateSourceModelSkeleton(skeleton, pose.boneMatrices)
     if (this.#uploadEvidence) {
       this.#uploadEvidence.poseAttributes += 1
       this.#uploadEvidence.poseUploadBytes += matrixBytes
@@ -4734,10 +4719,8 @@ class RendererOwner implements Renderer {
         if (!authored || authored.palette.some((bone) => bone >= skeleton!.bones.length)) {
           throw new RenderingError("IdentityMismatch", "authored model bone palette differs from its skeleton")
         }
-        const skinned = new THREE.SkinnedMesh(authored.geometry, object.material)
+        const skinned = bindSourceModelMesh(authored.geometry, object.material, skeleton)
         skinned.userData = { ...object.userData }
-        skinned.frustumCulled = false
-        skinned.bind(skeleton, new THREE.Matrix4())
         const parent = object.parent
         if (!parent) throw new RenderingError("MissingInput", "posed model mesh parent is unavailable")
         const index = parent.children.indexOf(object)
