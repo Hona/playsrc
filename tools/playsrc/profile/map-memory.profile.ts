@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises"
+import { closeSync, openSync, writeSync } from "node:fs"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -60,6 +61,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   await mkdir(output, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
   const pageCdp = await page.context().newCDPSession(page)
+  await pageCdp.send("HeapProfiler.startSampling", { samplingInterval: 32_768, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true })
   const system = await browserCdp.send("SystemInfo.getInfo") as { gpu?: { devices?: unknown; featureStatus?: unknown } }
   const timeline: MemorySample[] = []
   let target = "startup"
@@ -394,7 +396,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           worker: profile.worker,
           indexedDb: profile.indexedDb,
           longTasks: profile.longTasks,
-          garbageCollections: profile.garbageCollections,
+           garbageCollections: profile.garbageCollections,
+           mountedFontFaces: document.fonts.size,
           assets: (globalThis as any).__playsrcProfile.memoryAssets,
           geometry: (globalThis as any).__playsrcProfile.geometryEvidence,
         }
@@ -470,12 +473,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         },
         gpu: observed.gpu,
         indexedDb: observed.indexedDb,
-        responsiveness: {
+         responsiveness: {
           longTasks: observed.longTasks.length,
           maximumLongTaskMilliseconds: Math.max(0, ...observed.longTasks),
           garbageCollections: observed.garbageCollections.length,
           maximumGarbageCollectionMilliseconds: Math.max(0, ...observed.garbageCollections),
-        },
+         },
+         mountedFontFaces: observed.mountedFontFaces,
         transfers: observed.transfers,
         worker: observed.worker.filter((record: any) => ["resources", "loaded"].includes(record.kind)),
         load: observed.load,
@@ -495,6 +499,54 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-partial.json`), `${JSON.stringify({ maps, timeline }, null, 2)}\n`)
       console.log(`PLAYSRC_MAP_MEMORY ${JSON.stringify({ target: identity, readyMilliseconds, peakResidentBytes: peak.residentBytes, wasmLinearBytes: (maps.at(-1) as any).memory.wasmLinearBytes })}`)
     }
+    clearInterval(sampler)
+    const sampled = await pageCdp.send("HeapProfiler.stopSampling")
+    const allocations = new Map<string, number>()
+    const visit = (node: any): void => {
+      const identity = `${node.callFrame.functionName || "(anonymous)"}:${node.callFrame.url || "(native)"}`
+      allocations.set(identity, (allocations.get(identity) ?? 0) + Number(node.selfSize ?? 0))
+      for (const child of node.children ?? []) visit(child)
+    }
+    visit(sampled.profile.head)
+    let heapSnapshot: Record<string, unknown> | null = null
+    if (process.env.PROFILE_MEMORY_HEAP_SNAPSHOT === "1") {
+      const location = path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}.heapsnapshot`)
+      const file = openSync(location, "w")
+      const append = ({ chunk }: { chunk: string }): void => { writeSync(file, chunk) }
+      pageCdp.on("HeapProfiler.addHeapSnapshotChunk", append)
+      try {
+        await pageCdp.send("HeapProfiler.takeHeapSnapshot", { exposeInternals: true })
+      } finally {
+        pageCdp.off("HeapProfiler.addHeapSnapshotChunk", append)
+        closeSync(file)
+      }
+      const snapshot = JSON.parse(await readFile(location, "utf8")) as {
+        snapshot: { meta: { node_fields: string[]; node_types: unknown[][] }; node_count: number }
+        nodes: number[]
+        strings: string[]
+      }
+      const fields = snapshot.snapshot.meta.node_fields
+      const typeOffset = fields.indexOf("type")
+      const nameOffset = fields.indexOf("name")
+      const sizeOffset = fields.indexOf("self_size")
+      const names = snapshot.snapshot.meta.node_types[typeOffset] as string[]
+      const retained = new Map<string, { bytes: number; count: number }>()
+      for (let index = 0; index < snapshot.nodes.length; index += fields.length) {
+        const type = names[snapshot.nodes[index + typeOffset]!] ?? "unknown"
+        const name = (snapshot.strings[snapshot.nodes[index + nameOffset]!] ?? "unknown").slice(0, 192)
+        const identity = `${type}:${name}`
+        const entry = retained.get(identity) ?? { bytes: 0, count: 0 }
+        entry.bytes += snapshot.nodes[index + sizeOffset]!
+        entry.count += 1
+        retained.set(identity, entry)
+      }
+      heapSnapshot = {
+        path: location,
+        nodes: snapshot.snapshot.node_count,
+        retained: [...retained].sort((left, right) => right[1].bytes - left[1].bytes).slice(0, 30)
+          .map(([identity, value]) => ({ identity, ...value })),
+      }
+    }
     const report = {
       schema: "playsrc-headed-three-map-memory-v1",
       headed: true,
@@ -505,6 +557,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       gpu: system.gpu ?? null,
       maps,
       timeline,
+      allocations: [...allocations].sort((left, right) => right[1] - left[1]).slice(0, 30)
+        .map(([identity, bytes]) => ({ identity, bytes })),
+      heapSnapshot,
     }
     const serialized = `${JSON.stringify(report, null, 2)}\n`
     const label = process.env.PROFILE_MEMORY_LABEL ?? "current"

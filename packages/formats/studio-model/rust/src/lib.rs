@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 mod eye;
@@ -35,6 +35,28 @@ const EYEBALL_BYTES: usize = 172;
 const STUDIO_OVERRIDE: i32 = 0x0800;
 const STUDIO_CYCLE_POSE: i32 = 0x0080;
 const STUDIO_AUTO_LAYER_POSE: i32 = 0x4000;
+
+type AuthoredSourceIdentity = (String, [u8; 32]);
+
+pub fn retain_authored_source(identity: &str, bytes: &[u8], sha256: [u8; 32]) -> Arc<[u8]> {
+    static SOURCES: OnceLock<Mutex<BTreeMap<AuthoredSourceIdentity, Weak<[u8]>>>> = OnceLock::new();
+    let mut sources = SOURCES
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .expect("authored model source cache");
+    let key = (identity.to_ascii_lowercase(), sha256);
+    if let Some(source) = sources.get(&key).and_then(Weak::upgrade) {
+        if source.len() == bytes.len() {
+            return source;
+        }
+    }
+    if sources.len() >= 4_096 {
+        sources.retain(|_, source| source.strong_count() != 0);
+    }
+    let source = Arc::<[u8]>::from(bytes);
+    sources.insert(key, Arc::downgrade(&source));
+    source
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
@@ -337,7 +359,7 @@ impl Animation {
         )
     }
 
-    pub fn authored_frame(&self, frame: usize) -> Result<AnimationFrame, Error> {
+    pub fn authored_frame(&self, frame: usize) -> Result<Arc<AnimationFrame>, Error> {
         let retained = self.authored_frames.as_ref().ok_or_else(|| {
             invalid_reference(&self.source_identity, self.animation_offset.max(0) as usize)
         })?;
@@ -354,7 +376,7 @@ impl Animation {
             .get(&frame)
             .cloned()
         {
-            return Ok((*decoded).clone());
+            return Ok(decoded);
         }
         let (bytes, offset, local_frame) = animation_data(
             &retained.context.mdl,
@@ -384,7 +406,7 @@ impl Animation {
             .decoded
             .lock()
             .expect("authored animation frame cache");
-        Ok((**frames.entry(frame).or_insert(decoded)).clone())
+        Ok(Arc::clone(frames.entry(frame).or_insert(decoded)))
     }
 }
 
@@ -1153,7 +1175,16 @@ fn load_with_chain(
                 }
                 ani_bytes = Some(bytes.as_ref());
                 if context.authored_animation {
-                    authored_ani = Some(Arc::<[u8]>::from(bytes.as_ref()));
+                    let sha256 = context
+                        .verified_hashes
+                        .and_then(|hashes| hashes.get(&response.logical_path))
+                        .copied()
+                        .ok_or_else(|| invalid_reference(&response.logical_path, 0))?;
+                    authored_ani = Some(retain_authored_source(
+                        &response.logical_path,
+                        bytes.as_ref(),
+                        sha256,
+                    ));
                 }
             }
             DependencyRole::IncludeModel => {
@@ -1161,9 +1192,20 @@ fn load_with_chain(
                     i32_at(bytes, 4, &response.logical_path)?,
                     &response.logical_path,
                 )?;
-                let authored_include = context
-                    .authored_animation
-                    .then(|| Arc::<[u8]>::from(bytes.as_ref()));
+                let authored_include = if context.authored_animation {
+                    let sha256 = context
+                        .verified_hashes
+                        .and_then(|hashes| hashes.get(&response.logical_path))
+                        .copied()
+                        .ok_or_else(|| invalid_reference(&response.logical_path, 0))?;
+                    Some(retain_authored_source(
+                        &response.logical_path,
+                        bytes.as_ref(),
+                        sha256,
+                    ))
+                } else {
+                    None
+                };
                 match load_with_chain(
                     response.logical_path.clone(),
                     include_profile,
@@ -4741,9 +4783,13 @@ mod tests {
         assert!(Arc::ptr_eq(&retained.context.mdl, &shared));
         assert!(retained.decoded.lock().unwrap().is_empty());
         for (index, expected) in expanded.animations[0].frames.iter().enumerate() {
-            assert_eq!(&animation.authored_frame(index).unwrap(), expected);
+            assert_eq!(animation.authored_frame(index).unwrap().as_ref(), expected);
         }
         assert_eq!(retained.decoded.lock().unwrap().len(), 2);
+        assert!(Arc::ptr_eq(
+            &animation.authored_frame(1).unwrap(),
+            &animation.authored_frame(1).unwrap(),
+        ));
         assert_eq!(
             animation.authored_frame(1).unwrap().translations[0],
             Vector3([Float32(10.0_f32.to_bits()), Float32(0), Float32(0)]),
@@ -4774,6 +4820,27 @@ mod tests {
         let authored_artifact = build(&authored);
         assert_eq!(authored_artifact.bytes, eager_artifact.bytes);
         assert_eq!(authored_artifact.sha256, eager_artifact.sha256);
+    }
+
+    #[test]
+    fn authored_sources_share_verified_identity_without_retaining_old_generations() {
+        let bytes = b"exact authored model bytes";
+        let identity = [17; 32];
+        let first = retain_authored_source("models/player/shared.mdl", bytes, identity);
+        let second = retain_authored_source("MODELS/PLAYER/SHARED.MDL", bytes, identity);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let replacement = retain_authored_source("models/player/shared.mdl", bytes, [18; 32]);
+        assert!(!Arc::ptr_eq(&first, &replacement));
+
+        let prior = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(prior.upgrade().is_none());
+
+        let renewed = retain_authored_source("models/player/shared.mdl", bytes, identity);
+        assert_eq!(renewed.as_ref(), bytes);
+        assert!(!Arc::ptr_eq(&renewed, &replacement));
     }
 
     #[test]

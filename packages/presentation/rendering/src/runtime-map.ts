@@ -920,46 +920,83 @@ function parseHdrProfile(
   return profile
 }
 
-function packLightmaps(records: readonly LightmapRecord[], gutter: number): RuntimeLightmapLayout {
-  let x = gutter === 0 ? 1 : gutter
-  let y = gutter
-  let rowHeight = 1
-  const placements = new Map<number, LightmapPlacement>()
-  for (const record of records) {
-    const packedWidth = record.surface.lightmapWidth + gutter * 2
-    const packedHeight = record.surface.lightmapHeight + gutter * 2
-    if (packedWidth > MAX_ATLAS_DIMENSION || packedHeight > MAX_ATLAS_DIMENSION) {
+export function packRuntimeLightmapLayout(
+  surfaces: readonly Readonly<{ face: number; width: number; height: number }>[],
+  gutter: number,
+): RuntimeLightmapLayout {
+  if (!Number.isSafeInteger(gutter) || gutter < 0 || gutter > 1) {
+    throw new RuntimeMapError("lightmap gutter is invalid")
+  }
+  const ordered = surfaces.map((surface) => {
+    const width = surface.width + gutter * 2
+    const height = surface.height + gutter * 2
+    if (!Number.isSafeInteger(surface.face) || surface.face < 0 || !Number.isSafeInteger(surface.width)
+      || !Number.isSafeInteger(surface.height) || surface.width < 1 || surface.height < 1
+      || width > MAX_ATLAS_DIMENSION || height > MAX_ATLAS_DIMENSION) {
       throw new RuntimeMapError("lightmap dimensions are invalid")
     }
-    if (x + packedWidth > MAX_ATLAS_DIMENSION) {
-      x = gutter
-      y += rowHeight
-      rowHeight = 0
-    }
-    const placement = Object.freeze({
-      face: record.surface.face,
-      x: x + gutter,
-      y: y + gutter,
-      width: record.surface.lightmapWidth,
-      height: record.surface.lightmapHeight,
-    })
-    if (placements.has(placement.face)) throw new RuntimeMapError("duplicate lightmap face identity")
-    placements.set(placement.face, placement)
-    x += packedWidth
-    rowHeight = Math.max(rowHeight, packedHeight)
+    return Object.freeze({ ...surface, packedWidth: width, packedHeight: height })
+  }).sort((left, right) => right.packedHeight - left.packedHeight
+    || right.packedWidth - left.packedWidth || left.face - right.face)
+  if (new Set(ordered.map((surface) => surface.face)).size !== ordered.length) {
+    throw new RuntimeMapError("duplicate lightmap face identity")
   }
-  const height = y + rowHeight + gutter
-  if (height < 1 || height > MAX_ATLAS_DIMENSION) throw new RuntimeMapError("lightmap atlas exceeds its limit")
+  const widest = Math.max(1, ...ordered.map((surface) => surface.packedWidth))
+  let width = 1
+  while (width < widest) width *= 2
+  let selected: RuntimeLightmapLayout | undefined
+  for (; width <= MAX_ATLAS_DIMENSION; width *= 2) {
+    let x = gutter === 0 ? 1 : gutter
+    let y = gutter
+    let rowHeight = 1
+    const placements = new Map<number, LightmapPlacement>()
+    let fits = true
+    for (const surface of ordered) {
+      if (x + surface.packedWidth > width) {
+        x = gutter
+        y += rowHeight
+        rowHeight = 0
+      }
+      if (x + surface.packedWidth > width) {
+        fits = false
+        break
+      }
+      placements.set(surface.face, Object.freeze({
+        face: surface.face,
+        x: x + gutter,
+        y: y + gutter,
+        width: surface.width,
+        height: surface.height,
+      }))
+      x += surface.packedWidth
+      rowHeight = Math.max(rowHeight, surface.packedHeight)
+    }
+    const height = y + rowHeight + gutter
+    if (!fits || height > MAX_ATLAS_DIMENSION) continue
+    if (!selected || width * height < selected.width * selected.height) {
+      selected = Object.freeze({ width, height, gutter, placements })
+    }
+  }
+  if (!selected) throw new RuntimeMapError("lightmap atlas exceeds its limit")
+  return selected
+}
+
+function packLightmaps(records: readonly LightmapRecord[], gutter: number): RuntimeLightmapLayout {
+  const layout = packRuntimeLightmapLayout(records.map((record) => Object.freeze({
+    face: record.surface.face,
+    width: record.surface.lightmapWidth,
+    height: record.surface.lightmapHeight,
+  })), gutter)
   for (const record of records) {
-    const placement = placements.get(record.surface.face)!
+    const placement = layout.placements.get(record.surface.face)!
     for (let vertex = 0; vertex < record.uv.length / 2; vertex += 1) {
       record.batch.lightmapUv.set(record.uvStart + vertex * 2,
-        (placement.x + record.uv[vertex * 2]! + 0.5) / MAX_ATLAS_DIMENSION)
+        (placement.x + record.uv[vertex * 2]! + 0.5) / layout.width)
       record.batch.lightmapUv.set(record.uvStart + vertex * 2 + 1,
-        (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / height)
+        (placement.y + record.uv[vertex * 2 + 1]! + 0.5) / layout.height)
     }
   }
-  return Object.freeze({ width: MAX_ATLAS_DIMENSION, height, gutter, placements })
+  return layout
 }
 
 function styleScalarMap(surfaces: readonly SurfaceLighting[], values?: readonly Readonly<{ style: number; scalar: number }>[]): ReadonlyMap<number, number> {

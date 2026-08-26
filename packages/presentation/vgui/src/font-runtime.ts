@@ -190,12 +190,6 @@ function cssUnicodeRange([minimum, maximum]: readonly [number, number]): string 
   return `U+${minimum.toString(16).padStart(4, "0")}-${maximum.toString(16).padStart(4, "0")}`
 }
 
-function copiedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const buffer = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(buffer).set(bytes)
-  return buffer
-}
-
 function browserPlatform(): "windows" | "macos" | "linux" | "other" {
   if (typeof navigator === "undefined") return "other"
   const reported = ((navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform
@@ -216,7 +210,7 @@ function defaultBrowserAdapter(): VguiFontMountAdapter | null {
       if (request.font.weight < 0 || request.font.weight > 1000) throw new Error("browser weight unsupported")
       const source = request.source.kind === "local"
         ? `local(${cssString(request.source.faceName)})`
-        : copiedArrayBuffer(request.bytes!)
+        : request.bytes!
       const face = new FontFace(request.browserFamily, source, {
         style: request.font.effects.italic ? "italic" : "normal",
         weight: request.font.weight === 0 ? "normal" : String(request.font.weight),
@@ -495,7 +489,7 @@ export async function mountVguiFontSet(
       || await sha256(supply.bytes) !== supply.sha256
     ) return Object.freeze({ ok: false as const, capability: unsupported(request.identity, "invalid-target") })
   }
-  const supplies = request.byteSupplies.map((supply) => Object.freeze({ ...supply, bytes: supply.bytes.slice() }))
+  const supplies = request.byteSupplies
   if (new Set(supplies.map((supply) => `${supply.kind}:${supply.logicalIdentity}`)).size !== supplies.length) {
     return Object.freeze({ ok: false as const, capability: unsupported(request.identity, "invalid-target") })
   }
@@ -522,7 +516,7 @@ export async function mountVguiFontSet(
         if (source.kind !== "local") {
           const supply = findSupply(source, supplies)
           if (!supply) continue
-          bytes = supply.bytes.slice()
+          bytes = supply.bytes
         }
         try {
           const handle = await adapter.loadFace(Object.freeze({

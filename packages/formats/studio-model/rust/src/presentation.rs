@@ -2667,25 +2667,26 @@ fn sample_animation(
     let first = frame.floor() as usize;
     let second = (first + 1).min(frame_count - 1);
     let fraction = frame - first as f32;
+    let authored_frames;
+    let compact_frames;
     let (first_frame, second_frame) = if animation.authored_frames.is_some() {
-        (
+        authored_frames = (
             animation.authored_frame(first).map_err(|_| {
                 presentation_error(PresentationErrorCode::InvalidState, &model.identity)
             })?,
             animation.authored_frame(second).map_err(|_| {
                 presentation_error(PresentationErrorCode::InvalidState, &model.identity)
             })?,
-        )
+        );
+        (authored_frames.0.as_ref(), authored_frames.1.as_ref())
     } else if animation.frames.is_empty() {
-        (
+        compact_frames = (
             compact_frame(animation, first, &model.identity)?,
             compact_frame(animation, second, &model.identity)?,
-        )
+        );
+        (&compact_frames.0, &compact_frames.1)
     } else {
-        (
-            animation.frames[first].clone(),
-            animation.frames[second].clone(),
-        )
+        (&animation.frames[first], &animation.frames[second])
     };
     let mut output = if animation.flags & STUDIO_DELTA != 0 {
         (

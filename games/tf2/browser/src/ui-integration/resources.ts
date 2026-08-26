@@ -533,6 +533,7 @@ async function fontPresentations(
   platform: VguiDesktopPlatform,
   diagnostics: Tf2UiIntegrationDiagnostic[],
   mounts: VguiFontSetMount[],
+  mountedFaces: Map<string, Promise<Awaited<ReturnType<typeof mountVguiFontSet>>>>,
 ): Promise<readonly VguiFontPresentation[]> {
   const documents = descriptor.schemes.map(schemeDocument)
   const files: VguiFontFileIdentity[] = []
@@ -586,14 +587,29 @@ async function fontPresentations(
     const request = resolved.fonts[0]!
     lookups.push(lookup)
     const requiredSupplies = new Set(request.faces.flatMap((face) => face.sources.flatMap((source) => source.kind === "local" ? [] : [source.logicalIdentity])))
-    const mounted = await mountVguiFontSet({
-      identity: `${descriptor.identity}/${schemeIdentity}/${identity}`,
-      fonts: [request],
-      byteSupplies: supplies.filter((supply) => requiredSupplies.has(supply.logicalIdentity)),
-      profiles: [],
+    const faceIdentity = JSON.stringify({
+      weight: request.weight,
+      italic: request.effects.italic,
+      faces: request.faces.map((face) => ({
+        range: face.unicodeRange,
+        sources: face.sources.map((source) => source.identity),
+      })),
     })
+    let mounting = mountedFaces.get(faceIdentity)
+    if (!mounting) {
+      mounting = mountVguiFontSet({
+        identity: `${descriptor.identity}/${schemeIdentity}/${identity}`,
+        fonts: [request],
+        byteSupplies: supplies.filter((supply) => requiredSupplies.has(supply.logicalIdentity)),
+        profiles: [],
+      }).then((result) => {
+        if (result.ok) mounts.push(result.fontSet)
+        return result
+      })
+      mountedFaces.set(faceIdentity, mounting)
+    }
+    const mounted = await mounting
     const capability = mounted.ok ? mounted.fontSet.snapshot().capability : mounted.capability
-    if (mounted.ok) mounts.push(mounted.fontSet)
     const selected = capability.kind === "supported" ? capability.fonts[0] : null
     if (capability.kind === "unsupported") diagnostics.push(Object.freeze({ code: "FontUnavailable", subject: `${schemeIdentity}:${name}:${capability.reason}` }))
     const browserFamily = selected?.browserFamily ?? `playsrc-unavailable-${identity}`
@@ -903,9 +919,10 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     backgroundName: rawBackground.backgroundName,
     variants: Object.freeze(backgroundVariants),
   })
+  const mountedFaces = new Map<string, Promise<Awaited<ReturnType<typeof mountVguiFontSet>>>>()
   const [clientFonts, sourceFonts] = await Promise.all([
-    fontPresentations(descriptor, "resource/clientscheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts),
-    fontPresentations(descriptor, "resource/sourcescheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts),
+    fontPresentations(descriptor, "resource/clientscheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts, mountedFaces),
+    fontPresentations(descriptor, "resource/sourcescheme.res", request.dependencies, request.viewportHeight, request.platform, diagnostics, mounts, mountedFaces),
   ])
   const localization: VguiLocalization = Object.freeze({
     identity: `${descriptor.identity}/localization/english`,

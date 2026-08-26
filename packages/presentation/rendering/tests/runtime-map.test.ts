@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseRuntimeMap, sourceLdrLightmapIrradiance } from "../src/runtime-map"
+import { packRuntimeLightmapLayout, parseRuntimeMap, sourceLdrLightmapIrradiance } from "../src/runtime-map"
 
 function fixture(extendedLdr = false): Uint8Array {
   const bytes: number[] = [...new TextEncoder().encode("PSMP")]
@@ -92,5 +92,26 @@ describe("runtime map rendering input", () => {
     expect(sourceLdrLightmapIrradiance([1, 1, 1])[0]).toBeCloseTo(0.9918344056, 7)
     expect(sourceLdrLightmapIrradiance([4, 0.25, 0])[0]).toBeGreaterThan(3.8)
     expect(() => sourceLdrLightmapIrradiance([-1, 0, 0])).toThrow(/radiance/i)
+  })
+
+  test("packs exact authored lightmap rectangles into the smallest deterministic bounded atlas", () => {
+    const surfaces = Object.freeze([
+      Object.freeze({ face: 8, width: 4, height: 2 }),
+      Object.freeze({ face: 3, width: 2, height: 8 }),
+      Object.freeze({ face: 6, width: 4, height: 2 }),
+      Object.freeze({ face: 1, width: 2, height: 8 }),
+    ])
+    const forward = packRuntimeLightmapLayout(surfaces, 1)
+    const reversed = packRuntimeLightmapLayout([...surfaces].reverse(), 1)
+    expect(forward.width).toBeLessThan(4096)
+    expect(forward.width * forward.height).toBeLessThan(4096)
+    expect([...forward.placements]).toEqual([...reversed.placements])
+    for (const placement of forward.placements.values()) {
+      expect(placement.x).toBeGreaterThanOrEqual(1)
+      expect(placement.y).toBeGreaterThanOrEqual(1)
+      expect(placement.x + placement.width).toBeLessThan(forward.width)
+      expect(placement.y + placement.height).toBeLessThan(forward.height)
+    }
+    expect(() => packRuntimeLightmapLayout([...surfaces, surfaces[0]!], 1)).toThrow("duplicate lightmap")
   })
 })

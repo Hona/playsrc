@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isDirectVguiImageMaterial, shadeVguiImage, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
+import { isDirectVguiImageMaterial, shadeVguiImage, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
@@ -10,6 +10,37 @@ const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
   height: 1,
   hardwareFiltered: false,
   colorRead: "linear",
+})
+
+describe("bounded authored VGUI raster ownership", () => {
+  test("evicts least-recently-used decoded buffers by exact retained bytes", () => {
+    const cache = new VguiRasterCache<Uint8Array>(12, 3)
+    const first = new Uint8Array(4)
+    const second = new Uint8Array(4)
+    const third = new Uint8Array(4)
+    cache.set("first", first, first.byteLength)
+    cache.set("second", second, second.byteLength)
+    cache.set("third", third, third.byteLength)
+    expect(cache.get("first")).toBe(first)
+    cache.set("fourth", new Uint8Array(4), 4)
+    expect(cache.get("second")).toBeUndefined()
+    expect(cache.get("first")).toBe(first)
+    expect(cache.snapshot()).toEqual({ entries: 3, bytes: 12 })
+    cache.set("oversized", new Uint8Array(16), 16)
+    expect(cache.get("oversized")).toBeUndefined()
+    expect(cache.snapshot()).toEqual({ entries: 3, bytes: 12 })
+    cache.clear()
+    expect(cache.snapshot()).toEqual({ entries: 0, bytes: 0 })
+  })
+
+  test("bounds identities independently of decoded byte budget", () => {
+    const cache = new VguiRasterCache<number>(100, 2)
+    cache.set("first", 1, 1)
+    cache.set("second", 2, 1)
+    cache.set("third", 3, 1)
+    expect(cache.get("first")).toBeUndefined()
+    expect(cache.snapshot()).toEqual({ entries: 2, bytes: 2 })
+  })
 })
 
 const baseMaterial = (overrides: Partial<VguiImageMaterialPresentation> = {}): VguiImageMaterialPresentation => Object.freeze({
