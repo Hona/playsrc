@@ -417,10 +417,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const timelineStart = timeline.length
       await sample()
       const before = await pageCdp.send("Runtime.getHeapUsage")
+      await page.bringToFront()
       await page.keyboard.press("Backquote")
       const command = page.locator("[aria-label='Console command']")
       await expect(command).toBeVisible()
       await command.fill(`map ${identity}`)
+      await expect(command).toBeFocused()
+      await expect(command).toHaveValue(`map ${identity}`)
       const browserStarted = await page.evaluate(() => {
         const gpu = (globalThis as any).__playsrcMemoryProfile.gpu
         gpu.peakBufferBytes = gpu.bufferBytes
@@ -771,6 +774,22 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await writeFile(path.join(output, `${label}.json`), serialized)
     await writeFile(path.join(output, "report.json"), serialized)
     await testInfo.attach("headed-three-map-memory", { body: Buffer.from(serialized), contentType: "application/json" })
+  } catch (error) {
+    const failure = await page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>("main")
+      const command = document.querySelector<HTMLInputElement>("[aria-label='Console command']")
+      const state = (globalThis as any).__playsrcMemoryProfile
+      return {
+        application: { ...main?.dataset },
+        console: document.querySelector<HTMLElement>("[aria-label='Console output']")?.textContent,
+        command: { value: command?.value, focused: document.activeElement === command, documentFocused: document.hasFocus() },
+        worker: state?.worker.slice(-20),
+        owners: (globalThis as any).__playsrcProfile?.mapResidency,
+      }
+    }).catch(() => null)
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline }, null, 2)}\n`)
+    console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { application: failure.application, console: failure.console, command: failure.command })}`)
+    throw error
   } finally {
     clearInterval(sampler)
     await browserCdp.detach().catch(() => {})
