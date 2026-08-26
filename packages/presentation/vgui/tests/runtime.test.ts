@@ -222,6 +222,25 @@ describe("generic Source VGUI runtime", () => {
     expect(element.textWrites).toBe(text + 1)
   })
 
+  test("retains authored pixels, clipping, accessibility, and panel order across every supported browser display scale", () => {
+    const { root, runtime } = setup()
+    const first = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "RetainedForeground" }).panel!
+    const second = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "RetainedButton" }).panel!
+    operation(runtime, { kind: "mutate-control", panel: first, mutation: { text: "125" } })
+    operation(runtime, { kind: "set-bounds", panel: first, bounds: { x: 20, y: 30, width: 100, height: 24 } })
+    const label = descendants(root).find(element => element.dataset.vguiPanel === String(first))!
+    const button = descendants(root).find(element => element.dataset.vguiPanel === String(second))!
+    for (const devicePixelRatio of [1, 1.25, 1.5, 2]) {
+      operation(runtime, { kind: "set-viewport", viewport: { width: 1920, height: 1080, devicePixelRatio } })
+      expect(runtime.snapshot().viewport).toEqual({ width: 1920, height: 1080, devicePixelRatio })
+      expect(label.textContent).toBe("125")
+      expect(label.getAttribute("aria-label")).toBe("125")
+      expect(label.style.clipPath).toBe("inset(0px 0px 0px 0px)")
+      expect(button.getAttribute("aria-disabled")).toBe("false")
+      expect(label.parentElement?.children.indexOf(label)).toBeLessThan(button.parentElement!.children.indexOf(button))
+    }
+  })
+
   test("admits stale callback timestamps without reversing the shared monotonic frame clock", () => {
     const { root, runtime, time } = setup(emptyAnimations, [], 10)
     const entry = operation(runtime, {

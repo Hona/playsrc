@@ -7,7 +7,7 @@ import { profileSourceIdentity } from "../src/profile-runner"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
-import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, type TraceJoin } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
@@ -325,6 +325,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
   const availableCategories = (await browserCdp.send("Tracing.getCategories")).categories
   const traceFinished = new Promise<{ stream?: string; dataLossOccurred: boolean }>(resolve => browserCdp.once("Tracing.tracingComplete", resolve))
+  let compositorLayers: Array<{ layerId: string; backendNodeId?: number; width: number; height: number; drawsContent: boolean; paintCount: number }> = []
+  let layerTreeChanges = 0
+  const layerPaints: Array<{ layerId: string; x: number; y: number; width: number; height: number }> = []
+  cdp.on("LayerTree.layerTreeDidChange", ({ layers }) => {
+    layerTreeChanges += 1
+    if (layers) compositorLayers = layers
+  })
+  cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
+  await cdp.send("LayerTree.enable")
   await cdp.send("Performance.enable")
   await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
@@ -440,6 +449,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     }
     const elapsed = ended - started
     const position = (main.dataset.cameraPosition ?? "").split(",").map(Number)
+    const panels = [...document.querySelectorAll<HTMLElement>(".vgui-layer, .playsrc-vgui-runtime")].map(element => {
+      const bounds = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      return { className: element.className, width: bounds.width, height: bounds.height, visible: style.display !== "none" && style.visibility !== "hidden", background: style.backgroundColor, opacity: style.opacity, filter: style.filter, isolation: style.isolation, contain: style.contain }
+    })
+    const gpuContext = surface.getContext("webgpu")
     return {
       elapsed, started, ended, browserLifecycle, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
       visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
@@ -448,8 +463,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames, particleSamples,
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
-      dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0 },
       classSwitches, lifecycle,
+      dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0,
+        panels, rasterImages: document.querySelectorAll("img[data-vgui-raster]").length, rasterCanvases: document.querySelectorAll("canvas[data-vgui-raster]").length,
+        accessibility: { hudLabels: hudRoot?.querySelectorAll("[aria-label]").length ?? 0, gameView: surface.getAttribute("aria-label") },
+        canvas: { alphaMode: gpuContext?.getConfiguration()?.alphaMode ?? null, format: gpuContext?.getConfiguration()?.format ?? null },
+      },
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
@@ -573,6 +592,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const traceEvents: ChromiumTraceEvent[] = evidence.events
   const exactTraceWindow = evidence.manifest.analysis.window
   const allocations = (node: { selfSize: number; children: any[] }): number => node.selfSize + node.children.reduce((total, child) => total + allocations(child), 0)
+  const layerDetails = await Promise.all(compositorLayers.filter(layer => layer.drawsContent).map(async layer => {
+    const [reasons, node] = await Promise.all([
+      cdp.send("LayerTree.compositingReasons", { layerId: layer.layerId }).catch(() => null),
+      layer.backendNodeId ? cdp.send("DOM.describeNode", { backendNodeId: layer.backendNodeId }).catch(() => null) : null,
+    ])
+    return {
+      id: layer.layerId, width: layer.width, height: layer.height, paintCount: layer.paintCount,
+      estimatedRasterBytes: Math.ceil(layer.width) * Math.ceil(layer.height) * 4,
+      node: node?.node.nodeName ?? null, attributes: node?.node.attributes ?? null,
+      reasons: reasons?.compositingReasons ?? [], reasonIds: reasons?.compositingReasonIds ?? [],
+    }
+  }))
   const wasmWorkers = await Promise.all(page.workers().map(async (worker) => ({
     url: worker.url(),
     ...await (worker.url().includes("gameplay-worker") ? worker.evaluate(() => ({
@@ -629,6 +660,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     elapsedMilliseconds: Number(measurement.elapsed.toFixed(3)), readyMilliseconds, loads, totalWallMilliseconds: Date.now() - wallStarted,
     animationCallbacks: measurement.animationCallbacks, completedFrames: actualFrames, applicationCompletedFramesPerSecond: Number((actualFrames / measurement.elapsed * 1000).toFixed(3)),
     compositor: { ...summarizeCompositorTruth(exactTraceWindow ? traceEvents : [], measurement.elapsed, exactTraceWindow ?? undefined),
+      stages: summarizeCompositorStages(exactTraceWindow ? traceEvents : [], exactTraceWindow ?? undefined),
       stalls: exactTraceWindow ? analyzeCompositorStalls(traceEvents, exactTraceWindow, measurement.lifecycle) : [] },
     compositorIncludingSetupAndCollection: clockBefore !== undefined && clockAfter !== undefined && clockAfter > clockBefore ? {
       elapsedMilliseconds: (clockAfter - clockBefore) * 1_000,
@@ -641,6 +673,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     presentationDom: {
       ...measurement.dom,
+      layers: {
+        count: compositorLayers.length, drawing: layerDetails.length, treeChanges: layerTreeChanges,
+        estimatedRasterBytes: layerDetails.reduce((total, layer) => total + layer.estimatedRasterBytes, 0),
+        painted: { count: layerPaints.length, cssPixels: layerPaints.reduce((total, paint) => total + paint.width * paint.height, 0), rectangles: layerPaints.slice(0, 32) },
+        details: layerDetails,
+      },
       layout: { count: performanceDelta("LayoutCount"), milliseconds: Number((performanceDelta("LayoutDuration") * 1000).toFixed(3)) },
       style: { count: performanceDelta("RecalcStyleCount"), milliseconds: Number((performanceDelta("RecalcStyleDuration") * 1000).toFixed(3)) },
       paint,

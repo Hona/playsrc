@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isDirectVguiImageMaterial, shadeVguiImage, shadeVguiImageIncrementally, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
+import { isDirectVguiImageMaterial, retainedVguiRasterContext, shadeVguiImage, shadeVguiImageIncrementally, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
@@ -13,6 +13,14 @@ const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
 })
 
 describe("bounded authored VGUI raster ownership", () => {
+  test("keeps CPU-authored panel pixels in a retained nonaccelerated canvas without separate compositor surfaces", () => {
+    const context = {} as CanvasRenderingContext2D
+    const calls: unknown[][] = []
+    const canvas = { getContext: (...parameters: unknown[]) => { calls.push(parameters); return context } } as unknown as HTMLCanvasElement
+    expect(retainedVguiRasterContext(canvas)).toBe(context)
+    expect(calls).toEqual([["2d", { willReadFrequently: true }]])
+  })
+
   test("evicts least-recently-used decoded buffers by exact retained bytes", () => {
     const cache = new VguiRasterCache<Uint8Array>(12, 3)
     const first = new Uint8Array(4)

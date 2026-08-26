@@ -70,6 +70,16 @@ export function analyzeCompositorStalls(
   }).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 12)
 }
 
+export function summarizeCompositorStages(events: readonly ChromiumTraceEvent[], window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
+  const stages = ["BeginFrame", "BeginMainFrame", "DrawFrame", "SubmitCompositorFrame", "FramePresented"] as const
+  return Object.freeze(Object.fromEntries(stages.map(name => {
+    const sampled = events.filter(event => event.name === name && Number.isFinite(event.ts)
+      && (!window || event.ts! >= window.startedMicroseconds && event.ts! <= window.endedMicroseconds))
+    const timestamps = [...new Set(sampled.map(event => event.ts!))].sort((left, right) => left - right)
+    return [name, { count: timestamps.length, intervals: summarizeFrameTimes(timestamps.slice(1).map((timestamp, index) => (timestamp - timestamps[index]!) / 1_000)) }]
+  })))
+}
+
 export function assertVisibleGameplayTruth(evidence: Readonly<{ visible: boolean; focused: boolean; ticks: number; displayFrames: number; submissions: number; beforeSha256: string; afterSha256: string }>): void {
   if (!evidence.visible) throw new Error("Gameplay evidence rejected: browser document was hidden")
   if (!evidence.focused) throw new Error("Gameplay evidence rejected: browser document was not focused")

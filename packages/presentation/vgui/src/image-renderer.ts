@@ -305,7 +305,7 @@ export class VguiRasterCache<Value> {
 export class VguiImageRasterizer {
   readonly #document: Document
   readonly #textures = new VguiRasterCache<Promise<VguiImageRasterTexturePixels>>()
-  readonly #renders = new VguiRasterCache<Promise<Uint8ClampedArray>>()
+  readonly #renders = new VguiRasterCache<Promise<string>>()
   #destroyed = false
 
   constructor(document: Document) { this.#document = document }
@@ -342,29 +342,34 @@ export class VguiImageRasterizer {
     return loading
   }
 
-  async render(canvas: HTMLCanvasElement, request: VguiImageRasterRequest): Promise<void> {
+  async render(image: HTMLImageElement, request: VguiImageRasterRequest): Promise<void> {
     const signature = JSON.stringify(request)
     let rendering = this.#renders.get(signature)
     if (!rendering) {
       rendering = (async () => {
         const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
         const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
-        return shadeVguiImageIncrementally(
+        const pixels = await shadeVguiImageIncrementally(
           request,
           new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])),
           () => new Promise<void>(resolve => setTimeout(resolve, 0)),
         )
+        const canvas = this.#document.createElement("canvas")
+        canvas.width = request.width
+        canvas.height = request.height
+        const context = retainedVguiRasterContext(canvas)
+        if (!context) throw new Error("VGUI presentation canvas is unavailable")
+        context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
+        return canvas.toDataURL("image/png")
       })()
       this.#renders.set(signature, rendering, request.width * request.height * 4)
       void rendering.catch(() => this.#renders.delete(signature))
     }
-    const pixels = await rendering
-    if (this.#destroyed || !canvas.isConnected) return
-    canvas.width = request.width
-    canvas.height = request.height
-    const context = canvas.getContext("2d")
-    if (!context) throw new Error("VGUI presentation canvas is unavailable")
-    context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
+    const source = await rendering
+    if (this.#destroyed || !image.isConnected) return
+    if (image.width !== request.width) image.width = request.width
+    if (image.height !== request.height) image.height = request.height
+    if (image.src !== source) image.src = source
   }
 
   destroy(): void {
@@ -373,4 +378,8 @@ export class VguiImageRasterizer {
     this.#textures.clear()
     this.#renders.clear()
   }
+}
+
+export function retainedVguiRasterContext(canvas: Pick<HTMLCanvasElement, "getContext">): CanvasRenderingContext2D | null {
+  return canvas.getContext("2d", { willReadFrequently: true })
 }
