@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
+import { promisify } from "node:util"
 import path from "node:path"
 import { repositoryRoot } from "./config"
-import toolchains from "../toolchains.json"
+import toolchains from "../toolchains.json" with { type: "json" }
 
 const BUILD_INPUTS = Object.freeze([
   "Cargo.lock",
@@ -14,6 +16,23 @@ const BUILD_INPUTS = Object.freeze([
 ])
 
 let pendingIdentity: Promise<string> | undefined
+
+export async function applicationBuildIdentity(root = repositoryRoot): Promise<string> {
+  const git = async (args: string[]) => (await promisify(execFile)("git", args, { cwd: root, maxBuffer: 64 * 1024 * 1024 })).stdout
+  const [head, diff, untracked] = await Promise.all([
+    git(["rev-parse", "HEAD"]),
+    git(["diff", "--binary", "HEAD", "--", ".", ":(exclude)**/*.md", ":(exclude)*.md"]),
+    git(["ls-files", "--others", "--exclude-standard", "-z"]),
+  ])
+  if (!/^[0-9a-f]{40}$/.test(head.trim())) throw new Error("Application source identity is unavailable")
+  const names = untracked.split("\0").filter((name) => name && !name.endsWith(".md")).sort()
+  const hash = createHash("sha256").update(head.trim())
+  if (diff || names.length) {
+    hash.update("\0playsrc-working-source-v1\0").update(diff)
+    for (const name of names) hash.update("\0").update(name).update("\0").update(await readFile(path.join(root, name)))
+  }
+  return hash.digest("hex")
+}
 
 export function invalidateRustBuildIdentity(): void {
   pendingIdentity = undefined

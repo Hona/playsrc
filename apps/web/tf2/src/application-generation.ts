@@ -40,10 +40,11 @@ export function createApplicationGenerationRecovery(options: Readonly<{
       const operation = (async () => {
         const identity = `${options.currentBuild}:${expectedBuild}`
         const value = options.storage.getItem(STORAGE_KEY)
+        if (value !== null && value.length > MAX_UPGRADES * 132 + 1) throw new Error("Application generation recovery state is invalid")
         let previous: unknown
         try { previous = value === null ? [] : JSON.parse(value) }
         catch { throw new Error("Application generation recovery state is invalid") }
-        if (!Array.isArray(previous) || previous.some((entry) => typeof entry !== "string" || !/^[0-9a-f]{64}:[0-9a-f]{64}$/.test(entry))) {
+        if (!Array.isArray(previous) || previous.length > MAX_UPGRADES || previous.some((entry) => typeof entry !== "string" || !/^[0-9a-f]{64}:[0-9a-f]{64}$/.test(entry))) {
           throw new Error("Application generation recovery state is invalid")
         }
         const current = previous.filter((entry) => entry.startsWith(`${options.currentBuild}:`))

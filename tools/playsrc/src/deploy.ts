@@ -4,6 +4,7 @@ import { createDeployedBrowserConfiguration, parseTf2Release, TF2_APPLICATION_OR
 import { applyCloudflareInfrastructure, validateCloudflareInfrastructure } from "./cloudflare-infra"
 import { CLOUDFLARE_ASSET_ORIGIN, runWrangler, WRANGLER_CONFIG } from "./cloudflare"
 import { repositoryRoot } from "./config"
+import { applicationBuildIdentity } from "./build-identity"
 import { readTf2Release } from "./tf2-release"
 import { parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
@@ -17,19 +18,6 @@ export class DeploymentError extends Error {
     super(message)
     this.name = "DeploymentError"
   }
-}
-
-async function applicationBuildIdentity(): Promise<string> {
-  const child = Bun.spawn(["git", "rev-parse", "HEAD"], {
-    cwd: repositoryRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const value = (await new Response(child.stdout).text()).trim()
-  if ((await child.exited) !== 0 || !/^[0-9a-f]{40}$/.test(value)) {
-    throw new DeploymentError("public application commit identity is unavailable")
-  }
-  return new Bun.CryptoHasher("sha256").update(value).digest("hex")
 }
 
 export async function buildStaticSite(target: string | undefined): Promise<string> {
