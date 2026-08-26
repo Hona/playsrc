@@ -4,8 +4,8 @@ import os from "node:os"
 import path from "node:path"
 import { headedProfileConfiguration } from "../profile/profile-config"
 import { headedProfileTarget } from "../profile/profile-target"
-import { buildCacheDirectory, rustBuildIdentity } from "../src/build-identity"
-import { acquireHeadedProfileLock, parseHeadedProfile, profileSourceIdentity, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred, stopOwner } from "../src/profile-runner"
+import { applicationBuildIdentity, buildCacheDirectory, rustBuildIdentity } from "../src/build-identity"
+import { acquireHeadedProfileLock, parseHeadedProfile, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred, stopOwner } from "../src/profile-runner"
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
@@ -128,7 +128,7 @@ describe("bounded headed profile orchestration", () => {
   })
 
   test("binds shared build and source snapshots to exact checked repository inputs", async () => {
-    const [build, source] = await Promise.all([rustBuildIdentity(), profileSourceIdentity()])
+    const [build, source] = await Promise.all([rustBuildIdentity(), applicationBuildIdentity()])
     expect(build).toMatch(/^[0-9a-f]{64}$/)
     expect(source).toMatch(/^[0-9a-f]{64}$/)
     expect(await rustBuildIdentity()).toBe(build)
@@ -394,10 +394,10 @@ describe("bounded headed profile orchestration", () => {
     await git("add", ".")
     await git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
     const before = await rustBuildIdentity(directory)
-    const source = await profileSourceIdentity(directory)
+    const source = await applicationBuildIdentity(directory)
     await writeFile(path.join(directory, "input.rs"), "const A: u8 = 2;\n")
     expect(await rustBuildIdentity(directory)).not.toBe(before)
-    expect(await profileSourceIdentity(directory)).not.toBe(source)
+    expect(await applicationBuildIdentity(directory)).not.toBe(source)
     const edited = await rustBuildIdentity(directory)
     await writeFile(path.join(directory, "new.rs"), "const B: u8 = 3;\n")
     expect(await rustBuildIdentity(directory)).not.toBe(edited)

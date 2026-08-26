@@ -1,15 +1,15 @@
-import { execFile, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { promisify } from "node:util"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget, type HeadedProfileTarget } from "../profile/profile-target"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
+import { applicationBuildIdentity } from "./build-identity"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -94,23 +94,6 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
     else if (option !== "--headed") playwright.push(option)
   }
   return Object.freeze({ profile: profile as HeadedProfile, fresh, playwright: Object.freeze(playwright) })
-}
-
-export async function profileSourceIdentity(root = repositoryRoot): Promise<string> {
-  const command = async (arguments_: string[]): Promise<string> => {
-    const { stdout } = await promisify(execFile)("git", arguments_, { cwd: root, maxBuffer: 64 * 1024 * 1024 })
-    return stdout
-  }
-  const [head, changes, untracked] = await Promise.all([
-    command(["rev-parse", "HEAD"]),
-    command(["diff", "--binary", "HEAD", "--", ".", ":(exclude)**/*.md", ":(exclude)*.md"]),
-    command(["ls-files", "--others", "--exclude-standard"]),
-  ])
-  const hash = createHash("sha256").update("playsrc-headed-profile-source-v1\0").update(head).update("\0").update(changes)
-  for (const name of untracked.split("\n").filter((value) => value && !value.endsWith(".md")).sort()) {
-    hash.update("\0").update(name).update("\0").update(await readFile(path.join(root, name)))
-  }
-  return hash.digest("hex")
 }
 
 async function writeLease(metadataPath: string, token: string, milliseconds: number): Promise<void> {
@@ -315,7 +298,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     })
     progress = setInterval(() => console.error(`[performance] ${profile} phase=${currentPhase} total=${Date.now() - started}ms queued=${lock!.milliseconds}ms remaining=${remaining()}ms`), 10_000)
     const identityStarted = Date.now()
-    identity = await measure("source-identity", () => profileSourceIdentity())
+    identity = await measure("source-identity", () => applicationBuildIdentity())
     configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target))
     sourceIdentityMilliseconds = Date.now() - identityStarted
     const ownerIdentity = createHash("sha256").update(identity).update(configuredIdentity).update(process.env.PLAYSRC_DEV_PORT ?? "4173").digest("hex")
@@ -379,7 +362,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     }
     cancellation.signal.throwIfAborted()
     const verificationStarted = Date.now()
-    if (identity !== await profileSourceIdentity() || configuredIdentity !== await configuredProfileIdentity(config, target)
+    if (identity !== await applicationBuildIdentity() || configuredIdentity !== await configuredProfileIdentity(config, target)
       || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity()) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
     sourceVerificationMilliseconds = Date.now() - verificationStarted
     outcome = exitCode === 0 ? "passed" : "failed"
