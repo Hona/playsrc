@@ -34,3 +34,6 @@ evidence. Rayon helpers are listed as unsampled; they can remain synchronously
 parked in WASM. Sampling is diagnostic overhead, not an optimization benchmark.
 Task overlap is not serialization cost or proof of historical incident causation.
 Boundary tasks retain their full duration and separately report sample overlap.
+The class profile also gates actual gameplay silence inside presentation pairs
+that cross sample boundaries. Stopping capture cannot hide the already elapsed
+gameplay portion of a stall; collection-only portions remain separately labeled.

@@ -18,6 +18,40 @@ export function chromiumPresentationEventName(events: readonly ChromiumTraceEven
   return PRESENTATION_EVENTS.find(name => events.some(event => event.name === name))
 }
 
+/** A real gap that straddles sample end still contains real gameplay silence.
+ * Count only its intersection for the gate, but retain the full observed pair.
+ * Never join presentation timestamps from independent compositor streams. */
+export function summarizeActivePresentationSilence(events: readonly ChromiumTraceEvent[], window: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
+  if (!Number.isFinite(window.startedMicroseconds) || !Number.isFinite(window.endedMicroseconds) || window.endedMicroseconds < window.startedMicroseconds) throw new Error("Compositor sampling window is invalid")
+  const name = chromiumPresentationEventName(events)
+  const streams = new Map<string, number[]>()
+  for (const event of events) {
+    if (!name || event.name !== name || !Number.isFinite(event.ts)) continue
+    const key = `${event.pid}:${event.tid}`
+    const timestamps = streams.get(key) ?? []
+    timestamps.push(event.ts!)
+    streams.set(key, timestamps)
+  }
+  let maximumActiveSilenceMilliseconds = 0
+  let maximumObservedOverlappingGapMilliseconds = 0
+  let longestActiveSilence: { stream: string; startedMicroseconds: number; endedMicroseconds: number; observedMilliseconds: number; activeMilliseconds: number } | null = null
+  for (const [stream, timestamps] of streams) {
+    const sorted = [...new Set(timestamps)].sort((a, b) => a - b)
+    for (let i = 1; i < sorted.length; i++) {
+      const startedMicroseconds = sorted[i - 1]!, endedMicroseconds = sorted[i]!
+      const activeMilliseconds = (Math.min(endedMicroseconds, window.endedMicroseconds) - Math.max(startedMicroseconds, window.startedMicroseconds)) / 1000
+      if (activeMilliseconds <= 0) continue
+      const observedMilliseconds = (endedMicroseconds - startedMicroseconds) / 1000
+      maximumObservedOverlappingGapMilliseconds = Math.max(maximumObservedOverlappingGapMilliseconds, observedMilliseconds)
+      if (activeMilliseconds > maximumActiveSilenceMilliseconds) {
+        maximumActiveSilenceMilliseconds = activeMilliseconds
+        longestActiveSilence = { stream, startedMicroseconds, endedMicroseconds, observedMilliseconds, activeMilliseconds }
+      }
+    }
+  }
+  return { maximumActiveSilenceMilliseconds, maximumObservedOverlappingGapMilliseconds, longestActiveSilence }
+}
+
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
   if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0) throw new Error("Compositor sampling duration must be positive")
   if (window && (!Number.isFinite(window.startedMicroseconds) || !Number.isFinite(window.endedMicroseconds) || window.endedMicroseconds < window.startedMicroseconds)) throw new Error("Compositor sampling window is invalid")

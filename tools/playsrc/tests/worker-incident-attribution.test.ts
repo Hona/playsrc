@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { gzipSync } from "node:zlib"
+import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
 
 const capture: WorkerCpuCapture = {
   target: { targetId: "worker", type: "worker", url: "gameplay-worker.ts" }, samplingIntervalMicroseconds: 1000,
@@ -30,6 +31,20 @@ const events = [
 const window = { startedMicroseconds: 1_010_000, endedMicroseconds: 1_145_000 }
 
 describe("Worker CPU and monotonic task joins", () => {
+  test("cannot hide a long gameplay silence by ending the sample before its next native presentation", () => {
+    const result = summarizeActivePresentationSilence([
+      { name: "Display::FrameDisplayed", ts: 450_000, pid: 1, tid: 1 },
+      { name: "Display::FrameDisplayed", ts: 1000_000, pid: 1, tid: 1 },
+      { name: "Display::FrameDisplayed", ts: 1400_000, pid: 1, tid: 1 },
+      { name: "Display::FrameDisplayed", ts: 650_000, pid: 2, tid: 2 },
+    ], { startedMicroseconds: 0, endedMicroseconds: 800_000 })
+    expect(result.maximumActiveSilenceMilliseconds).toBe(350)
+    expect(result.maximumObservedOverlappingGapMilliseconds).toBe(550)
+    expect(result.maximumActiveSilenceMilliseconds < 250).toBe(false)
+    expect(result.longestActiveSilence?.stream).toBe("1:1")
+    expect(summarizeActivePresentationSilence([{ ts: 0 }, { ts: 1_000_000 }], { startedMicroseconds: 0, endedMicroseconds: 1_000_000 }).longestActiveSilence).toBeNull()
+  })
+
   test("replays hash-bound raw trace, Worker CPU and authoritative publication joins offline", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "playsrc-worker-evidence-"))
     try {
