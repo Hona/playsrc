@@ -308,6 +308,7 @@ test("headed authored three-map Soldier, bots, water, HUD, combat, and full-prop
           await new Promise<void>((resolve, reject) => {
             const frame = (now: number): void => {
               if (main.dataset.phase !== "Ready") { reject(new Error(`gameplay entered ${main.dataset.phase}: ${main.dataset.detail}`)); return }
+              if (now <= previous) { requestAnimationFrame(frame); return }
               const raw = main.dataset.performanceDetail
               const detail = raw ? JSON.parse(raw) as Record<string, number> : {}
               const sky = surface.dataset.sky3dPass ? JSON.parse(surface.dataset.sky3dPass) as { skySurfaces: number; skyProps: number } : undefined

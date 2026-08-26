@@ -1316,6 +1316,9 @@ class RendererOwner implements Renderer {
   readonly #fadeUp = new THREE.Vector3()
   readonly #fadeFirst = new THREE.Vector3()
   readonly #fadeSecond = new THREE.Vector3()
+  readonly #staticPropFrustum = new THREE.Frustum()
+  readonly #staticPropProjection = new THREE.Matrix4()
+  readonly #staticPropSphere = new THREE.Sphere()
   readonly #fogCache = new WeakMap<FogInput, THREE.Fog>()
   #visibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
   #nextVisibleStaticIndices: [Set<number>, Set<number>] = [new Set(), new Set()]
@@ -3009,7 +3012,7 @@ class RendererOwner implements Renderer {
           : this.#exposure.snapshot()
       this.#active.exposureUniform.value = this.configuration.lightingProfile === "hdr" ? exposure.current : 1
       this.#setCamera(frame.camera)
-      if(frame.visibility)this.#setStaticPropVisibility(frame.visibility.leaves,0,frame.camera)
+      if(frame.visibility)this.#setStaticPropVisibility(frame.visibility.leaves,0,frame.camera,frame.visibility.water.visibleWater===null)
       const dynamicItemsStarted = performance.now()
       const viewModelDepthRange = this.#stageDynamicItems(frame)
       const dynamicItemsMilliseconds = performance.now() - dynamicItemsStarted
@@ -3136,9 +3139,16 @@ class RendererOwner implements Renderer {
     }
   }
 
-  #setStaticPropVisibility(leaves: readonly number[], ownership: 0 | 1, camera: Camera): void {
+  #setStaticPropVisibility(leaves: readonly number[], ownership: 0 | 1, camera: Camera, frustumCull = true): void {
     const scene = this.#active
     if (!scene) return
+    if (frustumCull) {
+      this.#camera.updateMatrixWorld()
+      this.#staticPropFrustum.setFromProjectionMatrix(this.#staticPropProjection.multiplyMatrices(
+        this.#camera.projectionMatrix,
+        this.#camera.matrixWorldInverse,
+      ), this.#camera.coordinateSystem, this.#camera.reversedDepth)
+    }
     const count = scene.leafVisibility.select(leaves, ownership)
     const prior = this.#visibleStaticIndices[ownership]
     const next = this.#nextVisibleStaticIndices[ownership]
@@ -3165,7 +3175,16 @@ class RendererOwner implements Renderer {
       }
       alpha = quantizeStaticPropOpacity(alpha)
       prop.fadeUniform.value = alpha
-      if (alpha > 0) {
+      if (alpha > 0 && (!frustumCull || this.#staticPropFrustum.intersectsSphere(
+        this.#staticPropSphere.set(
+          this.#staticPropSphere.center.set(
+            (prop.bounds[0] + prop.bounds[3]) * 0.5,
+            (prop.bounds[1] + prop.bounds[4]) * 0.5,
+            (prop.bounds[2] + prop.bounds[5]) * 0.5,
+          ),
+          prop.radius,
+        ),
+      ))) {
         prop.object.visible = true
         next.add(index)
         if (!prior.has(index)) membershipChanged = true
@@ -3493,6 +3512,7 @@ class RendererOwner implements Renderer {
 
     try {
       this.#setWorldVisibility(sky.visibility.surfaces, sky.visibility.cacheIdentity, 1)
+      this.#setCamera(sky.camera)
       this.#setStaticPropVisibility(sky.visibility.leaves, 1, sky.camera)
       scene.worldBundle.visible = false
       scene.mainTransparentWorld.visible = false
@@ -3507,7 +3527,6 @@ class RendererOwner implements Renderer {
       this.#particles.visible = false
       if (scene.skyGroup) scene.skyGroup.visible = true
       this.#setSceneFog(this.#fog(sky.fog))
-      this.#setCamera(sky.camera)
       this.#backend.autoClear = true
       this.#backend.render(this.#scene, this.#camera)
       rendered = true
