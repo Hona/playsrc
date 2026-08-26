@@ -6,7 +6,9 @@ import { decodeScreenshot } from "./screenshot-pixels"
 
 const CLASSES = ["scout", "soldier", "pyro", "demoman", "heavyweapons", "engineer", "medic", "sniper", "spy"] as const
 
-test("persisted bot settings preserve repeated three-map RED class admission and real world pixels", async ({ page }, testInfo) => {
+test.use({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1.5 })
+
+test("fractional-DPR BLU/RED class admission preserves model pixels and three-map replacement", async ({ page }, testInfo) => {
   const failures: string[] = []
   page.on("pageerror", (error) => failures.push(error.message))
   page.on("console", (message) => {
@@ -31,12 +33,12 @@ test("persisted bot settings preserve repeated three-map RED class admission and
   await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
   const dialog = page.locator(".local-match-layer").getByRole("dialog", { name: "CREATE SERVER" })
   await dialog.locator("[data-vgui-name='MapList']").click()
-  await page.getByRole("option", { name: "jump_beef" }).click()
+  await page.getByRole("option", { name: "pl_upward" }).click()
   await dialog.getByRole("tab", { name: "GAME" }).click()
   await dialog.locator("[data-vgui-name='NumPlayersTextEntry']").fill("5")
   await dialog.getByRole("button", { name: "Start" }).click()
 
-  for (const [index, map] of ["jump_beef", "ctf_2fort", "pl_upward", "jump_beef"].entries()) {
+  for (const [index, map] of ["pl_upward", "ctf_2fort", "jump_beef"].entries()) {
     if (index > 0) {
       await page.keyboard.press("Backquote")
       const entry = page.locator("[aria-label='Console command']")
@@ -49,9 +51,19 @@ test("persisted bot settings preserve repeated three-map RED class admission and
       detail: await main.getAttribute("data-detail"),
     }), { timeout: 45_000 }).toMatchObject({ team: "true" })
     if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
-    await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+    await page.locator(`.team-selection-layer [data-vgui-name='teambutton${index === 0 ? 2 : 1}']`).click()
     await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
-    if (await main.getAttribute("data-class-selection-visible") === "true") await page.keyboard.press("Digit2")
+    if (await main.getAttribute("data-class-selection-visible") === "true") {
+      await expect.poll(async () => await main.getAttribute("data-class-selection-models"), { timeout: 15_000 })
+        .toMatch(/TFPlayerModel:[^|]+:[0-9]+:[1-9][0-9]*/u)
+      const preview = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot())
+      let modelPixels = 0
+      for (let offset = 0; offset < preview.pixels.length; offset += preview.channels) {
+        if (preview.pixels[offset]! > 8 || preview.pixels[offset + 1]! > 8 || preview.pixels[offset + 2]! > 8) modelPixels += 1
+      }
+      expect(modelPixels, `${map} visible class-selection world/model pixels`).toBeGreaterThan(20_000)
+      await page.keyboard.press("Digit2")
+    }
     await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     await expect.poll(async () => (await main.getAttribute("data-hud-probe"))?.split(":")[1], { timeout: 10_000 }).toBe("3")
     const pixels = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot())
@@ -62,12 +74,28 @@ test("persisted bot settings preserve repeated three-map RED class admission and
     expect(visible, `${map} visible world pixels`).toBeGreaterThan(20_000)
     expect(await main.getAttribute("data-hud-probe")).not.toContain("unknown")
     expect(failures).toEqual([])
+    if (index === 0) {
+      const cadence = await page.evaluate(() => new Promise<{ frames: number; ticks: number }>((resolve) => {
+        const root = document.querySelector<HTMLElement>("main")!
+        const initialTick = Number(root.dataset.snapshotTick)
+        const started = performance.now()
+        let frames = 0
+        const sample = (now: number) => {
+          frames += 1
+          if (now - started < 5_000) requestAnimationFrame(sample)
+          else resolve({ frames, ticks: Number(root.dataset.snapshotTick) - initialTick })
+        }
+        requestAnimationFrame(sample)
+      }))
+      expect(cadence.frames).toBeGreaterThan(100)
+      expect(cadence.ticks).toBeGreaterThan(250)
+    }
     const generation = Number(await main.getAttribute("data-generation"))
     const commands = await page.evaluate((current) =>
       (globalThis as any).__playsrcAdmissionCommands.filter((command: any) => command.generation === current), generation)
     if (map === "jump_beef") expect(commands.every((command: any) => command.configuration === 0)).toBe(true)
     await testInfo.attach(`admission-${index}-${map}`, {
-      body: JSON.stringify({ generation, visiblePixels: visible, commands: commands.length, failures }),
+      body: JSON.stringify({ generation, devicePixelRatio: await page.evaluate(() => devicePixelRatio), visiblePixels: visible, commands: commands.length, failures }),
       contentType: "application/json",
     })
   }

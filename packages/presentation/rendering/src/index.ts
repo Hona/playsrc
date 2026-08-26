@@ -3400,6 +3400,14 @@ class RendererOwner implements Renderer {
           || panel.horizontalFov4By3 <= 0 || panel.horizontalFov4By3 >= 180) {
           throw new RenderingError("MalformedInput", `model-panel pass is invalid: ${panel.identity}`)
         }
+        const displayWidth = this.#canvas.width
+        const displayHeight = this.#canvas.height
+        const left = Math.round(panel.bounds.x * this.#devicePixelRatio)
+        const top = Math.round(panel.bounds.y * this.#devicePixelRatio)
+        const right = Math.round((panel.bounds.x + panel.bounds.width) * this.#devicePixelRatio)
+        const bottom = Math.round((panel.bounds.y + panel.bounds.height) * this.#devicePixelRatio)
+        if (Math.min(displayWidth, right) <= Math.max(0, left)
+          || Math.min(displayHeight, bottom) <= Math.max(0, top)) continue
         const identity = modelKey(panel.model.toLowerCase(), panel.skin)
         const template = this.#active.modelTemplates.get(identity)
         if (!template) throw new RenderingError("MissingInput", `model-panel model is unavailable: ${identity}`)
@@ -3435,13 +3443,13 @@ class RendererOwner implements Renderer {
           horizontalFov4By3: panel.horizontalFov4By3,
           origin: panel.origin,
           bounds: panel.bounds,
-          displayWidth: this.#viewportWidth,
-          displayHeight: this.#viewportHeight,
+          displayWidth,
+          displayHeight,
           devicePixelRatio: this.#devicePixelRatio,
         })
         sourceTransform(retained.instance, presentation.origin, panel.angles)
-        const { x, y, width, height } = presentation.viewport
-        this.#modelPanelCamera.aspect = width / height
+        const { x, y, width, height } = presentation.rendererViewport
+        this.#modelPanelCamera.aspect = presentation.viewport.width / presentation.viewport.height
         this.#modelPanelCamera.fov = presentation.verticalFovDegrees
         this.#modelPanelCamera.updateProjectionMatrix()
         this.#backend.setViewport(x, y, width, height)
