@@ -33,20 +33,23 @@ async function applicationBuildIdentity(): Promise<string> {
 }
 
 export async function buildStaticSite(target: string | undefined): Promise<string> {
-  const release = await readTf2Release(target)
+  const sourceRelease = await readTf2Release(target)
   const applicationBuild = await applicationBuildIdentity()
   await rm(DIST_DIRECTORY, { recursive: true, force: true })
   const child = Bun.spawn([process.execPath, "run", "build"], {
     cwd: APP_DIRECTORY,
-    env: { ...process.env, PLAYSRC_APPLICATION_BUILD: applicationBuild },
+    env: { ...process.env, PLAYSRC_APPLICATION_BUILD: applicationBuild, PLAYSRC_BROWSER_CONFIG: undefined },
     stdout: "inherit",
     stderr: "inherit",
   })
   if (await child.exited !== 0) throw new DeploymentError("TF2 static application build failed")
   const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
-  if (new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex") !== release.objects.wasm.sha256) {
-    throw new DeploymentError("Release WASM differs from the browser bindings producer; refusing a mixed-generation package")
-  }
+  // A local candidate describes the actual compiled artifact, not the last
+  // published WASM. Publication separately requires the approved release pin.
+  const release = parseTf2Release({ ...sourceRelease, objects: { ...sourceRelease.objects, wasm: {
+    kind: "derived-object", mediaType: "application/octet-stream", byteLength: String(compiledWasm.byteLength),
+    sha256: new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex"),
+  } } })
   const configuration = createDeployedBrowserConfiguration(release, applicationBuild)
   await Promise.all([
     copyFile(path.join(repositoryRoot, "apps", "web", "index.html"), path.join(DIST_DIRECTORY, "index.html")),
@@ -186,9 +189,12 @@ export async function verifyCloudflareDeployment(target: string | undefined): Pr
 }
 
 export async function deployCloudflare(target: string | undefined): Promise<void> {
-  await applyCloudflareInfrastructure()
-  await verifyRemoteObjects(target)
   const applicationBuild = await buildStaticSite(target)
+  const approved = await readTf2Release(target)
+  const candidate = parseTf2Release(JSON.parse(await readFile(path.join(DIST_DIRECTORY, "release.json"), "utf8")).release)
+  if (JSON.stringify(candidate) !== JSON.stringify(approved)) throw new DeploymentError("Compiled package differs from the approved release; refusing mixed-generation publication")
+  await verifyRemoteObjects(target)
+  await applyCloudflareInfrastructure()
   const result = await runWrangler(["deploy", `--config=${WRANGLER_CONFIG}`])
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
   await waitForDeployment(target, applicationBuild)
