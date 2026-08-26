@@ -93,9 +93,11 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
         this.addEventListener("message", (event: MessageEvent) => {
-          const bytes = payloadBytes(event.data)
+          const sharedSection = event.data?.kind === "resources" && event.data.bytes instanceof SharedArrayBuffer
+            && Number.isSafeInteger(event.data.byteLength)
+          const bytes = sharedSection ? event.data.byteLength : payloadBytes(event.data)
           state.transfer.receivedBytes += bytes
-          state.transfer.receivedSharedBytes += sharedPayloadBytes(event.data)
+          state.transfer.receivedSharedBytes += sharedSection ? event.data.byteLength : sharedPayloadBytes(event.data)
           state.transfer.messages += 1
           const record = this.records.get(event.data?.id)
           if (!record) return
@@ -409,7 +411,9 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
   expect(outdoorSkyPixels).toBeGreaterThan(5_000)
   expect(ticksPerSecond).toBeGreaterThan(55)
   expect(report.actualVisibleFrames.frames).toBeGreaterThan(seconds * 20)
-  expect(report.actualVisibleFrames.p95Milliseconds).toBeLessThan(50)
-  expect(report.loading.initializationExcludingDownloadMilliseconds).toBeLessThan(30_000)
+  expect(report.actualVisibleFrames.p95Milliseconds).toBeLessThan(25)
+  expect(report.loading.initializationExcludingDownloadMilliseconds).toBeLessThan(10_000)
+  expect(report.browserResident.loaded.residentBytes).toBeLessThan(6 * 1024 ** 3)
+  expect(workers.find((worker) => worker.memory)?.memory?.linearBytes).toBeLessThan(2 * 1024 ** 3)
   await expect(root).toHaveAttribute("data-phase", "Ready")
 })
