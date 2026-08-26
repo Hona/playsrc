@@ -25,6 +25,7 @@ export async function generationFixtureServer(fixtures: readonly GenerationFixtu
     html: active, configuration: active, configurations: [] as GenerationFixture[],
     requests: [] as Array<{ pathname: string; generation: string; at: number }>,
     workerDelayMilliseconds: 0,
+    configurationGate: undefined as Promise<void> | undefined,
     activationDelays: [] as number[],
   }
   let origin = ""
@@ -41,6 +42,7 @@ export async function generationFixtureServer(fixtures: readonly GenerationFixtu
         response.end(await readFile(path.join(state.html.output, "index.html")))
       } else if (pathname === "/tf2/playsrc-config.json") {
         const fixture = state.configurations.shift() ?? state.configuration
+        if (state.configurationGate) await state.configurationGate
         response.setHeader("Content-Type", "application/json")
         response.end(JSON.stringify({ ...fixture.configuration, assetOrigin: origin }))
       } else if (pathname.startsWith("/tf2/assets/")) {

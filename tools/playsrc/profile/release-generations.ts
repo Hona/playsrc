@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
+import { spawn } from "node:child_process"
 import { readFile, mkdir, writeFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
-import { putObject } from "@playsrc/asset-store"
+import { objectPath, putObject } from "@playsrc/asset-store"
 import { createDeployedBrowserConfiguration, parseTf2Release } from "../../../apps/web/tf2/src/deployment"
 
 // GitHub release assets, not reconstructed or invented historical configuration.
@@ -14,13 +15,16 @@ export const ARCHIVED_GENERATIONS = Object.freeze([
 export const digest = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
 async function command(args: string[], cwd: string): Promise<Uint8Array> {
-  const child = Bun.spawn(args, { cwd, stdout: "pipe", stderr: "inherit" })
-  const bytes = new Uint8Array(await new Response(child.stdout).arrayBuffer())
-  if (await child.exited !== 0) throw new Error(`Release fixture command failed: ${args[0]} ${args[1]}`)
-  return bytes
+  return new Promise((resolve, reject) => {
+    const child = spawn(args[0]!, args.slice(1), { cwd, stdio: ["ignore", "pipe", "inherit"] })
+    const chunks: Buffer[] = []
+    child.stdout!.on("data", (bytes) => chunks.push(Buffer.from(bytes)))
+    child.on("error", reject)
+    child.on("close", (code) => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`Release fixture command failed: ${args[0]} ${args[1]}`)))
+  })
 }
 
-export async function archivedGeneration(fixture: typeof ARCHIVED_GENERATIONS[number]) {
+export async function archivedGeneration(fixture: typeof ARCHIVED_GENERATIONS[number], prepare = false) {
   const config = await loadLocalConfig()
   const directory = path.join(config.sourceCacheDir, "profiles", "application-upgrade", "fixtures", fixture.commit)
   await mkdir(directory, { recursive: true })
@@ -47,8 +51,8 @@ export async function archivedGeneration(fixture: typeof ARCHIVED_GENERATIONS[nu
   const app = path.join(source, "apps", "web", "tf2")
   const output = path.join(app, "dist", "cloudflare", "tf2")
   if (!await stat(path.join(output, "index.html")).catch(() => null)) {
-    await command([process.execPath, "install", "--frozen-lockfile"], source)
-    await command([process.execPath, "run", "build"], app)
+    await command(["bun", "install", "--frozen-lockfile"], source)
+    await command(["bun", "run", "build"], app)
   }
   const descriptor = release.objects.wasm
   const compiled = await readFile(path.join(source, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
@@ -57,13 +61,17 @@ export async function archivedGeneration(fixture: typeof ARCHIVED_GENERATIONS[nu
   if (!response.ok) throw new Error(`${fixture.tag} archived immutable WASM is unavailable: ${response.status}`)
   const wasm = new Uint8Array(await response.arrayBuffer())
   if (digest(wasm) !== descriptor.sha256 || wasm.byteLength !== Number(descriptor.byteLength)) throw new Error("Archived WASM is corrupt")
-  await putObject(config.assetDir, descriptor, wasm)
+  if (prepare) await putObject(config.assetDir, descriptor, wasm)
+  else {
+    const stored = await readFile(objectPath(config.assetDir, descriptor.sha256)).catch(() => null)
+    if (!stored || digest(stored) !== descriptor.sha256) throw new Error("Prepare authenticated archived objects with bun tools/playsrc/profile/release-generations.ts before the headed run")
+  }
   return { ...fixture, directory, output, configuration }
 }
 
 if (import.meta.main) {
   for (const fixture of ARCHIVED_GENERATIONS) {
-    const result = await archivedGeneration(fixture)
+    const result = await archivedGeneration(fixture, true)
     console.log(JSON.stringify({ tag: result.tag, commit: result.commit, manifest: result.sha256, wasm: result.configuration.wasm.sha256, output: result.output }))
   }
 }

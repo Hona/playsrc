@@ -88,7 +88,7 @@ import {
   type Tf2AudioRequest,
 } from "@playsrc/game-tf2-browser/presentation"
 import { decodeParticleRenderOutput } from "@playsrc/particle"
-import { browserFrameProfiler, createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput } from "@playsrc/rendering"
+import { browserFrameProfiler, createRenderer, SOURCE_LDR, SOURCE_PC_INTEGER_HDR, type Camera, type Frame, type MaterialStateInput, type ModelPanelPass } from "@playsrc/rendering"
 import {
   initializeClientDiagnostics,
   initializeDeveloperConsole,
@@ -2268,7 +2268,7 @@ export class Tf2Application {
           this.#teamSelectionPoses.set(selected.panel, item)
         }
       }
-      const panels = authored.map((panel, index) => {
+      const panels: readonly ModelPanelPass[] = authored.map((panel, index) => {
         const pose = this.#teamSelectionPoses.get(panel.name)
         return Object.freeze({
           identity: panel.name,
@@ -2280,7 +2280,7 @@ export class Tf2Application {
           bounds: panel.bounds,
           background: index === 0 ? "opaque" as const : "transparent" as const,
           presentationTimeSeconds: now,
-          ...(pose ? { pose: Object.freeze({ primitives: pose.primitives, boneMatrices: pose.boneMatrices }) } : {}),
+          ...(pose ? { pose } : {}),
         })
       })
       const result = await renderer.renderModelPanels(panels)

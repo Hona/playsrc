@@ -1,4 +1,4 @@
-import input from "../../content-build.json"
+import input from "../../content-build.json" with { type: "json" }
 
 export type Tf2ContentBuildContract = Readonly<{
   schema: "playsrc-tf2-content-build-v1"

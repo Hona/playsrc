@@ -2,7 +2,7 @@ import { build } from "vite"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import type { Page } from "@playwright/test"
-import { expect, test } from "./application-test"
+import { expect, test } from "./native-edge-test"
 import { settleTf2Gameplay } from "./team-selection-evidence"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { ARCHIVED_GENERATIONS, archivedGeneration } from "./release-generations"
@@ -13,15 +13,41 @@ import type { BrowserConfiguration } from "../../../apps/web/tf2/src/config"
 import { summarizeDistribution } from "./gameui-profile"
 
 test.use({ allowRecoverableApplicationFailure: true })
+const developmentOrigin = process.env.PLAYSRC_PROFILE_ORIGIN ?? `http://127.0.0.1:${process.env.PLAYSRC_DEV_PORT ?? "4173"}`
+
+test("native same-window tabs expose real visibility and independent session storage", async ({ page }) => {
+  await page.goto(`${developmentOrigin}/`, { waitUntil: "domcontentloaded" })
+  const opened = page.waitForEvent("popup")
+  await page.evaluate(() => { sessionStorage.setItem("generation-tab-test", "original"); window.open("about:blank", "_blank") })
+  const tab = await opened
+  try {
+    const first = await page.context().newCDPSession(page)
+    const second = await page.context().newCDPSession(tab)
+    expect((await first.send("Browser.getWindowForTarget")).windowId).toBe((await second.send("Browser.getWindowForTarget")).windowId)
+    await tab.bringToFront()
+    await tab.evaluate(() => sessionStorage.setItem("generation-tab-test", "other"))
+    await expect.poll(() => page.evaluate(() => document.visibilityState), { timeout: 3_000 }).toBe("hidden")
+    expect(await page.evaluate(() => sessionStorage.getItem("generation-tab-test"))).toBe("original")
+    await page.bringToFront()
+    await expect.poll(() => tab.evaluate(() => document.visibilityState), { timeout: 3_000 }).toBe("hidden")
+    expect(await tab.evaluate(() => sessionStorage.getItem("generation-tab-test"))).toBe("other")
+  } finally { await tab.close() }
+})
 
 test("exact archived generation transitions, isolated tabs, warm CAS and actual compositor recovery", async ({ page, context }, testInfo) => {
   const wall = Date.now()
   const local = await loadLocalConfig()
-  const configured = await (await page.request.get("/playsrc-config.json")).json() as BrowserConfiguration
-  const currentConfiguration = { ...configured, renderLevel: 2 as const }
+  const configured = await (await page.request.get(`${developmentOrigin}/playsrc-config.json`)).json() as BrowserConfiguration
   const target = configured.defaultTarget
   const roster = Number(process.env.PROFILE_UPGRADE_ROSTER ?? 0)
-  const archived = await Promise.all(ARCHIVED_GENERATIONS.map(archivedGeneration))
+  const switchOnly = process.env.PROFILE_UPGRADE_SWITCH_ONLY === "1"
+  const archived = await Promise.all(ARCHIVED_GENERATIONS.map((fixture) => archivedGeneration(fixture)))
+  const currentConfiguration = { ...configured, renderLevel: 2 as const,
+    ...(!roster ? { targets: archived[1]!.configuration.targets, catalog: archived[1]!.configuration.catalog } : {}),
+  }
+  for (const target of configured.targets) {
+    expect(currentConfiguration.targets.find((candidate) => candidate.target === target.target)?.objects.resources).toEqual(target.objects.resources)
+  }
   const prior = { build: process.env.PLAYSRC_APPLICATION_BUILD, config: process.env.PLAYSRC_BROWSER_CONFIG }
   const app = path.join(repositoryRoot, "apps", "web", "tf2")
   try {
@@ -43,6 +69,7 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
   const recoveries: number[] = []
   const baseline: any[] = []
   const services: any[] = []
+  const switches: any[] = []
   let browserCacheHits = 0
   const network = await context.newCDPSession(page)
   await network.send("Network.enable")
@@ -100,7 +127,7 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     await production.goto("https://playsrc.online/tf2", { waitUntil: "domcontentloaded", timeout: 20_000 })
     services.push({ origin: "production", ...await serviceState(production) })
     await production.close()
-    for (const fixture of fixtures) {
+    for (const fixture of switchOnly ? [current] : fixtures) {
       console.log(`GENERATION_STAGE exact ${fixture.name} ${target}`)
       server.select(fixture)
       server.state.workerDelayMilliseconds = fixture === current ? 250 : 0
@@ -114,8 +141,8 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     expect(retained.length).toBeGreaterThan(100)
     // Exercise three real stale-configuration responses. Ready must reset only the
     // completed episode, not forgive a repeatedly mismatching startup.
-    const staleConfigurations = [fixtures[0]!, fixtures[1]!, fixtures[0]!]
-    if (!roster) staleConfigurations.push({ ...current, name: "same-build-stale-wasm", configuration: { ...current.configuration, wasm: fixtures[0]!.configuration.wasm } })
+    const staleConfigurations = switchOnly ? [] : [fixtures[0]!, fixtures[1]!, fixtures[0]!]
+    if (!roster && !switchOnly) staleConfigurations.push({ ...current, name: "same-build-stale-wasm", configuration: { ...current.configuration, wasm: fixtures[0]!.configuration.wasm } })
     for (const stale of staleConfigurations) {
       console.log(`GENERATION_STAGE recover ${stale.name}`)
       server.state.configurations.push(stale)
@@ -129,41 +156,69 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     }
     // An independent old tab keeps its authentic module/WASM generation while a
     // newer tab opens and reloads against the same origin and IDB database.
-    server.select(fixtures[1]!)
-    console.log("GENERATION_STAGE retained-tab")
-    oldTab = await context.newPage()
-    await install(oldTab)
-    await navigate(oldTab)
-    server.select(current)
-    await navigate(page)
-    await ready(page)
-    expect(await immutableInventory(page)).toEqual(retained)
-    await oldTab.bringToFront()
-    expect(await oldTab.locator("main").getAttribute("data-phase")).toBe("MainMenu")
-    services.push({ origin: "retained-old-tab", ...await serviceState(oldTab) })
-    if (!roster) {
-      server.state.configurations.push(fixtures[0]!)
-      const requests = server.state.requests.length
-      await page.goto(`${server.origin}/tf2/`, { waitUntil: "domcontentloaded" })
-      await oldTab.bringToFront()
-      await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden")
-      await oldTab.waitForTimeout(250)
-      expect(server.state.requests.slice(requests).filter((request) => request.pathname.startsWith("/objects/"))).toEqual([])
-      expect(server.state.requests.slice(requests).filter((request) => request.pathname.endsWith("playsrc-config.json")).length).toBeLessThanOrEqual(1)
-      await page.bringToFront()
-      await menu(page)
+    if (!switchOnly) {
+      server.select(fixtures[1]!)
+      console.log("GENERATION_STAGE retained-tab")
+      const opened = page.waitForEvent("popup")
+      await page.evaluate(() => { window.open("about:blank", "_blank") })
+      oldTab = await opened
+      await install(oldTab)
+      await navigate(oldTab)
+      server.select(current)
+      await navigate(page)
       await ready(page)
       expect(await immutableInventory(page)).toEqual(retained)
+      await oldTab.bringToFront()
+      expect(await oldTab.locator("main").getAttribute("data-phase")).toBe("MainMenu")
+      services.push({ origin: "retained-old-tab", ...await serviceState(oldTab) })
+      if (!roster) {
+        server.state.configurations.push(fixtures[0]!)
+        let deliver!: () => void
+        server.state.configurationGate = new Promise<void>((resolve) => { deliver = resolve })
+        const requests = server.state.requests.length
+        await page.goto(`${server.origin}/tf2/`, { waitUntil: "domcontentloaded" })
+        await oldTab.bringToFront()
+        await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden")
+        deliver()
+        server.state.configurationGate = undefined
+        await oldTab.waitForTimeout(250)
+        expect(server.state.requests.slice(requests).filter((request) => request.pathname.startsWith("/objects/"))).toEqual([])
+        expect(server.state.requests.slice(requests).filter((request) => request.pathname.endsWith("playsrc-config.json")).length).toBeLessThanOrEqual(1)
+        await page.bringToFront()
+        await menu(page)
+        await ready(page)
+        expect(await immutableInventory(page)).toEqual(retained)
+      }
+      await oldTab.close()
+      oldTab = undefined
     }
-    await oldTab.close()
-    oldTab = undefined
     await page.bringToFront()
     await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready")
+    if (!roster) {
+      for (const map of ["ctf_2fort", target]) {
+        console.log(`GENERATION_STAGE map-switch ${map}`)
+        const previous = Number(await page.locator("main").getAttribute("data-generation"))
+        const started = Date.now()
+        await command(page, `map ${map}`)
+        await expect(page.locator("main")).toHaveAttribute("data-generation", String(previous + 1), { timeout: 30_000 })
+        if (await page.locator("main").getAttribute("data-phase") === "Failed") throw new Error((await page.locator("main").getAttribute("data-detail")) ?? "Map replacement failed")
+        await settleTf2Gameplay(page)
+        switches.push({ map, generation: previous + 1, readyMilliseconds: Date.now() - started })
+      }
+      await command(page, "joinclass heavyweapons")
+      await expect.poll(async () => (await page.locator("main").getAttribute("data-hud-probe"))?.split(":")[1], { timeout: 5_000 }).toBe("6")
+    }
     await command(page, "joinclass soldier")
+    await expect.poll(async () => (await page.locator("main").getAttribute("data-hud-probe"))?.split(":")[1]).toBe("3")
     await page.keyboard.press("Backquote")
+    if (switchOnly) { console.log(`TF2_GENERATION_SWITCH ${JSON.stringify(switches)}`); return }
     const visual = await changingGameplayEvidence(page)
     expect(visual.phase).toBe("Ready")
     expect(visual.bots).toBe(roster)
+    expect(visual.roster).toHaveLength(roster)
+    expect(new Set(visual.roster.map((bot: any) => bot.identity)).size).toBe(roster)
+    expect(visual.roster.every((bot: any) => Number.isInteger(bot.class) && bot.class >= 1 && bot.class <= 9
+      && [2, 3].includes(bot.team) && [1, 2].includes(bot.lifecycle) && bot.position.every(Number.isFinite))).toBe(true)
     expect(visual.losses).toEqual([])
     expect(visual.validationErrors).toBe(0)
     expect(visual.ticks / visual.elapsedMilliseconds * 1_000).toBeGreaterThan(60)
@@ -191,12 +246,16 @@ test("exact archived generation transitions, isolated tabs, warm CAS and actual 
     const { afterPixels, ...presentation } = visual
     expect(browserCacheHits).toBeGreaterThan(0)
     expect(server.state.activationDelays.some((delay) => delay >= 250)).toBe(true)
-    const report = { target, roster, browser: await context.browser()!.version(), transitions, services, browserCacheHits, workerActivationDelaysMilliseconds: server.state.activationDelays, warmCas: { records: retained.length, bytes: retained.reduce((total, record) => total + record.byteLength, 0), unchanged: true }, before: { failures: baseline.length, samples: baseline, failureLatency: summarizeDistribution(baseline.map((sample) => sample.milliseconds)) }, after: { failures: finalErrors.length, readySamplesMilliseconds: recoveries, readyLatency: summarizeDistribution(recoveries) }, presentation, wallMilliseconds: Date.now() - wall }
+    const report = { target, roster, browser: await context.browser()!.version(), transitions, switches, services, browserCacheHits, workerActivationDelaysMilliseconds: server.state.activationDelays, warmCas: { records: retained.length, bytes: retained.reduce((total, record) => total + record.byteLength, 0), unchanged: true }, before: { failures: baseline.length, samples: baseline, failureLatency: summarizeDistribution(baseline.map((sample) => sample.milliseconds)) }, after: { failures: finalErrors.length, readySamplesMilliseconds: recoveries, readyLatency: summarizeDistribution(recoveries) }, presentation, wallMilliseconds: Date.now() - wall }
     const directory = path.join(local.sourceCacheDir, "profiles", "application-upgrade")
     await mkdir(directory, { recursive: true })
     await writeFile(path.join(directory, `${target}-evidence.json`), JSON.stringify(report, null, 2))
     await writeFile(path.join(directory, `${target}-ready.png`), afterPixels)
     console.log(`TF2_APPLICATION_UPGRADE ${JSON.stringify(report)}`)
+  } catch (error) {
+    const terminal = await page.evaluate(() => ({ detail: document.querySelector<HTMLElement>("main")?.dataset.detail, phase: document.querySelector<HTMLElement>("main")?.dataset.phase, output: document.querySelector("[aria-label='Console output']")?.textContent })).catch(() => null)
+    console.log(`GENERATION_FAILURE ${JSON.stringify({ terminal, error: String(error) })}`)
+    throw error
   } finally {
     await oldTab?.close()
     await page.goto("about:blank").catch(() => {})

@@ -29,6 +29,8 @@ export async function changingGameplayEvidence(page: Page) {
       submissions: profiler.counters.submissions - start.submissions,
       losses: profiler.losses, validationErrors: profiler.counters.validationErrors,
       phase: root.dataset.phase, bots: Number(root.dataset.botCount),
+      viewport: { width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio, canvasWidth: canvas.width, canvasHeight: canvas.height },
+      roster: ((globalThis as any).__playsrcProfile.bots ?? []).map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, lifecycle: bot.lifecycle, health: bot.health, position: bot.position, tick: bot.tick })),
     }
   })
   await page.keyboard.up("w")
