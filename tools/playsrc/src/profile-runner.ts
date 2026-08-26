@@ -128,7 +128,7 @@ async function readOwner(metadataPath: string): Promise<OwnerMetadata | null> {
   try {
     const value = JSON.parse(await readFile(metadataPath, "utf8")) as OwnerMetadata
     if (value.schema !== "playsrc-profile-owner-v1" || typeof value.token !== "string" || typeof value.identity !== "string"
-      || typeof value.target !== "string" || typeof value.repository !== "string" || !Number.isSafeInteger(value.pid)
+      || typeof value.target !== "string" || typeof value.repository !== "string" || !Number.isSafeInteger(value.pid) || value.pid < 1
       || typeof value.url !== "string" || !value.startup || typeof value.startup !== "object") {
       throw new Error("Shared headed profile development owner metadata is malformed")
     }
@@ -143,26 +143,43 @@ async function verifyOwner(metadata: OwnerMetadata, identity: string, target: st
   if (!isAlive(metadata.pid) || metadata.identity !== identity || metadata.target !== target || metadata.repository !== repositoryRoot) return false
   try {
     if (metadata.generatedIdentity !== await generatedProfileIdentity()) return false
+    return await ownerEndpointMatches(metadata)
+  } catch { return false }
+}
+
+async function ownerEndpointMatches(metadata: OwnerMetadata): Promise<boolean> {
+  try {
     const response = await fetch(new URL("/__playsrc/profile-owner", metadata.url), { cache: "no-store", signal: AbortSignal.timeout(2_000) })
     if (!response.ok) return false
     const value = await response.json() as Partial<OwnerMetadata>
-    return value.schema === "playsrc-profile-owner-v1" && value.token === metadata.token && value.identity === identity
-      && value.target === target && value.repository === metadata.repository
+    return value.schema === "playsrc-profile-owner-v1" && value.token === metadata.token && value.identity === metadata.identity
+      && value.target === metadata.target && value.repository === metadata.repository
   } catch { return false }
 }
 
 export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000): Promise<void> {
+  if (!Number.isSafeInteger(metadata.pid) || metadata.pid < 1 || metadata.pid === process.pid) throw new Error("Refusing invalid development service PID")
   if (isAlive(metadata.pid)) {
     console.error(`[performance] retiring development owner pid=${metadata.pid} target=${metadata.target} by checked lease`)
     const deadline = Date.now() + maximumMilliseconds
     let announcement = Date.now()
+    let nextInterrupt = Date.now() + 1_000
     while (isAlive(metadata.pid) && Date.now() < deadline) {
       const current = await readOwner(metadataPath)
       if (current && current.token !== metadata.token) throw new Error("Shared development owner changed during retirement")
       // Older runners may have an in-flight heartbeat after releasing the
-      // machine lock. Keep this checked retirement request authoritative until
-      // the lease monitor observes it; never signal another worker's PID.
+      // machine lock. Keep the checked retirement request authoritative.
       await writeLease(metadataPath, metadata.token, 0)
+      // Some older services hang while closing their Vite sockets. This PID is
+      // the leased development service, not the agent or the lock holder. Only
+      // interrupt that single PID after its live endpoint proves the exact
+      // token/identity/repository again; never signal a foreign process group.
+      if (Date.now() >= nextInterrupt && await ownerEndpointMatches(metadata)) {
+        nextInterrupt = Date.now() + 1_000
+        console.error(`[performance] interrupting verified idle development service pid=${metadata.pid}`)
+        try { process.kill(metadata.pid, "SIGTERM") }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error }
+      }
       if (Date.now() - announcement >= 5_000) {
         announcement = Date.now()
         console.error(`[performance] waiting for development owner retirement pid=${metadata.pid} target=${metadata.target} alive=true`)
