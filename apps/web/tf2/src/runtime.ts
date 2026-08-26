@@ -472,7 +472,6 @@ export class Tf2Application {
   #resourceGraph?: ResourceGraph
   #dependencies: readonly Uint8Array[] = Object.freeze([])
   #dependencyEntries = new Map<string, Uint8Array>()
-  #sharedDependencyEntries = new Map<string, Uint8Array>()
   #cache?: DerivedObjectCache
   #client?: Tf2WorkerClient
   #renderer?: Renderer
@@ -1110,14 +1109,9 @@ export class Tf2Application {
     const chunks = new Map<string, ResourceChunkDescriptor>()
     for (const role of roles) for (const chunk of chunksForRole(graph, role)) chunks.set(chunk.encodedSha256, chunk)
     const records = await Promise.all([...chunks.values()].map(async (chunk) => {
-      let bytes = await this.#cache!.read(chunk.encodedSha256)
-      if (!bytes) {
-        const object = resourceChunkObject(chunk)
-        bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch, (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
-        await this.#cache!.write(chunk.encodedSha256, chunk.encodedSha256, bytes)
-      } else {
-        this.#trackBootstrapObject(chunk.encodedSha256, bytes.byteLength, bytes.byteLength)
-      }
+      const object = resourceChunkObject(chunk)
+      const bytes = await fetchImmutableObject(this.#configuration!.assetOrigin, object, signal, fetch,
+        (loaded, total) => this.#trackBootstrapObject(object.sha256, loaded, total))
       return Object.freeze({ descriptor: chunk, bytes })
     }))
     const sections: Uint8Array[] = []
@@ -1309,7 +1303,7 @@ export class Tf2Application {
     this.#sharedBlockers.clear()
     for (const blocker of this.#blockers) this.#sharedBlockers.add(blocker)
     this.#set({ menuPreparation: "ready" })
-    this.#sharedDependencyEntries = new Map(this.#dependencyEntries)
+    this.#dependencyEntries.clear()
     this.#initializeConsole()
     const currentSettings = this.#settings.snapshot().settings.current
     this.#bindingValues.clear()
@@ -1521,7 +1515,7 @@ export class Tf2Application {
           throw new Error("Target resource graph identity differs")
         }
         this.#resourceGraph = graph
-        this.#dependencyEntries = new Map(this.#sharedDependencyEntries)
+        this.#dependencyEntries = new Map()
         this.#activeTarget = target
         this.#mapIdentity = target.target
       }
@@ -1544,7 +1538,7 @@ export class Tf2Application {
         profile,
         this.#renderLevel,
         this.#configuration.wasm.sha256,
-        this.#dependencies,
+        this.#activeTarget.objects.resources.sha256,
       )
       finishLoadPhase("derivedKey")
       this.#set({ detail: "Compiling direct map authority" })
@@ -2830,7 +2824,7 @@ export class Tf2Application {
       this.#requireOperation(operation)
       const graph = parseResourceGraphBytes(graphBytes)
       if (graph.target !== target.target || graph.contentBuild !== target.contentBuild) throw new Error("Target resource graph identity differs")
-      const entries = new Map(this.#sharedDependencyEntries)
+      const entries = new Map<string, Uint8Array>()
       const dependencies = await this.#decodeResourceSet(graph, ["gameplay"], entries, signal)
       this.#requireOperation(operation)
       await this.#replace(bytes, target.objects.bsp.sha256, target.target, { target, graph, dependencies, entries }, operation)
@@ -2954,7 +2948,7 @@ export class Tf2Application {
       profile,
       this.#renderLevel,
       this.#configuration?.wasm.sha256 ?? "",
-      candidate?.dependencies ?? this.#dependencies,
+      candidate?.target.objects.resources.sha256 ?? this.#activeTarget?.objects.resources.sha256 ?? "",
     )
     finishReplacePhase("derivedKey")
     const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)

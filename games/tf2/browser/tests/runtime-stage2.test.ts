@@ -5,6 +5,7 @@ import {
   decodeSnapshot,
   encodeCommand,
   encodeJumpCourse,
+  mapDerivedKey,
   Tf2CodecError,
 } from "../src/codec"
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
@@ -170,6 +171,18 @@ class CourseWorker implements WorkerLike {
 }
 
 describe("TF2 canonical gameplay command and snapshot contract", () => {
+  test("binds retained map caches to one authenticated resource-root identity", async () => {
+    const bsp = "1".repeat(64)
+    const compiler = "2".repeat(64)
+    const root = "3".repeat(64)
+    const first = await mapDerivedKey(bsp, 1, 2, compiler, root)
+    expect(first).toMatch(/^[0-9a-f]{64}$/)
+    expect(await mapDerivedKey(bsp, 1, 2, compiler, root)).toBe(first)
+    expect(await mapDerivedKey(bsp, 1, 2, compiler, "4".repeat(64))).not.toBe(first)
+    await expect(mapDerivedKey(bsp, 1, 2, compiler, "invalid")).rejects.toBeInstanceOf(Tf2CodecError)
+    await expect(mapDerivedKey(bsp, 0, 2, compiler, root)).rejects.toBeInstanceOf(Tf2CodecError)
+  })
+
   test("preserves all nine Source class selectors and rejects invalid class/team identities", () => {
     const base = {
       forward: 0,

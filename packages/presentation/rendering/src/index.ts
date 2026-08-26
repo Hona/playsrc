@@ -55,6 +55,7 @@ import {
 } from "./source-water"
 import { sourceWaterTangentAttributes } from "./source-water-geometry"
 import { createSourceRefractMaterial } from "./source-refract"
+import { prepareWaterPipelineVisibility } from "./water-pipeline-visibility"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -1841,9 +1842,8 @@ class RendererOwner implements Renderer {
     const previousQuaternion = this.#camera.quaternion.clone()
     const previousFog = this.#scene.fog
     const previousTarget = this.#backend.getRenderTarget()
-    const waterVisibility = scene.waterMeshes.map((water) => water.mesh.visible)
+    const restoreSceneVisibility = prepareWaterPipelineVisibility(scene.group, scene.waterMeshes.map((water) => water.mesh))
     try {
-      for (const water of scene.waterMeshes) water.mesh.visible = true
       const combinations = [
         { target: scene.reflectionTarget, height: volume.surfaceZ + depth * 0.5, keep: "above" as const },
         { target: scene.refractionTarget, height: volume.surfaceZ + depth * 0.5, keep: "below" as const },
@@ -1872,9 +1872,7 @@ class RendererOwner implements Renderer {
       this.#camera.quaternion.copy(previousQuaternion)
       this.#camera.updateMatrixWorld()
       this.#setSceneFog(previousFog as THREE.Fog | null)
-      for (let index = 0; index < scene.waterMeshes.length; index += 1) {
-        scene.waterMeshes[index]!.mesh.visible = waterVisibility[index]!
-      }
+      restoreSceneVisibility()
     }
   }
 
