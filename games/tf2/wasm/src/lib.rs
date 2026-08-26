@@ -2287,7 +2287,7 @@ fn encode_model_poses(
     world: &mut ModelPoseWorld<'_>,
 ) -> Result<Vec<u8>, ()> {
     let mut out = b"PMPO".to_vec();
-    out.extend_from_slice(&6u32.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     for request in requests {
@@ -2805,8 +2805,14 @@ fn encode_model_pose_part(
                 .to_le_bytes(),
         );
         out.extend_from_slice(&[u8::from(selected_index >= opaque_count), 0, 0, 0]);
-        for ((position, normal), tangent) in positions.iter().zip(&normals).zip(&tangents) {
-            for value in position.iter().chain(normal).chain(tangent) {
+        out.resize(out.len().next_multiple_of(4), 0);
+        for values in positions.iter().chain(&normals) {
+            for value in values {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for values in &tangents {
+            for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         }
