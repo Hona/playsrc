@@ -26,6 +26,7 @@ import { synchronizeDynamicAttribute } from "./dynamic-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
+import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
@@ -685,7 +686,7 @@ export type SceneResult = Readonly<{
   resources: Readonly<{ geometries: number; materials: number; textures: number }>
   environment?: MapLoadRequest["environment"]
   environmentDrawables: number
-  staticProps:Readonly<{total:number;main:number;sky3d:number;runtimeLit:number}>
+  staticProps:Readonly<{total:number;main:number;sky3d:number;runtimeLit:number;batches:number;batched:number;hierarchyNodes:number}>
   runtimeStaticProps:readonly Readonly<{source:number;origin:readonly[number,number,number];lightingOrigin:readonly[number,number,number];radius:number}>[]
   displacements: readonly Readonly<{
     source: number
@@ -916,6 +917,7 @@ type StaticPropResource = Readonly<{
   radius: number
   bounds: readonly [number, number, number, number, number, number]
   fadeUniform: ReturnType<typeof TSL.uniform>
+  batches: Readonly<{ batch: StaticPropBatch; index: number }>[]
 }>
 
 type ModelPanelMaterialAnimation = Readonly<{
@@ -996,6 +998,7 @@ type SceneResources = {
   mainStaticProps:THREE.Group
   skyStaticProps:THREE.Group
   staticPropInstances: readonly StaticPropResource[]
+  staticPropBatches: readonly Readonly<{ ownership: 0 | 1; batch: StaticPropBatch }>[]
   reflectionTarget: THREE.RenderTarget
   refractionTarget: THREE.RenderTarget
   result: SceneResult
@@ -1557,6 +1560,14 @@ class RendererOwner implements Renderer {
       })
     }
     const selectedOwnership = ownership === "sky3d" ? 1 : 0
+    const batchedProps = new Map<THREE.Mesh, StaticPropBatch>()
+    for (const { ownership: batchOwnership, batch } of this.#active.staticPropBatches) {
+      if (batchOwnership !== selectedOwnership || !batch.mesh.visible) continue
+      const state = this.#active.materialStates.get(String(batch.mesh.userData.materialIdentity).toLowerCase())
+      if (state?.alphaTest) continue
+      meshes.push(batch.mesh)
+      batchedProps.set(batch.mesh, batch)
+    }
     for (const prop of this.#active.staticPropInstances) {
       if (prop.ownership === selectedOwnership) addProp(prop.object, "static-prop", prop.source)
     }
@@ -1576,7 +1587,9 @@ class RendererOwner implements Renderer {
           continue
         }
         const mesh = intersection.object as THREE.Mesh
-        const prop = propMeshes.get(mesh)
+        const staticBatch = batchedProps.get(mesh)
+        const source = staticBatch?.sourceAtFace(intersection.faceIndex)
+        const prop = source === undefined ? propMeshes.get(mesh) : { family: "static-prop" as const, identity: source }
         if (prop) {
           samples.push(Object.freeze({
             x,
@@ -2112,6 +2125,7 @@ class RendererOwner implements Renderer {
     projectedMarkGroup.matrixAutoUpdate = false
     skyStaticProps.visible = false
     const staticPropInstances: StaticPropResource[] = []
+    const staticPropBatches: { ownership: 0 | 1; batch: StaticPropBatch }[] = []
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
@@ -2888,7 +2902,43 @@ class RendererOwner implements Renderer {
             radius: sphere.radius,
             bounds: Object.freeze([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z] as const),
             fadeUniform,
+            batches: [],
           }))
+        }
+        const candidates = new Map<string, { prop: StaticPropResource; mesh: THREE.Mesh }[]>()
+        for (let index = 0; index < staticPropInstances.length; index += 1) {
+          const prop = staticPropInstances[index]!
+          if ((prop.flags & 1) !== 0) continue
+          for (const mesh of prop.object.children) {
+            if (!(mesh instanceof THREE.Mesh) || Array.isArray(mesh.material) || mesh.material.transparent) continue
+            const identity = `${prop.ownership}:${props.models[props.presentationModel[index]!]!}:${props.skin[index]}:${props.lod[index]}:${props.lightingKind[index]}:${mesh.userData.sourcePrimitive}:${mesh.material.uuid}`
+            let group = candidates.get(identity)
+            if (!group) candidates.set(identity, group = [])
+            group.push({ prop, mesh })
+          }
+        }
+        for (const group of candidates.values()) {
+          for (let start = 0; start < group.length; start += MAX_STATIC_PROPS_PER_BATCH) {
+            const entries = group.slice(start, start + MAX_STATIC_PROPS_PER_BATCH)
+            if (entries.length < 2) continue
+            const first = entries[0]!
+            const batch = createStaticPropBatch(entries.map(({ prop, mesh }) => ({
+              source: prop.source,
+              geometry: mesh.geometry,
+              matrix: prop.object.matrix,
+            })), first.mesh.material as THREE.Material)
+            batch.mesh.userData.materialIdentity = first.mesh.userData.materialIdentity
+            batch.mesh.userData.sourcePrimitive = first.mesh.userData.sourcePrimitive
+            disposables.add(batch.mesh.geometry)
+            ;(first.prop.ownership === 0 ? mainStaticProps : skyStaticProps).add(batch.mesh)
+            staticPropBatches.push({ ownership: first.prop.ownership, batch })
+            for (const [index, { prop, mesh }] of entries.entries()) {
+              prop.batches.push({ batch, index })
+              prop.object.remove(mesh)
+              if (mesh.geometry.hasAttribute("staticLighting")) disposables.release(mesh.geometry)
+              if (prop.object.children.length === 0) prop.object.removeFromParent()
+            }
+          }
         }
       }
       for (const occurrence of map.modelOccurrences) {
@@ -3079,7 +3129,7 @@ class RendererOwner implements Renderer {
         request.environment?.markRecords
           .filter((mark) => mark.status === 0 && mark.enabled)
           .reduce((total, mark) => total + mark.fragments.length, 0) ?? 0,
-      staticProps:Object.freeze({total:request.staticProps?.count??0,main:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===0),0):0,sky3d:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===1),0):0,runtimeLit:request.staticProps?request.staticProps.lightingKind.reduce((total,value)=>total+Number(value===1),0):0}),
+      staticProps:Object.freeze({total:request.staticProps?.count??0,main:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===0),0):0,sky3d:request.staticProps?request.staticProps.ownership.reduce((total,value)=>total+Number(value===1),0):0,runtimeLit:request.staticProps?request.staticProps.lightingKind.reduce((total,value)=>total+Number(value===1),0):0,batches:staticPropBatches.length,batched:staticPropInstances.reduce((total,prop)=>total+Number(prop.batches.length!==0),0),hierarchyNodes:mainStaticProps.children.length+skyStaticProps.children.length}),
       runtimeStaticProps:Object.freeze(runtimeStaticPropInstances.map(prop=>{if(!prop.lightingOrigin)throw new RenderingError("MissingInput","runtime static prop has no lighting origin");return Object.freeze({source:prop.source,origin:prop.origin,lightingOrigin:prop.lightingOrigin,radius:prop.radius})})),
       displacements: Object.freeze(displacementEvidence),
     })
@@ -3155,6 +3205,7 @@ class RendererOwner implements Renderer {
       mainStaticProps,
       skyStaticProps,
       staticPropInstances:Object.freeze(staticPropInstances),
+      staticPropBatches:Object.freeze(staticPropBatches),
       reflectionTarget,
       refractionTarget,
       result,
@@ -3608,19 +3659,26 @@ class RendererOwner implements Renderer {
         ),
       ))) {
         prop.object.visible = true
+        for (const binding of prop.batches) binding.batch.setVisible(binding.index, true)
         next.add(index)
         if (!prior.has(index)) membershipChanged = true
       } else {
         prop.object.visible = false
+        for (const binding of prop.batches) binding.batch.setVisible(binding.index, false)
       }
     }
 
     for (const index of prior) {
       if (next.has(index)) continue
-      scene.staticPropInstances[index]!.object.visible = false
+      const prop = scene.staticPropInstances[index]!
+      prop.object.visible = false
+      for (const binding of prop.batches) binding.batch.setVisible(binding.index, false)
       membershipChanged = true
     }
     this.#visibleStaticIndices[ownership] = next
+    for (const entry of scene.staticPropBatches) {
+      if (entry.ownership === ownership) entry.batch.update()
+    }
     this.#nextVisibleStaticIndices[ownership] = prior
     if (membershipChanged || next.size !== this.#visibleStaticSources[ownership].length) {
       const sources: number[] = []
