@@ -2,7 +2,8 @@ export type HeadedProfileTarget = "jump_beef" | "pl_upward" | "ctf_2fort"
 
 export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env, fallback: HeadedProfileTarget = "jump_beef"): HeadedProfileTarget {
   if (environment.PROFILE_CTF_OBJECTIVES === "1" || environment.PROFILE_CTF_BOTS === "1" || environment.PROFILE_2FORT_VISUAL === "1"
-    || environment.PROFILE_COMBAT_IMPACTS === "1" || environment.PROFILE_SCENARIOS === "local-practice") {
+    || environment.PROFILE_COMBAT_IMPACTS === "1"
+    || ["local-practice", "2fort-match"].includes(environment.PROFILE_SCENARIOS ?? "")) {
     return "ctf_2fort"
   }
   if (environment.PROFILE_COMBAT === "1" || environment.PROFILE_UPWARD_OUTDOORS === "1" || environment.PROFILE_ROUND_RULES === "1"

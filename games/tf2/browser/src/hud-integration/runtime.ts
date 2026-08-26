@@ -257,6 +257,7 @@ class Integration implements Tf2HudIntegration {
   #waitingPanelVisible = false
   #waitingPanelEnding = false
   #winPanel?: VguiPanelId
+  #winPanels?: ReadonlyMap<string, VguiPanelId>
   #roundPanels?: Readonly<{
     match: VguiPanelId
     background: VguiPanelId
@@ -525,7 +526,12 @@ class Integration implements Tf2HudIntegration {
     }
   }
 
-  #publishWinPanel(round: RoundSnapshot | undefined, objectives: CaptureObjectives | undefined): void {
+  #publishWinPanel(
+    round: RoundSnapshot | undefined,
+    objectives: CaptureObjectives | undefined,
+    publication: SessionSimulationPublication,
+    scoreboard: Tf2HudScoreboard | undefined,
+  ): void {
     const winner = round?.winningTeam ?? objectives?.winner ?? null
     if (winner === null) {
       if (this.#winPanel !== undefined) {
@@ -550,15 +556,24 @@ class Integration implements Tf2HudIntegration {
         resolutionSuffixes: this.#resources.resolutionSuffixes,
       })
       this.#winPanel = panel
+      const descendants = new Set<VguiPanelId>([panel])
+      const winPanels = new Map<string, VguiPanelId>()
       for (const value of this.#runtime.snapshot().panels) {
+        if (value.id === panel || (value.parent !== null && descendants.has(value.parent))) {
+          descendants.add(value.id)
+          winPanels.set(value.name.toLowerCase(), value.id)
+        }
         if (!this.#panels.has(value.name.toLowerCase())) this.#panels.set(value.name.toLowerCase(), value.id)
         apply(this.#runtime, { kind: "set-panel-state", panel: value.id, mouseInput: false, keyboardInput: false })
       }
+      this.#winPanels = winPanels
       this.#captureBaseBounds()
     }
+    const winPanels = this.#winPanels
+    if (winPanels === undefined) throw new Error("TF2 authored round-win panel inventory is unavailable")
+    const alreadyVisible = this.#publishedValues.get("ctf-win:visible") === "true"
     this.#objectiveValue("ctf-win:visible", "true", { kind: "set-panel-state", panel, visible: true })
-    const localized = (name: string): string => this.#resources.localization.tokens
-      .find((value) => value.name.toLowerCase() === name.replace(/^#/u, "").toLowerCase())?.value ?? name
+    const localized = (name: string): string => this.#localization.get(`#${name.replace(/^#/u, "").toLowerCase()}`) ?? name
     const team = winner === 2 ? "RED" : "BLU"
     const winning = localized("#Winpanel_TeamWins")
       .replace("%s1", team)
@@ -570,19 +585,72 @@ class Integration implements Tf2HudIntegration {
     const reason = localized(reasonToken)
       .replace("%s1", team)
       .replace("%s2", String(objectives?.captureLimit ?? 0))
+    const capture = objectives?.events.find((event) => event.kind === 2 && event.detail === 2 && event.player !== null)
+    const capturingPlayer = scoreboard?.players.find((player) => player.identity === capture?.player)
+    const details = capturingPlayer ? localized("#Winpanel_WinningCapture").replace("%s1", capturingPlayer.name)
+      : alreadyVisible ? this.#publishedValues.get("ctf-win:DetailsLabel") ?? "" : ""
     for (const [name, value] of [
       ["WinningTeamLabel", winning],
       ["AdvancingTeamLabel", ""],
       ["WinReasonLabel", reason],
-      ["DetailsLabel", ""],
+      ["DetailsLabel", details],
       ["TopPlayersLabel", localized(winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],
+    ] as const) {
+      this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel, name, value })
+    }
+    const scores = winPanels.get("teamscorespanel")
+    if (scores === undefined) throw new Error("TF2 authored round-win team score panel is unavailable")
+    for (const [name, value] of [
       ["redteamname", "RED"],
       ["blueteamname", "BLU"],
       ["redteamscore", round?.redScore ?? objectives?.redScore ?? 0],
       ["blueteamscore", round?.blueScore ?? objectives?.blueScore ?? 0],
     ] as const) {
-      this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel, name, value })
+      this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel: scores, name, value })
     }
+    for (const name of ["BlueLeaderAvatar", "BlueLeaderAvatarBG", "RedLeaderAvatar", "RedLeaderAvatarBG"]) {
+      const avatar = winPanels.get(name.toLowerCase())
+      if (avatar !== undefined) {
+        this.#objectiveValue(`ctf-win:${name}:visible`, "false", { kind: "set-panel-state", panel: avatar, visible: false })
+      }
+    }
+    const players = scoreboard?.players.filter((player) => player.team === winner && player.score > 0).slice(0, 3) ?? []
+    const classTokens = ["", "Scout", "Sniper", "Soldier", "Demoman", "Medic", "HWGuy", "Pyro", "Spy", "Engineer"] as const
+    const updatePlayer = (prefix: string, player: Tf2ScoreboardPlayer | undefined, score: number): void => {
+      const identity = player?.class.kind === "available" ? player.class.value
+        : player?.identity === 1 ? publication.snapshot.class
+          : publication.snapshot.bots?.find((bot) => bot.identity === player?.identity)?.class
+      const values = [
+        ["Name", player?.name ?? ""],
+        ["Class", identity === undefined ? "" : localized(`#TF_Class_Name_${classTokens[identity]}`)],
+        ["Score", player === undefined ? "" : String(score)],
+      ] as const
+      for (const [suffix, text] of values) {
+        const name = `${prefix}${suffix}`
+        const label = winPanels.get(name.toLowerCase())
+        if (label === undefined) throw new Error(`TF2 authored round-win player label is unavailable: ${name}`)
+        const color = player?.team === 2 ? [255, 64, 64, 255] : [153, 204, 255, 255]
+        this.#objectiveValue(`ctf-win:${name}:value`, `${text}:${player?.team ?? 0}`, {
+          kind: "mutate-control",
+          panel: label,
+          mutation: { text, foregroundColor: color as [number, number, number, number] },
+        })
+        this.#objectiveValue(`ctf-win:${name}:visible`, String(player !== undefined), {
+          kind: "set-panel-state", panel: label, visible: player !== undefined,
+        })
+      }
+      for (const [suffix, visible] of [["Avatar", player !== undefined], ["Badge", false]] as const) {
+        const name = `${prefix}${suffix}`
+        const value = winPanels.get(name.toLowerCase())
+        if (value !== undefined) {
+          this.#objectiveValue(`ctf-win:${name}:visible`, String(visible), { kind: "set-panel-state", panel: value, visible })
+        }
+      }
+    }
+    for (let index = 0; index < 3; index += 1) updatePlayer(`Player${index + 1}`, players[index], players[index]?.score ?? 0)
+    const leader = scoreboard?.players.filter((player) => player.killstreak > 0)
+      .toSorted((left, right) => right.killstreak - left.killstreak || left.identity - right.identity)[0]
+    updatePlayer("KillStreakPlayer1", leader, leader?.killstreak ?? 0)
   }
 
   #objectiveValue(identity: string, value: string, operation: VguiOperation): void {
@@ -930,7 +998,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.root, visible: false })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
     }
-    this.#publishWinPanel(round, objectives ?? undefined)
+    this.#publishWinPanel(round, objectives ?? undefined, publication, binding.scoreboard.kind === "available" ? binding.scoreboard.value : undefined)
     for (let index = this.#deathNotices.length - 1; index >= 0; index -= 1) {
       const notice = this.#deathNotices[index]!
       if (notice.expires <= publication.snapshot.tick) {

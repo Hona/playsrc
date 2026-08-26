@@ -63,6 +63,7 @@ struct SharedWorld {
     world: Arc<playsrc_collision::World>,
     snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
     impact_surfaces: Arc<BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>>,
+    movement_time: Arc<AtomicU32>,
 }
 impl Clone for SharedWorld {
     fn clone(&self) -> Self {
@@ -70,6 +71,7 @@ impl Clone for SharedWorld {
             world: self.world.clone(),
             snapshot: self.snapshot.clone(),
             impact_surfaces: self.impact_surfaces.clone(),
+            movement_time: self.movement_time.clone(),
         }
     }
 }
@@ -83,6 +85,7 @@ impl SharedWorld {
             world,
             snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
             impact_surfaces: Arc::new(impact_surfaces),
+            movement_time: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
         }
     }
 
@@ -99,6 +102,10 @@ impl SharedWorld {
             .read()
             .expect("TF2 Collision snapshot")
             .clone()
+    }
+
+    fn set_movement_time(&self, value: f32) {
+        self.movement_time.store(value.to_bits(), Ordering::Relaxed);
     }
 
     fn movement_trace(
@@ -326,6 +333,10 @@ impl playsrc_movement::Tracer for SharedWorld {
                 )
             })
     }
+
+    fn movement_time(&self) -> Option<f32> {
+        Some(f32::from_bits(self.movement_time.load(Ordering::Relaxed)))
+    }
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
@@ -534,7 +545,7 @@ struct Tf2Simulation {
 
 fn continuation_command(command: &[u8]) -> Result<Arc<[u8]>, playsrc_simulation::SimulationError> {
     let mut continuation = command
-        .get(..52)
+        .get(..gameplay_protocol::HEADER_BYTES)
         .ok_or_else(|| playsrc_simulation::SimulationError::new("command", "continuation"))?
         .to_vec();
     continuation[32..36].copy_from_slice(&0_u32.to_le_bytes());
@@ -543,7 +554,8 @@ fn continuation_command(command: &[u8]) -> Result<Arc<[u8]>, playsrc_simulation:
     let nextbot_stop = u16::from_le_bytes([continuation[42], continuation[43]]) & 0x8000;
     continuation[42..44].copy_from_slice(&nextbot_stop.to_le_bytes());
     continuation[44..48].fill(0);
-    continuation[48..52].copy_from_slice(&52_u32.to_le_bytes());
+    continuation[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
+    continuation[52..gameplay_protocol::HEADER_BYTES].fill(0);
     Ok(Arc::from(continuation))
 }
 
@@ -563,6 +575,23 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
                 u32::from_le_bytes(merged[36..40].try_into().map_err(|_| {
                     playsrc_simulation::SimulationError::new("command", "activate")
                 })?);
+            let latest_bot = u16::from_le_bytes(
+                merged[42..44]
+                    .try_into()
+                    .map_err(|_| playsrc_simulation::SimulationError::new("command", "bot"))?,
+            );
+            let nextbot_stop = latest_bot & 0x8000;
+            let mut bot = latest_bot & 0x7fff;
+            let mut bot_configuration =
+                u32::from_le_bytes(merged[44..48].try_into().map_err(|_| {
+                    playsrc_simulation::SimulationError::new("command", "bot-configuration")
+                })?);
+            let mut objective_configuration =
+                u32::from_le_bytes(merged[52..56].try_into().map_err(|_| {
+                    playsrc_simulation::SimulationError::new("command", "objective-configuration")
+                })?);
+            let mut control = <[u8; 28]>::try_from(&merged[56..84])
+                .map_err(|_| playsrc_simulation::SimulationError::new("command", "bot-control"))?;
             for value in input.commands {
                 flags |=
                     u32::from_le_bytes(value.bytes[28..32].try_into().map_err(|_| {
@@ -583,10 +612,44 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
                 if next_activate != u32::MAX {
                     activate = next_activate
                 }
+                let next_bot = u16::from_le_bytes(
+                    value.bytes[42..44]
+                        .try_into()
+                        .map_err(|_| playsrc_simulation::SimulationError::new("command", "bot"))?,
+                );
+                if next_bot & 0x7fff != 0 {
+                    bot = next_bot & 0x7fff;
+                }
+                let next_bot_configuration =
+                    u32::from_le_bytes(value.bytes[44..48].try_into().map_err(|_| {
+                        playsrc_simulation::SimulationError::new("command", "bot-configuration")
+                    })?);
+                if next_bot_configuration != 0 {
+                    bot_configuration = next_bot_configuration;
+                }
+                let next_objective_configuration =
+                    u32::from_le_bytes(value.bytes[52..56].try_into().map_err(|_| {
+                        playsrc_simulation::SimulationError::new(
+                            "command",
+                            "objective-configuration",
+                        )
+                    })?);
+                if next_objective_configuration != 0 {
+                    objective_configuration = next_objective_configuration;
+                }
+                if value.bytes.get(56).copied().unwrap_or_default() != 0 {
+                    control.copy_from_slice(value.bytes.get(56..84).ok_or_else(|| {
+                        playsrc_simulation::SimulationError::new("command", "bot-control")
+                    })?);
+                }
             }
             merged[28..32].copy_from_slice(&flags.to_le_bytes());
             merged[32..36].copy_from_slice(&selectors.to_le_bytes());
             merged[36..40].copy_from_slice(&activate.to_le_bytes());
+            merged[42..44].copy_from_slice(&(bot | nextbot_stop).to_le_bytes());
+            merged[44..48].copy_from_slice(&bot_configuration.to_le_bytes());
+            merged[52..56].copy_from_slice(&objective_configuration.to_le_bytes());
+            merged[56..84].copy_from_slice(&control);
             let merged = Arc::<[u8]>::from(merged);
             self.current_command = Some(continuation_command(&merged)?);
             merged
@@ -1864,31 +1927,23 @@ fn pose_bot_hitboxes(
     models: &BTreeMap<String, playsrc_studio_model::PresentationModel>,
     bots: &[playsrc_tf2::bot::Snapshot],
     tick: u64,
-) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, ()> {
+) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, String> {
     let mut output = Vec::new();
     for bot in bots {
         if bot.lifecycle != playsrc_tf2::PlayerLifecycle::Active {
             continue;
         }
-        let model = models.get(bot.class.data().model).ok_or(())?;
-        let role = match bot.weapon.map(|weapon| weapon.weapon) {
-            Some(
-                playsrc_tf2::Weapon::Bat
-                | playsrc_tf2::Weapon::Shovel
-                | playsrc_tf2::Weapon::Fists
-                | playsrc_tf2::Weapon::Kukri
-                | playsrc_tf2::Weapon::Wrench,
-            ) => "MELEE",
-            Some(
-                playsrc_tf2::Weapon::Pistol
-                | playsrc_tf2::Weapon::Shotgun
-                | playsrc_tf2::Weapon::HeavyShotgun
-                | playsrc_tf2::Weapon::Smg
-                | playsrc_tf2::Weapon::EngineerPistol
-                | playsrc_tf2::Weapon::StickybombLauncher,
-            ) => "SECONDARY",
-            None if bot.class == playsrc_tf2::PlayerClass::Spy => "MELEE",
-            _ => "PRIMARY",
+        let model = models.get(bot.class.data().model).ok_or_else(|| {
+            format!(
+                "missing model {} for bot {}",
+                bot.class.data().model,
+                bot.identity
+            )
+        })?;
+        let role = match bot.animation_role {
+            playsrc_tf2::bot::AnimationRole::Primary => "PRIMARY",
+            playsrc_tf2::bot::AnimationRole::Secondary => "SECONDARY",
+            playsrc_tf2::bot::AnimationRole::Melee => "MELEE",
         };
         let moving =
             (bot.velocity[0] * bot.velocity[0] + bot.velocity[1] * bot.velocity[1]).sqrt() > 1.0;
@@ -1896,15 +1951,22 @@ fn pose_bot_hitboxes(
         let sequence =
             *playsrc_studio_model::sequences_for_activity_name(model, activity.as_bytes())
                 .first()
-                .ok_or(())?;
+                .ok_or_else(|| {
+                    format!(
+                        "missing activity {} for bot {} model {}",
+                        activity,
+                        bot.identity,
+                        bot.class.data().model
+                    )
+                })?;
         let parameters = model
             .pose_parameters
             .iter()
             .map(|_| playsrc_studio_model::Float32(0))
             .collect::<Vec<_>>();
         let elapsed = tick as f32 * 0.015;
-        let timing =
-            playsrc_studio_model::sequence_timing(model, sequence, &parameters).map_err(|_| ())?;
+        let timing = playsrc_studio_model::sequence_timing(model, sequence, &parameters)
+            .map_err(|error| format!("bot {} sequence timing: {error:?}", bot.identity))?;
         let pose = playsrc_studio_model::sample_pose_at_time(
             model,
             &playsrc_studio_model::AnimationState {
@@ -1915,7 +1977,7 @@ fn pose_bot_hitboxes(
             },
             playsrc_studio_model::Float32(elapsed.to_bits()),
         )
-        .map_err(|_| ())?;
+        .map_err(|error| format!("bot {} sampled pose: {error:?}", bot.identity))?;
         let (sine, cosine) = bot.yaw_degrees.to_radians().sin_cos();
         let matrix = playsrc_studio_model::Matrix3x4(
             [
@@ -1934,15 +1996,23 @@ fn pose_bot_hitboxes(
             ]
             .map(|value| playsrc_studio_model::Float32(value.to_bits())),
         );
-        let world =
-            playsrc_studio_model::apply_entity_transform(model, &pose, matrix).map_err(|_| ())?;
+        let world = playsrc_studio_model::apply_entity_transform(model, &pose, matrix)
+            .map_err(|error| format!("bot {} world pose: {error:?}", bot.identity))?;
         let Some(set) = model.hitbox_sets.first() else {
             continue;
         };
         for hitbox in &set.hitboxes {
-            let bone_index = usize::try_from(hitbox.bone).map_err(|_| ())?;
-            let bone = model.bones.get(bone_index).ok_or(())?;
-            let transform = world.bone_matrices.get(bone_index).ok_or(())?;
+            let bone_index = usize::try_from(hitbox.bone)
+                .map_err(|_| format!("bot {} invalid hitbox bone {}", bot.identity, hitbox.bone))?;
+            let bone = model.bones.get(bone_index).ok_or_else(|| {
+                format!("bot {} missing hitbox bone {}", bot.identity, bone_index)
+            })?;
+            let transform = world.bone_matrices.get(bone_index).ok_or_else(|| {
+                format!(
+                    "bot {} missing hitbox transform {}",
+                    bot.identity, bone_index
+                )
+            })?;
             output.push(playsrc_tf2::PosedPlayerHitbox {
                 entity: bot.identity,
                 team: bot.team,
@@ -3832,6 +3902,9 @@ pub unsafe extern "C" fn playsrc_game_advance(
         };
         consumed_rocket_results.extend_from_slice(&rocket_results);
         gameplay_world.replace_snapshot(collision_snapshot);
+        gameplay_world.set_movement_time(
+            candidate.producer_snapshot().tick as f32 * playsrc_simulation::DEFAULT_TICK_INTERVAL,
+        );
         let physics_results = if index == 0 {
             input.physics_results.as_slice()
         } else {
@@ -3847,7 +3920,13 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 candidate.producer_snapshot().tick,
             ) {
                 Ok(value) => value,
-                Err(_) => fail!(18),
+                Err(error) => {
+                    *GAME_ADVANCE_DETAIL
+                        .get_or_init(|| Mutex::new(String::new()))
+                        .lock()
+                        .expect("game advance detail") = format!("; {error}");
+                    fail!(18)
+                }
             };
             candidate.set_posed_player_hitboxes(hitboxes);
         }
@@ -3899,7 +3978,13 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 producer = Some(current_producer);
                 snapshot = Some(value);
             }
-            Err(error) => fail!(gameplay_error_code(&error)),
+            Err(error) => {
+                *GAME_ADVANCE_DETAIL
+                    .get_or_init(|| Mutex::new(String::new()))
+                    .lock()
+                    .expect("game advance detail") = format!("; gameplay={error:?}");
+                fail!(gameplay_error_code(&error))
+            }
         }
     }
     let snapshot = snapshot.expect("positive tick count");
@@ -4718,7 +4803,7 @@ fn encode_snapshot(
                 bot.weapon.map_or(0, |weapon| weapon.weapon as u8),
                 bot.weapon.map_or(0, |weapon| weapon.reload as u8),
                 u8::from(bot.carrying_flag),
-                0,
+                bot.animation_role as u8,
             ],
             MAX,
         )?;
@@ -7305,6 +7390,27 @@ fn resolve_models(
         let mut selected_skins = std::collections::BTreeSet::from([0usize]);
         if model.skins.len() > 1 {
             selected_skins.insert(1);
+        }
+        for flag in &graph.entities {
+            if !flag
+                .classname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
+            {
+                continue;
+            }
+            let selected = entity_scalar(flag, b"flag_model")
+                .filter(|value| !value.is_empty())
+                .unwrap_or(playsrc_tf2::ctf::FLAG_MODEL.as_bytes());
+            if !selected.eq_ignore_ascii_case(identity.as_bytes()) {
+                continue;
+            }
+            let team = match entity_scalar(flag, b"TeamNum") {
+                Some(b"2") => 0,
+                Some(b"3") => 1,
+                _ => continue,
+            };
+            selected_skins.insert(team + 3);
         }
         for prop in &static_props.occurrences {
             if static_props
@@ -13332,16 +13438,16 @@ mod tests {
 
     #[test]
     fn command_and_snapshot_binary_contract_is_stable() {
-        let mut bytes = vec![0; 52];
+        let mut bytes = vec![0; 84];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&8_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
         bytes[28..32].copy_from_slice(&0xad_u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&0x0202_0304_u32.to_le_bytes());
         bytes[36..40].copy_from_slice(&77_u32.to_le_bytes());
-        bytes[48..52].copy_from_slice(&52_u32.to_le_bytes());
+        bytes[48..52].copy_from_slice(&84_u32.to_le_bytes());
         let input = gameplay_protocol::decode(&bytes).unwrap();
         let command = input.command;
         assert_eq!(command.movement.forward, 240.);
@@ -13360,6 +13466,40 @@ mod tests {
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
         assert!(input.physics_results.is_empty());
+        bytes[52..56].copy_from_slice(&(0x8000_0000_u32 | 1 | (1 << 16)).to_le_bytes());
+        assert_eq!(
+            gameplay_protocol::decode(&bytes)
+                .unwrap()
+                .command
+                .objective_configuration,
+            Some(playsrc_tf2::ctf::RuleConfiguration {
+                captures_per_round: 1,
+                return_on_touch: true,
+            })
+        );
+        for invalid in [1_u32, 0x8002_0000_u32] {
+            bytes[52..56].copy_from_slice(&invalid.to_le_bytes());
+            assert!(gameplay_protocol::decode(&bytes).is_none());
+        }
+        bytes[52..56].fill(0);
+        bytes[56] = 1;
+        bytes[60..64].copy_from_slice(&4_u32.to_le_bytes());
+        for (index, value) in [10_f32, 20.0, 30.0, -5.0, 90.0].into_iter().enumerate() {
+            bytes[64 + index * 4..68 + index * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(
+            gameplay_protocol::decode(&bytes)
+                .unwrap()
+                .command
+                .bot_control,
+            Some(playsrc_tf2::bot::Control::Teleport {
+                identity: 4,
+                position: [10.0, 20.0, 30.0],
+                pitch_degrees: -5.0,
+                yaw_degrees: 90.0,
+            })
+        );
+        bytes[56..84].fill(0);
         bytes[44..48].copy_from_slice(
             &(0x8000_0000_u32 | 7 | (24 << 6) | (2 << 12) | (1 << 14) | (1 << 16) | (1 << 18))
                 .to_le_bytes(),
@@ -13650,9 +13790,9 @@ mod tests {
 
     #[test]
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
-        let mut bytes = vec![0; 52 + 80];
+        let mut bytes = vec![0; 84 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&8_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
@@ -13665,7 +13805,7 @@ mod tests {
         let byte_length = bytes.len() as u32;
         bytes[48..52].copy_from_slice(&byte_length.to_le_bytes());
         let continued = continuation_command(&bytes).unwrap();
-        assert_eq!(continued.len(), 52);
+        assert_eq!(continued.len(), 84);
         assert_eq!(
             &continued[8..20],
             &[0, 0, 112, 67, 0, 0, 240, 194, 0, 0, 200, 66]
@@ -13691,9 +13831,9 @@ mod tests {
         assert_eq!(u32::from_le_bytes(continued[44..48].try_into().unwrap()), 0);
         assert_eq!(
             u32::from_le_bytes(continued[48..52].try_into().unwrap()),
-            52
+            84
         );
-
+        assert!(continued[52..84].iter().all(|value| *value == 0));
         bytes[43] |= 0x80;
         let stopped = continuation_command(&bytes).unwrap();
         assert_eq!(

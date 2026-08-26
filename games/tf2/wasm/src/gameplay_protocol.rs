@@ -1,4 +1,4 @@
-const HEADER_BYTES: usize = 52;
+pub(crate) const HEADER_BYTES: usize = 84;
 const PHYSICS_RESULT_BYTES: usize = 80;
 const MAX_RESULTS: usize = 64;
 
@@ -11,7 +11,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 7
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 8
     {
         return None;
     }
@@ -217,6 +217,50 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
             offline_practice: packed_configuration & (1 << 18) != 0,
         })
     };
+    let packed_objectives = u32::from_le_bytes(bytes[52..56].try_into().ok()?);
+    let objective_configuration = if packed_objectives == 0 {
+        None
+    } else {
+        if packed_objectives & 0x8000_0000 == 0 || packed_objectives & 0x7ffe_0000 != 0 {
+            return None;
+        }
+        Some(playsrc_tf2::ctf::RuleConfiguration {
+            captures_per_round: packed_objectives as u16,
+            return_on_touch: packed_objectives & (1 << 16) != 0,
+        })
+    };
+    let bot_control = match bytes[56] {
+        0 if bytes[57..84].iter().all(|value| *value == 0) => None,
+        operation @ (1 | 2) if bytes[57..60].iter().all(|value| *value == 0) => {
+            let identity = u32::from_le_bytes(bytes[60..64].try_into().ok()?);
+            if identity <= 1 {
+                return None;
+            }
+            if operation == 1 {
+                let position = [f(64)?, f(68)?, f(72)?];
+                let pitch_degrees = f(76)?;
+                let yaw_degrees = f(80)?;
+                if position
+                    .into_iter()
+                    .chain([pitch_degrees, yaw_degrees])
+                    .any(|value| !value.is_finite())
+                {
+                    return None;
+                }
+                Some(playsrc_tf2::bot::Control::Teleport {
+                    identity,
+                    position,
+                    pitch_degrees,
+                    yaw_degrees,
+                })
+            } else if bytes[64..84].iter().all(|value| *value == 0) {
+                Some(playsrc_tf2::bot::Control::Whack { identity })
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
     let command = playsrc_tf2::Command {
         movement: playsrc_movement::Command {
             forward: f(8)?,
@@ -245,6 +289,8 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         bot_request,
         building_request,
         bot_configuration,
+        objective_configuration,
+        bot_control,
     };
     if [
         command.movement.forward,

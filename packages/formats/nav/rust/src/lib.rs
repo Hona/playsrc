@@ -10,6 +10,7 @@ pub const TF2_SUBVERSION: u32 = 2;
 pub const NAV_MESH_CROUCH: u32 = 0x0000_0001;
 pub const NAV_MESH_JUMP: u32 = 0x0000_0002;
 pub const NAV_MESH_NO_JUMP: u32 = 0x0000_0008;
+pub const GENERATION_STEP_SIZE: f32 = 25.0;
 const GRID_CELL_SIZE: f32 = 300.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +282,82 @@ struct Grid {
 impl Mesh {
     pub fn area(&self, identity: u32) -> Option<&Area> {
         self.index.get(&identity).map(|index| &self.areas[*index])
+    }
+
+    pub fn closest_point_in_portal(
+        &self,
+        from: &Area,
+        destination: &Area,
+        direction: Direction,
+        position: [f32; 3],
+    ) -> [f32; 3] {
+        let is_edge = |side: Direction| {
+            !destination.connections[side as usize]
+                .iter()
+                .filter_map(|identity| self.area(*identity))
+                .any(|neighbor| {
+                    neighbor.connections[side.opposite() as usize].contains(&destination.identity)
+                })
+        };
+        let (x, y) = match direction {
+            Direction::North | Direction::South => {
+                let left = from.northwest[0].max(destination.northwest[0]);
+                let right = from.southeast[0].min(destination.southeast[0]);
+                let mut minimum = left
+                    + if is_edge(Direction::West) {
+                        GENERATION_STEP_SIZE
+                    } else {
+                        0.0
+                    };
+                let mut maximum = right
+                    - if is_edge(Direction::East) {
+                        GENERATION_STEP_SIZE
+                    } else {
+                        0.0
+                    };
+                if minimum > maximum {
+                    minimum = (left + right) * 0.5;
+                    maximum = minimum;
+                }
+                (
+                    position[0].clamp(minimum, maximum),
+                    if direction == Direction::North {
+                        from.northwest[1]
+                    } else {
+                        from.southeast[1]
+                    },
+                )
+            }
+            Direction::East | Direction::West => {
+                let top = from.northwest[1].max(destination.northwest[1]);
+                let bottom = from.southeast[1].min(destination.southeast[1]);
+                let mut minimum = top
+                    + if is_edge(Direction::North) {
+                        GENERATION_STEP_SIZE
+                    } else {
+                        0.0
+                    };
+                let mut maximum = bottom
+                    - if is_edge(Direction::South) {
+                        GENERATION_STEP_SIZE
+                    } else {
+                        0.0
+                    };
+                if minimum > maximum {
+                    minimum = (top + bottom) * 0.5;
+                    maximum = minimum;
+                }
+                (
+                    if direction == Direction::West {
+                        from.northwest[0]
+                    } else {
+                        from.southeast[0]
+                    },
+                    position[1].clamp(minimum, maximum),
+                )
+            }
+        };
+        [x, y, from.height(x, y)]
     }
 
     pub fn nearest_area(&self, position: [f32; 3]) -> Option<&Area> {
@@ -1036,8 +1113,65 @@ mod tests {
         assert_eq!(first.height(50.0, 50.0), 10.0);
         assert_eq!(first.portal(second, Direction::East), [100.0, 50.0, 10.0]);
         assert_eq!(
+            mesh.closest_point_in_portal(first, second, Direction::East, [5.0, 5.0, 0.0]),
+            [100.0, 50.0, 10.0]
+        );
+        assert_eq!(
             first.connection_height_change(second, Direction::East),
             20.0
+        );
+    }
+
+    #[test]
+    fn closest_portal_point_preserves_source_edge_margins_and_narrow_midlines() {
+        let bytes = fixture(&[
+            (
+                [0.0, 0.0, 0.0],
+                [100.0, 100.0, 0.0],
+                [vec![], vec![2, 3], vec![], vec![]],
+                0,
+            ),
+            (
+                [100.0, 0.0, 0.0],
+                [200.0, 100.0, 0.0],
+                [vec![], vec![], vec![], vec![1]],
+                0,
+            ),
+            (
+                [100.0, 30.0, 0.0],
+                [125.0, 50.0, 0.0],
+                [vec![], vec![], vec![], vec![1]],
+                0,
+            ),
+        ]);
+        let mesh = parse(&bytes, Profile::TeamFortress2, Some(128), Limits::default()).unwrap();
+        let from = mesh.area(1).unwrap();
+        assert_eq!(
+            mesh.closest_point_in_portal(
+                from,
+                mesh.area(2).unwrap(),
+                Direction::East,
+                [20.0, 4.0, 0.0],
+            ),
+            [100.0, 25.0, 0.0]
+        );
+        assert_eq!(
+            mesh.closest_point_in_portal(
+                from,
+                mesh.area(2).unwrap(),
+                Direction::East,
+                [20.0, 63.0, 0.0],
+            ),
+            [100.0, 63.0, 0.0]
+        );
+        assert_eq!(
+            mesh.closest_point_in_portal(
+                from,
+                mesh.area(3).unwrap(),
+                Direction::East,
+                [20.0, 100.0, 0.0],
+            ),
+            [100.0, 40.0, 0.0]
         );
     }
 

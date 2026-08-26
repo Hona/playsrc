@@ -146,6 +146,17 @@ export type Command = Readonly<{
   bot?: BotRequest
   building?: Tf2BuildingRequest
   botConfiguration?: BotConfiguration
+  objectiveConfiguration?: Readonly<{ capturesPerRound: number; returnOnTouch: boolean }>
+  botControl?: Readonly<{
+    action: "teleport"
+    identity: number
+    position: readonly [number, number, number]
+    pitchDegrees: number
+    yawDegrees: number
+  } | {
+    action: "whack"
+    identity: number
+  }>
 }>
 
 export type MovementSnapshot = Readonly<{
@@ -542,6 +553,7 @@ export type BotSnapshot = Readonly<{
   deaths: number
   captures: number
   carryingFlag: boolean
+  animationRole: "PRIMARY" | "SECONDARY" | "MELEE"
   lastFireTick: bigint | null
   respawnTick: bigint | null
 }>
@@ -779,12 +791,12 @@ export function encodeCommand(command: Command): ArrayBuffer {
       throw new Tf2CodecError("command projectile Physics result is invalid")
     }
   }
-  const length = 52 + physics.length * 80
+  const length = 84 + physics.length * 80
   const bytes = new ArrayBuffer(length)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 7, true)
+  view.setUint32(4, 8, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   let buildingFlags = 0
   if (command.building) {
@@ -857,7 +869,28 @@ export function encodeCommand(command: Command): ArrayBuffer {
   }
   view.setUint32(44, packedConfiguration, true)
   view.setUint32(48, length, true)
-  let at = 52
+  let packedObjectives = 0
+  if (command.objectiveConfiguration) {
+    const { capturesPerRound, returnOnTouch } = command.objectiveConfiguration
+    if (!Number.isSafeInteger(capturesPerRound) || capturesPerRound < 0 || capturesPerRound > 0xffff
+      || typeof returnOnTouch !== "boolean") throw new Tf2CodecError("command capture objective configuration is invalid")
+    packedObjectives = (0x8000_0000 | capturesPerRound | (Number(returnOnTouch) << 16)) >>> 0
+  }
+  view.setUint32(52, packedObjectives, true)
+  if (command.botControl) {
+    const control = command.botControl
+    if (!canonicalIdentity(control.identity) || control.identity <= 1) {
+      throw new Tf2CodecError("command bot control identity is invalid")
+    }
+    data[56] = control.action === "teleport" ? 1 : 2
+    view.setUint32(60, control.identity, true)
+    if (control.action === "teleport") {
+      const values = [...control.position, control.pitchDegrees, control.yawDegrees]
+      if (!values.every(Number.isFinite)) throw new Tf2CodecError("command bot teleport contains a non-finite scalar")
+      values.forEach((value, index) => view.setFloat32(64 + index * 4, value, true))
+    }
+  }
+  let at = 84
   const writeVector = (value: readonly number[]): void => {
     value.forEach((scalar, index) => view.setFloat32(at + index * 4, scalar, true))
     at += value.length * 4
@@ -1997,7 +2030,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     const health = view.getInt32(item + 12, true), maximumHealth = view.getInt32(item + 16, true)
     const target = view.getUint32(item + 20, true), area = view.getUint32(item + 24, true)
     const yawDegrees = view.getFloat32(item + 32, true), position = vector(view, item + 36), velocity = vector(view, item + 48)
-    const pitchDegrees = view.getFloat32(item + 60, true), weapon = data[item + 64], reload = data[item + 65], carryingFlag = data[item + 66]
+    const pitchDegrees = view.getFloat32(item + 60, true), weapon = data[item + 64], reload = data[item + 65], carryingFlag = data[item + 66], animationRole = data[item + 67]
     const clip = view.getUint16(item + 68, true), reserve = view.getUint16(item + 70, true)
     const maximumClip = view.getUint16(item + 72, true), maximumReserve = view.getUint16(item + 74, true)
     const lastFireTick = view.getBigUint64(item + 96, true), respawnTick = view.getBigUint64(item + 104, true)
@@ -2005,7 +2038,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
     if (identity <= previousBot || botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
       || objective === undefined || objective < 1 || objective > 7
-      || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 || data[item + 67] !== 0
+      || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
+      || animationRole === undefined || animationRole < 1 || animationRole > 3
       || weapon === undefined || (weapon > 21 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
       || health < 0 || maximumHealth < 1 || health > Math.max(maximumHealth, Math.floor(maximumHealth * 1.5 / 5) * 5) || clip > maximumClip || reserve > maximumReserve
       || (weapon === 0 && (reload !== 0 || clip !== 0 || reserve !== 0 || maximumClip !== 0 || maximumReserve !== 0 || nextPrimaryTick !== 0n || nextReloadTick !== 0n))
@@ -2021,6 +2055,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array): Snapshot {
       weapon: weapon === 0 ? null : Object.freeze({ identity: weapon as Tf2Weapon, reload: reload as 0 | 1 | 2 | 3, clip, reserve, maximumClip, maximumReserve, nextPrimaryTick, nextReloadTick }),
       shots: view.getUint32(item + 76, true), hits: view.getUint32(item + 80, true), kills: view.getUint32(item + 84, true), deaths: view.getUint32(item + 88, true), captures: view.getUint32(item + 92, true),
       carryingFlag: carryingFlag === 1,
+      animationRole: animationRole === 1 ? "PRIMARY" : animationRole === 2 ? "SECONDARY" : "MELEE",
       lastFireTick: lastFireTick === 0xffff_ffff_ffff_ffffn ? null : lastFireTick,
       respawnTick: respawnTick === 0xffff_ffff_ffff_ffffn ? null : respawnTick,
     }))

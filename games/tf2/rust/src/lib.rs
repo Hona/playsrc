@@ -35,10 +35,10 @@ pub use random::{
 pub mod jump;
 
 pub use map_runtime::{
-    CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, CombatPlayerFacts, Effect as MapEffect, EntityEvent,
-    EntityEventKind, EntityTransform, GameplayWorld, MapCounts, MapPhase, MapPickupSnapshot,
-    MapRuntime, MoverRequest, MoverResult, MoverResultKind, PlayerContactFacts, RegenerateContact,
-    respawn_barrier_collides,
+    ActorContact, CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, CombatPlayerFacts, Effect as MapEffect,
+    EntityEvent, EntityEventKind, EntityTransform, GameplayWorld, MapCounts, MapPhase,
+    MapPickupSnapshot, MapRuntime, MoverRequest, MoverResult, MoverResultKind, PlayerContactFacts,
+    RegenerateContact, respawn_barrier_collides,
 };
 
 use std::collections::BTreeMap;
@@ -282,6 +282,8 @@ pub struct Command {
     pub bot_request: Option<bot::Request>,
     pub building_request: Option<building::Request>,
     pub bot_configuration: Option<bot::Configuration>,
+    pub objective_configuration: Option<ctf::RuleConfiguration>,
+    pub bot_control: Option<bot::Control>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1519,6 +1521,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.deploy_active_weapon();
             }
         }
+        if let Some(settings) = command.objective_configuration {
+            let objectives = self
+                .map
+                .objectives_mut()
+                .ok_or(Error::Objectives(ctf::Error::InvalidConfiguration))?;
+            let mut configuration = objectives.configuration();
+            configuration.captures_per_round = settings.captures_per_round;
+            configuration.return_on_touch = settings.return_on_touch;
+            objectives
+                .configure(configuration)
+                .map_err(Error::Objectives)?;
+        }
         if let Some(configuration) = command.bot_configuration {
             self.bots
                 .as_mut()
@@ -1547,6 +1561,35 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.tick,
             );
             roster_changed = current != previous;
+        }
+        if let Some(control) = command.bot_control {
+            match control {
+                bot::Control::Teleport {
+                    identity,
+                    position,
+                    pitch_degrees,
+                    yaw_degrees,
+                } => self
+                    .bots
+                    .as_mut()
+                    .ok_or(Error::Bot(bot::Error::MissingScenario))?
+                    .teleport(identity, position, pitch_degrees, yaw_degrees)
+                    .map_err(Error::Bot)?,
+                bot::Control::Whack { identity } => {
+                    let weapon = self.weapon.ok_or(Error::Bot(bot::Error::InvalidEntity))?;
+                    self.apply_actor_damage(
+                        bot::Damage {
+                            attacker: PLAYER_IDENTITY,
+                            victim: identity,
+                            weapon,
+                            amount: 1000.0,
+                            position: self.movement.position,
+                        },
+                        self.team_selection.local_team(),
+                        &mut events,
+                    )?;
+                }
+            }
         }
         if let Some(bots) = self.bots.as_mut() {
             if bots.configuration().is_some() {
@@ -1855,6 +1898,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.movement.ground = None;
             teleported = true;
         }
+        let bot_contacts = self.bots.as_ref().map_or_else(Vec::new, |bots| {
+            bots.contact_actors(self.restrictions.team_win).collect()
+        });
         let phase = self.map.contact_phase(
             &self.collision,
             self.tick,
@@ -1867,6 +1913,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 conditions: self.conditions.words(),
                 winning_team: self.restrictions.team_win.map(PlayerTeam::source_number),
             },
+            &bot_contacts,
         )?;
         let discontinuity = self.apply_map_effects(&phase, &mut events, &mut teleported);
         let jump_contacts = phase.contacts.clone();
@@ -3387,7 +3434,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             return Ok(());
         }
-        if matches!(attack.weapon, Weapon::RocketLauncher | Weapon::Original) {
+        if matches!(
+            attack.weapon,
+            Weapon::RocketLauncher | Weapon::Original | Weapon::SyringeGun
+        ) {
             return self.fire_projectile(
                 attack.pitch_degrees,
                 attack.yaw_degrees,
@@ -3399,7 +3449,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if matches!(
             attack.weapon,
-            Weapon::Bat | Weapon::Shovel | Weapon::Fists | Weapon::Kukri | Weapon::Wrench
+            Weapon::Bat
+                | Weapon::Shovel
+                | Weapon::Fists
+                | Weapon::Kukri
+                | Weapon::Wrench
+                | Weapon::Bottle
+                | Weapon::FireAxe
+                | Weapon::Knife
+                | Weapon::Bonesaw
         ) {
             let (amount, definition) = match attack.weapon {
                 Weapon::Bat => (ballistics::BAT_DAMAGE, SoundDefinition::BatHitFlesh),
@@ -3407,6 +3465,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 Weapon::Fists => (65.0, SoundDefinition::FistHitFlesh),
                 Weapon::Kukri => (ballistics::KUKRI_DAMAGE, SoundDefinition::KukriHitFlesh),
                 Weapon::Wrench => (ballistics::WRENCH_DAMAGE, SoundDefinition::WrenchHitFlesh),
+                Weapon::Bottle => (ballistics::BOTTLE_DAMAGE, SoundDefinition::BottleHitFlesh),
+                Weapon::FireAxe => (pyro::FIRE_AXE_DAMAGE, SoundDefinition::FireAxeHitFlesh),
+                Weapon::Knife => (spy::KNIFE_DAMAGE, SoundDefinition::KnifeHitFlesh),
+                Weapon::Bonesaw => (
+                    medic::BONESAW_DAMAGE as f32,
+                    SoundDefinition::BonesawHitFlesh,
+                ),
                 _ => unreachable!("only melee weapons reach this branch"),
             };
             let position = if attack.target == PLAYER_IDENTITY {

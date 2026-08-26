@@ -225,6 +225,34 @@ describe("Source sound registry and neutral voice state", () => {
     expect(first.resource).toBe("sound/weapons/explode2.wav")
   })
 
+  test("suppresses a farther fifth duplicate without replacing its four nearer Source voices", () => {
+    const document = Object.freeze({
+      ...targetDocument,
+      entries: Object.freeze([
+        entry("Test.Duplicate", [
+          scalar("channel", "CHAN_AUTO"),
+          scalar("soundlevel", "SNDLVL_95dB"),
+          scalar("wave", "weapons/explode2.wav"),
+        ]),
+      ]),
+    })
+    const world = new SourceAudioWorld(new SoundRegistry([document]), { maxActiveVoices: 16 })
+    const request = (identity: number, distance: number) => start({
+      voiceIdentity: identity,
+      definition: "Test.Duplicate",
+      source: Object.freeze({ ...start().source, identity: identity + 10, origin: Object.freeze([distance, 0, 0]) }),
+    })
+    for (let identity = 1; identity <= 4; identity += 1) world.start(request(identity, identity * 20))
+    try {
+      world.start(request(5, 200))
+      throw new Error("farther duplicate was not suppressed")
+    } catch (error) {
+      expect(error).toBeInstanceOf(SourceAudioError)
+      expect((error as SourceAudioError).code).toBe("Suppressed")
+    }
+    expect(world.voices().map(voice => voice.identity)).toEqual([1, 2, 3, 4])
+  })
+
   test("rejects unknown levels, unavailable selected resources, and out-of-range ordinals", () => {
     expect(() => new SoundRegistry([Object.freeze({
       ...targetDocument,

@@ -306,15 +306,16 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(7)
-    expect(command.byteLength).toBe(132)
+    expect(commandView.getUint32(4, true)).toBe(8)
+    expect(command.byteLength).toBe(164)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0203_0304)
     expect(commandView.getUint32(36, true)).toBe(213)
     expect(commandView.getUint16(40, true)).toBe(1)
     expect(commandView.getUint16(42, true)).toBe(0)
     expect(commandView.getUint32(44, true)).toBe(0)
-    expect(commandView.getUint32(48, true)).toBe(132)
+    expect(commandView.getUint32(48, true)).toBe(164)
+    expect(commandView.getUint32(52, true)).toBe(0)
     const stopped = encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false, nextbotStop: true })
     expect(new DataView(stopped).getUint32(28, true)).toBe(0)
     expect(new DataView(stopped).getUint16(42, true)).toBe(0x8000)
@@ -412,6 +413,24 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-all" } })).getUint16(42, true)).toBe(2)
     expect(new DataView(encodeCommand({ ...base, bot: { action: "kick-team", team: 2 } })).getUint16(42, true)).toBe(3 | (2 << 11))
     expect(() => encodeCommand({ ...base, bot: { action: "add", count: 32, class: 3, difficulty: 1 } })).toThrow(Tf2CodecError)
+    const objectives = new DataView(encodeCommand({
+      ...base,
+      objectiveConfiguration: { capturesPerRound: 1, returnOnTouch: true },
+    }))
+    expect(objectives.getUint32(52, true)).toBe((0x8000_0000 | 1 | (1 << 16)) >>> 0)
+    expect(() => encodeCommand({
+      ...base,
+      objectiveConfiguration: { capturesPerRound: 65_536, returnOnTouch: false },
+    })).toThrow("command capture objective configuration is invalid")
+    const teleport = new DataView(encodeCommand({
+      ...base,
+      botControl: { action: "teleport", identity: 4, position: [10, 20, 30], pitchDegrees: -5, yawDegrees: 90 },
+    }))
+    expect(teleport.getUint8(56)).toBe(1)
+    expect(teleport.getUint32(60, true)).toBe(4)
+    expect([64, 68, 72, 76, 80].map(offset => teleport.getFloat32(offset, true))).toEqual([10, 20, 30, -5, 90])
+    expect(new DataView(encodeCommand({ ...base, botControl: { action: "whack", identity: 2 } })).getUint8(56)).toBe(2)
+    expect(() => encodeCommand({ ...base, botControl: { action: "whack", identity: 1 } })).toThrow("command bot control identity is invalid")
     const configured = new DataView(encodeCommand({
       ...base,
       botConfiguration: {
@@ -450,7 +469,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     view.setFloat32(at + 32, 90, true)
     ;[-2528, -1744, 17, 240, 0, 0].forEach((value, index) => view.setFloat32(at + 36 + index * 4, value, true))
     view.setFloat32(at + 60, -8, true)
-    bytes.set([1, 0, 0], at + 64)
+    bytes.set([1, 0, 0, 1], at + 64)
     view.setUint16(at + 68, 3, true)
     view.setUint16(at + 70, 20, true)
     view.setUint16(at + 72, 4, true)
@@ -487,7 +506,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       position: [-2528, -1744, 17],
       velocity: [240, 0, 0],
       weapon: { identity: 1, reload: 0, clip: 3, reserve: 20, maximumClip: 4, maximumReserve: 20, nextPrimaryTick: 20n, nextReloadTick: 0n },
-      shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, lastFireTick: 6n, respawnTick: null,
+      shots: 4, hits: 2, kills: 0, deaths: 0, captures: 0, carryingFlag: false, animationRole: "PRIMARY", lastFireTick: 6n, respawnTick: null,
     }])
     view.setInt32(at + 12, 250, true)
     expect(decodeSnapshot(bytes).bots[0]?.health).toBe(250)

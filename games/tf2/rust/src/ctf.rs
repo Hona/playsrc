@@ -93,6 +93,12 @@ pub struct Configuration {
     pub waiting_for_players: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuleConfiguration {
+    pub captures_per_round: u16,
+    pub return_on_touch: bool,
+}
+
 impl Default for Configuration {
     fn default() -> Self {
         Self {

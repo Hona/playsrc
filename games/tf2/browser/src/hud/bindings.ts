@@ -179,10 +179,7 @@ function copyTeam(value: Tf2Team): Tf2Team {
 
 function copyVector(value: readonly [number, number, number], subject: string): readonly [number, number, number] {
   if (!Array.isArray(value) || value.length !== 3) malformed(`${subject} is invalid`)
-  const output = value.map((component) => finite(component, subject)) as [number, number, number]
-  const length = Math.hypot(...output)
-  if (Math.abs(length - 1) > 1e-4) malformed(`${subject} is not normalized`)
-  return Object.freeze(output)
+  return Object.freeze(value.map((component) => finite(component, subject)) as [number, number, number])
 }
 
 function copyColor(value: readonly [number, number, number, number]): readonly [number, number, number, number] {
