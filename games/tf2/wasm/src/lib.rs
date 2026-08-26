@@ -503,7 +503,7 @@ fn presentation_model_cache()
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StudioModelLightingMetadata {
     position: playsrc_studio_model::Vector3,
     attachment: i32,
@@ -2848,7 +2848,7 @@ fn encode_model_lighting(
         out.extend_from_slice(&[0; 4]);
         return Ok(());
     };
-    let metadata = *world.metadata.get(&model.identity).ok_or(())?;
+    let metadata = world.metadata.get(&model.identity).ok_or(())?;
     let vector = |values: [f32; 3]| {
         playsrc_studio_model::Vector3(
             values.map(|value| playsrc_studio_model::Float32(value.to_bits())),
@@ -8310,6 +8310,17 @@ fn compile_static_prop_section(
                 ratio: *ratio,
                 direction: *direction,
                 intensity: light.intensity,
+                origin: light.origin,
+                normal: light.normal,
+                stop_dot: light.stop_dot,
+                stop_dot2: light.stop_dot2,
+                exponent: light.exponent,
+                radius: light.radius,
+                attenuation: [
+                    light.constant_attenuation,
+                    light.linear_attenuation,
+                    light.quadratic_attenuation,
+                ],
             };
             if light.kind != 0 && illumination < 0.0002 {
                 playsrc_map::add_world_light_to_cube(

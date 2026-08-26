@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseRuntimeMap } from "../src/runtime-map"
+import { parseRuntimeMap, sourceLdrLightmapIrradiance } from "../src/runtime-map"
 
 function fixture(): Uint8Array {
   const bytes: number[] = [...new TextEncoder().encode("PSMP")]
@@ -74,5 +74,12 @@ describe("runtime map rendering input", () => {
     const trailing = new Uint8Array(bytes.length + 1)
     trailing.set(bytes)
     expect(() => parseRuntimeMap(trailing)).toThrow()
+  })
+
+  test("round-trips authored LDR lightmaps through Source vertex gamma, sRGB, and overbright", () => {
+    expect(sourceLdrLightmapIrradiance([0, 0, 0])).toEqual([0, 0, 0])
+    expect(sourceLdrLightmapIrradiance([1, 1, 1])[0]).toBeCloseTo(0.9918344056, 7)
+    expect(sourceLdrLightmapIrradiance([4, 0.25, 0])[0]).toBeGreaterThan(3.8)
+    expect(() => sourceLdrLightmapIrradiance([-1, 0, 0])).toThrow(/radiance/i)
   })
 })
