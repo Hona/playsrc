@@ -5,9 +5,9 @@ use playsrc_studio_model::{
     PresentationDependencyResponse, PresentationDependencyRole, PresentationLimits,
     PresentationModel, PresentationModelBuild, PresentationProfile, Profile,
     TextureDisposition as StudioTextureDisposition, TextureRole as StudioTextureRole, VtxVariant,
-    build_presentation_model, load,
+    build_presentation_model, load_authored,
 };
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelPresentationError {
@@ -28,7 +28,7 @@ pub fn build_model(
     integer_hdr: bool,
     profile: PresentationProfile,
 ) -> Result<BuiltModelPresentation, ModelPresentationError> {
-    let document = load_model(identity, resources)?;
+    let document = load_model(identity, resources, resource_hashes)?;
     let mut responses = Vec::new();
     loop {
         match build_presentation_model(
@@ -106,18 +106,23 @@ fn model_profile(bytes: &[u8]) -> Result<Profile, ModelPresentationError> {
 fn load_model(
     identity: &str,
     resources: &BTreeMap<String, &[u8]>,
+    resource_hashes: &BTreeMap<String, [u8; 32]>,
 ) -> Result<Box<Document>, ModelPresentationError> {
-    let mdl = *resources
-        .get(&identity.to_ascii_lowercase())
-        .ok_or(ModelPresentationError::Missing)?;
+    let path = identity.to_ascii_lowercase();
+    let mdl = Arc::<[u8]>::from(
+        *resources
+            .get(&path)
+            .ok_or(ModelPresentationError::Missing)?,
+    );
     let mut responses = Vec::new();
     loop {
-        match load(
+        match load_authored(
             identity,
-            model_profile(mdl)?,
+            model_profile(&mdl)?,
             VtxVariant::Dx90,
-            mdl,
+            mdl.clone(),
             &responses,
+            resource_hashes,
             Limits::default(),
         )
         .map_err(|_| ModelPresentationError::Invalid)?

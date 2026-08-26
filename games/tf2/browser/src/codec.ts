@@ -2297,8 +2297,9 @@ export async function mapDerivedKey(
   resourceRootSha256: string,
 ): Promise<string> {
   if (!HASH.test(bspSha256) || !HASH.test(compilerSha256) || !HASH.test(resourceRootSha256)
-    || (renderLevel === 2) !== (profile === 1))
-    throw new Tf2CodecError("BSP, compiler, or render profile identity is invalid")
+    || (renderLevel === 2) !== (profile === 1)) {
+    throw new Tf2CodecError("BSP, compiler, resource root, or render profile identity is invalid")
+  }
   const identity = new TextEncoder().encode(
     `playsrc-map-runtime-11\n${bspSha256}\n${compilerSha256}\n${profile}\n${renderLevel}\n${resourceRootSha256}\n`,
   )
