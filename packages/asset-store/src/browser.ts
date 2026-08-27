@@ -328,7 +328,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
       }).then((bytes) => {
         const subscribers = [...transfer.subscribers]
         transfer.subscribers.clear()
-        transfers.delete(transfer.identity)
+        if (transfers.get(transfer.identity) === transfer) transfers.delete(transfer.identity)
         active -= 1
         pump()
         for (const subscriber of subscribers) {
@@ -338,7 +338,7 @@ export function createImmutableObjectAcquirer(options: Readonly<{
       }, (error) => {
         const subscribers = [...transfer.subscribers]
         transfer.subscribers.clear()
-        transfers.delete(transfer.identity)
+        if (transfers.get(transfer.identity) === transfer) transfers.delete(transfer.identity)
         active -= 1
         pump()
         for (const subscriber of subscribers) {
@@ -378,9 +378,9 @@ export function createImmutableObjectAcquirer(options: Readonly<{
             subscriber.signal!.removeEventListener("abort", subscriber.abort!)
             reject(new BrowserAssetError("Cancelled", "immutable object request was cancelled"))
             if (current.subscribers.size === 0) {
+              if (transfers.get(current.identity) === current) transfers.delete(current.identity)
               current.controller.abort()
               if (!current.started) {
-                transfers.delete(current.identity)
                 const index = queue.indexOf(current)
                 if (index !== -1) queue.splice(index, 1)
               }
