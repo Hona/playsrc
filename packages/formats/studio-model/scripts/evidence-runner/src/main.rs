@@ -540,6 +540,7 @@ fn verify_stock_viewmodels(files: &VpkFiles, facing_digest: &mut Vec<u8>) -> Res
                         phase: *phase,
                         previous_cycle: studio::Float32((-0.01_f32).to_bits()),
                         composition: studio::ViewModelCompositionRequest {
+                            item_bone_rotations: Vec::new(),
                             translated_activity: activity.as_bytes().to_vec(),
                             hand_sequence: sequences[0],
                             cycle: studio::Float32(cycle.to_bits()),
@@ -1655,6 +1656,7 @@ fn verify_eye_states(files: &VpkFiles) -> Result<String, String> {
         let pose = studio::sample_pose(
             &artifact.model,
             &studio::AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: studio::Float32(0.0_f32.to_bits()),
                 pose_parameters: artifact
@@ -1880,6 +1882,7 @@ fn locker_state_digest(model: &studio::PresentationModel) -> Result<String, Stri
             let pose = studio::sample_pose(
                 model,
                 &studio::AnimationState {
+                    bone_rotations: Vec::new(),
                     base_sequence: sequence,
                     cycle: studio::Float32(cycle.to_bits()),
                     pose_parameters: pose_parameters.clone(),
@@ -1912,6 +1915,7 @@ fn append_sample(
     let pose = studio::sample_pose(
         model,
         &studio::AnimationState {
+            bone_rotations: Vec::new(),
             base_sequence: sequence,
             cycle: studio::Float32(cycle.to_bits()),
             pose_parameters: pose_parameters.to_vec(),

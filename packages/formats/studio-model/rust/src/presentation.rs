@@ -1730,6 +1730,8 @@ pub struct AnimationState {
     pub cycle: Float32,
     pub pose_parameters: Vec<Float32>,
     pub layers: Vec<AnimationLayer>,
+    /// Local rotations applied by StandardBlendingRules before hierarchy setup.
+    pub bone_rotations: Vec<(usize, [Float32; 4])>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2113,6 +2115,12 @@ pub fn sample_pose_at_time(
             &state.pose_parameters,
             &mut stack,
         )?;
+    }
+    for &(bone, rotation) in &state.bone_rotations {
+        if bone >= local.1.len() || rotation.iter().any(|value| !f32::from_bits(value.0).is_finite()) {
+            return Err(presentation_error(PresentationErrorCode::InvalidState, &model.identity));
+        }
+        local.1[bone] = rotation;
     }
     let mut model_matrices = Vec::with_capacity(model.bones.len());
     let mut skinning_matrices = Vec::with_capacity(model.bones.len());
@@ -5589,6 +5597,21 @@ mod tests {
     }
 
     #[test]
+    fn standard_blending_rotations_feed_descendants_palettes_and_attachments() {
+        let model = build().model;
+        let mut state = AnimationState { base_sequence: 0, cycle: float(0.0), pose_parameters: vec![float(0.0)], layers: Vec::new(), bone_rotations: Vec::new() };
+        let base = sample_pose(&model, &state).unwrap();
+        state.bone_rotations.push((0, [float(0.0), float(0.0), float(1.0), float(0.0)]));
+        let rotated = sample_pose(&model, &state).unwrap();
+        assert_eq!(rotated.local_translations, base.local_translations);
+        assert_eq!(rotated.model_matrices[1].0[7], float(-1.0));
+        assert_ne!(rotated.skinning_matrices[1], base.skinning_matrices[1]);
+        assert_ne!(rotated.attachments[0].model_transform, base.attachments[0].model_transform);
+        state.bone_rotations[0].0 = model.bones.len();
+        assert!(sample_pose(&model, &state).is_err());
+    }
+
+    #[test]
     fn evaluates_sequence_timing_autolayers_events_hitboxes_and_static_roots() {
         let artifact = build();
         let timing = sequence_timing(&artifact.model, 0, &[float(0.0)]).unwrap();
@@ -5671,6 +5694,7 @@ mod tests {
         let pose = sample_pose(
             &model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: float(1.0),
                 pose_parameters: vec![float(0.0)],
@@ -5727,6 +5751,7 @@ mod tests {
         let pose = sample_pose(
             &artifact.model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: float(0.5),
                 pose_parameters: vec![float(0.0)],
@@ -5778,6 +5803,7 @@ mod tests {
         let pose = sample_pose(
             &artifact.model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: float(0.5),
                 pose_parameters: vec![float(0.5)],
@@ -5811,6 +5837,7 @@ mod tests {
         let three_way = sample_pose(
             &artifact.model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: float(0.5),
                 pose_parameters: vec![float(0.25), float(0.75)],
@@ -5837,6 +5864,7 @@ mod tests {
         let layered = sample_pose(
             &artifact.model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 1,
                 cycle: float(0.5),
                 pose_parameters: vec![float(0.0), float(0.0)],
@@ -6011,6 +6039,7 @@ mod tests {
         let sampled = sample_pose(
             &first.model,
             &AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: float(0.5),
                 pose_parameters: vec![float(0.0)],

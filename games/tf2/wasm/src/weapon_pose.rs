@@ -7,6 +7,36 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(super) struct AnimationState {
     source: Option<(u32, u64, String)>,
     idle_started: Option<f32>,
+    barrel: BarrelState,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BarrelState {
+    definition: Option<u32>,
+    velocity: f32,
+    target: f32,
+    angle: f32,
+}
+
+impl BarrelState {
+    fn advance(&mut self, definition: u32, activity: &str, frame_time: f32) -> f32 {
+        if self.definition != Some(definition) { *self = Self { definition: Some(definition), ..Self::default() }; }
+        match activity {
+            "ACT_VM_PRIMARYATTACK" | "ACT_MP_ATTACK_STAND_PRIMARYFIRE" | "ACT_MP_ATTACK_STAND_PREFIRE" => self.target = 20.0,
+            "ACT_VM_DRAW" | "ACT_MP_ATTACK_STAND_POSTFIRE" => self.target = 0.0,
+            _ => {},
+        }
+        if self.velocity < self.target { self.velocity = (self.velocity + 0.1).min(self.target); }
+        else if self.velocity > self.target { self.velocity = (self.velocity - 0.1).max(self.target); }
+        self.angle += self.velocity * frame_time;
+        self.angle
+    }
+}
+
+pub(super) fn bone_rotations(request: &ModelPoseRequest, model: &PresentationModel) -> Vec<(usize, [playsrc_studio_model::Float32; 4])> {
+    let Some(angle) = request.barrel_angle else { return Vec::new(); };
+    let Some(bone) = model.bones.iter().position(|bone| bone.name.eq_ignore_ascii_case(b"barrel")) else { return Vec::new(); };
+    vec![(bone, [0.0, 0.0, (angle * 0.5).sin(), (angle * 0.5).cos()].map(|value| playsrc_studio_model::Float32(value.to_bits())))]
 }
 
 impl AnimationState {
@@ -49,6 +79,7 @@ pub(super) fn prepare(
     request: &ModelPoseRequest,
     models: &BTreeMap<String, Arc<super::RetainedPresentationModel>>,
     states: &mut BTreeMap<u32, AnimationState>,
+    gameplay: Option<&playsrc_tf2::Snapshot>,
 ) -> Result<Option<ModelPoseRequest>, ()> {
     let Some(definition) = request.item_definition else {
         return Ok(None);
@@ -65,6 +96,25 @@ pub(super) fn prepare(
         .or_else(|| (item.usable_by.len() == 1).then(|| *item.usable_by.first().unwrap()))
         .ok_or(())?;
     let mut resolved = request.clone();
+    if item.item_class == "tf_weapon_minigun" && request.activity == "ACT_MP_ATTACK_STAND_PREFIRE"
+        && !request.preparation && !request.model_panel && !request.world_item {
+        let gameplay = gameplay.ok_or(())?;
+        let weapon = if request.actor_identity <= 1 {
+            gameplay.loadout.iter().find(|weapon| weapon.weapon == playsrc_tf2::Weapon::Minigun)
+        } else {
+            gameplay.bots.iter().find(|bot| bot.identity == request.actor_identity).and_then(|bot| bot.weapon.as_ref())
+        }.ok_or(())?;
+        resolved.elapsed *= weapon.prefire_playback_rate;
+        resolved.previous_elapsed *= weapon.prefire_playback_rate;
+    }
+    if item.item_class == "tf_weapon_minigun" && !request.preparation && !request.model_panel {
+        let mut transient;
+        let state = if request.attachments_only {
+            transient = states.get(&request.identity).cloned().unwrap_or_default();
+            &mut transient
+        } else { states.entry(request.identity).or_default() };
+        resolved.barrel_angle = Some(state.barrel.advance(definition, &request.activity, request.frame_time));
+    }
     if request.world_item || request.model_panel || request.class_selection {
         resolved.activity =
             weapon_presentation::world_activity(definition, class, &request.activity).ok_or(())?;
@@ -85,7 +135,7 @@ pub(super) fn prepare(
     let duration = f32::from_bits(timing.duration_seconds.0);
     let finished = request.phase != Some(ViewModelPhase::Idle)
         && !timing.looping
-        && request.elapsed >= duration;
+        && resolved.elapsed >= duration;
     let mut transient = AnimationState::default();
     let state = if request.preparation || request.attachments_only {
         &mut transient
@@ -118,6 +168,17 @@ pub(super) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minigun_barrel_uses_source_per_call_acceleration_and_frame_time() {
+        let mut barrel = BarrelState::default();
+        assert!((barrel.advance(15, "ACT_MP_ATTACK_STAND_PREFIRE", 0.015) - 0.0015).abs() < 0.000001);
+        assert!((barrel.advance(15, "ACT_VM_SECONDARYATTACK", 0.03) - 0.0075).abs() < 0.000001);
+        assert!((barrel.advance(15, "ACT_MP_ATTACK_STAND_POSTFIRE", 0.015) - 0.009).abs() < 0.000001);
+        assert!((barrel.advance(15, "ACT_VM_IDLE", 0.015) - 0.009).abs() < 0.000001);
+        assert_eq!(barrel.velocity, 0.0);
+        assert_eq!(barrel.advance(424, "ACT_VM_DRAW", 0.015), 0.0);
+    }
 
     fn request_bytes() -> (Vec<u8>, usize) {
         let mut bytes = b"PMRQ".to_vec();

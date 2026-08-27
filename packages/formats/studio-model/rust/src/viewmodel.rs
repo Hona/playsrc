@@ -25,6 +25,7 @@ pub fn model_panel_events(events: &[SequenceEvent], previous: f32, current: f32)
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewModelCompositionRequest {
+    pub item_bone_rotations: Vec<(usize, [Float32; 4])>,
     pub translated_activity: Vec<u8>,
     pub hand_sequence: usize,
     pub cycle: Float32,
@@ -815,6 +816,7 @@ pub fn compose_viewmodel(
     let hand_pose = crate::sample_pose_at_time(
         hand,
         &AnimationState {
+            bone_rotations: Vec::new(),
             base_sequence: request.hand_sequence,
             cycle: request.cycle,
             pose_parameters: request.hand_pose_parameters.clone(),
@@ -825,6 +827,7 @@ pub fn compose_viewmodel(
     let item_pose = sample_pose(
         item,
         &AnimationState {
+            bone_rotations: request.item_bone_rotations.clone(),
             base_sequence: 0,
             cycle: Float32(0.0_f32.to_bits()),
             pose_parameters: item
