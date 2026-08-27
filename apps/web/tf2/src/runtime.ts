@@ -1779,10 +1779,7 @@ export class Tf2Application {
       const audioContext = new AudioContextConstructor()
       this.#audioContext = audioContext
       this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
-        logicalPath: document.logicalPath,
-        mode: "base" as const,
-        preload: false,
-        entries: document.entries,
+        logicalPath: document.logicalPath, mode: "base" as const, preload: false, entries: document.entries,
       })))
       const audioPaths = this.#audioRegistry.resources().filter(identity => {
         if (!this.#artifacts!.audio.unavailable.has(identity)) return true
@@ -1790,11 +1787,10 @@ export class Tf2Application {
         return false
       })
       const audioStarted = performance.now()
-      const audioResourcesReady = Promise.all(audioPaths.map(async (identity) => {
+      const audioResourcesReady = Promise.all(audioPaths.map(async identity => {
         const bytes = this.#dependencyEntries.get(identity)
         if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
-        const buffer = await audioContext.decodeAudioData(bytes.slice().buffer)
-        return Object.freeze({ identity, buffer })
+        return Object.freeze({ identity, buffer: await audioContext.decodeAudioData(bytes.slice().buffer) })
       }))
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
