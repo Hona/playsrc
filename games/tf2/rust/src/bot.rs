@@ -364,6 +364,8 @@ pub struct CombatTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Spawn {
+    identity: u32,
+    class_flags: u32,
     position: [f32; 3],
     yaw_degrees: f32,
 }
@@ -532,6 +534,8 @@ pub struct BotWorld {
     next_quota_think: f32,
     path_scratch: PathScratch,
     point_navigation: control_point::Navigation,
+    point_spawn_revision: Option<u64>,
+    last_spawn: [Option<u32>; 2],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -548,8 +552,22 @@ pub enum Error {
 
 impl BotWorld {
     pub fn configure_control_points(&mut self, points: &crate::control_point::World) -> Result<(), Error> {
+        self.synchronize_control_point_spawns(points);
         self.point_navigation = control_point::Navigation::compile(&self.mesh, points, &self.spawns)?;
         Ok(())
+    }
+
+    pub fn synchronize_control_point_spawns(&mut self, points: &crate::control_point::World) {
+        if self.point_spawn_revision == Some(points.spawn_revision()) { return; }
+        self.point_spawn_revision = Some(points.spawn_revision());
+        for team in [PlayerTeam::Red, PlayerTeam::Blue] {
+            self.spawns[team_index(team)] = points.spawns().iter().filter(|s| s.team == team && !s.disabled).map(|s| Spawn { identity: s.identity, class_flags: s.class_flags, position: s.position, yaw_degrees: s.yaw }).collect();
+        }
+    }
+
+    pub fn control_point_round_spawn(&mut self, points: &crate::control_point::World) {
+        self.last_spawn = [None; 2];
+        self.synchronize_control_point_spawns(points);
     }
 
     pub fn new<W: GameplayWorld>(
@@ -574,6 +592,8 @@ impl BotWorld {
                 let position = vector(entity, b"origin").ok_or(Error::InvalidEntity)?;
                 let yaw_degrees = vector(entity, b"angles").map_or(0.0, |angles| angles[1]);
                 spawns[team_index(team)].push(Spawn {
+                    identity: entity.index as u32,
+                    class_flags: scalar(entity, b"spawnflags").and_then(|v| std::str::from_utf8(v).ok()).and_then(|v| v.parse().ok()).unwrap_or(0),
                     position,
                     yaw_degrees,
                 });
@@ -630,6 +650,8 @@ impl BotWorld {
             spawns,
             scenario,
             point_navigation,
+            point_spawn_revision: None,
+            last_spawn: [None; 2],
             bots: BTreeMap::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             next_name: None,
@@ -800,12 +822,14 @@ impl BotWorld {
             if candidates.is_empty() {
                 return Err(Error::MissingSpawn(bot.team));
             }
-            let choice = random
+            let choice = if matches!(self.scenario, Scenario::ControlPoints { .. }) {
+                next_control_point_spawn(candidates, &mut self.last_spawn[team_index(bot.team)], bot.class).ok_or(Error::MissingSpawn(bot.team))?
+            } else { random
                 .random_int(
                     0,
                     i32::try_from(candidates.len() - 1).map_err(|_| Error::Limit)?,
                 )
-                .map_err(|_| Error::Limit)? as usize;
+                .map_err(|_| Error::Limit)? as usize };
             respawn_bot(
                 bot,
                 candidates[choice],
@@ -829,6 +853,21 @@ impl BotWorld {
                 velocity: bot.movement.velocity,
                 burning: bot.afterburn.is_some(),
             })
+    }
+
+    pub fn control_point_actors(&self) -> impl Iterator<Item = crate::control_point::Actor> + '_ {
+        self.bots.values().map(|bot| {
+            let policy = MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve();
+            let mut actor = crate::control_point::Actor::active(bot.identity, bot.team, bot.class, bot.movement.position, bot.movement.active_hull(policy));
+            actor.alive = bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0;
+            actor.invulnerable = bot.conditions.is_invulnerable();
+            actor.stealthed = [ConditionId::STEALTHED, ConditionId::STEALTHED_USER, ConditionId::STEALTHED_USER_FADING].into_iter().any(|c| bot.conditions.contains(c));
+            actor.megaheal = bot.conditions.contains(ConditionId::MEGAHEAL);
+            actor.phased = bot.conditions.contains(ConditionId::PHASE);
+            actor.control_stunned = bot.conditions.is_control_stunned();
+            actor.enemy_disguise = bot.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != bot.team);
+            actor
+        })
     }
 
     pub(crate) fn contact_actors(
@@ -984,12 +1023,15 @@ impl BotWorld {
             if candidates.is_empty() {
                 return Err(Error::MissingSpawn(team));
             }
-            let choice = random
+            let class = request.class.or_else(|| preset_spawn_class(&self.bots, team, human_team, human_class)).ok_or(Error::InvalidEntity)?;
+            let choice = if matches!(self.scenario, Scenario::ControlPoints { .. }) {
+                next_control_point_spawn(candidates, &mut self.last_spawn[team_index(team)], class).ok_or(Error::MissingSpawn(team))?
+            } else { random
                 .random_int(
                     0,
                     i32::try_from(candidates.len() - 1).map_err(|_| Error::Limit)?,
                 )
-                .map_err(|_| Error::Limit)? as usize;
+                .map_err(|_| Error::Limit)? as usize };
             let spawn = candidates[choice];
             let class = request
                 .class
@@ -1128,12 +1170,14 @@ impl BotWorld {
             if bot.lifecycle != PlayerLifecycle::Active {
                 if bot.respawn_tick.is_some_and(|due| tick >= due) {
                     let candidates = &spawns[team_index(bot.team)];
-                    let choice = random
+                    let choice = if matches!(scenario, Scenario::ControlPoints { .. }) {
+                        next_control_point_spawn(candidates, &mut self.last_spawn[team_index(bot.team)], bot.class).ok_or(Error::MissingSpawn(bot.team))?
+                    } else { random
                         .random_int(
                             0,
                             i32::try_from(candidates.len() - 1).map_err(|_| Error::Limit)?,
                         )
-                        .map_err(|_| Error::Limit)? as usize;
+                        .map_err(|_| Error::Limit)? as usize };
                     respawn_bot(bot, candidates[choice], mesh, tick, self.tick_interval);
                 }
                 continue;
@@ -1802,11 +1846,16 @@ impl BotWorld {
     }
 
     pub fn select_spawn(
-        &self,
+        &mut self,
         team: PlayerTeam,
+        class: PlayerClass,
         random: &mut UniformRandomStream,
     ) -> Option<[f32; 3]> {
         let candidates = self.spawns.get(team_index(team))?;
+        if matches!(self.scenario, Scenario::ControlPoints { .. }) {
+            let index = next_control_point_spawn(candidates, &mut self.last_spawn[team_index(team)], class)?;
+            return Some(candidates[index].position);
+        }
         let maximum = i32::try_from(candidates.len().checked_sub(1)?).ok()?;
         let index = usize::try_from(random.random_int(0, maximum).ok()?).ok()?;
         Some(candidates.get(index)?.position)
@@ -2496,7 +2545,25 @@ fn next_respawn_wave(death_tick: u64, interval: f32, configured: f32, population
     let wave = ticks(duration, interval);
     earliest.div_ceil(wave) * wave
 }
+fn next_control_point_spawn(candidates: &[Spawn], last: &mut Option<u32>, class: PlayerClass) -> Option<usize> {
+    let start = last.and_then(|id| candidates.iter().position(|spawn| spawn.identity > id)).unwrap_or(0);
+    for restrict_class in [true, false] {
+        for offset in 0..candidates.len() {
+            let index = (start + offset) % candidates.len();
+            let spawn = candidates[index];
+            if spawn.position == [0.0;3] || (restrict_class && spawn.class_flags != 0 && spawn.class_flags & (1 << (class as u8 - 1)) == 0) { continue; }
+            *last = Some(spawn.identity);
+            return Some(index);
+        }
+    }
+    None
+}
+
 fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f32) {
+    bot.point_action = control_point::Action::default();
+    if matches!(bot.objective, ObjectiveKind::CapturePoint | ObjectiveKind::DefendPoint | ObjectiveKind::BlockCapture) {
+        bot.objective = ObjectiveKind::CapturePoint;
+    }
     crate::admission_metrics::begin_tick(tick);
     crate::admission_metrics::emit(crate::admission_metrics::RESPAWN, bot.identity);
     let policy = MovementPolicy {

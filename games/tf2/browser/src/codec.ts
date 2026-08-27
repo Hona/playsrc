@@ -83,12 +83,14 @@ export type Tf2RandomState = Readonly<{
   bonesawHitFleshAvailable: number
   bonesawHitWorldAvailable: number
   overtimeAvailable: number
+  controlPointAvailable: number
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
   definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
     | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
+    | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -101,6 +103,7 @@ export type AudioEvent = Readonly<{
   identity: 1 | 2 | 3 | 4
   definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
     | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
+    | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -1567,10 +1570,10 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     || (fistAndBonesawFlesh & ~31) !== 0 || (fistAndBonesawWorld & ~15) !== 0 || (fistHitFleshAvailable & ~7) !== 0
     || (flagEnemyStolenAvailable & ~15) !== 0 || (flagEnemyDroppedAvailable & ~3) !== 0
     || (flagEnemyCapturedAvailable & ~7) !== 0 || (flagEnemyReturnedAvailable & ~7) !== 0 || (flagTeamDroppedAvailable & ~3) !== 0
-    || data[at + 13]! > 15 || data[at + 14] !== 0 || data[at + 15] !== 0) {
+    || data[at + 13]! > 15 || view.getUint16(at + 14, true) > 0x1fff) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
-  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]! })
+  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
@@ -2130,7 +2133,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 85 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 102 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
@@ -2158,7 +2161,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 ? 2 : 1
     if (
-      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 85 ||
+      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 102 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||

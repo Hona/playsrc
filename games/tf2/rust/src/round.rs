@@ -481,10 +481,8 @@ impl Rules {
                     ) {
                         self.pending_events.extend(events);
                     }
-                } else if self.configuration.stalemate_enabled {
-                    let mut events = Vec::new();
-                    self.transition(State::Stalemate, &mut events);
-                    self.transition_at = Some(now + self.configuration.stalemate_seconds);
+                } else {
+                    let events = self.set_stalemate();
                     self.pending_events.extend(events);
                 }
                 self.pending_events.push(Event::MapRoundWin { entity });
@@ -579,6 +577,17 @@ impl Rules {
         self.most_recent_cappers.extend_from_slice(cappers);
     }
 
+    pub fn recreate_map_entities(&mut self, authored: &Configuration) {
+        self.configuration.round_wins = authored.round_wins.clone();
+        for timer in &mut self.timers {
+            if let Some(configuration) = authored.timers.iter().find(|c| c.identity == timer.configuration.identity) {
+                timer.configuration = *configuration;
+                timer.now = self.now;
+                timer.reset();
+            }
+        }
+    }
+
     fn add_timer_seconds(&mut self, identity: u32, seconds: i32) {
         if !matches!(self.state, State::Running | State::TeamWin) {
             return;
@@ -656,7 +665,7 @@ impl Rules {
     }
 
     pub fn win(&mut self, team: PlayerTeam, reason: u8) -> Result<Vec<Event>, Error> {
-        if !team.is_gameplay() || reason == 0 {
+        if (!team.is_gameplay() && !(team == PlayerTeam::Unassigned && reason == WIN_REASON_STALEMATE)) || reason == 0 {
             return Err(Error::InvalidWinner);
         }
         if self.state == State::TeamWin {
@@ -666,7 +675,7 @@ impl Rules {
         self.win_reason = reason;
         if team == PlayerTeam::Red {
             self.red_score = self.red_score.saturating_add(1);
-        } else {
+        } else if team == PlayerTeam::Blue {
             self.blue_score = self.blue_score.saturating_add(1);
         }
         self.rounds_played = self.rounds_played.saturating_add(1);
@@ -684,6 +693,17 @@ impl Rules {
         self.transition(State::TeamWin, &mut events);
         self.transition_at = Some(self.now + self.configuration.bonus_seconds.max(5.0));
         Ok(events)
+    }
+
+    pub fn set_stalemate(&mut self) -> Vec<Event> {
+        if self.configuration.stalemate_enabled {
+            let mut events = Vec::new();
+            self.transition(State::Stalemate, &mut events);
+            self.transition_at = Some(self.now + self.configuration.stalemate_seconds);
+            events
+        } else {
+            self.win(PlayerTeam::Unassigned, WIN_REASON_STALEMATE).expect("draw winner")
+        }
     }
 
     pub fn restart(&mut self, reset_scores: bool) -> Vec<Event> {
@@ -849,7 +869,7 @@ impl Rules {
                 }
             }
         }
-        if !finished_normal || self.configuration.koth.is_some() {
+        if !finished_normal || self.configuration.koth.is_some() || !self.configuration.round_wins.is_empty() {
             return Ok(());
         }
         if let Some(team) = self.configuration.defending_team {

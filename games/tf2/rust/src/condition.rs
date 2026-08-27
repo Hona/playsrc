@@ -12,6 +12,9 @@ impl ConditionId {
     pub const INVULNERABLE: Self = Self(5);
     pub const CRIT_BOOSTED: Self = Self(11);
     pub const PHASE: Self = Self(14);
+    pub const STUNNED: Self = Self(15);
+    pub const MEGAHEAL: Self = Self(28);
+    pub const STEALTHED_USER_FADING: Self = Self(66);
     pub const OFFENSE_BUFF: Self = Self(16);
     pub const ENERGY_BUFF: Self = Self(19);
     pub const HEALTH_BUFF: Self = Self(21);
@@ -123,17 +126,23 @@ pub struct ConditionEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConditionState {
     entries: Vec<Option<ConditionEntry>>,
+    active_stun_flags: Option<u16>,
 }
 
 impl Default for ConditionState {
     fn default() -> Self {
         Self {
             entries: vec![None; CONDITION_COUNT],
+            active_stun_flags: None,
         }
     }
 }
 
 impl ConditionState {
+    pub fn set_active_stun_flags(&mut self, flags: Option<u16>) { self.active_stun_flags = flags; }
+    pub fn is_control_stunned(&self) -> bool {
+        self.contains(ConditionId::STUNNED) && self.active_stun_flags.is_some_and(|flags| flags & 2 != 0)
+    }
     pub fn contains(&self, condition: ConditionId) -> bool {
         self.entries[condition.0 as usize].is_some()
     }
@@ -226,6 +235,7 @@ impl ConditionState {
     }
 
     pub fn remove(&mut self, condition: ConditionId, force: bool) -> Option<ConditionEvent> {
+        if condition == ConditionId::STUNNED { self.active_stun_flags = None; }
         let slot = &mut self.entries[condition.0 as usize];
         let entry = slot.as_mut()?;
         if condition == ConditionId::CRIT_BOOSTED && !force && entry.minimum_duration > 0.0 {

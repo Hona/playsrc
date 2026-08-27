@@ -16,7 +16,7 @@ fn badlands_authored_capture_chain_and_master() {
     assert_eq!(format!("{:x}", Sha256::digest(&bytes)), "872f6e77abda907d095000009cfbe8c50d62d15e304c80c7dc86a6591ebc08e3");
     let bsp = playsrc_bsp::parse(&bytes, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).unwrap();
     let graph = playsrc_entity::parse(bsp.lump(0).unwrap().bytes(&bsp), playsrc_entity::Limits::default()).unwrap();
-    let world = control_point::World::from_graph(&graph).unwrap().unwrap();
+    let mut world = control_point::World::from_graph(&graph).unwrap().unwrap();
     assert_eq!(world.points().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["cap_blue_1", "cap_blue_2", "cap_center", "cap_red_2", "cap_red_1"]);
     assert_eq!(world.points().iter().map(|p| p.owner).collect::<Vec<_>>(), [PlayerTeam::Blue, PlayerTeam::Blue, PlayerTeam::Unassigned, PlayerTeam::Red, PlayerTeam::Red]);
     for team in [PlayerTeam::Red, PlayerTeam::Blue] {
@@ -30,6 +30,19 @@ fn badlands_authored_capture_chain_and_master() {
     assert_eq!(areas[3].teams[3].spawn_adjust, -4);
     assert_eq!(world.master().base_points[2], Some(4));
     assert_eq!(world.master().base_points[3], Some(0));
+    let red_spawns = |world: &control_point::World| world.spawns().iter().filter(|spawn| spawn.team == PlayerTeam::Red && !spawn.disabled).map(|spawn| spawn.point).collect::<Vec<_>>();
+    assert_eq!(red_spawns(&world), vec![Some(4); 16]);
+    let facts = control_point::Facts { points_may_be_captured: true, round_running: true, ..control_point::Facts::default() };
+    let middle = world.points()[2].identity;
+    let second = world.points()[1].identity;
+    world.apply_input(middle, b"SetOwner", &playsrc_entity::Variant::Integer(2), 1.0, facts, &mut Vec::new());
+    assert_eq!(red_spawns(&world), vec![Some(2); 12]);
+    world.apply_input(second, b"SetOwner", &playsrc_entity::Variant::Integer(2), 2.0, facts, &mut Vec::new());
+    assert_eq!(red_spawns(&world), vec![Some(1); 12]);
+    world.apply_input(second, b"SetOwner", &playsrc_entity::Variant::Integer(3), 3.0, facts, &mut Vec::new());
+    assert_eq!(red_spawns(&world), vec![Some(2); 12]);
+    world.apply_input(middle, b"SetOwner", &playsrc_entity::Variant::Integer(3), 4.0, facts, &mut Vec::new());
+    assert_eq!(red_spawns(&world), vec![Some(4); 16]);
     let playsrc_bsp::LumpData::Models(models) = &bsp.lump(14).unwrap().records else { panic!("missing models"); };
     let bounds = models.iter().enumerate().map(|(model, value)| playsrc_entity::ModelBounds {
         model,
