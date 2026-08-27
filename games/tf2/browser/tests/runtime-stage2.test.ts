@@ -200,6 +200,23 @@ test("round codec keeps two independent KOTH timer records and rejects malformed
   view.setFloat32(at + 52, Number.NaN, true)
   expect(() => decodeSnapshot(bytes.buffer)).toThrow("KOTH timer is invalid")
 })
+test("critical draws preserve separate authority and predicted-presentation records", () => {
+  const source = new Uint8Array(snapshot()), at = 913
+  const data = new Uint8Array(source.length + 32), view = new DataView(data.buffer)
+  data.set(source.subarray(0, at)); data.set(source.subarray(at), at + 32)
+  view.setUint32(128, 2, true)
+  for (let index = 0; index < 2; index++) {
+    const record = at + index * 16
+    data.set([index + 1, 14, 0, 0], record)
+    view.setInt32(record + 4, 12345, true)
+    data[record + 8] = 2
+    view.setInt32(record + 12, 2345, true)
+  }
+  expect(decodeSnapshot(data).randomDraws.map(draw => [draw.context, draw.decision, draw.result]))
+    .toEqual([[1, 14, {kind: "integer", value: 2345}], [2, 14, {kind: "integer", value: 2345}]])
+  data[at + 16 + 1] = 5
+  expect(() => decodeSnapshot(data)).toThrow("random draw record is invalid")
+})
 
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
   const source = new Uint8Array(snapshot())

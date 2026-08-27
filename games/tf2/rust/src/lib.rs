@@ -8,6 +8,7 @@ pub mod class;
 pub mod combat;
 pub mod condition;
 pub mod control_point;
+pub mod critical;
 pub mod ctf;
 pub mod damage;
 pub mod deathnotice;
@@ -807,6 +808,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     pending_team_change: Option<PlayerTeam>,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
+    loadout_class: PlayerClass,
+    critical_history: critical::PlayerHistory,
     equipment: equipment::Equipment,
     active_equipment: equipment::Equipment,
     equipment_attributes: equipment::AttributeProviders,
@@ -891,6 +894,8 @@ pub enum Error {
     ProjectileLimit,
     InvalidStickyLaunchRandom,
     InvalidProjectilePhysics,
+    MissingWeapon { owner: u32, weapon: Weapon },
+    Damage(damage::DamageError),
     InvalidPlayerPosition,
     Random(RandomError),
     Bot(bot::Error),
@@ -978,6 +983,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pending_team_change: None,
             weapon: Some(Weapon::RocketLauncher),
             loadout,
+            loadout_class: PlayerClass::Soldier,
+            critical_history: critical::PlayerHistory::default(),
             equipment: equipment::Equipment::default(),
             active_equipment: equipment::Equipment::default(),
             equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
@@ -1118,10 +1125,69 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.equipment_attributes.player(hook, input)
     }
 
+    /// Resolve one weapon's critical classification before firing. Raw damage
+    /// and projectile count are already attribute-resolved, before range,
+    /// splash falloff, hitgroup, or target resistance. Bots have no client-side
+    /// prediction pass; the local player consumes both Source RNG streams.
+    pub fn check_weapon_critical(&mut self, owner: u32, weapon: Weapon, shot: critical::Shot)
+        -> Result<damage::CritCheckResult, Error> {
+        let mut state = if owner == PLAYER_IDENTITY {
+            self.loadout.get(&weapon).map(|weapon| weapon.critical)
+        } else { self.bots.as_ref().and_then(|bots| bots.critical_weapon(owner, weapon)) }
+            .ok_or(Error::MissingWeapon { owner, weapon })?;
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        // Reject malformed caller facts before changing history, RNG, or cache.
+        state.bucket.needs_roll(shot.input(now, 1.0, 1.0)).map_err(Error::Damage)?;
+        if state.last_tick == Some(self.tick) { return Ok(state.result.expect("cached critical result")); }
+        let history = self.critical_history_mut(owner)?;
+        history.supply_observed_damage(&mut state.bucket);
+        let multiplier = history.multiplier();
+        let chance = self.equipped_weapon_attribute(owner, weapon, "mult_crit_chance", 1.0);
+        let mut input = shot.input(now, multiplier, chance);
+        if state.bucket.needs_roll(input).map_err(Error::Damage)? {
+            let seed = shot.seed(owner);
+            if seed != state.current_seed {
+                let random = UniformRandomStream::from_seed(seed)?;
+                if owner == PLAYER_IDENTITY { self.predicted_presentation_random = random.clone(); }
+                self.authority_random = random;
+                state.current_seed = seed;
+            }
+            input.roll = Some(self.draw_random_int(RandomContext::Authority,
+                RandomDecision::WeaponCritical, 0, i32::from(damage::RANDOM_RANGE) - 1) as u16);
+            if owner == PLAYER_IDENTITY {
+                self.draw_random_int(RandomContext::PredictedPresentation,
+                    RandomDecision::WeaponCritical, 0, i32::from(damage::RANDOM_RANGE) - 1);
+            }
+        }
+        let result = state.bucket.check(input).map_err(Error::Damage)?;
+        state.last_tick = Some(self.tick);
+        state.result = Some(result);
+        if owner == PLAYER_IDENTITY { self.loadout.get_mut(&weapon).unwrap().critical = state; }
+        else { self.bots.as_mut().unwrap().set_critical_weapon(owner, weapon, state); }
+        Ok(result)
+    }
+
+    /// Record admitted, non-self player damage. `health_damage` is the actual
+    /// before/after health loss; `input.damage` and `bonus_damage` retain the
+    /// damage-info values needed by the Source crit-history calculation.
+    pub fn record_weapon_damage(&mut self, owner: u32, input: damage::DamageHistoryInput,
+        health_damage: u32, critical: damage::CritKind, attacker_is_crit_boosted: bool) -> Result<(), Error> {
+        self.critical_history_mut(owner)?.record(input, health_damage, critical, attacker_is_crit_boosted)
+            .map_err(Error::Damage)
+    }
+
+    fn critical_history_mut(&mut self, owner: u32) -> Result<&mut critical::PlayerHistory, Error> {
+        if owner == PLAYER_IDENTITY { Ok(&mut self.critical_history) }
+        else { self.bots.as_mut().and_then(|bots| bots.critical_history_mut(owner)).ok_or(Error::MissingEntity(owner)) }
+    }
+
     fn apply_equipment(&mut self) {
+        let old_items = self.active_equipment.equipped_items(self.loadout_class);
+        let old_loadout = std::mem::take(&mut self.loadout);
+        let same_class = self.loadout_class == self.class;
         self.active_equipment = self.equipment.clone();
+        let new_items = self.active_equipment.equipped_items(self.class);
         self.equipment_attributes = equipment::AttributeProviders::new(&self.active_equipment, self.class);
-        self.loadout.clear();
         for weapon in self.active_equipment.weapons(self.class) {
             let context = weapon::ProfileContext {
                 ammo: weapon_ammo_kind(weapon),
@@ -1133,8 +1199,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 weapon::AttributeTarget::Weapon => self.equipment_attributes.weapon(weapon, hook, input),
                 weapon::AttributeTarget::Player => self.equipment_attributes.player(hook, input),
             });
-            self.loadout.insert(weapon, WeaponRuntime::full_with_profile(weapon, profile));
+            let mut runtime = WeaponRuntime::full_with_profile(weapon, profile);
+            let definition = |items: &[equipment::EquippedItem]| items.iter().find_map(|item| {
+                (equipment::supported_item(item.definition_index).unwrap().implementation
+                    == equipment::Implementation::Weapon(weapon)).then_some(item.definition_index)
+            });
+            if same_class && definition(&old_items) == definition(&new_items)
+                && let Some(previous) = old_loadout.get(&weapon) {
+                runtime.critical = previous.critical;
+            }
+            self.loadout.insert(weapon, runtime);
         }
+        self.loadout_class = self.class;
         self.ammo = self.maximum_ammo();
         if self.weapon.is_none_or(|weapon| !self.loadout.contains_key(&weapon)) {
             self.weapon = self.active_equipment.weapons(self.class).next();
@@ -1205,6 +1281,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 );
                 self.snap_spawn_angles();
                 self.buildings.reset();
+                self.critical_history.reset_for_spawn();
                 self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
                 self.air_dashes = 0;
@@ -1659,6 +1736,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.raw_view_angles = [command.pitch_degrees, command.movement.yaw_degrees, 0.0];
         admission_metrics::begin_tick(self.tick);
         self.map.set_control_point_facts(self.control_point_facts());
+        let critical_time = self.tick as f32 * self.movement_configuration.tick_interval;
+        self.critical_history.advance(critical_time).map_err(Error::Damage)?;
+        if let Some(bots) = self.bots.as_mut() {
+            bots.advance_critical_histories(critical_time).map_err(Error::Damage)?;
+        }
         match self.movement.water_level {
             0 => self.in_water = false,
             1 | 2 => self.in_water = true,
@@ -1919,6 +2001,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 round_facts,
             )
             .map_err(Error::Round)?;
+        if round_events.iter().any(|event| matches!(event, round::Event::RoundStarted { .. })) {
+            self.critical_history.reset_round_statistics();
+            if let Some(bots) = self.bots.as_mut() { bots.reset_critical_round_statistics(); }
+        }
         let round_phase = self.map.emit_round_outputs(self.tick, &round_events)?;
         map_phase.append(round_phase);
         for event in &round_events {
@@ -3311,6 +3397,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
             self.class = class;
+            self.critical_history.reset_for_spawn();
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
             self.buildings.reset();
             self.weapon = default_weapon(class);
@@ -6658,6 +6745,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         // WeaponReset destroys sound patches without emitting a winddown.
         self.stop_flame(true);
+        self.critical_history.reset_for_spawn();
         self.fizzle_projectiles(projectile_events);
         self.damagers = deathnotice::DamagerHistory::default();
         self.health = self.maximum_health();
@@ -7059,6 +7147,77 @@ mod tests {
         assert_eq!(session.ammo.secondary, 32);
         let runtime = session.weapon_runtime(Weapon::RocketLauncher).unwrap();
         assert_eq!((runtime.clip, runtime.reserve), (5, 60));
+    }
+
+    fn critical_shot() -> critical::Shot {
+        critical::Shot { command_number: 42, launcher_identity: 18,
+            kind: damage::WeaponCritKind::SingleShot, raw_damage: 90.0,
+            projectiles_per_shot: 1.0, fire_delay: 0.8, can_fire_critical: true,
+            guaranteed_critical: false, random_crits_enabled: true }
+    }
+
+    #[test]
+    fn native_critical_query_uses_source_seed_both_streams_and_one_frame_cache() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let shot = critical_shot();
+        let mut expected = UniformRandomStream::from_seed(shot.seed(PLAYER_IDENTITY)).unwrap();
+        let roll = expected.random_int(0, 9999).unwrap() as u16;
+        let result = session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap();
+        assert_eq!(result.roll, Some(roll));
+        assert_eq!(result.threshold, 200.0);
+        assert_eq!(session.random_state().authority, expected.state());
+        assert_eq!(session.random_state().predicted_presentation, expected.state());
+        let draws = session.random_draws().len();
+        let state = session.random_state();
+        assert_eq!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap(), result);
+        assert_eq!(session.random_draws().len(), draws);
+        assert_eq!(session.random_state(), state);
+    }
+
+    #[test]
+    fn native_critical_boost_and_invalid_inputs_do_not_consume_randomness() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let before = session.random_state();
+        let invalid = critical::Shot { raw_damage: f32::NAN, ..critical_shot() };
+        assert!(matches!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, invalid),
+            Err(Error::Damage(damage::DamageError::InvalidCritInput))));
+        assert_eq!(session.random_state(), before);
+        let result = session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher,
+            critical::Shot { guaranteed_critical: true, ..critical_shot() }).unwrap();
+        assert_eq!(result.kind, damage::CritKind::Full);
+        assert!(!result.random);
+        assert_eq!(session.random_state(), before);
+        assert_eq!(result.bucket_before, result.bucket_after);
+    }
+
+    #[test]
+    fn native_critical_history_is_shared_and_surviving_weapon_bucket_is_not_reset_on_spawn() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session.record_weapon_damage(PLAYER_IDENTITY, damage::DamageHistoryInput {
+            now: 0.0, damage: 100.0, bonus_damage: 0.0, victim_previous_health: 200,
+            lethal: false, damage_type: damage::DamageType::BULLET, counts_toward_crit_rate: true,
+        }, 100, damage::CritKind::None, false).unwrap();
+        for _ in 0..200 { session.advance(Command::default()).unwrap(); }
+        let rocket = session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, critical_shot()).unwrap();
+        let shotgun = session.check_weapon_critical(PLAYER_IDENTITY, Weapon::Shotgun,
+            critical::Shot { launcher_identity: 10, raw_damage: 6.0, projectiles_per_shot: 10.0, ..critical_shot() }).unwrap();
+        assert!(rocket.threshold > 200.0);
+        assert_eq!(rocket.threshold, shotgun.threshold);
+        let state = session.weapon_runtime(Weapon::RocketLauncher).unwrap().critical;
+        session.advance(Command { respawn: true, ..Default::default() }).unwrap();
+        assert_eq!(session.weapon_runtime(Weapon::RocketLauncher).unwrap().critical, state);
+        for _ in 0..40 { session.advance(Command::default()).unwrap(); }
+        assert_eq!(session.critical_history.multiplier(), 1.0);
+    }
+
+    #[test]
+    fn native_rapid_critical_check_waits_for_the_initial_one_second_boundary() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let shot = critical::Shot { kind: damage::WeaponCritKind::RapidFire, ..critical_shot() };
+        session.tick = 66;
+        assert_eq!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap().roll, None);
+        session.tick = 67;
+        assert!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap().roll.is_some());
     }
 
     #[test]

@@ -52,6 +52,7 @@ pub enum RandomDecision {
     ClassSelection,
     SyringePitchSpread,
     SyringeYawSpread,
+    WeaponCritical,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +75,12 @@ pub struct UniformRandomState {
     pub current: i32,
     pub shuffled: i32,
     pub table: [i32; SHUFFLE_SIZE],
+}
+
+pub fn prediction_seed(command_number: u32) -> u32 {
+    use md5::{Digest, Md5};
+    let digest = Md5::digest(command_number.to_le_bytes());
+    u32::from_le_bytes(digest[6..10].try_into().unwrap()) & 0x7fff_ffff
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

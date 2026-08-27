@@ -5319,6 +5319,8 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::Objectives(_) => 13,
         playsrc_tf2::Error::Round(_) => 14,
         playsrc_tf2::Error::ControlPoints(_) => 15,
+        playsrc_tf2::Error::MissingWeapon { .. } => 17,
+        playsrc_tf2::Error::Damage(_) => 16,
     }
 }
 
@@ -7049,6 +7051,7 @@ fn encode_random_draw(
         playsrc_tf2::RandomDecision::SyringeYawSpread => {
             (10, 0, playsrc_tf2::SoundQueryPhase::Inspect)
         }
+        playsrc_tf2::RandomDecision::WeaponCritical => (14, 0, playsrc_tf2::SoundQueryPhase::Inspect),
     };
     extend(
         output,
@@ -15908,6 +15911,7 @@ mod tests {
             maximum_health: 200,
             conditions: [0; 5],
             weapons: vec![playsrc_tf2::weapon::WeaponRuntime {
+                critical: playsrc_tf2::critical::WeaponState::default(),
                 resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,

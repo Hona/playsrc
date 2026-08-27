@@ -87,7 +87,7 @@ export type Tf2RandomState = Readonly<{
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
-  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 14
   definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
     | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
     | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
@@ -2133,11 +2133,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
-      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 102 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 && decision !== 14 ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 102 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
-      ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
+      ((decision === 3 || decision === 7 || decision === 8 || decision === 14) ? resultKind === 1 : resultKind !== 1) ||
       (resultKind === 3 && resultValue !== 0)
     ) throw new Tf2CodecError("random draw record is invalid")
     const result: RandomDraw["result"] = resultKind === 1

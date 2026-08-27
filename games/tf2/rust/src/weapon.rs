@@ -411,6 +411,7 @@ pub enum MinigunState {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponRuntime {
+    pub critical: crate::critical::WeaponState,
     pub resolved_profile: WeaponProfile,
     pub weapon: Weapon,
     pub clip: u16,
@@ -447,6 +448,7 @@ impl WeaponRuntime {
 
     pub fn full_with_profile(weapon: Weapon, profile: WeaponProfile) -> Self {
         Self {
+            critical: crate::critical::WeaponState::default(),
             resolved_profile: profile,
             weapon,
             clip: profile.maximum_clip,

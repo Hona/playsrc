@@ -1,5 +1,3 @@
-use md5::{Digest, Md5};
-
 use crate::{Weapon, random::UniformRandomStream};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,8 +67,7 @@ impl HitscanProfile {
             return forward;
         }
 
-        let digest = Md5::digest(command_number.to_le_bytes());
-        let prediction_seed = u32::from_le_bytes(digest[6..10].try_into().unwrap()) & 0x7fff_ffff;
+        let prediction_seed = crate::random::prediction_seed(command_number);
         let seed = (prediction_seed & 255).wrapping_add(u32::from(pellet)) as i32;
         let mut random = UniformRandomStream::from_seed(seed).unwrap();
         let x = random.random_float(-0.5, 0.5) + random.random_float(-0.5, 0.5);
