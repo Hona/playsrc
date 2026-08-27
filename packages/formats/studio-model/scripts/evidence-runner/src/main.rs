@@ -1232,6 +1232,7 @@ fn verify_model_materials(files: &VpkFiles) -> Result<(), String> {
         mip_digest.push(match model.shader {
             playsrc_material::ModelShader::UnlitGeneric => 3,
             playsrc_material::ModelShader::UnlitTwoTexture => 4,
+            playsrc_material::ModelShader::Modulate => 5,
             playsrc_material::ModelShader::VertexLitGeneric => 0,
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,
