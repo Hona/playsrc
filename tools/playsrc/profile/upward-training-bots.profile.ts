@@ -1193,6 +1193,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     workerRequired: capturePlan.workerCpu === "required",
     sourceUnchanged: sourceFingerprintAfter === sourceFingerprint, workerCaptures: workerCapture.captures,
     compositor: process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1", smooth: process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1" })
+  if (process.env.PROFILE_REQUIRE_CLASS_HANDOFF === "1") {
+    expect(report.replacement.length).toBe(3)
+    expect(report.pipelinePreparation.retainedTemplates).toBeGreaterThan(0)
+    expect(report.pipelinePreparation.reusedPreparedModels).toBeGreaterThan(0)
+    expect(report.nodeBuilds.filter((build: any) => build.material.includes("/models/player/"))).toEqual([])
+  }
   if (process.env.PROFILE_CLASS_UI_AUDIT === "1") {
     await combatCommand("joinclass engineer")
     await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("9")
