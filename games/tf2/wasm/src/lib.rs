@@ -15367,6 +15367,7 @@ mod tests {
             maximum_health: 200,
             conditions: [0; 5],
             weapons: vec![playsrc_tf2::weapon::WeaponRuntime {
+                resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,
                 reserve: 20,
