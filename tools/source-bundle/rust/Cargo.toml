@@ -10,6 +10,7 @@ verify-hdr = ["dep:playsrc-tf2-wasm"]
 presentation-bound-diagnostic = ["dep:playsrc-tf2-wasm", "playsrc-tf2-wasm/presentation-bound-diagnostic"]
 
 [dependencies]
+playsrc-audio = { path = "../../../packages/presentation/audio/rust" }
 playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }
 playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-content = { path = "../../../packages/content/rust" }

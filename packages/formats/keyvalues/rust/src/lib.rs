@@ -117,7 +117,7 @@ impl NumericValue<'_> {
 
     pub fn get_float(self) -> f32 {
         match self {
-            Self::Bytes(value) => decimal_float_prefix(value),
+            Self::Bytes(value) => decimal_float_prefix(value) as f32,
             Self::Integer(value) => value as f32,
             Self::Float(value) => value,
             Self::Uint64(value) => value as f32,
@@ -221,7 +221,8 @@ fn source_i64_prefix(value: &[u8]) -> i64 {
     }
 }
 
-fn decimal_float_prefix(value: &[u8]) -> f32 {
+/// Decimal prefix conversion before an owner-specific floating-point narrowing.
+pub fn decimal_float_prefix(value: &[u8]) -> f64 {
     let start = source_whitespace_prefix(value);
     let mut cursor = start;
     if matches!(value.get(cursor), Some(b'+' | b'-')) {
@@ -259,7 +260,7 @@ fn decimal_float_prefix(value: &[u8]) -> f32 {
     std::str::from_utf8(&value[start..cursor])
         .ok()
         .and_then(|number| number.parse::<f64>().ok())
-        .map_or(0.0, |number| number as f32)
+        .unwrap_or(0.0)
 }
 
 fn source_whitespace_prefix(value: &[u8]) -> usize {

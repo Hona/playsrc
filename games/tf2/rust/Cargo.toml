@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+playsrc-audio = { path = "../../../packages/presentation/audio/rust" }
 md-5 = "0.10.6"
 playsrc-collision = { path = "../../../packages/world/collision/rust" }
 playsrc-movement = { path = "../../../packages/runtime/movement/rust" }

@@ -510,6 +510,7 @@ pub struct FilterState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TriggerKind {
+    Soundscape,
     Multiple,
     Hurt,
     Push,
@@ -2566,7 +2567,9 @@ impl EntityWorld {
                 coverage,
             ));
         }
-        let trigger_kind = if classname.eq_ignore_ascii_case(b"trigger_multiple") {
+        let trigger_kind = if classname.eq_ignore_ascii_case(b"trigger_soundscape") {
+            Some(TriggerKind::Soundscape)
+        } else if classname.eq_ignore_ascii_case(b"trigger_multiple") {
             Some(TriggerKind::Multiple)
         } else if classname.eq_ignore_ascii_case(b"trigger_hurt") {
             Some(TriggerKind::Hurt)
@@ -5798,6 +5801,7 @@ impl EntityWorld {
             }
         }
         match trigger_state.kind {
+            TriggerKind::Soundscape => {}
             TriggerKind::Multiple => self.emit_trigger_effect(
                 record.trigger,
                 record.subject,
@@ -5931,6 +5935,7 @@ impl EntityWorld {
             local_direction,
         );
         let effect = match state.kind {
+            TriggerKind::Soundscape => return Ok(()),
             TriggerKind::Multiple => TriggerEffectData::Multiple,
             TriggerKind::Hurt => TriggerEffectData::Hurt {
                 damage_bits: state.mutable_value_bits,
@@ -9570,6 +9575,7 @@ fn encode_behavior(
             output.u8(8)?;
             output.u8(match state.kind {
                 TriggerKind::Multiple => 0,
+                TriggerKind::Soundscape => 5,
                 TriggerKind::Hurt => 1,
                 TriggerKind::Push => 2,
                 TriggerKind::Catapult => 3,

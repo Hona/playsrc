@@ -16,6 +16,7 @@ pub struct SurfacePropertyRecord {
     pub source_record: usize,
     pub game_material: u8,
     pub bullet_impact: Option<Vec<u8>>,
+    pub audio_reflectivity_bits: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,12 +66,21 @@ impl SurfacePropertyRegistry {
                 let mut base = None;
                 let mut game_material = None;
                 let mut bullet_impact = None;
+                let mut audio_reflectivity_bits = lookup.get(&normalized).or_else(|| lookup.get(b"default".as_slice()))
+                    .and_then(|index| records.get(*index as usize)).map_or(0, |record| record.audio_reflectivity_bits);
                 for field in fields {
                     let Value::Scalar(value) = &field.value else {
                         continue;
                     };
                     if field.key.bytes.eq_ignore_ascii_case(b"base") {
                         base = Some(value.token.bytes.to_ascii_lowercase());
+                        if let Some(record) = lookup.get(&value.token.bytes.to_ascii_lowercase()).and_then(|index| records.get(*index as usize)) {
+                            audio_reflectivity_bits = record.audio_reflectivity_bits;
+                        }
+                    } else if field.key.bytes.eq_ignore_ascii_case(b"audioReflectivity") {
+                        let reflectivity = playsrc_keyvalues::NumericValue::Bytes(&value.token.bytes).get_float();
+                        if !reflectivity.is_finite() { return Err(SurfacePropertyError::InvalidDocument); }
+                        audio_reflectivity_bits = reflectivity.to_bits();
                     } else if field.key.bytes.eq_ignore_ascii_case(b"gamematerial") {
                         let raw = &value.token.bytes;
                         game_material = Some(if raw.len() == 1 && !raw[0].is_ascii_digit() {
@@ -92,6 +102,7 @@ impl SurfacePropertyRegistry {
                         .ok_or(SurfacePropertyError::InvalidInput)?;
                     record.source_file = source_file;
                     record.source_record = source_record;
+                    record.audio_reflectivity_bits = audio_reflectivity_bits;
                 } else {
                     let index =
                         u32::try_from(records.len()).map_err(|_| SurfacePropertyError::Limit)?;
@@ -103,6 +114,7 @@ impl SurfacePropertyRegistry {
                         source_record,
                         game_material: b'C',
                         bullet_impact: None,
+                        audio_reflectivity_bits,
                     });
                 }
             }
@@ -153,6 +165,19 @@ impl SurfacePropertyRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acoustic_reflectivity_uses_parse_order_base_copy_and_partial_overrides() {
+        let registry = SurfacePropertyRegistry::compile(&[
+            SurfacePropertyFile { logical_path: "first.txt", bytes: br#"default { audioReflectivity 0.66 }
+                metal { audioReflectivity 0.83 } copied { audioReflectivity 0.2 base metal }
+                inherited { base metal audioReflectivity 0.25 }"# },
+            SurfacePropertyFile { logical_path: "second.txt", bytes: br#"metal { friction 0.8 } default { audioReflectivity 0.5 }"# },
+        ]).unwrap();
+        for (name, expected) in [(b"metal".as_slice(),0.83_f32),(b"copied",0.83),(b"inherited",0.25),(b"default",0.5)] {
+            assert_eq!(registry.resolve(Some(name)).unwrap().audio_reflectivity_bits,expected.to_bits());
+        }
+    }
 
     #[test]
     fn registry_preserves_first_index_and_later_override_source() {
