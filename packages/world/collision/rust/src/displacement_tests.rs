@@ -97,6 +97,60 @@ fn assert_bits(actual: Trace, expected: Trace) {
 }
 
 #[test]
+fn compact_bounds_and_planes_reconstruct_exact_float_bits() {
+    let mut random = Random(0x55818240);
+    let (tree, positions) = tree(&mut random);
+    for triangle in &tree.triangles {
+        let points = triangle.vertices.map(|i| positions[usize::from(i)]);
+        let expected = points.into_iter().fold(empty_bounds(), include);
+        let actual = triangle.bounds(&positions);
+        assert_eq!(
+            actual.mins.map(f32::to_bits),
+            expected.mins.map(f32::to_bits)
+        );
+        assert_eq!(
+            actual.maxs.map(f32::to_bits),
+            expected.maxs.map(f32::to_bits)
+        );
+        for (slot, index) in triangle.edges.into_iter().enumerate() {
+            let expected = edge_plane(points, slot / 3, slot % 3);
+            if index == NO_PLANE {
+                assert!(expected.is_none());
+            } else {
+                let actual = tree.edge_planes[usize::from(index & 0x7fff)].unpack(slot / 3, index);
+                let expected = expected.unwrap();
+                assert_eq!(
+                    actual.normal.map(f32::to_bits),
+                    expected.normal.map(f32::to_bits)
+                );
+                assert_eq!(actual.distance.to_bits(), expected.distance.to_bits());
+            }
+        }
+    }
+    for zeros in [[0.0, -0.0, 0.0], [-0.0, 0.0, -0.0]] {
+        let points = zeros.map(|zero| [zero; 3]);
+        let triangle = Triangle {
+            vertices: [0, 1, 2],
+            normal: [0.0; 3],
+            distance: 0.0,
+            bounds_vertices: bounds_vertices(points),
+            flags: 0,
+            edges: [NO_PLANE; 9],
+        };
+        let expected = points.into_iter().fold(empty_bounds(), include);
+        let actual = triangle.bounds(&points);
+        assert_eq!(
+            actual.mins.map(f32::to_bits),
+            expected.mins.map(f32::to_bits)
+        );
+        assert_eq!(
+            actual.maxs.map(f32::to_bits),
+            expected.maxs.map(f32::to_bits)
+        );
+    }
+}
+
+#[test]
 fn ordered_hierarchy_and_cached_intervals_match_direct_traces_bit_for_bit() {
     let mut random = Random(0x189185);
     let mut world = World::empty();
