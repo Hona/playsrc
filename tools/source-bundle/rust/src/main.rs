@@ -3253,46 +3253,18 @@ fn main() -> Result<(), String> {
             resolver.required(path, consumer)?;
         }
     }
-    if graph.entities.iter().any(|entity| {
+    let flags = graph.entities.iter().any(|entity| {
         entity
             .classname
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
-    }) {
-        for path in [
-            "scripts/game_sounds_vo.txt",
-            "scripts/game_sounds.txt",
-            "sound/vo/intel_enemystolen.mp3",
-            "sound/vo/intel_enemystolen2.mp3",
-            "sound/vo/intel_enemystolen3.mp3",
-            "sound/vo/intel_enemystolen4.mp3",
-            "sound/vo/intel_enemydropped.mp3",
-            "sound/vo/intel_enemydropped2.mp3",
-            "sound/vo/intel_enemycaptured.mp3",
-            "sound/vo/intel_enemycaptured2.mp3",
-            "sound/vo/intel_enemyreturned.mp3",
-            "sound/vo/intel_enemyreturned2.mp3",
-            "sound/vo/intel_enemyreturned3.mp3",
-            "sound/vo/intel_teamstolen.mp3",
-            "sound/vo/intel_teamdropped.mp3",
-            "sound/vo/intel_teamdropped2.mp3",
-            "sound/vo/intel_teamcaptured.mp3",
-            "sound/vo/intel_teamreturned.mp3",
-            "sound/misc/your_team_won.mp3",
-            "sound/misc/your_team_lost.mp3",
-        ] {
-            resolver.required(
-                path,
-                if path.starts_with("sound/") {
-                    "ctf-audio-wave"
-                } else {
-                    "ctf-audio-script"
-                },
-            )?;
-        }
-    }
+    });
     let control_points = graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point_master")) && !graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_train_watcher"));
     let mut round_scripts: Vec<(&str, Vec<&str>)> = Vec::new();
+    if flags {
+        round_scripts.push(("scripts/game_sounds_vo.txt", playsrc_tf2::audio::FLAG_SOUNDS.iter().map(|d| d.identity()).collect()));
+        round_scripts.push(("scripts/game_sounds.txt", vec!["Game.YourTeamWon", "Game.YourTeamLost"]));
+    }
     if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"tf_logic_koth")
         || value.eq_ignore_ascii_case(b"team_round_timer") && entity.pairs.iter().rev().any(|pair| pair.key.eq_ignore_ascii_case(b"show_in_hud") && pair.value == b"1"))) {
         for (script, targets) in [
@@ -3306,22 +3278,8 @@ fn main() -> Result<(), String> {
     }
     for (script, targets) in round_scripts {
             let bytes = resolver.required(script, "round-audio-script")?;
-            let document = playsrc_keyvalues::parse_text(&bytes, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default())
-                .map_err(|error| format!("Round sound script {script}: {error:?}"))?
-                .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
-            for target in targets {
-                let node = document.roots.iter().find(|node| node.key.bytes.eq_ignore_ascii_case(target.as_bytes())).ok_or_else(|| format!("Round sound definition {script}:{target} is missing"))?;
-                let mut pending = vec![node];
-                while let Some(node) = pending.pop() {
-                    match &node.value {
-                        playsrc_keyvalues::Value::Object(children) => pending.extend(children),
-                        playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => {
-                            let wave = std::str::from_utf8(&value.token.bytes).map_err(|_| format!("Round sound wave {target} is not UTF-8"))?;
-                            resolver.required(&format!("sound/{}", wave.trim_start_matches('#')), "round-audio-wave")?;
-                        }
-                        _ => {}
-                    }
-                }
+            for wave in sound_wave_dependencies(&bytes, &targets).map_err(|error| format!("{script}: {error}"))? {
+                resolver.required(&wave, "round-audio-wave")?;
             }
     }
     for dependency in &tf2_ui.dependencies {
@@ -3982,6 +3940,29 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+fn sound_wave_dependencies(source: &[u8], targets: &[&str]) -> Result<Vec<String>, String> {
+    let document = playsrc_keyvalues::parse_text(source, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default())
+        .map_err(|error| format!("Sound script: {error:?}"))?
+        .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
+    let mut waves = BTreeSet::new();
+    for target in targets {
+        let node = document.roots.iter().find(|node| node.key.bytes.eq_ignore_ascii_case(target.as_bytes()))
+            .ok_or_else(|| format!("Sound definition {target} is missing"))?;
+        let mut pending = vec![node];
+        while let Some(node) = pending.pop() {
+            match &node.value {
+                playsrc_keyvalues::Value::Object(children) => pending.extend(children),
+                playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => {
+                    let wave = std::str::from_utf8(&value.token.bytes).map_err(|_| format!("Sound wave {target} is not UTF-8"))?;
+                    waves.insert(format!("sound/{}", wave.trim_start_matches('#')));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(waves.into_iter().collect())
+}
+
 #[cfg(any(feature = "verify-hdr", feature = "presentation-bound-diagnostic"))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -3990,6 +3971,19 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctf_audio_closure_includes_flag_spawn_and_all_selected_random_waves() {
+        let targets: Vec<_> = playsrc_tf2::audio::FLAG_SOUNDS.iter().map(|d| d.identity()).collect();
+        assert_eq!(targets.len(), 9);
+        let mut source = targets.iter().map(|target| format!("\"{target}\" {{ wave \"#vo/flag.mp3\" }}\n")).collect::<String>();
+        source = source.replace("\"CaptureFlag.FlagSpawn\" { wave \"#vo/flag.mp3\" }", "\"CaptureFlag.FlagSpawn\" { rndwave { wave \"items/itembk2.wav\" wave \"#vo/flag2.mp3\" } }");
+        source.push_str("\"NotAdmitted\" { wave \"unrelated.wav\" }");
+        assert_eq!(sound_wave_dependencies(source.as_bytes(), &targets).unwrap(), vec![
+            "sound/items/itembk2.wav", "sound/vo/flag.mp3", "sound/vo/flag2.mp3",
+        ]);
+        assert!(sound_wave_dependencies(b"", &targets).is_err());
+    }
 
     #[test]
     fn force_install_manifest_is_inside_the_configured_install() {

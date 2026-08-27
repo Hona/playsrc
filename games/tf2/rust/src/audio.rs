@@ -111,6 +111,18 @@ pub enum SoundDefinition {
     EndRoundScored,
 }
 
+pub const FLAG_SOUNDS: &[SoundDefinition] = &[
+    SoundDefinition::FlagEnemyStolen,
+    SoundDefinition::FlagEnemyDropped,
+    SoundDefinition::FlagEnemyCaptured,
+    SoundDefinition::FlagEnemyReturned,
+    SoundDefinition::FlagTeamStolen,
+    SoundDefinition::FlagTeamDropped,
+    SoundDefinition::FlagTeamCaptured,
+    SoundDefinition::FlagTeamReturned,
+    SoundDefinition::FlagSpawn,
+];
+
 impl SoundDefinition {
     pub const fn identity(self) -> &'static str {
         match self {
