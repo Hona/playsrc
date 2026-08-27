@@ -46,6 +46,7 @@ export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{ id: number; kind: "team-selection"; generation: number; choice: Tf2TeamChoice | null }>
   | Readonly<{ id: number; kind: "equipment"; generation: number; mutation?: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "equipment-models"; generation: number; definitions: readonly number[]; resourceGeneration: number; profile: 0 | 1 }>
   | Readonly<{
       id: number
       kind: "configure-course"
@@ -157,6 +158,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "team-selection"; generation: number; state: Tf2TeamSelectionServerState }>
   | Readonly<{ id: number; kind: "equipment"; generation: number; state: Tf2EquipmentState }>
+  | Readonly<{ id: number; kind: "equipment-models"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "position-set"; generation: number }>

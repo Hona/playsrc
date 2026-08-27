@@ -890,69 +890,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
-        u32v(&mut out, models.len() as u32);
-        for model in models {
-            bytesv(&mut out, model.logical_path.as_bytes());
-            u32v(&mut out, model.materials.len() as u32);
-            for material in &model.materials {
-                bytesv(&mut out, material.logical_path.as_bytes());
-                materialv(&mut out, material, matches!(schema, 8 | 9 | 10 | 11));
-            }
-            u32v(&mut out, model.primitives.len() as u32);
-            for primitive in &model.primitives {
-                u32v(&mut out, primitive.material as u32);
-                u32v(&mut out, primitive.positions.len() as u32);
-                u32v(&mut out, primitive.triangles.len() as u32);
-                for position in &primitive.positions {
-                    for value in position {
-                        f32v(&mut out, *value);
-                    }
-                }
-                for normal in &primitive.normals {
-                    for value in normal {
-                        f32v(&mut out, *value);
-                    }
-                }
-                for position in &primitive.bind_positions {
-                    for value in position {
-                        f32v(&mut out, *value);
-                    }
-                }
-                for normal in &primitive.bind_normals {
-                    for value in normal {
-                        f32v(&mut out, *value);
-                    }
-                }
-                for tangent in &primitive.bind_tangents {
-                    for value in tangent {
-                        f32v(&mut out, *value);
-                    }
-                }
-                for indices in &primitive.bone_indices {
-                    for index in indices {
-                        out.extend_from_slice(&index.to_le_bytes());
-                    }
-                }
-                for weights in &primitive.bone_weights {
-                    for weight in weights {
-                        f32v(&mut out, *weight);
-                    }
-                }
-                u32v(&mut out, primitive.bone_palette.len() as u32);
-                for index in &primitive.bone_palette {
-                    out.extend_from_slice(&index.to_le_bytes());
-                }
-                for uv in &primitive.uv {
-                    f32v(&mut out, uv[0]);
-                    f32v(&mut out, uv[1]);
-                }
-                for triangle in &primitive.triangles {
-                    for index in triangle {
-                        u32v(&mut out, *index);
-                    }
-                }
-            }
-        }
+        serialize_model_registry(&mut out, models, matches!(schema, 8 | 9 | 10 | 11));
         u32v(&mut out, occurrences.len() as u32);
         for occurrence in occurrences {
             u32v(&mut out, occurrence.entity as u32);
@@ -972,6 +910,36 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         return Err(error(ErrorCode::InvalidRange, None));
     }
     Ok(out)
+}
+
+/// Authored model geometry shared by map admission and incremental model-only
+/// admission. This does not construct a map, collision world, or game session.
+pub fn serialize_model_registry(out: &mut Vec<u8>, models: &[RuntimeModel], modern_materials: bool) {
+    u32v(out, models.len() as u32);
+    for model in models {
+        bytesv(out, model.logical_path.as_bytes());
+        u32v(out, model.materials.len() as u32);
+        for material in &model.materials {
+            bytesv(out, material.logical_path.as_bytes());
+            materialv(out, material, modern_materials);
+        }
+        u32v(out, model.primitives.len() as u32);
+        for primitive in &model.primitives {
+            u32v(out, primitive.material as u32);
+            u32v(out, primitive.positions.len() as u32);
+            u32v(out, primitive.triangles.len() as u32);
+            for vectors in [&primitive.positions, &primitive.normals, &primitive.bind_positions, &primitive.bind_normals] {
+                for vector in vectors { for value in vector { f32v(out, *value); } }
+            }
+            for tangent in &primitive.bind_tangents { for value in tangent { f32v(out, *value); } }
+            for indices in &primitive.bone_indices { for index in indices { out.extend_from_slice(&index.to_le_bytes()); } }
+            for weights in &primitive.bone_weights { for value in weights { f32v(out, *value); } }
+            u32v(out, primitive.bone_palette.len() as u32);
+            for index in &primitive.bone_palette { out.extend_from_slice(&index.to_le_bytes()); }
+            for uv in &primitive.uv { for value in uv { f32v(out, *value); } }
+            for triangle in &primitive.triangles { for index in triangle { u32v(out, *index); } }
+        }
+    }
 }
 
 fn runtime_schema(

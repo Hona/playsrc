@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import type { ModelEyeState, ModelLightingInput, ModelLocalLight } from "@playsrc/rendering"
+import { decodeRuntimeModelRegistry } from "@playsrc/rendering/runtime-map"
 
 const LIMIT = 512 * 1024 * 1024
 export type ModelArtifact = Readonly<{
@@ -1355,14 +1356,23 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
   if(vhv.length!==count*2-runtimeLightingCount*2)throw new ArtifactError("static prop VHV closure")
   return Object.freeze({aggregateSha256,modelCount,count,source,dictionaryModel,presentationModel,transform,skin,body,lod,fades,flags,solidity,ownership,lightingKind,lightingOrigin,leafOffsets,leaves:Uint16Array.from(leafValues),areas:Uint16Array.from(areaValues),vhvObjects,runtimeAmbient,runtimeLightOffsets,runtimeLights:Object.freeze(runtimeLights),models:Object.freeze([...models]),vhv,runtimeLightingCount})
 }
-export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
+export type EquipmentModelArtifacts = Pick<PresentationArtifacts, "models" | "materialStates" | "modelMaterials" | "authoredTextures"> & Readonly<{ geometry: readonly import("@playsrc/rendering/runtime-map").RuntimeModel[] }>
+
+export function parseEquipmentModelArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EquipmentModelArtifacts {
   const r = new Reader(bytes)
-  if (r.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
-  const modelCount = r.u32(),
-    directionalCount = r.u32(),
-    particleMaterialCount = r.u32(),brushModelCount=r.u32()
-  if (modelCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536||brushModelCount<1||brushModelCount>4096)
-    throw new ArtifactError("artifact count")
+  if (r.decode(r.take(4)) !== "PEQM" || r.u32() !== 1) throw new ArtifactError("equipment model identity")
+  const models = parseModelHeaders(r, r.u32())
+  const materialStates = parseMaterialStates(r)
+  const modelMaterials = parseModelMaterials(r)
+  const authoredTextures = parseAuthoredTextures(r, resources, new Map())
+  const geometry = decodeRuntimeModelRegistry(r.blob(64 * 1024 * 1024))
+  if (r.offset !== bytes.byteLength) throw new ArtifactError("equipment model trailing bytes")
+  for (const material of modelMaterials.values()) if (material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath))) throw new ArtifactError("equipment texture binding")
+  return Object.freeze({ models, materialStates, modelMaterials, authoredTextures, geometry })
+}
+
+function parseModelHeaders(r: Reader, modelCount: number): ReadonlyMap<string, ModelArtifact> {
+  if (modelCount > 4096) throw new ArtifactError("model count")
   const models = new Map<string, ModelArtifact>()
   for (let i = 0; i < modelCount; i++) {
     const identity = r.text(),
@@ -1424,6 +1434,15 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
       }),
     )
   }
+  return models
+}
+
+export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
+  const r = new Reader(bytes)
+  if (r.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
+  const modelCount = r.u32(), directionalCount = r.u32(), particleMaterialCount = r.u32(), brushModelCount = r.u32()
+  if (modelCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536 || brushModelCount < 1 || brushModelCount > 4096) throw new ArtifactError("artifact count")
+  const models = parseModelHeaders(r, modelCount)
   const directionalRecords: Omit<DirectionalTextureArtifact, "authored">[] = []
   for (let i = 0; i < directionalCount; i++) {
     const material = r.text(),

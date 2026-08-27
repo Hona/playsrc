@@ -607,6 +607,14 @@ export class Tf2WorkerClient {
     return response.state
   }
 
+  async admitEquipmentModels(generation: number, definitions: readonly number[], configuration: ResourceConfiguration, profile: 0 | 1 = 1): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(generation) || generation < 0 || !Array.isArray(definitions) || definitions.length < 1 || definitions.length > 32
+      || definitions.some((value) => !Number.isSafeInteger(value) || value < 0 || value >= 0xffff_ffff) || ![0, 1].includes(profile)) throw new Tf2WorkerError("BoundExceeded")
+    const response = await this.#request({ kind: "equipment-models", generation, definitions, resourceGeneration: configuration.generation, profile })
+    if (response.kind !== "equipment-models" || response.generation !== generation || !(response.payload instanceof ArrayBuffer)) throw new Tf2WorkerError("WorkerFailed")
+    return new Uint8Array(response.payload)
+  }
+
   async activate(generation: number): Promise<void> {
     const activated = await this.#request({ kind: "activate", generation })
     if (activated.kind !== "activated" || activated.generation !== generation) {

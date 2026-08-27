@@ -5,6 +5,18 @@ import { ResourceGenerations, type ResourceSection } from "../src/resource-gener
 const HASH = "ab".repeat(32)
 const section = (pointer: number): ResourceSection => ({ pointer, length: 32, authoredBacking: true })
 
+test("retiring supplemental model resources does not retire the active map generation", () => {
+  const freed: number[] = []
+  const resources = new ResourceGenerations((owner) => freed.push(owner.pointer))
+  resources.adopt(1, section(100)); resources.get(1)!.sha256 = HASH
+  resources.adopt(2, section(200)); resources.get(2)!.sha256 = HASH
+  expect(resources.release(2, false)).toBe(true)
+  expect(resources.loadable(1)).toBe(true)
+  expect(freed).toEqual([200])
+  expect(resources.release(1)).toBe(true)
+  expect(freed).toEqual([200, 100])
+})
+
 test("generation leases preserve current/old-frame owners through staged cancellation and retirement", () => {
   const freed: number[] = []
   const resources = new ResourceGenerations((owner) => freed.push(owner.pointer))
