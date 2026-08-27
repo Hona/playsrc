@@ -109,7 +109,7 @@ export type CloakState = Readonly<{ enabled: boolean; factor: number; colorTint:
 export type ModelMaterialArtifact = Readonly<{
   identity: string
   cloakProxy: number
-  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes" | "refract"
   vertexRequirements: number
   bindings: readonly ModelTextureBinding[]
   environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
@@ -160,6 +160,7 @@ export type ModelMaterialArtifact = Readonly<{
     | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
     | Readonly<{ kind: "unlit-generic"; colorModulation: readonly [number, number, number] }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
+    | Readonly<{ kind: "refract"; normalFrame: number; normalTransform: readonly number[]; refractAmount: number; refractTint: readonly [number, number, number]; blurAmount: 0 | 1; ignoreDepth: boolean }>
     | Readonly<{ kind: "modulate" }>
 }>
 export type AuthoredTexturePlane = Readonly<{
@@ -1107,11 +1108,11 @@ function cloak(r: Reader): CloakState {
 }
 
 function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifact> {
-  if (r.decode(r.take(4)) !== "PMDL" || r.u32() !== 3) throw new ArtifactError("PMDL identity")
+  if (r.decode(r.take(4)) !== "PMDL" || r.u32() !== 4) throw new ArtifactError("PMDL identity")
   const output = new Map<string, ModelMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase(), shaderCode = r.u8(), cloakProxy = r.u8()
-    if (!identity || output.has(identity) || shaderCode > 5 || cloakProxy > 7) throw new ArtifactError("model material identity")
+    if (!identity || output.has(identity) || shaderCode > 6 || cloakProxy > 7) throw new ArtifactError("model material identity")
     const vertexRequirements = r.u16(), bindings: ModelTextureBinding[] = [], bindingIdentities = new Set<string>()
     for (let bindingCount = r.u32(); bindingCount > 0; bindingCount--) {
       const kind = r.u8(), role = r.u8(), colorRead = r.u8()
@@ -1198,6 +1199,11 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
       }
       state = Object.freeze({ kind: "unlit-two-texture", secondFrameRate: frame ? frameRate : null,
         secondScrollRate: scroll ? scrollRate : null, secondScrollAngle: scroll ? scrollAngle : null })
+    } else if (shaderCode === 6) {
+      const normalFrame = r.i32(), normalTransform = Object.freeze(Array.from({ length: 16 }, () => r.f32()))
+      const refractAmount = r.f32(), refractTint = tuple3(r), blurAmount = r.u8(), ignoreDepth = r.u8()
+      if (normalFrame < 0 || blurAmount > 1 || ignoreDepth > 1 || r.u8() || r.u8()) throw new ArtifactError("model Refract state")
+      state = Object.freeze({ kind: "refract", normalFrame, normalTransform, refractAmount, refractTint, blurAmount: blurAmount as 0 | 1, ignoreDepth: ignoreDepth === 1 })
     } else if (shaderCode === 3) {
       state = Object.freeze({ kind: "unlit-generic", colorModulation: tuple3(r) })
     } else {
@@ -1207,7 +1213,7 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
     output.set(identity, Object.freeze({
       identity,
       cloakProxy,
-      shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic", "unlit-two-texture", "modulate"] as const)[shaderCode]!,
+      shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic", "unlit-two-texture", "modulate", "refract"] as const)[shaderCode]!,
       vertexRequirements,
       bindings: Object.freeze(bindings),
       environmentMap,

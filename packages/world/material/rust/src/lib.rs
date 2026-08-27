@@ -1444,6 +1444,9 @@ pub(crate) fn float_or(
     let Some(value) = get(parameters, parameter) else {
         return Ok(default);
     };
+    // A present empty scalar converts to zero, unlike an absent shader value.
+    // Configured weapon materials use this for their Phong boost.
+    if value.iter().all(u8::is_ascii_whitespace) { return Ok(0.0); }
     std::str::from_utf8(value)
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
@@ -1846,6 +1849,31 @@ mod tests {
             selected.environment_map.as_ref().unwrap().tint,
             [0.6, 0.6, 0.6]
         );
+    }
+
+    #[test]
+    fn present_empty_shader_float_is_zero_not_the_parameter_default() {
+        let environment = SelectionEnvironment { model: true, ..SelectionEnvironment::default() };
+        let selected = material(br#"VertexLitGeneric { "$basetexture" "weapon" "$phong" "1" "$phongboost" "" "$phongfresnelranges" "[1.5 .5 3]" }"#, environment).unwrap();
+        let ModelShaderState::VertexLitGeneric(selected) = selected.model.unwrap().state else { panic!("model shader") };
+        assert_eq!(selected.phong.unwrap().boost, 0.0);
+        let absent = material(br#"VertexLitGeneric { "$basetexture" "weapon" "$phong" "1" }"#, environment).unwrap();
+        let ModelShaderState::VertexLitGeneric(absent) = absent.model.unwrap().state else { panic!("model shader") };
+        assert_eq!(absent.phong.unwrap().boost, 1.0);
+    }
+
+    #[test]
+    fn model_refract_keeps_the_shared_shader_and_current_framebuffer_contract() {
+        let source = br#"Refract { "$model" "1" "$normalmap" "lens" "$refractamount" ".15" "$bluramount" ".5" "$nocull" "1" }"#;
+        let resolved = material(source, SelectionEnvironment { model: true, ..SelectionEnvironment::default() }).unwrap();
+        assert_eq!(resolved.model.as_ref().unwrap().shader, ModelShader::Refract);
+        let state = model_draw_state(&resolved, TextureAlphaFacts { base: false }, ModelRuntimeInputs { alpha_modulation: 1.0, cloak_factor: None }).unwrap();
+        assert_eq!(state.opacity, ModelOpacity::Translucent);
+        assert_eq!(state.framebuffer, ModelFramebufferRequirement::Current);
+        let refract = refract_material_output(&resolved).unwrap().unwrap();
+        assert_eq!(refract.refract_amount, 0.15);
+        assert_eq!(refract.blur_amount, 0);
+        assert!(material(source, SelectionEnvironment::default()).unwrap().model.is_none());
     }
 
     #[test]

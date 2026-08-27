@@ -213,6 +213,34 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the exact configured equipment resource graph"]
+    fn configured_equipment_admission_stages() {
+        let graph = std::env::var("PLAYSRC_EQUIPMENT_GRAPH").expect("configured graph path");
+        let definitions = std::env::var("PLAYSRC_EQUIPMENT_DEFINITION").ok().map(|value| vec![value.parse::<u32>().unwrap()])
+            .unwrap_or_else(|| vec![45, 1103, 425, 1153, 415, 424, 312, 41, 61, 460, 220, 402]);
+        for definition in definitions {
+            let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some(&format!("equipment-{definition}"))).unwrap();
+            let resources = bundle(&bytes).unwrap();
+            let hashes = resources.iter().map(|(path, bytes)| (path.clone(), <[u8; 32]>::from(Sha256::digest(bytes)))).collect();
+            let decoders = TextureDecoders::new(&resources);
+            let models = roots(&[definition]).unwrap().into_iter().map(|(path, kind)| {
+                let model = build_model_presentation(&path, &resources, &hashes, playsrc_map::LightingProfile::Hdr, kind)
+                    .unwrap_or_else(|_| panic!("equipment {definition} model {path}"));
+                (path, model)
+            }).collect::<Vec<_>>();
+            let materials = prepare_model_materials(&models, &resources, &decoders, &hashes, playsrc_map::LightingProfile::Hdr)
+                .unwrap_or_else(|_| panic!("equipment {definition} materials"));
+            model_material_opacity(&models, &resources, &decoders, playsrc_map::LightingProfile::Hdr, Some(&materials))
+                .unwrap_or_else(|_| panic!("equipment {definition} opacity"));
+            let registry = models.iter().map(|(path, model)| (path.clone(), Arc::clone(&model.model))).collect();
+            resolve_models(None, &registry, &resources, &decoders, playsrc_map::LightingProfile::Hdr, None)
+                .unwrap_or_else(|_| panic!("equipment {definition} geometry"));
+            let section = ResourceSection { pointer: bytes.as_ptr(), length: bytes.len() };
+            assert_eq!(unsafe { playsrc_equipment_models_admit(0, &definition, 1, &section, 1, 1) }, 1, "equipment {definition} ABI");
+        }
+    }
+
+    #[test]
     fn catalog_model_roots_are_bounded_deduplicated_and_class_complete() {
         assert!(roots(&[]).is_err());
         assert!(roots(&[u32::MAX]).is_err());

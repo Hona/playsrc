@@ -85,11 +85,17 @@ export function evaluateSourceRefractPixel(input: SourceRefractPixelRequest): So
 export function createSourceRefractMaterial(input: Readonly<{
   state: SourceRefractShaderState
   normal: THREE.Texture
+  normalTransform?: readonly number[]
   tint?: THREE.Texture
   framebuffer?: THREE.Texture
 }>): Readonly<{ material: THREE.MeshBasicNodeMaterial; normalNode: ReturnType<typeof TSL.texture> }> {
   validate(input.state)
-  const normalNode = TSL.texture(input.normal, TSL.uv())
+  const transform = input.normalTransform
+  if (transform && (transform.length !== 16 || !transform.every(Number.isFinite))) throw new SourceRefractError("Refract normal transform is invalid")
+  const uv = TSL.uv()
+  const normalUv = transform ? TSL.vec2(uv.x.mul(transform[0]!).add(uv.y.mul(transform[1]!)).add(transform[3]!),
+    uv.x.mul(transform[4]!).add(uv.y.mul(transform[5]!)).add(transform[7]!)) : uv
+  const normalNode = TSL.texture(input.normal, normalUv)
   const warped = TSL.screenUV.add(normalNode.xy.mul(2).sub(1).mul(normalNode.a).mul(input.state.refractAmount))
   const coordinate = input.state.blurAmount === 1 ? warped.add(TSL.vec2(-0.5 / 512, -0.5 / 512)) : warped
   const first = input.framebuffer ? TSL.texture(input.framebuffer, coordinate) : TSL.viewportSharedTexture(coordinate)
