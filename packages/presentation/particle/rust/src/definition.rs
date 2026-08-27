@@ -202,7 +202,7 @@ impl Registry {
                     ErrorCode::MissingDefinition,
                     "particle-registry",
                     0,
-                    "requested particle definition is missing",
+                    format!("requested particle definition is missing: {root:?}"),
                 )
             })?;
             self.visit(
@@ -654,6 +654,8 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
         FunctionCategory::Operator => &[
             "Alpha Fade and Decay",
             "Alpha Fade Out Random",
+            "Alpha Fade In Random",
+            "Set child control points from particle positions",
             "Color Fade",
             "Lifespan Decay",
             "Movement Basic",
@@ -716,8 +718,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
                 &definition.source,
                 0,
                 format!(
-                    "function {} parameter {} is not in the target executable schema",
-                    function.identity, name
+                    "system {} function {} parameter {}={value:?} is not in the target executable schema; parameters={:?}",
+                    definition.name, function.identity, name, function.parameters
                 ),
             ));
         }
@@ -754,6 +756,10 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "accelerate position",
             "invert absolute value",
             "set positions in world space",
+            "set cp orientation for particles",
+            "set cp density for particles",
+            "set cp velocity for particles",
+            "set cp radius for particles",
         ]
         .contains(&name.as_str())
             || (name == "absolute value"
@@ -786,6 +792,10 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "spin_rate_degrees",
             "oscillation field",
             "maximum emission per frame",
+            "group id to affect",
+            "first control point to set",
+            "# of control points to set",
+            "first particle to copy",
             "num_to_emit",
             "num_to_emit_minimum",
             "emission count scale control point",
@@ -897,6 +907,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .eq_ignore_ascii_case("Movement Lock to Control Point")
     {
         float_parameter(function, "distance fade range", 0.0) != 0.0
+    } else if function.identity.eq_ignore_ascii_case("Set child control points from particle positions") {
+        ["set cp orientation for particles", "set cp density for particles", "set cp velocity for particles", "set cp radius for particles"].into_iter().any(|name| bool_parameter(function, name, false)) || int_parameter(function, "first particle to copy", 0) < 0
     } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
         bool_parameter(function, "use parent particles for emission scaling", false)
     } else if function
@@ -1029,6 +1041,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "start_fade_out_time",
             "end_fade_out_time",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Alpha Fade In Random") {
+        &["fade in time min", "fade in time max", "fade in time exponent", "fade in curve exponent", "proportional 0/1"]
     } else if function
         .identity
         .eq_ignore_ascii_case("Alpha Fade Out Random")
@@ -1041,6 +1055,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "ease in and out",
             "fade bias",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Set child control points from particle positions") {
+        &["group id to affect", "first control point to set", "# of control points to set", "first particle to copy", "set cp orientation for particles", "set cp density for particles", "set cp velocity for particles", "set cp radius for particles"]
     } else if function.identity.eq_ignore_ascii_case("Lifespan Decay") {
         &[]
     } else if function.identity.eq_ignore_ascii_case("Radius Scale") {
