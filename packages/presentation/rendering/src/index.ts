@@ -5298,7 +5298,8 @@ class RendererOwner implements Renderer {
           if (Array.isArray((renderer as any)._compilationPromises)) return
           if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && camera === this.#camera
             && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))) {
-            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
+            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera, camera === this.#camera
+              && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))
           }
           if (profile && !material.userData.firstParticleUse) {
             material.userData.firstParticleUse = true

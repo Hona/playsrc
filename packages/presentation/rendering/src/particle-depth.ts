@@ -17,6 +17,7 @@ export class SourceParticleDepth {
   #call = -1
   #projection = [0, 0]
   #evidenceRequested = false
+  #captureEvidence = true
   #evidence: { before: GPUTexture; depth: GPUTexture; width: number; height: number; format: string; colorSpace: string } | null = null
 
   requestEvidence(): void { this.#evidenceRequested = true }
@@ -105,7 +106,7 @@ export class SourceParticleDepth {
     return node
   }
 
-  capture(renderer: THREE.WebGPURenderer, camera: THREE.Camera): void {
+  capture(renderer: THREE.WebGPURenderer, camera: THREE.Camera, captureEvidence = true): void {
     // Three traverses onBeforeRender while compiling too; no live pass exists then.
     if (Array.isArray((renderer as any)._compilationPromises)) return
     if (this.#call === renderer.info.calls) return
@@ -120,6 +121,7 @@ export class SourceParticleDepth {
       texture.image.width = size.x; texture.image.height = size.y; texture.needsUpdate = true
     }
     this.#projection = [camera.projectionMatrix.elements[10]!, camera.projectionMatrix.elements[14]!]
+    this.#captureEvidence = captureEvidence
     renderer.copyFramebufferToTexture(texture)
     this.#call = renderer.info.calls
   }
@@ -146,7 +148,7 @@ export class SourceParticleDepth {
       ] }); groups.set(projectionKey, group)
     }
     state.currentPass.end()
-    if (this.#evidenceRequested) {
+    if (this.#evidenceRequested && this.#captureEvidence) {
       const color: GPUTexture = context.renderTarget ? backend.get(context.textures[0]).texture : backend.context.getCurrentTexture()
       if (!["rgba8unorm", "bgra8unorm", "rgba16float"].includes(color.format)) throw new Error("Particle evidence output format is unavailable")
       this.#evidence?.before.destroy(); this.#evidence?.depth.destroy()
