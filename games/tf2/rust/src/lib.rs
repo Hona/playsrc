@@ -815,6 +815,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     class: PlayerClass,
     team_selection: team_selection::TeamSelection,
     pending_team_change: Option<PlayerTeam>,
+    pending_control_point_events: Vec<control_point::Event>,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     loadout_class: PlayerClass,
@@ -991,6 +992,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 selection
             },
             pending_team_change: None,
+            pending_control_point_events: Vec::new(),
             weapon: Some(Weapon::RocketLauncher),
             loadout,
             loadout_class: PlayerClass::Soldier,
@@ -1603,7 +1605,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn apply_mover_results(&mut self, results: &[MoverResult]) -> Result<MapPhase, Error> {
         let mut candidate = self.clone();
-        let phase = candidate.map.apply_mover_results(candidate.tick, results)?;
+        let mut phase = candidate.map.apply_mover_results(candidate.tick, results)?;
+        candidate.pending_control_point_events.append(&mut phase.control_point_events);
         candidate.movement.position = add(candidate.movement.position, phase.carry);
         candidate.mover_requests.retain(|request| {
             !results.iter().any(|result| {
@@ -1622,7 +1625,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         value: playsrc_entity::Variant,
     ) -> Result<MapPhase, Error> {
         let mut candidate = self.clone();
-        let phase = candidate.map.input(candidate.tick, source, input, value)?;
+        let mut phase = candidate.map.input(candidate.tick, source, input, value)?;
+        candidate.pending_control_point_events.append(&mut phase.control_point_events);
         merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
         *self = candidate;
         Ok(phase)
@@ -1650,7 +1654,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn fire_entity_input(&mut self, target: &[u8], input: &[u8], value: &[u8], delay: f32) -> Result<(), Error> {
-        let phase = self.map.fire_input(self.tick, target, input, value, delay)?;
+        let mut phase = self.map.fire_input(self.tick, target, input, value, delay)?;
+        self.pending_control_point_events.append(&mut phase.control_point_events);
         merge_mover_requests(&mut self.mover_requests, &phase.mover_requests);
         Ok(())
     }
@@ -1846,6 +1851,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &mut projectile_events,
             &mut events,
         )?;
+        map_phase.control_point_events.splice(0..0, std::mem::take(&mut self.pending_control_point_events));
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
         if std::mem::take(&mut self.equipment_respawn_requested)
