@@ -142,6 +142,9 @@ impl Default for Equipment {
 
 impl Equipment {
     pub fn revision(&self) -> u32 { self.revision }
+    pub fn class_matches(&self, other: &Self, class: PlayerClass) -> bool {
+        self.classes[class as usize - 1] == other.classes[class as usize - 1]
+    }
 
     pub fn encode_state(&self) -> Vec<u8> {
         let mut out = b"TFEI\x01\0\0\0".to_vec();

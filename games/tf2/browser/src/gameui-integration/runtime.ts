@@ -525,6 +525,7 @@ class Integration implements Tf2GameUiIntegration {
     else if (command === "Cancel") button = "cancel-loading"
     else if (command === "find_game") button = "find-game"
     else if (command === "play_training") button = "training"
+    else if (command === "engine open_charinfo") button = "items"
     else if (command === "create_server") button = "create-server"
     else if (command === "quit") button = panel?.name === "DisconnectButton" ? "disconnect" : "quit"
     if (button === null) {

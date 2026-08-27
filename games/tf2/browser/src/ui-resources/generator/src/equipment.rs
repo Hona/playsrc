@@ -11,7 +11,9 @@ struct Registration {
     #[serde(default)] quality: u8,
     #[serde(default)] style: u8,
     #[serde(default)] attributes: Vec<Attribute>,
+    #[serde(default = "implemented_by_default")] implemented: bool,
 }
+fn implemented_by_default() -> bool { true }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,8 +118,10 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
         let item = schema.definition(supported.definition_index).ok_or("supported definition missing")?;
         let name = scalar(&item.source, "item_name").ok_or("item localization missing")?;
         let image = scalar(&item.source, "image_inventory").ok_or("item image missing")?;
-        generated.images.push(format!("../{image}"));
-        generated.tokens.push(name.into());
+        if supported.implemented {
+            generated.images.push(format!("../{image}"));
+            generated.tokens.push(name.into());
+        }
         let visuals = object(&item.source, "visuals");
         writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, image: {:?}, model_player: {:?}, attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, image,
             scalar(&item.source, "model_player").unwrap_or(""), scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
@@ -126,6 +130,7 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
     }
     output.push_str("];\npub const SUPPORTED_ITEMS: &[SupportedItem] = &[\n");
     for item in &supported_items {
+        if !item.implemented { continue; }
         let implementation = item.weapon.as_ref().map_or("Implementation::Wearable".into(), |weapon| format!("Implementation::Weapon(Weapon::{weapon})"));
         writeln!(output, "SupportedItem {{ definition_index: {}, implementation: {}, quality: {}, style: {}, attributes: &[{}] }},", item.definition_index, implementation, item.quality, item.style,
             item.attributes.iter().map(|attribute| format!("ItemAttribute {{ definition: {}, value: {:?} }}", attribute.definition, attribute.value)).collect::<Vec<_>>().join(", ")).unwrap();

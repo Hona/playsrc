@@ -1412,6 +1412,7 @@ unsafe fn compile_map(
         let mut session =
             playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map, rules);
         session.set_initial_view_angles(spawn.angles);
+        session.restore_equipment(&local_equipment().lock().expect("local equipment").persist()).map_err(|_| 11_u32)?;
         if let Some((_, bytes)) = resources
             .iter()
             .find(|(identity, _)| identity.starts_with("maps/") && identity.ends_with(".nav"))
@@ -4563,14 +4564,11 @@ pub extern "C" fn playsrc_team_select(handle: u32, choice: u32) -> u32 {
 /// # Safety
 /// `pointer` must identify writable module memory of at least `capacity` bytes.
 pub unsafe extern "C" fn playsrc_equipment_state_copy(handle: u32, pointer: *mut u8, capacity: usize) -> usize {
-    if pointer.is_null() { return 0; }
-    with(handle, |slot| {
-        let Some(session) = slot.session.as_ref() else { return 0; };
-        let bytes = session.equipment().encode_state();
-        if bytes.len() > capacity { return 0; }
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
-        bytes.len()
-    }).unwrap_or(0)
+    if pointer.is_null() || (handle != 0 && with(handle, |_| ()).is_none()) { return 0; }
+    let bytes = local_equipment().lock().expect("local equipment").encode_state();
+    if bytes.len() > capacity { return 0; }
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+    bytes.len()
 }
 
 #[unsafe(no_mangle)]
@@ -4579,19 +4577,33 @@ pub unsafe extern "C" fn playsrc_equipment_state_copy(handle: u32, pointer: *mut
 pub unsafe extern "C" fn playsrc_equipment_update(handle: u32, pointer: *const u8, length: usize) -> u32 {
     if pointer.is_null() || length == 0 || length > 1024 { return 0; }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    if handle != 0 && with(handle, |_| ()).is_none() { return 0; }
+    if bytes[0] != 2 {
+        let mut equipment = local_equipment().lock().expect("local equipment");
+        let result = match (bytes[0], length) {
+            (0, 693) => playsrc_tf2::equipment::Equipment::restore(&bytes[1..]).map(|restored| *equipment = restored),
+            (1, 7) => {
+                let Ok(class) = playsrc_tf2::PlayerClass::try_from(bytes[1]) else { return 0; };
+                let Ok(position) = playsrc_tf2::schema::LoadoutPosition::try_from(bytes[2]) else { return 0; };
+                let definition = u32::from_le_bytes(bytes[3..7].try_into().unwrap());
+                equipment.equip(class, position, (definition != u32::MAX).then_some(definition)).map(|_| ())
+            },
+            _ => return 0,
+        };
+        if result.is_err() { return 0; }
+        let saved = equipment.persist();
+        drop(equipment);
+        for slot in slots().lock().expect("TF2 slots").iter_mut() {
+            if let Some(session) = slot.session.as_mut() { session.restore_equipment(&saved).expect("validated local equipment"); }
+        }
+        return 1;
+    }
     let Some((index, generation)) = decode(handle) else { return 0; };
     let mut slots = slots().lock().expect("TF2 slots");
     let Some(slot) = slots.get_mut(index) else { return 0; };
     if slot.generation != generation || slot.payload.is_none() { return 0; }
     let Some(session) = slot.session.as_mut() else { return 0; };
     let result = match (bytes[0], length) {
-        (0, 693) => session.restore_equipment(&bytes[1..]),
-        (1, 7) => {
-            let Ok(class) = playsrc_tf2::PlayerClass::try_from(bytes[1]) else { return 0; };
-            let Ok(position) = playsrc_tf2::schema::LoadoutPosition::try_from(bytes[2]) else { return 0; };
-            let definition = u32::from_le_bytes(bytes[3..7].try_into().unwrap());
-            session.equip_item(class, position, (definition != u32::MAX).then_some(definition)).map(|_| ())
-        },
         (2, 9) => {
             let identity = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
             let definition = u32::from_le_bytes(bytes[5..9].try_into().unwrap());
@@ -4601,6 +4613,11 @@ pub unsafe extern "C" fn playsrc_equipment_update(handle: u32, pointer: *const u
     };
     if result.is_ok() { gameplay_replay::mutation(handle, 5, bytes); }
     u32::from(result.is_ok())
+}
+
+fn local_equipment() -> &'static Mutex<playsrc_tf2::equipment::Equipment> {
+    static EQUIPMENT: OnceLock<Mutex<playsrc_tf2::equipment::Equipment>> = OnceLock::new();
+    EQUIPMENT.get_or_init(|| Mutex::new(playsrc_tf2::equipment::Equipment::default()))
 }
 
 #[unsafe(no_mangle)]

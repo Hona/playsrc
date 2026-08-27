@@ -88,6 +88,8 @@ export type Tf2ClassSelectionIntegrationRequest = Readonly<{
   clock: Readonly<{ nowSeconds(): number }>
   random: Readonly<{ nextUnit(): number }>
   onRequest(request: Tf2ClassSelectionRequest): void
+  loadoutAvailable?(): boolean
+  onEditLoadout?(identity: import("../codec").Tf2Class): void
   onModelPanels(panels: readonly Tf2ClassSelectionModelPanel[]): void
 }>
 
@@ -155,6 +157,7 @@ class Integration implements Tf2ClassSelectionIntegration {
   readonly #root: HTMLElement
   readonly #resources: Tf2VguiResources
   readonly #onRequest: Tf2ClassSelectionIntegrationRequest["onRequest"]
+  readonly #loadoutAvailable: () => boolean
   readonly #onModelPanels: Tf2ClassSelectionIntegrationRequest["onModelPanels"]
   readonly #localization: ReadonlyMap<string, string>
   readonly #source: VguiResourceDocument
@@ -187,6 +190,7 @@ class Integration implements Tf2ClassSelectionIntegration {
     this.#roster = request.roster ?? (() => [])
     this.#resources = request.resources
     this.#onRequest = request.onRequest
+    this.#loadoutAvailable = request.loadoutAvailable ?? (() => false)
     this.#onModelPanels = request.onModelPanels
     this.#source = request.resources.document(CLASS_SELECTION_PATH)
     this.#localization = new Map(request.resources.localization.tokens.map((token) => [token.name.toLowerCase(), token.value]))
@@ -205,6 +209,10 @@ class Integration implements Tf2ClassSelectionIntegration {
       reducedMotion: request.reducedMotion,
       onRequest: (value) => {
         if (value.kind !== "command") return
+        if (value.command === "openloadout" && this.#state.selected !== 12 && request.loadoutAvailable?.()) {
+          request.onEditLoadout?.(this.#state.selected as import("../codec").Tf2Class)
+          return
+        }
         if (/^select (?:[1-9]|12)$/u.test(value.command)) {
           this.dispatch({ kind: "select", identity: Number(value.command.slice(7)) as Tf2ClassSelectionIdentity })
         } else if (value.command === "vguicancel" || value.command === "close") this.dispatch({ kind: "cancel" })
@@ -478,7 +486,8 @@ class Integration implements Tf2ClassSelectionIntegration {
       const select = panel(this.#runtime, "ClassMenuSelect", this.#owner)
       if (select !== null) apply(this.#runtime, { kind: "set-panel-state", panel: select, visible: this.#state.initialJoin })
       const loadout = panel(this.#runtime, "EditLoadoutButton", this.#owner)
-      if (loadout !== null) apply(this.#runtime, { kind: "set-panel-state", panel: loadout, visible: this.#state.selected !== 12 })
+      if (loadout !== null) apply(this.#runtime, { kind: "set-panel-state", panel: loadout, visible: this.#state.selected !== 12,
+        enabled: this.#loadoutAvailable() })
       this.#updateTips(this.#state.selected)
       this.#updateRoster()
     })
