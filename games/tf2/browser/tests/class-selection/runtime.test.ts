@@ -3,7 +3,7 @@ import { createRoot } from "../../../../../packages/presentation/vgui/tests/fake
 import { createTf2GameUiTransitionFixture } from "../gameui-integration/fixture"
 import { initializeTf2ClassSelectionIntegration, TF2_CLASS_SELECTION_CLASSES, type Tf2ClassSelectionModelPanel, type Tf2ClassSelectionRequest } from "../../src/class-selection"
 
-function fixture() {
+function fixture(roster: readonly { fake: boolean; team: number; class: number }[] = []) {
   const base = createTf2GameUiTransitionFixture()
   const requests: Tf2ClassSelectionRequest[] = []
   const models: (readonly Tf2ClassSelectionModelPanel[])[] = []
@@ -16,11 +16,32 @@ function fixture() {
     random: { nextUnit: () => 0 },
     onRequest: (request) => requests.push(request),
     onModelPanels: (panels) => models.push(panels),
+    roster: () => roster,
   })
   return Object.freeze({ ...base, integration, requests, models })
 }
 
 describe("authored TF2 class selection VGUI integration", () => {
+  test("projects authoritative local/bot counts and keeps admission out of the old local class", () => {
+    const { integration } = fixture([
+      { fake: false, team: 2, class: 3 }, { fake: true, team: 2, class: 1 },
+      { fake: true, team: 2, class: 1 }, { fake: true, team: 3, class: 5 },
+    ])
+    integration.dispatch({ kind: "show", team: 2, current: null })
+    let panels = integration.snapshot().panels
+    expect(panels.find(panel => panel.name === "numSoldier")?.text).toBe("")
+    expect(panels.find(panel => panel.name === "numScout")?.text).toBe("2")
+    expect(panels.find(panel => panel.name === "countImage0")?.state.image).toBe("class_sel_sm_scout_red")
+    expect(panels.find(panel => panel.name === "countImage1")?.effectivelyVisible).toBe(true)
+    expect(panels.find(panel => panel.name === "countImage2")?.effectivelyVisible).toBe(false)
+    expect(panels.find(panel => panel.name === "localPlayerImage")?.effectivelyVisible).toBe(false)
+    integration.dispatch({ kind: "show", team: 2, current: 3 })
+    panels = integration.snapshot().panels
+    expect(panels.find(panel => panel.name === "numSoldier")?.text).toBe("1")
+    expect(panels.find(panel => panel.name === "localPlayerImage")?.state.image).toBe("class_sel_sm_soldier_red")
+    expect(panels.find(panel => panel.name === "CountLabel")?.effectivelyVisible).toBe(true)
+    expect(panels.find(panel => panel.name === "UpArrow")?.effectivelyVisible).toBe(false)
+  })
   test("mounts every authored class button and exposes both exact model-panel passes", () => {
     const { integration, models } = fixture()
     integration.dispatch({ kind: "show", team: 2, current: 3 })

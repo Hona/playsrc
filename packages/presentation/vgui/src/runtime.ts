@@ -2805,7 +2805,7 @@ class SourceVguiRuntime implements VguiRuntime {
       && frame === 0
       && rotation === 0
       && panel.imageFill === 1
-      && !sameName(panel.sourceControl, "ScalableImagePanel")
+      && (!sameName(panel.sourceControl, "ScalableImagePanel") || ["src_corner_width", "src_corner_height", "draw_corner_width", "draw_corner_height"].every(name => Number(panel.properties.get(name) ?? 0) === 0))
     if (image.material && !directMaterial) {
       const tiled = panel.properties.get("tileImage") === "1" || panel.properties.get("tileHorizontally") === "1" || panel.properties.get("tileVertically") === "1"
       const geometry: VguiImageRasterGeometry = sameName(panel.sourceControl, "ScalableImagePanel")

@@ -458,6 +458,13 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     view.setUint32(at, encoded.length, true); at += 4; bytes.set(encoded, at); at += encoded.length
   }
   for (const { request, model, item, activity } of encodedRequests) {
+    if ((request.classSelection !== undefined && typeof request.classSelection !== "boolean")
+      || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
+      || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
+      || ((request.classSelection || request.modelPanel) && (request.itemModel !== undefined || request.handsOnlyViewmodel || request.phase !== undefined))
+      || (request.modelPanelReset && !request.classSelection && !request.modelPanel)) {
+      throw new ProjectilePresentationError("MalformedFact", "model panel pose request")
+    }
     if (!Number.isSafeInteger(request.identity) || request.identity < 1 || !request.model || !request.activity ||
       ![request.previousElapsedSeconds, request.elapsedSeconds].every(Number.isFinite) || request.previousElapsedSeconds < 0 ||
       request.elapsedSeconds < request.previousElapsedSeconds || ![request.skin, request.lod, ...request.bodygroups, ...(request.itemBodygroups ?? [])].every((value) => Number.isSafeInteger(value) && value >= 0) ||
