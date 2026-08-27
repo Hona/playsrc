@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./artifacts": "./src/artifacts.ts",
     "./codec": "./src/codec.ts",
+    "./client-render-frame": "./src/client-render-frame.ts",
     "./engineer": "./src/engineer.ts",
     "./equipment": "./src/equipment/index.ts",
     "./class": "./src/class.ts",

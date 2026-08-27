@@ -46,11 +46,11 @@ function stop(tick: bigint, immediate: boolean): StopRequest {
 }
 
 describe("generation-owned projectile particle transactions", () => {
-  test("uses one version-3 stop opcode with explicit graceful and immediate modes", () => {
+  test("uses one version-4 stop opcode with explicit graceful and immediate modes", () => {
     const graceful = createParticleBatchEncoder().encode(1n, [0, 0, 0], [stop(1n, false)])
     const immediate = createParticleBatchEncoder().encode(1n, [0, 0, 0], [stop(1n, true)])
 
-    expect(new DataView(graceful.buffer).getUint32(4, true)).toBe(3)
+    expect(new DataView(graceful.buffer).getUint32(4, true)).toBe(4)
     expect([...graceful.subarray(32, 36)]).toEqual([3, 0, 0, 0])
     expect([...immediate.subarray(32, 36)]).toEqual([3, 1, 0, 0])
   })

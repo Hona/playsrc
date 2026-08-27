@@ -270,8 +270,8 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
           if (!record) return
           record.finished = host.performance.now()
           const shared = typeof SharedArrayBuffer === "function" && response?.output instanceof SharedArrayBuffer
-          record.receivedBytes = shared ? 0 : response?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
-            ?? response?.output?.byteLength ?? response?.payload?.byteLength ?? 0
+          record.receivedBytes = shared ? 0 : (response?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
+            ?? response?.output?.byteLength ?? response?.payload?.byteLength ?? 0) + (response?.visualOutput?.byteLength ?? 0)
           record.sharedBytes = shared ? response.byteLength ?? 0 : 0
           if (response?.timings) record.timings = response.timings
           this.records.delete(response.id)

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fmt, ops::Range};
 
 mod source_random;
+pub mod smokestack;
 mod value;
 mod world;
 pub mod particle_system;

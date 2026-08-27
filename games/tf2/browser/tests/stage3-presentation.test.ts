@@ -40,7 +40,7 @@ test("encodes one bounded complete PCF phase without per-particle calls", () => 
   const bytes = createParticleBatchEncoder().encode(7n, [4, 5, 6], [request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PPTX")
-  expect(view.getUint32(4, true)).toBe(3)
+  expect(view.getUint32(4, true)).toBe(4)
   expect(view.getUint32(28, true)).toBe(1)
   expect(bytes[32]).toBe(1)
   expect(new TextDecoder().decode(bytes.subarray(68, 79))).toBe("rockettrail")
@@ -62,7 +62,7 @@ test("encodes both authored Medi Gun beam endpoints in one particle transaction"
   })
   const bytes = createParticleBatchEncoder().encode(9n, [0, 0, 0], [start, update])
   const view = new DataView(bytes.buffer)
-  expect(view.getUint32(4, true)).toBe(3)
+  expect(view.getUint32(4, true)).toBe(4)
   expect(bytes[34]).toBe(2)
   const nameBytes = new TextEncoder().encode("medicgun_beam_red").length
   const patient = 68 + nameBytes + 32

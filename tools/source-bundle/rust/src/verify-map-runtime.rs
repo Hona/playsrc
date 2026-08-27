@@ -130,16 +130,44 @@ fn main() -> Result<(), String> {
         Ok(payload)
     })();
     let payload = result?;
+    let smoke_occlusion = playsrc_tf2_wasm::smokestack_occlusion_probe(handle)
+        .map(|(identity, position, angles, fraction)| serde_json::json!({"identity":identity,"position":position,"yawDegrees":angles[0],"pitchDegrees":angles[1],"worldFraction":fraction}));
+    let parsed = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).map_err(|error| error.to_string())?;
+    let entities = playsrc_entity::parse(parsed.lumps[0].bytes(&parsed), playsrc_entity::Limits::default()).map_err(|error| error.to_string())?;
+    let mut smoke_camera = None;
+    if let Some(stack) = entities.entities.iter().find(|entity| entity.classname.as_deref() == Some(b"env_smokestack")) {
+        let origin = stack.pairs.iter().find(|pair| pair.key.eq_ignore_ascii_case(b"origin")).ok_or("smokestack origin")?;
+        let origin = std::str::from_utf8(&origin.value).map_err(|e| e.to_string())?.split_whitespace().map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let view = [origin[0], origin[1] - 80.0, origin[2] + 20.0, origin[0], origin[1] - 80.0, origin[2] + 20.0, 90.0, 5.0, 75.0, 16.0 / 9.0, 1.0, 30_000.0, 0.0, -1.0];
+        smoke_camera = Some([view[3], view[4], view[5]]);
+        if unsafe { playsrc_tf2_wasm::playsrc_visibility_query(handle, view.as_ptr()) } != 1 { return Err("native smokestack view failed".into()); }
+    }
     // Exercise real map-authored systems through the same single-call particle
     // boundary as gameplay. This catches operators that fail only on emission.
     let mut particle_request = [0_u8; 32];
     particle_request[..4].copy_from_slice(b"PPTX");
-    particle_request[4..8].copy_from_slice(&3_u32.to_le_bytes());
+    particle_request[4..8].copy_from_slice(&4_u32.to_le_bytes());
     particle_request[12..16].copy_from_slice(&1.0_f32.to_le_bytes());
+    if let Some(camera) = smoke_camera {
+        for (axis, value) in camera.into_iter().enumerate() { particle_request[16 + axis * 4..20 + axis * 4].copy_from_slice(&value.to_le_bytes()); }
+    }
     if unsafe { playsrc_tf2_wasm::playsrc_particle_transact(handle, particle_request.as_ptr(), particle_request.len()) } != 1 {
         let mut detail = vec![0; playsrc_tf2_wasm::playsrc_simulation_error_length()];
         unsafe { playsrc_tf2_wasm::playsrc_simulation_error_copy(detail.as_mut_ptr(), detail.len()); }
         return Err(format!("native map particle simulation failed: {}", String::from_utf8_lossy(&detail)));
+    }
+    if playsrc_tf2_wasm::playsrc_legacy_particle_frames(handle) == 1 {
+        let mut frame = [0_u8; 64];
+        frame[..32].copy_from_slice(&particle_request);
+        frame[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+        frame[32..36].copy_from_slice(&(1.0_f32 / 60.0).to_le_bytes());
+        for (axis, value) in [90.0_f32, 5.0, 75.0, 16.0 / 9.0].into_iter().enumerate() { frame[44 + axis * 4..48 + axis * 4].copy_from_slice(&value.to_le_bytes()); }
+        for index in 0..60_u32 {
+            let now = index as f32 / 60.0;
+            frame[8..12].copy_from_slice(&now.to_le_bytes()); frame[12..16].copy_from_slice(&now.to_le_bytes());
+            frame[36..40].copy_from_slice(&index.to_le_bytes()); frame[40..44].copy_from_slice(&(index + 1).to_le_bytes());
+            if unsafe { playsrc_tf2_wasm::playsrc_particle_transact(handle, frame.as_ptr(), frame.len()) } != 1 { return Err("native legacy particle frame failed".into()); }
+        }
     }
     let particle_bytes = playsrc_tf2_wasm::playsrc_particle_output_length(handle);
     let mut particle_output = vec![0; particle_bytes];
@@ -149,25 +177,25 @@ fn main() -> Result<(), String> {
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
     fs::write(output.join(format!("{target}.psmp")), &payload)
         .map_err(|error| error.to_string())?;
-    let parsed = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).map_err(|error| error.to_string())?;
-    let entities = playsrc_entity::parse(parsed.lumps[0].bytes(&parsed), playsrc_entity::Limits::default()).map_err(|error| error.to_string())?;
     let mut spawns = Vec::new();
     let mut particle_systems = Vec::new();
     let mut sky_cameras = Vec::new();
+    let mut smokestacks = Vec::new();
     for entity in &entities.entities {
-        if ![b"info_player_teamspawn".as_slice(), b"info_particle_system", b"sky_camera"].contains(&entity.classname.as_deref().unwrap_or_default()) { continue; }
+        if ![b"info_player_teamspawn".as_slice(), b"info_particle_system", b"sky_camera", b"env_smokestack"].contains(&entity.classname.as_deref().unwrap_or_default()) { continue; }
         let value = |name: &[u8]| entity.pairs.iter().find(|pair| pair.key.eq_ignore_ascii_case(name)).map(|pair| String::from_utf8_lossy(&pair.value).into_owned());
         let vector = |name: &[u8]| -> Result<[f32; 3], String> {
             let values = value(name).unwrap_or_else(|| "0 0 0".to_owned()).split_whitespace().map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
             values.try_into().map_err(|_| "spawn vector is invalid".to_owned())
         };
         match entity.classname.as_deref().unwrap_or_default() {
+            b"env_smokestack" => smokestacks.push(serde_json::json!({"identity":entity.index,"name":value(b"targetname"),"material":value(b"SmokeMaterial"),"position":vector(b"origin")?,"active":value(b"InitialState"),"rate":value(b"Rate"),"speed":value(b"Speed"),"jetLength":value(b"JetLength"),"color":value(b"rendercolor")})),
             b"info_particle_system" => particle_systems.push(serde_json::json!({"identity":entity.index,"name":value(b"targetname"),"effect":value(b"effect_name"),"position":vector(b"origin")?,"active":value(b"start_active")})),
             b"sky_camera" => sky_cameras.push(serde_json::json!({"position":vector(b"origin")?,"scale":value(b"scale")})),
             _ => spawns.push(serde_json::json!({ "identity": entity.index, "team": value(b"TeamNum"), "position": vector(b"origin")?, "angles": vector(b"angles")?, "disabled": value(b"StartDisabled"), "classFlags": value(b"spawnflags") })),
         }
     }
-    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras,"smokestacks":smokestacks,"smokeOcclusion":smoke_occlusion})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     println!(
         "{}",
         serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": payload.len(), "sha256": hex_hash(&payload), "particleOutputBytes": particle_bytes,"skyParticles":sky_particles})

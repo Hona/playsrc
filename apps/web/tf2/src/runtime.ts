@@ -69,10 +69,12 @@ import {
 } from "@playsrc/game-tf2-browser/loading-presentation"
 import { encodeCommand, mapDerivedKey, type BotConfiguration, type BotQuotaMode, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
 import { blueprintModel, buildingModel, initializeTf2EngineerPresentation, type Tf2EngineerPresentation } from "@playsrc/game-tf2-browser/engineer"
+import { createClientRenderFrameClock } from "@playsrc/game-tf2-browser/client-render-frame"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, parseEquipmentModelArtifacts, type PresentationArtifacts, type EquipmentModelArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
   createParticleBatchEncoder,
+  encodeLegacyParticleFrame,
   createProjectilePresentationMapper,
   createViewmodelPresenter,
   classPipelinePoseRequests,
@@ -442,6 +444,7 @@ export class Tf2Application {
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
+  #clientRenderFrames = createClientRenderFrameClock()
   #pyroFlameEffect?: string
   #combatTracerCount = 0
   #combatDecalCount = 0
@@ -1952,6 +1955,7 @@ export class Tf2Application {
     this.#preparingModelPipelines = false
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
+    this.#clientRenderFrames = createClientRenderFrameClock()
     this.#medicBeamTarget = null
     this.#medicBeamReleasing = false
     this.#pendingProjectileTimeline = []
@@ -4527,7 +4531,7 @@ export class Tf2Application {
       return
     }
     if (!this.#paused && this.#snapshot && this.#showFps === 0 && this.#showPos !== 0) this.#updateDiagnostics(time)
-    if (this.#paused || !this.#client || !this.#renderer) return
+    if (this.#paused || !this.#client || !this.#renderer) { this.#clientRenderFrames.suspend(); return }
     if (!this.#snapshot) {
       if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
       return
@@ -4552,7 +4556,7 @@ export class Tf2Application {
     const prepared=required??this.#preparedPresentation
     if(
       this.#displayTask||this.#classSelectionRenderTask||this.#teamSelectionRenderTask||!prepared||this.#closed||this.#paused||
-      (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
+      (!required&&!this.#loaded?.legacyParticleFrames&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     ){
       if(frameProfiler?.active){
         if(this.#displayTask){
@@ -4589,6 +4593,7 @@ export class Tf2Application {
   async #renderDisplay(prepared:PreparedPresentation):Promise<void>{
     const client=this.#client,renderer=this.#renderer,generation=this.#generation
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
+    const clientFrame = this.#clientRenderFrames.prepare(performance.now() / 1000)
     const viewRevision=this.#viewRevision,mouseRevision=this.#mouseViewRevision,snapRevision=this.#authoritativeViewRevision,yaw=this.#yaw,pitch=this.#pitch
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
@@ -4655,6 +4660,18 @@ export class Tf2Application {
         ? Number(prepared.snapshot.tick-this.#lastRenderedTick)
         : prepared.publication.selectedTicks
     const models=prepared.frame.models
+    let particles = prepared.frame.particles
+    let legacyParticleMilliseconds = 0, legacyParticleBytes = 0
+    if (this.#loaded?.legacyParticleFrames && this.#artifacts) {
+      const started = performance.now()
+      this.#wasmCalls.particles++
+      const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio }))
+      if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
+      particles = [...(particles ?? []), ...decodeParticleRenderOutput(output.particles, this.#artifacts.particleMaterials).items]
+      if (output.visuals.byteLength !== 0) throw new Error("Legacy frame visual output has no admitted renderer")
+      legacyParticleBytes = output.particles.byteLength + output.visuals.byteLength
+      legacyParticleMilliseconds = performance.now() - started
+    }
     const renderStart=performance.now()
     const hudPixelRevision = profile?.hudPixelEvidenceRevision
     const captureHudPixels = Number.isSafeInteger(hudPixelRevision) && hudPixelRevision !== (profile?.hudPixelEvidence as { revision?: number } | undefined)?.revision
@@ -4663,6 +4680,9 @@ export class Tf2Application {
     if (captureCosmeticDepth) renderer.requestParticleDepthEvidence()
     const rendered=await renderer.render({
       ...prepared.frame,
+      particles,
+      clientFrame: clientFrame.clientFrame,
+      clientFrameSeconds: clientFrame.clientFrameSeconds,
       hudMaterials:this.#hudIntegration?.materialFrame(),
       ...(captureHudPixels ? { capture: { format: "image/png" as const, beforeHud: true } } : {}),
       models,
@@ -4672,6 +4692,7 @@ export class Tf2Application {
       sky3d,
       deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
     })
+    clientFrame.accept()
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     if (captureHudPixels && profile) profile.hudPixelEvidence = { revision: hudPixelRevision, before: rendered.beforeHudCapture, after: rendered.capture }
     const hudModel=this.#hudIntegration?.modelPanel()
@@ -4695,7 +4716,7 @@ export class Tf2Application {
     if (captureCosmeticDepth && profile) {
       const pixels = this.#canvas.toDataURL("image/png")
       const buffers = await renderer.readParticleDepthEvidence()
-      if (buffers) profile.cosmeticDepthCapture = { revision: cosmeticDepthRevision, camera, particles: prepared.frame.particles,
+      if (buffers) profile.cosmeticDepthCapture = { revision: cosmeticDepthRevision, camera, particles,
         tick: prepared.snapshot.tick.toString(), pixels, buffers }
     }
     if (profile?.cloakSampleActive) profile.cloakSampleCopies = Number(profile.cloakSampleCopies ?? 0) + rendered.timings.cloakFramebufferCopies
@@ -4741,10 +4762,10 @@ export class Tf2Application {
       const skyGeometry=sky3d?renderer.captureGeometryEvidence(sky3d.camera,"sky3d"):null
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),skyGeometry,geometry:renderer.captureGeometryEvidence(camera)})
     }
-    if (profile && Number.isSafeInteger(profile.particleEvidenceRevision) && prepared.frame.particles?.length
+    if (profile && Number.isSafeInteger(profile.particleEvidenceRevision)
       && (profile.particleEvidence as { revision?: number } | undefined)?.revision !== profile.particleEvidenceRevision) {
       profile.particleEvidence = { revision: profile.particleEvidenceRevision, tick: prepared.snapshot.tick.toString(), camera,
-        items: prepared.frame.particles, batches: renderer.captureParticleBatchEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
+        items: particles, batches: renderer.captureParticleBatchEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
     }
     if (profile && Array.isArray(profile.doorEvidenceTargets) && this.#view.phase === "Ready") {
       const captures = (profile.doorEvidence ??= []) as Array<{ key: string }>
@@ -4769,7 +4790,7 @@ export class Tf2Application {
     const frameProfiler=browserFrameProfiler()
     const admissionProfile=botAdmissionProfile()
     if(admissionProfile)recordBotAdmission(admissionProfile,"frame-submitted",prepared.snapshot.tick,{displayFrame:this.#displayFrame,actors:models?.filter(model=>model.identity>=BOT_MODEL_IDENTITY_BASE&&model.identity<BOT_MODEL_IDENTITY_BASE+0x10000).map(model=>({actor:model.identity-BOT_MODEL_IDENTITY_BASE,model:model.model,skin:model.skin}))??[]})
-    const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
+    const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,legacyParticleMilliseconds,legacyParticleBytes,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
     if(frameProfiler?.active&&rendererProfile){
       frameProfiler.counters.completedFrames!+=1
       frameProfiler.completedFrames.push({
@@ -5816,6 +5837,9 @@ export class Tf2Application {
         }
       }
       profile.memoryAssets = Object.freeze({
+        compileWasmLinearMemoryBytes: this.#loaded?.timings.wasmLinearMemoryBytes,
+        compileWasmAllocatorLiveBytes: this.#loaded?.timings.wasmAllocatorLiveBytes,
+        compileWasmAllocatorHighWaterBytes: this.#loaded?.timings.wasmAllocatorHighWaterBytes,
         generation: this.#generation,
         target: this.#mapIdentity,
         resourceSections: this.#dependencies?.sections.length ?? 0,

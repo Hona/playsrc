@@ -394,6 +394,7 @@ pub struct MapRuntime {
     movers: BTreeMap<EntityHandle, ActiveMover>,
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
     particle_systems: playsrc_entity::particle_system::Systems,
+    smokestacks: playsrc_entity::smokestack::Systems,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     control_points: Option<crate::control_point::World>,
@@ -443,6 +444,7 @@ impl MapRuntime {
             model_bounds,
             external_classes: vec![
                 playsrc_entity::particle_system::binding(),
+                playsrc_entity::smokestack::binding(),
                 playsrc_entity::ExternalClassBinding {
                     classname: b"info_player_teamspawn".to_vec(),
                     inputs: [b"Enable".as_slice(), b"Disable", b"RoundSpawn", b"RoundActivate"].into_iter().map(<[u8]>::to_vec).collect(),
@@ -905,8 +907,11 @@ impl MapRuntime {
         });
         let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.clone())).collect()));
         let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
+        let mut smokestacks = playsrc_entity::smokestack::Systems::default();
+        smokestacks.synchronize(&world).map_err(|_| invalid(0))?;
         Ok(Self {
             particle_systems,
+            smokestacks,
             world,
             player,
             actor_handles: BTreeMap::new(),
@@ -1371,6 +1376,10 @@ impl MapRuntime {
 
     pub fn particle_systems(&self) -> Vec<playsrc_entity::particle_system::Presentation> {
         self.particle_systems.presentation(&self.world)
+    }
+
+    pub fn smokestacks(&self) -> Vec<playsrc_entity::smokestack::Presentation> {
+        self.smokestacks.presentation(&self.world)
     }
 
     pub fn restart_control_point_map(&mut self, tick: u64) -> Result<MapPhase, RuntimeFailure> {
@@ -1924,6 +1933,9 @@ impl MapRuntime {
     }
 
     fn consume(&mut self, batch: TransitionBatch) -> Result<MapPhase, RuntimeFailure> {
+        if batch.records.iter().any(|record| matches!(record.transition, Transition::Lifecycle { .. })) {
+            self.smokestacks.synchronize(&self.world).map_err(|_| invalid(0))?;
+        }
         let mut output = MapPhase::default();
         for record in batch.records {
             match record.transition {
@@ -2162,6 +2174,7 @@ impl MapRuntime {
                     } => {
                         let source = self.source(entity);
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
+                        self.smokestacks.input(entity, &input, &value);
                         let mut point_events = Vec::new();
                         if input.eq_ignore_ascii_case(b"RoundActivate")
                             && let Some(koth) = self.round_configuration.koth

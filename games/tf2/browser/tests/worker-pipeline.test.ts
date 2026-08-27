@@ -196,6 +196,7 @@ function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0
 
 class PipelineWorker implements WorkerLike {
   visibilityResult?: ArrayBuffer
+  visualResult?: Uint8Array
   readonly requests: WorkerRequest[] = []
   readonly mapHash: string
   failure?: WorkerResponse
@@ -258,6 +259,7 @@ class PipelineWorker implements WorkerLike {
         this.#respond({
           id: request.id,
           kind: "loaded",
+          legacyParticleFrames: false,
           generation: request.generation,
           payloadBytes: MAP.byteLength,
           payloadSha256: this.mapHash,
@@ -297,7 +299,8 @@ class PipelineWorker implements WorkerLike {
       }
       case "particles": {
         const output = request.batch
-        this.#respond({ id: request.id, kind: "particles", generation: request.generation, output, timings: TIMINGS }, [output])
+        const visualOutput = this.visualResult?.slice().buffer
+        this.#respond({ id: request.id, kind: "particles", generation: request.generation, output, ...(visualOutput ? { visualOutput } : {}), timings: TIMINGS }, [output, ...(visualOutput ? [visualOutput] : [])])
         return
       }
       case "decode-resources": {
@@ -749,6 +752,18 @@ describe("TF2 Worker transport ownership", () => {
     const particles = client.particles(2, new Uint8Array(32))
     await Promise.all([models, particles])
     expect(worker.requests.map((request) => request.kind)).toEqual(["models", "particles"])
+    await client.shutdown()
+  })
+
+  test("one accepted legacy frame receives both particle and visual outputs without a second request", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    worker.visualResult = new Uint8Array([0x50, 0x4c, 0x56, 0x46])
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const frame = await client.legacyFrame(2, new Uint8Array(64))
+    expect(frame.particles.byteLength).toBe(64)
+    expect(frame.visuals).toEqual(worker.visualResult)
+    expect(worker.requests.map(request => request.kind)).toEqual(["particles"])
+    await expect(client.particles(2, new Uint8Array(32))).rejects.toMatchObject({ code: "WorkerFailed" })
     await client.shutdown()
   })
 

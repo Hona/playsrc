@@ -873,7 +873,7 @@ export function createParticleBatchEncoder() {
       const bytes = new Uint8Array(length)
       const view = new DataView(bytes.buffer)
       bytes.set([0x50, 0x50, 0x54, 0x58])
-      view.setUint32(4, 3, true)
+      view.setUint32(4, 4, true)
       view.setFloat32(8, previousTime, true)
       view.setFloat32(12, to, true)
       camera.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
@@ -926,6 +926,27 @@ export function createParticleBatchEncoder() {
       return bytes
     },
   })
+}
+
+/** Render-only operation on the existing particle channel. PCF simulation and
+ * its event clock are not advanced by an accepted legacy client frame. */
+export function encodeLegacyParticleFrame(timeSeconds: number,
+  frame: Pick<import("./client-render-frame").ClientRenderFrame, "clientFrame" | "acceptedClientFrame" | "clientFrameSeconds">,
+  camera: Readonly<{ position: Vector3; yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; aspectRatio: number }>,
+  visualPayload: Uint8Array = new Uint8Array(0)): Uint8Array {
+  if (![timeSeconds, frame.clientFrameSeconds, ...camera.position, camera.yawDegrees, camera.pitchDegrees, camera.verticalFovDegrees, camera.aspectRatio].every(value => Number.isFinite(Math.fround(value))) || timeSeconds < 0 || frame.clientFrameSeconds < 0 || !uint32(frame.clientFrame) || (frame.acceptedClientFrame !== 0 && !uint32(frame.acceptedClientFrame)) || frame.acceptedClientFrame >= frame.clientFrame || camera.verticalFovDegrees <= 0 || camera.verticalFovDegrees >= 180 || camera.aspectRatio <= 0) {
+    throw new ProjectilePresentationError("MalformedFact", "legacy particle frame is invalid")
+  }
+  if (!(visualPayload instanceof Uint8Array) || visualPayload.byteLength > 4 * 1024 * 1024 - 64) throw new ProjectilePresentationError("BoundExceeded", "legacy visual frame payload is invalid")
+  const bytes = new Uint8Array(64 + visualPayload.byteLength), view = new DataView(bytes.buffer)
+  bytes.set([0x50, 0x50, 0x54, 0x58]); view.setUint32(4, 4, true)
+  view.setFloat32(8, timeSeconds, true); view.setFloat32(12, timeSeconds, true)
+  camera.position.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
+  view.setUint32(28, 0x8000_0000, true); view.setFloat32(32, frame.clientFrameSeconds, true)
+  view.setUint32(36, frame.acceptedClientFrame, true); view.setUint32(40, frame.clientFrame, true)
+  ;[camera.yawDegrees, camera.pitchDegrees, camera.verticalFovDegrees, camera.aspectRatio].forEach((value, index) => view.setFloat32(44 + index * 4, value, true))
+  view.setUint32(60, visualPayload.byteLength, true); bytes.set(visualPayload, 64)
+  return bytes
 }
 
 function particleIdentity(value: string): boolean {
