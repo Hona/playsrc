@@ -1860,36 +1860,8 @@ export class Tf2Application {
       }
       this.#requireOperation(operation)
       this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
-      const warmupCamera=tf2Camera(this.#snapshot,this.#yaw,this.#pitch)
-      const warmupViewport=this.#viewport()
-      const warmupVisibility=await this.#client!.visibility(this.#generation,{
-        position:warmupCamera.position,yawDegrees:warmupCamera.yawDegrees,pitchDegrees:warmupCamera.pitchDegrees,
-        verticalFovDegrees:warmupCamera.verticalFovDegrees,aspectRatio:warmupViewport.width/warmupViewport.height,
-        near:warmupCamera.near,far:warmupCamera.far,presentationTimeSeconds:Number(this.#snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,
-      })
-      await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
+      await this.#prepareGameplayPipelines(this.#snapshot.team)
       this.#requireOperation(operation)
-      await this.#renderer.prepareParticlePipelines(warmupCamera, this.#mainFog(this.#artifacts))
-      this.#requireOperation(operation)
-      if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
-      const classPreparation = [...classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
-        warmupViewport.width / warmupViewport.height, this.#equipmentProfile!.state()!.inventory), ...mapPropPipelinePoseRequests(this.#artifacts, this.#snapshot, warmupCamera,
-        warmupViewport.width / warmupViewport.height)]
-      const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
-      const classPoses = await this.#client!.models(this.#generation, encodeModelPoseBatch(classPreparation.map(value => ({ ...value.request, preparation: true }))))
-      this.#requireOperation(operation)
-      await this.#renderer.prepareModelPipelines(classPoses.map(pose => {
-        const preparation = preparationByIdentity.get(pose.identity)
-        const artifact = this.#artifacts!.models.get(pose.model)
-        if (!preparation || !artifact || !pose.lighting) throw new Error(`Class pipeline pose unavailable: ${pose.model}`)
-        return { pass: preparation.pass, unposedPanel: preparation.pass === "panel" && pose.role === "single", item: {
-          identity: pose.identity, model: pose.model, skin: preparation.request.skin < artifact.skinCount ? preparation.request.skin : 0,
-          position: preparation.request.lighting!.origin, angles: preparation.request.lighting!.angles, scale: 1,
-          pose, modelLighting: pose.lighting, eyeStates: pose.eyes,
-        } }
-      }), warmupCamera, this.#mainFog(this.#artifacts))
-      this.#requireOperation(operation)
-      }
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
@@ -3679,6 +3651,7 @@ export class Tf2Application {
   ): Promise<void> {
     const replaceStarted=performance.now();let replacePhase=replaceStarted;const replaceTimings:Record<string,number>={};const finishReplacePhase=(phase:string)=>{const now=performance.now();replaceTimings[phase]=now-replacePhase;replacePhase=now}
     if (!this.#client || !this.#renderer || !this.#loaded || !this.#dependencies) throw new Error("Application is not ready")
+    const preparationTeam = this.#snapshot?.team
     this.#paused = true
     this.#neutral()
     this.#predictedEye.suspend()
@@ -3869,7 +3842,7 @@ export class Tf2Application {
     }
     if (operation) this.#requireOperation(operation)
     this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
-    await this.#prepareMapEffectPipelines()
+    await this.#prepareGameplayPipelines(preparationTeam)
     if (operation) this.#requireOperation(operation)
     this.#resetHudIntegration()
     this.#recordAuthorityBlockers(this.#snapshot)
@@ -4082,23 +4055,38 @@ export class Tf2Application {
     if (this.#crouchHistory.length > 128) this.#crouchHistory.splice(0, this.#crouchHistory.length - 128)
   }
 
-  async #prepareMapEffectPipelines(): Promise<void> {
+  async #prepareGameplayPipelines(team: number | undefined): Promise<void> {
     const renderer = this.#renderer!, client = this.#client!, artifacts = this.#artifacts!, snapshot = this.#snapshot!
     const generation = this.#generation, camera = tf2Camera(snapshot, this.#yaw, this.#pitch), viewport = this.#viewport()
     const checkOwner = () => {
-      if (renderer !== this.#renderer || client !== this.#client || artifacts !== this.#artifacts || generation !== this.#generation) throw new Error("Map effect pipeline preparation generation was replaced")
+      if (renderer !== this.#renderer || client !== this.#client || artifacts !== this.#artifacts || generation !== this.#generation) throw new Error("Gameplay pipeline preparation generation was replaced")
     }
+    const visibility = await client.visibility(generation, {
+      position: camera.position, yawDegrees: camera.yawDegrees, pitchDegrees: camera.pitchDegrees,
+      verticalFovDegrees: camera.verticalFovDegrees, aspectRatio: viewport.width / viewport.height,
+      near: camera.near, far: camera.far, presentationTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS,
+    })
+    checkOwner()
+    await renderer.prepareVisiblePipelines(camera, visibility.leaves)
+    checkOwner()
     await renderer.prepareParticlePipelines(camera, this.#mainFog(artifacts))
     checkOwner()
-    const requests = mapPropPipelinePoseRequests(artifacts, snapshot, camera, viewport.width / viewport.height)
+    // Replacement resets the simulation's team. Keep the admitted presentation
+    // team's bounded panel/view variants; world players include both teams.
+    const requests = [
+      ...classPipelinePoseRequests(artifacts, team === 2 ? 0 : team === 3 ? 1 : null, camera, viewport.width / viewport.height, this.#equipmentProfile!.state()!.inventory),
+      ...mapPropPipelinePoseRequests(artifacts, snapshot, camera, viewport.width / viewport.height),
+    ]
     if (!requests.length) return
-    const byIdentity = new Map(requests.map(value => [value.request.identity, value.request]))
-    const poses = await client.models(generation, encodeModelPoseBatch(requests.map(value => value.request)))
+    const byIdentity = new Map(requests.map(value => [value.request.identity, value]))
+    const poses = await client.models(generation, encodeModelPoseBatch(requests.map(value => ({ ...value.request, preparation: true }))))
     checkOwner()
     await renderer.prepareModelPipelines(poses.map(pose => {
-      const request = byIdentity.get(pose.identity)
-      if (!request?.lighting || !pose.lighting) throw new Error(`Map prop pipeline pose unavailable: ${pose.model}`)
-      return { pass: "world" as const, item: { identity: pose.identity, model: pose.model, skin: request.skin,
+      const preparation = byIdentity.get(pose.identity), artifact = artifacts.models.get(pose.model)
+      const request = preparation?.request
+      if (!preparation || !artifact || !request?.lighting || !pose.lighting) throw new Error(`Gameplay pipeline pose unavailable: ${pose.model}`)
+      return { pass: preparation.pass, unposedPanel: preparation.pass === "panel" && pose.role === "single", item: {
+        identity: pose.identity, model: pose.model, skin: request.skin < artifact.skinCount ? request.skin : 0,
         position: request.lighting.origin, angles: request.lighting.angles, scale: 1, pose, modelLighting: pose.lighting, eyeStates: pose.eyes } }
     }), camera, this.#mainFog(artifacts))
     checkOwner()

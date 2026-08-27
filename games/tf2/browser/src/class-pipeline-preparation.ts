@@ -11,7 +11,7 @@ export function classPreviewBaseActivity(identity: Tf2Class): string {
 /** Pose metadata for the selected team's already-resident class resources.
  * These are presentation queries, never class commands, weapon inputs or ticks.
  * The worker supplies authored palette/eye data; no skeleton is inferred in JS. */
-export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin: number, camera: {
+export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin: number | null, camera: {
   position: readonly [number, number, number]; yawDegrees: number; pitchDegrees: number; far: number
 }, aspect: number, inventory: readonly Tf2SupportedItem[]): readonly Readonly<{ request: ModelPoseRequest; pass: "panel" | "view" | "world" }>[] {
   const output: { request: ModelPoseRequest; pass: "panel" | "view" | "world" }[] = []
@@ -29,7 +29,7 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
     const activity = classPreviewBaseActivity(identity as Tf2Class)
     const equippedItems = inventory.filter(item => item.weapon === null && item.classSlots.some(slot => slot.class === identity)).map(item => item.item)
     if (!artifact.sequences.some(sequence => sequence.activity === activity)) throw new Error(`Class pipeline standing pose unavailable: ${model}:${activity}`)
-    output.push({ pass: "panel", request: {
+    if (skin !== null) output.push({ pass: "panel", request: {
       ...common, identity: 0xfffc0000 + output.length, model, skin, classSelection: true,
       equippedItems,
       activity,
@@ -42,7 +42,7 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
     } })
   }
   for (const [model, artifact] of artifacts.models) {
-    if (artifact.profile !== "viewmodel") continue
+    if (skin === null || artifact.profile !== "viewmodel") continue
     const sequence = artifact.sequences[0]
     if (!sequence) throw new Error(`Class pipeline sequence unavailable: ${model}`)
     output.push({ pass: "view", request: {
