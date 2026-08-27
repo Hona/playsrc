@@ -684,6 +684,8 @@ export type StaticPropInput=Readonly<{
 }>
 
 export type MapLoadRequest = Readonly<{
+  /** Verified immutable presentation-resource closure, when supplied by the owner. */
+  resourceIdentity?: string
   payload: Uint8Array
   payloadSha256: string
   lightStyles?: readonly Readonly<{ style: number; scalar: number }>[]
@@ -1102,6 +1104,7 @@ type SceneResources = {
   loadRequest: Omit<MapLoadRequest, "payload" | "signal">
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
+  modelBaseSamples: Map<string, any>
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
   modelLightingGraphs: ModelLightingGraphs
   modelPanelLightingGraphs: ModelLightingGraphs
@@ -2255,6 +2258,8 @@ class RendererOwner implements Renderer {
     if(!request.diagnostic)throw new RenderingError("UnsupportedFeature","ordinary rendering requires an explicit WebGPU frame encoder; the current Three.js adapter is diagnostic-only")
     if (!HASH.test(request.payloadSha256))
       throw new RenderingError("MalformedInput", "runtime map payload SHA-256 is invalid")
+    if (request.resourceIdentity !== undefined && !HASH.test(request.resourceIdentity))
+      throw new RenderingError("MalformedInput", "presentation resource identity is invalid")
     const ordinal = ++this.#loadOrdinal
     const payload = request.payload
     this.#checkAbort(request.signal, ordinal)
@@ -2439,6 +2444,7 @@ class RendererOwner implements Renderer {
       this.#checkAbort(request.signal, ordinal)
 
       const prior = this.#active
+      staged.textureResidency.commitTransfers()
       this.#clearDynamic(this.#effects)
       this.#dynamicModelInstances.clear()
       this.#dynamicBrushInstances.clear()
@@ -2763,11 +2769,18 @@ class RendererOwner implements Renderer {
     const staticPropInstances: StaticPropResource[] = []
     const staticPropBatches: { ownership: 0 | 1; batch: StaticPropBatch }[] = []
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
+    // An exact same-world/resource replacement still builds a fresh world and
+    // resets every occurrence. Only immutable samples/graphs and pinned texture
+    // objects cross the successful generation handoff, never old poses/entities.
+    const retained = request.resourceIdentity && HASH.test(request.resourceIdentity)
+      && this.#active?.disposables.deviceGeneration === this.#deviceGeneration
+      && this.#active?.payloadSha256 === payloadSha256 && this.#active.loadRequest.resourceIdentity === request.resourceIdentity
+      ? this.#active : undefined
     const modelTemplates = new Map<string, THREE.Group>()
-    const modelBaseSamples = new Map<string, any>()
+    const modelBaseSamples = retained?.modelBaseSamples ?? new Map<string, any>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
-    const modelLightingGraphs = new ModelLightingGraphs()
-    const modelPanelLightingGraphs = new ModelLightingGraphs()
+    const modelLightingGraphs = retained?.modelLightingGraphs ?? new ModelLightingGraphs()
+    const modelPanelLightingGraphs = retained?.modelPanelLightingGraphs ?? new ModelLightingGraphs()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
@@ -2828,14 +2841,14 @@ class RendererOwner implements Renderer {
         disposables.add(texture)
       }
     }
-    const exposureUniform = TSL.uniform(
+    const exposureUniform = retained?.exposureUniform ?? TSL.uniform(
       this.configuration.lightingProfile === "hdr" ? this.#exposure.snapshot().current : 1,
       "float",
     )
-    const waterFogUniforms = createSourceWaterFogUniforms()
+    const waterFogUniforms = retained?.waterFogUniforms ?? createSourceWaterFogUniforms()
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.Texture }>()
     const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables, 4, () =>
-      this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
+      this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve(), retained?.textureResidency)
     const authoredTextureKey = (input: AuthoredTextureInput, colorSpace: string, frame = 0): string =>
       `${input.sourceSha256}:${input.sourceFormat ?? "rgba"}:${input.scalarEncoding}:${colorSpace}:${frame}`
     const retainAuthoredTexture = (input: AuthoredTextureInput, colorSpace: string, frame = 0): THREE.Texture =>
@@ -3855,6 +3868,7 @@ class RendererOwner implements Renderer {
       },
       group,
       modelTemplates,
+      modelBaseSamples,
       modelLightingTextures,
       modelLightingGraphs,
       modelPanelLightingGraphs,

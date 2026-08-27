@@ -6,8 +6,9 @@ const reference = (path: string, type: string) => TSL.reference(`userData.${path
 
 /** One immutable graph family per scene/exposure/fog domain. Values are read
  * from the drawn primitive, not captured from the first actor using a shader.
- * The owner is generation-local: ReferenceNode must not keep an old scene alive
- * through a module-global last-object reference. */
+ * The owner is scene-local, with an explicit handoff for an identical verified
+ * world/resource closure on the same device. It is never a module-global cache;
+ * every new draw binds the replacement's primitive values. */
 export class ModelLightingGraphs {
   readonly lighting: SourceModelLightingUniforms = Object.freeze({
     ambientEnabled: reference("sourceLighting.ambientEnabled", "float"),

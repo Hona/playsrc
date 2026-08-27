@@ -40,6 +40,17 @@ export class OwnedResourceGeneration implements Iterable<OwnedResource> {
     try { resource.dispose() } finally { this.#disposals += 1 }
   }
 
+  /** Commit an exact resource handoff only after candidate admission succeeds. */
+  transferTo(target: OwnedResourceGeneration, resources: readonly OwnedResource[]): void {
+    if (this.#state !== "Active" || !["Staging", "Active"].includes(target.#state) || this.deviceGeneration !== target.deviceGeneration
+      || target.sceneGeneration <= this.sceneGeneration
+      || new Set(resources).size !== resources.length
+      || resources.some(resource => !this.#resources.has(resource) || this.#releasing.has(resource) || target.#resources.has(resource))) {
+      throw new Error("resource generation transfer is invalid")
+    }
+    for (const resource of resources) { this.#resources.delete(resource); target.#resources.add(resource) }
+  }
+
   releaseAfter(resource: OwnedResource, queueCompletion: Promise<unknown>): void {
     if ((this.#state !== "Staging" && this.#state !== "Active") || this.#releasing.has(resource) || !this.#resources.has(resource)) {
       throw new Error("resource cannot be released from this generation")

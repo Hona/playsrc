@@ -3,6 +3,44 @@ import { OwnedResourceGeneration } from "../src/resource-generation"
 import { SharedTextureResidency } from "../src/texture-residency"
 
 describe("authored GPU texture residency", () => {
+  test("exact replacement hands off pinned objects once and drops old animated consumers", async () => {
+    const disposed: string[] = []
+    const create = (id: string) => ({ id, dispose() { disposed.push(id) } })
+    const old = new OwnedResourceGeneration(1, 1), first = new SharedTextureResidency(old)
+    const base = first.retain("base:srgb", () => create("base"))
+    first.retain("lazy-cloak-normal", () => create("normal"))
+    first.select("animated", 3, "old-water", () => create("animation"))
+    old.activate()
+    const next = new OwnedResourceGeneration(1, 2), second = new SharedTextureResidency(next, 4, undefined, first)
+    expect(second.retain("base:srgb", () => { throw new Error("duplicate upload") })).toBe(base)
+    expect(second.selected("old-water")).toBeUndefined()
+    expect(second.snapshot().pinned).toBe(2)
+    expect(next.snapshot().resources).toBe(0)
+    second.commitTransfers()
+    second.commitTransfers()
+    next.activate()
+    await old.retire(Promise.resolve())
+    expect(disposed).toEqual(["animation"])
+    expect(next.snapshot().resources).toBe(2)
+    next.dispose()
+    expect(disposed).toEqual(["animation", "base", "normal"])
+  })
+
+  test("a rejected replacement cannot dispose borrowed textures or partly transfer across devices", () => {
+    let disposed = 0
+    const old = new OwnedResourceGeneration(1, 1), first = new SharedTextureResidency(old)
+    const texture = first.retain("base", () => ({ dispose() { disposed++ } }))
+    old.activate()
+    const failed = new OwnedResourceGeneration(1, 2), staged = new SharedTextureResidency(failed, 4, undefined, first)
+    staged.clear(); failed.dispose()
+    expect(disposed).toBe(0)
+    expect(first.retain("base", () => { throw new Error("lost source") })).toBe(texture)
+    expect(() => old.transferTo(new OwnedResourceGeneration(2, 2), [texture])).toThrow("transfer")
+    expect(old.snapshot().resources).toBe(1)
+    old.dispose()
+    expect(disposed).toBe(1)
+  })
+
   test("shares exact source identities across model, world, and decal owners", () => {
     const generation = new OwnedResourceGeneration(1, 1)
     const residency = new SharedTextureResidency(generation)

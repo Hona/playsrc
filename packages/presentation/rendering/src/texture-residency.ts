@@ -22,14 +22,25 @@ export class SharedTextureResidency<T extends OwnedResource> {
   readonly #sequences = new Map<string, Set<string>>()
   readonly #selected = new Map<string, string>()
   #evictions = 0
+  #source?: SharedTextureResidency<T>
+  readonly #borrowed = new Map<string, T>()
 
-  constructor(generation: OwnedResourceGeneration, maximumFrames = 4, queueCompletion?: () => Promise<unknown>) {
+  constructor(generation: OwnedResourceGeneration, maximumFrames = 4, queueCompletion?: () => Promise<unknown>, source?: SharedTextureResidency<T>) {
     if (!Number.isSafeInteger(maximumFrames) || maximumFrames < 1) {
       throw new Error("animated texture residency bound is invalid")
     }
     this.#generation = generation
     this.#maximumFrames = maximumFrames
     this.#queueCompletion = queueCompletion
+    this.#source = source
+    // Retained graphs can refer to a lazily selected authored input that the
+    // replacement's bind-pose templates do not visit. Keep the complete pinned
+    // set for this exact resource closure, never animated LRU frames/consumers.
+    if (source) for (const [identity, resource] of source.#resources) {
+      if (!resource.pinned) continue
+      this.#borrowed.set(identity, resource.value)
+      this.#resources.set(identity, { value: resource.value, sequence: null, pinned: true, consumers: new Set() })
+    }
   }
 
   retain(identity: string, create: () => T): T {
@@ -39,7 +50,9 @@ export class SharedTextureResidency<T extends OwnedResource> {
       existing.pinned = true
       return existing.value
     }
-    const value = this.#generation.add(create())
+    const prior = this.#source?.#resources.get(identity)
+    const value = prior?.pinned ? prior.value : this.#generation.add(create())
+    if (prior?.pinned) this.#borrowed.set(identity, value)
     this.#resources.set(identity, { value, sequence: null, pinned: true, consumers: new Set() })
     return value
   }
@@ -97,7 +110,17 @@ export class SharedTextureResidency<T extends OwnedResource> {
     return identity === undefined ? undefined : this.#resources.get(identity)?.value
   }
 
+  commitTransfers(): void {
+    if (!this.#source) return
+    this.#source.#generation.transferTo(this.#generation, [...this.#borrowed.values()])
+    for (const identity of this.#borrowed.keys()) this.#source.#resources.delete(identity)
+    this.#borrowed.clear()
+    this.#source = undefined
+  }
+
   clear(): void {
+    this.#borrowed.clear()
+    this.#source = undefined
     this.#resources.clear()
     this.#sequences.clear()
     this.#selected.clear()
