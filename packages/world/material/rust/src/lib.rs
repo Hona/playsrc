@@ -25,6 +25,7 @@ pub enum Shader {
     Refract,
     Sprite,
     DecalModulate,
+    Modulate,
     SkyLdr,
     SkyHdr,
     Unsupported,
@@ -473,6 +474,7 @@ pub fn resolve_for_environment(
                 gamma_color_read,
                 sprite_card,
             );
+            if shader == Shader::Modulate { request.color_read = TextureColorRead::Linear; }
             if role == TextureRole::Environment
                 && document.root.key.bytes.eq_ignore_ascii_case(b"EyeRefract")
             {
@@ -647,7 +649,14 @@ fn static_state_with_alpha(
         && !base_alpha_environment_mask
         && (features.translucent || features.alpha_test);
     let alpha_blend = alpha < 1.0 || features.vertex_alpha || (base_texture_alpha && !alpha_test);
-    let blend = if material.shader == Shader::DecalModulate {
+    let blend = if material.shader == Shader::Modulate {
+        BlendState {
+            enabled: true,
+            equation: BlendEquation::Add,
+            source: BlendFactor::DestinationColor,
+            destination: if boolean(&material.first_parameters, b"$mod2x") { BlendFactor::SourceColor } else { BlendFactor::Zero },
+        }
+    } else if material.shader == Shader::DecalModulate {
         BlendState {
             enabled: true,
             equation: BlendEquation::Add,
@@ -724,6 +733,7 @@ fn static_state_with_alpha(
         | Shader::Sprite
         | Shader::Refract
         | Shader::DecalModulate => LightingModel::Unlit,
+        Shader::Modulate => LightingModel::Unlit,
         Shader::Water => LightingModel::Water,
         Shader::SkyLdr | Shader::SkyHdr => LightingModel::Sky,
         Shader::Unsupported if material.model.is_some() => LightingModel::VertexLit,
@@ -759,7 +769,7 @@ fn static_state_with_alpha(
             CullState::Back
         },
         depth_test,
-        depth_write: depth_test && !features.decal && !blend.enabled,
+        depth_write: depth_test && ((material.shader == Shader::Modulate && boolean(&material.first_parameters, b"$writez")) || (!features.decal && !blend.enabled)),
         depth_function: if features.z_nearer {
             DepthFunction::Nearer
         } else {
@@ -1516,6 +1526,8 @@ fn shader(v: &[u8]) -> Shader {
         Shader::Sprite
     } else if v.eq_ignore_ascii_case(b"DecalModulate") {
         Shader::DecalModulate
+    } else if v.eq_ignore_ascii_case(b"Modulate") || v.eq_ignore_ascii_case(b"Modulate_DX9") {
+        Shader::Modulate
     } else if v.eq_ignore_ascii_case(b"Sky") {
         Shader::SkyLdr
     } else {
@@ -2087,6 +2099,23 @@ mod tests {
         assert!(state.depth_test);
         assert!(!state.depth_write);
         assert_eq!(state.polygon_offset, PolygonOffset::Decal);
+    }
+
+    #[test]
+    fn modulate_model_uses_linear_texture_and_authored_multiply_depth_state() {
+        let plain = material(br#"Modulate { "$basetexture" "models/effects/logo" }"#, SelectionEnvironment::default()).unwrap();
+        assert_eq!(plain.model.as_ref().unwrap().shader, ModelShader::Modulate);
+        assert_eq!(plain.textures[0].color_read, TextureColorRead::Linear);
+        let state = static_state(&plain, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.blend.source, BlendFactor::DestinationColor);
+        assert_eq!(state.blend.destination, BlendFactor::Zero);
+        assert!(!state.depth_write);
+        assert!(!state.alpha_test);
+        assert_eq!(state.lighting, LightingModel::Unlit);
+        let twice = material(br#"Modulate { "$basetexture" "models/effects/logo" "$mod2x" "1" "$writez" "1" }"#, SelectionEnvironment::default()).unwrap();
+        let state = static_state(&twice, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.blend.destination, BlendFactor::SourceColor);
+        assert!(state.depth_write);
     }
 
     #[test]

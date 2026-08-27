@@ -131,6 +131,8 @@ pub struct Point {
     pub warn_sound: String,
     pub capture_sounds: [String; 4],
     initial_locked: bool,
+    model_skins: [usize; 4],
+    model_bodies: [i32; 4],
     next_unlock_think: f32,
 }
 
@@ -140,6 +142,14 @@ pub struct TeamCapture {
     pub required: i32,
     pub required_to_start: i32,
     pub spawn_adjust: i32,
+}
+
+impl Point {
+    pub fn body(&self) -> i32 { self.model_bodies[slot(self.owner)] }
+    pub fn skin(&self) -> usize {
+        let raw = if self.owner == PlayerTeam::Unassigned { 2 } else { self.owner as i32 - 2 };
+        playsrc_studio_model::source_skin_family(raw, self.model_skins[slot(self.owner)])
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,6 +267,8 @@ pub enum Event {
 pub struct Snapshot {
     pub points: Vec<Point>,
     pub may_capture: Vec<[bool; 2]>,
+    pub local_point: Option<usize>,
+    pub local_capture_text: &'static str,
     pub areas: Vec<Area>,
     pub master: Master,
     pub configuration: Configuration,
@@ -282,6 +294,7 @@ pub struct World {
     won: bool,
     next_master_think: f32,
     facts: Facts,
+    local_actor: Option<Actor>,
 }
 
 impl World {
@@ -364,6 +377,8 @@ impl World {
                 warn_on_cap: integer(entity, b"point_warn_on_cap", 0),
                 warn_sound: text(entity, b"point_warn_sound"),
                 initial_locked: locked,
+                model_skins: [0; 4],
+                model_bodies: [0; 4],
                 next_unlock_think: f32::INFINITY,
             });
         }
@@ -434,6 +449,7 @@ impl World {
             won: false,
             next_master_think: 0.1,
             facts: Facts::default(),
+            local_actor: None,
             master: Master {
                 identity: master.index as u32,
                 disabled,
@@ -462,6 +478,15 @@ impl World {
         }
     }
 
+    pub fn install_models(&mut self, models: &std::collections::BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>) {
+        for point in &mut self.points {
+            for team in [0,2,3] {
+                point.model_skins[team] = models.get(&point.models[team].to_ascii_lowercase()).map_or(0, |model| model.skins.len());
+                point.model_bodies[team] = models.get(&point.models[team].to_ascii_lowercase()).and_then(|model| model.body_parts.first()).filter(|part| team < part.model_names.len()).map_or(0, |part| part.base * team as i32);
+            }
+        }
+    }
+
     pub fn bot_capture_points(&self, team: PlayerTeam) -> impl Iterator<Item = &Point> {
         self.points.iter().filter(move |point| {
             (self.koth && self.points.len() == 1) || (point.owner != team && !point.bots_ignore
@@ -486,14 +511,41 @@ impl World {
         self.configuration
     }
     pub fn snapshot(&self, events: Vec<Event>) -> Snapshot {
+        let local_area = self.areas.iter().find(|a| a.touching.contains(&crate::PLAYER_IDENTITY));
         Snapshot {
             points: self.points.clone(),
+            local_point: local_area.map(|a| a.point),
+            local_capture_text: local_area.map_or("", |a| self.capture_text(a)),
             may_capture: self.points.iter().map(|p| [self.team_may_capture(PlayerTeam::Red, p.index, self.facts.waiting_for_players), self.team_may_capture(PlayerTeam::Blue, p.index, self.facts.waiting_for_players)]).collect(),
             areas: self.areas.clone(),
             master: self.master.clone(),
             configuration: self.configuration,
             events,
         }
+    }
+
+    fn capture_text(&self, area: &Area) -> &'static str {
+        let Some(actor) = self.local_actor else { return ""; };
+        let point = &self.points[area.point];
+        if !area.blocked && area.capturing_team.is_gameplay() && area.capturing_team != point.owner && area.capturing_team == actor.team { return ""; }
+        if !self.facts.points_may_be_captured || point.locked { return "#Team_Capture_NotNow"; }
+        if self.configuration.block_style == 1 && area.capturing_team.is_gameplay() && area.capturing_team != actor.team {
+            if area.blocked { return "#Team_Blocking_Capture"; }
+            if point.owner == PlayerTeam::Unassigned { return "#Team_Reverting_Capture"; }
+        }
+        if point.owner == actor.team {
+            let enemy = if actor.team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red };
+            return if !area.teams[slot(enemy)].can_cap { "#Team_Capture_Owned" } else { "#Team_Capture_OwnPoint" };
+        }
+        if !self.team_may_capture(actor.team, area.point, self.facts.waiting_for_players) { return "#Team_Capture_Linear"; }
+        if actor.stealthed { return "#Cant_cap_stealthed"; }
+        if actor.invulnerable || actor.megaheal || actor.phased { return "#Cant_cap_invuln"; }
+        if actor.control_stunned { return "#Cant_cap_stunned"; }
+        if actor.enemy_disguise { return "#Cant_cap_disguised"; }
+        let enough = self.configuration.scales_with_players || area.num_players[slot(actor.team)] >= area.teams[slot(actor.team)].required;
+        if area.capturing_team == actor.team && enough { return "#Team_Capture_Blocked"; }
+        if !area.teams[slot(actor.team)].can_cap { return "#Team_Cannot_Capture"; }
+        "#Team_Waiting_for_teammate"
     }
 
     pub fn farthest_owned(&self, team: PlayerTeam) -> Option<usize> {
@@ -548,6 +600,7 @@ impl World {
     }
 
     pub fn reset(&mut self, now: f32, events: &mut Vec<Event>) {
+        self.local_actor = None;
         self.won = false;
         self.master.disabled = self.master.initial_disabled;
         self.next_master_think = now + 0.1;
@@ -712,6 +765,7 @@ impl World {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         self.facts = facts;
+        self.local_actor = actors.iter().copied().find(|a| a.identity == crate::PLAYER_IDENTITY);
         for point in &mut self.points {
             if now >= point.next_unlock_think {
                 if point

@@ -152,6 +152,20 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#Winreason_DefendedUntilTimeLimit",
     "#Winreason_OpponentsDead",
     "#Winreason_Stalemate",
+    "#Winreason_AllPointsCaptured",
+    "#Team_Capture_NotNow",
+    "#Team_Blocking_Capture",
+    "#Team_Reverting_Capture",
+    "#Team_Capture_Owned",
+    "#Team_Capture_OwnPoint",
+    "#Team_Capture_Linear",
+    "#Cant_cap_stealthed",
+    "#Cant_cap_invuln",
+    "#Cant_cap_stunned",
+    "#Cant_cap_disguised",
+    "#Team_Capture_Blocked",
+    "#Team_Cannot_Capture",
+    "#Team_Waiting_for_teammate",
     "#ScoreBoard_Spectator",
     "#ScoreBoard_Spectators",
     "#TF_MM_PlayerConnecting",
@@ -1619,7 +1633,7 @@ fn main() -> Result<(), String> {
         || class_images
             .iter()
             .any(|image| {
-                !(image.starts_with("../hud/") || image.starts_with("hud/") || image.starts_with("../sprites/obj_icons/") || matches!(image.as_str(), "progress_bar" | "progress_bar_red" | "progress_bar_blu")) || image.len() > 128
+                !(image.starts_with("../hud/") || image.starts_with("hud/") || image.starts_with("../sprites/obj_icons/") || image == "progress_bar" || image.starts_with("progress_bar_")) || image.len() > 128
             })
         || class_images
             .iter()

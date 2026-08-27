@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub enum ModelShader {
     UnlitGeneric,
     UnlitTwoTexture,
+    Modulate,
     VertexLitGeneric,
     EyeRefract,
     Eyes,
@@ -184,6 +185,7 @@ pub struct EyesState {
 pub enum ModelShaderState {
     UnlitGeneric(Box<UnlitGenericState>),
     UnlitTwoTexture(Box<UnlitTwoTextureState>),
+    Modulate,
     VertexLitGeneric(Box<VertexLitGenericState>),
     EyeRefract(Box<EyeRefractState>),
     Eyes(Box<EyesState>),
@@ -251,7 +253,7 @@ pub fn model_draw_state(
         .as_ref()
         .ok_or_else(|| error(ErrorCode::InvalidParameter, None))?;
     let (cloak, sheen) = match &model.state {
-        ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_) => (
+        ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_) | ModelShaderState::Modulate => (
             CloakState {
                 enabled: false,
                 factor: 0.0,
@@ -668,6 +670,11 @@ pub(crate) fn resolve_model_state(
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
     if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
         Ok((Some(unlit(textures)), Vec::new()))
+    } else if shader.eq_ignore_ascii_case(b"Modulate") || shader.eq_ignore_ascii_case(b"Modulate_DX9") {
+        let mut state = unlit(textures);
+        state.shader = ModelShader::Modulate;
+        state.state = ModelShaderState::Modulate;
+        Ok((Some(state), Vec::new()))
     } else if shader.eq_ignore_ascii_case(b"UnlitTwoTexture") {
         Ok((
             Some(unlit_two_texture(textures, proxy_program)?),

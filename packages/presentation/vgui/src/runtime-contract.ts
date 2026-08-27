@@ -397,6 +397,8 @@ export type VguiControlMutation = Readonly<{
   progress?: number
   foregroundImage?: string
   backgroundImage?: string
+  imageUv?: readonly [number, number, number, number]
+  fixedDetailUv?: boolean
   previousProgress?: number
   imageFill?: number
   drawColor?: Rgba

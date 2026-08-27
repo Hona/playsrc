@@ -6925,6 +6925,70 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/progress_bar_nocap.vmt",
+      "sha256": "6f055eae1e6454d589786cf28db713f01fc176e6aa4728909eb6a9bf2a2d1db7",
+      "byteLength": 118,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_nocap.vtf",
+      "sha256": "ffc79032639d10153599357e76ffae891038fc6a589e5a9307b90fd5e6d29f94",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer.vmt",
+      "sha256": "3b772552e20bf1f3b49e969cfeeb02cb7c17ab8c15088e6a14dde670992b606d",
+      "byteLength": 208,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer.vtf",
+      "sha256": "efbc6ea4d06bc77566499e195d021b6523c31ddbb0c6b9f9207eb9a454fe47a1",
+      "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer_left.vmt",
+      "sha256": "e263218bf52175cf449fa4eb048ac979c89e6ca8615c699ab3f68afdc553bd21",
+      "byteLength": 213,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer_left.vtf",
+      "sha256": "6158650cc2c8e8fb914b883c88063d64cc1097a5349bcee526bd76617d536068",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer_right.vmt",
+      "sha256": "67f279f7cfc6818abc8b162075c74b2abee3ebfd4745d55713851774dac6028c",
+      "byteLength": 214,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/progress_bar_pointer_right.vtf",
+      "sha256": "1cd6ecd88381edb0b2ae0f69f2efc463b1cf7b999fde65138a5efac53a57e565",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/progress_bar_red.vmt",
       "sha256": "bba0e35513647065f93434c874e2bd8be2d8e714042119b95c11ddb2823aba71",
       "byteLength": 116,
@@ -16023,6 +16087,70 @@
     },
     {
       "identity": "image-0443",
+      "configuredValue": "progress_bar_noCap",
+      "classification": "content-vtf",
+      "material": "materials/vgui/progress_bar_nocap.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/progress_bar_nocap.vtf",
+          "sha256": "ffc79032639d10153599357e76ffae891038fc6a589e5a9307b90fd5e6d29f94",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0444",
+      "configuredValue": "progress_bar_pointer",
+      "classification": "content-vtf",
+      "material": "materials/vgui/progress_bar_pointer.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/progress_bar_pointer.vtf",
+          "sha256": "efbc6ea4d06bc77566499e195d021b6523c31ddbb0c6b9f9207eb9a454fe47a1",
+          "width": 128,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0445",
+      "configuredValue": "progress_bar_pointer_left",
+      "classification": "content-vtf",
+      "material": "materials/vgui/progress_bar_pointer_left.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/progress_bar_pointer_left.vtf",
+          "sha256": "6158650cc2c8e8fb914b883c88063d64cc1097a5349bcee526bd76617d536068",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0446",
+      "configuredValue": "progress_bar_pointer_right",
+      "classification": "content-vtf",
+      "material": "materials/vgui/progress_bar_pointer_right.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/progress_bar_pointer_right.vtf",
+          "sha256": "1cd6ecd88381edb0b2ae0f69f2efc463b1cf7b999fde65138a5efac53a57e565",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0447",
       "configuredValue": "progress_bar_red",
       "classification": "content-vtf",
       "material": "materials/vgui/progress_bar_red.vmt",
@@ -16038,7 +16166,7 @@
       ]
     },
     {
-      "identity": "image-0444",
+      "identity": "image-0448",
       "configuredValue": "replay/dullgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/dullgreybox.vmt",
@@ -16054,7 +16182,7 @@
       ]
     },
     {
-      "identity": "image-0445",
+      "identity": "image-0449",
       "configuredValue": "replay/fatlineborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder.vmt",
@@ -16070,7 +16198,7 @@
       ]
     },
     {
-      "identity": "image-0446",
+      "identity": "image-0450",
       "configuredValue": "replay/fatlineborder_red",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder_red.vmt",
@@ -16086,7 +16214,7 @@
       ]
     },
     {
-      "identity": "image-0447",
+      "identity": "image-0451",
       "configuredValue": "replay/graydialogborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/graydialogborder.vmt",
@@ -16102,7 +16230,7 @@
       ]
     },
     {
-      "identity": "image-0448",
+      "identity": "image-0452",
       "configuredValue": "replay/outlinedgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/outlinedgreybox.vmt",
@@ -16118,7 +16246,7 @@
       ]
     },
     {
-      "identity": "image-0449",
+      "identity": "image-0453",
       "configuredValue": "replay/panel_scalable_balloon",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_balloon.vmt",
@@ -16134,7 +16262,7 @@
       ]
     },
     {
-      "identity": "image-0450",
+      "identity": "image-0454",
       "configuredValue": "replay/panel_scalable_default",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_default.vmt",
@@ -16150,7 +16278,7 @@
       ]
     },
     {
-      "identity": "image-0451",
+      "identity": "image-0455",
       "configuredValue": "replay/panel_scalable_highlight",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_highlight.vmt",
@@ -16166,7 +16294,7 @@
       ]
     },
     {
-      "identity": "image-0452",
+      "identity": "image-0456",
       "configuredValue": "replay/panel_scalable_transparent",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_transparent.vmt",
@@ -16182,7 +16310,7 @@
       ]
     },
     {
-      "identity": "image-0453",
+      "identity": "image-0457",
       "configuredValue": "resource/icon_vac",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/icon_vac.vmt",
@@ -16198,7 +16326,7 @@
       ]
     },
     {
-      "identity": "image-0454",
+      "identity": "image-0458",
       "configuredValue": "resource/mic_meter_dead",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_dead.vmt",
@@ -16214,7 +16342,7 @@
       ]
     },
     {
-      "identity": "image-0455",
+      "identity": "image-0459",
       "configuredValue": "resource/mic_meter_live",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_live.vmt",
@@ -16230,7 +16358,7 @@
       ]
     },
     {
-      "identity": "image-0456",
+      "identity": "image-0460",
       "configuredValue": "sale_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/sale_corner.vmt",
@@ -16246,7 +16374,7 @@
       ]
     },
     {
-      "identity": "image-0457",
+      "identity": "image-0461",
       "configuredValue": "scroll_button_off",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_button_off.vmt",
@@ -16262,7 +16390,7 @@
       ]
     },
     {
-      "identity": "image-0458",
+      "identity": "image-0462",
       "configuredValue": "scroll_well",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_well.vmt",
@@ -16278,7 +16406,7 @@
       ]
     },
     {
-      "identity": "image-0459",
+      "identity": "image-0463",
       "configuredValue": "stamp_background_map",
       "classification": "content-vtf",
       "material": "materials/vgui/stamp_background_map.vmt",
@@ -16294,7 +16422,7 @@
       ]
     },
     {
-      "identity": "image-0460",
+      "identity": "image-0464",
       "configuredValue": "store/innershadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/innershadow_border.vmt",
@@ -16310,7 +16438,7 @@
       ]
     },
     {
-      "identity": "image-0461",
+      "identity": "image-0465",
       "configuredValue": "store/store_add_to_cart",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_add_to_cart.vmt",
@@ -16326,7 +16454,7 @@
       ]
     },
     {
-      "identity": "image-0462",
+      "identity": "image-0466",
       "configuredValue": "store/store_coupon_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_coupon_border.vmt",
@@ -16342,7 +16470,7 @@
       ]
     },
     {
-      "identity": "image-0463",
+      "identity": "image-0467",
       "configuredValue": "store/store_featured_item_bg01",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_featured_item_bg01.vmt",
@@ -16358,7 +16486,7 @@
       ]
     },
     {
-      "identity": "image-0464",
+      "identity": "image-0468",
       "configuredValue": "store/store_inspector_bg_small",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_inspector_bg_small.vmt",
@@ -16374,7 +16502,7 @@
       ]
     },
     {
-      "identity": "image-0465",
+      "identity": "image-0469",
       "configuredValue": "store/store_tab_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_selected.vmt",
@@ -16390,7 +16518,7 @@
       ]
     },
     {
-      "identity": "image-0466",
+      "identity": "image-0470",
       "configuredValue": "store/store_tab_unselected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_unselected.vmt",
@@ -16406,7 +16534,7 @@
       ]
     },
     {
-      "identity": "image-0467",
+      "identity": "image-0471",
       "configuredValue": "techcredits/bink",
       "classification": "content-vtf",
       "material": "materials/vgui/techcredits/bink.vmt",
@@ -16422,7 +16550,7 @@
       ]
     },
     {
-      "identity": "image-0468",
+      "identity": "image-0472",
       "configuredValue": "training/gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/training/gradient.vmt",
@@ -16438,7 +16566,7 @@
       ]
     },
     {
-      "identity": "image-0469",
+      "identity": "image-0473",
       "configuredValue": "training/gradient_black",
       "classification": "content-vtf",
       "material": "materials/vgui/training/gradient_black.vmt",
@@ -16454,7 +16582,7 @@
       ]
     },
     {
-      "identity": "image-0470",
+      "identity": "image-0474",
       "configuredValue": "training/screenshots/pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/training/screenshots/pl_upward.vmt",
@@ -16470,14 +16598,14 @@
       ]
     },
     {
-      "identity": "image-0471",
+      "identity": "image-0475",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0472",
+      "identity": "image-0476",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",
@@ -16493,7 +16621,7 @@
       ]
     },
     {
-      "identity": "image-0473",
+      "identity": "image-0477",
       "configuredValue": "vgui/hud/8x800corner1",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner1.vmt",
@@ -16509,7 +16637,7 @@
       ]
     },
     {
-      "identity": "image-0474",
+      "identity": "image-0478",
       "configuredValue": "vgui/hud/8x800corner2",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner2.vmt",
@@ -16525,7 +16653,7 @@
       ]
     },
     {
-      "identity": "image-0475",
+      "identity": "image-0479",
       "configuredValue": "vgui/hud/8x800corner3",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner3.vmt",
@@ -16541,7 +16669,7 @@
       ]
     },
     {
-      "identity": "image-0476",
+      "identity": "image-0480",
       "configuredValue": "vgui/hud/8x800corner4",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner4.vmt",

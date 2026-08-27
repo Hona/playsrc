@@ -42,6 +42,7 @@ import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
 import { Tf2HudDeathNoticePresentation } from "./deathnotice"
+import { ControlPointHud } from "./control-points"
 import { Tf2HudDamagePresentation, type Tf2DamageIndicatorInput } from "./damage"
 
 export type Tf2HudIntegrationDiagnostic = Readonly<{
@@ -279,6 +280,7 @@ class Integration implements Tf2HudIntegration {
   readonly #timerDeltas = new Map<VguiPanelId, TimerDeltas>()
   #lastRoundEventTick = -1n
   #destroyed = false
+  #controlPoints?: ControlPointHud
 
   constructor(request: Tf2HudIntegrationRequest) {
     this.#resources = request.resources
@@ -1113,6 +1115,10 @@ class Integration implements Tf2HudIntegration {
       this.#publishRound(events.length === 0 && round.events.length === 0 ? round : { ...round, events }, publication.snapshot.team)
     }
     const objectives = publication.snapshot.objectives
+    if (publication.snapshot.controlPoints && !this.#controlPoints) {
+      this.#controlPoints = new ControlPointHud(this.#runtime, this.#resources, (panel, resource) => applyPanelResource(this.#runtime, panel, this.#resources.document(resource), { activeConditions: this.#resources.activeConditions, resolutionSuffixes: this.#resources.resolutionSuffixes }))
+    }
+    this.#controlPoints?.publish(publication.snapshot.controlPoints, round, this.#viewport, Number(publication.snapshot.tick) * 0.015, context.liveHudSuppressed)
     if (objectives) {
       this.#publishObjectives(objectives, context.playerIdentity, publication.snapshot.team, publication.snapshot.tick)
     } else if (this.#objective) {

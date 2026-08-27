@@ -1227,6 +1227,7 @@ impl MapRuntime {
         models: &BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>,
     ) -> Result<(), RuntimeFailure> {
         let mut definitions = BTreeMap::new();
+        if let Some(points) = &mut self.control_points { points.install_models(models); }
         for handle in self.source_handles.values().copied() {
             let Some(entity) = self.world.entity(handle) else {
                 continue;

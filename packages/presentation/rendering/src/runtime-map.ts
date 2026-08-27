@@ -454,7 +454,7 @@ function zeros(bytes: Uint8Array, field: string): void {
 }
 
 function knownShader(shader: number): boolean {
-  return (shader >= 1 && shader <= 10) || shader === 255
+  return (shader >= 1 && shader <= 12) || shader === 255
 }
 
 function knownTextureRole(role: number): boolean {

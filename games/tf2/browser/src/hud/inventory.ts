@@ -74,6 +74,7 @@ export const TF2_CONTROL_POINT_IMAGES = Object.freeze([
   ...["neutral", "red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_${team}`, `../sprites/obj_icons/icon_obj_${team}_locked`]),
   ...["red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_cap_${team}`, `../sprites/obj_icons/icon_obj_cap_${team}_up`]),
   "progress_bar", "progress_bar_red", "progress_bar_blu",
+  "progress_bar_pointer", "progress_bar_pointer_left", "progress_bar_pointer_right", "progress_bar_noCap",
 ])
 
 export const TF2_CLASS_IMAGES: Readonly<Record<Tf2PlayableTeam, Readonly<Record<Tf2Class, string>>>> =

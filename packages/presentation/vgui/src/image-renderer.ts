@@ -17,7 +17,7 @@ export type VguiImageRasterTexturePixels = Readonly<{
 export type VguiImageRasterGeometry =
   | Readonly<{ kind: "stretch"; rotation: 0 | 1 | 2 | 3 }>
   | Readonly<{ kind: "tile"; rotation: 0 | 1 | 2 | 3 }>
-  | Readonly<{ kind: "crop"; u0: number; v0: number; u1: number; v1: number }>
+  | Readonly<{ kind: "crop"; u0: number; v0: number; u1: number; v1: number; fixedDetailUv?: boolean }>
   | Readonly<{
       kind: "nine-slice"
       sourceCornerWidth: number
@@ -185,7 +185,9 @@ function shadeVguiImageRows(
       } else {
         let distance = color[3]!
         if (detailTexture) {
-          sample(detailTexture, u * request.material.detailScale[0], v * request.material.detailScale[1], secondary)
+          const detailU = request.geometry.kind === "crop" && request.geometry.fixedDetailUv ? (x + 0.5) / request.width : u
+          const detailV = request.geometry.kind === "crop" && request.geometry.fixedDetailUv ? (y + 0.5) / request.height : v
+          sample(detailTexture, detailU * request.material.detailScale[0], detailV * request.material.detailScale[1], secondary)
           secondary[0] *= request.material.detailTint[0]
           secondary[1] *= request.material.detailTint[1]
           secondary[2] *= request.material.detailTint[2]

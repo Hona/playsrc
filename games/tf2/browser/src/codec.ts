@@ -463,6 +463,8 @@ export type CaptureObjectives = Readonly<{
 
 export type ControlPoint = Readonly<{
   identity: number
+  skin: number
+  body: number
   owner: 0 | Tf2Team
   capturingTeam: 0 | Tf2Team
   teamInZone: 0 | Tf2Team
@@ -488,6 +490,8 @@ export type ControlPoint = Readonly<{
 export type ControlPoints = Readonly<{
   customPosition: readonly [number, number]
   capLayout: string
+  localPoint: number | null
+  localCaptureText: string
   points: readonly ControlPoint[]
 }>
 
@@ -1327,30 +1331,36 @@ function decodeControlPoints(buffer: ArrayBuffer, offset: number, available: num
   const customPosition = Object.freeze([view.getFloat32(at, true), view.getFloat32(at + 4, true)] as const); at += 8
   if (!finite(customPosition)) throw new Tf2CodecError("Control point layout is invalid")
   const capLayout = text(), points: ControlPoint[] = []
+  require(4)
+  const localPointIndex = view.getInt32(at, true); at += 4
+  if (localPointIndex < -1 || localPointIndex >= count) throw new Tf2CodecError("Control point local contact is invalid")
+  const localCaptureText = text()
   for (let index = 0; index < count; index++) {
-    require(68)
+    require(72)
     const identity = view.getUint32(at, true), owner = data[at + 4]!, capturingTeam = data[at + 5]!, teamInZone = data[at + 6]!, flags = data[at + 7]!
     const remaining = view.getFloat32(at + 8, true), progress = view.getFloat32(at + 12, true), unlock = view.getFloat32(at + 16, true)
     const captureTimes = Object.freeze([view.getFloat32(at + 20, true), view.getFloat32(at + 24, true)] as const)
     const playerCounts = Object.freeze([view.getInt32(at + 28, true), view.getInt32(at + 32, true)] as const)
     const requiredCappers = Object.freeze([view.getInt32(at + 36, true), view.getInt32(at + 40, true)] as const)
     const position = vector(view, at + 44), angles = vector(view, at + 56)
-    if (![owner, capturingTeam, teamInZone].every(team => team === 0 || team === 2 || team === 3) || flags > 63
+    if (![owner, capturingTeam, teamInZone].every(team => team === 0 || team === 2 || team === 3) || flags >> 6 > 2
       || !finite([remaining, progress, unlock, ...captureTimes, ...position, ...angles]) || unlock < -1) throw new Tf2CodecError("Control point state is invalid")
-    at += 68
+    const body = view.getInt32(at + 68, true)
+    if (body < 0) throw new Tf2CodecError("Control point body is invalid")
+    at += 72
     const printName = text(), icon = text(), model = text(), overlay = text()
     require(4)
     const touchingCount = view.getUint32(at, true); at += 4
     if (touchingCount > 32) throw new Tf2CodecError("Control point contact limit exceeded")
     require(touchingCount * 4)
     const touching = Array.from({ length: touchingCount }, (_, i) => view.getUint32(at + i * 4, true)); at += touchingCount * 4
-    points.push(Object.freeze({ identity, owner: owner as 0 | Tf2Team, capturingTeam: capturingTeam as 0 | Tf2Team, teamInZone: teamInZone as 0 | Tf2Team,
+    points.push(Object.freeze({ identity, skin: flags >> 6, body, owner: owner as 0 | Tf2Team, capturingTeam: capturingTeam as 0 | Tf2Team, teamInZone: teamInZone as 0 | Tf2Team,
       locked: (flags & 1) !== 0, visible: (flags & 2) !== 0, modelVisible: (flags & 4) !== 0, blocked: (flags & 8) !== 0,
       mayCapture: Object.freeze([(flags & 16) !== 0, (flags & 32) !== 0] as const), remaining, progress, unlockAt: unlock === -1 ? null : unlock,
       captureTimes, playerCounts, requiredCappers, position, angles, printName, icon, model, overlay, touching: Object.freeze(touching) }))
   }
   if (at !== length) throw new Tf2CodecError("Control point section has trailing bytes")
-  return Object.freeze({ points: Object.freeze({ customPosition, capLayout, points: Object.freeze(points) }), length })
+  return Object.freeze({ points: Object.freeze({ customPosition, capLayout, localPoint: localPointIndex === -1 ? null : localPointIndex, localCaptureText, points: Object.freeze(points) }), length })
 }
 
 function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): Readonly<{ objectives: CaptureObjectives | null; length: number }> {
