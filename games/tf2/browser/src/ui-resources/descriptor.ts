@@ -38,6 +38,7 @@ const DOMAINS = new Set<Tf2UiResourceDomain>([
   "scheme-base",
   "hud",
   "class-selection",
+  "equipment",
   "team-selection",
   "practice",
   "create-server",
@@ -63,6 +64,7 @@ const VGUI_CONTROLS = new Set([
   "FrameSystemButton",
   "HTML",
   "ImagePanel",
+  "ImageButton",
   "Label",
   "Menu",
   "Panel",
@@ -105,6 +107,27 @@ const GENERIC_PROPERTIES = new Set([
 
 const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCategory, Tf2UiOwner]>> = Object.freeze({
   "%button_command%": ["service", "service"],
+  "loadout scout": ["application", "tf2"],
+  "loadout soldier": ["application", "tf2"],
+  "loadout pyro": ["application", "tf2"],
+  "loadout demoman": ["application", "tf2"],
+  "loadout heavy": ["application", "tf2"],
+  "loadout engineer": ["application", "tf2"],
+  "loadout medic": ["application", "tf2"],
+  "loadout sniper": ["application", "tf2"],
+  "loadout spy": ["application", "tf2"],
+  backpack: ["application", "tf2"],
+  characterloadout: ["application", "tf2"],
+  crafting: ["unsupported", "unsupported"],
+  armory: ["unsupported", "unsupported"],
+  trading: ["service", "service"],
+  paintkit_preview: ["unsupported", "unsupported"],
+  show_explanations: ["unsupported", "unsupported"],
+  close: ["application", "tf2"],
+  nextexplanation: ["unsupported", "unsupported"],
+  prevexplanation: ["unsupported", "unsupported"],
+  tauntloadout: ["unsupported", "unsupported"],
+  canceltool: ["unsupported", "unsupported"],
   "%startcommand%": ["gameplay", "tf2"],
   Advanced: ["application", "settings"],
   Apply: ["application", "settings"],
@@ -200,6 +223,7 @@ function compareText(left: string, right: string): number {
 }
 
 function controlOwner(name: string): Tf2UiOwner | null {
+  if (["CArmoryPanel", "CBackpackPanel", "CClassLoadoutPanel", "CLoadoutPresetPanel", "CLoadoutParticleSlider", "ScalableImagePanel"].includes(name)) return "tf2"
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
@@ -425,7 +449,7 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
       if (node.name.toLowerCase() === "controlname" && node.value !== null) {
         controlCounts.set(node.value, (controlCounts.get(node.value) ?? 0) + 1)
       }
-      if ((node.name.toLowerCase() === "command" || node.name.toLowerCase() === "button_command") && node.value !== null) {
+      if ((node.name.toLowerCase() === "command" || node.name.toLowerCase() === "button_command") && node.value !== null && node.value !== "") {
         const classification = commandClassifications[node.value]
           ?? (/^select (?:[1-9]|12)$/u.test(node.value) || node.value === "resetclass"
             ? ["gameplay", "tf2"] as const
@@ -612,8 +636,8 @@ export function createTf2UiResourceDescriptor(input: unknown): Tf2UiResourceReso
   ]
 
   const panels = resources
-    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "team-selection" | "practice" | "create-server" | "options"; document: readonly Tf2UiResourceNode[] } =>
-      ["main-menu", "loading", "hud", "class-selection", "team-selection", "practice", "create-server", "options"].includes(source.domain) && source.document !== null)
+    .filter((source): source is Tf2UiResourceSource & { domain: "main-menu" | "loading" | "hud" | "class-selection" | "equipment" | "team-selection" | "practice" | "create-server" | "options"; document: readonly Tf2UiResourceNode[] } =>
+      ["main-menu", "loading", "hud", "class-selection", "equipment", "team-selection", "practice", "create-server", "options"].includes(source.domain) && source.document !== null)
     .map((source) => Object.freeze({
       identity: `panel-document-${source.logicalPath.replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "")}`,
       domain: source.domain,

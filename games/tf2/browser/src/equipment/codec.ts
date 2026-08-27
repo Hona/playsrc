@@ -46,7 +46,15 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
       if (identity < 1 || identity > 9 || slot > 18) throw new Error("invalid class slot")
       return Object.freeze({ class: identity as Tf2Class, slot })
     })
-    inventory.push(Object.freeze({ item: decoded.items[0]!, weapon: weapon === 0 ? null : weapon as Tf2Weapon, classSlots: Object.freeze(classSlots), name: text(), image: text() }))
+    const name = text(), image = text(), attach = view.getUint8(at++), deathNoticeIcon = text() || null, modelPlayer = text()
+    if (attach > 1) throw new Error("invalid item attachment")
+    const pairs = () => {
+      const count = view.getUint32(at, true); at += 4
+      if (count > 128) throw new Error("invalid item replacements")
+      return Object.freeze(Array.from({ length: count }, () => Object.freeze([text(), text()] as const)))
+    }
+    inventory.push(Object.freeze({ item: decoded.items[0]!, weapon: weapon === 0 ? null : weapon as Tf2Weapon, classSlots: Object.freeze(classSlots), name, image, modelPlayer,
+      attachToHands: attach === 1, deathNoticeIcon, animationReplacements: pairs(), soundOverrides: pairs() }))
   }
   const classes = Array.from({ length: 9 }, (_, index) => {
     const decoded = decodeEquippedItems(view, at); at = decoded.end

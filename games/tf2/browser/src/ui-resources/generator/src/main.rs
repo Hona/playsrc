@@ -2,6 +2,12 @@ mod crosshair;
 mod class_selection;
 mod deathnotice;
 mod equipment;
+#[allow(dead_code)]
+#[path = "../../../../../rust/src/class.rs"]
+mod class;
+#[allow(dead_code)]
+#[path = "../../../../../rust/src/schema.rs"]
+mod schema;
 
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::{ConditionEnvironment, EscapeMode, Node, ScalarKind, Value};
@@ -403,6 +409,9 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/destroy_menu/tele_exit_active.res", true),
     ("hud", "resource/ui/destroy_menu/tele_exit_inactive.res", true),
     ("class-selection", "resource/ui/classselection.res", true),
+    ("equipment", "resource/ui/charinfoloadoutsubpanel.res", true),
+    ("equipment", "resource/ui/classloadoutpanel.res", true),
+    ("equipment", "resource/ui/econ/backpackpanel.res", true),
     ("class-selection", "resource/ui/classtipslist.res", true),
     ("class-selection", "resource/ui/classtipsitem.res", true),
     ("team-selection", "resource/ui/teammenu.res", true),
@@ -1682,13 +1691,14 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let mut resources = Vec::new();
-    equipment::generate(&content, repository)?;
+    let equipment = equipment::generate(&content, repository)?;
     class_selection::generate(&content, repository)?;
     let mut unique_controls = BTreeSet::new();
     let mut code_localization_tokens = CODE_LOCALIZATION_TOKENS
         .iter()
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
+    code_localization_tokens.extend(equipment.tokens);
     for (class, count) in [(1, 2), (2, 2), (3, 2), (4, 2), (5, 2), (6, 1), (7, 2), (8, 4), (9, 3)] {
         code_localization_tokens.push(format!("#ClassTips_{class}_Count"));
         for tip in 1..=count {
@@ -1698,6 +1708,7 @@ fn main() -> Result<(), String> {
     }
     let mut unique_localization_tokens = code_localization_tokens.iter().cloned().collect::<BTreeSet<_>>();
     let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
+    unique_image_values.extend(equipment.images);
     unique_image_values.insert("maps/menu_photos_ctf_2fort".to_owned());
     unique_image_values.insert("maps/menu_photos_pl_upward".to_owned());
     unique_image_values.insert("training/screenshots/pl_upward".to_owned());

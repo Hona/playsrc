@@ -400,15 +400,6 @@ name = "playsrc-choreography"
 version = "0.1.0"
 
 [[package]]
-name = "playsrc-collision"
-version = "0.1.0"
-dependencies = [
- "playsrc-bsp",
- "playsrc-phy",
- "sha2 0.11.0",
-]
-
-[[package]]
 name = "playsrc-content"
 version = "0.1.0"
 dependencies = [
@@ -418,39 +409,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "playsrc-entity"
-version = "0.1.0"
-dependencies = [
- "playsrc-bsp",
- "playsrc-collision",
-]
-
-[[package]]
 name = "playsrc-keyvalues"
-version = "0.1.0"
-
-[[package]]
-name = "playsrc-material"
-version = "0.1.0"
-dependencies = [
- "playsrc-keyvalues",
- "playsrc-vmt",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "playsrc-movement"
-version = "0.1.0"
-dependencies = [
- "playsrc-collision",
-]
-
-[[package]]
-name = "playsrc-nav"
-version = "0.1.0"
-
-[[package]]
-name = "playsrc-phy"
 version = "0.1.0"
 
 [[package]]
@@ -458,21 +417,6 @@ name = "playsrc-studio-model"
 version = "0.1.0"
 dependencies = [
  "playsrc-vhv",
-]
-
-[[package]]
-name = "playsrc-tf2"
-version = "0.1.0"
-dependencies = [
- "md-5",
- "playsrc-collision",
- "playsrc-entity",
- "playsrc-keyvalues",
- "playsrc-material",
- "playsrc-movement",
- "playsrc-nav",
- "playsrc-studio-model",
- "playsrc-vmt",
 ]
 
 [[package]]
@@ -486,7 +430,6 @@ dependencies = [
  "playsrc-content",
  "playsrc-keyvalues",
  "playsrc-studio-model",
- "playsrc-tf2",
  "playsrc-vmt",
  "playsrc-vpk",
  "playsrc-vtf",

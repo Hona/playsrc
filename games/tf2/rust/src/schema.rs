@@ -856,11 +856,12 @@ fn parse_item(
             }
         }
     }
-    let static_attributes = parse_item_attributes(
-        object(&fields, "attributes").or_else(|| object(&fields, "static_attrs")),
+    let mut static_attributes = parse_item_attributes(
+        object(&fields, "static_attrs"),
         attributes,
         index,
     )?;
+    static_attributes.extend(parse_item_attributes(object(&fields, "attributes"), attributes, index)?);
     let mut styles = BTreeSet::new();
     collect_styles(&fields, &mut styles, index)?;
     Ok(ItemDefinition {

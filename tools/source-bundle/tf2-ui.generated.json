@@ -1,8 +1,8 @@
 {
   "schema": "playsrc-tf2-ui-bundle-v1",
-  "identity": "tf2-ui-24245096-f3f3ef3ba993643e",
+  "identity": "tf2-ui-24245096-e431eb3e60f9ec3b",
   "contentBuild": "24245096",
-  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/dashboardpartymember.res=cd09d886bf54e5f327931124170519820444c4c4215fbdc9c5779966a92f735b\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/scoreboard.res=ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52\nresource/ui/hudobjectivestatus.res=b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca\nresource/ui/hudmatchstatus.res=7c6dc4cd5bf8136f6962ab5a2745fe285dd84c1a211b539c4b7a696d51c966c5\nresource/ui/hudobjectivetimepanel.res=cae1af088a6fbe3ca6607d3e756ed2cf7e3d8f574ef18492a20f29cba7591500\nresource/ui/waitingforplayerspanel.res=04c80baaff2d42a8ae6155f240a33c8e687861b8df5d04f09c3a333b87f00b4f\nresource/ui/hudobjectiveflagpanel.res=8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683\nresource/ui/flagstatus.res=69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca\nresource/ui/winpanel.res=e03fe37c651b1958fedd58b8062a88cc76a7728a6b1d98f21e61af96bbb68089\nresource/ui/notifications/base_notification.res=224f01f03b0aa19c053f3ef8a9514f55f829abfbba3bb1ee9c34da77127493ac\nresource/ui/notifications/notify_your_flag_taken_red.res=bb57e2c055fe13a26e657a6c0f4341e65c61c6a36f13be5378675b44b7036c20\nresource/ui/notifications/notify_your_flag_taken_blue.res=6dc095c2be8fa10cc70d969d2f8c2223bfaaa447bd7e702cf3caab9d806f45e5\nresource/ui/notifications/notify_your_flag_dropped_red.res=b577077ce001433c73376b7c910c65cc84c73ec05177a28fb025ed101f5b48df\nresource/ui/notifications/notify_your_flag_dropped_blue.res=203a5856c0bb65bedfbc8969ed326ffca07d67358e2bc1318f109a02f12f5db6\nresource/ui/notifications/notify_your_flag_returned_red.res=6ddbde6a9a06738c416a3954fcfebac0ec00bd264415caab329a2f089d88407e\nresource/ui/notifications/notify_your_flag_returned_blue.res=e8800ce8f53707b98ae6447d9664d5338e83155dea39f50e4ab4a3c7c8777aa8\nresource/ui/notifications/notify_your_flag_captured_red.res=6e45432c4f1daeafb3c11fe38ea025ba5e7474904e62cf4896111a914107583b\nresource/ui/notifications/notify_your_flag_captured_blue.res=ff2609c1c992d929b59a576155045dd3138132b501630e645efae4aff16e9cad\nresource/ui/notifications/notify_enemy_flag_taken_red.res=69941e1902085f74b0651651aa7d7a8afa67d0e970e437d6812669d08f8b50e9\nresource/ui/notifications/notify_enemy_flag_taken_blue.res=ce7380aa0ead67029ff4538b92eeaa3f5097546af2a5eed1f7729dba7b03e8f2\nresource/ui/notifications/notify_enemy_flag_dropped_red.res=cb1657bc57f92a4caa5206a390e1d82168e85b590ac62dc9dc413f0b962f560f\nresource/ui/notifications/notify_enemy_flag_dropped_blue.res=f4d8aea3f1549560e56e2e7382b12037c3b39b46a7b41bcd2287363995f30f90\nresource/ui/notifications/notify_enemy_flag_returned_red.res=5171217a99a003cc1dd919d2c3cad7bd67fbddb95b522f5f2867c355bc2875b3\nresource/ui/notifications/notify_enemy_flag_returned_blue.res=6e5d270ffb0f50e1864956b3c00b919d994da87a9b6042a5bdd1aa45d10f0b58\nresource/ui/notifications/notify_enemy_flag_captured_red.res=1d43cbbd035626d43c32eb116f499a631a56d76e4cd08c81eb0957279d49bdbf\nresource/ui/notifications/notify_enemy_flag_captured_blue.res=27b8b7b23921a9df7d36776ddc814e5a1475fe79d1a0c83811c45272ea62002d\nresource/ui/notifications/notify_touching_enemy_ctf_cap_red.res=b6dc7aa9ac40282ad58a23a7a7cf16db90a872d1133205453275a2bd3a280ea6\nresource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res=50e4ed92ddde5b0cff09214a58c765f2f971172175f9418ae07d3624913e2ee4\nresource/ui/huditemeffectmeter_spy.res=ac0868d0059d81a722db3441543c05ce2f9281e0f9b8feebf957163e277b62c7\nresource/ui/disguisestatuspanel.res=3f63dde5168cdc48b4412d816b29855f560223500df5a41a3463adc06f96f659\nresource/ui/disguise_menu/hudmenuspydisguise.res=af6b597b77ea6c24345fae67cf9fd71a4a119685fa58dcb5ec4847ddbd8055a3\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudmediccharge.res=052b93edb2d11068ad6279c4026f97664cb5c160a03468ed4d984345de6a5c80\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/ui/hudaccountpanel.res=3778df1b3f8980d57a212b1093b46d79981a8f478535eb8fb5a0e32c499c821b\nresource/ui/hud_obj_sentrygun.res=847aa11dc79860b30a8895e56cbea5f05e25d86ee90156358e439f3252531d8d\nresource/ui/hud_obj_dispenser.res=de01fecf5488294a859924ebb8ef4469c5c8c411ac9494ccef59e0b6cf3b2324\nresource/ui/hud_obj_tele_entrance.res=08e636e77652cddd131e1616786ffe433f46140effd07b19069136d5b93bbe8b\nresource/ui/hud_obj_tele_exit.res=820ec83871757254342b33406f13f20ba58552fe98ef6a3d0c5796bdf7e1b060\nresource/ui/build_menu/hudmenuengybuild.res=d6ae743246d924cb196711d9c76c686547dcc25fd48f97a46f7ea583eec8da24\nresource/ui/build_menu/base_active.res=85e3534ab70bcc4b351f18d28a36de2b76d74b9e7c7411be94a235016eb97642\nresource/ui/build_menu/base_already_built.res=739a6a4aa3c3c7d3bedd7a82caf43e5a98305f1ddc541efbc299bfe6df187ffb\nresource/ui/build_menu/base_cant_afford.res=a66763285d3a17afef0dbb294a25cbce513cdf0cdae3fb4e1dfd1aab84f290e0\nresource/ui/build_menu/base_unavailable.res=86ed16e426488d8b6ee8d15b4cf35533f13a077bc4b517d5f30a8638e8d62fcf\nresource/ui/build_menu/sentry_active.res=f93c016a408914e36d937e561af64c06b841ddf474416962e71f40da9c8a4296\nresource/ui/build_menu/sentry_already_built.res=15a8c82f10764efe71b06b0c8dd66c57241fade19984e1cd30e0d30d15569763\nresource/ui/build_menu/sentry_cant_afford.res=f991aa9c66b16e1bdc124e64aa2fbac534e78cfc9aa0675f0ba59dc0346d9ef4\nresource/ui/build_menu/sentry_unavailable.res=af8127ddaab14655147927c89a0ecbcc6df0721f29375728fb9bb62b34e36efd\nresource/ui/build_menu/dispenser_active.res=ed1c867a7cca3571ce7a0944a661d47b8b76f6390f523f81e7ef892df6df7823\nresource/ui/build_menu/dispenser_already_built.res=bf79605b3178a66f16b07aeeed534b149a3825afc742371771eb6dd93390af44\nresource/ui/build_menu/dispenser_cant_afford.res=2d8b5933088544ad51223df833cde5ee59ecb62611c3f3f5e64353b9695d80d8\nresource/ui/build_menu/dispenser_unavailable.res=c7467c50b700ed00000a744cbcd2b90db3bbfb7117025922a11046abfeae51d4\nresource/ui/build_menu/tele_entrance_active.res=b60e5a503b977025ef4f8e6cba57ea51b6315ed09edf8362498797ca2223d4ef\nresource/ui/build_menu/tele_entrance_already_built.res=84158771f4214232dfdebc009504bd9401671e2b364d3f9b4c62a1af4baf6642\nresource/ui/build_menu/tele_entrance_cant_afford.res=7af85facd99f84f15d74e98d4568ddfc029fa3bc9bb042ecccd34844ac7de87f\nresource/ui/build_menu/tele_entrance_unavailable.res=eb4c704290dc58a435b7a060cc18545048a636164ef5e2c287601f555b39fb79\nresource/ui/build_menu/tele_exit_active.res=3e2d5d3e9351a2b7e2d192b25cc038639291ba453e261e3ad9e011f7d3cece1f\nresource/ui/build_menu/tele_exit_already_built.res=a663a08df86006e8b308187e542f8056e6be557b911295ee9cff9e3290e0994a\nresource/ui/build_menu/tele_exit_cant_afford.res=033e68c1f12cacaeb70eff746ede152f8105e25a5bb875541eff0fb44dfa79ea\nresource/ui/build_menu/tele_exit_unavailable.res=2fd9134ed0677a08b73ac05d2bf0b770fac5a073fa0dca70596e337d850228ba\nresource/ui/destroy_menu/hudmenuengydestroy.res=eccaca4ea9c7cf1a0b6da8a8a0b43f4a64fb80853d96affb5a1d81e89741c722\nresource/ui/destroy_menu/sentry_active.res=61aa16cb165f0a08ac45b566f7aa755cd3095504d5fabf08e476dcdbec70e3bb\nresource/ui/destroy_menu/sentry_inactive.res=21e221c001506e849c765dbf10c1101c8b7db47c11f4cf17bb4e184f532dbddd\nresource/ui/destroy_menu/dispenser_active.res=13f29b892149149e8acaafb3999153cb9b895f8aaf16ab3fb6c1db819d8bc3dc\nresource/ui/destroy_menu/dispenser_inactive.res=c8e55e77e3f3dc93198a45a4365ec6f17f0d1f46e88d5943fbba77086f12fd53\nresource/ui/destroy_menu/tele_entrance_active.res=69f1cac1e9077053266b0d7c7d71547ed102b73577bb33598c9de82bdd0abce1\nresource/ui/destroy_menu/tele_entrance_inactive.res=ca2fb3667ea5445c75d6ff71825bfbadedc342f48a463de1c3abd44e76c7d5b8\nresource/ui/destroy_menu/tele_exit_active.res=5ff66dd1bef2453ff3f45de11119ab43796ed4f8968f4912b949fd3ad0c81585\nresource/ui/destroy_menu/tele_exit_inactive.res=e3d6a74fbe1cdef2694d6be1c766720b1a26ed337f17838eced77c688a282544\nresource/ui/classselection.res=e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc\nresource/ui/classtipslist.res=c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc\nresource/ui/classtipsitem.res=524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7\nresource/ui/teammenu.res=650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0\nresource/offline_practice.res=0bfd8e281c89a45b08d5d78ff049159c7b8c19cbe3c32594bdfa3c8b0586a507\nresource/ui/training/main.res=a6efff7d0f36d89d866567b2b8109b8ef65573ed4a0cd47131646487d9a461a2\nresource/ui/training/modeselection/modeselection.res=bd38e0941d916733c588f1ffc850607c71e7f20ea09a4c9c663666796c4bf0a5\nresource/ui/training/modeselection/modepanel.res=ce7e7c8061b2a2a09ccf636d85c03b2c93451379573503a83182356fdf0c46a7\nresource/ui/training/offlinepractice/practicemodeselection.res=71bc8847bb02fc2a4933732a7f078c540e6e3d082808a80c8c02ae18c0b16562\nresource/ui/training/offlinepractice/mapselection.res=17354d6b6f43c82867fec37dc95e7434eb9931584d85f83bf0886a8865220197\nresource/createmultiplayergameserverpage.res=9e718333bba8f969137955db8321374926d2589b58837c5c9a4d2aa05f462eff\nresource/createmultiplayergamegameplaypage.res=ffe497ad532fdb0643de3d83a80c2e87daea926832da27b15d728a959c9939a5\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
+  "sourceLedger": "resource/ui/mainmenuoverride.res=5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92\nresource/gamemenu.res=09eac01db08203960e10a0d5febe4c6e6b92fbb3cf9302ff9282fcd62ce12044\nresource/ui/matchmakingdashboard.res=edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289\nresource/ui/dashboardpartymember.res=cd09d886bf54e5f327931124170519820444c4c4215fbdc9c5779966a92f735b\nresource/ui/matchmakingdashboardplaylist.res=5bc6d3e1e101f9b3dc30bcc40d631703d0c9bddce90b1b207937d4b3d9c90367\nresource/ui/matchmakingplaylist.res=86cda545847d2219d67b31ac39e5a26a6f711c1662404e62a26b7871d038b8a7\nresource/ui/mainmenuplaylistentry.res=f8379b432cee49b0696775788b5eac15a2c7f1ded8364386991cf7bc5e4af570\nresource/ui/mainmenueventplaylistentry.res=1e752c4072e60e3985141ed522fc9d41f424c0027313bd8e0e5fd43b9a2cac34\nscripts/characterbackgrounds.txt=9cfe4a4006b65adc31f1012cc8ca8d20d24dcd5ded3ca35c167ddf1b7f3e9c6f\nresource/ui/statsummary.res=bf146199fcd7aec0a5467752853b89ead6f882d11533de383c09561bd3455903\nresource/loadingdialognobanner.res=7cb4533c43c99512be637450c0ceba681621a140d0fe058a32781470e3a14290\nresource/loadingdialognobannersingle.res=cffde579cef52d36f2dd794e68848014da866e38c2404b8adcc56c579df4718b\nresource/loadingdialogvac.res=81cdac564b982aa4bed0658cda3d895caf46690194e24b870938ad89a82a87c9\nresource/loadingdialogdualprogress.res=missing\nresource/loadingdialogerror.res=f18624dea43ddeb196475fb5ae15831b72597686dd09e3716a8ce09a0c80a3cc\nresource/loadingdialogerrorvacbanned.res=8f0e097a4efd485c9c733d8de4d4632312afe1904e7bf1516f14e2fcaf95d66b\nresource/loadingdialogerrornosteamconnection.res=c9aa0c669d6d40d1c06204949ca2236cc2d2c2f7b9a2aa194a6ad9fb1fe52751\nresource/loadingdialogerrorloggedinelsewhere.res=4f2f0536c944961830f1bff66694e2e24af369aa5b027588ced8aa7568967562\nresource/clientscheme.res=1d071b99def0405cbf73d97642a396e6dcbad1a7488f12696ca5dd62893c604c\nresource/sourcescheme.res=97e6bb4816a567e1dea0333462f519a7be1434e4e7c10c728be25663d0f4134c\nresource/sourceschemebase.res=1ca27ea2d70db6af5a76605bd8f1655aabfecd61e3d19d89981e7eded972ea99\nscripts/hudlayout.res=1f18cb73d9ef54ff79ea208c9996db0655ac731b2ee8e9a82ff63a4b697f400f\nscripts/hudanimations_manifest.txt=927b61008081eafac302db71d32d75c63b4c9ed1b23c4bd5b8725826733c1acc\nscripts/hudanimations.txt=7e2e97c91493d7cfee9a67bd04fcc242c8f6cfec2834a796df08bdbac8a94e1a\nscripts/hudanimations_tf.txt=cffca69ab872c358d8afb566e78acde022062e87b4fdcfa1779e77dd28ad52ff\nresource/ui/hudplayerclass.res=10181165d10a81821672fd8e104d798e18cf896ca1156cf92df8ce0a07f8c89d\nresource/ui/hudplayerhealth.res=31fabca97c196eb2cff565b18ff8b3a17aa8806c8e1a980c9376782be7fa4774\nresource/ui/hudammoweapons.res=a23a98f009dd34ac8c94e7149b1ded56eb9ed66e03d583fcd9c2ab68c3cb7734\nresource/ui/hudweaponselection.res=7a6f02c7eab4f0befdac5c69082c9334b0a03975738e1fc6d598ba6c91967138\nresource/ui/scoreboard.res=ed6e7d1619dcfa7423d00cf77c19026d7fe00c6a2bca634bb742d20d870b3e52\nresource/ui/hudobjectivestatus.res=b46a3a3d4cbfa57d28d15292036f0de16bfdd928f82034dda4f37617576875ca\nresource/ui/hudmatchstatus.res=7c6dc4cd5bf8136f6962ab5a2745fe285dd84c1a211b539c4b7a696d51c966c5\nresource/ui/hudobjectivetimepanel.res=cae1af088a6fbe3ca6607d3e756ed2cf7e3d8f574ef18492a20f29cba7591500\nresource/ui/waitingforplayerspanel.res=04c80baaff2d42a8ae6155f240a33c8e687861b8df5d04f09c3a333b87f00b4f\nresource/ui/hudobjectiveflagpanel.res=8affbaac643b77e07e3561497d4f6cbc1abd919d497c92fe0a683015d9adc683\nresource/ui/flagstatus.res=69b56afcf854afe54cd745054f1f720540933a23838bf8f77f34d780091176ca\nresource/ui/winpanel.res=e03fe37c651b1958fedd58b8062a88cc76a7728a6b1d98f21e61af96bbb68089\nresource/ui/notifications/base_notification.res=224f01f03b0aa19c053f3ef8a9514f55f829abfbba3bb1ee9c34da77127493ac\nresource/ui/notifications/notify_your_flag_taken_red.res=bb57e2c055fe13a26e657a6c0f4341e65c61c6a36f13be5378675b44b7036c20\nresource/ui/notifications/notify_your_flag_taken_blue.res=6dc095c2be8fa10cc70d969d2f8c2223bfaaa447bd7e702cf3caab9d806f45e5\nresource/ui/notifications/notify_your_flag_dropped_red.res=b577077ce001433c73376b7c910c65cc84c73ec05177a28fb025ed101f5b48df\nresource/ui/notifications/notify_your_flag_dropped_blue.res=203a5856c0bb65bedfbc8969ed326ffca07d67358e2bc1318f109a02f12f5db6\nresource/ui/notifications/notify_your_flag_returned_red.res=6ddbde6a9a06738c416a3954fcfebac0ec00bd264415caab329a2f089d88407e\nresource/ui/notifications/notify_your_flag_returned_blue.res=e8800ce8f53707b98ae6447d9664d5338e83155dea39f50e4ab4a3c7c8777aa8\nresource/ui/notifications/notify_your_flag_captured_red.res=6e45432c4f1daeafb3c11fe38ea025ba5e7474904e62cf4896111a914107583b\nresource/ui/notifications/notify_your_flag_captured_blue.res=ff2609c1c992d929b59a576155045dd3138132b501630e645efae4aff16e9cad\nresource/ui/notifications/notify_enemy_flag_taken_red.res=69941e1902085f74b0651651aa7d7a8afa67d0e970e437d6812669d08f8b50e9\nresource/ui/notifications/notify_enemy_flag_taken_blue.res=ce7380aa0ead67029ff4538b92eeaa3f5097546af2a5eed1f7729dba7b03e8f2\nresource/ui/notifications/notify_enemy_flag_dropped_red.res=cb1657bc57f92a4caa5206a390e1d82168e85b590ac62dc9dc413f0b962f560f\nresource/ui/notifications/notify_enemy_flag_dropped_blue.res=f4d8aea3f1549560e56e2e7382b12037c3b39b46a7b41bcd2287363995f30f90\nresource/ui/notifications/notify_enemy_flag_returned_red.res=5171217a99a003cc1dd919d2c3cad7bd67fbddb95b522f5f2867c355bc2875b3\nresource/ui/notifications/notify_enemy_flag_returned_blue.res=6e5d270ffb0f50e1864956b3c00b919d994da87a9b6042a5bdd1aa45d10f0b58\nresource/ui/notifications/notify_enemy_flag_captured_red.res=1d43cbbd035626d43c32eb116f499a631a56d76e4cd08c81eb0957279d49bdbf\nresource/ui/notifications/notify_enemy_flag_captured_blue.res=27b8b7b23921a9df7d36776ddc814e5a1475fe79d1a0c83811c45272ea62002d\nresource/ui/notifications/notify_touching_enemy_ctf_cap_red.res=b6dc7aa9ac40282ad58a23a7a7cf16db90a872d1133205453275a2bd3a280ea6\nresource/ui/notifications/notify_touching_enemy_ctf_cap_blue.res=50e4ed92ddde5b0cff09214a58c765f2f971172175f9418ae07d3624913e2ee4\nresource/ui/huditemeffectmeter_spy.res=ac0868d0059d81a722db3441543c05ce2f9281e0f9b8feebf957163e277b62c7\nresource/ui/disguisestatuspanel.res=3f63dde5168cdc48b4412d816b29855f560223500df5a41a3463adc06f96f659\nresource/ui/disguise_menu/hudmenuspydisguise.res=af6b597b77ea6c24345fae67cf9fd71a4a119685fa58dcb5ec4847ddbd8055a3\nresource/ui/huddemomanpipes.res=607417c4abf5e469cf15e2d15d45ae5ccc826fe4a6b5f28444241a91a701bb55\nresource/ui/hudmediccharge.res=052b93edb2d11068ad6279c4026f97664cb5c160a03468ed4d984345de6a5c80\nresource/ui/hudkillstreaknotice.res=551c477ae179b47715074091375612eae36fd22a0ddcd3a7c98f213925224aba\nresource/ui/targetid.res=1f9f3567a38238aa7a0ce2c1343a8b2b2fd18518a4220984268571a5e443f321\nresource/ui/hudaccountpanel.res=3778df1b3f8980d57a212b1093b46d79981a8f478535eb8fb5a0e32c499c821b\nresource/ui/hud_obj_sentrygun.res=847aa11dc79860b30a8895e56cbea5f05e25d86ee90156358e439f3252531d8d\nresource/ui/hud_obj_dispenser.res=de01fecf5488294a859924ebb8ef4469c5c8c411ac9494ccef59e0b6cf3b2324\nresource/ui/hud_obj_tele_entrance.res=08e636e77652cddd131e1616786ffe433f46140effd07b19069136d5b93bbe8b\nresource/ui/hud_obj_tele_exit.res=820ec83871757254342b33406f13f20ba58552fe98ef6a3d0c5796bdf7e1b060\nresource/ui/build_menu/hudmenuengybuild.res=d6ae743246d924cb196711d9c76c686547dcc25fd48f97a46f7ea583eec8da24\nresource/ui/build_menu/base_active.res=85e3534ab70bcc4b351f18d28a36de2b76d74b9e7c7411be94a235016eb97642\nresource/ui/build_menu/base_already_built.res=739a6a4aa3c3c7d3bedd7a82caf43e5a98305f1ddc541efbc299bfe6df187ffb\nresource/ui/build_menu/base_cant_afford.res=a66763285d3a17afef0dbb294a25cbce513cdf0cdae3fb4e1dfd1aab84f290e0\nresource/ui/build_menu/base_unavailable.res=86ed16e426488d8b6ee8d15b4cf35533f13a077bc4b517d5f30a8638e8d62fcf\nresource/ui/build_menu/sentry_active.res=f93c016a408914e36d937e561af64c06b841ddf474416962e71f40da9c8a4296\nresource/ui/build_menu/sentry_already_built.res=15a8c82f10764efe71b06b0c8dd66c57241fade19984e1cd30e0d30d15569763\nresource/ui/build_menu/sentry_cant_afford.res=f991aa9c66b16e1bdc124e64aa2fbac534e78cfc9aa0675f0ba59dc0346d9ef4\nresource/ui/build_menu/sentry_unavailable.res=af8127ddaab14655147927c89a0ecbcc6df0721f29375728fb9bb62b34e36efd\nresource/ui/build_menu/dispenser_active.res=ed1c867a7cca3571ce7a0944a661d47b8b76f6390f523f81e7ef892df6df7823\nresource/ui/build_menu/dispenser_already_built.res=bf79605b3178a66f16b07aeeed534b149a3825afc742371771eb6dd93390af44\nresource/ui/build_menu/dispenser_cant_afford.res=2d8b5933088544ad51223df833cde5ee59ecb62611c3f3f5e64353b9695d80d8\nresource/ui/build_menu/dispenser_unavailable.res=c7467c50b700ed00000a744cbcd2b90db3bbfb7117025922a11046abfeae51d4\nresource/ui/build_menu/tele_entrance_active.res=b60e5a503b977025ef4f8e6cba57ea51b6315ed09edf8362498797ca2223d4ef\nresource/ui/build_menu/tele_entrance_already_built.res=84158771f4214232dfdebc009504bd9401671e2b364d3f9b4c62a1af4baf6642\nresource/ui/build_menu/tele_entrance_cant_afford.res=7af85facd99f84f15d74e98d4568ddfc029fa3bc9bb042ecccd34844ac7de87f\nresource/ui/build_menu/tele_entrance_unavailable.res=eb4c704290dc58a435b7a060cc18545048a636164ef5e2c287601f555b39fb79\nresource/ui/build_menu/tele_exit_active.res=3e2d5d3e9351a2b7e2d192b25cc038639291ba453e261e3ad9e011f7d3cece1f\nresource/ui/build_menu/tele_exit_already_built.res=a663a08df86006e8b308187e542f8056e6be557b911295ee9cff9e3290e0994a\nresource/ui/build_menu/tele_exit_cant_afford.res=033e68c1f12cacaeb70eff746ede152f8105e25a5bb875541eff0fb44dfa79ea\nresource/ui/build_menu/tele_exit_unavailable.res=2fd9134ed0677a08b73ac05d2bf0b770fac5a073fa0dca70596e337d850228ba\nresource/ui/destroy_menu/hudmenuengydestroy.res=eccaca4ea9c7cf1a0b6da8a8a0b43f4a64fb80853d96affb5a1d81e89741c722\nresource/ui/destroy_menu/sentry_active.res=61aa16cb165f0a08ac45b566f7aa755cd3095504d5fabf08e476dcdbec70e3bb\nresource/ui/destroy_menu/sentry_inactive.res=21e221c001506e849c765dbf10c1101c8b7db47c11f4cf17bb4e184f532dbddd\nresource/ui/destroy_menu/dispenser_active.res=13f29b892149149e8acaafb3999153cb9b895f8aaf16ab3fb6c1db819d8bc3dc\nresource/ui/destroy_menu/dispenser_inactive.res=c8e55e77e3f3dc93198a45a4365ec6f17f0d1f46e88d5943fbba77086f12fd53\nresource/ui/destroy_menu/tele_entrance_active.res=69f1cac1e9077053266b0d7c7d71547ed102b73577bb33598c9de82bdd0abce1\nresource/ui/destroy_menu/tele_entrance_inactive.res=ca2fb3667ea5445c75d6ff71825bfbadedc342f48a463de1c3abd44e76c7d5b8\nresource/ui/destroy_menu/tele_exit_active.res=5ff66dd1bef2453ff3f45de11119ab43796ed4f8968f4912b949fd3ad0c81585\nresource/ui/destroy_menu/tele_exit_inactive.res=e3d6a74fbe1cdef2694d6be1c766720b1a26ed337f17838eced77c688a282544\nresource/ui/classselection.res=e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc\nresource/ui/charinfoloadoutsubpanel.res=017e977f498fc0eb326b8b0a4f26ffd40b6914f80502d4670736673d47ee16be\nresource/ui/classloadoutpanel.res=868c75b730375b8a099e03103643be76430d089d992a227a163a7b3c3ccb0d38\nresource/ui/econ/backpackpanel.res=f19343267c6f1297427c609a9d46b5a24aa335c5a75e8bda975893e184fad378\nresource/ui/classtipslist.res=c7be1fb87a7d748df8f5d59db54b79020d57675e983939cb4b7f2f3a8ec968cc\nresource/ui/classtipsitem.res=524eac0cddd5625561cf1d0034653624d3daffcc1e99313ebdbfd5fd00a1a9d7\nresource/ui/teammenu.res=650867b7928f728ff6fce107745018223f3a19b1193b4c7f5fae54e391f102a0\nresource/offline_practice.res=0bfd8e281c89a45b08d5d78ff049159c7b8c19cbe3c32594bdfa3c8b0586a507\nresource/ui/training/main.res=a6efff7d0f36d89d866567b2b8109b8ef65573ed4a0cd47131646487d9a461a2\nresource/ui/training/modeselection/modeselection.res=bd38e0941d916733c588f1ffc850607c71e7f20ea09a4c9c663666796c4bf0a5\nresource/ui/training/modeselection/modepanel.res=ce7e7c8061b2a2a09ccf636d85c03b2c93451379573503a83182356fdf0c46a7\nresource/ui/training/offlinepractice/practicemodeselection.res=71bc8847bb02fc2a4933732a7f078c540e6e3d082808a80c8c02ae18c0b16562\nresource/ui/training/offlinepractice/mapselection.res=17354d6b6f43c82867fec37dc95e7434eb9931584d85f83bf0886a8865220197\nresource/createmultiplayergameserverpage.res=9e718333bba8f969137955db8321374926d2589b58837c5c9a4d2aa05f462eff\nresource/createmultiplayergamegameplaypage.res=ffe497ad532fdb0643de3d83a80c2e87daea926832da27b15d728a959c9939a5\nresource/optionssubkeyboard.res=99cc7c486fa19b58c76842a8ce5abf8b65ff13fbbd097f5eb7e195783b570902\nresource/optionssubkeyboardadvanceddlg.res=fc9cfe367a14c0afdf31e09a87e571a8bfc9fe7080611b64a0f6be115fee0a55\nresource/optionssubmouse.res=d66b4e5c5138ab5a03488f04275532e249834dfc56c55d648a61cc95e62730a7\nresource/optionssubaudio.res=610c003f70285085917e930015d17ad772d6ec24d7ec4beda55f22f4d87bf42e\nresource/optionssubaudiothirdpartydlg.res=6e03e67f08e7fb52c8bb2e589ac11475188da913e4cde7f6431f409f03c30419\nresource/optionssubvideo.res=0753652e496d0df7a8935a10f3360c275ed24f6dfe5c70f83695953754f0333a\nresource/optionssubvideoadvanceddlg.res=6810e7b776ddaf2350fb2370fde6313cfc724bc7115841236cecccb5fd9e53c4\nresource/optionssubvideogammadlg.res=1820881866018ea5499fa796dc81d6ebb79e37a228f808236af3f05994da229e\nresource/optionssubvideothirdpartydlg.res=d284eda8d6e578cc4645e6fba94044d14c870e491e4b0ba5d497a5ce9fc094d5\nresource/optionssubvoice.res=c72f989c979091c6ad9b0456039b9444be39962fc66fd816019914b7cf7f247d\nresource/optionssubmultiplayer.res=40cacfeaff5f0304edbbdfe03a970dddb786a6c4ad8c9492edafae556a00c19e\nresource/ui/tfadvancedoptionsdialog.res=38926822b667e916f5df3c3aeca41b86bab6f155ce3b2cc31edf53598fb29cc4\ncfg/user_default.scr=d8f4cf14cebc84082b555fe4277f05aa5959cbd2b2e9f920252f43fe70b6b020\ncfg/user.scr=missing\nscripts/kb_act.lst=403843357e1e3dd4212fba5f4d253db92096531d224595a47eadc07cb6b1f8da\nresource/tf_english.txt=9c6b1b289b03c1d3d8c44b11378b785c06b98de73b406a5f118b0aabfb65e1ef\nresource/gameui_english.txt=43730a193cec6892915532f809fa274397a122e827e75820514bced96f1f83f5\nresource/vgui_english.txt=56a86da0be3ab3045d2fe766b852043ba1d641df70675097e24537f46c0096b4\nresource/valve_english.txt=4bbd3d8d9fca9d4f1dae999d9bdac16a0152dc28e8b3fcb9c5508c60a32dbcfa",
   "dependencies": [
     {
       "logicalPath": "cfg/user_default.scr",
@@ -23,6 +23,438 @@
     {
       "logicalPath": "materials/backpack/player/items/crafting/icon_dueling.vtf",
       "sha256": "a70616f5cad67c1b900223775caa894cea066376e539af6a9a2aed43eb587d12",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_bat.vmt",
+      "sha256": "eee186d25328d08bb771ac2397dd4ed38b93861ff9ae2353fe1b91d00a49c0d3",
+      "byteLength": 113,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_bat.vtf",
+      "sha256": "1a2ff400c8b2abb4446830e3ecd4884f5846e8af90f3c112219789d2b586b207",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_bonesaw/c_bonesaw.vmt",
+      "sha256": "63f8514ab3a0c544f1e35cd266179244c1049ddd7d998de5aed4160c8b9a8d2b",
+      "byteLength": 127,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_bonesaw/c_bonesaw.vtf",
+      "sha256": "aa25faf0f672502b808576163883a71169eb105b841c00c319d77d258e13f522",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.vmt",
+      "sha256": "880faac7d5816a3864e4248871fe1257372fa2e01ab1886b06bc75b639242f88",
+      "byteLength": 137,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.vtf",
+      "sha256": "ba87000c213cc774cf7e9194d1349b041dfe6f0ca96e9cf940944c50c3faaf4c",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_flamethrower/c_flamethrower.vmt",
+      "sha256": "c1940be8dc9bf08b5a4a809ca749c11c1ae7ca9b27dcd7a494c6dd1b8c256166",
+      "byteLength": 137,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_flamethrower/c_flamethrower.vtf",
+      "sha256": "344ea57d7e98be36f29e36aa02dac4706715ada5d719782e46e64eca303c97a6",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_medigun/c_medigun.vmt",
+      "sha256": "2bb7ef9f1921b4921c6635a00aa1099ed08146bf74bfd642dde996a856e39d5c",
+      "byteLength": 127,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_medigun/c_medigun.vtf",
+      "sha256": "66bfe308b143be4c814f86230b23e3b97f6b055521d106c54916dd7a15a49988",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_pistol.vmt",
+      "sha256": "d91e11fc7271563e7d2c5e3deb0188d0c7ff93a66dbb52df7baf6fe93eb66b71",
+      "byteLength": 114,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_pistol.vtf",
+      "sha256": "9a0785ec00293f7e86193229b56f027bc732c1ef15c831bcf14e9c80e17c29b0",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_scattergun.vmt",
+      "sha256": "110ab8fdb8b1de8702edc06159d826f93564d41f4ccb0cfa0b44e65c3a42a3fc",
+      "byteLength": 118,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_scattergun.vtf",
+      "sha256": "e5fab1ac057206c3d020a213c681a60f167c5a7f2dd5183cb60ad513538122b3",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_spy_watch/parts/c_spy_watch.vmt",
+      "sha256": "e9d66f53dba6e0fa0e6613abb62cb6d94bb03008762545c26a1cb12fbba2b2a1",
+      "byteLength": 135,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/c_models/c_spy_watch/parts/c_spy_watch.vtf",
+      "sha256": "220a866f973fa99f86636133745863f9f0c0f1cf62abf3bfdd5774b4a3a074af",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/v_models/v_fist_heavy.vmt",
+      "sha256": "64304a0e77010d2768fced3d18b3ab72600b5ff20c410cfdbf18fc03ec48c7a0",
+      "byteLength": 118,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/v_models/v_fist_heavy.vtf",
+      "sha256": "86868674e539203ce955eaa59d03a8ca470d2c4e38752b424235181f6eb537e1",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_bottle.vmt",
+      "sha256": "c2a261986cd37311a432744d84f6ae056999cc03116d01542989831c757e7f75",
+      "byteLength": 114,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_bottle.vtf",
+      "sha256": "53c073eb23affd5bbba447c0fa0092c516d7b746f82688d8c3e4266075b8a121",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_builder.vmt",
+      "sha256": "b7c83f92a4bb029ec4dc7f6b7e6fe3050dd56a40280428a224cca55c03f495e2",
+      "byteLength": 115,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_builder.vtf",
+      "sha256": "00cc8df91d8c458a016503ee4e88906cc788796f20686a8ca0aa4c30c07197f0",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_cigarette_case.vmt",
+      "sha256": "d052b79f5727bed3332e13d2f36ff45c62ef28a2e784af916cc28d1fcc421a6e",
+      "byteLength": 122,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_cigarette_case.vtf",
+      "sha256": "7b90e559a080f17010525809141711f0ee3d2425ccab69c04b4d15a3d03e7ccb",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_grenadelauncher.vmt",
+      "sha256": "28f759154049950a989d1d52e7acbd1e81701e90e220e9ed2ee30928023afc82",
+      "byteLength": 123,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_grenadelauncher.vtf",
+      "sha256": "b7445900ff3351474b10ad14b1f29a2ce9d407855b75601f3afe6592966456a0",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_knife.vmt",
+      "sha256": "e6f3e74ae10b1ad185bb22f144659d5fcaebd81aa2ef18f99112b69bffdea1e6",
+      "byteLength": 113,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_knife.vtf",
+      "sha256": "0102c2ef3545153ab0d4fb942f7663ee6a487389d8da5e6742ed9fe116239779",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_machete.vmt",
+      "sha256": "28a66ef3cc9af2d7c555aafd141dd8d3f061a8fd17d7749d72622078ad6da97b",
+      "byteLength": 115,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_machete.vtf",
+      "sha256": "f52d322c9d9057c33552eb04d6189a4d7d2b548d82f424995273240ac518819a",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_minigun.vmt",
+      "sha256": "87a66686610b56ce2147f746d76f5bc572da141654f6c882256c281fb67dc9c3",
+      "byteLength": 115,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_minigun.vtf",
+      "sha256": "704d27d669c9ce4c3e201b9ec74de399351a746e1c7502e6b3ba7557d76b1984",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_pda_engineer.vmt",
+      "sha256": "56352b4cb59d05cc977b94719bb67142e127356e3a647cb5f42c33438ff4d6b2",
+      "byteLength": 120,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_pda_engineer.vtf",
+      "sha256": "96a0f7ed967f1dbedddb0af5074ad97dc6ead2d0d61ee5b030e0641f24e07b65",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_revolver.vmt",
+      "sha256": "04a399a69f0af4909398a49dbfb4de21b0b65230e69df5ceaa2fe51a93a2f99f",
+      "byteLength": 116,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_revolver.vtf",
+      "sha256": "da9ad2da34458e1b9ed6e5ff032bedb4e37513dd98cb1c17f9f5bd4fa34c21f2",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_rocketlauncher.vmt",
+      "sha256": "5f2914724f43b094c560c378d5e05b40a901cb5036e47a3639e8b44f5a5747b9",
+      "byteLength": 122,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_rocketlauncher.vtf",
+      "sha256": "5e7c606a5c3d49c0d17c23f8376f14716a60b71cba3afeecd5edb190ab4783c8",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_sapper.vmt",
+      "sha256": "805f9be32b3fd6feb7f63ce0c97de7cd2c02cdd45d73a198842471c5be176df5",
+      "byteLength": 114,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_sapper.vtf",
+      "sha256": "88bb22b8aeaa2f2b53b30d7dc7cffe3e0f4a65126ee347da478aa2c3b6c3d94f",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_shotgun.vmt",
+      "sha256": "37fce23d6dd827a8a274b0f5b2191c0537faf71e86b12135e48cacfa5daa4cba",
+      "byteLength": 115,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_shotgun.vtf",
+      "sha256": "a77deee86d07060bb306b85541ca193583ed02387185a76d498e1b5ba61a5b76",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_shovel.vmt",
+      "sha256": "332efaabec1ee86c1d6bf4bd56aa5002c4ef660621c1d6441901d88c66c7d771",
+      "byteLength": 114,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_shovel.vtf",
+      "sha256": "715af2584c7ae9d985c84b8d54b8c449f7d3506affb056219c6854912aaf4a32",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_smg.vmt",
+      "sha256": "0497dd7c446c2dd6b803f60568c52692c39bbe0ee466797400a01d61c598baa2",
+      "byteLength": 111,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_smg.vtf",
+      "sha256": "d4564a1458f2ecd8c5e2bf03f0f3c8dc2325913023962ea4bb92a0b1e6e23373",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_sniperrifle.vmt",
+      "sha256": "8b543780c4ae2ca7f8b528fedc5e52338c0381595f5291cb420226e04bdc366c",
+      "byteLength": 119,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_sniperrifle.vtf",
+      "sha256": "1d3c719aa459f21449b387f826bb007f925b9579fddc1c54f54209601efbddba",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_stickybomb_launcher.vmt",
+      "sha256": "655df55fe62df4e3ecf16672596ef2907e09b49688c886d3d2182dbff6fb66ee",
+      "byteLength": 127,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_stickybomb_launcher.vtf",
+      "sha256": "4d5205824a31607e4735f178543b5e38e7a2607657679be734013169867f93ac",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_syringegun.vmt",
+      "sha256": "7e8fd75e9ba2866a7c0846ff90d73d96aa9b4c4597f88734448a1dc2206edc06",
+      "byteLength": 118,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_syringegun.vtf",
+      "sha256": "f7255ff4921cef059dc4da8b1f253725671f40c93968b1eddcaebf5e3c276dff",
+      "byteLength": 22104,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_wrench.vmt",
+      "sha256": "e15eb3a2a19b2fbeb5c46fb76ed5269d753080bb9470baca8d2f7c78e2ed157c",
+      "byteLength": 114,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/backpack/weapons/w_models/w_wrench.vtf",
+      "sha256": "e0ad54bdcb1b7e0e76387a0f166448329b7495f76dfe20aaf79898f8fd46cde0",
       "byteLength": 22104,
       "kinds": [
         "texture"
@@ -2949,6 +3381,22 @@
       ]
     },
     {
+      "logicalPath": "materials/hud/ico_reel.vmt",
+      "sha256": "8e42f8a399d80875cfb5584b45ae3cc6e593e9d1460f216ed99b5bcce714d2ec",
+      "byteLength": 149,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/hud/ico_reel.vtf",
+      "sha256": "b427e01c02d91799eb6f214efd84f58b84ccb0d4dc66dca79efa23497b176c3b",
+      "byteLength": 87640,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/hud/ico_stickybomb_blue.vmt",
       "sha256": "92a90da8b5df8a05d27aa8db3820b61858e2455b9578b923a7267cfe7a76f0b9",
       "byteLength": 160,
@@ -3904,6 +4352,22 @@
       "logicalPath": "materials/vgui/alert_rect.vtf",
       "sha256": "72b33cc2b9ecf90b9b624b213cae678aea841d8c3a0db40779071d825d6f7de9",
       "byteLength": 43896,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/backpack_jewel_modify_target_b_g.vmt",
+      "sha256": "806a41582a4b10937e7cba5b948460a637a2619b2e2a2fbfee40050428d038cb",
+      "byteLength": 134,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/backpack_jewel_modify_target_b_g.vtf",
+      "sha256": "9c9c101400068cb5c7ba66080202a1e29679d2557b5dbaec5c0c17d3bca171bf",
+      "byteLength": 1624,
       "kinds": [
         "texture"
       ]
@@ -5701,6 +6165,22 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/loadout_dotted_line.vmt",
+      "sha256": "2a1f8704e44aaa8bd1239a987624dfe322c9b8ca55fec069ad7da0d9b93b4a42",
+      "byteLength": 100,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/loadout_dotted_line.vtf",
+      "sha256": "ce1353c301abaf7c4e3c5f064d904683656bbe03a2bc7c62df113bf40460215d",
+      "byteLength": 5784,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/loadout_header.vmt",
       "sha256": "acf88734ce8b5ea9b399aea68b7cfe484bced85e15e889deed4c9f2f0f0911e9",
       "byteLength": 95,
@@ -7045,6 +7525,22 @@
       ]
     },
     {
+      "logicalPath": "resource/ui/charinfoloadoutsubpanel.res",
+      "sha256": "017e977f498fc0eb326b8b0a4f26ffd40b6914f80502d4670736673d47ee16be",
+      "byteLength": 48125,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/classloadoutpanel.res",
+      "sha256": "868c75b730375b8a099e03103643be76430d089d992a227a163a7b3c3ccb0d38",
+      "byteLength": 12739,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
       "logicalPath": "resource/ui/classselection.res",
       "sha256": "e6fc4be62822eb351e6e678ece2f6e42b92b0b8e825a12c8120fc14b82154fcc",
       "byteLength": 37109,
@@ -7160,6 +7656,14 @@
       "logicalPath": "resource/ui/disguisestatuspanel.res",
       "sha256": "3f63dde5168cdc48b4412d816b29855f560223500df5a41a3463adc06f96f659",
       "byteLength": 2713,
+      "kinds": [
+        "resource"
+      ]
+    },
+    {
+      "logicalPath": "resource/ui/econ/backpackpanel.res",
+      "sha256": "f19343267c6f1297427c609a9d46b5a24aa335c5a75e8bda975893e184fad378",
+      "byteLength": 34892,
       "kinds": [
         "resource"
       ]
@@ -7992,6 +8496,438 @@
     },
     {
       "identity": "image-0021",
+      "configuredValue": "../backpack/weapons/c_models/c_bat",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_bat.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_bat.vtf",
+          "sha256": "1a2ff400c8b2abb4446830e3ecd4884f5846e8af90f3c112219789d2b586b207",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0022",
+      "configuredValue": "../backpack/weapons/c_models/c_bonesaw/c_bonesaw",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_bonesaw/c_bonesaw.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_bonesaw/c_bonesaw.vtf",
+          "sha256": "aa25faf0f672502b808576163883a71169eb105b841c00c319d77d258e13f522",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0023",
+      "configuredValue": "../backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.vtf",
+          "sha256": "ba87000c213cc774cf7e9194d1349b041dfe6f0ca96e9cf940944c50c3faaf4c",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0024",
+      "configuredValue": "../backpack/weapons/c_models/c_flamethrower/c_flamethrower",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_flamethrower/c_flamethrower.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_flamethrower/c_flamethrower.vtf",
+          "sha256": "344ea57d7e98be36f29e36aa02dac4706715ada5d719782e46e64eca303c97a6",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0025",
+      "configuredValue": "../backpack/weapons/c_models/c_medigun/c_medigun",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_medigun/c_medigun.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_medigun/c_medigun.vtf",
+          "sha256": "66bfe308b143be4c814f86230b23e3b97f6b055521d106c54916dd7a15a49988",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0026",
+      "configuredValue": "../backpack/weapons/c_models/c_pistol",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_pistol.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_pistol.vtf",
+          "sha256": "9a0785ec00293f7e86193229b56f027bc732c1ef15c831bcf14e9c80e17c29b0",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0027",
+      "configuredValue": "../backpack/weapons/c_models/c_scattergun",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_scattergun.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_scattergun.vtf",
+          "sha256": "e5fab1ac057206c3d020a213c681a60f167c5a7f2dd5183cb60ad513538122b3",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0028",
+      "configuredValue": "../backpack/weapons/c_models/c_spy_watch/parts/c_spy_watch",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/c_models/c_spy_watch/parts/c_spy_watch.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/c_models/c_spy_watch/parts/c_spy_watch.vtf",
+          "sha256": "220a866f973fa99f86636133745863f9f0c0f1cf62abf3bfdd5774b4a3a074af",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0029",
+      "configuredValue": "../backpack/weapons/v_models/v_fist_heavy",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/v_models/v_fist_heavy.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/v_models/v_fist_heavy.vtf",
+          "sha256": "86868674e539203ce955eaa59d03a8ca470d2c4e38752b424235181f6eb537e1",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0030",
+      "configuredValue": "../backpack/weapons/w_models/w_bottle",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_bottle.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_bottle.vtf",
+          "sha256": "53c073eb23affd5bbba447c0fa0092c516d7b746f82688d8c3e4266075b8a121",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0031",
+      "configuredValue": "../backpack/weapons/w_models/w_builder",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_builder.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_builder.vtf",
+          "sha256": "00cc8df91d8c458a016503ee4e88906cc788796f20686a8ca0aa4c30c07197f0",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0032",
+      "configuredValue": "../backpack/weapons/w_models/w_cigarette_case",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_cigarette_case.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_cigarette_case.vtf",
+          "sha256": "7b90e559a080f17010525809141711f0ee3d2425ccab69c04b4d15a3d03e7ccb",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0033",
+      "configuredValue": "../backpack/weapons/w_models/w_grenadelauncher",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_grenadelauncher.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_grenadelauncher.vtf",
+          "sha256": "b7445900ff3351474b10ad14b1f29a2ce9d407855b75601f3afe6592966456a0",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0034",
+      "configuredValue": "../backpack/weapons/w_models/w_knife",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_knife.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_knife.vtf",
+          "sha256": "0102c2ef3545153ab0d4fb942f7663ee6a487389d8da5e6742ed9fe116239779",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0035",
+      "configuredValue": "../backpack/weapons/w_models/w_machete",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_machete.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_machete.vtf",
+          "sha256": "f52d322c9d9057c33552eb04d6189a4d7d2b548d82f424995273240ac518819a",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0036",
+      "configuredValue": "../backpack/weapons/w_models/w_minigun",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_minigun.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_minigun.vtf",
+          "sha256": "704d27d669c9ce4c3e201b9ec74de399351a746e1c7502e6b3ba7557d76b1984",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0037",
+      "configuredValue": "../backpack/weapons/w_models/w_pda_engineer",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_pda_engineer.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_pda_engineer.vtf",
+          "sha256": "96a0f7ed967f1dbedddb0af5074ad97dc6ead2d0d61ee5b030e0641f24e07b65",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0038",
+      "configuredValue": "../backpack/weapons/w_models/w_revolver",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_revolver.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_revolver.vtf",
+          "sha256": "da9ad2da34458e1b9ed6e5ff032bedb4e37513dd98cb1c17f9f5bd4fa34c21f2",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0039",
+      "configuredValue": "../backpack/weapons/w_models/w_rocketlauncher",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_rocketlauncher.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_rocketlauncher.vtf",
+          "sha256": "5e7c606a5c3d49c0d17c23f8376f14716a60b71cba3afeecd5edb190ab4783c8",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0040",
+      "configuredValue": "../backpack/weapons/w_models/w_sapper",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_sapper.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_sapper.vtf",
+          "sha256": "88bb22b8aeaa2f2b53b30d7dc7cffe3e0f4a65126ee347da478aa2c3b6c3d94f",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0041",
+      "configuredValue": "../backpack/weapons/w_models/w_shotgun",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_shotgun.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_shotgun.vtf",
+          "sha256": "a77deee86d07060bb306b85541ca193583ed02387185a76d498e1b5ba61a5b76",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0042",
+      "configuredValue": "../backpack/weapons/w_models/w_shovel",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_shovel.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_shovel.vtf",
+          "sha256": "715af2584c7ae9d985c84b8d54b8c449f7d3506affb056219c6854912aaf4a32",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0043",
+      "configuredValue": "../backpack/weapons/w_models/w_smg",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_smg.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_smg.vtf",
+          "sha256": "d4564a1458f2ecd8c5e2bf03f0f3c8dc2325913023962ea4bb92a0b1e6e23373",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0044",
+      "configuredValue": "../backpack/weapons/w_models/w_sniperrifle",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_sniperrifle.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_sniperrifle.vtf",
+          "sha256": "1d3c719aa459f21449b387f826bb007f925b9579fddc1c54f54209601efbddba",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0045",
+      "configuredValue": "../backpack/weapons/w_models/w_stickybomb_launcher",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_stickybomb_launcher.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_stickybomb_launcher.vtf",
+          "sha256": "4d5205824a31607e4735f178543b5e38e7a2607657679be734013169867f93ac",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0046",
+      "configuredValue": "../backpack/weapons/w_models/w_syringegun",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_syringegun.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_syringegun.vtf",
+          "sha256": "f7255ff4921cef059dc4da8b1f253725671f40c93968b1eddcaebf5e3c276dff",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0047",
+      "configuredValue": "../backpack/weapons/w_models/w_wrench",
+      "classification": "content-vtf",
+      "material": "materials/backpack/weapons/w_models/w_wrench.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/backpack/weapons/w_models/w_wrench.vtf",
+          "sha256": "e0ad54bdcb1b7e0e76387a0f166448329b7495f76dfe20aaf79898f8fd46cde0",
+          "width": 128,
+          "height": 128,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0048",
       "configuredValue": "../console/background_xmas2020_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/background_xmas2020_widescreen.vmt",
@@ -8007,7 +8943,7 @@
       ]
     },
     {
-      "identity": "image-0022",
+      "identity": "image-0049",
       "configuredValue": "../console/background_xmas2023_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/background_xmas2023_widescreen.vmt",
@@ -8023,7 +8959,7 @@
       ]
     },
     {
-      "identity": "image-0023",
+      "identity": "image-0050",
       "configuredValue": "../console/characters/bbq_summer2023",
       "classification": "content-vtf",
       "material": "materials/console/characters/bbq_summer2023.vmt",
@@ -8039,7 +8975,7 @@
       ]
     },
     {
-      "identity": "image-0024",
+      "identity": "image-0051",
       "configuredValue": "../console/characters/bbq_summer2023_blu",
       "classification": "content-vtf",
       "material": "materials/console/characters/bbq_summer2023_blu.vmt",
@@ -8055,7 +8991,7 @@
       ]
     },
     {
-      "identity": "image-0025",
+      "identity": "image-0052",
       "configuredValue": "../console/characters/community/hwn24_hale",
       "classification": "content-vtf",
       "material": "materials/console/characters/community/hwn24_hale.vmt",
@@ -8071,7 +9007,7 @@
       ]
     },
     {
-      "identity": "image-0026",
+      "identity": "image-0053",
       "configuredValue": "../console/characters/community/hwn24_upgrades",
       "classification": "content-vtf",
       "material": "materials/console/characters/community/hwn24_upgrades.vmt",
@@ -8087,7 +9023,7 @@
       ]
     },
     {
-      "identity": "image-0027",
+      "identity": "image-0054",
       "configuredValue": "../console/characters/community/xms2023_krampus",
       "classification": "content-vtf",
       "material": "materials/console/characters/community/xms2023_krampus.vmt",
@@ -8103,7 +9039,7 @@
       ]
     },
     {
-      "identity": "image-0028",
+      "identity": "image-0055",
       "configuredValue": "../console/characters/community/xms2024_hale",
       "classification": "content-vtf",
       "material": "materials/console/characters/community/xms2024_hale.vmt",
@@ -8119,7 +9055,7 @@
       ]
     },
     {
-      "identity": "image-0029",
+      "identity": "image-0056",
       "configuredValue": "../console/characters/demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/demoman.vmt",
@@ -8135,7 +9071,7 @@
       ]
     },
     {
-      "identity": "image-0030",
+      "identity": "image-0057",
       "configuredValue": "../console/characters/engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/engineer.vmt",
@@ -8151,7 +9087,7 @@
       ]
     },
     {
-      "identity": "image-0031",
+      "identity": "image-0058",
       "configuredValue": "../console/characters/eotl_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/eotl_soldier.vmt",
@@ -8167,7 +9103,7 @@
       ]
     },
     {
-      "identity": "image-0032",
+      "identity": "image-0059",
       "configuredValue": "../console/characters/fwk_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_demoman.vmt",
@@ -8183,7 +9119,7 @@
       ]
     },
     {
-      "identity": "image-0033",
+      "identity": "image-0060",
       "configuredValue": "../console/characters/fwk_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_engineer.vmt",
@@ -8199,7 +9135,7 @@
       ]
     },
     {
-      "identity": "image-0034",
+      "identity": "image-0061",
       "configuredValue": "../console/characters/fwk_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_heavy.vmt",
@@ -8215,7 +9151,7 @@
       ]
     },
     {
-      "identity": "image-0035",
+      "identity": "image-0062",
       "configuredValue": "../console/characters/fwk_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_medic.vmt",
@@ -8231,7 +9167,7 @@
       ]
     },
     {
-      "identity": "image-0036",
+      "identity": "image-0063",
       "configuredValue": "../console/characters/fwk_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_pyro.vmt",
@@ -8247,7 +9183,7 @@
       ]
     },
     {
-      "identity": "image-0037",
+      "identity": "image-0064",
       "configuredValue": "../console/characters/fwk_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_scout.vmt",
@@ -8263,7 +9199,7 @@
       ]
     },
     {
-      "identity": "image-0038",
+      "identity": "image-0065",
       "configuredValue": "../console/characters/fwk_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_sniper.vmt",
@@ -8279,7 +9215,7 @@
       ]
     },
     {
-      "identity": "image-0039",
+      "identity": "image-0066",
       "configuredValue": "../console/characters/fwk_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_soldier.vmt",
@@ -8295,7 +9231,7 @@
       ]
     },
     {
-      "identity": "image-0040",
+      "identity": "image-0067",
       "configuredValue": "../console/characters/fwk_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/fwk_spy.vmt",
@@ -8311,7 +9247,7 @@
       ]
     },
     {
-      "identity": "image-0041",
+      "identity": "image-0068",
       "configuredValue": "../console/characters/heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/heavy.vmt",
@@ -8327,7 +9263,7 @@
       ]
     },
     {
-      "identity": "image-0042",
+      "identity": "image-0069",
       "configuredValue": "../console/characters/hwn13_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_demoman.vmt",
@@ -8343,7 +9279,7 @@
       ]
     },
     {
-      "identity": "image-0043",
+      "identity": "image-0070",
       "configuredValue": "../console/characters/hwn13_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_engineer.vmt",
@@ -8359,7 +9295,7 @@
       ]
     },
     {
-      "identity": "image-0044",
+      "identity": "image-0071",
       "configuredValue": "../console/characters/hwn13_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_heavy.vmt",
@@ -8375,7 +9311,7 @@
       ]
     },
     {
-      "identity": "image-0045",
+      "identity": "image-0072",
       "configuredValue": "../console/characters/hwn13_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_medic.vmt",
@@ -8391,7 +9327,7 @@
       ]
     },
     {
-      "identity": "image-0046",
+      "identity": "image-0073",
       "configuredValue": "../console/characters/hwn13_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_pyro.vmt",
@@ -8407,7 +9343,7 @@
       ]
     },
     {
-      "identity": "image-0047",
+      "identity": "image-0074",
       "configuredValue": "../console/characters/hwn13_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_scout.vmt",
@@ -8423,7 +9359,7 @@
       ]
     },
     {
-      "identity": "image-0048",
+      "identity": "image-0075",
       "configuredValue": "../console/characters/hwn13_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_sniper.vmt",
@@ -8439,7 +9375,7 @@
       ]
     },
     {
-      "identity": "image-0049",
+      "identity": "image-0076",
       "configuredValue": "../console/characters/hwn13_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_soldier.vmt",
@@ -8455,7 +9391,7 @@
       ]
     },
     {
-      "identity": "image-0050",
+      "identity": "image-0077",
       "configuredValue": "../console/characters/hwn13_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn13_spy.vmt",
@@ -8471,7 +9407,7 @@
       ]
     },
     {
-      "identity": "image-0051",
+      "identity": "image-0078",
       "configuredValue": "../console/characters/hwn14_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_demoman.vmt",
@@ -8487,7 +9423,7 @@
       ]
     },
     {
-      "identity": "image-0052",
+      "identity": "image-0079",
       "configuredValue": "../console/characters/hwn14_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_engineer.vmt",
@@ -8503,7 +9439,7 @@
       ]
     },
     {
-      "identity": "image-0053",
+      "identity": "image-0080",
       "configuredValue": "../console/characters/hwn14_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_heavy.vmt",
@@ -8519,7 +9455,7 @@
       ]
     },
     {
-      "identity": "image-0054",
+      "identity": "image-0081",
       "configuredValue": "../console/characters/hwn14_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_medic.vmt",
@@ -8535,7 +9471,7 @@
       ]
     },
     {
-      "identity": "image-0055",
+      "identity": "image-0082",
       "configuredValue": "../console/characters/hwn14_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_pyro.vmt",
@@ -8551,7 +9487,7 @@
       ]
     },
     {
-      "identity": "image-0056",
+      "identity": "image-0083",
       "configuredValue": "../console/characters/hwn14_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_scout.vmt",
@@ -8567,7 +9503,7 @@
       ]
     },
     {
-      "identity": "image-0057",
+      "identity": "image-0084",
       "configuredValue": "../console/characters/hwn14_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_sniper.vmt",
@@ -8583,7 +9519,7 @@
       ]
     },
     {
-      "identity": "image-0058",
+      "identity": "image-0085",
       "configuredValue": "../console/characters/hwn14_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_soldier.vmt",
@@ -8599,7 +9535,7 @@
       ]
     },
     {
-      "identity": "image-0059",
+      "identity": "image-0086",
       "configuredValue": "../console/characters/hwn14_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn14_spy.vmt",
@@ -8615,7 +9551,7 @@
       ]
     },
     {
-      "identity": "image-0060",
+      "identity": "image-0087",
       "configuredValue": "../console/characters/hwn_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_demoman.vmt",
@@ -8631,7 +9567,7 @@
       ]
     },
     {
-      "identity": "image-0061",
+      "identity": "image-0088",
       "configuredValue": "../console/characters/hwn_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_engineer.vmt",
@@ -8647,7 +9583,7 @@
       ]
     },
     {
-      "identity": "image-0062",
+      "identity": "image-0089",
       "configuredValue": "../console/characters/hwn_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_heavy.vmt",
@@ -8663,7 +9599,7 @@
       ]
     },
     {
-      "identity": "image-0063",
+      "identity": "image-0090",
       "configuredValue": "../console/characters/hwn_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_medic.vmt",
@@ -8679,7 +9615,7 @@
       ]
     },
     {
-      "identity": "image-0064",
+      "identity": "image-0091",
       "configuredValue": "../console/characters/hwn_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_pyro.vmt",
@@ -8695,7 +9631,7 @@
       ]
     },
     {
-      "identity": "image-0065",
+      "identity": "image-0092",
       "configuredValue": "../console/characters/hwn_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_scout.vmt",
@@ -8711,7 +9647,7 @@
       ]
     },
     {
-      "identity": "image-0066",
+      "identity": "image-0093",
       "configuredValue": "../console/characters/hwn_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_sniper.vmt",
@@ -8727,7 +9663,7 @@
       ]
     },
     {
-      "identity": "image-0067",
+      "identity": "image-0094",
       "configuredValue": "../console/characters/hwn_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_soldier.vmt",
@@ -8743,7 +9679,7 @@
       ]
     },
     {
-      "identity": "image-0068",
+      "identity": "image-0095",
       "configuredValue": "../console/characters/hwn_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/hwn_spy.vmt",
@@ -8759,7 +9695,7 @@
       ]
     },
     {
-      "identity": "image-0069",
+      "identity": "image-0096",
       "configuredValue": "../console/characters/medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/medic.vmt",
@@ -8775,7 +9711,7 @@
       ]
     },
     {
-      "identity": "image-0070",
+      "identity": "image-0097",
       "configuredValue": "../console/characters/mvm_demoman_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_demoman_bot.vmt",
@@ -8791,7 +9727,7 @@
       ]
     },
     {
-      "identity": "image-0071",
+      "identity": "image-0098",
       "configuredValue": "../console/characters/mvm_heavy_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_heavy_bot.vmt",
@@ -8807,7 +9743,7 @@
       ]
     },
     {
-      "identity": "image-0072",
+      "identity": "image-0099",
       "configuredValue": "../console/characters/mvm_medic_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_medic_bot.vmt",
@@ -8823,7 +9759,7 @@
       ]
     },
     {
-      "identity": "image-0073",
+      "identity": "image-0100",
       "configuredValue": "../console/characters/mvm_pyro_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_pyro_bot.vmt",
@@ -8839,7 +9775,7 @@
       ]
     },
     {
-      "identity": "image-0074",
+      "identity": "image-0101",
       "configuredValue": "../console/characters/mvm_scout_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_scout_bot.vmt",
@@ -8855,7 +9791,7 @@
       ]
     },
     {
-      "identity": "image-0075",
+      "identity": "image-0102",
       "configuredValue": "../console/characters/mvm_sniper_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_sniper_bot.vmt",
@@ -8871,7 +9807,7 @@
       ]
     },
     {
-      "identity": "image-0076",
+      "identity": "image-0103",
       "configuredValue": "../console/characters/mvm_soldier_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_soldier_bot.vmt",
@@ -8887,7 +9823,7 @@
       ]
     },
     {
-      "identity": "image-0077",
+      "identity": "image-0104",
       "configuredValue": "../console/characters/mvm_spy_bot",
       "classification": "content-vtf",
       "material": "materials/console/characters/mvm_spy_bot.vmt",
@@ -8903,7 +9839,7 @@
       ]
     },
     {
-      "identity": "image-0078",
+      "identity": "image-0105",
       "configuredValue": "../console/characters/pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/pyro.vmt",
@@ -8919,7 +9855,7 @@
       ]
     },
     {
-      "identity": "image-0079",
+      "identity": "image-0106",
       "configuredValue": "../console/characters/scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/scout.vmt",
@@ -8935,7 +9871,7 @@
       ]
     },
     {
-      "identity": "image-0080",
+      "identity": "image-0107",
       "configuredValue": "../console/characters/sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/sniper.vmt",
@@ -8951,7 +9887,7 @@
       ]
     },
     {
-      "identity": "image-0081",
+      "identity": "image-0108",
       "configuredValue": "../console/characters/soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/soldier.vmt",
@@ -8967,7 +9903,7 @@
       ]
     },
     {
-      "identity": "image-0082",
+      "identity": "image-0109",
       "configuredValue": "../console/characters/spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/spy.vmt",
@@ -8983,7 +9919,7 @@
       ]
     },
     {
-      "identity": "image-0083",
+      "identity": "image-0110",
       "configuredValue": "../console/characters/xms2011_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_demoman.vmt",
@@ -8999,7 +9935,7 @@
       ]
     },
     {
-      "identity": "image-0084",
+      "identity": "image-0111",
       "configuredValue": "../console/characters/xms2011_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_engineer.vmt",
@@ -9015,7 +9951,7 @@
       ]
     },
     {
-      "identity": "image-0085",
+      "identity": "image-0112",
       "configuredValue": "../console/characters/xms2011_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_heavy.vmt",
@@ -9031,7 +9967,7 @@
       ]
     },
     {
-      "identity": "image-0086",
+      "identity": "image-0113",
       "configuredValue": "../console/characters/xms2011_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_medic.vmt",
@@ -9047,7 +9983,7 @@
       ]
     },
     {
-      "identity": "image-0087",
+      "identity": "image-0114",
       "configuredValue": "../console/characters/xms2011_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_pyro.vmt",
@@ -9063,7 +9999,7 @@
       ]
     },
     {
-      "identity": "image-0088",
+      "identity": "image-0115",
       "configuredValue": "../console/characters/xms2011_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_scout.vmt",
@@ -9079,7 +10015,7 @@
       ]
     },
     {
-      "identity": "image-0089",
+      "identity": "image-0116",
       "configuredValue": "../console/characters/xms2011_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_sniper.vmt",
@@ -9095,7 +10031,7 @@
       ]
     },
     {
-      "identity": "image-0090",
+      "identity": "image-0117",
       "configuredValue": "../console/characters/xms2011_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_soldier.vmt",
@@ -9111,7 +10047,7 @@
       ]
     },
     {
-      "identity": "image-0091",
+      "identity": "image-0118",
       "configuredValue": "../console/characters/xms2011_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/xms2011_spy.vmt",
@@ -9127,7 +10063,7 @@
       ]
     },
     {
-      "identity": "image-0092",
+      "identity": "image-0119",
       "configuredValue": "../console/characters/zombie_demoman",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_demoman.vmt",
@@ -9143,7 +10079,7 @@
       ]
     },
     {
-      "identity": "image-0093",
+      "identity": "image-0120",
       "configuredValue": "../console/characters/zombie_engineer",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_engineer.vmt",
@@ -9159,7 +10095,7 @@
       ]
     },
     {
-      "identity": "image-0094",
+      "identity": "image-0121",
       "configuredValue": "../console/characters/zombie_heavy",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_heavy.vmt",
@@ -9175,7 +10111,7 @@
       ]
     },
     {
-      "identity": "image-0095",
+      "identity": "image-0122",
       "configuredValue": "../console/characters/zombie_medic",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_medic.vmt",
@@ -9191,7 +10127,7 @@
       ]
     },
     {
-      "identity": "image-0096",
+      "identity": "image-0123",
       "configuredValue": "../console/characters/zombie_pyro",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_pyro.vmt",
@@ -9207,7 +10143,7 @@
       ]
     },
     {
-      "identity": "image-0097",
+      "identity": "image-0124",
       "configuredValue": "../console/characters/zombie_scout",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_scout.vmt",
@@ -9223,7 +10159,7 @@
       ]
     },
     {
-      "identity": "image-0098",
+      "identity": "image-0125",
       "configuredValue": "../console/characters/zombie_sniper",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_sniper.vmt",
@@ -9239,7 +10175,7 @@
       ]
     },
     {
-      "identity": "image-0099",
+      "identity": "image-0126",
       "configuredValue": "../console/characters/zombie_soldier",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_soldier.vmt",
@@ -9255,7 +10191,7 @@
       ]
     },
     {
-      "identity": "image-0100",
+      "identity": "image-0127",
       "configuredValue": "../console/characters/zombie_spy",
       "classification": "content-vtf",
       "material": "materials/console/characters/zombie_spy.vmt",
@@ -9271,7 +10207,7 @@
       ]
     },
     {
-      "identity": "image-0101",
+      "identity": "image-0128",
       "configuredValue": "../console/title_fullmoon_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_fullmoon_widescreen.vmt",
@@ -9287,7 +10223,7 @@
       ]
     },
     {
-      "identity": "image-0102",
+      "identity": "image-0129",
       "configuredValue": "../console/title_scream_fortress_2017_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_scream_fortress_2017_widescreen.vmt",
@@ -9303,7 +10239,7 @@
       ]
     },
     {
-      "identity": "image-0103",
+      "identity": "image-0130",
       "configuredValue": "../console/title_team_halloween2011_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_team_halloween2011_widescreen.vmt",
@@ -9319,7 +10255,7 @@
       ]
     },
     {
-      "identity": "image-0104",
+      "identity": "image-0131",
       "configuredValue": "../console/title_team_halloween2012_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_team_halloween2012_widescreen.vmt",
@@ -9335,7 +10271,7 @@
       ]
     },
     {
-      "identity": "image-0105",
+      "identity": "image-0132",
       "configuredValue": "../console/title_team_halloween2013_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_team_halloween2013_widescreen.vmt",
@@ -9351,7 +10287,7 @@
       ]
     },
     {
-      "identity": "image-0106",
+      "identity": "image-0133",
       "configuredValue": "../console/title_team_halloween2014_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_team_halloween2014_widescreen.vmt",
@@ -9367,7 +10303,7 @@
       ]
     },
     {
-      "identity": "image-0107",
+      "identity": "image-0134",
       "configuredValue": "../console/title_team_halloween2015_widescreen",
       "classification": "content-vtf",
       "material": "materials/console/title_team_halloween2015_widescreen.vmt",
@@ -9383,7 +10319,7 @@
       ]
     },
     {
-      "identity": "image-0108",
+      "identity": "image-0135",
       "configuredValue": "../hud/ammo_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/ammo_blue_bg.vmt",
@@ -9407,7 +10343,7 @@
       ]
     },
     {
-      "identity": "image-0109",
+      "identity": "image-0136",
       "configuredValue": "../hud/ammo_blue_bg_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/ammo_blue_bg_lodef.vmt",
@@ -9431,7 +10367,7 @@
       ]
     },
     {
-      "identity": "image-0110",
+      "identity": "image-0137",
       "configuredValue": "../hud/ammo_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/ammo_red_bg.vmt",
@@ -9455,7 +10391,7 @@
       ]
     },
     {
-      "identity": "image-0111",
+      "identity": "image-0138",
       "configuredValue": "../hud/ammo_red_bg_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/ammo_red_bg_lodef.vmt",
@@ -9479,7 +10415,7 @@
       ]
     },
     {
-      "identity": "image-0112",
+      "identity": "image-0139",
       "configuredValue": "../hud/character_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/character_blue_bg.vmt",
@@ -9503,7 +10439,7 @@
       ]
     },
     {
-      "identity": "image-0113",
+      "identity": "image-0140",
       "configuredValue": "../hud/character_blue_bg_clipped",
       "classification": "content-vtf",
       "material": "materials/hud/character_blue_bg_clipped.vmt",
@@ -9527,7 +10463,7 @@
       ]
     },
     {
-      "identity": "image-0114",
+      "identity": "image-0141",
       "configuredValue": "../hud/character_blue_bg_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/character_blue_bg_lodef.vmt",
@@ -9551,7 +10487,7 @@
       ]
     },
     {
-      "identity": "image-0115",
+      "identity": "image-0142",
       "configuredValue": "../hud/character_blue_bg_lodef_clipped",
       "classification": "content-vtf",
       "material": "materials/hud/character_blue_bg_lodef_clipped.vmt",
@@ -9575,7 +10511,7 @@
       ]
     },
     {
-      "identity": "image-0116",
+      "identity": "image-0143",
       "configuredValue": "../hud/character_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/character_red_bg.vmt",
@@ -9599,7 +10535,7 @@
       ]
     },
     {
-      "identity": "image-0117",
+      "identity": "image-0144",
       "configuredValue": "../hud/character_red_bg_clipped",
       "classification": "content-vtf",
       "material": "materials/hud/character_red_bg_clipped.vmt",
@@ -9623,7 +10559,7 @@
       ]
     },
     {
-      "identity": "image-0118",
+      "identity": "image-0145",
       "configuredValue": "../hud/character_red_bg_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/character_red_bg_lodef.vmt",
@@ -9647,7 +10583,7 @@
       ]
     },
     {
-      "identity": "image-0119",
+      "identity": "image-0146",
       "configuredValue": "../hud/character_red_bg_lodef_clipped",
       "classification": "content-vtf",
       "material": "materials/hud/character_red_bg_lodef_clipped.vmt",
@@ -9671,7 +10607,7 @@
       ]
     },
     {
-      "identity": "image-0120",
+      "identity": "image-0147",
       "configuredValue": "../hud/class_demoblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_demoblue.vmt",
@@ -9687,7 +10623,7 @@
       ]
     },
     {
-      "identity": "image-0121",
+      "identity": "image-0148",
       "configuredValue": "../hud/class_demored",
       "classification": "content-vtf",
       "material": "materials/hud/class_demored.vmt",
@@ -9703,7 +10639,7 @@
       ]
     },
     {
-      "identity": "image-0122",
+      "identity": "image-0149",
       "configuredValue": "../hud/class_engiblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_engiblue.vmt",
@@ -9719,7 +10655,7 @@
       ]
     },
     {
-      "identity": "image-0123",
+      "identity": "image-0150",
       "configuredValue": "../hud/class_engired",
       "classification": "content-vtf",
       "material": "materials/hud/class_engired.vmt",
@@ -9735,7 +10671,7 @@
       ]
     },
     {
-      "identity": "image-0124",
+      "identity": "image-0151",
       "configuredValue": "../hud/class_heavyblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_heavyblue.vmt",
@@ -9751,7 +10687,7 @@
       ]
     },
     {
-      "identity": "image-0125",
+      "identity": "image-0152",
       "configuredValue": "../hud/class_heavyred",
       "classification": "content-vtf",
       "material": "materials/hud/class_heavyred.vmt",
@@ -9767,7 +10703,7 @@
       ]
     },
     {
-      "identity": "image-0126",
+      "identity": "image-0153",
       "configuredValue": "../hud/class_medicblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_medicblue.vmt",
@@ -9783,7 +10719,7 @@
       ]
     },
     {
-      "identity": "image-0127",
+      "identity": "image-0154",
       "configuredValue": "../hud/class_medicred",
       "classification": "content-vtf",
       "material": "materials/hud/class_medicred.vmt",
@@ -9799,7 +10735,7 @@
       ]
     },
     {
-      "identity": "image-0128",
+      "identity": "image-0155",
       "configuredValue": "../hud/class_pyroblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_pyroblue.vmt",
@@ -9815,7 +10751,7 @@
       ]
     },
     {
-      "identity": "image-0129",
+      "identity": "image-0156",
       "configuredValue": "../hud/class_pyrored",
       "classification": "content-vtf",
       "material": "materials/hud/class_pyrored.vmt",
@@ -9831,7 +10767,7 @@
       ]
     },
     {
-      "identity": "image-0130",
+      "identity": "image-0157",
       "configuredValue": "../hud/class_scoutblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_scoutblue.vmt",
@@ -9847,7 +10783,7 @@
       ]
     },
     {
-      "identity": "image-0131",
+      "identity": "image-0158",
       "configuredValue": "../hud/class_scoutred",
       "classification": "content-vtf",
       "material": "materials/hud/class_scoutred.vmt",
@@ -9863,7 +10799,7 @@
       ]
     },
     {
-      "identity": "image-0132",
+      "identity": "image-0159",
       "configuredValue": "../hud/class_sniperblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_sniperblue.vmt",
@@ -9879,7 +10815,7 @@
       ]
     },
     {
-      "identity": "image-0133",
+      "identity": "image-0160",
       "configuredValue": "../hud/class_sniperred",
       "classification": "content-vtf",
       "material": "materials/hud/class_sniperred.vmt",
@@ -9895,7 +10831,7 @@
       ]
     },
     {
-      "identity": "image-0134",
+      "identity": "image-0161",
       "configuredValue": "../hud/class_soldierblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_soldierblue.vmt",
@@ -9911,7 +10847,7 @@
       ]
     },
     {
-      "identity": "image-0135",
+      "identity": "image-0162",
       "configuredValue": "../hud/class_soldierred",
       "classification": "content-vtf",
       "material": "materials/hud/class_soldierred.vmt",
@@ -9927,7 +10863,7 @@
       ]
     },
     {
-      "identity": "image-0136",
+      "identity": "image-0163",
       "configuredValue": "../hud/class_spy_outline",
       "classification": "content-vtf",
       "material": "materials/hud/class_spy_outline.vmt",
@@ -9943,7 +10879,7 @@
       ]
     },
     {
-      "identity": "image-0137",
+      "identity": "image-0164",
       "configuredValue": "../hud/class_spyblue",
       "classification": "content-vtf",
       "material": "materials/hud/class_spyblue.vmt",
@@ -9959,7 +10895,7 @@
       ]
     },
     {
-      "identity": "image-0138",
+      "identity": "image-0165",
       "configuredValue": "../hud/class_spyred",
       "classification": "content-vtf",
       "material": "materials/hud/class_spyred.vmt",
@@ -9975,7 +10911,7 @@
       ]
     },
     {
-      "identity": "image-0139",
+      "identity": "image-0166",
       "configuredValue": "../hud/color_panel_blu",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu.vmt",
@@ -9991,7 +10927,7 @@
       ]
     },
     {
-      "identity": "image-0140",
+      "identity": "image-0167",
       "configuredValue": "../hud/color_panel_blu_more_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu_more_opaque.vmt",
@@ -10007,7 +10943,7 @@
       ]
     },
     {
-      "identity": "image-0141",
+      "identity": "image-0168",
       "configuredValue": "../hud/color_panel_blu_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_blu_opaque.vmt",
@@ -10023,7 +10959,7 @@
       ]
     },
     {
-      "identity": "image-0142",
+      "identity": "image-0169",
       "configuredValue": "../hud/color_panel_brown",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_brown.vmt",
@@ -10039,7 +10975,7 @@
       ]
     },
     {
-      "identity": "image-0143",
+      "identity": "image-0170",
       "configuredValue": "../hud/color_panel_brown_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_brown_opaque.vmt",
@@ -10055,7 +10991,7 @@
       ]
     },
     {
-      "identity": "image-0144",
+      "identity": "image-0171",
       "configuredValue": "../hud/color_panel_clear",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_clear.vmt",
@@ -10071,7 +11007,7 @@
       ]
     },
     {
-      "identity": "image-0145",
+      "identity": "image-0172",
       "configuredValue": "../hud/color_panel_red",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red.vmt",
@@ -10087,7 +11023,7 @@
       ]
     },
     {
-      "identity": "image-0146",
+      "identity": "image-0173",
       "configuredValue": "../hud/color_panel_red_more_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red_more_opaque.vmt",
@@ -10103,7 +11039,7 @@
       ]
     },
     {
-      "identity": "image-0147",
+      "identity": "image-0174",
       "configuredValue": "../hud/color_panel_red_opaque",
       "classification": "content-vtf",
       "material": "materials/hud/color_panel_red_opaque.vmt",
@@ -10119,7 +11055,7 @@
       ]
     },
     {
-      "identity": "image-0148",
+      "identity": "image-0175",
       "configuredValue": "../hud/death_panel_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/death_panel_blue_bg.vmt",
@@ -10143,7 +11079,7 @@
       ]
     },
     {
-      "identity": "image-0149",
+      "identity": "image-0176",
       "configuredValue": "../hud/death_panel_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/death_panel_red_bg.vmt",
@@ -10167,7 +11103,7 @@
       ]
     },
     {
-      "identity": "image-0150",
+      "identity": "image-0177",
       "configuredValue": "../hud/eng_build_bg",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_bg.vmt",
@@ -10191,7 +11127,7 @@
       ]
     },
     {
-      "identity": "image-0151",
+      "identity": "image-0178",
       "configuredValue": "../hud/eng_build_dispenser_blueprint",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_dispenser_blueprint.vmt",
@@ -10207,7 +11143,7 @@
       ]
     },
     {
-      "identity": "image-0152",
+      "identity": "image-0179",
       "configuredValue": "../hud/eng_build_item",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_item.vmt",
@@ -10231,7 +11167,7 @@
       ]
     },
     {
-      "identity": "image-0153",
+      "identity": "image-0180",
       "configuredValue": "../hud/eng_build_sentry_blueprint",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_sentry_blueprint.vmt",
@@ -10247,7 +11183,7 @@
       ]
     },
     {
-      "identity": "image-0154",
+      "identity": "image-0181",
       "configuredValue": "../hud/eng_build_tele_entrance_blueprint",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_tele_entrance_blueprint.vmt",
@@ -10263,7 +11199,7 @@
       ]
     },
     {
-      "identity": "image-0155",
+      "identity": "image-0182",
       "configuredValue": "../hud/eng_build_tele_exit_blueprint",
       "classification": "content-vtf",
       "material": "materials/hud/eng_build_tele_exit_blueprint.vmt",
@@ -10279,7 +11215,7 @@
       ]
     },
     {
-      "identity": "image-0156",
+      "identity": "image-0183",
       "configuredValue": "../hud/eng_sel_item_active",
       "classification": "content-vtf",
       "material": "materials/hud/eng_sel_item_active.vmt",
@@ -10303,7 +11239,7 @@
       ]
     },
     {
-      "identity": "image-0157",
+      "identity": "image-0184",
       "configuredValue": "../hud/eng_sel_item_movable",
       "classification": "content-vtf",
       "material": "materials/hud/eng_sel_item_movable.vmt",
@@ -10319,7 +11255,7 @@
       ]
     },
     {
-      "identity": "image-0158",
+      "identity": "image-0185",
       "configuredValue": "../hud/eng_status_alert_ico_wrench",
       "classification": "content-vtf",
       "material": "materials/hud/eng_status_alert_ico_wrench.vmt",
@@ -10335,7 +11271,7 @@
       ]
     },
     {
-      "identity": "image-0159",
+      "identity": "image-0186",
       "configuredValue": "../hud/eng_status_area_sentry_alrt",
       "classification": "content-vtf",
       "material": "materials/hud/eng_status_area_sentry_alrt.vmt",
@@ -10359,7 +11295,7 @@
       ]
     },
     {
-      "identity": "image-0160",
+      "identity": "image-0187",
       "configuredValue": "../hud/eng_status_area_sentry_disabled",
       "classification": "content-vtf",
       "material": "materials/hud/eng_status_area_sentry_disabled.vmt",
@@ -10375,7 +11311,7 @@
       ]
     },
     {
-      "identity": "image-0161",
+      "identity": "image-0188",
       "configuredValue": "../hud/eng_status_area_tele_alrt",
       "classification": "content-vtf",
       "material": "materials/hud/eng_status_area_tele_alrt.vmt",
@@ -10399,7 +11335,7 @@
       ]
     },
     {
-      "identity": "image-0162",
+      "identity": "image-0189",
       "configuredValue": "../hud/eng_status_area_tele_disabled",
       "classification": "content-vtf",
       "material": "materials/hud/eng_status_area_tele_disabled.vmt",
@@ -10415,7 +11351,7 @@
       ]
     },
     {
-      "identity": "image-0163",
+      "identity": "image-0190",
       "configuredValue": "../hud/health_bg",
       "classification": "content-vtf",
       "material": "materials/hud/health_bg.vmt",
@@ -10431,7 +11367,7 @@
       ]
     },
     {
-      "identity": "image-0164",
+      "identity": "image-0191",
       "configuredValue": "../hud/health_over_bg",
       "classification": "content-vtf",
       "material": "materials/hud/health_over_bg.vmt",
@@ -10447,7 +11383,7 @@
       ]
     },
     {
-      "identity": "image-0165",
+      "identity": "image-0192",
       "configuredValue": "../hud/hud_obj_status_ammo_64",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_ammo_64.vmt",
@@ -10463,7 +11399,7 @@
       ]
     },
     {
-      "identity": "image-0166",
+      "identity": "image-0193",
       "configuredValue": "../hud/hud_obj_status_dispenser",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_dispenser.vmt",
@@ -10479,7 +11415,7 @@
       ]
     },
     {
-      "identity": "image-0167",
+      "identity": "image-0194",
       "configuredValue": "../hud/hud_obj_status_kill_64",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_kill_64.vmt",
@@ -10495,7 +11431,7 @@
       ]
     },
     {
-      "identity": "image-0168",
+      "identity": "image-0195",
       "configuredValue": "../hud/hud_obj_status_rockets_64",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_rockets_64.vmt",
@@ -10511,7 +11447,7 @@
       ]
     },
     {
-      "identity": "image-0169",
+      "identity": "image-0196",
       "configuredValue": "../hud/hud_obj_status_sapper",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_sapper.vmt",
@@ -10527,7 +11463,7 @@
       ]
     },
     {
-      "identity": "image-0170",
+      "identity": "image-0197",
       "configuredValue": "../hud/hud_obj_status_sentry_1",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_sentry_1.vmt",
@@ -10543,7 +11479,7 @@
       ]
     },
     {
-      "identity": "image-0171",
+      "identity": "image-0198",
       "configuredValue": "../hud/hud_obj_status_sentry_2",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_sentry_2.vmt",
@@ -10559,7 +11495,7 @@
       ]
     },
     {
-      "identity": "image-0172",
+      "identity": "image-0199",
       "configuredValue": "../hud/hud_obj_status_sentry_3",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_sentry_3.vmt",
@@ -10575,7 +11511,7 @@
       ]
     },
     {
-      "identity": "image-0173",
+      "identity": "image-0200",
       "configuredValue": "../hud/hud_obj_status_tele_entrance",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_tele_entrance.vmt",
@@ -10591,7 +11527,7 @@
       ]
     },
     {
-      "identity": "image-0174",
+      "identity": "image-0201",
       "configuredValue": "../hud/hud_obj_status_tele_exit",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_tele_exit.vmt",
@@ -10607,7 +11543,7 @@
       ]
     },
     {
-      "identity": "image-0175",
+      "identity": "image-0202",
       "configuredValue": "../hud/hud_obj_status_teleport_64",
       "classification": "content-vtf",
       "material": "materials/hud/hud_obj_status_teleport_64.vmt",
@@ -10623,7 +11559,7 @@
       ]
     },
     {
-      "identity": "image-0176",
+      "identity": "image-0203",
       "configuredValue": "../hud/hud_upgrade_1",
       "classification": "content-vtf",
       "material": "materials/hud/hud_upgrade_1.vmt",
@@ -10639,7 +11575,7 @@
       ]
     },
     {
-      "identity": "image-0177",
+      "identity": "image-0204",
       "configuredValue": "../hud/hud_upgrade_2",
       "classification": "content-vtf",
       "material": "materials/hud/hud_upgrade_2.vmt",
@@ -10655,7 +11591,7 @@
       ]
     },
     {
-      "identity": "image-0178",
+      "identity": "image-0205",
       "configuredValue": "../hud/hud_upgrade_3",
       "classification": "content-vtf",
       "material": "materials/hud/hud_upgrade_3.vmt",
@@ -10671,7 +11607,7 @@
       ]
     },
     {
-      "identity": "image-0179",
+      "identity": "image-0206",
       "configuredValue": "../hud/ico_build",
       "classification": "content-vtf",
       "material": "materials/hud/ico_build.vmt",
@@ -10687,7 +11623,7 @@
       ]
     },
     {
-      "identity": "image-0180",
+      "identity": "image-0207",
       "configuredValue": "../hud/ico_demolish",
       "classification": "content-vtf",
       "material": "materials/hud/ico_demolish.vmt",
@@ -10703,7 +11639,7 @@
       ]
     },
     {
-      "identity": "image-0181",
+      "identity": "image-0208",
       "configuredValue": "../hud/ico_health_cluster",
       "classification": "content-vtf",
       "material": "materials/hud/ico_health_cluster.vmt",
@@ -10719,7 +11655,7 @@
       ]
     },
     {
-      "identity": "image-0182",
+      "identity": "image-0209",
       "configuredValue": "../hud/ico_key_blank",
       "classification": "content-vtf",
       "material": "materials/hud/ico_key_blank.vmt",
@@ -10735,7 +11671,7 @@
       ]
     },
     {
-      "identity": "image-0183",
+      "identity": "image-0210",
       "configuredValue": "../hud/ico_metal_mask",
       "classification": "content-vtf",
       "material": "materials/hud/ico_metal_mask.vmt",
@@ -10751,7 +11687,23 @@
       ]
     },
     {
-      "identity": "image-0184",
+      "identity": "image-0211",
+      "configuredValue": "../hud/ico_reel",
+      "classification": "content-vtf",
+      "material": "materials/hud/ico_reel.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/hud/ico_reel.vtf",
+          "sha256": "b427e01c02d91799eb6f214efd84f58b84ccb0d4dc66dca79efa23497b176c3b",
+          "width": 256,
+          "height": 256,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0212",
       "configuredValue": "../hud/ico_stickybomb_blue",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_blue.vmt",
@@ -10767,7 +11719,7 @@
       ]
     },
     {
-      "identity": "image-0185",
+      "identity": "image-0213",
       "configuredValue": "../hud/ico_stickybomb_blue_faded",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_blue_faded.vmt",
@@ -10783,7 +11735,7 @@
       ]
     },
     {
-      "identity": "image-0186",
+      "identity": "image-0214",
       "configuredValue": "../hud/ico_stickybomb_red",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_red.vmt",
@@ -10799,7 +11751,7 @@
       ]
     },
     {
-      "identity": "image-0187",
+      "identity": "image-0215",
       "configuredValue": "../hud/ico_stickybomb_red_faded",
       "classification": "content-vtf",
       "material": "materials/hud/ico_stickybomb_red_faded.vmt",
@@ -10815,7 +11767,7 @@
       ]
     },
     {
-      "identity": "image-0188",
+      "identity": "image-0216",
       "configuredValue": "../hud/leaderboard_class_demo",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_demo.vmt",
@@ -10831,7 +11783,7 @@
       ]
     },
     {
-      "identity": "image-0189",
+      "identity": "image-0217",
       "configuredValue": "../hud/leaderboard_class_demo_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_demo_d.vmt",
@@ -10847,7 +11799,7 @@
       ]
     },
     {
-      "identity": "image-0190",
+      "identity": "image-0218",
       "configuredValue": "../hud/leaderboard_class_engineer",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_engineer.vmt",
@@ -10863,7 +11815,7 @@
       ]
     },
     {
-      "identity": "image-0191",
+      "identity": "image-0219",
       "configuredValue": "../hud/leaderboard_class_engineer_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_engineer_d.vmt",
@@ -10879,7 +11831,7 @@
       ]
     },
     {
-      "identity": "image-0192",
+      "identity": "image-0220",
       "configuredValue": "../hud/leaderboard_class_heavy",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_heavy.vmt",
@@ -10895,7 +11847,7 @@
       ]
     },
     {
-      "identity": "image-0193",
+      "identity": "image-0221",
       "configuredValue": "../hud/leaderboard_class_heavy_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_heavy_d.vmt",
@@ -10911,7 +11863,7 @@
       ]
     },
     {
-      "identity": "image-0194",
+      "identity": "image-0222",
       "configuredValue": "../hud/leaderboard_class_medic",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_medic.vmt",
@@ -10927,7 +11879,7 @@
       ]
     },
     {
-      "identity": "image-0195",
+      "identity": "image-0223",
       "configuredValue": "../hud/leaderboard_class_medic_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_medic_d.vmt",
@@ -10943,7 +11895,7 @@
       ]
     },
     {
-      "identity": "image-0196",
+      "identity": "image-0224",
       "configuredValue": "../hud/leaderboard_class_pyro",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_pyro.vmt",
@@ -10959,7 +11911,7 @@
       ]
     },
     {
-      "identity": "image-0197",
+      "identity": "image-0225",
       "configuredValue": "../hud/leaderboard_class_pyro_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_pyro_d.vmt",
@@ -10975,7 +11927,7 @@
       ]
     },
     {
-      "identity": "image-0198",
+      "identity": "image-0226",
       "configuredValue": "../hud/leaderboard_class_scout",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_scout.vmt",
@@ -10991,7 +11943,7 @@
       ]
     },
     {
-      "identity": "image-0199",
+      "identity": "image-0227",
       "configuredValue": "../hud/leaderboard_class_scout_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_scout_d.vmt",
@@ -11007,7 +11959,7 @@
       ]
     },
     {
-      "identity": "image-0200",
+      "identity": "image-0228",
       "configuredValue": "../hud/leaderboard_class_sniper",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_sniper.vmt",
@@ -11023,7 +11975,7 @@
       ]
     },
     {
-      "identity": "image-0201",
+      "identity": "image-0229",
       "configuredValue": "../hud/leaderboard_class_sniper_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_sniper_d.vmt",
@@ -11039,7 +11991,7 @@
       ]
     },
     {
-      "identity": "image-0202",
+      "identity": "image-0230",
       "configuredValue": "../hud/leaderboard_class_soldier",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_soldier.vmt",
@@ -11055,7 +12007,7 @@
       ]
     },
     {
-      "identity": "image-0203",
+      "identity": "image-0231",
       "configuredValue": "../hud/leaderboard_class_soldier_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_soldier_d.vmt",
@@ -11071,7 +12023,7 @@
       ]
     },
     {
-      "identity": "image-0204",
+      "identity": "image-0232",
       "configuredValue": "../hud/leaderboard_class_spy",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_spy.vmt",
@@ -11087,7 +12039,7 @@
       ]
     },
     {
-      "identity": "image-0205",
+      "identity": "image-0233",
       "configuredValue": "../hud/leaderboard_class_spy_d",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_class_spy_d.vmt",
@@ -11103,7 +12055,7 @@
       ]
     },
     {
-      "identity": "image-0206",
+      "identity": "image-0234",
       "configuredValue": "../hud/leaderboard_streak",
       "classification": "content-vtf",
       "material": "materials/hud/leaderboard_streak.vmt",
@@ -11119,7 +12071,7 @@
       ]
     },
     {
-      "identity": "image-0207",
+      "identity": "image-0235",
       "configuredValue": "../hud/medic_charge_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/medic_charge_blue_bg.vmt",
@@ -11143,7 +12095,7 @@
       ]
     },
     {
-      "identity": "image-0208",
+      "identity": "image-0236",
       "configuredValue": "../hud/medic_charge_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/medic_charge_red_bg.vmt",
@@ -11167,7 +12119,7 @@
       ]
     },
     {
-      "identity": "image-0209",
+      "identity": "image-0237",
       "configuredValue": "../hud/misc_ammo_area_blue",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_blue.vmt",
@@ -11191,7 +12143,7 @@
       ]
     },
     {
-      "identity": "image-0210",
+      "identity": "image-0238",
       "configuredValue": "../hud/misc_ammo_area_blue_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_blue_lodef.vmt",
@@ -11215,7 +12167,7 @@
       ]
     },
     {
-      "identity": "image-0211",
+      "identity": "image-0239",
       "configuredValue": "../hud/misc_ammo_area_red",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_red.vmt",
@@ -11239,7 +12191,7 @@
       ]
     },
     {
-      "identity": "image-0212",
+      "identity": "image-0240",
       "configuredValue": "../hud/misc_ammo_area_red_lodef",
       "classification": "content-vtf",
       "material": "materials/hud/misc_ammo_area_red_lodef.vmt",
@@ -11263,7 +12215,7 @@
       ]
     },
     {
-      "identity": "image-0213",
+      "identity": "image-0241",
       "configuredValue": "../hud/objectives_flagpanel_bg_left",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_bg_left.vmt",
@@ -11287,7 +12239,7 @@
       ]
     },
     {
-      "identity": "image-0214",
+      "identity": "image-0242",
       "configuredValue": "../hud/objectives_flagpanel_bg_outline",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_bg_outline.vmt",
@@ -11311,7 +12263,7 @@
       ]
     },
     {
-      "identity": "image-0215",
+      "identity": "image-0243",
       "configuredValue": "../hud/objectives_flagpanel_bg_playingto",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_bg_playingto.vmt",
@@ -11335,7 +12287,7 @@
       ]
     },
     {
-      "identity": "image-0216",
+      "identity": "image-0244",
       "configuredValue": "../hud/objectives_flagpanel_bg_playingto_hidef",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_bg_playingto_hidef.vmt",
@@ -11359,7 +12311,7 @@
       ]
     },
     {
-      "identity": "image-0217",
+      "identity": "image-0245",
       "configuredValue": "../hud/objectives_flagpanel_bg_right",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_bg_right.vmt",
@@ -11383,7 +12335,7 @@
       ]
     },
     {
-      "identity": "image-0218",
+      "identity": "image-0246",
       "configuredValue": "../hud/objectives_flagpanel_briefcase",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_briefcase.vmt",
@@ -11399,7 +12351,7 @@
       ]
     },
     {
-      "identity": "image-0219",
+      "identity": "image-0247",
       "configuredValue": "../hud/objectives_flagpanel_carried_blue",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_carried_blue.vmt",
@@ -11415,7 +12367,7 @@
       ]
     },
     {
-      "identity": "image-0220",
+      "identity": "image-0248",
       "configuredValue": "../hud/objectives_flagpanel_carried_outline",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_carried_outline.vmt",
@@ -11431,7 +12383,7 @@
       ]
     },
     {
-      "identity": "image-0221",
+      "identity": "image-0249",
       "configuredValue": "../hud/objectives_flagpanel_carried_red",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_carried_red.vmt",
@@ -11447,7 +12399,7 @@
       ]
     },
     {
-      "identity": "image-0222",
+      "identity": "image-0250",
       "configuredValue": "../hud/objectives_flagpanel_compass_blue",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_compass_blue.vmt",
@@ -11463,7 +12415,7 @@
       ]
     },
     {
-      "identity": "image-0223",
+      "identity": "image-0251",
       "configuredValue": "../hud/objectives_flagpanel_compass_blue_noarrow",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_compass_blue_noarrow.vmt",
@@ -11479,7 +12431,7 @@
       ]
     },
     {
-      "identity": "image-0224",
+      "identity": "image-0252",
       "configuredValue": "../hud/objectives_flagpanel_compass_red",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_compass_red.vmt",
@@ -11495,7 +12447,7 @@
       ]
     },
     {
-      "identity": "image-0225",
+      "identity": "image-0253",
       "configuredValue": "../hud/objectives_flagpanel_compass_red_noarrow",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_compass_red_noarrow.vmt",
@@ -11511,7 +12463,7 @@
       ]
     },
     {
-      "identity": "image-0226",
+      "identity": "image-0254",
       "configuredValue": "../hud/objectives_flagpanel_ico_flag_dropped",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_ico_flag_dropped.vmt",
@@ -11527,7 +12479,7 @@
       ]
     },
     {
-      "identity": "image-0227",
+      "identity": "image-0255",
       "configuredValue": "../hud/objectives_flagpanel_ico_flag_home",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_ico_flag_home.vmt",
@@ -11543,7 +12495,7 @@
       ]
     },
     {
-      "identity": "image-0228",
+      "identity": "image-0256",
       "configuredValue": "../hud/objectives_flagpanel_ico_flag_moving",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_flagpanel_ico_flag_moving.vmt",
@@ -11559,7 +12511,7 @@
       ]
     },
     {
-      "identity": "image-0229",
+      "identity": "image-0257",
       "configuredValue": "../hud/objectives_timepanel_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_timepanel_blue_bg.vmt",
@@ -11583,7 +12535,7 @@
       ]
     },
     {
-      "identity": "image-0230",
+      "identity": "image-0258",
       "configuredValue": "../hud/objectives_timepanel_progressbar",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_timepanel_progressbar.vmt",
@@ -11599,7 +12551,7 @@
       ]
     },
     {
-      "identity": "image-0231",
+      "identity": "image-0259",
       "configuredValue": "../hud/objectives_timepanel_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_timepanel_red_bg.vmt",
@@ -11623,7 +12575,7 @@
       ]
     },
     {
-      "identity": "image-0232",
+      "identity": "image-0260",
       "configuredValue": "../hud/objectives_timepanel_suddendeath",
       "classification": "content-vtf",
       "material": "materials/hud/objectives_timepanel_suddendeath.vmt",
@@ -11647,7 +12599,7 @@
       ]
     },
     {
-      "identity": "image-0233",
+      "identity": "image-0261",
       "configuredValue": "../hud/panel_scalable_blue",
       "classification": "content-vtf",
       "material": "materials/hud/panel_scalable_blue.vmt",
@@ -11663,7 +12615,7 @@
       ]
     },
     {
-      "identity": "image-0234",
+      "identity": "image-0262",
       "configuredValue": "../hud/panel_scalable_red",
       "classification": "content-vtf",
       "material": "materials/hud/panel_scalable_red.vmt",
@@ -11679,7 +12631,7 @@
       ]
     },
     {
-      "identity": "image-0235",
+      "identity": "image-0263",
       "configuredValue": "../hud/score_panel_blue_bg",
       "classification": "content-vtf",
       "material": "materials/hud/score_panel_blue_bg.vmt",
@@ -11703,7 +12655,7 @@
       ]
     },
     {
-      "identity": "image-0236",
+      "identity": "image-0264",
       "configuredValue": "../hud/score_panel_blue_bg_solid",
       "classification": "content-vtf",
       "material": "materials/hud/score_panel_blue_bg_solid.vmt",
@@ -11727,7 +12679,7 @@
       ]
     },
     {
-      "identity": "image-0237",
+      "identity": "image-0265",
       "configuredValue": "../hud/score_panel_red_bg",
       "classification": "content-vtf",
       "material": "materials/hud/score_panel_red_bg.vmt",
@@ -11751,7 +12703,7 @@
       ]
     },
     {
-      "identity": "image-0238",
+      "identity": "image-0266",
       "configuredValue": "../hud/score_panel_red_bg_solid",
       "classification": "content-vtf",
       "material": "materials/hud/score_panel_red_bg_solid.vmt",
@@ -11775,7 +12727,7 @@
       ]
     },
     {
-      "identity": "image-0239",
+      "identity": "image-0267",
       "configuredValue": "../hud/scoreboard_ping_bot_blue",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_bot_blue.vmt",
@@ -11791,7 +12743,7 @@
       ]
     },
     {
-      "identity": "image-0240",
+      "identity": "image-0268",
       "configuredValue": "../hud/scoreboard_ping_bot_blue_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_bot_blue_d.vmt",
@@ -11807,7 +12759,7 @@
       ]
     },
     {
-      "identity": "image-0241",
+      "identity": "image-0269",
       "configuredValue": "../hud/scoreboard_ping_bot_red",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_bot_red.vmt",
@@ -11823,7 +12775,7 @@
       ]
     },
     {
-      "identity": "image-0242",
+      "identity": "image-0270",
       "configuredValue": "../hud/scoreboard_ping_bot_red_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_bot_red_d.vmt",
@@ -11839,7 +12791,7 @@
       ]
     },
     {
-      "identity": "image-0243",
+      "identity": "image-0271",
       "configuredValue": "../hud/scoreboard_ping_high",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_high.vmt",
@@ -11855,7 +12807,7 @@
       ]
     },
     {
-      "identity": "image-0244",
+      "identity": "image-0272",
       "configuredValue": "../hud/scoreboard_ping_high_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_high_d.vmt",
@@ -11871,7 +12823,7 @@
       ]
     },
     {
-      "identity": "image-0245",
+      "identity": "image-0273",
       "configuredValue": "../hud/scoreboard_ping_low",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_low.vmt",
@@ -11887,7 +12839,7 @@
       ]
     },
     {
-      "identity": "image-0246",
+      "identity": "image-0274",
       "configuredValue": "../hud/scoreboard_ping_low_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_low_d.vmt",
@@ -11903,7 +12855,7 @@
       ]
     },
     {
-      "identity": "image-0247",
+      "identity": "image-0275",
       "configuredValue": "../hud/scoreboard_ping_med",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_med.vmt",
@@ -11919,7 +12871,7 @@
       ]
     },
     {
-      "identity": "image-0248",
+      "identity": "image-0276",
       "configuredValue": "../hud/scoreboard_ping_med_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_med_d.vmt",
@@ -11935,7 +12887,7 @@
       ]
     },
     {
-      "identity": "image-0249",
+      "identity": "image-0277",
       "configuredValue": "../hud/scoreboard_ping_very_high",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_very_high.vmt",
@@ -11951,7 +12903,7 @@
       ]
     },
     {
-      "identity": "image-0250",
+      "identity": "image-0278",
       "configuredValue": "../hud/scoreboard_ping_very_high_d",
       "classification": "content-vtf",
       "material": "materials/hud/scoreboard_ping_very_high_d.vmt",
@@ -11967,7 +12919,7 @@
       ]
     },
     {
-      "identity": "image-0251",
+      "identity": "image-0279",
       "configuredValue": "../hud/team_Red",
       "classification": "content-vtf",
       "material": "materials/hud/team_red.vmt",
@@ -11983,7 +12935,7 @@
       ]
     },
     {
-      "identity": "image-0252",
+      "identity": "image-0280",
       "configuredValue": "../hud/team_blue",
       "classification": "content-vtf",
       "material": "materials/hud/team_blue.vmt",
@@ -11999,7 +12951,7 @@
       ]
     },
     {
-      "identity": "image-0253",
+      "identity": "image-0281",
       "configuredValue": "../logo/new_tf2_logo",
       "classification": "content-vtf",
       "material": "materials/logo/new_tf2_logo.vmt",
@@ -12015,7 +12967,7 @@
       ]
     },
     {
-      "identity": "image-0254",
+      "identity": "image-0282",
       "configuredValue": "../signs/death_wheel_whammy",
       "classification": "content-vtf",
       "material": "materials/signs/death_wheel_whammy.vmt",
@@ -12031,7 +12983,7 @@
       ]
     },
     {
-      "identity": "image-0255",
+      "identity": "image-0283",
       "configuredValue": "../vgui/bleed_drop",
       "classification": "content-vtf",
       "material": "materials/vgui/bleed_drop.vmt",
@@ -12047,7 +12999,7 @@
       ]
     },
     {
-      "identity": "image-0256",
+      "identity": "image-0284",
       "configuredValue": "../vgui/bleed_drop_grapple",
       "classification": "content-vtf",
       "material": "materials/vgui/bleed_drop_grapple.vmt",
@@ -12063,7 +13015,7 @@
       ]
     },
     {
-      "identity": "image-0257",
+      "identity": "image-0285",
       "configuredValue": "../vgui/covered_in_gas",
       "classification": "content-vtf",
       "material": "materials/vgui/covered_in_gas.vmt",
@@ -12079,7 +13031,7 @@
       ]
     },
     {
-      "identity": "image-0258",
+      "identity": "image-0286",
       "configuredValue": "../vgui/marked_for_death",
       "classification": "content-vtf",
       "material": "materials/vgui/marked_for_death.vmt",
@@ -12095,7 +13047,7 @@
       ]
     },
     {
-      "identity": "image-0259",
+      "identity": "image-0287",
       "configuredValue": "../vgui/new",
       "classification": "content-vtf",
       "material": "materials/vgui/new.vmt",
@@ -12111,7 +13063,7 @@
       ]
     },
     {
-      "identity": "image-0260",
+      "identity": "image-0288",
       "configuredValue": "../vgui/slowed",
       "classification": "content-vtf",
       "material": "materials/vgui/slowed.vmt",
@@ -12127,7 +13079,7 @@
       ]
     },
     {
-      "identity": "image-0261",
+      "identity": "image-0289",
       "configuredValue": "/pve/chalf_circle.vmt",
       "classification": "content-vtf",
       "material": "materials/vgui/pve/chalf_circle.vmt",
@@ -12143,7 +13095,7 @@
       ]
     },
     {
-      "identity": "image-0262",
+      "identity": "image-0290",
       "configuredValue": "alert_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/alert_rect.vmt",
@@ -12159,7 +13111,23 @@
       ]
     },
     {
-      "identity": "image-0263",
+      "identity": "image-0291",
+      "configuredValue": "backpack_jewel_modify_target_b_g",
+      "classification": "content-vtf",
+      "material": "materials/vgui/backpack_jewel_modify_target_b_g.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/backpack_jewel_modify_target_b_g.vtf",
+          "sha256": "9c9c101400068cb5c7ba66080202a1e29679d2557b5dbaec5c0c17d3bca171bf",
+          "width": 32,
+          "height": 32,
+          "frames": 1,
+          "rawFlags": 9024
+        }
+      ]
+    },
+    {
+      "identity": "image-0292",
       "configuredValue": "backpack_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect.vmt",
@@ -12175,7 +13143,7 @@
       ]
     },
     {
-      "identity": "image-0264",
+      "identity": "image-0293",
       "configuredValue": "backpack_rect_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_color.vmt",
@@ -12191,7 +13159,7 @@
       ]
     },
     {
-      "identity": "image-0265",
+      "identity": "image-0294",
       "configuredValue": "backpack_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover.vmt",
@@ -12207,7 +13175,7 @@
       ]
     },
     {
-      "identity": "image-0266",
+      "identity": "image-0295",
       "configuredValue": "backpack_rect_mouseover_color",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_mouseover_color.vmt",
@@ -12223,7 +13191,7 @@
       ]
     },
     {
-      "identity": "image-0267",
+      "identity": "image-0296",
       "configuredValue": "backpack_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/backpack_rect_selected.vmt",
@@ -12239,7 +13207,7 @@
       ]
     },
     {
-      "identity": "image-0268",
+      "identity": "image-0297",
       "configuredValue": "blog_back",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_back.vmt",
@@ -12255,7 +13223,7 @@
       ]
     },
     {
-      "identity": "image-0269",
+      "identity": "image-0298",
       "configuredValue": "blog_forward",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_forward.vmt",
@@ -12271,7 +13239,7 @@
       ]
     },
     {
-      "identity": "image-0270",
+      "identity": "image-0299",
       "configuredValue": "blog_tabby",
       "classification": "content-vtf",
       "material": "materials/vgui/blog_tabby.vmt",
@@ -12287,7 +13255,7 @@
       ]
     },
     {
-      "identity": "image-0271",
+      "identity": "image-0300",
       "configuredValue": "button_Alert",
       "classification": "content-vtf",
       "material": "materials/vgui/button_alert.vmt",
@@ -12303,7 +13271,7 @@
       ]
     },
     {
-      "identity": "image-0272",
+      "identity": "image-0301",
       "configuredValue": "button_MOTD",
       "classification": "content-vtf",
       "material": "materials/vgui/button_motd.vmt",
@@ -12319,7 +13287,7 @@
       ]
     },
     {
-      "identity": "image-0273",
+      "identity": "image-0302",
       "configuredValue": "button_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central.vmt",
@@ -12335,7 +13303,7 @@
       ]
     },
     {
-      "identity": "image-0274",
+      "identity": "image-0303",
       "configuredValue": "button_central_adv",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv.vmt",
@@ -12351,7 +13319,7 @@
       ]
     },
     {
-      "identity": "image-0275",
+      "identity": "image-0304",
       "configuredValue": "button_central_adv_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_adv_hover.vmt",
@@ -12367,7 +13335,7 @@
       ]
     },
     {
-      "identity": "image-0276",
+      "identity": "image-0305",
       "configuredValue": "button_central_depressed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed.vmt",
@@ -12383,7 +13351,7 @@
       ]
     },
     {
-      "identity": "image-0277",
+      "identity": "image-0306",
       "configuredValue": "button_central_depressed_armed",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_depressed_armed.vmt",
@@ -12399,7 +13367,7 @@
       ]
     },
     {
-      "identity": "image-0278",
+      "identity": "image-0307",
       "configuredValue": "button_central_disabled",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_disabled.vmt",
@@ -12415,7 +13383,7 @@
       ]
     },
     {
-      "identity": "image-0279",
+      "identity": "image-0308",
       "configuredValue": "button_central_hover",
       "classification": "content-vtf",
       "material": "materials/vgui/button_central_hover.vmt",
@@ -12431,7 +13399,7 @@
       ]
     },
     {
-      "identity": "image-0280",
+      "identity": "image-0309",
       "configuredValue": "button_glow",
       "classification": "content-vtf",
       "material": "materials/vgui/button_glow.vmt",
@@ -12447,7 +13415,7 @@
       ]
     },
     {
-      "identity": "image-0281",
+      "identity": "image-0310",
       "configuredValue": "button_holder_central",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central.vmt",
@@ -12463,7 +13431,7 @@
       ]
     },
     {
-      "identity": "image-0282",
+      "identity": "image-0311",
       "configuredValue": "button_holder_central_alpha",
       "classification": "content-vtf",
       "material": "materials/vgui/button_holder_central_alpha.vmt",
@@ -12479,7 +13447,7 @@
       ]
     },
     {
-      "identity": "image-0283",
+      "identity": "image-0312",
       "configuredValue": "button_quests_pda",
       "classification": "content-vtf",
       "material": "materials/vgui/button_quests_pda.vmt",
@@ -12495,7 +13463,7 @@
       ]
     },
     {
-      "identity": "image-0284",
+      "identity": "image-0313",
       "configuredValue": "button_streaming",
       "classification": "content-vtf",
       "material": "materials/vgui/button_streaming.vmt",
@@ -12511,7 +13479,7 @@
       ]
     },
     {
-      "identity": "image-0285",
+      "identity": "image-0314",
       "configuredValue": "callout_bubble",
       "classification": "content-vtf",
       "material": "materials/vgui/callout_bubble.vmt",
@@ -12527,7 +13495,7 @@
       ]
     },
     {
-      "identity": "image-0286",
+      "identity": "image-0315",
       "configuredValue": "chalkboard_scroll_box",
       "classification": "content-vtf",
       "material": "materials/vgui/chalkboard_scroll_box.vmt",
@@ -12543,7 +13511,7 @@
       ]
     },
     {
-      "identity": "image-0287",
+      "identity": "image-0316",
       "configuredValue": "chalkboard_scroll_down",
       "classification": "content-vtf",
       "material": "materials/vgui/chalkboard_scroll_down.vmt",
@@ -12559,7 +13527,7 @@
       ]
     },
     {
-      "identity": "image-0288",
+      "identity": "image-0317",
       "configuredValue": "chalkboard_scroll_line",
       "classification": "content-vtf",
       "material": "materials/vgui/chalkboard_scroll_line.vmt",
@@ -12575,7 +13543,7 @@
       ]
     },
     {
-      "identity": "image-0289",
+      "identity": "image-0318",
       "configuredValue": "chalkboard_scroll_up",
       "classification": "content-vtf",
       "material": "materials/vgui/chalkboard_scroll_up.vmt",
@@ -12591,7 +13559,7 @@
       ]
     },
     {
-      "identity": "image-0290",
+      "identity": "image-0319",
       "configuredValue": "class_icons/filter_all",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all.vmt",
@@ -12607,7 +13575,7 @@
       ]
     },
     {
-      "identity": "image-0291",
+      "identity": "image-0320",
       "configuredValue": "class_icons/filter_all_motd",
       "classification": "content-vtf",
       "material": "materials/vgui/class_icons/filter_all_motd.vmt",
@@ -12623,7 +13591,7 @@
       ]
     },
     {
-      "identity": "image-0292",
+      "identity": "image-0321",
       "configuredValue": "class_portraits/silhouette_alpha",
       "classification": "content-vtf",
       "material": "materials/vgui/class_portraits/silhouette_alpha.vmt",
@@ -12639,7 +13607,7 @@
       ]
     },
     {
-      "identity": "image-0293",
+      "identity": "image-0322",
       "configuredValue": "class_sel_sm_demo_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_demo_blu.vmt",
@@ -12655,7 +13623,7 @@
       ]
     },
     {
-      "identity": "image-0294",
+      "identity": "image-0323",
       "configuredValue": "class_sel_sm_demo_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_demo_inactive.vmt",
@@ -12671,7 +13639,7 @@
       ]
     },
     {
-      "identity": "image-0295",
+      "identity": "image-0324",
       "configuredValue": "class_sel_sm_demo_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_demo_red.vmt",
@@ -12687,7 +13655,7 @@
       ]
     },
     {
-      "identity": "image-0296",
+      "identity": "image-0325",
       "configuredValue": "class_sel_sm_engineer_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_engineer_blu.vmt",
@@ -12703,7 +13671,7 @@
       ]
     },
     {
-      "identity": "image-0297",
+      "identity": "image-0326",
       "configuredValue": "class_sel_sm_engineer_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_engineer_inactive.vmt",
@@ -12719,7 +13687,7 @@
       ]
     },
     {
-      "identity": "image-0298",
+      "identity": "image-0327",
       "configuredValue": "class_sel_sm_engineer_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_engineer_red.vmt",
@@ -12735,7 +13703,7 @@
       ]
     },
     {
-      "identity": "image-0299",
+      "identity": "image-0328",
       "configuredValue": "class_sel_sm_heavy_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_heavy_blu.vmt",
@@ -12751,7 +13719,7 @@
       ]
     },
     {
-      "identity": "image-0300",
+      "identity": "image-0329",
       "configuredValue": "class_sel_sm_heavy_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_heavy_inactive.vmt",
@@ -12767,7 +13735,7 @@
       ]
     },
     {
-      "identity": "image-0301",
+      "identity": "image-0330",
       "configuredValue": "class_sel_sm_heavy_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_heavy_red.vmt",
@@ -12783,7 +13751,7 @@
       ]
     },
     {
-      "identity": "image-0302",
+      "identity": "image-0331",
       "configuredValue": "class_sel_sm_medic_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_medic_blu.vmt",
@@ -12799,7 +13767,7 @@
       ]
     },
     {
-      "identity": "image-0303",
+      "identity": "image-0332",
       "configuredValue": "class_sel_sm_medic_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_medic_inactive.vmt",
@@ -12815,7 +13783,7 @@
       ]
     },
     {
-      "identity": "image-0304",
+      "identity": "image-0333",
       "configuredValue": "class_sel_sm_medic_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_medic_red.vmt",
@@ -12831,7 +13799,7 @@
       ]
     },
     {
-      "identity": "image-0305",
+      "identity": "image-0334",
       "configuredValue": "class_sel_sm_pyro_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_pyro_blu.vmt",
@@ -12847,7 +13815,7 @@
       ]
     },
     {
-      "identity": "image-0306",
+      "identity": "image-0335",
       "configuredValue": "class_sel_sm_pyro_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_pyro_inactive.vmt",
@@ -12863,7 +13831,7 @@
       ]
     },
     {
-      "identity": "image-0307",
+      "identity": "image-0336",
       "configuredValue": "class_sel_sm_pyro_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_pyro_red.vmt",
@@ -12879,7 +13847,7 @@
       ]
     },
     {
-      "identity": "image-0308",
+      "identity": "image-0337",
       "configuredValue": "class_sel_sm_random_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_random_blu.vmt",
@@ -12895,7 +13863,7 @@
       ]
     },
     {
-      "identity": "image-0309",
+      "identity": "image-0338",
       "configuredValue": "class_sel_sm_random_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_random_inactive.vmt",
@@ -12911,7 +13879,7 @@
       ]
     },
     {
-      "identity": "image-0310",
+      "identity": "image-0339",
       "configuredValue": "class_sel_sm_random_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_random_red.vmt",
@@ -12927,7 +13895,7 @@
       ]
     },
     {
-      "identity": "image-0311",
+      "identity": "image-0340",
       "configuredValue": "class_sel_sm_scout_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_scout_blu.vmt",
@@ -12943,7 +13911,7 @@
       ]
     },
     {
-      "identity": "image-0312",
+      "identity": "image-0341",
       "configuredValue": "class_sel_sm_scout_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_scout_inactive.vmt",
@@ -12959,7 +13927,7 @@
       ]
     },
     {
-      "identity": "image-0313",
+      "identity": "image-0342",
       "configuredValue": "class_sel_sm_scout_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_scout_red.vmt",
@@ -12975,7 +13943,7 @@
       ]
     },
     {
-      "identity": "image-0314",
+      "identity": "image-0343",
       "configuredValue": "class_sel_sm_sniper_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_sniper_blu.vmt",
@@ -12991,7 +13959,7 @@
       ]
     },
     {
-      "identity": "image-0315",
+      "identity": "image-0344",
       "configuredValue": "class_sel_sm_sniper_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_sniper_inactive.vmt",
@@ -13007,7 +13975,7 @@
       ]
     },
     {
-      "identity": "image-0316",
+      "identity": "image-0345",
       "configuredValue": "class_sel_sm_sniper_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_sniper_red.vmt",
@@ -13023,7 +13991,7 @@
       ]
     },
     {
-      "identity": "image-0317",
+      "identity": "image-0346",
       "configuredValue": "class_sel_sm_soldier_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_soldier_blu.vmt",
@@ -13039,7 +14007,7 @@
       ]
     },
     {
-      "identity": "image-0318",
+      "identity": "image-0347",
       "configuredValue": "class_sel_sm_soldier_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_soldier_inactive.vmt",
@@ -13055,7 +14023,7 @@
       ]
     },
     {
-      "identity": "image-0319",
+      "identity": "image-0348",
       "configuredValue": "class_sel_sm_soldier_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_soldier_red.vmt",
@@ -13071,7 +14039,7 @@
       ]
     },
     {
-      "identity": "image-0320",
+      "identity": "image-0349",
       "configuredValue": "class_sel_sm_spy_blu",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_spy_blu.vmt",
@@ -13087,7 +14055,7 @@
       ]
     },
     {
-      "identity": "image-0321",
+      "identity": "image-0350",
       "configuredValue": "class_sel_sm_spy_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_spy_inactive.vmt",
@@ -13103,7 +14071,7 @@
       ]
     },
     {
-      "identity": "image-0322",
+      "identity": "image-0351",
       "configuredValue": "class_sel_sm_spy_red",
       "classification": "content-vtf",
       "material": "materials/vgui/class_sel_sm_spy_red.vmt",
@@ -13119,7 +14087,7 @@
       ]
     },
     {
-      "identity": "image-0323",
+      "identity": "image-0352",
       "configuredValue": "close_button",
       "classification": "content-vtf",
       "material": "materials/vgui/close_button.vmt",
@@ -13135,7 +14103,7 @@
       ]
     },
     {
-      "identity": "image-0324",
+      "identity": "image-0353",
       "configuredValue": "crosshair_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/crosshair_bg.vmt",
@@ -13151,7 +14119,7 @@
       ]
     },
     {
-      "identity": "image-0325",
+      "identity": "image-0354",
       "configuredValue": "cyoa/cyoa_map_screen_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/cyoa_map_screen_border.vmt",
@@ -13167,7 +14135,7 @@
       ]
     },
     {
-      "identity": "image-0326",
+      "identity": "image-0355",
       "configuredValue": "cyoa/node_view_border",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border.vmt",
@@ -13183,7 +14151,7 @@
       ]
     },
     {
-      "identity": "image-0327",
+      "identity": "image-0356",
       "configuredValue": "cyoa/node_view_border_active",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_active.vmt",
@@ -13199,7 +14167,7 @@
       ]
     },
     {
-      "identity": "image-0328",
+      "identity": "image-0357",
       "configuredValue": "cyoa/node_view_border_inactive",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_inactive.vmt",
@@ -13215,7 +14183,7 @@
       ]
     },
     {
-      "identity": "image-0329",
+      "identity": "image-0358",
       "configuredValue": "cyoa/node_view_border_turnin",
       "classification": "content-vtf",
       "material": "materials/vgui/cyoa/node_view_border_turnin.vmt",
@@ -13231,7 +14199,7 @@
       ]
     },
     {
-      "identity": "image-0330",
+      "identity": "image-0359",
       "configuredValue": "featured_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/featured_corner.vmt",
@@ -13247,7 +14215,7 @@
       ]
     },
     {
-      "identity": "image-0331",
+      "identity": "image-0360",
       "configuredValue": "gamma",
       "classification": "content-vtf",
       "material": "materials/vgui/gamma.vmt",
@@ -13263,7 +14231,7 @@
       ]
     },
     {
-      "identity": "image-0332",
+      "identity": "image-0361",
       "configuredValue": "gc_dc",
       "classification": "content-vtf",
       "material": "materials/vgui/gc_dc.vmt",
@@ -13279,7 +14247,7 @@
       ]
     },
     {
-      "identity": "image-0333",
+      "identity": "image-0362",
       "configuredValue": "glyph_achievements",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_achievements.vmt",
@@ -13295,7 +14263,7 @@
       ]
     },
     {
-      "identity": "image-0334",
+      "identity": "image-0363",
       "configuredValue": "glyph_alert",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_alert.vmt",
@@ -13311,7 +14279,7 @@
       ]
     },
     {
-      "identity": "image-0335",
+      "identity": "image-0364",
       "configuredValue": "glyph_bug",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_bug.vmt",
@@ -13327,7 +14295,7 @@
       ]
     },
     {
-      "identity": "image-0336",
+      "identity": "image-0365",
       "configuredValue": "glyph_chat",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_chat.vmt",
@@ -13343,7 +14311,7 @@
       ]
     },
     {
-      "identity": "image-0337",
+      "identity": "image-0366",
       "configuredValue": "glyph_commentary",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_commentary.vmt",
@@ -13359,7 +14327,7 @@
       ]
     },
     {
-      "identity": "image-0338",
+      "identity": "image-0367",
       "configuredValue": "glyph_create",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_create.vmt",
@@ -13375,7 +14343,7 @@
       ]
     },
     {
-      "identity": "image-0339",
+      "identity": "image-0368",
       "configuredValue": "glyph_disconnect",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_disconnect.vmt",
@@ -13391,7 +14359,7 @@
       ]
     },
     {
-      "identity": "image-0340",
+      "identity": "image-0369",
       "configuredValue": "glyph_forums",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_forums.vmt",
@@ -13407,7 +14375,7 @@
       ]
     },
     {
-      "identity": "image-0341",
+      "identity": "image-0370",
       "configuredValue": "glyph_items",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_items.vmt",
@@ -13423,7 +14391,7 @@
       ]
     },
     {
-      "identity": "image-0342",
+      "identity": "image-0371",
       "configuredValue": "glyph_multiplayer",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_multiplayer.vmt",
@@ -13439,7 +14407,7 @@
       ]
     },
     {
-      "identity": "image-0343",
+      "identity": "image-0372",
       "configuredValue": "glyph_muted",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_muted.vmt",
@@ -13455,7 +14423,7 @@
       ]
     },
     {
-      "identity": "image-0344",
+      "identity": "image-0373",
       "configuredValue": "glyph_options",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_options.vmt",
@@ -13471,7 +14439,7 @@
       ]
     },
     {
-      "identity": "image-0345",
+      "identity": "image-0374",
       "configuredValue": "glyph_quit",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_quit.vmt",
@@ -13487,7 +14455,7 @@
       ]
     },
     {
-      "identity": "image-0346",
+      "identity": "image-0375",
       "configuredValue": "glyph_steamworkshop",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_steamworkshop.vmt",
@@ -13503,7 +14471,7 @@
       ]
     },
     {
-      "identity": "image-0347",
+      "identity": "image-0376",
       "configuredValue": "glyph_store",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_store.vmt",
@@ -13519,7 +14487,7 @@
       ]
     },
     {
-      "identity": "image-0348",
+      "identity": "image-0377",
       "configuredValue": "glyph_tutorial",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tutorial.vmt",
@@ -13535,7 +14503,7 @@
       ]
     },
     {
-      "identity": "image-0349",
+      "identity": "image-0378",
       "configuredValue": "glyph_tv",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_tv.vmt",
@@ -13551,7 +14519,7 @@
       ]
     },
     {
-      "identity": "image-0350",
+      "identity": "image-0379",
       "configuredValue": "glyph_vr",
       "classification": "content-vtf",
       "material": "materials/vgui/glyph_vr.vmt",
@@ -13567,7 +14535,7 @@
       ]
     },
     {
-      "identity": "image-0351",
+      "identity": "image-0380",
       "configuredValue": "gradient_pure_black",
       "classification": "content-vtf",
       "material": "materials/vgui/gradient_pure_black.vmt",
@@ -13583,7 +14551,7 @@
       ]
     },
     {
-      "identity": "image-0352",
+      "identity": "image-0381",
       "configuredValue": "hud/checkmark",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/checkmark.vmt",
@@ -13599,7 +14567,7 @@
       ]
     },
     {
-      "identity": "image-0353",
+      "identity": "image-0382",
       "configuredValue": "icon_checkbox",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_checkbox.vmt",
@@ -13615,7 +14583,7 @@
       ]
     },
     {
-      "identity": "image-0354",
+      "identity": "image-0383",
       "configuredValue": "icon_resume",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_resume.vmt",
@@ -13631,7 +14599,7 @@
       ]
     },
     {
-      "identity": "image-0355",
+      "identity": "image-0384",
       "configuredValue": "icon_whistle",
       "classification": "content-vtf",
       "material": "materials/vgui/icon_whistle.vmt",
@@ -13647,7 +14615,7 @@
       ]
     },
     {
-      "identity": "image-0356",
+      "identity": "image-0385",
       "configuredValue": "illustrations/bg",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/bg.vmt",
@@ -13663,7 +14631,7 @@
       ]
     },
     {
-      "identity": "image-0357",
+      "identity": "image-0386",
       "configuredValue": "illustrations/gamemode_cp",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/gamemode_cp.vmt",
@@ -13679,7 +14647,7 @@
       ]
     },
     {
-      "identity": "image-0358",
+      "identity": "image-0387",
       "configuredValue": "illustrations/gamemode_koth",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/gamemode_koth.vmt",
@@ -13695,7 +14663,7 @@
       ]
     },
     {
-      "identity": "image-0359",
+      "identity": "image-0388",
       "configuredValue": "illustrations/gamemode_payload",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/gamemode_payload.vmt",
@@ -13711,7 +14679,7 @@
       ]
     },
     {
-      "identity": "image-0360",
+      "identity": "image-0389",
       "configuredValue": "illustrations/training_basic",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/training_basic.vmt",
@@ -13727,7 +14695,7 @@
       ]
     },
     {
-      "identity": "image-0361",
+      "identity": "image-0390",
       "configuredValue": "illustrations/training_offlinepractice",
       "classification": "content-vtf",
       "material": "materials/vgui/illustrations/training_offlinepractice.vmt",
@@ -13743,7 +14711,7 @@
       ]
     },
     {
-      "identity": "image-0362",
+      "identity": "image-0391",
       "configuredValue": "importtool_goldstar",
       "classification": "content-vtf",
       "material": "materials/vgui/importtool_goldstar.vmt",
@@ -13759,7 +14727,7 @@
       ]
     },
     {
-      "identity": "image-0363",
+      "identity": "image-0392",
       "configuredValue": "info",
       "classification": "content-vtf",
       "material": "materials/vgui/info.vmt",
@@ -13775,7 +14743,7 @@
       ]
     },
     {
-      "identity": "image-0364",
+      "identity": "image-0393",
       "configuredValue": "inner_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/inner_shadow_border.vmt",
@@ -13791,7 +14759,7 @@
       ]
     },
     {
-      "identity": "image-0365",
+      "identity": "image-0394",
       "configuredValue": "item_bg",
       "classification": "content-vtf",
       "material": "materials/vgui/item_bg.vmt",
@@ -13807,7 +14775,7 @@
       ]
     },
     {
-      "identity": "image-0366",
+      "identity": "image-0395",
       "configuredValue": "loadout_bottom_gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_bottom_gradient.vmt",
@@ -13823,7 +14791,23 @@
       ]
     },
     {
-      "identity": "image-0367",
+      "identity": "image-0396",
+      "configuredValue": "loadout_dotted_line",
+      "classification": "content-vtf",
+      "material": "materials/vgui/loadout_dotted_line.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/loadout_dotted_line.vtf",
+          "sha256": "ce1353c301abaf7c4e3c5f064d904683656bbe03a2bc7c62df113bf40460215d",
+          "width": 256,
+          "height": 16,
+          "frames": 1,
+          "rawFlags": 8960
+        }
+      ]
+    },
+    {
+      "identity": "image-0397",
       "configuredValue": "loadout_header",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_header.vmt",
@@ -13839,7 +14823,7 @@
       ]
     },
     {
-      "identity": "image-0368",
+      "identity": "image-0398",
       "configuredValue": "loadout_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect.vmt",
@@ -13855,7 +14839,7 @@
       ]
     },
     {
-      "identity": "image-0369",
+      "identity": "image-0399",
       "configuredValue": "loadout_rect_mouseover",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_mouseover.vmt",
@@ -13871,7 +14855,7 @@
       ]
     },
     {
-      "identity": "image-0370",
+      "identity": "image-0400",
       "configuredValue": "loadout_rect_red",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_rect_red.vmt",
@@ -13887,7 +14871,7 @@
       ]
     },
     {
-      "identity": "image-0371",
+      "identity": "image-0401",
       "configuredValue": "loadout_round_rect",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect.vmt",
@@ -13903,7 +14887,7 @@
       ]
     },
     {
-      "identity": "image-0372",
+      "identity": "image-0402",
       "configuredValue": "loadout_round_rect_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_round_rect_selected.vmt",
@@ -13919,7 +14903,7 @@
       ]
     },
     {
-      "identity": "image-0373",
+      "identity": "image-0403",
       "configuredValue": "loadout_solid_line",
       "classification": "content-vtf",
       "material": "materials/vgui/loadout_solid_line.vmt",
@@ -13935,7 +14919,7 @@
       ]
     },
     {
-      "identity": "image-0374",
+      "identity": "image-0404",
       "configuredValue": "locked_icon",
       "classification": "content-vtf",
       "material": "materials/vgui/locked_icon.vmt",
@@ -13951,14 +14935,14 @@
       ]
     },
     {
-      "identity": "image-0375",
+      "identity": "image-0405",
       "configuredValue": "logos/UI/spray",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0376",
+      "identity": "image-0406",
       "configuredValue": "main_menu/main_menu_button_casual",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_casual.vmt",
@@ -13974,7 +14958,7 @@
       ]
     },
     {
-      "identity": "image-0377",
+      "identity": "image-0407",
       "configuredValue": "main_menu/main_menu_button_community_server",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_community_server.vmt",
@@ -13990,7 +14974,7 @@
       ]
     },
     {
-      "identity": "image-0378",
+      "identity": "image-0408",
       "configuredValue": "main_menu/main_menu_button_competitive",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_competitive.vmt",
@@ -14006,7 +14990,7 @@
       ]
     },
     {
-      "identity": "image-0379",
+      "identity": "image-0409",
       "configuredValue": "main_menu/main_menu_button_custom_server",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_custom_server.vmt",
@@ -14022,7 +15006,7 @@
       ]
     },
     {
-      "identity": "image-0380",
+      "identity": "image-0410",
       "configuredValue": "main_menu/main_menu_button_mvm",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_mvm.vmt",
@@ -14038,7 +15022,7 @@
       ]
     },
     {
-      "identity": "image-0381",
+      "identity": "image-0411",
       "configuredValue": "main_menu/main_menu_button_training",
       "classification": "content-vtf",
       "material": "materials/vgui/main_menu/main_menu_button_training.vmt",
@@ -14054,7 +15038,7 @@
       ]
     },
     {
-      "identity": "image-0382",
+      "identity": "image-0412",
       "configuredValue": "maps/menu_photos_ctf_2fort",
       "classification": "content-vtf",
       "material": "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
@@ -14070,7 +15054,7 @@
       ]
     },
     {
-      "identity": "image-0383",
+      "identity": "image-0413",
       "configuredValue": "maps/menu_photos_pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/maps/menu_photos_pl_upward.vmt",
@@ -14086,7 +15070,7 @@
       ]
     },
     {
-      "identity": "image-0384",
+      "identity": "image-0414",
       "configuredValue": "marked_for_death",
       "classification": "content-vtf",
       "material": "materials/vgui/marked_for_death.vmt",
@@ -14102,7 +15086,7 @@
       ]
     },
     {
-      "identity": "image-0385",
+      "identity": "image-0415",
       "configuredValue": "mvm/class_upgraded",
       "classification": "content-vtf",
       "material": "materials/vgui/mvm/class_upgraded.vmt",
@@ -14118,7 +15102,7 @@
       ]
     },
     {
-      "identity": "image-0386",
+      "identity": "image-0416",
       "configuredValue": "new_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/new_corner.vmt",
@@ -14134,7 +15118,7 @@
       ]
     },
     {
-      "identity": "image-0387",
+      "identity": "image-0417",
       "configuredValue": "outer_shadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/outer_shadow_border.vmt",
@@ -14150,7 +15134,7 @@
       ]
     },
     {
-      "identity": "image-0388",
+      "identity": "image-0418",
       "configuredValue": "replay/dullgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/dullgreybox.vmt",
@@ -14166,7 +15150,7 @@
       ]
     },
     {
-      "identity": "image-0389",
+      "identity": "image-0419",
       "configuredValue": "replay/fatlineborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder.vmt",
@@ -14182,7 +15166,7 @@
       ]
     },
     {
-      "identity": "image-0390",
+      "identity": "image-0420",
       "configuredValue": "replay/fatlineborder_red",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/fatlineborder_red.vmt",
@@ -14198,7 +15182,7 @@
       ]
     },
     {
-      "identity": "image-0391",
+      "identity": "image-0421",
       "configuredValue": "replay/graydialogborder",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/graydialogborder.vmt",
@@ -14214,7 +15198,7 @@
       ]
     },
     {
-      "identity": "image-0392",
+      "identity": "image-0422",
       "configuredValue": "replay/outlinedgreybox",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/outlinedgreybox.vmt",
@@ -14230,7 +15214,7 @@
       ]
     },
     {
-      "identity": "image-0393",
+      "identity": "image-0423",
       "configuredValue": "replay/panel_scalable_balloon",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_balloon.vmt",
@@ -14246,7 +15230,7 @@
       ]
     },
     {
-      "identity": "image-0394",
+      "identity": "image-0424",
       "configuredValue": "replay/panel_scalable_default",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_default.vmt",
@@ -14262,7 +15246,7 @@
       ]
     },
     {
-      "identity": "image-0395",
+      "identity": "image-0425",
       "configuredValue": "replay/panel_scalable_highlight",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_highlight.vmt",
@@ -14278,7 +15262,7 @@
       ]
     },
     {
-      "identity": "image-0396",
+      "identity": "image-0426",
       "configuredValue": "replay/panel_scalable_transparent",
       "classification": "content-vtf",
       "material": "materials/vgui/replay/panel_scalable_transparent.vmt",
@@ -14294,7 +15278,7 @@
       ]
     },
     {
-      "identity": "image-0397",
+      "identity": "image-0427",
       "configuredValue": "resource/icon_vac",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/icon_vac.vmt",
@@ -14310,7 +15294,7 @@
       ]
     },
     {
-      "identity": "image-0398",
+      "identity": "image-0428",
       "configuredValue": "resource/mic_meter_dead",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_dead.vmt",
@@ -14326,7 +15310,7 @@
       ]
     },
     {
-      "identity": "image-0399",
+      "identity": "image-0429",
       "configuredValue": "resource/mic_meter_live",
       "classification": "content-vtf",
       "material": "materials/vgui/resource/mic_meter_live.vmt",
@@ -14342,7 +15326,7 @@
       ]
     },
     {
-      "identity": "image-0400",
+      "identity": "image-0430",
       "configuredValue": "sale_corner",
       "classification": "content-vtf",
       "material": "materials/vgui/sale_corner.vmt",
@@ -14358,7 +15342,7 @@
       ]
     },
     {
-      "identity": "image-0401",
+      "identity": "image-0431",
       "configuredValue": "scroll_button_off",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_button_off.vmt",
@@ -14374,7 +15358,7 @@
       ]
     },
     {
-      "identity": "image-0402",
+      "identity": "image-0432",
       "configuredValue": "scroll_well",
       "classification": "content-vtf",
       "material": "materials/vgui/scroll_well.vmt",
@@ -14390,7 +15374,7 @@
       ]
     },
     {
-      "identity": "image-0403",
+      "identity": "image-0433",
       "configuredValue": "stamp_background_map",
       "classification": "content-vtf",
       "material": "materials/vgui/stamp_background_map.vmt",
@@ -14406,7 +15390,7 @@
       ]
     },
     {
-      "identity": "image-0404",
+      "identity": "image-0434",
       "configuredValue": "store/innershadow_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/innershadow_border.vmt",
@@ -14422,7 +15406,7 @@
       ]
     },
     {
-      "identity": "image-0405",
+      "identity": "image-0435",
       "configuredValue": "store/store_add_to_cart",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_add_to_cart.vmt",
@@ -14438,7 +15422,7 @@
       ]
     },
     {
-      "identity": "image-0406",
+      "identity": "image-0436",
       "configuredValue": "store/store_coupon_border",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_coupon_border.vmt",
@@ -14454,7 +15438,7 @@
       ]
     },
     {
-      "identity": "image-0407",
+      "identity": "image-0437",
       "configuredValue": "store/store_featured_item_bg01",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_featured_item_bg01.vmt",
@@ -14470,7 +15454,7 @@
       ]
     },
     {
-      "identity": "image-0408",
+      "identity": "image-0438",
       "configuredValue": "store/store_inspector_bg_small",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_inspector_bg_small.vmt",
@@ -14486,7 +15470,7 @@
       ]
     },
     {
-      "identity": "image-0409",
+      "identity": "image-0439",
       "configuredValue": "store/store_tab_selected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_selected.vmt",
@@ -14502,7 +15486,7 @@
       ]
     },
     {
-      "identity": "image-0410",
+      "identity": "image-0440",
       "configuredValue": "store/store_tab_unselected",
       "classification": "content-vtf",
       "material": "materials/vgui/store/store_tab_unselected.vmt",
@@ -14518,7 +15502,7 @@
       ]
     },
     {
-      "identity": "image-0411",
+      "identity": "image-0441",
       "configuredValue": "techcredits/bink",
       "classification": "content-vtf",
       "material": "materials/vgui/techcredits/bink.vmt",
@@ -14534,7 +15518,7 @@
       ]
     },
     {
-      "identity": "image-0412",
+      "identity": "image-0442",
       "configuredValue": "training/gradient",
       "classification": "content-vtf",
       "material": "materials/vgui/training/gradient.vmt",
@@ -14550,7 +15534,7 @@
       ]
     },
     {
-      "identity": "image-0413",
+      "identity": "image-0443",
       "configuredValue": "training/gradient_black",
       "classification": "content-vtf",
       "material": "materials/vgui/training/gradient_black.vmt",
@@ -14566,7 +15550,7 @@
       ]
     },
     {
-      "identity": "image-0414",
+      "identity": "image-0444",
       "configuredValue": "training/screenshots/pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/training/screenshots/pl_upward.vmt",
@@ -14582,14 +15566,14 @@
       ]
     },
     {
-      "identity": "image-0415",
+      "identity": "image-0445",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0416",
+      "identity": "image-0446",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",
@@ -14605,7 +15589,7 @@
       ]
     },
     {
-      "identity": "image-0417",
+      "identity": "image-0447",
       "configuredValue": "vgui/hud/8x800corner1",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner1.vmt",
@@ -14621,7 +15605,7 @@
       ]
     },
     {
-      "identity": "image-0418",
+      "identity": "image-0448",
       "configuredValue": "vgui/hud/8x800corner2",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner2.vmt",
@@ -14637,7 +15621,7 @@
       ]
     },
     {
-      "identity": "image-0419",
+      "identity": "image-0449",
       "configuredValue": "vgui/hud/8x800corner3",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner3.vmt",
@@ -14653,7 +15637,7 @@
       ]
     },
     {
-      "identity": "image-0420",
+      "identity": "image-0450",
       "configuredValue": "vgui/hud/8x800corner4",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner4.vmt",
