@@ -274,7 +274,7 @@ pub fn resolve_render_output(
             if raw_length <= 0.0 {
                 continue;
             }
-            let length = raw_length.clamp(item.trail_min_length, item.trail_max_length);
+            let length = source_clamp(raw_length, item.trail_min_length, item.trail_max_length);
             item.trail_length = length;
             item.trail_width = item.radius.min(length);
             item.trail_end_position = add(
@@ -394,7 +394,7 @@ pub fn encode_render_output(
             || item.lifetime_seconds <= 0.0
             || item.step_seconds <= 0.0
             || item.trail_min_length < 0.0
-            || item.trail_max_length < item.trail_min_length
+            || item.trail_max_length < 0.0
             || item.trail_fade_in_seconds < 0.0
             || !valid_sheet_sample(item.primary_sheet.as_ref())
             || !valid_sheet_sample(item.secondary_sheet.as_ref())
@@ -1638,7 +1638,7 @@ fn initialize_particle(
             let minimum = integer_parameter(initializer, "starting control point", 0);
             let maximum = integer_parameter(initializer, "maximum end control point", 0);
             particle.target_control_point = if minimum <= maximum {
-                i32::from(system.target_control_point).clamp(minimum, maximum) as u8
+                source_clamp(i32::from(system.target_control_point), minimum, maximum) as u8
             } else {
                 maximum as u8
             };
@@ -1648,7 +1648,7 @@ fn initialize_particle(
         {
             let minimum = integer_parameter(initializer, "starting control point", 0);
             let maximum = integer_parameter(initializer, "maximum end control point", 0);
-            let target = i32::from(particle.target_control_point).clamp(minimum, maximum);
+            let target = source_clamp(i32::from(particle.target_control_point), minimum, maximum);
             particle.lifetime_seconds = system
                 .controls
                 .get(target as usize)
@@ -1711,7 +1711,7 @@ fn initialize_particle(
                 let minimum = color_parameter(initializer, "tint clamp min", [0; 4]);
                 let maximum = color_parameter(initializer, "tint clamp max", [255; 4]);
                 Some(std::array::from_fn::<_, 3, _>(|index| {
-                    value[index].clamp(minimum[index], maximum[index]) as f32 / 255.0
+                    source_clamp(value[index], minimum[index], maximum[index]) as f32 / 255.0
                 }))
             } else {
                 None
@@ -2501,7 +2501,7 @@ fn operate(
             } else if operator.identity.eq_ignore_ascii_case("Movement Follow CP") {
                 let minimum = integer_parameter(operator, "starting control point", 0);
                 let maximum = integer_parameter(operator, "maximum end control point", 0);
-                let index = i32::from(particle.target_control_point).clamp(minimum, maximum);
+                let index = source_clamp(i32::from(particle.target_control_point), minimum, maximum);
                 let Some(control) = controls.get(index as usize).and_then(Option::as_ref) else {
                     continue;
                 };
@@ -2523,7 +2523,7 @@ fn operate(
                 if radius_speed > 0.0 {
                     let difference = control.radius - particle.radius;
                     let step = radius_speed * dt;
-                    particle.radius += difference.clamp(-step, step);
+                    particle.radius += source_clamp(difference, -step, step);
                 }
                 if bool_parameter(operator, "update particle life time", false) {
                     particle.lifetime_seconds = control.duration;
@@ -2833,7 +2833,7 @@ fn constrain(
                 if distance > maximum || distance < minimum {
                     if let Some(direction) = normalize(offset) {
                         particle.position =
-                            add(center, mul(direction, distance.clamp(minimum, maximum)));
+                            add(center, mul(direction, source_clamp(distance, minimum, maximum)));
                     }
                 }
             }
@@ -3756,6 +3756,21 @@ fn hash(left: u64, right: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
+}
+
+// SDK mathlib::clamp returns the upper bound for reversed authored ranges.
+fn source_clamp<T: PartialOrd + Copy>(value: T, minimum: T, maximum: T) -> T {
+    if maximum < minimum { maximum }
+    else if value < minimum { minimum }
+    else if value > maximum { maximum }
+    else { value }
+}
+
+#[test]
+fn reversed_authored_bounds_match_sdk_clamp_without_panicking() {
+    for value in [-1.0_f32, 21.0, 23.0] { assert_eq!(source_clamp(value, 22.0, 20.0), 20.0); }
+    assert_eq!(source_clamp(5, 3, 1), 1);
+    assert_eq!(source_clamp(0.5_f32, 0.0, 1.0), 0.5);
 }
 
 fn normalize_seed(seed: u64) -> i32 {

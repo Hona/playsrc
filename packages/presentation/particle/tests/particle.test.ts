@@ -75,6 +75,13 @@ test("particle pass ownership distinguishes real sky particles and rejects unkno
   expect(() => decodeParticleRenderOutput(bytes, ["smoke"])).toThrow("identity is invalid")
 })
 
+test("retains authored reversed rain trail bounds instead of rejecting Source's upper-bound clamp", () => {
+  const bytes = output(), view = new DataView(bytes.buffer)
+  view.setFloat32(40 + 100, 22, true); view.setFloat32(40 + 104, 20, true)
+  const item = decodeParticleRenderOutput(bytes, ["rain"]).items[0]!
+  expect([item.trailMinLength, item.trailMaxLength]).toEqual([22, 20])
+})
+
 describe("Rust particle render-data adapter", () => {
   test("decodes bounded renderer-neutral sprite and trail records", () => {
     expect(decodeParticleRenderOutput(output(), ["effects/rocketrailsmoke.vmt"])).toEqual({

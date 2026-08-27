@@ -244,7 +244,7 @@ export function decodeParticleRenderOutput(
       || ageSeconds < 0
       || lifetimeSeconds <= 0
       || trailMinLength < 0
-      || trailMaxLength < trailMinLength
+      || trailMaxLength < 0
       || trailFadeInSeconds < 0
       || secondaryAnimationRate < 0
       || stepSeconds <= 0
