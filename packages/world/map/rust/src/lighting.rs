@@ -451,7 +451,7 @@ fn parse_world_lights(
             if light.radius < 1.0 {
                 light.radius = source_world_light_radius(&light, profile);
             }
-            if !light.radius.is_finite() || light.radius < 0.0 {
+            if !light.radius.is_finite() {
                 return Err(error(ErrorCode::InvalidLightingProfile, Some(index)));
             }
             Ok(light)
@@ -1069,6 +1069,21 @@ mod tests {
         assert_eq!(ldr.quadratic_attenuation, 1.0);
         assert!(hdr.radius > ldr.radius);
         assert!((hdr.radius - (3.0_f32.sqrt() / 0.015).sqrt()).abs() < 0.00001);
+    }
+
+    #[test]
+    fn signed_linear_attenuation_retains_its_computed_radius() {
+        let mut bytes = [0_u8; WORLD_LIGHT_BYTES];
+        bytes[12..16].copy_from_slice(&0.06_f32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&1_i32.to_le_bytes());
+        bytes[68..72].copy_from_slice(&(-2.0_f32).to_le_bytes());
+        let ldr = parse_world_lights(&bytes, LightingLimits::default(), 15, LightingProfile::Ldr)
+            .unwrap()[0];
+        let hdr = parse_world_lights(&bytes, LightingLimits::default(), 54, LightingProfile::Hdr)
+            .unwrap()[0];
+        assert_eq!(ldr.linear_attenuation, -2.0);
+        assert_eq!(ldr.radius, -1.0);
+        assert_eq!(hdr.radius, -2.0);
     }
 
     #[test]

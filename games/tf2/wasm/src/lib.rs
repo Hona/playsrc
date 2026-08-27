@@ -8102,7 +8102,7 @@ fn resolve_profile_materials(
     ["rt", "lf", "bk", "ft", "up", "dn"]
         .into_iter()
         .map(|suffix| {
-            let identity = format!("materials/skybox/{sky}_hdr{suffix}.vmt").to_ascii_lowercase();
+            let identity = format!("materials/skybox/{sky}{suffix}.vmt").to_ascii_lowercase();
             let material =
                 resolve_material_semantics(&identity, bundle, material_environment(profile, false))
                     .map_err(|_| ())?;

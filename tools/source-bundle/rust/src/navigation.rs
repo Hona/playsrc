@@ -49,7 +49,7 @@ pub fn authenticate(
     bsp_length: usize,
     bounds: [[f32; 3]; 2],
     entities: &playsrc_entity::Graph,
-    target: &str,
+    mode: &str,
 ) -> Result<(), String> {
     let bsp_size =
         u32::try_from(bsp_length).map_err(|_| "authenticated BSP exceeds Source NAV size")?;
@@ -122,7 +122,7 @@ pub fn authenticate(
     let mut blue = Vec::new();
     let mut objectives = Vec::new();
     let mut payload_route = BTreeSet::new();
-    if target == "pl_upward" {
+    if mode == "payload" {
         let watcher = entities
             .entities
             .iter()
@@ -174,8 +174,10 @@ pub fn authenticate(
             if team == b"3" {
                 blue.push(area);
             }
-        } else if (target == "ctf_2fort" && classname.eq_ignore_ascii_case(b"item_teamflag"))
-            || (target == "pl_upward"
+        } else if (mode == "capture-the-flag" && classname.eq_ignore_ascii_case(b"item_teamflag"))
+            || (matches!(mode, "control-point" | "king-of-the-hill")
+                && classname.eq_ignore_ascii_case(b"team_control_point"))
+            || (mode == "payload"
                 && (classname.eq_ignore_ascii_case(b"team_control_point")
                     || (classname.eq_ignore_ascii_case(b"path_track")
                         && entity_value(entity, b"targetname")
@@ -288,9 +290,31 @@ mod tests {
                 128,
                 [[0.0, 0.0, -1.0], [100.0, 50.0, 1.0]],
                 &entities,
-                "ctf_2fort",
+                "capture-the-flag",
             )
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn control_point_modes_require_connected_authored_points() {
+        for mode in ["control-point", "king-of-the-hill"] {
+            let (bytes, mut entities) = fixture(0, true);
+            entities.entities[2].classname = Some(b"team_control_point".to_vec());
+            let bounds = [[0.0, 0.0, -1.0], [100.0, 50.0, 1.0]];
+            authenticate(&bytes, 128, bounds, &entities, mode).unwrap();
+            let (disconnected, _) = fixture(0, false);
+            assert!(
+                authenticate(&disconnected, 128, bounds, &entities, mode)
+                    .unwrap_err()
+                    .contains("topology")
+            );
+            entities.entities.pop();
+            assert!(
+                authenticate(&bytes, 128, bounds, &entities, mode)
+                    .unwrap_err()
+                    .contains("objectives")
+            );
         }
     }
 
@@ -299,7 +323,7 @@ mod tests {
         let (mut bytes, entities) = fixture(0, true);
         let bounds = [[0.0, 0.0, -1.0], [100.0, 50.0, 1.0]];
         assert!(
-            authenticate(&bytes, 129, bounds, &entities, "ctf_2fort")
+            authenticate(&bytes, 129, bounds, &entities, "capture-the-flag")
                 .unwrap_err()
                 .contains("BspSizeMismatch")
         );
@@ -309,20 +333,20 @@ mod tests {
                 128,
                 [[0.0; 3], [49.0, 50.0, 1.0]],
                 &entities,
-                "ctf_2fort"
+                "capture-the-flag"
             )
             .unwrap_err()
             .contains("world bounds")
         );
         let (disconnected, entities) = fixture(0, false);
         assert!(
-            authenticate(&disconnected, 128, bounds, &entities, "ctf_2fort")
+            authenticate(&disconnected, 128, bounds, &entities, "capture-the-flag")
                 .unwrap_err()
                 .contains("topology")
         );
         bytes.push(0);
         assert!(
-            authenticate(&bytes, 128, bounds, &entities, "ctf_2fort")
+            authenticate(&bytes, 128, bounds, &entities, "capture-the-flag")
                 .unwrap_err()
                 .contains("TrailingBytes")
         );
@@ -342,15 +366,27 @@ mod tests {
         }
         bytes.push(1);
         assert!(
-            authenticate(&bytes, 41, [[-1.0; 3], [1.0; 3]], &entities, "ctf_2fort")
-                .unwrap_err()
-                .contains("BspSizeMismatch")
+            authenticate(
+                &bytes,
+                41,
+                [[-1.0; 3], [1.0; 3]],
+                &entities,
+                "capture-the-flag"
+            )
+            .unwrap_err()
+            .contains("BspSizeMismatch")
         );
         bytes[0] = 0;
         assert!(
-            authenticate(&bytes, 42, [[-1.0; 3], [1.0; 3]], &entities, "ctf_2fort")
-                .unwrap_err()
-                .contains("InvalidMagic")
+            authenticate(
+                &bytes,
+                42,
+                [[-1.0; 3], [1.0; 3]],
+                &entities,
+                "capture-the-flag"
+            )
+            .unwrap_err()
+            .contains("InvalidMagic")
         );
     }
 }

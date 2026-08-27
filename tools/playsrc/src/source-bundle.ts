@@ -9,6 +9,7 @@ import { parseResourceGraphBytes, type ResourceGraph } from "@playsrc/asset-stor
 import toolchains from "../toolchains.json"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { buildCacheDirectory, rustBuildIdentity } from "./build-identity"
+import { resolveMapTarget } from "./targets"
 
 export type SourceBundleArtifact = Readonly<{
   graphPath: string
@@ -313,7 +314,7 @@ export async function buildSourceBundle(config: LocalConfig, target: string): Pr
     .update(config.tf2Dir).update("\0")
     .update(TF2_CONTENT_BUILD.contentBuild).update("\0")
     .update(target)
-  if (target === "ctf_2fort" || target === "pl_upward") {
+  if (resolveMapTarget(target).navigation === "local") {
     const location = await realpath(path.join(config.tf2Dir, "maps", `${target}.nav`))
     if (!location.startsWith(`${config.tf2Dir}${path.sep}`)) {
       throw new Error(`configured ${target} NAV escapes the exact TF2 root`)

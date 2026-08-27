@@ -221,6 +221,8 @@ struct Tf2GameUiBackgroundVariant {
 #[serde(rename_all = "camelCase")]
 struct MapTarget {
     logical_path: String,
+    mode: String,
+    navigation: Option<String>,
     download: Option<Download>,
     installed: Option<InstalledMap>,
 }
@@ -2312,43 +2314,53 @@ fn main() -> Result<(), String> {
     let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
         .map_err(|error| error.to_string())?;
     let mut resolver = Resolver::new(&content);
-    if matches!(target.as_str(), "pl_upward" | "ctf_2fort") {
+    if let Some(navigation_source) = &map_target.navigation {
         let logical = format!("maps/{target}.nav");
-        let configured_root = fs::canonicalize(&tf2).map_err(|error| error.to_string())?;
-        let configured_nav = fs::canonicalize(tf2.join(&logical))
-            .map_err(|error| format!("configured local NAV {logical} is unavailable: {error}"))?;
-        if !configured_nav.starts_with(&configured_root) {
-            return Err(format!(
-                "configured local NAV {logical} escapes its TF2 root"
-            ));
-        }
-        let nav = fs::read(&configured_nav).map_err(|error| error.to_string())?;
-        let expected_provider = map_target
-            .installed
-            .as_ref()
-            .map(|installed| installed.provider.as_str())
-            .ok_or("local NAV target has no authenticated installed BSP provider")?;
-        let provider = provider_records
-            .iter()
-            .find(|provider| provider.identity == expected_provider && provider.kind == "directory")
-            .ok_or("local NAV target has no configured TF2 directory provider")?;
-        resolver.inject_source(
-            &logical,
-            "tf2-bot-navigation",
-            nav.clone(),
-            ProvenanceRecord {
-                provider_identity: provider.identity.clone(),
-                provider_kind: provider.kind,
-                provider_revision: provider.revision.clone(),
-                location: logical.clone(),
-            },
-        )?;
+        let nav = if navigation_source == "content" {
+            resolver.required(&logical, "tf2-bot-navigation")?
+        } else if navigation_source == "local" {
+            let configured_root = fs::canonicalize(&tf2).map_err(|error| error.to_string())?;
+            let configured_nav = fs::canonicalize(tf2.join(&logical)).map_err(|error| {
+                format!("configured local NAV {logical} is unavailable: {error}")
+            })?;
+            if !configured_nav.starts_with(&configured_root) {
+                return Err(format!(
+                    "configured local NAV {logical} escapes its TF2 root"
+                ));
+            }
+            let nav = fs::read(&configured_nav).map_err(|error| error.to_string())?;
+            let expected_provider = map_target
+                .installed
+                .as_ref()
+                .map(|installed| installed.provider.as_str())
+                .ok_or("local NAV target has no authenticated installed BSP provider")?;
+            let provider = provider_records
+                .iter()
+                .find(|provider| {
+                    provider.identity == expected_provider && provider.kind == "directory"
+                })
+                .ok_or("local NAV target has no configured TF2 directory provider")?;
+            resolver.inject_source(
+                &logical,
+                "tf2-bot-navigation",
+                nav.clone(),
+                ProvenanceRecord {
+                    provider_identity: provider.identity.clone(),
+                    provider_kind: provider.kind,
+                    provider_revision: provider.revision.clone(),
+                    location: logical.clone(),
+                },
+            )?;
+            nav
+        } else {
+            return Err(format!("invalid navigation source for {target}"));
+        };
         let bounds = canonical
             .brush_models
             .first()
             .ok_or("BSP world bounds are unavailable")?
             .bounds;
-        navigation::authenticate(&nav, bsp_bytes.len(), bounds, &graph, &target)
+        navigation::authenticate(&nav, bsp_bytes.len(), bounds, &graph, &map_target.mode)
             .map_err(|error| format!("navigation {target}: {error}"))?;
     }
     for (path, bytes, sha256, consumer) in [
@@ -2429,10 +2441,10 @@ fn main() -> Result<(), String> {
     {
         return Err("skyname is malformed".to_owned());
     }
-    for (profile_suffix, environment) in [
-        ("", SelectionEnvironment::default()),
+    for (consumer, environment) in [
+        ("sky-ldr", SelectionEnvironment::default()),
         (
-            "_hdr",
+            "sky-hdr",
             SelectionEnvironment {
                 hdr_mode: HdrMode::Integer,
                 ..SelectionEnvironment::default()
@@ -2442,15 +2454,11 @@ fn main() -> Result<(), String> {
         for suffix in ["rt", "lf", "bk", "ft", "up", "dn"] {
             collect_material(
                 &mut resolver,
-                &format!("materials/skybox/{sky}{profile_suffix}{suffix}.vmt"),
+                &format!("materials/skybox/{sky}{suffix}.vmt"),
                 true,
                 environment,
                 true,
-                if profile_suffix.is_empty() {
-                    "sky-ldr"
-                } else {
-                    "sky-hdr"
-                },
+                consumer,
             )?;
         }
     }
