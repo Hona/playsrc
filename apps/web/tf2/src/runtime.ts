@@ -2257,6 +2257,8 @@ export class Tf2Application {
   }
 
   #classSelectionRequest(request: Tf2ClassSelectionRequest): void {
+    this.#selectionViewportEpoch += 1
+    this.#pendingClassSelectionTeam = undefined
     const identity = request.identity
     if (identity === 12) this.#selectClass = 12
     else this.selectClass(identity)
@@ -2408,9 +2410,10 @@ export class Tf2Application {
   async #teamSelectionRequest(request: Tf2TeamSelectionRequest): Promise<void> {
     if (!this.#client || !this.#teamSelection) return
     const generation = this.#generation
+    const selectionEpoch = ++this.#selectionViewportEpoch
     const server = await this.#client.teamSelection(generation, request.team)
     if (generation !== this.#generation || this.#closed) return
-    if (this.#snapshot && (server.localTeam === 2 || server.localTeam === 3)
+    if (selectionEpoch === this.#selectionViewportEpoch && this.#snapshot && (server.localTeam === 2 || server.localTeam === 3)
       && this.#snapshot.team !== server.localTeam) {
       this.#pendingClassSelectionTeam = server.localTeam
     }
