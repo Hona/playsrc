@@ -119,8 +119,8 @@ pub struct World {
     pub model_contents: Vec<u32>,
     pub texture_flags: Vec<u16>,
     pub displacements: Vec<DisplacementPatch>,
-    displacement_inputs: Vec<DisplacementInput>,
-    displacement_trees: displacement::Acceleration,
+    pub displacement_inputs: Vec<DisplacementInput>,
+    displacement_trees: Vec<displacement::Tree>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hull {
@@ -456,7 +456,7 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
         texture_flags,
         displacements,
         displacement_inputs: Vec::new(),
-        displacement_trees: displacement::Acceleration::default(),
+        displacement_trees: Vec::new(),
     };
     world.identity = world_identity(&world);
     Ok(world)
@@ -497,10 +497,6 @@ impl World {
         self.displacement_trees = displacement::build(&self)?;
         self.identity = world_identity(&self);
         Ok(self)
-    }
-
-    pub fn displacement_input_count(&self) -> usize {
-        self.displacement_inputs.len()
     }
 }
 fn plane(p: &BspPlane, i: usize) -> Result<Plane, Error> {
@@ -555,7 +551,7 @@ impl World {
             texture_flags: Vec::new(),
             displacements: Vec::new(),
             displacement_inputs: Vec::new(),
-            displacement_trees: displacement::Acceleration::default(),
+            displacement_trees: Vec::new(),
         };
         world.identity = world_identity(&world);
         world

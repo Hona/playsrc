@@ -1721,7 +1721,7 @@ pub fn diagnose_presentation_bound(
     let templates =
         collision_object_templates(&canonical, &entities, &resources, &studio_model_checksums)
             .map_err(|_| 5u32)?;
-    ledger.displacement_input_count = collision.displacement_input_count();
+    ledger.displacement_input_count = collision.displacement_inputs.len();
     ledger.static_prop_collision_count = templates
         .iter()
         .filter(|template| template.input.role == playsrc_collision::ObjectRole::StaticProp)
