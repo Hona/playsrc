@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use playsrc_content::{Content, Resolution};
 use playsrc_keyvalues::{EscapeMode, Node, Value};
 use serde::Serialize;
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, fs, io::Write, path::Path};
 
 use crate::{digest, image_record, scalar};
 
@@ -65,7 +65,14 @@ struct ScopeTexture {
     clamp_s: bool,
     clamp_t: bool,
     no_lod: bool,
-    mips: Vec<AuthoredFrame>,
+    encoding: &'static str,
+    mips: Vec<ScopeMip>,
+}
+
+#[derive(Serialize)]
+struct ScopeMip {
+    sha256: String,
+    data: String,
 }
 
 #[derive(Serialize)]
@@ -358,6 +365,7 @@ fn scope_texture(content: &Content, logical_path: &str) -> Result<ScopeTexture, 
     } else {
         metadata.mip_count
     };
+    let normal = logical_path == "materials/hud/scope_normal_ul.vtf";
     Ok(ScopeTexture {
         source,
         width: u32::from(metadata.width),
@@ -365,8 +373,33 @@ fn scope_texture(content: &Content, logical_path: &str) -> Result<ScopeTexture, 
         clamp_s: metadata.effective_flags & 4 != 0,
         clamp_t: metadata.effective_flags & 8 != 0,
         no_lod: metadata.effective_flags & 0x200 != 0,
+        encoding: if normal { "rgba-deflate" } else { "png" },
         mips: (0..mip_count)
-            .map(|mip| frame_mip(&bytes, 0, mip, None))
+            .map(|mip| {
+                if !normal {
+                    let frame = frame_mip(&bytes, 0, mip, None)?;
+                    return Ok(ScopeMip { sha256: frame.png_sha256, data: frame.png_data_url });
+                }
+                // A normal map is scalar data. Browser color-image uploads can
+                // round RGB through premultiplied alpha at the lens boundary.
+                let plane = playsrc_vtf::decode(
+                    &bytes,
+                    playsrc_vtf::Dialect::Source2013Pc,
+                    playsrc_vtf::SubresourceIdentity::HighResolution {
+                        mip, frame: 0, face: playsrc_vtf::Face::Right, slice: 0,
+                    },
+                    playsrc_vtf::Limits::default(),
+                ).map_err(|error| error.to_string())?;
+                if plane.scalar_encoding != playsrc_vtf::ScalarEncoding::U8
+                    || plane.channel_layout != playsrc_vtf::ChannelLayout::Rgba
+                    || plane.row_stride != plane.width as usize * 4 {
+                    return Err("scope normal is not packed RGBA8 data".to_owned());
+                }
+                let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                compressed.write_all(&plane.samples).map_err(|error| error.to_string())?;
+                let data = compressed.finish().map_err(|error| error.to_string())?;
+                Ok(ScopeMip { sha256: digest(&plane.samples), data: STANDARD.encode(data) })
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("{logical_path}: {error}"))?,
     })

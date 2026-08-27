@@ -4,7 +4,7 @@ import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import { createSourceRefractMaterial } from "./source-refract"
 
-export type HudTexture = Readonly<{ width: number; height: number; clampS: boolean; clampT: boolean; noLod: boolean; mips: readonly string[] }>
+export type HudTexture = Readonly<{ width: number; height: number; clampS: boolean; clampT: boolean; noLod: boolean; encoding: "png" | "rgba-deflate"; mips: readonly string[] }>
 export type HudMaterial = Readonly<
   | { kind: "solid"; color: readonly [number, number, number, number] }
   | { kind: "refract"; normal: HudTexture; tint: HudTexture; amount: number; blur: 0 | 1 }
@@ -23,6 +23,8 @@ export class SourceHudMaterials {
   readonly #scene = new THREE.Scene()
   readonly #camera = new THREE.OrthographicCamera(0, 1, 0, 1, 0, 2)
   readonly #framebuffer = new THREE.FramebufferTexture(1, 1)
+  readonly #resolveMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false })
+  readonly #resolve = new THREE.QuadMesh(this.#resolveMaterial)
   readonly #materials: THREE.MeshBasicNodeMaterial[] = []
   readonly #textures: THREE.Texture[] = []
   readonly #images: ImageBitmap[] = []
@@ -36,6 +38,13 @@ export class SourceHudMaterials {
   constructor(readonly quality?: Readonly<{ mipOffset: number; trilinear: boolean; anisotropy: number }>) {
     this.#camera.position.z = 1
     this.#framebuffer.minFilter = this.#framebuffer.magFilter = THREE.LinearFilter
+    // The opaque canvas presents RenderOutput's RGB but discards its alpha.
+    // Resolve that displayed RGB back to linear before VGUI blends into it.
+    // Sampling the alpha-bearing intermediate instead brightens scope edges
+    // over translucent world surfaces when the scope changes destination alpha.
+    const presented = TSL.renderOutput(TSL.texture(this.#framebuffer, TSL.screenUV), THREE.NoToneMapping, THREE.SRGBColorSpace)
+    this.#resolveMaterial.colorNode = TSL.vec4(TSL.sRGBTransferEOTF(presented.rgb.clamp(0, 1)), 1)
+    this.#resolveMaterial.toneMapped = false
   }
 
   get prepared(): boolean { return this.#input !== undefined }
@@ -56,15 +65,22 @@ export class SourceHudMaterials {
     const texture = async (source: HudTexture, color: boolean) => {
       const offset = source.noLod ? 0 : Math.min(Math.max(0, this.quality?.mipOffset ?? 0), source.mips.length - 1)
       const images = await Promise.all(source.mips.slice(offset).map(async (url, level) => {
+        const mip = level + offset, width = Math.max(1, source.width >> mip), height = Math.max(1, source.height >> mip)
+        if (source.encoding === "rgba-deflate") {
+          const compressed = Uint8Array.from(atob(url), value => value.charCodeAt(0))
+          const data = new Uint8Array(await new Response(new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer())
+          if (data.byteLength !== width * height * 4) throw new Error("HUD scalar texture dimensions differ")
+          return { data, width, height }
+        }
         const image = await createImageBitmap(await (await fetch(url)).blob(), { premultiplyAlpha: "none", colorSpaceConversion: "none" })
         if (this.#disposed) { image.close(); throw new Error("HUD material owner was disposed during texture decoding") }
         this.#images.push(image)
-        const mip = level + offset
-        if (image.width !== Math.max(1, source.width >> mip) || image.height !== Math.max(1, source.height >> mip)) throw new Error("HUD material texture dimensions differ")
+        if (image.width !== width || image.height !== height) throw new Error("HUD material texture dimensions differ")
         return image
       }))
       if (this.#disposed) throw new Error("HUD material owner was disposed during texture decoding")
-      const value = new THREE.Texture(images[0])
+      const base = images[0]!
+      const value = "data" in base ? new THREE.DataTexture(base.data, base.width, base.height, THREE.RGBAFormat, THREE.UnsignedByteType) : new THREE.Texture(base)
       if (images.length > 1) value.mipmaps = images
       value.flipY = false
       value.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace
@@ -97,7 +113,7 @@ export class SourceHudMaterials {
           material.blending = THREE.AdditiveBlending
         } else material.colorNode = TSL.vec4(...source.color)
       }
-      material.side = THREE.DoubleSide
+      material.side = THREE.FrontSide
       material.toneMapped = false
       this.#materials.push(material)
     }
@@ -153,10 +169,12 @@ export class SourceHudMaterials {
     }
     // UpdateRefractTexture precedes every scope quadrant, so overlaps must not
     // sample a previously tinted quadrant. No readback or CPU pixel copies.
-    renderer.copyFramebufferToTexture(this.#framebuffer)
     const autoClear = renderer.autoClear
     try {
       renderer.autoClear = false
+      renderer.copyFramebufferToTexture(this.#framebuffer)
+      this.#resolve.render(renderer)
+      renderer.copyFramebufferToTexture(this.#framebuffer)
       renderer.render(this.#scene, this.#camera)
     } finally { renderer.autoClear = autoClear }
   }
@@ -169,6 +187,7 @@ export class SourceHudMaterials {
     for (const texture of this.#textures) texture.dispose()
     for (const image of this.#images) image.close()
     this.#framebuffer.dispose()
+    this.#resolveMaterial.dispose()
     this.#scene.clear()
   }
 }

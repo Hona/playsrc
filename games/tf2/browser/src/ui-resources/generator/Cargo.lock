@@ -413,6 +413,7 @@ name = "playsrc-tf2-ui-resources-generator"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "flate2",
  "icefast",
  "playsrc-content",
  "playsrc-keyvalues",

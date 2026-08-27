@@ -2,6 +2,7 @@ import { tf2AuthoredScope } from "../../../games/tf2/browser/src/ui-resources/sc
 import { tf2ScopeGeometry } from "../../../games/tf2/browser/src/hud-integration/scope"
 import { evaluateSourceRefractPixel } from "../../../packages/presentation/rendering/src/source-refract"
 import { decodeScreenshot, type DecodedScreenshot } from "./screenshot-pixels"
+import { inflateSync } from "node:zlib"
 
 const linear = (c: number) => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4
 const srgb = (c: number) => Math.round(255 * (c <= .0031308 ? 12.92 * c : 1.055 * Math.max(0, c) ** (1 / 2.4) - .055))
@@ -23,8 +24,9 @@ function sample(image: DecodedScreenshot, u: number, v: number, color: boolean):
 /** Same-frame world readback is the oracle's input, not a generated backdrop.
  * Compare the actual GPU material result, including refraction, four blur taps,
  * sRGB tint sampling, normal alpha and blending. Never just test transparency. */
-export function scopePixelOracle(before: DecodedScreenshot, after: DecodedScreenshot) {
+export function scopePixelOracle(before: DecodedScreenshot, after: DecodedScreenshot, quality: { picmip: number; trilinear: number; anisotropy: number }) {
   if (before.width !== after.width || before.height !== after.height) throw new Error("scope witness dimensions differ")
+  if (quality.trilinear !== 0 || quality.anisotropy !== 1) throw new Error("scope pixel oracle requires the configured bilinear sampler")
   const g = tf2ScopeGeometry(before.width, before.height)
   const quads = [
     [g.left, g.top, g.middleX - g.left, g.middleY - g.top, 1, 1],
@@ -32,7 +34,12 @@ export function scopePixelOracle(before: DecodedScreenshot, after: DecodedScreen
     [g.middleX, g.middleY, g.right - g.middleX, g.bottom - g.middleY, -1, -1],
     [g.left, g.middleY, g.middleX - g.left, g.bottom - g.middleY, 1, -1],
   ] as const
-  const textures = Object.fromEntries((["normal", "tint"] as const).map(role => [role, tf2AuthoredScope[role].mips.map(mip => decodeScreenshot(Buffer.from(mip.pngDataUrl.split(",")[1]!, "base64")))]))
+  const textures = Object.fromEntries((["normal", "tint"] as const).map(role => {
+    const source = tf2AuthoredScope[role]
+    return [role, source.mips.map((mip, level) => source.encoding === "png" ? decodeScreenshot(Buffer.from(mip.data.split(",")[1]!, "base64")) : {
+      width: Math.max(1, source.width >> level), height: Math.max(1, source.height >> level), channels: 4, pixels: inflateSync(Buffer.from(mip.data, "base64")),
+    })]
+  }))
   const points = []
   for (const yFraction of [.25, .36, .42, .58, .64, .75]) {
     for (const xFraction of [.28, .34, .42, .46, .54, .56, .66, .72]) {
@@ -44,7 +51,8 @@ export function scopePixelOracle(before: DecodedScreenshot, after: DecodedScreen
       const v = .5 + ((.5 / 256 + (y + .5 - top) / height * span) - .5) * sy
       const lookup = (role: "normal" | "tint") => {
         const source = tf2AuthoredScope[role]
-        const level = Math.max(0, Math.min(source.mips.length - 1, Math.round(Math.log2(Math.max(source.width * span / width, source.height * span / height)))))
+        const offset = source.noLod ? 0 : Math.max(0, quality.picmip)
+        const level = Math.max(offset, Math.min(source.mips.length - 1, Math.round(Math.log2(Math.max(source.width * span / width, source.height * span / height)))))
         return sample(textures[role]![level]!, u, v, role === "tint")
       }
       const normal = lookup("normal"), tint = lookup("tint")
@@ -57,7 +65,7 @@ export function scopePixelOracle(before: DecodedScreenshot, after: DecodedScreen
       const expected = [0, 1, 2].map(channel => srgb(material.rgba[channel]! * normal[3] + world[channel]! * (1 - normal[3])))
       const offset = (y * after.width + x) * after.channels
       const actual = Array.from(after.pixels.slice(offset, offset + 3))
-      points.push({ x, y, quadrant: index, normalAlpha: normal[3], expected, actual, difference: Math.max(...expected.map((value, channel) => Math.abs(value - actual[channel]!))) })
+      points.push({ x, y, quadrant: index, normal, tint, warpedCoordinate: material.warpedCoordinate, normalAlpha: normal[3], expected, actual, difference: Math.max(...expected.map((value, channel) => Math.abs(value - actual[channel]!))) })
     }
   }
   return { maximumDifference: Math.max(...points.map(point => point.difference)), points }
