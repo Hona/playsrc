@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { createParticleQuadWriter, writeParticleQuad, type ParticleQuad, type ParticleQuadCamera } from "../src/particle-geometry"
+import { createParticleQuadWriter, writeParticleQuad, writeParticleQuadIndices, type ParticleQuad, type ParticleQuadCamera } from "../src/particle-geometry"
 
 function previousQuad(item: ParticleQuad, camera: ParticleQuadCamera): Float32Array {
   const positions = new Float32Array(12)
@@ -40,6 +40,19 @@ const base: ParticleQuad = {
 }
 
 describe("allocation-free Source Particle geometry", () => {
+  test("one-sided sprites and trails face their actual pass camera without disabling culling", () => {
+    const indices = new Uint16Array(6)
+    writeParticleQuadIndices(indices)
+    for (const primitive of ["sprite", "trail"] as const) {
+      const positions = new Float32Array(12)
+      writeParticleQuad({ ...base, primitive }, camera, positions, 0)
+      const a = new THREE.Vector3().fromArray(positions, indices[0]! * 3)
+      const b = new THREE.Vector3().fromArray(positions, indices[1]! * 3)
+      const c = new THREE.Vector3().fromArray(positions, indices[2]! * 3)
+      const normal = b.sub(a).cross(c.sub(a))
+      expect(normal.dot(new THREE.Vector3().fromArray(camera.position).sub(a))).toBeGreaterThan(0)
+    }
+  })
   test("preserves exact binary32 camera-facing explosion and smoke sprite vertices", () => {
     const actual = new Float32Array(12)
     writeParticleQuad(base, camera, actual, 0)

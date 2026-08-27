@@ -169,6 +169,7 @@ pub struct ParticleMaterialState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderItem {
+    pub sky: bool,
     pub effect_identity: u32,
     pub system_uuid: [u8; 16],
     pub particle_identity: u32,
@@ -344,7 +345,7 @@ pub fn encode_render_output(
     let sorted_materials = materials.windows(2).all(|pair| pair[0] <= pair[1]);
     let mut bytes = vec![0; length];
     bytes[0..4].copy_from_slice(&0x5250_5350_u32.to_le_bytes());
-    bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
     bytes[8..12].copy_from_slice(&(items.len() as u32).to_le_bytes());
     if let Some(bounds) = bounds {
         if !finite(&bounds.minimum)
@@ -434,6 +435,7 @@ pub fn encode_render_output(
             Primitive::Sprite => 0,
             Primitive::Trail => 1,
         };
+        bytes[offset + 15] = u8::from(item.sky);
         bytes[offset + 16..offset + 32].copy_from_slice(&item.system_uuid);
         bytes[offset + 32..offset + 36].copy_from_slice(&material.to_le_bytes());
         put_vector(&mut bytes, offset + 36, item.position);
@@ -600,6 +602,7 @@ struct Effect {
 #[derive(Clone, Debug, PartialEq)]
 struct System {
     definition_uuid: [u8; 16],
+    definition_index: usize,
     sequence_spans: Option<Arc<BTreeMap<i32, f32>>>,
     path_identity: u64,
     start_seconds: f32,
@@ -765,13 +768,17 @@ impl ParticleWorld {
         self.event_identities.len()
     }
 
+    pub fn has_effect(&self, identity: u32) -> bool {
+        self.effects.iter().any(|effect| effect.identity == identity)
+    }
+
     pub fn advance(
         &mut self,
         events: &[Event],
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
     ) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
-        self.advance_complete(events, &[], request, collision, |items, bounds| {
+        self.transact(events, &[], request, collision, |items, bounds| {
             Ok((items, bounds))
         })
     }
@@ -786,17 +793,32 @@ impl ParticleWorld {
         material_identities: &[String],
         maximum_output_bytes: usize,
     ) -> Result<Vec<u8>, Error> {
-        self.advance_complete(events, attached_controls, request, collision, |items, bounds| {
+        self.transact(events, attached_controls, request, collision, |items, bounds| {
             let resolved = resolve_render_output(items, materials)?;
             encode_render_output(&resolved, bounds, material_identities, maximum_output_bytes)
         })
     }
 
-    fn advance_complete<T>(
+    /// Compose independent collections under one atomic presentation admission.
+    /// State advances only after the caller accepts the complete render output.
+    pub fn transact<T>(
         &mut self,
         events: &[Event],
         attached_controls: &[(u32, ControlPoint)],
         request: AdvanceRequest,
+        collision: &mut impl CollisionQuery,
+        complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.transact_views(events, attached_controls, request, |_| request.camera_position, collision, complete)
+    }
+
+    /// Each collection is sorted using the camera of its owning render pass.
+    pub fn transact_views<T>(
+        &mut self,
+        events: &[Event],
+        attached_controls: &[(u32, ControlPoint)],
+        request: AdvanceRequest,
+        camera: impl Fn(u32) -> [f32; 3],
         collision: &mut impl CollisionQuery,
         complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -833,7 +855,7 @@ impl ParticleWorld {
         candidate
             .effects
             .retain(|effect| !finished(&effect.root, &candidate.registry, request.to_seconds));
-        let (items, bounds) = candidate.render(request.camera_position)?;
+        let (items, bounds) = candidate.render(camera)?;
         let output = complete(items, bounds)?;
         *self = candidate;
         Ok(output)
@@ -1100,7 +1122,7 @@ impl ParticleWorld {
                 )
             })?;
         self.registry
-            .target_closure(&[DefinitionLookup::Uuid(root_definition.uuid)])?;
+            .target_closure(&[DefinitionLookup::Name(definition)])?;
         let mut system_count = 0;
         let mut controls = vec![None; self.limits.max_control_points];
         for control in control_points {
@@ -1131,18 +1153,12 @@ impl ParticleWorld {
         })
     }
 
-    fn render(&self, camera: [f32; 3]) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
-        if !finite(&camera) {
-            return Err(Error::new(
-                ErrorCode::NonFinite,
-                "particle-world",
-                0,
-                "camera position is non-finite",
-            ));
-        }
+    fn render(&self, camera: impl Fn(u32) -> [f32; 3]) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
         let mut items = Vec::with_capacity(particle_count(&self.effects));
         let mut bounds: Option<Bounds> = None;
         for effect in &self.effects {
+            let camera = camera(effect.identity);
+            if !finite(&camera) { return Err(Error::new(ErrorCode::NonFinite, "particle-world", 0, "camera position is non-finite")); }
             if let Some(effect_bounds) = system_bounds(&effect.root, &self.registry) {
                 merge_bounds(&mut bounds, effect_bounds);
             }
@@ -1184,7 +1200,7 @@ fn initialize_system_first_frame(
     collision: &mut impl CollisionQuery,
 ) -> Result<(), Error> {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let initial = (integer_attribute(definition, &["initial_particles"], 0).max(0) as usize)
         .min(authored_remaining(system, definition));
@@ -1303,6 +1319,7 @@ fn instantiate(
     }
     Ok(System {
         definition_uuid: definition.uuid,
+        definition_index: definition.registry_index,
         sequence_spans: state.sequence_spans.get(&definition.material).cloned(),
         path_identity,
         start_seconds: start,
@@ -1346,7 +1363,7 @@ fn advance_system(
     collision_cache: &mut CollisionPlaneCache,
 ) -> Result<(), Error> {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let local_from = (from - system.start_seconds - system.delay_seconds).max(0.0);
     let local_to = (to - system.start_seconds - system.delay_seconds).max(0.0);
@@ -1722,7 +1739,13 @@ fn initialize_particle(
             .identity
             .eq_ignore_ascii_case("Position Within Sphere Random")
         {
-            let cp_index = integer_parameter(initializer, "control_point_number", 0);
+            let mut cp_index = integer_parameter(initializer, "control_point_number", 0);
+            if bool_parameter(initializer, "randomly distribute to highest supplied Control Point", false) {
+                let growth = float_parameter(initializer, "randomly distribution growth time", 0.0);
+                let strength = if growth == 0.0 { 1.0 } else { system.local_time.min(growth) / growth };
+                let highest = system.controls.iter().rposition(Option::is_some).unwrap_or(0);
+                cp_index = next_random_int(system, cp_index, (highest as f32 * strength).floor() as i32);
+            }
             let cp = control_at_time(system, cp_index, creation);
             let (mut direction, unit_radius) = next_random_in_unit_sphere(system);
             let distance_bias = vector_parameter(initializer, "distance_bias", [1.0; 3]);
@@ -1734,11 +1757,6 @@ fn initialize_particle(
                 direction[component] *= distance_bias[component];
             }
             direction = normalize(direction).unwrap_or([1.0, 0.0, 0.0]);
-            if bool_parameter(initializer, "bias in local system", false)
-                && let Some(orientation) = control_orientation(system, cp_index)
-            {
-                direction = rotate(orientation, direction);
-            }
             let distance = mix(
                 float_parameter(initializer, "distance_min", 0.0),
                 float_parameter(initializer, "distance_max", 0.0),
@@ -2093,6 +2111,22 @@ fn initialize_particle(
                 }
             }
             velocity = add(velocity, added);
+        } else if initializer.identity.eq_ignore_ascii_case("Remap Noise to Scalar") {
+            let temporal = (particle.creation_seconds + float_parameter(initializer, "time coordinate offset", 0.0))
+                * float_parameter(initializer, "time noise coordinate scale", 0.1);
+            let spatial = mul(add(particle.position, vector_parameter(initializer, "spatial coordinate offset", [0.0; 3])),
+                float_parameter(initializer, "spatial noise coordinate scale", 0.001));
+            let mut noise = crate::source_noise::sample(spatial.map(|value| value + temporal));
+            let absolute = bool_parameter(initializer, "absolute value", false);
+            if absolute { noise = noise.abs(); }
+            if bool_parameter(initializer, "invert absolute value", false) { noise = 1.0 - noise; }
+            let field = integer_parameter(initializer, "output field", 3);
+            let mut minimum = float_parameter(initializer, "output minimum", 0.0);
+            let mut maximum = float_parameter(initializer, "output maximum", 1.0);
+            if matches!(field, 4 | 5 | 12) { minimum = minimum.to_radians(); maximum = maximum.to_radians(); }
+            let scale = if absolute { 1.0 } else { 0.5 };
+            let value = minimum + (1.0 - scale) * (maximum - minimum) + scale * (maximum - minimum) * noise;
+            set_particle_scalar(&mut particle, field, value);
         } else if initializer
             .identity
             .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
@@ -2990,7 +3024,7 @@ fn render_system(
     limit: usize,
 ) -> Result<(), Error> {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let mut particles: Vec<&Particle> = system.particles.iter().collect();
     if bool_attribute(definition, "sort particles", false) {
@@ -3026,6 +3060,7 @@ fn render_system(
             let item = RenderItem {
                 effect_identity,
                 system_uuid: system.definition_uuid,
+                sky: false,
                 particle_identity: particle.identity,
                 renderer_index: renderer_index as u16,
                 primitive,
@@ -3082,7 +3117,7 @@ fn render_system(
 
 fn finished(system: &System, registry: &Registry, time: f32) -> bool {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let local = (time - system.start_seconds - system.delay_seconds).max(0.0);
     let emitters_finished = definition
@@ -3374,7 +3409,7 @@ fn set_dormant(system: &mut System, dormant: bool) {
 
 fn restart_system(system: &mut System, registry: &Registry) {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     for (emitter, context) in definition
         .functions(FunctionCategory::Emitter)
@@ -3440,7 +3475,7 @@ fn system_particle_count(system: &System) -> usize {
 
 fn maximum_system_step(system: &System, registry: &Registry) -> f32 {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let own = float_attribute(definition, "maximum time step", 0.1);
     let own = if own > 0.0 { own } else { 0.1 };
@@ -3588,7 +3623,7 @@ fn string_parameter(function: &Function, name: &str, default: &str) -> String {
 
 fn system_bounds(system: &System, registry: &Registry) -> Option<Bounds> {
     let definition = registry
-        .definition_by_uuid(system.definition_uuid)
+        .definition_at(system.definition_index)
         .expect("instantiated definition");
     let mut bounds = if system.particles.is_empty() {
         None

@@ -11,7 +11,7 @@ function output(overrides: Readonly<{ count?: number; material?: number; radius?
   const bytes = new Uint8Array(40 + count * 436)
   const view = new DataView(bytes.buffer)
   view.setUint32(0, 0x5250_5350, true)
-  view.setUint32(4, 3, true)
+  view.setUint32(4, 4, true)
   view.setUint32(8, count, true)
   view.setUint32(12, 1, true)
   ;[-4, -5, -6, 4, 5, 6].forEach((value, component) => {
@@ -66,11 +66,21 @@ function output(overrides: Readonly<{ count?: number; material?: number; radius?
   return bytes
 }
 
+test("particle pass ownership distinguishes real sky particles and rejects unknown ownership", () => {
+  const bytes = output(); bytes[55] = 1
+  expect(decodeParticleRenderOutput(bytes, ["smoke"]).items[0]!.sky).toBe(true)
+  bytes[55] = 2
+  expect(() => decodeParticleRenderOutput(bytes, ["smoke"])).toThrow()
+  bytes[55] = 0; new DataView(bytes.buffer).setUint32(4, 3, true)
+  expect(() => decodeParticleRenderOutput(bytes, ["smoke"])).toThrow("identity is invalid")
+})
+
 describe("Rust particle render-data adapter", () => {
   test("decodes bounded renderer-neutral sprite and trail records", () => {
     expect(decodeParticleRenderOutput(output(), ["effects/rocketrailsmoke.vmt"])).toEqual({
       bounds: { minimum: [-4, -5, -6], maximum: [4, 5, 6] },
       items: [{
+        sky: false,
         identity: 1,
         effectIdentity: 7,
         particleIdentity: 11,

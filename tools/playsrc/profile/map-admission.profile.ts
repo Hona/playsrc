@@ -7,6 +7,18 @@ import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tf2MapBsp, tf2MapMode } from "@playsrc/game-tf2-browser/maps"
 import { loadLocalConfig } from "../src/config"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+
+const json = (value: unknown) => JSON.stringify(value, (_, value) => typeof value === "bigint" ? value.toString() : value)
+
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return
+  const evidence = await page.evaluate(() => ({ failure: (globalThis as any).__playsrcProfile?.failure,
+    frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
+    simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
+    dataset: { ...document.querySelector<HTMLElement>("main")?.dataset } })).catch(() => null)
+  await writeFile(testInfo.outputPath("map-failure.json"), json(evidence))
+})
 
 test("configured map native traversal, objective roster, visible geometry and cadence", async ({ page }, testInfo) => {
   const target = headedProfileTarget(process.env, "cp_badlands")
@@ -14,6 +26,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   const facts = JSON.parse(await readFile(path.join(config.sourceCacheDir, "evidence/map-runtime", `${target}.facts.json`), "utf8"))
   expect(facts.bspSha256).toBe(tf2MapBsp(target).sha256)
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
+  await page.addInitScript(installBrowserFrameProfiler)
   const main = page.locator("main")
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
@@ -71,6 +84,55 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if (process.env.PROFILE_MAP_SKY_PARTICLE) {
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.controlPoints?.points.length > 0)
+    const emitter = facts.particleSystems.find((value: any) => value.name === process.env.PROFILE_MAP_SKY_PARTICLE)
+    expect(emitter).toBeTruthy()
+    const sky = facts.skyCameras[0]
+    expect(sky).toBeTruthy()
+    const point = await page.evaluate(() => (globalThis as any).__playsrcProfile.controlPoints.points.find((point: any) => point.owner === 0).position)
+    const position = [point[0], point[1], point[2] + 768]
+    const targetPosition = emitter.position.map((value: number, axis: number) => (value - sky.position[axis]) * Number(sky.scale))
+    const delta = targetPosition.map((value: number, axis: number) => value - position[axis]!)
+    const yawDegrees = Math.atan2(delta[1], delta[0]) * 180 / Math.PI
+    const pitchDegrees = -Math.atan2(delta[2], Math.hypot(delta[0], delta[1])) * 180 / Math.PI
+    await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, { position, yawDegrees, pitchDegrees })
+    await capture("sky-particle-visible")
+    await page.evaluate(() => { (globalThis as any).__playsrcProfile.particleEvidenceRevision = 1 })
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.particleEvidence?.revision === 1)
+    const particles = await page.evaluate(() => (globalThis as any).__playsrcProfile.particleEvidence)
+    const skyItems = particles.items.filter((item: any) => item.sky)
+    expect(skyItems.length).toBeGreaterThan(0)
+    const worldPixels = async (revision: number, name: string) => {
+      await page.evaluate(revision => { (globalThis as any).__playsrcProfile.hudPixelEvidenceRevision = revision }, revision)
+      await page.waitForFunction(revision => (globalThis as any).__playsrcProfile.hudPixelEvidence?.revision === revision, revision)
+      const bytes = Buffer.from(await page.evaluate(() => Array.from((globalThis as any).__playsrcProfile.hudPixelEvidence.before.bytes) as number[]))
+      await writeFile(testInfo.outputPath(name), bytes)
+      return decodeScreenshot(bytes)
+    }
+    const before = await worldPixels(1, "sky-particle-before.png")
+    if (process.env.PROFILE_MAP_SKY_PARTICLE_DEBUG === "1") {
+      const profiler = await page.evaluate(() => ({ uses: (globalThis as any).__playsrcFrameProfiler.firstParticleUses,
+        preparation: (globalThis as any).__playsrcFrameProfiler.particlePreparation }))
+      await writeFile(testInfo.outputPath("sky-particle-debug.json"), json({ particles, profiler }))
+      return
+    }
+    const lifetime = Math.max(...skyItems.map((item: any) => item.lifetimeSeconds))
+    expect(lifetime).toBeLessThanOrEqual(30)
+    await command(`ent_fire ${emitter.name} Stop`); await closeConsole()
+    await page.waitForTimeout((lifetime + 0.2) * 1000)
+    await capture("sky-particle-stopped")
+    const after = await worldPixels(2, "sky-particle-after.png")
+    let changed = 0
+    for (let y = before.height / 4; y < before.height / 2; y++) for (let x = before.width * 3 / 8; x < before.width * 5 / 8; x++) {
+      const offset = (y * before.width + x) * before.channels
+      if ([0, 1, 2].some(channel => Math.abs(before.pixels[offset + channel]! - after.pixels[offset + channel]!) > 3)) changed++
+    }
+    await writeFile(testInfo.outputPath("sky-particle-evidence.json"), json({ emitter, sky, particles, changed, lifetime }))
+    expect(changed).toBeGreaterThan(10)
+    expect(errors).toEqual([])
+    return
+  }
   await checkSpawn(2, "red-initial")
   await command("joinclass scout"); await closeConsole()
   await waitPlayer("class", 1)
@@ -109,6 +171,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await closeConsole()
   const sample = await page.evaluate(async () => {
     const root = document.querySelector<HTMLElement>("main")!, profile = (globalThis as any).__playsrcProfile
+    const profiler = (globalThis as any).__playsrcFrameProfiler
+    profiler.completedFrames.length = 0; profiler.active = true
     const start = performance.now(), tick = Number(root.dataset.snapshotTick)
     const before = profile.bots.map((bot: any) => ({ identity: bot.identity, area: bot.area, position: bot.position }))
     const frames: number[] = []; let previous = start
@@ -116,8 +180,13 @@ test("configured map native traversal, objective roster, visible geometry and ca
       const frame = (now: number) => { frames.push(now - previous); previous = now; if (now - start >= 5000) resolve(); else requestAnimationFrame(frame) }
       requestAnimationFrame(frame)
     })
-    return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points }
+    profiler.active = false
+    return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points,
+      completedFrames: profiler.completedFrames, counters: profiler.counters, simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure }
   })
+  const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
+  await writeFile(resultPath, json({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
+  await testInfo.attach("map-acceptance", { path: resultPath, contentType: "application/json" })
   expect(sample.bots).toHaveLength(15)
   expect(sample.bots.every((bot: any) => bot.area !== null)).toBe(true)
   expect(sample.bots.some((bot: any) => sample.before.some((prior: any) => prior.identity === bot.identity && Math.hypot(...bot.position.map((value: number, axis: number) => value - prior.position[axis])) > 32))).toBe(true)
@@ -128,8 +197,5 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await closeConsole(); await page.waitForTimeout(300)
     await capture(`point-${index}`)
   }
-  const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
-  await writeFile(resultPath, JSON.stringify({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
-  await testInfo.attach("map-acceptance", { path: resultPath, contentType: "application/json" })
   expect(errors).toEqual([])
 })

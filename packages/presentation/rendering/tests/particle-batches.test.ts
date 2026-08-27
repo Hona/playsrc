@@ -3,6 +3,7 @@ import { fillParticleBatchRanges, particleBatchRanges, type MutableParticleBatch
 
 const item = (material: string, blendSource = "source-alpha", blendDestination = "one-minus-source-alpha") => ({
   material,
+  sky: false,
   blendSource,
   blendDestination,
 })
@@ -37,4 +38,9 @@ test("retains range identities while preserving rocket flash, debris, and smoke 
   ], ranges)).toBe(2)
   expect(ranges[0]).toBe(first)
   expect(ranges).toEqual([{ start: 0, end: 2 }, { start: 2, end: 3 }])
+})
+
+test("main and sky particles never share a billboard batch even with the same material", () => {
+  expect(particleBatchRanges([item("smoke"), { ...item("smoke"), sky: true }, item("smoke")]))
+    .toEqual([{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 3 }])
 })

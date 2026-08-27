@@ -28,7 +28,7 @@ import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { particlePipelineKey, particlePipelineVariant, particlePreparationSides } from "./particle-pipeline"
-import { createParticleQuadWriter } from "./particle-geometry"
+import { createParticleQuadWriter, writeParticleQuadIndices } from "./particle-geometry"
 import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
@@ -328,6 +328,7 @@ export type ModelItem = Readonly<{
 }>
 
 export type ParticleItem = Readonly<{
+  sky: boolean
   identity: number
   primitive: "sprite" | "trail"
   material: string
@@ -1588,6 +1589,7 @@ class RendererOwner implements Renderer {
   #world = new THREE.Group()
   #effects = new THREE.Group()
   #particles = new THREE.Group()
+  #skyParticles = new THREE.Group()
   #viewModels = new THREE.Group()
   #cloakFramebuffer = new SourceCloakFramebuffer()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
@@ -1712,6 +1714,8 @@ class RendererOwner implements Renderer {
     this.#world.matrixAutoUpdate = false
     this.#scene.background = null
     this.#waterClipping.add(this.#world, this.#effects, this.#particles)
+    this.#waterClipping.add(this.#skyParticles)
+    this.#skyParticles.visible = false
     this.#scene.add(this.#waterClipping, this.#camera, this.#viewCamera)
     this.#viewCamera.add(this.#viewModels)
     this.#viewCamera.layers.set(1)
@@ -4938,6 +4942,7 @@ class RendererOwner implements Renderer {
       for (const water of scene.waterMeshes) water.mesh.visible = false
       this.#effects.visible = false
       this.#particles.visible = false
+      this.#skyParticles.visible = true
       if (scene.skyGroup) scene.skyGroup.visible = true
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
@@ -4961,6 +4966,7 @@ class RendererOwner implements Renderer {
       }
       this.#effects.visible = effects
       this.#particles.visible = particles
+      this.#skyParticles.visible = false
       if (scene.skyGroup) scene.skyGroup.visible = false
       this.#setSceneFog(this.#fog(frame.fog) ?? (fog as THREE.Fog | null))
       this.#scene.background = background
@@ -5183,7 +5189,7 @@ class RendererOwner implements Renderer {
   #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
     if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
-    for(let index=0;index<capacity;index+=1){const vertex=index*4,offset=index*6;indices[offset]=vertex;indices[offset+1]=vertex+1;indices[offset+2]=vertex+2;indices[offset+3]=vertex;indices[offset+4]=vertex+2;indices[offset+5]=vertex+3}
+    writeParticleQuadIndices(indices)
     geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("particleCenter",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
   }
 
@@ -5233,16 +5239,24 @@ class RendererOwner implements Renderer {
   }
 
   #clearParticleBatches():void{
-    for(const retained of this.#particleBatchMeshes){this.#particles.remove(retained.mesh);retained.mesh.geometry.dispose()}
+    for(const retained of this.#particleBatchMeshes){retained.mesh.removeFromParent();retained.mesh.geometry.dispose()}
     this.#particleBatchMeshes=[];this.#particleBatchCount=0
     for (const pool of this.#panelParticlePools.values()) { pool.group.clear(); for (const entry of pool.meshes) entry.mesh.geometry.dispose() }
     this.#panelParticlePools.clear()
+  }
+
+  captureParticleBatchEvidence() {
+    return this.#particleBatchMeshes.map(({ key, mesh }) => ({ key, visible: mesh.visible,
+      sky: mesh.parent === this.#skyParticles, count: mesh.geometry.drawRange.count,
+      positions: Array.from(mesh.geometry.getAttribute("position").array.slice(0, 12)),
+      material: (mesh.material as THREE.Material).name }))
   }
 
   #stageParticleBatches(
     items: readonly ParticleItem[],
     camera: Camera,
     pool?: { group: THREE.Group; meshes: { key: string; capacity: number; mesh: THREE.Mesh }[]; ranges: MutableParticleBatchRange[] },
+    skyCamera?: Camera,
   ): void {
     const assets = this.#active ?? this.#panelAssets
     const meshes = pool?.meshes ?? this.#particleBatchMeshes, ranges = pool?.ranges ?? this.#particleBatchRanges, group = pool?.group ?? this.#particles
@@ -5266,7 +5280,7 @@ class RendererOwner implements Renderer {
       }
       if (!retained || retained.key !== key || retained.capacity < required) {
         if (retained) {
-          group.remove(retained.mesh)
+          retained.mesh.removeFromParent()
           retained.mesh.geometry.dispose()
         }
         let capacity = 1
@@ -5285,11 +5299,14 @@ class RendererOwner implements Renderer {
             ;(profile.firstParticleUses ??= []).push({ at: performance.now(), id: material.id, identity: material.name, pass: profile.currentPass?.identity ?? null })
           }
         }
-        group.add(mesh)
         retained = { key, capacity, mesh }
         meshes[index] = retained
       }
-      this.#updateParticleBatchGeometry(retained.mesh.geometry, items, batch.start, batch.end, camera)
+      const owner = first.sky ? this.#skyParticles : group
+      if (retained.mesh.parent !== owner) owner.add(retained.mesh)
+      const batchCamera = first.sky ? skyCamera : camera
+      if (!batchCamera) { retained.mesh.visible = false; continue }
+      this.#updateParticleBatchGeometry(retained.mesh.geometry, items, batch.start, batch.end, batchCamera)
       retained.mesh.renderOrder = batch.start
       retained.mesh.visible = true
     }
@@ -5641,7 +5658,7 @@ class RendererOwner implements Renderer {
     }
     const prior = this.#stagedDynamic
     if (prior && prior.particles === frame.particles && prior.models === frame.models && prior.brushModels === frame.brushModels && prior.studioModels === frame.studioModels) {
-      this.#stageParticleBatches(frame.particles ?? [], frame.camera)
+      this.#stageParticleBatches(frame.particles ?? [], frame.camera, undefined, frame.sky3d?.camera)
       if (this.#viewCamera.far !== frame.camera.far) {
         this.#viewCamera.far = frame.camera.far
         this.#viewCamera.updateProjectionMatrix()
@@ -5756,7 +5773,7 @@ class RendererOwner implements Renderer {
         retained.instance.userData.identity = item.identity
         this.#placeDynamicInstance(retained.instance, effectOrder++)
       }
-      this.#stageParticleBatches(particleItems, frame.camera)
+      this.#stageParticleBatches(particleItems, frame.camera, undefined, frame.sky3d?.camera)
     } catch (error) {
       if (error instanceof RenderingError) throw error
       throw new RenderingError("BoundExceeded", `render item staging failed: ${String(error)}`)

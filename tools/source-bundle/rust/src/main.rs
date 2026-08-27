@@ -19,6 +19,7 @@ use std::{
 };
 
 mod navigation;
+mod particles;
 
 const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
@@ -2902,99 +2903,12 @@ fn main() -> Result<(), String> {
         Some(aggregate)
     };
     stage("map-materials-and-models", &mut stage_started);
-    let particle_paths = [
-        "particles/rockettrail.pcf",
-        "particles/rocketbackblast.pcf",
-        "particles/stickybomb.pcf",
-        "particles/muzzle_flash.pcf",
-        "particles/explosion.pcf",
-        "particles/flamethrower.pcf",
-        "particles/nailtrails.pcf",
-        "particles/medicgun_beam.pcf",
-        "particles/blood_impact.pcf",
-        "particles/bullet_tracers.pcf",
-        "particles/impact_fx.pcf",
-        "particles/crit.pcf",
-        "particles/item_fx.pcf",
-    ];
-    let particle_bytes = particle_paths
-        .iter()
-        .map(|path| {
-            resolver
-                .required(path, format!("particle-registry:{path}"))
-                .map(|bytes| (*path, bytes))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let particle_sources = particle_bytes
-        .iter()
-        .map(|(logical_path, bytes)| playsrc_particle::PcfSource {
-            logical_path,
-            bytes,
-        })
-        .collect::<Vec<_>>();
-    let registry = playsrc_particle::Registry::from_pcf(
-        &particle_sources,
-        playsrc_particle::RegistryLimits::default(),
-    )
-    .map_err(|error| error.to_string())?;
-    let roots = [
-        "rockettrail",
-        "rocketbackblast",
-        "stickybombtrail_red",
-        "stickybombtrail_blue",
-        "stickybomb_pulse_red",
-        "stickybomb_pulse_blue",
-        "muzzle_pipelauncher",
-        "muzzle_scattergun",
-        "muzzle_pistol",
-        "muzzle_shotgun",
-        "blood_impact_red_01",
-        "water_blood_impact_red_01",
-        "blood_spray_red_01",
-        "blood_spray_red_01_far",
-        "bullet_scattergun_tracer01_red",
-        "bullet_scattergun_tracer01_blue",
-        "bullet_scattergun_tracer01_red_crit",
-        "bullet_scattergun_tracer01_blue_crit",
-        "bullet_pistol_tracer01_red",
-        "bullet_pistol_tracer01_blue",
-        "bullet_pistol_tracer01_red_crit",
-        "bullet_pistol_tracer01_blue_crit",
-        "bullet_shotgun_tracer01_red",
-        "bullet_shotgun_tracer01_blue",
-        "bullet_shotgun_tracer01_red_crit",
-        "bullet_shotgun_tracer01_blue_crit",
-        "bullet_tracer01_red",
-        "bullet_tracer01_blue",
-        "bullet_tracer01_red_crit",
-        "bullet_tracer01_blue_crit",
-        "impact_concrete",
-        "impact_wood",
-        "impact_metal",
-        "impact_dirt",
-        "impact_glass",
-        "crit_text",
-        "muzzle_revolver",
-        "ExplosionCore_Wall",
-        "ExplosionCore_MidAir",
-        "new_flame",
-        "new_flame_crit_red",
-        "new_flame_crit_blue",
-        "flamethrower_underwater",
-        "pyro_blast",
-        "muzzle_shotgun",
-        "nailtrails_medic_red",
-        "nailtrails_medic_blue",
-        "muzzle_syringe",
-        "medicgun_beam_red",
-        "medicgun_beam_blue",
-        "medicgun_beam_red_invun",
-        "medicgun_beam_blue_invun",
-        "superrare_burning1",
-    ]
-    .map(playsrc_particle::DefinitionLookup::Name);
+    let (registry, particle_sources) = particles::collect(&mut resolver, &graph, &target,
+        pak.entries.iter().any(|entry| entry.raw_name.eq_ignore_ascii_case(b"particles.txt")))?;
+    let roots = playsrc_tf2::particle_resources::roots(&graph).into_iter()
+        .map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
     let closure = registry
-        .target_closure(&roots)
+        .dependency_closure(&roots)
         .map_err(|error| error.to_string())?;
     for material in closure.materials {
         let path = material_path(material.as_bytes())?;
@@ -3618,6 +3532,7 @@ fn main() -> Result<(), String> {
     ui_bundle.insert(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH.to_owned(),
         format!("{}{}", playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER,
             sound_precache_absences.iter().map(|path| format!("{path}\n")).collect::<String>()).into_bytes());
+    ui_bundle.insert(playsrc_tf2::particle_resources::SOURCE_LIST.to_owned(), particle_sources);
     if let Some(bytes) = static_prop_vhv_aggregate {
         ui_bundle.insert(STATIC_PROP_VHV_AGGREGATE_PATH.to_owned(), bytes);
     }
@@ -3742,7 +3657,9 @@ fn main() -> Result<(), String> {
     for (logical_path, bytes) in &ui_bundle {
         resources.push(Resource {
             logical_path: logical_path.clone(),
-            roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH || logical_path == playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH {
+            roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH
+                || logical_path == playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH
+                || logical_path == playsrc_tf2::particle_resources::SOURCE_LIST {
                 "gameplay".to_owned()
             } else if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm"
             {

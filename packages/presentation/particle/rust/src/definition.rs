@@ -84,6 +84,7 @@ pub struct ChildDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Definition {
+    pub registry_index: usize,
     pub name: String,
     pub uuid: [u8; 16],
     pub name_lookup: bool,
@@ -102,7 +103,7 @@ pub enum DefinitionLookup<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetClosure {
-    pub definitions: Vec<[u8; 16]>,
+    pub definitions: Vec<usize>,
     pub materials: Vec<String>,
 }
 
@@ -169,13 +170,29 @@ impl Registry {
         self.definitions.get(*index)
     }
 
-    pub fn definition_by_uuid(&self, uuid: [u8; 16]) -> Option<&Definition> {
-        self.by_uuid
-            .get(&uuid)
-            .and_then(|index| self.definitions.get(*index))
+    pub fn definition_at(&self, index: usize) -> Option<&Definition> {
+        self.definitions.get(index)
     }
 
     pub fn target_closure(&self, roots: &[DefinitionLookup<'_>]) -> Result<TargetClosure, Error> {
+        let closure = self.dependency_closure(roots)?;
+        for &index in &closure.definitions {
+            let definition = &self.definitions[index];
+            for function in &definition.functions {
+                if !supported(function.category, &function.identity) {
+                    return Err(Error::new(ErrorCode::UnsupportedFunction, &definition.source, 0,
+                        format!("definition {} has unimplemented {:?} {}: {:?}", definition.name,
+                            function.category, function.identity, function.parameters)));
+                }
+                validate_function(function, definition)?;
+            }
+        }
+        Ok(closure)
+    }
+
+    /// Resource discovery is independent from execution admission. Unknown
+    /// operators remain available for diagnostics; target_closure validates them.
+    pub fn dependency_closure(&self, roots: &[DefinitionLookup<'_>]) -> Result<TargetClosure, Error> {
         let mut ordered = Vec::new();
         let mut visiting = BTreeSet::new();
         let mut visited = BTreeSet::new();
@@ -189,7 +206,7 @@ impl Registry {
                 )
             })?;
             self.visit(
-                definition.uuid,
+                definition.registry_index,
                 0,
                 &mut visiting,
                 &mut visited,
@@ -197,8 +214,8 @@ impl Registry {
             )?;
         }
         let mut materials = BTreeSet::new();
-        for uuid in &ordered {
-            let definition = self.definition_by_uuid(*uuid).expect("visited definition");
+        for index in &ordered {
+            let definition = self.definition_at(*index).expect("visited definition");
             if !definition.material.is_empty() {
                 materials.insert(definition.material.clone());
             }
@@ -211,13 +228,13 @@ impl Registry {
 
     fn visit(
         &self,
-        uuid: [u8; 16],
+        index: usize,
         depth: usize,
-        visiting: &mut BTreeSet<[u8; 16]>,
-        visited: &mut BTreeSet<[u8; 16]>,
-        ordered: &mut Vec<[u8; 16]>,
+        visiting: &mut BTreeSet<usize>,
+        visited: &mut BTreeSet<usize>,
+        ordered: &mut Vec<usize>,
     ) -> Result<(), Error> {
-        if visited.contains(&uuid) {
+        if visited.contains(&index) {
             return Ok(());
         }
         if depth > self.limits.max_definition_depth {
@@ -228,7 +245,7 @@ impl Registry {
                 "definition closure exceeds max_definition_depth",
             ));
         }
-        if !visiting.insert(uuid) {
+        if !visiting.insert(index) {
             return Err(Error::new(
                 ErrorCode::DefinitionCycle,
                 "particle-registry",
@@ -236,7 +253,7 @@ impl Registry {
                 "definition child graph contains a cycle",
             ));
         }
-        let definition = self.definition_by_uuid(uuid).ok_or_else(|| {
+        let definition = self.definition_at(index).ok_or_else(|| {
             Error::new(
                 ErrorCode::MissingDefinition,
                 "particle-registry",
@@ -244,21 +261,7 @@ impl Registry {
                 "child particle definition is missing",
             )
         })?;
-        for function in &definition.functions {
-            if !supported(function.category, &function.identity) {
-                return Err(Error::new(
-                    ErrorCode::UnsupportedFunction,
-                    &definition.source,
-                    0,
-                    format!(
-                        "{} is not executable by the projectile target",
-                        function.identity
-                    ),
-                ));
-            }
-            validate_function(function, definition)?;
-        }
-        ordered.push(uuid);
+        ordered.push(index);
         for child in &definition.children {
             let child_definition = self.child_definition(child).ok_or_else(|| {
                 Error::new(
@@ -268,10 +271,10 @@ impl Registry {
                     "child particle definition is missing",
                 )
             })?;
-            self.visit(child_definition.uuid, depth + 1, visiting, visited, ordered)?;
+            self.visit(child_definition.registry_index, depth + 1, visiting, visited, ordered)?;
         }
-        visiting.remove(&uuid);
-        visited.insert(uuid);
+        visiting.remove(&index);
+        visited.insert(index);
         Ok(())
     }
 
@@ -313,16 +316,9 @@ impl Registry {
                     "particleSystemDefinitions references a non-definition element",
                 ));
             }
-            let definition = compile_definition(source, &document, definition_index, self.limits)?;
-            if self.by_uuid.contains_key(&definition.uuid) {
-                return Err(Error::new(
-                    ErrorCode::InvalidValue,
-                    source,
-                    0,
-                    "definition UUID is duplicated",
-                ));
-            }
+            let mut definition = compile_definition(source, &document, definition_index, self.limits)?;
             let next_index = self.definitions.len();
+            definition.registry_index = next_index;
             if definition.name_lookup {
                 let canonical = definition.name.to_ascii_lowercase();
                 if let Some(previous) = self.by_name.insert(canonical.clone(), next_index) {
@@ -332,8 +328,9 @@ impl Registry {
                         definition.uuid,
                     ));
                 }
+            } else {
+                self.by_uuid.insert(definition.uuid, next_index);
             }
-            self.by_uuid.insert(definition.uuid, next_index);
             self.definitions.push(definition);
         }
         Ok(())
@@ -343,7 +340,7 @@ impl Registry {
         if child.name_lookup {
             self.definition(DefinitionLookup::Name(&child.definition_name))
         } else {
-            self.definition_by_uuid(child.definition_uuid)
+            self.definition(DefinitionLookup::Uuid(child.definition_uuid))
         }
     }
 }
@@ -496,14 +493,7 @@ fn compile_definition(
                 "child index is invalid",
             )
         })?;
-        let definition_index = reference(child.attribute("child"), source)?.ok_or_else(|| {
-            Error::new(
-                ErrorCode::MissingDefinition,
-                source,
-                0,
-                "child definition is null",
-            )
-        })?;
+        let Some(definition_index) = reference(child.attribute("child"), source)? else { continue; };
         let definition = document.elements.get(definition_index).ok_or_else(|| {
             Error::new(
                 ErrorCode::InvalidReference,
@@ -512,6 +502,7 @@ fn compile_definition(
                 "child definition index is invalid",
             )
         })?;
+        if !definition.element_type.eq_ignore_ascii_case("DmeParticleSystemDefinition") { continue; }
         let delay_seconds = match child.attribute("delay") {
             Some(Value::Float(value)) if *value >= 0.0 => *value,
             None => 0.0,
@@ -545,6 +536,7 @@ fn compile_definition(
     }
     Ok(Definition {
         name: element.name.clone(),
+        registry_index: 0,
         uuid: element.uuid,
         name_lookup,
         source: source.to_owned(),
@@ -683,6 +675,8 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Lifetime From Control Point Life Time",
             "Lifetime From Sequence",
             "Lifetime Pre-Age Noise",
+            "Lifetime From Sequence",
+            "Remap Noise to Scalar",
             "Lifetime Random",
             "Position Along Path Random",
             "Move Particles Between 2 Control Points",
@@ -762,9 +756,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         ]
         .contains(&name.as_str())
             || (name == "absolute value"
-                && function
-                    .identity
-                    .eq_ignore_ascii_case("Lifetime Pre-Age Noise"))
+                && (function.identity.eq_ignore_ascii_case("Lifetime Pre-Age Noise")
+                    || function.identity.eq_ignore_ascii_case("Remap Noise to Scalar")))
         {
             matches!(value, Value::Bool(_))
         } else if [
@@ -825,9 +818,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         ]
         .contains(&name.as_str())
             || (name == "absolute value"
-                && !function
-                    .identity
-                    .eq_ignore_ascii_case("Lifetime Pre-Age Noise"))
+                && !function.identity.eq_ignore_ascii_case("Lifetime Pre-Age Noise")
+                && !function.identity.eq_ignore_ascii_case("Remap Noise to Scalar"))
             || ([
                 "oscillation rate min",
                 "oscillation rate max",
@@ -892,11 +884,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .eq_ignore_ascii_case("Position Within Sphere Random")
     {
         int_parameter(function, "create in model", 0) != 0
-            || bool_parameter(
-                function,
-                "randomly distribute to highest supplied Control Point",
-                false,
-            )
+    } else if function.identity.eq_ignore_ascii_case("Remap Noise to Scalar") {
+        !matches!(int_parameter(function, "output field", 3), 1 | 3 | 4 | 5 | 7 | 9 | 10 | 12 | 13 | 21)
+            || float_parameter(function, "world time noise coordinate scale", 0.0) != 0.0
     } else if function
         .identity
         .eq_ignore_ascii_case("Movement Lock to Control Point")
@@ -936,8 +926,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             &definition.source,
             0,
             format!(
-                "function {} uses a parameter combination outside the exact projectile closure",
-                function.identity
+                "definition {} function {} has unimplemented parameters: {:?}",
+                definition.name, function.identity, function.parameters
             ),
         ));
     }
@@ -1247,6 +1237,10 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "output maximum",
             "apply velocity in local space (0/1)",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Remap Noise to Scalar") {
+        &["time noise coordinate scale", "spatial noise coordinate scale", "output field",
+          "time coordinate offset", "spatial coordinate offset", "absolute value", "invert absolute value",
+          "output minimum", "output maximum", "world time noise coordinate scale"]
     } else if function
         .identity
         .eq_ignore_ascii_case("Lifetime Pre-Age Noise")

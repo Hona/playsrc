@@ -16,6 +16,7 @@ pub mod dynamic_prop;
 pub mod health;
 pub mod koth;
 mod map_runtime;
+pub mod particle_resources;
 pub mod medic;
 pub mod pickup;
 pub mod pyro;
@@ -1708,6 +1709,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn map_counts(&self) -> MapCounts {
         self.map.counts()
+    }
+
+    pub fn map_particle_systems(&self) -> Vec<playsrc_entity::particle_system::Presentation> {
+        self.map.particle_systems()
     }
 
     pub fn payload_constraint_blocked(&self) -> bool {

@@ -393,6 +393,7 @@ pub struct MapRuntime {
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
+    particle_systems: playsrc_entity::particle_system::Systems,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     control_points: Option<crate::control_point::World>,
@@ -441,6 +442,7 @@ impl MapRuntime {
             registry_identity: 0x5446_325f_454e_5434,
             model_bounds,
             external_classes: vec![
+                playsrc_entity::particle_system::binding(),
                 playsrc_entity::ExternalClassBinding {
                     classname: b"info_player_teamspawn".to_vec(),
                     inputs: [b"Enable".as_slice(), b"Disable", b"RoundSpawn", b"RoundActivate"].into_iter().map(<[u8]>::to_vec).collect(),
@@ -902,7 +904,9 @@ impl MapRuntime {
                         || attached(first, b"prop_physics_override"))
         });
         let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.clone())).collect()));
+        let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
         Ok(Self {
+            particle_systems,
             world,
             player,
             actor_handles: BTreeMap::new(),
@@ -1365,6 +1369,10 @@ impl MapRuntime {
         self.control_points.as_mut()
     }
 
+    pub fn particle_systems(&self) -> Vec<playsrc_entity::particle_system::Presentation> {
+        self.particle_systems.presentation(&self.world)
+    }
+
     pub fn restart_control_point_map(&mut self, tick: u64) -> Result<MapPhase, RuntimeFailure> {
         let Some(definitions) = self.restart_definitions.clone() else { return Ok(MapPhase::default()); };
         let actors: std::collections::BTreeSet<_> = self.actor_handles.values().copied().chain([self.player]).collect();
@@ -1401,6 +1409,7 @@ impl MapRuntime {
             exclusion.enabled = definitions.iter().find(|e| e.index == exclusion.source as usize).is_none_or(|e| !boolean(e, b"StartDisabled", false));
         }
         self.prop_animations.clear();
+        self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
         if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
         result.append(self.consume(spawned)?);
         Ok(result)
@@ -2152,6 +2161,7 @@ impl MapRuntime {
                         ..
                     } => {
                         let source = self.source(entity);
+                        self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         let mut point_events = Vec::new();
                         if input.eq_ignore_ascii_case(b"RoundActivate")
                             && let Some(koth) = self.round_configuration.koth

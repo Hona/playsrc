@@ -578,7 +578,7 @@ fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
     let names = closure
         .definitions
         .iter()
-        .map(|uuid| registry.definition_by_uuid(*uuid).unwrap().name.as_str())
+        .map(|index| registry.definition_at(*index).unwrap().name.as_str())
         .collect::<Vec<_>>();
     assert_eq!(
         names,
@@ -667,7 +667,7 @@ fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
                 .map(|axis| (item.position[axis] - wall[axis]) * normal[axis])
                 .sum::<f32>();
             let name = registry
-                .definition_by_uuid(item.system_uuid)
+                .definitions().iter().find(|definition| definition.uuid == item.system_uuid)
                 .unwrap()
                 .name
                 .as_str();
