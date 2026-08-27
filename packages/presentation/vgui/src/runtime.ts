@@ -2793,6 +2793,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private presentImage(panel: PanelState, image: VguiImagePresentation): void {
     if (!image) throw new RuntimeFault("MissingReference", `${panel.name}:image`)
+    const scaleImage = sameName(panel.sourceControl, "ScalableImagePanel") || panel.properties.get("scaleImage") === "1"
     const frame = Math.max(0, Math.min(image.frames - 1, Number(panel.properties.get("frame") ?? 0)))
     const rotation = Number(panel.properties.get("rotation") ?? 0)
     if (!safeInteger(rotation) || rotation < 0 || rotation > 3) throw new RuntimeFault("MalformedValue", `${panel.name}:rotation`)
@@ -2861,13 +2862,13 @@ class SourceVguiRuntime implements VguiRuntime {
       if (panel.properties.get("scaleProportional") === "1" && panel.properties.get("scaleImage") === "1" && panel.proportional) {
         scale *= this.proportional(1000, panel) * 0.001
       }
-      panel.element.style.backgroundSize = panel.properties.get("scaleImage") === "1"
+      panel.element.style.backgroundSize = scaleImage
         ? scale > 0 ? `${Math.trunc(image.width * scale)}px ${Math.trunc(image.height * scale)}px` : "100% 100%"
         : `${image.width}px ${image.height}px`
       panel.element.style.backgroundPosition = "0 0"
     }
     panel.element.setAttribute("draggable", "false")
-    panel.element.style.objectFit = panel.properties.get("scaleImage") === "1" ? "fill" : "none"
+    panel.element.style.objectFit = scaleImage ? "fill" : "none"
     panel.element.style.imageRendering = image.hardwareFiltered ? "auto" : "pixelated"
     panel.element.style.backgroundColor = rgba(panel.fillColor)
     panel.element.style.transform = "none"
