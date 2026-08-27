@@ -1940,6 +1940,9 @@ export class Tf2Application {
       await this.#showTeamSelection()
       await admission
       this.#requireOperation(operation)
+      this.#preparingModelPipelines = true
+      await Promise.all([this.#displayTask, this.#teamSelectionRenderTask, this.#classSelectionRenderTask])
+      this.#requireOperation(operation)
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
       if (this.#snapshot.objectives && (this.#flagCapturesPerRound !== 3 || this.#flagReturnOnTouch)) {
@@ -1966,10 +1969,6 @@ export class Tf2Application {
       await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
       this.#requireOperation(operation)
       if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
-      this.#preparingModelPipelines = true
-      try {
-      await Promise.all([this.#displayTask, this.#teamSelectionRenderTask, this.#classSelectionRenderTask])
-      this.#requireOperation(operation)
       const classPreparation = classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
         warmupViewport.width / warmupViewport.height)
       const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
@@ -1979,14 +1978,13 @@ export class Tf2Application {
         const preparation = preparationByIdentity.get(pose.identity)
         const artifact = this.#artifacts!.models.get(pose.model)
         if (!preparation || !artifact || !pose.lighting) throw new Error(`Class pipeline pose unavailable: ${pose.model}`)
-        return { panel: preparation.panel, item: {
+        return { pass: preparation.pass, item: {
           identity: pose.identity, model: pose.model, skin: preparation.request.skin < artifact.skinCount ? preparation.request.skin : 0,
           position: warmupCamera.position, angles: [0, 0, 0] as const, scale: 1,
           pose, modelLighting: pose.lighting, eyeStates: pose.eyes,
         } }
-      }), warmupCamera)
+      }), warmupCamera, this.#mainFog(this.#artifacts))
       this.#requireOperation(operation)
-      } finally { this.#preparingModelPipelines = false }
       }
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
@@ -2061,10 +2059,13 @@ export class Tf2Application {
       this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
       this.#syncLoadingPresentation()
       this.#set({ phase: "Failed", gameUi: "failure", detail })
+    } finally {
+      if (this.#operations.current(operation)) this.#preparingModelPipelines = false
     }
   }
 
   #resetGenerationPresentation(): void {
+    this.#preparingModelPipelines = false
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
     this.#medicBeamTarget = null
