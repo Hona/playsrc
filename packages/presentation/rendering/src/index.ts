@@ -1105,6 +1105,8 @@ type SceneResources = {
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
   modelBaseSamples: Map<string, any>
+  modelTemplateResources: Map<string, (THREE.BufferGeometry | THREE.Material)[]>
+  borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[]
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
   modelLightingGraphs: ModelLightingGraphs
   modelPanelLightingGraphs: ModelLightingGraphs
@@ -2444,7 +2446,8 @@ class RendererOwner implements Renderer {
       this.#checkAbort(request.signal, ordinal)
 
       const prior = this.#active
-      staged.textureResidency.commitTransfers()
+      staged.textureResidency.commitTransfers(staged.borrowedModelResources)
+      staged.borrowedModelResources.length = 0
       this.#clearDynamic(this.#effects)
       this.#dynamicModelInstances.clear()
       this.#dynamicBrushInstances.clear()
@@ -2455,7 +2458,7 @@ class RendererOwner implements Renderer {
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
       this.#retainedModelPanels.clear()
-      this.#preparedModelInstances.clear()
+      this.#preparedModelInstances.discardWhere(value => !staged.modelTemplates.has(value.model) || staged.modelTemplates.get(value.model) !== prior?.modelTemplates.get(value.model))
       this.#stagedDynamic = undefined
       this.#worldVisibilitySurfaces = undefined
       this.#worldVisibilityIdentity = undefined
@@ -2535,20 +2538,23 @@ class RendererOwner implements Renderer {
         if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
         if (unposedPanel) {
           if (pass !== "panel") throw new RenderingError("MalformedInput", "unposed model preparation requires a panel")
-          const bind = template.clone(true), bindKey = `panel-bind:${model}`
+          const bindKey = `panel-bind:${model}`
+          const bind = this.#preparedModelInstances.take(bindKey)?.instance ?? template.clone(true)
           restoreVisibility.push(prepareReachablePipelineVisibility(bind).restore)
           staged.push({ key: bindKey, retained: { model, instance: bind } })
           keys.add(bindKey)
           preparationProfile?.modelPreparation?.models.push({ model: item.model, skin: item.skin ?? 0, pass: "panel-bind" })
           panels.add(bind)
         }
-        const instance = template.clone(true)
+        const prepared = this.#preparedModelInstances.take(key)
+        if (prepared && preparationProfile) preparationProfile.counters.reusedPreparedModels = (preparationProfile.counters.reusedPreparedModels ?? 0) + 1
+        const instance = prepared?.instance ?? template.clone(true)
         const authoredViewState: { transparent: boolean; depthWrite: boolean }[][] = []
         if (pass === "view") instance.traverse(object => {
           if (object instanceof THREE.Mesh) authoredViewState.push((Array.isArray(object.material) ? object.material : [object.material])
             .map(material => ({ transparent: material.transparent, depthWrite: material.depthWrite })))
         })
-        const retained = { model, instance, meshes: [] as THREE.Mesh[] }
+        const retained = prepared ?? { model, instance, meshes: [] as THREE.Mesh[] }
         staged.push({ key, retained })
         // Use the same palette, flex, primitive ordering and world/panel depth
         // state owner as drawing. Standalone viewmodel metadata is not a weapon
@@ -2777,6 +2783,10 @@ class RendererOwner implements Renderer {
       && this.#active?.payloadSha256 === payloadSha256 && this.#active.loadRequest.resourceIdentity === request.resourceIdentity
       ? this.#active : undefined
     const modelTemplates = new Map<string, THREE.Group>()
+    const modelTemplateResources = new Map<string, (THREE.BufferGeometry | THREE.Material)[]>()
+    const borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[] = []
+    const handoffProfile = browserFrameProfiler()
+    if (handoffProfile) handoffProfile.counters.retainedModelTemplates = 0
     const modelBaseSamples = retained?.modelBaseSamples ?? new Map<string, any>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
     const modelLightingGraphs = retained?.modelLightingGraphs ?? new ModelLightingGraphs()
@@ -3452,7 +3462,23 @@ class RendererOwner implements Renderer {
       }
 
       for (const model of map.models) {
+        const priorTemplate = retained?.modelTemplates.get(model.logicalPath)
+        if (priorTemplate && model.materials.every(material => request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader !== "unlit-two-texture")) {
+          const resources = retained!.modelTemplateResources.get(model.logicalPath)!
+          modelTemplates.set(model.logicalPath, priorTemplate)
+          if (handoffProfile) handoffProfile.counters.retainedModelTemplates += 1
+          modelTemplateResources.set(model.logicalPath, resources)
+          borrowedModelResources.push(...resources)
+          for (const material of model.materials) {
+            const identity = material.logicalPath.toLowerCase(), textures = retained!.modelLightingTextures.get(identity)
+            if (textures) modelLightingTextures.set(identity, { ...textures,
+              normal: textures.normal ? () => createModelTexture(identity, 7)?.texture : undefined })
+          }
+          continue
+        }
         const template = new THREE.Group()
+        const resources: (THREE.BufferGeometry | THREE.Material)[] = []
+        modelTemplateResources.set(model.logicalPath, resources)
         for (let primitiveIndex=0;primitiveIndex<model.primitives.length;primitiveIndex+=1) {
           const primitive=model.primitives[primitiveIndex]!
           const geometry = new THREE.BufferGeometry()
@@ -3462,6 +3488,7 @@ class RendererOwner implements Renderer {
           geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
           geometry.computeBoundingSphere()
           disposables.add(geometry)
+          resources.push(geometry)
           const bindGeometry = new THREE.BufferGeometry()
           bindGeometry.setAttribute("position", new THREE.BufferAttribute(primitive.bindPositions, 3))
           bindGeometry.setAttribute("normal", new THREE.BufferAttribute(primitive.bindNormals, 3))
@@ -3472,6 +3499,7 @@ class RendererOwner implements Renderer {
           bindGeometry.setIndex(geometry.getIndex())
           bindGeometry.boundingSphere = geometry.boundingSphere
           disposables.add(bindGeometry)
+          resources.push(bindGeometry)
           SOURCE_MODEL_BIND_GEOMETRY.set(geometry, Object.freeze({ geometry: bindGeometry, palette: primitive.bonePalette }))
           const resolved = model.materials[primitive.material]!
           const materialState = materialStates.get(resolved.logicalPath.toLowerCase())
@@ -3572,6 +3600,7 @@ class RendererOwner implements Renderer {
           material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms)
           material.toneMapped = false
           disposables.add(material)
+          resources.push(material)
           const mesh = new THREE.Mesh(geometry, material)
           mesh.userData.primitiveMaterial = primitive.material
           mesh.userData.sourcePrimitive=primitiveIndex
@@ -3869,6 +3898,8 @@ class RendererOwner implements Renderer {
       group,
       modelTemplates,
       modelBaseSamples,
+      modelTemplateResources,
+      borrowedModelResources,
       modelLightingTextures,
       modelLightingGraphs,
       modelPanelLightingGraphs,

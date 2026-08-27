@@ -35,5 +35,12 @@ export class RetainedModelCache<Value> {
     this.#entries.clear()
   }
 
+  discardWhere(predicate: (value: Value) => boolean): void {
+    for (const [key, value] of this.#entries) if (predicate(value)) {
+      this.#entries.delete(key)
+      this.#dispose(value)
+    }
+  }
+
   get size(): number { return this.#entries.size }
 }
