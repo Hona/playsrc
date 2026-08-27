@@ -53,6 +53,23 @@ test("audio refuses missing resources without creating a source", () => {
   expect(audio.activeVoices()).toEqual([])
 })
 
+test("audio preload closure comes only from selected definitions, never from a script filename", () => {
+  const registry = new SoundRegistry([{
+    logicalPath: "scripts/game_sounds_vo.txt", mode: "base", preload: false,
+    entries: [
+      { key: "Announcer.RoundEnds60seconds", value: [{ key: "wave", value: "vo/announcer_ends_60sec.mp3" }] },
+      { key: "Game.Overtime", value: [{ key: "rndwave", value: [
+        { key: "wave", value: "#vo/announcer_overtime.mp3" },
+        { key: "wave", value: "vo/announcer_overtime.mp3" },
+        { key: "wave", value: "vo/announcer_overtime2.mp3" },
+      ] }] },
+    ],
+  }])
+  expect(registry.resources()).toEqual(["sound/vo/announcer_ends_60sec.mp3", "sound/vo/announcer_overtime.mp3", "sound/vo/announcer_overtime2.mp3"])
+  expect(Object.isFrozen(registry.resources())).toBe(true)
+  expect(registry.resources()).not.toContain("sound/vo/intel_enemystolen.mp3")
+})
+
 describe("browser audio graph", () => {
   test("starts, replaces, stops, and closes supplied exact buffers", async () => {
     const sources: Node[] = []
