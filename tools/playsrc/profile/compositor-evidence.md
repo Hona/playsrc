@@ -20,7 +20,7 @@ Bounds per capture: 128 MiB browser trace buffer, 32 MiB compressed stream, 256 
 
 # Worker CPU/task evidence
 
-New Upward/class/combat captures use `playsrc-compositor-evidence-v2`. Its `mainCpu`
+Upward/class/combat captures use `playsrc-compositor-evidence-v3` (v2 for historical CPU-only evidence). Its `mainCpu`
 links the exact SHA-256 and byte count of one immutable `main.cpuprofile`, plus
 source commit/fingerprint, page target before/after, and CDP `Performance.Timestamp`
 brackets around `Profiler.start/stop` in Chromium monotonic microseconds. Replay
@@ -81,3 +81,11 @@ Incremental journals and compressed native stream prefixes survive incomplete ca
 Windows local runs require the runner to be in the active, unlocked physical console session before server preparation and browser launch. `bun tools/playsrc/profile/windows-desktop.ts` reads WTS session evidence without changing settings or starting a browser; unknown, locked, remote, and session-zero states fail closed. This preflight is not proof that the display stays visible: the gameplay visibility/focus checks still apply. Remote CDP adapters must establish that gate on the browser host.
 
 Upward/class-switch/combat reports include bounded, exact-PID process-memory snapshots outside the marked sample. Windows reports working set and private committed bytes separately; macOS/Linux report RSS, not invented private bytes. These are boundary values, **not peaks or private working sets**. Missing/exited processes make totals null and retain an error. Remote CDP never looks up browser PIDs on the runner's machine.
+
+## Allocation and retained-memory evidence
+
+`bun tools/playsrc/profile/allocation-memory-evidence.ts <sha256.manifest.json>` authenticates v3's raw `main.heapprofile` (16 MiB, 100,000 nodes, 500,000 samples) and reuses the existing main/Worker CPU provenance and capture plan. The existing page sampler retains its effective settings, default execution context, main frame, monotonic start/stop brackets, heap gauges, snapshot endpoints and process-memory boundaries. Overflow prefixes and failures stay incomplete. No second CPU/Worker collector or forced GC is used. CPU replay includes this memory replay; historical missing allocation profiles remain **unknown**.
+
+Allocation `selfSize` is a sampled estimate including collected objects over the **whole sampler interval**, including setup and native-trace drain. CDP allocation samples have ordinals, not clocks: they cannot be sliced into an invented active-only allocation count. Worker allocation, exclusive native/GPU/WASM bytes and shared mappings remain unmeasured. Per-PID RSS can contain shared pages; summing it is not exclusive physical usage. Main-only allocation increases after work moves from a Worker do not establish total growth, a leak, or a regression.
+
+Snapshot transport now reports `retainedGauges.beforeBytes/afterBytes` separately from an explicit `counterDeltas` allowlist. These are logical baseline `byteLength` gauges, not retained-heap or physical-memory totals. Boundary-local owner tokens track the actual metrics object's identity; missing endpoints, owner changes and counter resets produce null deltas. A shrinking baseline never becomes negative live bytes. Older reports' subtracted `retainedBaselineBytes` cannot recover either endpoint and are not migrated.
