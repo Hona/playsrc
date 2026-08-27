@@ -273,47 +273,28 @@ export function projectileModels(models: readonly ProjectileModelRequest[]): rea
 export { classPipelinePoseRequests, classPreviewBaseActivity } from "./class-pipeline-preparation"
 export { mapPropPipelinePoseRequests } from "./map-prop-pipeline-preparation"
 
-export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
+export function createViewmodelPresenter(artifacts: PresentationArtifacts, catalog: readonly import("./equipment/types").Tf2SupportedItem[]) {
+  const items = new Map(catalog.map((item) => [item.item.definitionIndex, item]))
   let actionTick = 0n
   let priorTick = 0n
   let prior: Snapshot["weapon"] | undefined
   let priorClass: Snapshot["class"] | undefined
+  let priorDefinition: number | undefined
   let activity = "ACT_VM_DRAW"
+  let phase: 0 | 1 | 2 | 3 | 4 | 5 = 0
   return Object.freeze({
     updateArtifacts(next: PresentationArtifacts): void { artifacts = next },
     map(snapshot: Snapshot, view: Readonly<{ aspectRatio: number; farPlane: number }> = Object.freeze({ aspectRatio: 4 / 3, farPlane: 32768 })): Readonly<{ item: ModelItem; request: ModelPoseRequest; standalone: boolean }> {
       if (snapshot.weapon === null || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(snapshot.class) || snapshot.weapon === 54) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")
       }
-      const standalone = snapshot.weapon === 53
-      const identity = standalone ? "models/weapons/v_models/v_pda_spy.mdl" : tf2ClassPresentation(snapshot.class).hands
-      const itemIdentity = snapshot.weapon === 17 ? "models/weapons/c_models/c_bottle/c_bottle.mdl"
-        : snapshot.weapon === 18 ? "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl"
-          : snapshot.weapon === 19 ? "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
-            : snapshot.weapon === 20 ? "models/weapons/c_models/c_medigun/c_medigun.mdl"
-              : snapshot.weapon === 21 ? "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl"
-                : snapshot.weapon === 40 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
-        : snapshot.weapon === 41 ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
-          : snapshot.weapon === 42 ? "models/weapons/c_models/c_wrench/c_wrench.mdl"
-            : snapshot.weapon === 4 ? "models/weapons/c_models/c_scattergun.mdl"
-        : snapshot.weapon === 5 ? "models/weapons/c_models/c_pistol/c_pistol.mdl"
-          : snapshot.weapon === 6 ? "models/weapons/c_models/c_bat.mdl"
-            : snapshot.weapon === 7 || snapshot.weapon === 10 ? "models/weapons/c_models/c_shotgun/c_shotgun.mdl"
-              : snapshot.weapon === 8 ? "models/weapons/c_models/c_shovel/c_shovel.mdl"
-                : snapshot.weapon === 9 ? "models/weapons/c_models/c_minigun/c_minigun.mdl"
-                  : snapshot.weapon === 11 ? undefined
-                    : snapshot.weapon === 12 ? "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl"
-                      : snapshot.weapon === 13 ? "models/weapons/c_models/c_smg/c_smg.mdl"
-                        : snapshot.weapon === 14 ? "models/weapons/c_models/c_machete/c_machete.mdl"
-                          : snapshot.weapon === 15 ? "models/weapons/c_models/c_flamethrower/c_flamethrower.mdl"
-                            : snapshot.weapon === 16 ? "models/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro.mdl"
-                              : snapshot.weapon === 43 || snapshot.weapon === 44 ? "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl"
-                               : snapshot.weapon === 45 ? "models/weapons/c_models/c_toolbox/c_toolbox.mdl"
-                               : snapshot.weapon === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
-                                : snapshot.weapon === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
-                                  : snapshot.weapon === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl"
-                                : snapshot.class === 3 ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-                                  : "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
+      const instance = snapshot.equippedItems.find((instance) => items.get(instance.definitionIndex)?.classSlots.some((slot) => slot.class === snapshot.class && slot.slot === instance.slot && slot.weapon === snapshot.weapon))
+      const equipped = instance && items.get(instance.definitionIndex)
+      if (!equipped) throw new ProjectilePresentationError("MalformedFact", "active weapon has no equipped catalog definition")
+      const standalone = !equipped.attachToHands
+      const itemIdentity = equipped.modelPlayer || undefined
+      const identity = standalone ? itemIdentity : tf2ClassPresentation(snapshot.class).hands
+      if (!identity) throw new ProjectilePresentationError("MissingModel", "standalone equipped model")
       const artifact = artifacts.models.get(identity)
       const itemArtifact = standalone || itemIdentity === undefined ? undefined : artifacts.models.get(itemIdentity)
       if (!artifact) throw new ProjectilePresentationError("MissingModel", identity)
@@ -322,48 +303,25 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
       if (itemArtifact && itemArtifact.descriptor.kind !== "viewmodel") throw new ProjectilePresentationError("MissingModel", `${itemIdentity}:descriptor`)
       const weapon = snapshot.loadout.find((value) => value.weapon === snapshot.weapon)
       if (!weapon) throw new ProjectilePresentationError("MissingModel", `${identity}:weapon-state`)
-      const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class
+      const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class || priorDefinition !== equipped.item.definitionIndex
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
-      const role = snapshot.weapon === 6 || snapshot.weapon === 8 || snapshot.weapon === 14 || snapshot.weapon === 16 || snapshot.weapon === 17 || snapshot.weapon === 42 || snapshot.weapon === 51 || snapshot.weapon === 21 ? "MELEE"
-        : snapshot.weapon === 11 ? "FISTS"
-          : snapshot.weapon === 5 || snapshot.weapon === 7 || snapshot.weapon === 10 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 || snapshot.weapon === 3 || snapshot.weapon === 20 ? "SECONDARY"
-            : snapshot.weapon === 43 ? "ENGINEER_PDA1" : snapshot.weapon === 44 ? "ENGINEER_PDA2" : snapshot.weapon === 45 ? "ENGINEER_BLD" : snapshot.weapon === 52 || standalone ? "" : "PRIMARY"
-      const prefix = role ? `ACT_${role}_` : "ACT_"
-      const draw = `${prefix}VM_DRAW`, idle = `${prefix}VM_IDLE`
-      const mapped = exact === undefined ? undefined : [
-        "", draw,
-        role === "MELEE" ? "ACT_MELEE_VM_HITCENTER" : role === "FISTS" ? "ACT_FISTS_VM_HITLEFT" : `${prefix}VM_PRIMARYATTACK`,
-        snapshot.weapon === 5 || snapshot.weapon === 13 || snapshot.weapon === 50 || snapshot.weapon === 41 ? `${prefix}VM_RELOAD` : `${prefix}RELOAD_START`,
-        `${prefix}VM_RELOAD`, `${prefix}RELOAD_FINISH`, idle, `${prefix}VM_SECONDARYATTACK`,
-      ][exact.activity]
-      let nextActivity = mapped ?? (selectionChanged ? draw : activity)
-      let selected = artifact.sequences.find((value) => value.activity === nextActivity)
-      if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
-      const elapsed = Number(snapshot.tick - actionTick) * 0.015
-      if (!selectionChanged && exact === undefined && weapon.reload === 0 && nextActivity === activity && nextActivity !== idle && elapsed >= selected.durationSeconds) {
-        nextActivity = idle
-        selected = artifact.sequences.find((value) => value.activity === nextActivity)
-        if (!selected) throw new ProjectilePresentationError("MissingModel", `${identity}:${nextActivity}`)
-      }
-      if (exact !== undefined) actionTick = exact.tick
-      else if (nextActivity !== activity || selectionChanged) actionTick = snapshot.tick
-      activity = nextActivity
+      if (exact !== undefined) {
+        activity = ["", "ACT_VM_DRAW", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH", "ACT_VM_IDLE", "ACT_VM_SECONDARYATTACK", "ACT_VM_SWINGHARD", "ACT_VM_HITCENTER", "ACT_VM_HITLEFT", "ACT_VM_HITRIGHT"][exact.activity]!
+        phase = ([0, 0, 1, 2, 3, 4, 5, 1, 1, 1, 1, 1] as const)[exact.activity]!
+        actionTick = exact.tick
+      } else if (selectionChanged) { activity = "ACT_VM_DRAW"; phase = 0; actionTick = snapshot.tick }
       prior = snapshot.weapon
       priorClass = snapshot.class
+      priorDefinition = equipped.item.definitionIndex
       const currentElapsed = Number(snapshot.tick - actionTick) * 0.015
       const previousElapsed = Math.max(0, Number(priorTick - actionTick) * 0.015)
       const frameTime = Math.max(0, Number(snapshot.tick - priorTick) * 0.015)
       priorTick = snapshot.tick
       const now=Number(snapshot.tick)*0.015
-      const phase = exact ? (exact.activity === 7 ? 1 : exact.activity - 1) : nextActivity.endsWith("_VM_DRAW") ? 0
-        : nextActivity.endsWith("_VM_PRIMARYATTACK") ? 1
-          : nextActivity.endsWith("_RELOAD_START") ? 2
-            : nextActivity.endsWith("_VM_RELOAD") ? 3
-              : nextActivity.endsWith("_RELOAD_FINISH") ? 4 : 5
-      if (phase < 0 || phase > 5) throw new ProjectilePresentationError("MalformedFact", "viewmodel phase")
       const common = {
         identity: 0x7fff_ff00 + snapshot.class * 4,
         model: identity, activity,
+        itemDefinition: equipped.item.definitionIndex, activityStartTick: actionTick, allowIdleTransition: weapon.reload === 0,
         previousElapsedSeconds: Math.min(previousElapsed, currentElapsed), elapsedSeconds: currentElapsed,
         currentTimeSeconds: now, frameTimeSeconds: frameTime, planarSpeed: Math.hypot(snapshot.velocity[0], snapshot.velocity[1]),
         screenAspectRatio: view.aspectRatio, worldFarPlane: view.farPlane,

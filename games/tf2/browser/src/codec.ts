@@ -258,7 +258,7 @@ export type ShotgunPellet = Readonly<{
   damage: number
   range: number
 }>
-export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6 | 7
+export type WeaponActivity = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
 export type ActivityEvent = Readonly<{ tick: bigint; weapon: Tf2Weapon; activity: WeaponActivity }>
 export type LifecycleEvent = Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>
 export type ProjectilePhysicsRequest = Readonly<{
@@ -1970,7 +1970,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 7 ||
+    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 11 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")

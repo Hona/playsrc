@@ -200,6 +200,15 @@ pub fn presentation(definition_index: u32) -> Option<&'static ItemPresentation> 
     ITEM_PRESENTATIONS.iter().find(|item| item.definition_index == definition_index)
 }
 
+pub fn stock_weapon_models() -> impl Iterator<Item = &'static str> {
+    PlayerClass::ALL.into_iter().flat_map(|class| class.data().stock_items.iter().filter_map(move |stock| {
+        let item = supported_item(stock.definition)?;
+        if item.weapon_for_class(class).is_none() { return None; }
+        let model = presentation(stock.definition)?.model_for_class(class)?;
+        (!model.is_empty()).then_some(model)
+    }))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EquipmentError { UnsupportedItem, IneligibleSlot, InvalidPersistence }
 

@@ -2750,17 +2750,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     }
                     (
                         Weapon::Pistol | Weapon::EngineerPistol,
-                        weapon::WeaponActivity::ReloadStart,
+                        weapon::WeaponActivity::ReloadLoop,
                     ) => Some(SoundDefinition::PistolReload),
                     (
                         Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun,
                         weapon::WeaponActivity::ReloadLoop,
                     ) => Some(SoundDefinition::ShotgunReload),
-                    (Weapon::Smg, weapon::WeaponActivity::ReloadStart) => {
+                    (Weapon::Smg, weapon::WeaponActivity::ReloadLoop) => {
                         Some(SoundDefinition::SmgReload)
                     }
 
-                    (Weapon::Revolver, weapon::WeaponActivity::ReloadStart) => {
+                    (Weapon::Revolver, weapon::WeaponActivity::ReloadLoop) => {
                         Some(SoundDefinition::RevolverReload)
                     }
                     (Weapon::SyringeGun, weapon::WeaponActivity::ReloadLoop) => {

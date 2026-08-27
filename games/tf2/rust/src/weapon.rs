@@ -64,6 +64,10 @@ pub enum WeaponActivity {
     ReloadFinish,
     Idle,
     SecondaryAttack,
+    MeleeCritical,
+    MeleePrimary,
+    FistLeft,
+    FistRight,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -590,7 +594,7 @@ impl WeaponRuntime {
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
-            activity: if self.weapon == Weapon::SyringeGun || self.discard_chambered_on_reload {
+            activity: if profile.reload_round == 0.0 || self.weapon == Weapon::SyringeGun || self.discard_chambered_on_reload {
                 WeaponActivity::ReloadLoop
             } else {
                 WeaponActivity::ReloadStart
@@ -737,7 +741,7 @@ impl WeaponRuntime {
                 activities.push(ActivityEvent {
                     tick,
                     weapon: self.weapon,
-                    activity: WeaponActivity::PrimaryAttack,
+                    activity: if secondary { WeaponActivity::FistRight } else { WeaponActivity::FistLeft },
                 });
                 return PrimaryResult::Fired {
                     charge_seconds: if secondary { 1.0 } else { 0.0 },
@@ -903,7 +907,9 @@ impl WeaponRuntime {
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
-            activity: WeaponActivity::PrimaryAttack,
+            activity: if matches!(self.weapon, Weapon::Bat | Weapon::Shovel | Weapon::Kukri | Weapon::Wrench | Weapon::FireAxe | Weapon::Bottle | Weapon::Knife | Weapon::Bonesaw) {
+                WeaponActivity::MeleePrimary
+            } else { WeaponActivity::PrimaryAttack },
         });
         PrimaryResult::Fired { charge_seconds }
     }
@@ -1160,7 +1166,7 @@ mod tests {
             (bottle.clip, bottle.reserve, bottle.next_primary_tick),
             (0, 0, 64)
         );
-        assert_eq!(activities[0].activity, WeaponActivity::PrimaryAttack);
+        assert_eq!(activities[0].activity, WeaponActivity::MeleePrimary);
     }
 
     #[test]
