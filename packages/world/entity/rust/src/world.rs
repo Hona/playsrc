@@ -988,8 +988,10 @@ struct WorldState {
     random: SourceRandom,
     slots: Vec<Slot>,
     creation_order: Vec<EntityHandle>,
-    targetname_index: BTreeMap<Vec<u8>, Vec<EntityHandle>>,
-    classname_index: BTreeMap<Vec<u8>, Vec<EntityHandle>>,
+    // Tick/phase checkpoints retain these tables unchanged. Detach only at
+    // entity admission, rename, or removal, just like the retained entities.
+    targetname_index: Arc<BTreeMap<Vec<u8>, Vec<EntityHandle>>>,
+    classname_index: Arc<BTreeMap<Vec<u8>, Vec<EntityHandle>>>,
     queue: Vec<QueuedEvent>,
 }
 
@@ -1103,8 +1105,8 @@ impl EntityWorld {
                 random: SourceRandom::new(config.random_seed as i32),
                 slots: Vec::new(),
                 creation_order: Vec::new(),
-                targetname_index: BTreeMap::new(),
-                classname_index: BTreeMap::new(),
+                targetname_index: Arc::default(),
+                classname_index: Arc::default(),
                 queue: Vec::new(),
             },
             config: Arc::new(config),
@@ -2682,14 +2684,12 @@ impl EntityWorld {
     }
 
     fn index_insert(&mut self, classname: &[u8], targetname: Option<&[u8]>, handle: EntityHandle) {
-        self.state
-            .classname_index
+        Arc::make_mut(&mut self.state.classname_index)
             .entry(ascii_key(classname))
             .or_default()
             .push(handle);
         if let Some(name) = targetname {
-            self.state
-                .targetname_index
+            Arc::make_mut(&mut self.state.targetname_index)
                 .entry(ascii_key(name))
                 .or_default()
                 .push(handle);
@@ -2697,18 +2697,16 @@ impl EntityWorld {
     }
 
     fn index_remove(&mut self, handle: EntityHandle) {
-        for values in self.state.classname_index.values_mut() {
+        let classes = Arc::make_mut(&mut self.state.classname_index);
+        for values in classes.values_mut() {
             values.retain(|value| *value != handle);
         }
-        for values in self.state.targetname_index.values_mut() {
+        let names = Arc::make_mut(&mut self.state.targetname_index);
+        for values in names.values_mut() {
             values.retain(|value| *value != handle);
         }
-        self.state
-            .classname_index
-            .retain(|_, values| !values.is_empty());
-        self.state
-            .targetname_index
-            .retain(|_, values| !values.is_empty());
+        classes.retain(|_, values| !values.is_empty());
+        names.retain(|_, values| !values.is_empty());
     }
 
     fn push_transition(
