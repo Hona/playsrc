@@ -8,6 +8,8 @@ struct Panel {
     opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     scenes: BTreeMap<u32, ClassPreview>,
     bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
+    weapon_animations: BTreeMap<u32, weapon_pose::AnimationState>,
+    wearable_particles: wearable::ParticleStates,
     output: Vec<u8>,
     admission: Vec<u8>,
     particles: Option<playsrc_particle::ParticleWorld>,
@@ -132,13 +134,14 @@ pub(super) fn transact(requests: &[ModelPoseRequest]) -> Result<(), ()> {
     let requests: Vec<_> = requests.iter().cloned().map(|mut request| { request.model_panel = true; request }).collect();
     let mut panel = panel().lock().unwrap();
     let mut bob = panel.bob.clone();
+    let mut weapon_animations = panel.weapon_animations.clone();
     let mut wearable_particles = panel.wearable_particles.clone();
     if requests.is_empty() { wearable_particles = wearable::ParticleStates::default(); } else { wearable_particles.retain(&requests); }
     let Panel { models, metadata, opacity, scenes, output, particles, particle_materials, particle_sheets, .. } = &mut *panel;
     let mut world = ModelPoseWorld { metadata, lighting: None, visibility: None, collision: None, snapshot: None, gameplay: None, cubemaps: &[],
         particle_inputs: particles.as_ref().map(|template| wearable::ParticleInputs { template, materials: particle_sheets, identities: particle_materials }), wearable_particles: &mut wearable_particles };
-    *output = encode_model_poses(models, opacity, &mut bob, scenes, &requests, &mut world, std::mem::take(output))?;
-    panel.bob = bob; panel.wearable_particles = wearable_particles;
+    *output = encode_model_poses(models, opacity, &mut bob, scenes, &mut weapon_animations, &requests, &mut world, std::mem::take(output))?;
+    panel.bob = bob; panel.weapon_animations = weapon_animations; panel.wearable_particles = wearable_particles;
     Ok(())
 }
 

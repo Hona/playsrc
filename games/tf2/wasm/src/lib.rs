@@ -577,6 +577,7 @@ struct Slot {
     model_lighting_world: Option<playsrc_map::ModelLightingWorld<'static>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
+    weapon_animations: BTreeMap<u32, weapon_pose::AnimationState>,
     class_scenes: BTreeMap<u32, ClassPreview>,
     wearable_particles: wearable::ParticleStates,
     model_output: Vec<u8>,
@@ -1526,6 +1527,7 @@ unsafe fn compile_map(
             model_lighting_world: Some(model_lighting_world),
             model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
+            weapon_animations: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
             wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
@@ -1572,6 +1574,7 @@ unsafe fn compile_map(
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            weapon_animations: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
             wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
@@ -2037,6 +2040,9 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 
 #[derive(Clone, Debug)]
 struct ModelPoseRequest {
+    item_definition: Option<u32>,
+    activity_start_tick: Option<u64>,
+    allow_idle_transition: bool,
     identity: u32,
     control_point: Option<u32>,
     class_selection: bool,
@@ -2082,6 +2088,7 @@ struct ModelPoseLightingRequest {
 }
 
 mod equipment_models;
+mod weapon_pose;
 
 struct ModelPoseWorld<'a> {
     metadata: &'a BTreeMap<String, StudioModelLightingMetadata>,
@@ -2138,6 +2145,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         return 0;
     };
     let mut wearable_particles = slot.wearable_particles.clone();
+    let mut weapon_animations = slot.weapon_animations.clone();
     wearable_particles.retain(&requests);
     let mut world = ModelPoseWorld {
         metadata: &slot.model_lighting_metadata,
@@ -2155,6 +2163,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         &slot.model_material_opacity,
         &mut slot.viewmodel_bob,
         &mut slot.class_scenes,
+        &mut weapon_animations,
         &requests,
         &mut world,
         std::mem::take(&mut slot.model_output),
@@ -2163,6 +2172,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
     };
     slot.model_output = output;
     slot.wearable_particles = wearable_particles;
+    slot.weapon_animations = weapon_animations;
     1
 }
 
@@ -2251,7 +2261,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 11 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 12 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2285,6 +2295,10 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let hud_model = flags & 8 != 0;
         if flags > 15 || (has_cloak && actor_identity == 0) || (hud_model && (!matches!(kind, 3 | 4 | 6) || actor_identity == 0)) || (!has_cloak && [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|value| value != 0.0)) { return Err(()); }
         let cloak = has_cloak.then_some(playsrc_tf2::spy::CloakRenderState { local_factor, world_factor, raw_factor, player_tint });
+        let definition = reader.u32()?;
+        let item_definition = (definition != u32::MAX).then_some(definition);
+        let start_tick = reader.u64()?;
+        let activity_start_tick = (start_tick != u64::MAX).then_some(start_tick);
         if kind > 7
             || (kind == 7 && (actor_identity == 0 || has_cloak || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
             || (matches!(kind, 3 | 4 | 6) && actor_identity != 0 && !hud_model)
@@ -2293,6 +2307,8 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
             || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4 | 6))
+            || item_definition.is_some_and(|definition| playsrc_tf2::equipment::supported_item(definition).is_none())
+            || item_definition.is_some() && !matches!(kind, 3 | 4 | 5 | 6) && activity_start_tick.is_none()
         {
             return Err(());
         }
@@ -2330,7 +2346,8 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let phase_code = reader.u8()?;
         let reflected_viewmodel = reader.u8()?;
         let owner_alive = reader.u8()?;
-        if reflected_viewmodel > 1 || owner_alive > 1 || reader.u8()? != 0 {
+        let idle_transition = reader.u8()?;
+        if reflected_viewmodel > 1 || owner_alive > 1 || idle_transition > 1 {
             return Err(());
         }
         let phase = match phase_code {
@@ -2423,6 +2440,9 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         };
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
+            item_definition,
+            activity_start_tick,
+            allow_idle_transition: idle_transition != 0,
             identity,
             control_point: (kind == 7).then_some(actor_identity),
             class_selection: kind == 3,
@@ -2597,6 +2617,7 @@ fn encode_model_poses(
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     class_scenes: &mut BTreeMap<u32, ClassPreview>,
+    weapon_animations: &mut BTreeMap<u32, weapon_pose::AnimationState>,
     requests: &[ModelPoseRequest],
     world: &mut ModelPoseWorld<'_>,
     mut out: Vec<u8>,
@@ -2628,6 +2649,11 @@ fn encode_model_poses(
             scene_request.previous_elapsed = (sample.sequence_elapsed - original.frame_time).max(0.0);
             &scene_request
         } else { original };
+        let resolved_weapon;
+        let request = if let Some(resolved) = weapon_pose::prepare(request, models, weapon_animations)? {
+            resolved_weapon = resolved;
+            &resolved_weapon
+        } else { request };
         let model = models.get(&request.model).ok_or(())?;
         let control_point = if let Some(identity) = request.control_point {
             let points = world.gameplay.and_then(|g| g.control_points.as_ref()).ok_or(())?;
@@ -4901,6 +4927,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.model_lighting_world = None;
     slot.model_material_opacity = BTreeMap::new();
     slot.viewmodel_bob = BTreeMap::new();
+    slot.weapon_animations = BTreeMap::new();
     slot.class_scenes = BTreeMap::new();
     slot.model_output = Vec::new();
     slot.visibility = None;
@@ -15589,6 +15616,7 @@ mod tests {
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            weapon_animations: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
             wearable_particles: wearable::ParticleStates::default(),
             model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
@@ -15673,6 +15701,7 @@ mod tests {
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            weapon_animations: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
             wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),

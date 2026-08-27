@@ -29,6 +29,7 @@ pub mod spy;
 pub mod state;
 pub mod team_selection;
 pub mod weapon;
+pub mod weapon_presentation;
 
 pub use audio::{
     AudioAction, AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition, SoundQueryPhase,

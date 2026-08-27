@@ -391,6 +391,9 @@ function stable64(value: string) {
 }
 
 export type ModelPoseRequest = Readonly<{
+  itemDefinition?: number
+  activityStartTick?: bigint
+  allowIdleTransition?: boolean
   identity: number
   classSelection?: boolean
   controlPoint?: number
@@ -470,7 +473,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = poseText(request.model)
     const item = poseText(request.itemModel ?? "")
     const activity = poseText(request.activity)
-    length += 192 + model.length + item.length + activity.length +
+    length += 204 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     for (const item of request.equippedItems ?? []) length += 12 + item.attributes.length * 8
     return { request, model, item, activity }
@@ -478,7 +481,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-    view.setUint32(4, 11, true)
+  view.setUint32(4, 12, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -528,6 +531,15 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     bytes[at + 2] = Number(request.fireView !== undefined)
     bytes[at + 3] = Number(request.modelPanelReset ?? false) | (Number(cloak !== undefined) << 1) | (Number(request.preparation ?? false) << 2) | (Number(request.hudModel ?? false) << 3)
     at += 4
+    if (request.itemDefinition !== undefined && (!Number.isSafeInteger(request.itemDefinition)
+      || request.itemDefinition < 0 || request.itemDefinition >= 0xffff_ffff)) throw new ProjectilePresentationError("MalformedFact", "item definition")
+    const activityStartTick = request.activityStartTick ?? 0xffff_ffff_ffff_ffffn
+    if (typeof activityStartTick !== "bigint" || activityStartTick < 0n || activityStartTick > 0xffff_ffff_ffff_ffffn
+      || (request.itemDefinition !== undefined && !request.worldItem && !request.modelPanel && !request.classSelection && request.activityStartTick === undefined)) {
+      throw new ProjectilePresentationError("MalformedFact", "viewmodel activity clock")
+    }
+    view.setUint32(at, request.itemDefinition ?? 0xffff_ffff, true); at += 4
+    view.setBigUint64(at, activityStartTick, true); at += 8
     const firePosition=request.fireView?.eyePosition,fireOrientation=request.fireView?.viewOrientation
     view.setFloat32(at,firePosition?.[0]??0,true)
     view.setFloat32(at+4,firePosition?.[1]??0,true)
@@ -551,13 +563,13 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     bytes[at] = request.worldItem || (request.itemModel === undefined && !request.handsOnlyViewmodel) ? 0xff : (request.phase ?? 0xff)
     bytes[at + 1] = Number(request.reflectedViewmodel ?? false)
     bytes[at + 2] = Number(request.ownerAlive ?? true)
-    bytes[at + 3] = 0
+    bytes[at + 3] = Number(request.allowIdleTransition ?? false)
     if (((request.itemModel !== undefined && !request.worldItem || request.handsOnlyViewmodel) && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
       (request.worldItem && (request.itemModel === undefined || request.phase !== undefined || request.handsOnlyViewmodel || request.fireView !== undefined)) ||
       (request.itemModel === undefined && !request.handsOnlyViewmodel && request.phase !== undefined) ||
       (request.handsOnlyViewmodel && (request.itemModel !== undefined || request.itemBodygroups !== undefined)) ||
       typeof (request.reflectedViewmodel ?? false) !== "boolean" ||
-      typeof (request.ownerAlive ?? true) !== "boolean") throw new ProjectilePresentationError("MalformedFact", "viewmodel frame request")
+      typeof (request.ownerAlive ?? true) !== "boolean" || typeof (request.allowIdleTransition ?? false) !== "boolean") throw new ProjectilePresentationError("MalformedFact", "viewmodel frame request")
     at += 4
     view.setInt32(at, request.packedBody ?? -0x8000_0000, true);at+=4
     if(request.packedBody!==undefined&&(!Number.isSafeInteger(request.packedBody)||request.packedBody<0||request.itemModel!==undefined))throw new ProjectilePresentationError("MalformedFact","packed model body")
