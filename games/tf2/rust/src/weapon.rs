@@ -411,6 +411,10 @@ pub enum MinigunState {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponRuntime {
+    pub hitscan: crate::hitscan::State,
+    pub deploy_multiplier: f32,
+    pub spinup_seconds: f32,
+    pub discard_chambered_on_reload: bool,
     pub critical: crate::critical::WeaponState,
     pub resolved_profile: WeaponProfile,
     pub weapon: Weapon,
@@ -449,6 +453,10 @@ impl WeaponRuntime {
     pub fn full_with_profile(weapon: Weapon, profile: WeaponProfile) -> Self {
         Self {
             critical: crate::critical::WeaponState::default(),
+            hitscan: crate::hitscan::State::default(),
+            deploy_multiplier: 1.0,
+            spinup_seconds: 0.75,
+            discard_chambered_on_reload: false,
             resolved_profile: profile,
             weapon,
             clip: profile.maximum_clip,
@@ -506,11 +514,13 @@ impl WeaponRuntime {
 
     pub fn deploy(&mut self, tick: u64, tick_interval: f32) {
         self.abort_reload();
+        self.hitscan.consecutive_shots = 0;
         self.charge_begin_tick = None;
         self.next_primary_tick = self
             .next_primary_tick
-            .max(tick.saturating_add(delay_ticks(0.5, tick_interval)));
+            .max(tick.saturating_add(delay_ticks(0.5 * self.deploy_multiplier, tick_interval)));
         self.first_primary_tick = self.next_primary_tick;
+        self.next_secondary_tick = self.next_secondary_tick.max(tick.saturating_add(delay_ticks(0.5 * self.deploy_multiplier, tick_interval)));
     }
 
     pub fn refill(&mut self) {
@@ -534,6 +544,7 @@ impl WeaponRuntime {
 
     pub fn reset_for_spawn(&mut self) {
         self.refill();
+        self.hitscan = crate::hitscan::State::default();
     }
 
     pub fn abort_reload(&mut self) {
@@ -558,10 +569,12 @@ impl WeaponRuntime {
         self.reload = ReloadPhase::Start;
         self.reload_due_tick =
             Some(tick.saturating_add(delay_ticks(profile.reload_start, tick_interval)));
+        self.hitscan.idle_tick = self.reload_due_tick.unwrap();
+        if profile.reload_round == 0.0 { self.next_primary_tick = self.next_primary_tick.max(self.reload_due_tick.unwrap()); }
         activities.push(ActivityEvent {
             tick,
             weapon: self.weapon,
-            activity: if self.weapon == Weapon::SyringeGun {
+            activity: if self.weapon == Weapon::SyringeGun || self.discard_chambered_on_reload {
                 WeaponActivity::ReloadLoop
             } else {
                 WeaponActivity::ReloadStart
@@ -600,13 +613,10 @@ impl WeaponRuntime {
         }
         match self.reload {
             ReloadPhase::Start => {
-                if matches!(
-                    self.weapon,
-                    Weapon::Pistol | Weapon::Smg | Weapon::EngineerPistol | Weapon::Revolver
-                ) {
+                if profile.reload_round == 0.0 {
                     let inserted = (profile.maximum_clip - self.clip).min(self.reserve);
                     self.clip += inserted;
-                    self.reserve -= inserted;
+                    self.reserve = self.reserve.saturating_sub(if self.discard_chambered_on_reload { profile.maximum_clip } else { inserted });
                     ammo.push(AmmoEvent {
                         tick,
                         weapon: self.weapon,
@@ -661,11 +671,12 @@ impl WeaponRuntime {
             }
             ReloadPhase::Ready => self.reload_due_tick = None,
         }
+        self.hitscan.idle_tick = self.reload_due_tick.unwrap_or(tick);
     }
 
     pub fn minigun_penalties(self, tick: u64, tick_interval: f32) -> (f32, f32) {
         let prefire = self.spin_begin_tick.map_or(0.0, |begin| {
-            elapsed_seconds(begin, tick, tick_interval) - 0.75
+            elapsed_seconds(begin, tick, tick_interval) - self.spinup_seconds
         });
         let firing = self
             .firing_begin_tick
@@ -784,7 +795,7 @@ impl WeaponRuntime {
                 self.minigun_state = MinigunState::Starting;
                 self.spin_begin_tick = Some(tick);
                 self.firing_begin_tick = None;
-                self.next_primary_tick = tick.saturating_add(delay_ticks(0.75, tick_interval));
+                self.next_primary_tick = tick.saturating_add(delay_ticks(self.spinup_seconds, tick_interval));
                 self.idle_due_tick = Some(self.next_primary_tick);
                 activities.push(ActivityEvent {
                     tick,
