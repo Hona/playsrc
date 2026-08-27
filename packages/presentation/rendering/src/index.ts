@@ -44,6 +44,7 @@ import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { RetainedModelCache } from "./retained-model-cache"
 import { installRenderObjectLifetime } from "./render-object-lifetime"
 import { installGeometryAttributeLifetime } from "./geometry-attribute-lifetime"
+import { installTextureBindingLifetime } from "./texture-binding-lifetime"
 import { disposeDynamicModel } from "./dynamic-model-disposal"
 import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "./model-lighting-graphs"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
@@ -1659,6 +1660,7 @@ class RendererOwner implements Renderer {
   #restoreNodeBuilderInstrumentation?: () => void
   #renderObjectLifetime?: ReturnType<typeof installRenderObjectLifetime>
   #restoreGeometryAttributeLifetime?: () => void
+  #restoreTextureBindingLifetime?: () => void
   #restoreBufferNames?: () => void
   #uploadBatch?: WebGpuUploadBatch
   #active?: SceneResources
@@ -2122,6 +2124,7 @@ class RendererOwner implements Renderer {
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
       this.#renderObjectLifetime = installRenderObjectLifetime((backend as any)._objects)
       this.#restoreGeometryAttributeLifetime = installGeometryAttributeLifetime((backend as any)._geometries)
+      this.#restoreTextureBindingLifetime = installTextureBindingLifetime((backend as any)._textures, backend.backend as any)
       const diagnostics = (globalThis as any).__playsrcProfile
       if (diagnostics) diagnostics.rendererOwnership = () => ({
         scene: this.#sceneGeneration,
@@ -2202,6 +2205,8 @@ class RendererOwner implements Renderer {
       this.#renderObjectLifetime = undefined
       this.#restoreGeometryAttributeLifetime?.()
       this.#restoreGeometryAttributeLifetime = undefined
+      this.#restoreTextureBindingLifetime?.()
+      this.#restoreTextureBindingLifetime = undefined
       this.#restoreBufferNames?.()
       this.#restoreBufferNames = undefined
       backend.dispose()
@@ -5973,6 +5978,8 @@ class RendererOwner implements Renderer {
       this.#renderObjectLifetime = undefined
       this.#restoreGeometryAttributeLifetime?.()
       this.#restoreGeometryAttributeLifetime = undefined
+      this.#restoreTextureBindingLifetime?.()
+      this.#restoreTextureBindingLifetime = undefined
       this.#restoreBufferNames?.()
       this.#restoreBufferNames = undefined
       this.#exposureSampler?.dispose()
@@ -6102,6 +6109,8 @@ class RendererOwner implements Renderer {
     this.#renderObjectLifetime = undefined
     this.#restoreGeometryAttributeLifetime?.()
     this.#restoreGeometryAttributeLifetime = undefined
+    this.#restoreTextureBindingLifetime?.()
+    this.#restoreTextureBindingLifetime = undefined
     this.#restoreBufferNames?.()
     this.#restoreBufferNames = undefined
     this.#exposureSampler?.dispose()
