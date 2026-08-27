@@ -16,6 +16,7 @@ export type SharedReply = Readonly<{
 }>
 const tags = ["simulation", "particles", "models", "visibility"] as const
 const timingKeys = ["queueMilliseconds", "inputCopyMilliseconds", "transactMilliseconds", "outputCopyMilliseconds", "totalMilliseconds"] as const
+const memoryKeys = ["wasmLinearMemoryBytes", "wasmAllocatorLiveBytes", "wasmAllocatorHighWaterBytes"] as const
 
 function validate(mailbox: SharedArrayBuffer): void {
   if (!(mailbox instanceof SharedArrayBuffer) || mailbox.byteLength !== REPLY_BYTES) throw new Error("Invalid reply mailbox")
@@ -61,7 +62,7 @@ export class ReplyWriter {
   }
   shared(reply: SharedReply, release: () => void): void {
     const { at, sequence } = this.#reserve()
-    if (reply.ranges.length < 1 || reply.ranges.length > 2 || (reply.kind !== "visibility" && reply.ranges.length !== 1)) throw new Error("Invalid reply ranges")
+    if (reply.ranges.length < 1 || reply.ranges.length > 2 || (reply.kind !== "visibility" && reply.kind !== "particles" && reply.ranges.length !== 1)) throw new Error("Invalid reply ranges")
     this.#bytes.setUint32(at, tags.indexOf(reply.kind) + 1, true)
     this.#bytes.setUint32(at + 4, reply.id, true)
     this.#bytes.setUint32(at + 8, reply.generation, true)
@@ -79,6 +80,11 @@ export class ReplyWriter {
     this.#bytes.setUint32(at + 40, attack ? attack.playerClass | attack.weapon << 8 | attack.lifecycle << 16 : 0, true)
     this.#bytes.setBigUint64(at + 48, attack?.hostTick ?? 0n, true)
     timingKeys.forEach((key, index) => this.#bytes.setFloat64(at + 56 + index * 8, reply.timings[key], true))
+    const hasMemory = reply.timings.wasmLinearMemoryBytes !== undefined
+    if (hasMemory ? memoryKeys.some(key => !Number.isSafeInteger(reply.timings[key]) || reply.timings[key]! < 0)
+      : reply.timings.wasmAllocatorLiveBytes !== undefined || reply.timings.wasmAllocatorHighWaterBytes !== undefined) throw new Error("Invalid reply memory gauges")
+    this.#bytes.setUint32(at + 120, hasMemory ? 1 : 0, true)
+    if (hasMemory) memoryKeys.forEach((key, index) => this.#bytes.setFloat64(at + 96 + index * 8, reply.timings[key]!, true))
     this.#releases.set(sequence, release)
     this.#publish(sequence)
   }
@@ -153,12 +159,19 @@ export class ReplyReader {
     const kind = tags[tag - 1]
     const id = this.#bytes.getUint32(at + 4, true), generation = this.#bytes.getUint32(at + 8, true)
     const count = this.#bytes.getUint32(at + 12, true)
-    if (!kind || id === 0 || count < 1 || count > 2 || (kind !== "visibility" && count !== 1)) throw new Error("Invalid shared reply")
-    const timings = {
+    if (!kind || id === 0 || count < 1 || count > 2 || (kind !== "visibility" && kind !== "particles" && count !== 1)) throw new Error("Invalid shared reply")
+    const memoryFlag = this.#bytes.getUint32(at + 120, true)
+    if (memoryFlag > 1) throw new Error("Invalid reply memory flag")
+    const timings: { -readonly [K in keyof WorkerTransactionTimings]: WorkerTransactionTimings[K] } & { mainCopyMilliseconds: number } = {
       queueMilliseconds: this.#bytes.getFloat64(at + 56, true), inputCopyMilliseconds: this.#bytes.getFloat64(at + 64, true),
       transactMilliseconds: this.#bytes.getFloat64(at + 72, true), outputCopyMilliseconds: this.#bytes.getFloat64(at + 80, true),
       totalMilliseconds: this.#bytes.getFloat64(at + 88, true), mainCopyMilliseconds: 0,
     }
+    if (memoryFlag) memoryKeys.forEach((key, index) => {
+      const value = this.#bytes.getFloat64(at + 96 + index * 8, true)
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid reply memory gauges")
+      timings[key] = value
+    })
     if (Object.values(timings).some(value => !Number.isFinite(value) || value < 0)) throw new Error("Invalid reply timings")
     // A shared Memory object, not a cached SAB, observes growth by its Worker.
     const memory = this.shared.memory.buffer
@@ -175,7 +188,7 @@ export class ReplyReader {
     const outputs = ranges.map(range => new Uint8Array(memory, range.pointer, range.length).slice().buffer)
     timings.mainCopyMilliseconds = performance.now() - copyStarted
     if (kind === "visibility") return { id, kind, generation, timings, outputs }
-    if (kind === "particles") return { id, kind, generation, timings, output: outputs[0]! }
+    if (kind === "particles") return { id, kind, generation, timings, output: outputs[0]!, ...(outputs[1] ? { visualOutput: outputs[1] } : {}) }
     const player = this.#bytes.getUint32(at + 40, true)
     const replayAttack = this.#bytes.getUint32(at + 36, true) ? { hostTick: this.#bytes.getBigUint64(at + 48, true),
       playerClass: player & 255, weapon: player >>> 8 & 255, lifecycle: player >>> 16 & 255 } : undefined

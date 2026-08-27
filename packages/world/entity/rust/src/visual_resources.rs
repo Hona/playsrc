@@ -21,8 +21,12 @@ pub struct References {
 }
 
 pub fn from_graph(graph: &Graph) -> Result<References, std::str::Utf8Error> {
+    from_entities(&graph.entities)
+}
+
+pub fn from_entities<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> Result<References, std::str::Utf8Error> {
     let mut output = References::default();
-    for entity in &graph.entities {
+    for entity in entities {
         let class = entity.classname.as_deref().unwrap_or_default();
         if class.eq_ignore_ascii_case(b"env_sprite") || class.eq_ignore_ascii_case(b"env_sprite_oriented") || class.eq_ignore_ascii_case(b"env_glow") {
             if let Some(path) = sprite_material(text(entity, b"model")?) { output.materials.insert(path); }

@@ -94,6 +94,9 @@ export type InitialView = Readonly<{
 }>
 
 export type WorkerTransactionTimings = Readonly<{
+  wasmLinearMemoryBytes?: number
+  wasmAllocatorLiveBytes?: number
+  wasmAllocatorHighWaterBytes?: number
   mainCopyMilliseconds?: number
   queueMilliseconds?: number
   inputCopyMilliseconds: number
@@ -111,6 +114,7 @@ export type WorkerResponse =
   | Readonly<{
       id: number
       kind: "loaded"
+      legacyParticleFrames: boolean
       generation: number
       payloadBytes: number
       payloadSha256: string
@@ -164,7 +168,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "position-set"; generation: number }>
   | Readonly<{ id: number; kind: "entity-input-queued"; generation: number }>
-  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; visualOutput?: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: SharedArrayBuffer; byteOffset: number; byteLength: number; lease: number; ownership: SharedArrayBuffer; slot: number; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "visibility"; generation: number; outputs: readonly ArrayBuffer[]; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; replayAttack?: Readonly<{ hostTick: bigint; playerClass: number; weapon: number; lifecycle: number }>; timings: WorkerTransactionTimings }>

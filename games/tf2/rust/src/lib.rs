@@ -1715,6 +1715,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.particle_systems()
     }
 
+    pub fn map_smokestacks(&self) -> Vec<playsrc_entity::smokestack::Presentation> {
+        self.map.smokestacks()
+    }
+
     pub fn payload_constraint_blocked(&self) -> bool {
         self.map.payload_constraint_blocked()
     }

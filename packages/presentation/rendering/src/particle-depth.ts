@@ -20,6 +20,7 @@ export class SourceParticleDepth {
   #evidence: { before: GPUTexture; depth: GPUTexture; width: number; height: number; format: string; colorSpace: string } | null = null
 
   requestEvidence(): void { this.#evidenceRequested = true }
+  get evidenceRequested(): boolean { return this.#evidenceRequested }
 
   async readEvidence(): Promise<{ before: Uint8Array; depth: Uint8Array; width: number; height: number; format: string; colorSpace: string } | null> {
     const evidence = this.#evidence

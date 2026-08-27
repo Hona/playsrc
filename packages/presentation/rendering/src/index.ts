@@ -402,6 +402,9 @@ export type EvaluatedWorldMaterialInput = Readonly<{
 export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan;worldMaterials:readonly EvaluatedWorldMaterialInput[]}>
 
 export type Frame = Readonly<{
+  /** Accepted Source client-render clock; absent for non-game fixture renders. */
+  clientFrame?: number
+  clientFrameSeconds?: number
   hudMaterials?: HudMaterialFrame
   camera: Camera
   effects: readonly Effect[]
@@ -5293,7 +5296,10 @@ class RendererOwner implements Renderer {
         const profile = browserFrameProfiler()
         mesh.onBeforeRender = (renderer, _scene, camera) => {
           if (Array.isArray((renderer as any)._compilationPromises)) return
-          if (material.userData.sourceParticleDepth) assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
+          if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && camera === this.#camera
+            && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))) {
+            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
+          }
           if (profile && !material.userData.firstParticleUse) {
             material.userData.firstParticleUse = true
             ;(profile.firstParticleUses ??= []).push({ at: performance.now(), id: material.id, identity: material.name, pass: profile.currentPass?.identity ?? null })

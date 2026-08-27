@@ -48,6 +48,7 @@ export type ResourceConfiguration = Readonly<{
 }>
 
 export type LoadedGame = Readonly<{
+  legacyParticleFrames: boolean
   generation: number
   payload: Uint8Array
   payloadSha256: string
@@ -492,6 +493,7 @@ export class Tf2WorkerClient {
         !(loaded.presentation instanceof ArrayBuffer) ||
         loaded.presentation.byteLength !== loaded.presentationBytes ||
         (cached ? loaded.payload !== undefined : !(loaded.payload instanceof ArrayBuffer)) ||
+        typeof loaded.legacyParticleFrames !== "boolean" ||
         !Number.isSafeInteger(loaded.initialView?.entity) ||
         loaded.initialView.entity < 0 ||
         loaded.initialView.entity > 0xffff_ffff ||
@@ -611,6 +613,7 @@ export class Tf2WorkerClient {
           position: Object.freeze([...loaded.initialView.position]) as readonly [number, number, number],
           angles: Object.freeze([...loaded.initialView.angles]) as readonly [number, number, number],
         }),
+        legacyParticleFrames: loaded.legacyParticleFrames,
       })
     } catch (error) {
       try {
@@ -753,16 +756,26 @@ export class Tf2WorkerClient {
     return this.#snapshotStreams.get(generation)?.metrics
   }
   async particles(generation: number, batch: Uint8Array): Promise<Uint8Array> {
+    const response = await this.#readParticleReply(generation, batch)
+    if (response.visualOutput) throw new Tf2WorkerError("WorkerFailed", "Unexpected client-frame visual output in a PCF transaction")
+    return new Uint8Array(response.output)
+  }
+  async legacyFrame(generation: number, batch: Uint8Array): Promise<Readonly<{ particles: Uint8Array; visuals: Uint8Array }>> {
+    const response = await this.#readParticleReply(generation, batch)
+    return { particles: new Uint8Array(response.output), visuals: response.visualOutput ? new Uint8Array(response.visualOutput) : new Uint8Array(0) }
+  }
+  async #readParticleReply(generation: number, batch: Uint8Array): Promise<Extract<WorkerResponse, { kind: "particles" }>> {
     if (batch.byteLength < 32 || batch.byteLength > 4 * 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
     const transferred = transferredBytes(batch)
     const response = await this.#request({ kind: "particles", generation, batch: transferred }, [transferred])
     if (
       response.kind !== "particles" ||
       response.generation !== generation ||
-      !(response.output instanceof ArrayBuffer)
+      !(response.output instanceof ArrayBuffer) ||
+      (response.visualOutput !== undefined && !(response.visualOutput instanceof ArrayBuffer))
     )
       throw new Tf2WorkerError("WorkerFailed")
-    return new Uint8Array(response.output)
+    return response
   }
   models(generation: number, batch: Uint8Array): Promise<readonly PosedModel[]> {
     const read = this.#readModels(generation, batch)

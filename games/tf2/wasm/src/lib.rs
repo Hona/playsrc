@@ -5,6 +5,7 @@ mod memory;
 mod reply_output;
 mod wearable;
 mod map_particles;
+mod smokestack;
 pub mod static_prop_artifact;
 
 #[cfg(target_arch = "wasm32")]
@@ -571,6 +572,8 @@ struct Slot {
     coverage: Vec<u8>,
     particles: Option<playsrc_particle::ParticleWorld>,
     map_particles: Option<(playsrc_particle::ParticleWorld, map_particles::MapParticles)>,
+    smokestacks: Option<smokestack::Frames>,
+    legacy_visual_output: Vec<u8>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
     combat_decals: Option<CombatDecalWorld>,
@@ -1148,7 +1151,7 @@ unsafe fn compile_map(
         compile_metrics[3] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let (particles, particle_materials, particle_sheets, particle_presentation) =
-            compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entity_graph)).map_err(|_| 10_u32)?;
+            compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entity_graph), &smokestack_materials(&entity_graph)?).map_err(|_| 10_u32)?;
         let static_model_roots = canonical
             .static_props
             .models
@@ -1523,6 +1526,9 @@ unsafe fn compile_map(
             coverage,
             map_particles: (!session.map_particle_systems().is_empty())
                 .then(|| (particles.independent(), map_particles::MapParticles::default())),
+            smokestacks: (!session.map_smokestacks().is_empty()).then(|| smokestack::Frames::new(
+                (playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut RuntimeMetricsClock::new()) as u32 & 0x7fff_ffff) as i32)),
+            legacy_visual_output: Vec::new(),
             particles: Some(particles),
             particle_materials,
             particle_sheets,
@@ -1572,6 +1578,8 @@ unsafe fn compile_map(
             coverage: Vec::new(),
             particles: None,
             map_particles: None,
+            smokestacks: None,
+            legacy_visual_output: Vec::new(),
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -1757,7 +1765,7 @@ pub fn diagnose_presentation_bound(
     let visibility =
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
     let (_, _, _, particle_presentation) =
-        compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entities)).map_err(|_| 10u32)?;
+        compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entities), &smokestack_materials(&entities)?).map_err(|_| 10u32)?;
     let ((_, models, _, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
         canonical: &canonical,
         bsp: &bsp,
@@ -1938,7 +1946,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
-    let Ok((mut events, request)) = decode_particle_transaction(bytes) else {
+    let Ok((mut events, request, legacy_frame)) = decode_particle_transaction(bytes) else {
         *SIMULATION_ERROR_DETAIL
             .get_or_init(|| Mutex::new(String::new()))
             .lock()
@@ -1971,6 +1979,9 @@ pub unsafe extern "C" fn playsrc_particle_transact(
     if slot.generation != generation {
         return 0;
     }
+    if let Some(frame) = legacy_frame {
+        return transact_legacy_particle_frame(slot, request, frame);
+    }
     let Some(collision_world) = slot.collision.clone() else {
         return 0;
     };
@@ -1996,6 +2007,10 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         for (order, event) in events.iter_mut().enumerate() { event.source_order = order as u32; }
     }
     let wearable_controls = slot.wearable_particles.controls.iter().map(|(id, cp)| (*id, cp.clone())).collect::<Vec<_>>();
+    let encode = |items: Vec<playsrc_particle::RenderItem>, bounds| {
+        let items = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)?;
+        playsrc_particle::encode_render_output(&items, bounds, &slot.particle_materials, 64 * 1024 * 1024)
+    };
     let result = if let Some((map_world, map_state)) = slot.map_particles.as_mut() {
         let mut candidate = map_state.clone();
         let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
@@ -2020,12 +2035,11 @@ pub unsafe extern "C" fn playsrc_particle_transact(
                     }),
                     (left, right) => left.or(right),
                 };
-                let items = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)?;
-                playsrc_particle::encode_render_output(&items, bounds, &slot.particle_materials, 64 * 1024 * 1024)
+                encode(items, bounds)
             })
         }).inspect(|_| *map_state = candidate)
     } else {
-        world.transact_render_output(&events, &wearable_controls, request, &mut collision, &slot.particle_sheets, &slot.particle_materials, 64 * 1024 * 1024)
+        world.transact(&events, &wearable_controls, request, &mut collision, encode)
     };
     let output = match result {
         Ok(output) => output,
@@ -2041,6 +2055,97 @@ pub unsafe extern "C" fn playsrc_particle_transact(
     slot.wearable_particles.pending.clear();
     slot.wearable_particles.controls.clear();
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_legacy_particle_frames(handle: u32) -> u32 {
+    with(handle, |slot| u32::from(slot.smokestacks.is_some())).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_legacy_visual_output_length(handle: u32) -> usize {
+    with(handle, |slot| slot.legacy_visual_output.len()).unwrap_or(0)
+}
+
+/// Select a real, PVS-admitted opaque-world occluder for the headed map probe.
+/// This does not mutate entities, collision, render depth, or particle state.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn smokestack_occlusion_probe(handle: u32) -> Option<(usize, [f32; 3], [f32; 2], f32)> {
+    with(handle, |slot| {
+        let (world, visibility, area, candidates, environment, session) = (slot.collision.as_ref()?, slot.visibility.as_ref()?,
+            slot.area_state.as_ref()?, slot.visibility_candidates.as_ref()?, slot.environment.as_ref()?, slot.session.as_ref()?);
+        for state in session.map_smokestacks() {
+            let origin = state.transform.origin;
+            let target = [origin[0], origin[1], origin[2] + state.parameters.jet_length * 0.5];
+            for distance in [128.0, 256.0, 512.0] {
+                for offset in [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0], [1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]] {
+                    let position = [target[0] + offset[0] * distance, target[1] + offset[1] * distance, target[2]];
+                    let trace = world.trace_hull(position, target, playsrc_collision::Hull { mins: [0.0; 3], maxs: [0.0; 3] }, 1).ok()?;
+                    if trace.start_solid || trace.all_solid || !(0.1..0.9).contains(&trace.fraction)
+                        || trace.surface_flags & (0x80 | 0x4) != 0 || !matches!(trace.hit, Some(playsrc_collision::Hit::WorldBrush { .. })) { continue; }
+                    let yaw = (target[1] - position[1]).atan2(target[0] - position[0]).to_degrees();
+                    let input = [position[0], position[1], position[2], position[0], position[1], position[2], yaw, 0.0, 75.0, 16.0 / 9.0, 1.0, 32_768.0, 0.0, -1.0];
+                    let view = visibility.view(area, candidates, &playsrc_visibility::ViewQuery { origins: vec![position], bypass_pvs: false }).ok()?;
+                    let view = smokestack::RenderView::from_query(&input, &view.leaves, visibility, &environment.node_cull_modes).ok()?;
+                    let bounds = playsrc_particle::Bounds { minimum: [origin[0] - 16.0, origin[1] - 16.0, origin[2]], maximum: [origin[0] + 16.0, origin[1] + 16.0, origin[2] + state.parameters.jet_length] };
+                    if view.render_leaf(visibility, bounds, bounds).is_none() { continue; }
+                    let covered = (0..8).all(|corner| {
+                        let point = std::array::from_fn(|axis| if corner & (1 << axis) == 0 { bounds.minimum[axis] } else { bounds.maximum[axis] });
+                        world.trace_hull(position, point, playsrc_collision::Hull { mins: [0.0; 3], maxs: [0.0; 3] }, 1)
+                            .is_ok_and(|hit| !hit.start_solid && hit.fraction < 0.95 && hit.surface_flags & (0x80 | 0x4) == 0 && matches!(hit.hit, Some(playsrc_collision::Hit::WorldBrush { .. })))
+                    });
+                    if covered { return Some((state.source, position, [yaw, 0.0], trace.fraction)); }
+                }
+            }
+        }
+        None
+    }).flatten()
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LegacyParticleFrame<'a> { seconds: f32, accepted: u32, identity: u32, view: [f32; 4], visual_payload: &'a [u8] }
+
+fn transact_legacy_particle_frame(slot: &mut Slot, request: playsrc_particle::AdvanceRequest, frame: LegacyParticleFrame<'_>) -> u32 {
+    if !frame.visual_payload.is_empty() {
+        *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("legacy frame error detail") = "Legacy visual frame payload has no admitted processor".into();
+        return 0;
+    }
+    let (Some(smoke), Some(visibility)) = (slot.smokestacks.as_mut(), slot.visibility.as_ref()) else { return 0; };
+    let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
+        match controller.state { playsrc_map::ControllerState::SkyCamera { area, origin, scale, .. } => Some((area, origin, scale)), _ => None }
+    }));
+    for index in 0..if sky.is_some() { 2 } else { 1 } {
+        let (origin, position, area_filter) = if index == 0 { (request.camera_position, request.camera_position, -1.0) }
+            else { let (area, origin, scale) = sky.unwrap(); (origin, std::array::from_fn(|axis| origin[axis] + request.camera_position[axis] / scale.max(1) as f32), area as f32) };
+        let input = [origin[0], origin[1], origin[2], position[0], position[1], position[2],
+            frame.view[0], frame.view[1], frame.view[2], frame.view[3], 1.0, 30_000.0, request.to_seconds, area_filter];
+        if smoke.views[index].as_ref().is_none_or(|view| !view.matches(&input)) {
+            let (Some(area), Some(candidates)) = (slot.area_state.as_ref(), slot.visibility_candidates.as_ref()) else { return 0; };
+            let Ok(view) = visibility.view(area, candidates, &playsrc_visibility::ViewQuery { origins: vec![origin], bypass_pvs: false }) else { return 0; };
+            let leaves: Vec<_> = view.leaves.into_iter().filter(|&leaf| index == 0 || usize::from(visibility.leaves[leaf].area_and_flags & 0x1ff) == sky.unwrap().0).collect();
+            let Some(environment) = slot.environment.as_ref() else { return 0; };
+            let Ok(view) = smokestack::RenderView::from_query(&input, &leaves, visibility, &environment.node_cull_modes) else { return 0; };
+            smoke.views[index] = Some(view);
+        }
+    }
+    let views = smoke.views.clone();
+    let mut candidate = smoke.candidate(frame.accepted);
+    let states = slot.session.as_ref().map(|session| session.map_smokestacks()).unwrap_or_default();
+    let items = candidate.advance(&states, request.to_seconds, frame.seconds,
+        |sky| views[usize::from(sky)].as_ref().expect("owning particle view").camera,
+        |position| visibility.locate_leaf(position).ok().and_then(|leaf| visibility.leaves.get(leaf))
+            .is_some_and(|leaf| Some(usize::from(leaf.area_and_flags & 0x1ff)) == sky.map(|sky| sky.0)),
+        |sky, bounds, registered| views[usize::from(sky)].as_ref().and_then(|view| view.render_leaf(visibility, bounds, registered)),
+        |state| views[0].as_ref().unwrap().in_pvs(visibility, playsrc_particle::Bounds { minimum: state.transform.origin, maximum: state.transform.origin }));
+    let result = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)
+        .and_then(|items| playsrc_particle::encode_render_output(&items, None, &slot.particle_materials, 64 * 1024 * 1024));
+    match result {
+        Ok(output) => { smoke.prepare(frame.identity, candidate); slot.particle_output = output; slot.legacy_visual_output.clear(); 1 }
+        Err(error) => {
+            *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("particle error detail") = error.to_string();
+            0
+        }
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_particle_output_length(handle: u32) -> usize {
@@ -3957,7 +4062,7 @@ fn encode_sorted_world_bits(output: &mut Vec<u8>, words: &[u64]) {
     }
 }
 
-fn frustum_world_surfaces(
+fn frustum_world_leaves(
     world: &playsrc_visibility::World,
     node_cull_modes: &[i8],
     allowed_leaves: &[usize],
@@ -3965,7 +4070,7 @@ fn frustum_world_surfaces(
     angles: [f32; 2],
     vertical_fov: f32,
     aspect: f32,
-) -> Result<Vec<u16>, ()> {
+) -> Result<Vec<usize>, ()> {
     const SUPPRESS: u8 = u8::MAX;
     let planes = world_frustum(origin, angles[0], angles[1], vertical_fov, aspect);
     if node_cull_modes.len() != world.nodes.len() {
@@ -4009,6 +4114,19 @@ fn frustum_world_surfaces(
         stack.push((node.children[1 - near], mask));
         stack.push((node.children[near], mask));
     }
+    Ok(leaves)
+}
+
+fn frustum_world_surfaces(
+    world: &playsrc_visibility::World,
+    node_cull_modes: &[i8],
+    allowed_leaves: &[usize],
+    origin: [f32; 3],
+    angles: [f32; 2],
+    vertical_fov: f32,
+    aspect: f32,
+) -> Result<Vec<u16>, ()> {
+    let leaves = frustum_world_leaves(world, node_cull_modes, allowed_leaves, origin, angles, vertical_fov, aspect)?;
     let mut seen = [0_u64; 1024];
     let mut surfaces = Vec::new();
     for leaf in leaves {
@@ -4091,6 +4209,10 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             area_filter.is_none_or(|area| world.leaves[*leaf].area_and_flags & 0x01ff == area)
         })
         .collect::<Vec<_>>();
+    if let Some(smoke) = slot.smokestacks.as_mut() {
+        let Ok(view) = smokestack::RenderView::from_query(input, &qualified_leaves, world, &environment.node_cull_modes) else { return 0; };
+        smoke.views[usize::from(area_filter.is_some())] = Some(view);
+    }
     let Ok(world_surfaces) = frustum_world_surfaces(
         world,
         &environment.node_cull_modes,
@@ -4940,6 +5062,8 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.coverage = Vec::new();
     slot.particles = None;
     slot.map_particles = None;
+    slot.smokestacks = None;
+    slot.legacy_visual_output = Vec::new();
     slot.particle_materials = Vec::new();
     slot.wearable_particles = wearable::ParticleStates::default();
     slot.particle_sheets = BTreeMap::new();
@@ -14195,6 +14319,7 @@ fn compile_particles(
     b: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
     roots: &[&str],
+    legacy_materials: &[String],
 ) -> Result<CompiledParticles, ()> {
     let paths = std::str::from_utf8(b.get(playsrc_tf2::particle_resources::SOURCE_LIST).ok_or(())?)
         .map_err(|_| ())?.lines().collect::<Vec<_>>();
@@ -14211,14 +14336,20 @@ fn compile_particles(
         playsrc_particle::Registry::from_pcf(&sources, playsrc_particle::RegistryLimits::default())
             .map_err(|_| ())?;
     let roots = roots.iter().copied().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
-    compile_particle_materials(&registry, &roots, b, decoders)
+    compile_particle_materials(&registry, &roots, b, decoders, legacy_materials)
+}
+
+fn smokestack_materials(graph: &playsrc_entity::Graph) -> Result<Vec<String>, u32> {
+    let entities = graph.entities.iter().filter(|entity| entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"env_smokestack")));
+    Ok(playsrc_entity::visual_resources::from_entities(entities).map_err(|_| 10_u32)?.materials.into_iter()
+        .map(|path| path.trim_start_matches("materials/").trim_end_matches(".vmt").to_owned()).collect())
 }
 
 fn compile_cosmetic_particles(b: &BTreeMap<String, &[u8]>, decoders: &TextureDecoders<'_>) -> Result<CompiledParticles, ()> {
     let registry = playsrc_particle::Registry::from_pcf(&[playsrc_particle::PcfSource {
         logical_path: "particles/item_fx.pcf", bytes: b.get("particles/item_fx.pcf").ok_or(())?,
     }], playsrc_particle::RegistryLimits::default()).map_err(|_| ())?;
-    compile_particle_materials(&registry, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")], b, decoders)
+    compile_particle_materials(&registry, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")], b, decoders, &[])
 }
 
 fn compile_particle_materials(
@@ -14226,8 +14357,12 @@ fn compile_particle_materials(
     roots: &[playsrc_particle::DefinitionLookup<'_>],
     b: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
+    legacy_materials: &[String],
 ) -> Result<CompiledParticles, ()> {
-    let materials = registry.target_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
+    let mut materials = registry.target_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
+    materials.extend_from_slice(legacy_materials);
+    materials.sort();
+    materials.dedup();
     let compiled = materials
         .iter()
         .map(|identity| {
@@ -14648,17 +14783,29 @@ fn decode_particle_transaction(
     (
         Vec<playsrc_particle::Event>,
         playsrc_particle::AdvanceRequest,
+        Option<LegacyParticleFrame<'_>>,
     ),
     (),
 > {
     let mut r = ParticleReader { bytes, at: 0 };
-    if r.take(4)? != b"PPTX" || r.u32()? != 3 {
+    if r.take(4)? != b"PPTX" || r.u32()? != 4 {
         return Err(());
     }
     let from = r.f32()?;
     let to = r.f32()?;
     let camera_position = [r.f32()?, r.f32()?, r.f32()?];
     let count = r.u32()? as usize;
+    if count == 0x8000_0000 {
+        let frame_seconds = r.f32()?;
+        let accepted = r.u32()?;
+        let identity = r.u32()?;
+        let view = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+        let visual_length = r.u32()? as usize;
+        let visual_payload = r.take(visual_length)?;
+        if from < 0.0 || from != to || frame_seconds < 0.0 || accepted >= identity || view[2] <= 0.0 || view[2] >= 180.0 || view[3] <= 0.0 || r.at != bytes.len() { return Err(()); }
+        return Ok((Vec::new(), playsrc_particle::AdvanceRequest { from_seconds: from, to_seconds: to,
+            maximum_step_seconds: 1.0 / 60.0, camera_position }, Some(LegacyParticleFrame { seconds: frame_seconds, accepted, identity, view, visual_payload })));
+    }
     if count > 4096 || from < 0.0 || to < from {
         return Err(());
     }
@@ -14739,6 +14886,7 @@ fn decode_particle_transaction(
             maximum_step_seconds: 1.0 / 60.0,
             camera_position,
         },
+        None,
     ))
 }
 
@@ -15077,7 +15225,7 @@ mod tests {
             decode_particle_sheet(metadata)
                 .unwrap_or_else(|_| panic!("particle sheet {identity}: {texture}"));
         }
-        assert!(compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS).is_ok());
+        assert!(compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS, &[]).is_ok());
     }
 
     #[test]
@@ -15097,7 +15245,7 @@ mod tests {
             playsrc_material::static_state(&material, playsrc_material::TextureAlphaFacts { base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit }).unwrap_or_else(|error| panic!("state {identity}: {error:?}"));
             decode_particle_sheet(metadata).unwrap_or_else(|_| panic!("sheet {identity}"));
         }
-        let (mut world, _, materials, presentation) = compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS).unwrap();
+        let (mut world, _, materials, presentation) = compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS, &[]).unwrap();
         let fire = "particle/flamethrowerfire/flamethrowerfire102.vmt";
         let state = presentation[fire].sprite_card.as_ref().unwrap();
         assert_eq!(state.add_self.value, 0.5);
@@ -15254,7 +15402,7 @@ mod tests {
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PPTX");
-        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
         bytes.extend_from_slice(&0.0_f32.to_le_bytes());
         bytes.extend_from_slice(&0.015_f32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
@@ -15267,13 +15415,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_frame_envelope_owns_one_clock_ack_and_exact_visual_payload_range() {
+        let mut bytes = vec![0_u8; 68];
+        bytes[..4].copy_from_slice(b"PPTX");
+        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&0.3_f32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&7_u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&8_u32.to_le_bytes());
+        bytes[52..56].copy_from_slice(&75.0_f32.to_le_bytes());
+        bytes[56..60].copy_from_slice(&(16.0_f32 / 9.0).to_le_bytes());
+        bytes[60..64].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[64..].copy_from_slice(b"PLVQ");
+        let (events, request, frame) = decode_particle_transaction(&bytes).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(request.from_seconds, request.to_seconds);
+        let frame = frame.unwrap();
+        assert_eq!((frame.seconds, frame.accepted, frame.identity), (0.3, 7, 8));
+        assert_eq!(frame.visual_payload, b"PLVQ");
+        assert!(decode_particle_transaction(&bytes[..67]).is_err());
+        bytes[36..40].copy_from_slice(&8_u32.to_le_bytes());
+        assert!(decode_particle_transaction(&bytes).is_err());
+    }
+
+    #[test]
     fn particle_transaction_uses_one_stop_opcode_and_explicit_source_modes() {
         for (mode, expected) in [
             (0, playsrc_particle::StopMode::Graceful),
             (1, playsrc_particle::StopMode::Immediate),
         ] {
-            let (events, request) = decode_particle_transaction(&particle_stop_transaction(mode))
+            let bytes = particle_stop_transaction(mode);
+            let (events, request, legacy) = decode_particle_transaction(&bytes)
                 .expect("current particle transaction must decode");
+            assert!(legacy.is_none());
             assert_eq!(request.from_seconds, 0.0);
             assert_eq!(request.to_seconds, 0.015);
             assert_eq!(
@@ -15588,6 +15762,8 @@ mod tests {
             coverage: Vec::new(),
             particles: None,
             map_particles: None,
+            smokestacks: None,
+            legacy_visual_output: Vec::new(),
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -15675,6 +15851,8 @@ mod tests {
             coverage: Vec::new(),
             particles: None,
             map_particles: None,
+            smokestacks: None,
+            legacy_visual_output: Vec::new(),
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,

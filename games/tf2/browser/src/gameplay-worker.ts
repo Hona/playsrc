@@ -47,6 +47,8 @@ type WasmExports = Readonly<{
   playsrc_coverage_length(handle:number):number
   playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
+  playsrc_legacy_particle_frames(handle: number): number
+  playsrc_legacy_visual_output_length(handle: number): number
   playsrc_particle_output_length(handle: number): number
   playsrc_model_transact(handle: number, pointer: number, length: number): number
   playsrc_model_output_length(handle: number): number
@@ -241,6 +243,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_coverage_length,
         candidate.playsrc_coverage_copy,
         candidate.playsrc_particle_transact,
+        candidate.playsrc_legacy_particle_frames,
+        candidate.playsrc_legacy_visual_output_length,
         candidate.playsrc_particle_output_length,
         candidate.playsrc_model_transact,
         candidate.playsrc_model_output_length,
@@ -670,6 +674,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   post({
     id: request.id,
     kind: "loaded",
+    legacyParticleFrames: exports.playsrc_legacy_particle_frames(candidate) === 1,
     generation: request.generation,
     payloadBytes,
     payloadSha256,
@@ -970,10 +975,20 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     return
   }
   const outputCopyStarted=performance.now(),output = takeReply(value.exports, value.handle, 2, length)
-  const outputCopyMilliseconds=performance.now()-outputCopyStarted
+  let visual: ReturnType<typeof takeReply> | undefined
   try {
-    postShared({ id: request.id, kind: "particles", generation: request.generation, ranges: [output], timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, output.release)
-  } catch (error) { output.release(); throw error }
+    const legacyFrame = new DataView(request.batch).getUint32(28, true) === 0x8000_0000
+    const visualLength = legacyFrame ? value.exports.playsrc_legacy_visual_output_length(value.handle) : 0
+    if (visualLength > 64 * 1024 * 1024) throw new Error("Legacy visual output exceeds its bound")
+    if (visualLength) visual = takeReply(value.exports, value.handle, 5, visualLength)
+    const outputCopyMilliseconds=performance.now()-outputCopyStarted
+    const memory = legacyFrame ? {
+      wasmLinearMemoryBytes: value.exports.memory.buffer.byteLength,
+      wasmAllocatorLiveBytes: value.exports.playsrc_memory_bytes(0),
+      wasmAllocatorHighWaterBytes: value.exports.playsrc_memory_bytes(1),
+    } : {}
+    postShared({ id: request.id, kind: "particles", generation: request.generation, ranges: visual ? [output, visual] : [output], timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,...memory,totalMilliseconds:performance.now()-started} }, () => { output.release(); visual?.release() })
+  } catch (error) { output.release(); visual?.release(); throw error }
 }
 function admitEquipmentModels(request: Extract<WorkerRequest, { kind: "equipment-models" }>): void {
   const value = request.generation === 0 && wasm ? { exports: wasm, handle: 0 } : requireActive(request.id, request.generation)

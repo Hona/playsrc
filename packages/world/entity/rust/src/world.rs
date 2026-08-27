@@ -8503,6 +8503,9 @@ fn field_vector(
 
 fn render_state(entity: &Entity) -> Result<EntityRenderState, RuntimeFailure> {
     let mut color = [255; 4];
+    if entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"env_smokestack")) {
+        color[..3].fill(0);
+    }
     if let Some(value) = field(entity, b"rendercolor").or_else(|| field(entity, b"rendercolor32")) {
         let parsed = source_color(value).ok_or_else(|| {
             failure(
