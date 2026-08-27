@@ -65,6 +65,8 @@ import { createSourceLightmappedEnvironmentNode, type SourceLightmappedEnvironme
 import { SourceExposureSampler } from "./source-exposure"
 import {
   createSourceModelLightingUniforms,
+  sourceModelLightingReferences,
+  sourceModelEyeReferences,
   createSourceModelEyeUniforms,
   sourceEyeIrisNode,
   sourceModelSurfaceNode,
@@ -975,6 +977,7 @@ type ModelLightingScene = Readonly<{
   textures: ReadonlyMap<string, ModelLightingTextures>
   cubemap: (identity: string) => THREE.CubeTexture | undefined
   exposure: ReturnType<typeof TSL.uniform>
+  graphs: Map<string, any>
 }>
 
 type ModelLightingTextures = Readonly<{
@@ -994,6 +997,7 @@ type SceneResources = {
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
+  modelLightingGraphs: Map<string, any>
   modelPanelMaterialAnimations: ReadonlyMap<string, readonly ModelPanelMaterialAnimation[]>
   modelOccurrenceInstances:Map<number,THREE.Group>
   modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
@@ -1437,7 +1441,7 @@ function validateDirectionalInputs(
   return result
 }
 
-type RetainedDynamicModel = { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }
+type RetainedDynamicModel = { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; seen: number }
 type RetainedViewModel = RetainedDynamicModel & { root: THREE.Group; meshes: THREE.Mesh[] }
 
 class RendererOwner implements Renderer {
@@ -2424,6 +2428,7 @@ class RendererOwner implements Renderer {
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
+    const modelLightingGraphs = new Map<string, any>()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
@@ -3303,6 +3308,7 @@ class RendererOwner implements Renderer {
             states: materialStates,
             waterFog: waterFogUniforms,
             textures: modelLightingTextures,
+            graphs: modelLightingGraphs,
             cubemap: modelCubemap,
             exposure: exposureUniform,
           })
@@ -3502,6 +3508,7 @@ class RendererOwner implements Renderer {
       group,
       modelTemplates,
       modelLightingTextures,
+      modelLightingGraphs,
       modelPanelMaterialAnimations,
       modelOccurrenceInstances,
       modelOccurrenceLighting: Object.freeze(modelOccurrenceLighting),
@@ -3637,7 +3644,7 @@ class RendererOwner implements Renderer {
         sourceTransform(retained.instance, presentation.origin, panel.angles)
         const panelLighting = {
           materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
-          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure,
+          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure, graphs: this.#active.modelLightingGraphs,
         }
         if (panel.modelLighting) this.#applyDynamicModelLighting(retained, {
           identity: 0, model: panel.model, position: presentation.origin, angles: panel.angles, scale: 1,
@@ -5007,7 +5014,7 @@ class RendererOwner implements Renderer {
   }
 
   #applyDynamicModelLighting(
-    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[] },
+    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null },
     item: ModelItem,
     scene?: ModelLightingScene,
   ): void {
@@ -5020,16 +5027,17 @@ class RendererOwner implements Renderer {
       textures: this.#active!.modelLightingTextures,
       cubemap: this.#active!.modelCubemap,
       exposure: this.#active!.exposureUniform,
+      graphs: this.#active!.modelLightingGraphs,
     }
     let uniforms = retained.lighting
-    if (!uniforms) {
-      uniforms = createSourceModelLightingUniforms()
+    if (!uniforms || retained.cubemapIdentity !== input.localEnvironment) {
+      uniforms ??= createSourceModelLightingUniforms()
       retained.lighting = uniforms
       retained.cubemapIdentity = input.localEnvironment
-      const cubemapNodes: any[] = []
       const meshes = retained.meshes ?? []
       if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
       for (const mesh of meshes) {
+        Object.defineProperty(mesh.userData, "sourceLighting", { value: uniforms, writable: true, configurable: true })
         const identity = String(mesh.userData.materialIdentity).toLowerCase()
         const authored = resources.materials?.get(identity)
         if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture") continue
@@ -5070,20 +5078,24 @@ class RendererOwner implements Renderer {
           }
           let base = SOURCE_MODEL_BASE_COLOR.get(mesh.geometry)
           if (!base) throw new RenderingError("MissingInput", `authored model base sample ${identity} is unavailable`)
+          const graphKey = `${identity}:${resources.exposure.uuid}:${base.uuid}:${environment?.texture.uuid ?? "none"}`
           if (authored.shader === "eye-refract" || authored.shader === "eyes") {
             const primitive = Number(mesh.userData.posedPrimitive ?? mesh.userData.sourcePrimitive)
             const eye = item.eyeStates?.find((value) => value.primitive === primitive)
             if (!eye || !textures?.iris || typeof state.dilation !== "number") {
               throw new RenderingError("MissingInput", `authored Studio eye state ${identity}:${primitive} is unavailable`)
             }
-            const eyeUniforms = createSourceModelEyeUniforms()
+            const eyeUniforms = retained.eyes?.get(primitive) ?? createSourceModelEyeUniforms()
             const eyes = retained.eyes ?? new Map<number, SourceModelEyeUniforms>()
             eyes.set(primitive, eyeUniforms)
             retained.eyes = eyes
             updateSourceModelEyeUniforms(eyeUniforms, eye)
-            base = sourceEyeIrisNode(textures.iris, eyeUniforms, state.dilation, authored.shader === "eye-refract")
+            Object.defineProperty(mesh.userData, "sourceEye", { value: eyeUniforms, writable: true, configurable: true })
+            base = sourceEyeIrisNode(textures.iris, sourceModelEyeReferences, state.dilation, authored.shader === "eye-refract")
           }
-          const shaded = sourceModelSurfaceNode(base, uniforms, {
+          let colorNode = resources.graphs.get(graphKey)
+          if (!colorNode) {
+          const shaded = sourceModelSurfaceNode(base, sourceModelLightingReferences, {
             halfLambert: state.phong ? true : state.halfLambert,
             diffuseWarp: textures?.warp,
             exponentTexture: textures?.exponent,
@@ -5097,17 +5109,13 @@ class RendererOwner implements Renderer {
               },
             } : {}),
           }, resources.exposure)
-          material.colorNode = sourceFragmentColor(shaded.color, resources.states.get(identity), resources.waterFog)
-          if (shaded.environmentNode && !textures?.environment) cubemapNodes.push(shaded.environmentNode)
+          colorNode = sourceFragmentColor(shaded.color, resources.states.get(identity), resources.waterFog)
+          resources.graphs.set(graphKey, colorNode)
+          }
+          material.colorNode = colorNode
           material.needsUpdate = true
         }
       }
-      if (cubemapNodes.length > 0) retained.cubemapNodes = cubemapNodes
-    } else if (retained.cubemapNodes && retained.cubemapIdentity !== input.localEnvironment) {
-      const texture = input.localEnvironment && resources.cubemap(input.localEnvironment)
-      if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
-      for (const node of retained.cubemapNodes) node.value = texture
-      retained.cubemapIdentity = input.localEnvironment
     }
     updateSourceModelLightingUniforms(uniforms, input)
     if (retained.eyes) {

@@ -101,6 +101,24 @@ export function createSourceModelLightingUniforms(): SourceModelLightingUniforms
   return Object.freeze({ ambientEnabled: scalar(), cameraPosition: vector(), ambient: Object.freeze(ambient), local: Object.freeze(local) })
 }
 
+// A material graph is immutable; its values belong to the drawn occurrence.
+// ReferenceNode uses Three's per-object uniform group, so one cached graph can
+// bind independent Source lighting/eye values without rebuilding shader nodes.
+const lightingReference = (path: string, type: string) => TSL.reference(`userData.sourceLighting.${path}.value`, type) as unknown as VectorUniform
+export const sourceModelLightingReferences: SourceModelLightingUniforms = Object.freeze({
+  ambientEnabled: lightingReference("ambientEnabled", "float"),
+  cameraPosition: lightingReference("cameraPosition", "vec3"),
+  ambient: Object.freeze(Array.from({ length: 6 }, (_, side) => lightingReference(`ambient.${side}`, "vec3"))) as SourceModelLightingUniforms["ambient"],
+  local: Object.freeze(Array.from({ length: 4 }, (_, index) => Object.freeze(Object.fromEntries(
+    ["enabled", "kind", "color", "position", "direction", "attenuation", "falloff", "theta", "phi"].map(name =>
+      [name, lightingReference(`local.${index}.${name}`, ["color", "position", "direction", "attenuation"].includes(name) ? "vec3" : "float")]),
+  )))) as unknown as SourceModelLightingUniforms["local"],
+})
+export const sourceModelEyeReferences: SourceModelEyeUniforms = Object.freeze(Object.fromEntries(
+  ["irisU", "irisV", "glintU", "glintV", "origin"].map(name => [name,
+    TSL.reference(`userData.sourceEye.${name}.value`, name === "origin" ? "vec3" : "vec4")]),
+)) as SourceModelEyeUniforms
+
 function assign(target: VectorUniform, value: readonly [number, number, number]): void {
   ;(target.value as THREE.Vector3).set(value[0], value[1], value[2])
 }
