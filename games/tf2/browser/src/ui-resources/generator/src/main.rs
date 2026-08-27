@@ -1,6 +1,7 @@
 mod crosshair;
 mod class_selection;
 mod deathnotice;
+mod equipment;
 
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::{ConditionEnvironment, EscapeMode, Node, ScalarKind, Value};
@@ -1681,6 +1682,7 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let mut resources = Vec::new();
+    equipment::generate(&content, repository)?;
     class_selection::generate(&content, repository)?;
     let mut unique_controls = BTreeSet::new();
     let mut code_localization_tokens = CODE_LOCALIZATION_TOKENS

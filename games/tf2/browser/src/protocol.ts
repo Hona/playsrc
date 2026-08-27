@@ -1,4 +1,5 @@
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
+import type { Tf2EquipmentState } from "./equipment/types"
 
 export const TF2_PRESENTATION_SCHEMA = 16
 
@@ -44,6 +45,7 @@ export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "read-coverage"; generation: number }>
   | Readonly<{ id: number; kind: "activate"; generation: number }>
   | Readonly<{ id: number; kind: "team-selection"; generation: number; choice: Tf2TeamChoice | null }>
+  | Readonly<{ id: number; kind: "equipment"; generation: number; mutation?: ArrayBuffer }>
   | Readonly<{
       id: number
       kind: "configure-course"
@@ -153,6 +155,7 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "coverage"; generation: number; payload: ArrayBuffer }>
   | Readonly<{ id: number; kind: "activated"; generation: number }>
   | Readonly<{ id: number; kind: "team-selection"; generation: number; state: Tf2TeamSelectionServerState }>
+  | Readonly<{ id: number; kind: "equipment"; generation: number; state: Tf2EquipmentState }>
   | Readonly<{ id: number; kind: "course-configured"; generation: number }>
   | Readonly<{ id: number; kind: "discarded"; generation: number }>
   | Readonly<{ id: number; kind: "position-set"; generation: number }>

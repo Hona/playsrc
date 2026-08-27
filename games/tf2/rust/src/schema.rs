@@ -229,9 +229,16 @@ pub struct ItemDefinition {
     pub maximum_level: u8,
     pub base_item: bool,
     pub usable_by: BTreeSet<PlayerClass>,
+    pub class_slots: BTreeMap<PlayerClass, LoadoutPosition>,
     pub styles: BTreeSet<u8>,
     pub static_attributes: Vec<ItemAttribute>,
     pub source: Vec<SchemaNode>,
+}
+
+impl ItemDefinition {
+    pub fn slot_for_class(&self, class: PlayerClass) -> Option<LoadoutPosition> {
+        self.class_slots.get(&class).copied()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -443,7 +450,7 @@ impl ItemInstance {
             paint,
             team,
             class,
-            slot: item.slot,
+            slot: item.slot_for_class(class).expect("validated usable class"),
             runtime_attributes,
         })
     }
@@ -804,7 +811,7 @@ fn parse_item(
     let name = required_scalar(&fields, "name", &record)?.to_owned();
     let item_class = required_scalar(&fields, "item_class", &record)?.to_owned();
     let slot_name = required_scalar(&fields, "item_slot", &record)?;
-    let slot = parse_slot(slot_name).ok_or_else(|| SchemaError::InvalidField {
+    let slot = parse_slot(if slot_name == "head" { "misc" } else { slot_name }).ok_or_else(|| SchemaError::InvalidField {
         record: record.clone(),
         field: "item_slot",
         value: slot_name.into(),
@@ -833,6 +840,22 @@ fn parse_item(
         });
     }
     let usable_by = parse_classes(object(&fields, "used_by_classes"), index)?;
+    let mut class_slots: BTreeMap<_, _> = usable_by.iter().map(|class| (*class, slot)).collect();
+    if let Some(classes) = object(&fields, "used_by_classes") {
+        for field in classes {
+            let Some(class) = usable_by.iter().find(|class| class.data().identity == field.key) else {
+                continue;
+            };
+            if let SchemaValue::Scalar(value) = &field.value
+                && !value.starts_with('1')
+            {
+                let position = parse_slot(value).ok_or_else(|| SchemaError::InvalidField {
+                    record: record.clone(), field: "used_by_classes", value: value.clone(),
+                })?;
+                class_slots.insert(*class, position);
+            }
+        }
+    }
     let static_attributes = parse_item_attributes(
         object(&fields, "attributes").or_else(|| object(&fields, "static_attrs")),
         attributes,
@@ -850,6 +873,7 @@ fn parse_item(
         maximum_level,
         base_item: scalar(&fields, "baseitem") == Some("1"),
         usable_by,
+        class_slots,
         styles,
         static_attributes,
         source: fields,

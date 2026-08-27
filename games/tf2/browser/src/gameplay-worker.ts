@@ -5,6 +5,7 @@ import { ResourceGenerations } from "./resource-generations"
 import { reclaimModelReads } from "./model-read-ownership"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
+import { decodeEquipmentState } from "./equipment/codec"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__ } from "virtual:playsrc-generation"
 
@@ -58,6 +59,8 @@ type WasmExports = Readonly<{
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_state_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_select(handle: number, choice: number): number
+  playsrc_equipment_state_copy(handle: number, pointer: number, capacity: number): number
+  playsrc_equipment_update(handle: number, pointer: number, length: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_player_set_position(handle: number, x: number, y: number, z: number): number
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number, snapshotTick: bigint): number
@@ -224,6 +227,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_spawn_copy,
         candidate.playsrc_team_state_copy,
         candidate.playsrc_team_select,
+        candidate.playsrc_equipment_state_copy,
+        candidate.playsrc_equipment_update,
         candidate.playsrc_jump_configure,
         candidate.playsrc_player_set_position,
         candidate.playsrc_simulation_observe,
@@ -708,6 +713,25 @@ function readCoverage(request: Extract<WorkerRequest, { kind: "read-coverage" }>
   post({ id: request.id, kind: "coverage", generation: request.generation, payload }, [payload])
 }
 
+function equipment(request: Extract<WorkerRequest, { kind: "equipment" }>): void {
+  const selected = pending?.generation === request.generation && resourceSets.loadable(request.generation)
+    ? pending : active?.generation === request.generation ? active : undefined
+  if (!wasm || !selected) { fail(request.id, "StaleGeneration"); return }
+  const capacity = 64 * 1024
+  const pointer = wasm.playsrc_alloc(capacity) >>> 0
+  try {
+    if (request.mutation) {
+      if (!(request.mutation instanceof ArrayBuffer) || request.mutation.byteLength > 1024) { fail(request.id, "MalformedRequest"); return }
+      new Uint8Array(wasm.memory.buffer, pointer, request.mutation.byteLength).set(new Uint8Array(request.mutation))
+      if (wasm.playsrc_equipment_update(selected.handle, pointer, request.mutation.byteLength) !== 1) { fail(request.id, "TransitionFailed"); return }
+    }
+    const length = wasm.playsrc_equipment_state_copy(selected.handle, pointer, capacity)
+    if (length < 16 || length > capacity) { fail(request.id, "InternalFailure"); return }
+    const state = decodeEquipmentState(new Uint8Array(wasm.memory.buffer, pointer, length))
+    post({ id: request.id, kind: "equipment", generation: request.generation, state })
+  } finally { wasm.playsrc_free(pointer, capacity) }
+}
+
 function teamSelection(request: Extract<WorkerRequest, { kind: "team-selection" }>): void {
   const selected = pending?.generation === request.generation && resourceSets.loadable(request.generation)
     ? pending
@@ -1050,6 +1074,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return activate(request)
     case "team-selection":
       return teamSelection(request)
+    case "equipment":
+      return equipment(request)
     case "discard":
       return discard(request)
     case "configure-course":

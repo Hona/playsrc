@@ -4495,6 +4495,50 @@ pub extern "C" fn playsrc_team_select(handle: u32, choice: u32) -> u32 {
 
 #[unsafe(no_mangle)]
 /// # Safety
+/// `pointer` must identify writable module memory of at least `capacity` bytes.
+pub unsafe extern "C" fn playsrc_equipment_state_copy(handle: u32, pointer: *mut u8, capacity: usize) -> usize {
+    if pointer.is_null() { return 0; }
+    with(handle, |slot| {
+        let Some(session) = slot.session.as_ref() else { return 0; };
+        let bytes = session.equipment().encode_state();
+        if bytes.len() > capacity { return 0; }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
+        bytes.len()
+    }).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify readable module memory of `length` bytes.
+pub unsafe extern "C" fn playsrc_equipment_update(handle: u32, pointer: *const u8, length: usize) -> u32 {
+    if pointer.is_null() || length == 0 || length > 1024 { return 0; }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let Some((index, generation)) = decode(handle) else { return 0; };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index) else { return 0; };
+    if slot.generation != generation || slot.payload.is_none() { return 0; }
+    let Some(session) = slot.session.as_mut() else { return 0; };
+    let result = match (bytes[0], length) {
+        (0, 693) => session.restore_equipment(&bytes[1..]),
+        (1, 7) => {
+            let Ok(class) = playsrc_tf2::PlayerClass::try_from(bytes[1]) else { return 0; };
+            let Ok(position) = playsrc_tf2::schema::LoadoutPosition::try_from(bytes[2]) else { return 0; };
+            let definition = u32::from_le_bytes(bytes[3..7].try_into().unwrap());
+            session.equip_item(class, position, (definition != u32::MAX).then_some(definition)).map(|_| ())
+        },
+        (2, 9) => {
+            let identity = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+            let definition = u32::from_le_bytes(bytes[5..9].try_into().unwrap());
+            session.equip_bot_cosmetic(identity, (definition != u32::MAX).then_some(definition)).map(|_| ())
+        },
+        _ => return 0,
+    };
+    if result.is_ok() { gameplay_replay::mutation(handle, 5, bytes); }
+    u32::from(result.is_ok())
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
 /// `pointer` must identify one complete version-4 gameplay command in this module's memory.
 pub unsafe extern "C" fn playsrc_simulation_observe(
     handle: u32,
@@ -6118,6 +6162,8 @@ fn encode_snapshot(
             )?;
         }
     }
+    playsrc_tf2::equipment::encode_items(&mut out, &snapshot.equipped_items);
+    for bot in &snapshot.bots { playsrc_tf2::equipment::encode_items(&mut out, &bot.equipped_items); }
     Some(out)
 }
 
@@ -15252,6 +15298,7 @@ mod tests {
             age_seconds: 0.5,
         };
         let snapshot = playsrc_tf2::Snapshot {
+            equipped_items: Vec::new(),
             tick: 9,
             class: playsrc_tf2::PlayerClass::Soldier,
             team: playsrc_tf2::PlayerTeam::Blue,

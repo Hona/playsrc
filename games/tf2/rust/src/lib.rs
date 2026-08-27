@@ -19,6 +19,7 @@ pub mod pyro;
 pub mod random;
 pub mod round;
 pub mod schema;
+pub mod equipment;
 pub mod scoreboard;
 pub mod spy;
 pub mod state;
@@ -709,6 +710,7 @@ pub struct Snapshot {
     pub maximum_health: f32,
     pub spy: Option<spy::SpyState>,
     pub loadout: Vec<WeaponState>,
+    pub equipped_items: Vec<equipment::EquippedItem>,
     pub conditions: u32,
     pub projectiles: Vec<Projectile>,
     pub projectile_events: Vec<ProjectileEvent>,
@@ -780,6 +782,10 @@ pub struct Session<W: GameplayWorld + Clone> {
     pending_team_change: Option<PlayerTeam>,
     weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
+    equipment: equipment::Equipment,
+    active_equipment: equipment::Equipment,
+    equipment_attributes: equipment::AttributeProviders,
+    bot_equipment: BTreeMap<u32, equipment::Equipment>,
     ammo: class::AmmoLedger,
     movement: MovementState,
     air_dashes: u8,
@@ -941,6 +947,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pending_team_change: None,
             weapon: Some(Weapon::RocketLauncher),
             loadout,
+            equipment: equipment::Equipment::default(),
+            active_equipment: equipment::Equipment::default(),
+            equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
+            bot_equipment: BTreeMap::new(),
             ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
                 Player {
@@ -1037,6 +1047,48 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.team_selection.snapshot()
     }
 
+    pub fn equipment(&self) -> &equipment::Equipment { &self.equipment }
+
+    pub fn equip_bot_cosmetic(&mut self, identity: u32, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
+        let class = self.bots.as_ref().and_then(|bots| bots.snapshots().into_iter().find(|bot| bot.identity == identity)).map(|bot| bot.class)
+            .ok_or(equipment::EquipmentError::IneligibleSlot)?;
+        if let Some(definition) = definition_index {
+            if equipment::supported_item(definition).is_none_or(|item| item.implementation != equipment::Implementation::Wearable) {
+                return Err(equipment::EquipmentError::UnsupportedItem);
+            }
+        }
+        self.bot_equipment.entry(identity).or_default().equip(class, schema::LoadoutPosition::Misc, definition_index)
+    }
+
+    pub fn equip_item(&mut self, class: PlayerClass, slot: schema::LoadoutPosition, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
+        self.equipment.equip(class, slot, definition_index)
+    }
+
+    pub fn restore_equipment(&mut self, bytes: &[u8]) -> Result<(), equipment::EquipmentError> {
+        self.equipment = equipment::Equipment::restore(bytes)?;
+        if !self.team_selection.local_team().is_gameplay() { self.apply_equipment(); }
+        Ok(())
+    }
+
+    pub fn equipped_weapon_attribute(&mut self, owner: u32, weapon: Weapon, hook: &str, input: f32) -> f32 {
+        if owner != PLAYER_IDENTITY { return input; }
+        self.equipment_attributes.weapon(weapon, hook, input)
+    }
+
+    pub fn equipped_player_attribute(&mut self, owner: u32, hook: &str, input: f32) -> f32 {
+        if owner != PLAYER_IDENTITY { return input; }
+        self.equipment_attributes.player(hook, input)
+    }
+
+    fn apply_equipment(&mut self) {
+        self.active_equipment = self.equipment.clone();
+        self.equipment_attributes = equipment::AttributeProviders::new(&self.active_equipment, self.class);
+        self.loadout = self.active_equipment.weapons(self.class).map(|weapon| (weapon, WeaponRuntime::full(weapon))).collect();
+        if self.weapon.is_none_or(|weapon| !self.loadout.contains_key(&weapon)) {
+            self.weapon = self.active_equipment.weapons(self.class).next();
+        }
+    }
+
     pub fn round_snapshot(&self) -> round::Snapshot {
         self.round.snapshot(Vec::new())
     }
@@ -1119,7 +1171,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.health = 0;
             } else if self.weapon.is_none() {
                 self.weapon = default_weapon(self.class);
-                self.loadout = default_loadout(self.class);
+                self.apply_equipment();
                 self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
                 self.deploy_active_weapon();
@@ -2535,6 +2587,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             (round.red_score, round.blue_score),
         );
         Ok(Snapshot {
+            equipped_items: self.active_equipment.equipped_items(self.class),
             tick: self.tick,
             class: self.class,
             team: self.team_selection.local_team(),
@@ -2566,7 +2619,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             round,
             jump: jump_output,
             events,
-            bots,
+            bots: bots.into_iter().map(|mut bot| {
+                if let Some(equipment) = self.bot_equipment.get(&bot.identity) {
+                    bot.equipped_items = equipment.equipped_items(bot.class).into_iter().filter(|item|
+                        equipment::supported_item(item.definition_index).is_some_and(|item| item.implementation == equipment::Implementation::Wearable)).collect();
+                }
+                bot
+            }).collect(),
             pickups: self.map.pickups(),
             metal: self.ammo.metal,
             scoreboard,
@@ -2994,7 +3053,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
             self.buildings.reset();
             self.weapon = default_weapon(class);
-            self.loadout = default_loadout(class);
+            self.apply_equipment();
             self.ammo = class.data().maximum_ammo;
             self.deploy_active_weapon();
             self.health = self.maximum_health();
@@ -3047,7 +3106,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Respawned);
         }
         if let Some(weapon) = command.select_weapon
-            && allowed(self.class, weapon)
+            && self.loadout.contains_key(&weapon)
             && Some(weapon) != self.weapon
         {
             if let Some(active_weapon) = self.weapon
@@ -6331,6 +6390,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             class: self.class,
             team: self.team_selection.local_team(),
         });
+        self.apply_equipment();
         for weapon in self.loadout.values_mut() {
             weapon.reset_for_spawn();
         }
@@ -6513,45 +6573,6 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
             (Weapon::Bonesaw, WeaponRuntime::full(Weapon::Bonesaw)),
         ]),
     }
-}
-
-fn allowed(class: PlayerClass, weapon: Weapon) -> bool {
-    matches!(
-        (class, weapon),
-        (
-            PlayerClass::Soldier,
-            Weapon::RocketLauncher | Weapon::Original | Weapon::Shotgun | Weapon::Shovel
-        ) | (
-            PlayerClass::Demoman,
-            Weapon::GrenadeLauncher | Weapon::StickybombLauncher | Weapon::Bottle
-        ) | (
-            PlayerClass::Scout,
-            Weapon::Scattergun | Weapon::Pistol | Weapon::Bat
-        ) | (
-            PlayerClass::Heavy,
-            Weapon::Minigun | Weapon::HeavyShotgun | Weapon::Fists
-        ) | (
-            PlayerClass::Sniper,
-            Weapon::SniperRifle | Weapon::Smg | Weapon::Kukri
-        ) | (
-            PlayerClass::Engineer,
-            Weapon::EngineerShotgun
-                | Weapon::EngineerPistol
-                | Weapon::Wrench
-                | Weapon::BuildPda
-                | Weapon::DestroyPda
-                | Weapon::Toolbox
-        ) | (
-            PlayerClass::Pyro,
-            Weapon::Flamethrower | Weapon::Shotgun | Weapon::FireAxe
-        ) | (
-            PlayerClass::Spy,
-            Weapon::Revolver | Weapon::Knife | Weapon::Sapper | Weapon::DisguiseKit
-        ) | (
-            PlayerClass::Medic,
-            Weapon::SyringeGun | Weapon::MediGun | Weapon::Bonesaw
-        )
-    )
 }
 
 fn resupply_removed_conditions() -> [Condition; 10] {
@@ -10106,16 +10127,16 @@ mod tests {
         }
         let switched = session
             .advance(Command {
-                select_weapon: Some(Weapon::Original),
+                select_weapon: Some(Weapon::Shotgun),
                 fire: true,
                 ..Command::default()
             })
             .unwrap();
-        assert_eq!(switched.weapon, Some(Weapon::Original));
+        assert_eq!(switched.weapon, Some(Weapon::Shotgun));
         assert!(switched.projectile_events.is_empty());
-        let original = session.weapon_runtime(Weapon::Original).unwrap();
-        assert_eq!(original.next_primary_tick, 44);
-        assert_eq!(original.first_primary_tick, 44);
+        let shotgun = session.weapon_runtime(Weapon::Shotgun).unwrap();
+        assert_eq!(shotgun.next_primary_tick, 44);
+        assert_eq!(shotgun.first_primary_tick, 44);
 
         let changed = session
             .advance(Command {

@@ -171,6 +171,11 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
       } else if (record.kind === 4) {
         require(e.playsrc_team_select(handle, data.readUInt32LE(0)) === 1, "Replay team mutation failed"); mutations++
       } else if (record.kind === 5) {
+        const pointer = e.playsrc_alloc(data.length)
+        new Uint8Array(e.memory.buffer, pointer, data.length).set(data)
+        require(e.playsrc_equipment_update(handle, pointer, data.length) === 1, "Replay equipment mutation failed")
+        e.playsrc_free(pointer, data.length); mutations++
+      } else if (record.kind === 5) {
         require(e.playsrc_player_set_position(handle, data.readFloatLE(0), data.readFloatLE(4), data.readFloatLE(8)) === 1, "Replay position mutation failed"); mutations++
       } else if (record.kind === 6) {
         const pointer = copy(data)

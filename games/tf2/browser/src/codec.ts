@@ -1,9 +1,12 @@
 import type { SnapshotRanges } from "./snapshot-retention"
+import { decodeEquippedItems } from "./equipment/codec"
+import type { Tf2EquippedItem } from "./equipment/types"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 const MAX_RECORDS = 65_536
 const MOVEMENT_BYTES = 96
+const NO_EQUIPPED_ITEMS: readonly Tf2EquippedItem[] = Object.freeze([])
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
@@ -532,6 +535,7 @@ export type JumpSnapshot = Readonly<{
 }>
 
 export type BotSnapshot = Readonly<{
+  equippedItems: readonly Tf2EquippedItem[]
   identity: number
   class: Tf2Class
   team: Tf2Team
@@ -639,6 +643,7 @@ export type BuildingSnapshot = Readonly<{
 }>
 
 export type Snapshot = Readonly<{
+  equippedItems: readonly Tf2EquippedItem[]
   actorCloaks: readonly ActorCloakState[]
   tick: bigint
   class: Tf2Class
@@ -2140,6 +2145,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const readBotWeapon = () => weapon === 0 ? null : Object.freeze({ identity: weapon as Tf2Weapon, reload: reload as 0 | 1 | 2 | 3, clip, reserve, maximumClip, maximumReserve, nextPrimaryTick, nextReloadTick })
     return Object.freeze({
       identity, class: botClass, team: botTeam, lifecycle, difficulty: difficulty as BotDifficulty,
+      equippedItems: NO_EQUIPPED_ITEMS,
       objective: objective as BotSnapshot["objective"], health, maximumHealth,
       target: target === 0xffff_ffff ? null : target, area: area === 0xffff_ffff ? null : area,
       remainingPathAreas: view.getUint32(item + 28, true), yawDegrees, pitchDegrees, position, velocity,
@@ -2340,6 +2346,20 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     actorCloaks.push(Object.freeze({ identity, localFactor: values[0]!, worldFactor: values[1]!, rawFactor: values[2]!, playerTint: Object.freeze(values.slice(3)) as readonly [number, number, number] }))
     at += 28
   }
+  const readEquipment = (key: string) => {
+    const decode = () => {
+      const result = decodeEquippedItems(view, at)
+      return { items: result.items, length: result.end - at }
+    }
+    const result = ranges ? ranges.section(key, at, bytes.byteLength - at, decode) : decode()
+    at += result.length
+    return result.items
+  }
+  const equippedItems = readEquipment("equipment")
+  const equippedBots = bots.map(bot => {
+    const equippedItems = readEquipment(`bot-equipment/${bot.identity}`)
+    return equippedItems.length === 0 ? bot : Object.freeze({ ...bot, equippedItems })
+  })
   if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
@@ -2349,6 +2369,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   return Object.freeze({
     tick,
     actorCloaks: Object.freeze(actorCloaks),
+    equippedItems,
     class: tf2Class as Tf2Class,
     team,
     weapon: weapon === 0 ? null : weapon as Tf2Weapon,
@@ -2399,7 +2420,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     collisionSnapshot,
     entityPresentation,
     authorityBlockers: Object.freeze(authorityBlockers),
-    bots: ranges ? ranges.array("bots", bots) : Object.freeze(bots),
+    bots: ranges ? ranges.array("bots", equippedBots) : Object.freeze(equippedBots),
     pickups: Object.freeze(pickups),
     buildings: Object.freeze(buildings),
     placement,
