@@ -511,6 +511,34 @@ describe("browser asset adapters", () => {
     expect(await retained).toEqual(bytes)
   })
 
+  test("map replacement cannot subscribe to a retiring cancelled transfer", async () => {
+    const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
+    const releases: (() => void)[] = []
+    const signals: AbortSignal[] = []
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      signals.push(init!.signal!)
+      await new Promise<void>(resolve => releases.push(resolve))
+      const response = new Response(bytes, { headers: { "content-length": String(bytes.byteLength), etag: `"${sha256}"` } })
+      Object.defineProperty(response, "url", { value: url })
+      return response
+    }) as typeof fetch
+    const acquire = createImmutableObjectAcquirer({ concurrency: 2, fetcher })
+    const controller = new AbortController()
+    const cancelled = acquire("http://127.0.0.1:4321/", descriptor, { signal: controller.signal })
+    controller.abort()
+    const replacement = acquire("http://127.0.0.1:4321/", descriptor)
+    await expect(cancelled).rejects.toMatchObject({ code: "Cancelled" })
+    expect(signals.map(signal => signal.aborted)).toEqual([true, false])
+    releases[0]!()
+    // Retiring completion must not remove the replacement from the shared index.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const shared = acquire("http://127.0.0.1:4321/", descriptor)
+    expect(signals).toHaveLength(2)
+    releases[1]!()
+    expect(await replacement).toEqual(bytes)
+    expect(await shared).toEqual(bytes)
+  })
+
   test("accepts only the exact immutable response and bytes", async () => {
     const url = `http://127.0.0.1:4321/objects/sha256/${sha256}`
     const fetcher = (async () => {
