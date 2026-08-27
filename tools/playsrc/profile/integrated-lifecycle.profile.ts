@@ -83,9 +83,15 @@ test("integrated persisted quality, two live map replacements and overhead water
   // Use the game's real console for the authored-water viewpoint; input below
   // still travels through trusted mouse events and genuine pointer lock.
   await command("noclip")
+  await expect(main).toHaveAttribute("data-movement-mode", "1")
   const x = (water.bounds[0][0] + water.bounds[1][0]) / 2
   const y = (water.bounds[0][1] + water.bounds[1][1]) / 2
   await command(`setpos ${x} ${y} ${water.surfaceZ + 192}`)
+  await page.waitForFunction(({ x, y, z }) => {
+    const main = document.querySelector<HTMLElement>("main")!
+    const position = main.dataset.cameraPosition!.split(",").map(Number)
+    return main.dataset.movementMode === "1" && Math.hypot(position[0]! - x, position[1]! - y) < 1 && position[2]! > z + 128
+  }, { x, y, z: water.surfaceZ })
   await page.keyboard.press("Backquote")
   await canvas.click({ position: { x: 640, y: 360 } })
   await expect(main).toHaveAttribute("data-pointer-locked", "true")
