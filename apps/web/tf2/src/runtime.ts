@@ -3676,7 +3676,11 @@ export class Tf2Application {
       candidate?.target.objects.resources.sha256 ?? this.#activeTarget?.objects.resources.sha256 ?? "",
     )
     finishReplacePhase("derivedKey")
-    const staged = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
+    const loaded = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
+    // The active renderer already verified this immutable byte identity. Keep
+    // its exact backing owner rather than retain two identical map payloads.
+    const staged = loaded.payloadSha256 === this.#loaded.payloadSha256
+      ? Object.freeze({ ...loaded, payload: this.#loaded.payload }) : loaded
     this.#profileMapResidency("compiled", candidate?.dependencies, staged)
     if (operation) this.#requireOperation(operation)
     const coverageSamples=await this.#client.coverage(generation)

@@ -2270,7 +2270,7 @@ class RendererOwner implements Renderer {
     this.#checkAbort(request.signal, ordinal)
     let map: RuntimeMap
     try {
-      map = await parseRuntimeMapVerified(payload)
+      map = this.#active?.payload === payload ? this.#active.map : await parseRuntimeMapVerified(payload)
     } catch (error) {
       throw new RenderingError("MalformedInput", `runtime map validation failed: ${String(error)}`)
     }
@@ -3877,6 +3877,7 @@ class RendererOwner implements Renderer {
       payloadSha256,
       loadRequest: {
         payloadSha256,
+        resourceIdentity: request.resourceIdentity,
         lightStyles: request.lightStyles?.map((value) => Object.freeze({ ...value })),
         directionalTextures: [...directionalInputs.values()],
         environment: request.environment,
