@@ -10,10 +10,10 @@ export function mapPropPipelinePoseRequests(artifacts: PresentationArtifacts, sn
   const selected = new Map(snapshot.entityPresentation.studioAnimations.map(animation => [animation.sourceIndex, {
     activity: animation.sequence, elapsedSeconds: animation.elapsedSeconds, body: undefined as number | undefined,
   }]))
-  // A locker need not have been touched in the initial snapshot. Its exact
-  // association is emitted by the same Rust join that owns func_regenerate.
-  for (const occurrence of artifacts.modelOccurrences) if (occurrence.regenerate && !selected.has(occurrence.entity)) {
-    selected.set(occurrence.entity, { activity: "open", elapsedSeconds: 0, body: occurrence.body })
+  // Authored doors and lockers need not have received their first input yet.
+  // Rust emits only a sequence actually declared for that map model.
+  for (const occurrence of artifacts.modelOccurrences) if (occurrence.pipelineAnimation && !selected.has(occurrence.entity)) {
+    selected.set(occurrence.entity, { activity: occurrence.pipelineAnimation, elapsedSeconds: 0, body: occurrence.body })
   }
   for (const event of snapshot.regenerateAnimationEvents) {
     const closed = snapshot.tick >= event.closeTick
