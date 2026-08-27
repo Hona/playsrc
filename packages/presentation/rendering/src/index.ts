@@ -32,6 +32,7 @@ import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
+import { withBoundedPipelineCompilation } from "./bounded-pipeline-compilation"
 import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buffer-names"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
@@ -2356,12 +2357,14 @@ class RendererOwner implements Renderer {
       }
       // compileAsync waits for actual native pipeline readiness. It neither
       // submits a game frame nor advances simulation/animation/input clocks.
-      for (const [group, targetScene, camera] of [[viewModels, this.#scene, this.#viewCamera], [panels, this.#modelPanelScene, this.#modelPanelCamera]] as const) {
-        if (group.children.length) await this.#backend.compileAsync(group, camera, targetScene)
-        this.#checkAbort(undefined, ordinal)
-      }
-      this.#setSceneFog(this.#fog(fog))
-      if (world.children.length) await this.#backend.compileAsync(world, this.#camera, this.#scene)
+      await withBoundedPipelineCompilation((this.#backend as any)._pipelines, async () => {
+        for (const [group, targetScene, camera] of [[viewModels, this.#scene, this.#viewCamera], [panels, this.#modelPanelScene, this.#modelPanelCamera]] as const) {
+          if (group.children.length) await this.#backend.compileAsync(group, camera, targetScene)
+          this.#checkAbort(undefined, ordinal)
+        }
+        this.#setSceneFog(this.#fog(fog))
+        if (world.children.length) await this.#backend.compileAsync(world, this.#camera, this.#scene)
+      })
       this.#checkAbort(undefined, ordinal)
       for (const { key, retained } of staged) {
         retained.instance.removeFromParent()
