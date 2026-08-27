@@ -145,11 +145,13 @@ pub fn world_activity(definition_index: u32, class: PlayerClass, activity: &str)
     if !definition.usable_by.contains(&class) {
         return None;
     }
-    let weapon = equipment::supported_item(definition_index)?.weapon_for_class(class)?;
+    let weapon = equipment::registered_item(definition_index)?.weapon_for_class(class)?;
     let role = role(definition, weapon).to_ascii_uppercase();
     let role = if role == "PRIMARY2" { "PRIMARY" } else { &role };
     let translated = if activity == "ACT_MP_STAND_IDLE" {
         format!("ACT_MP_STAND_{role}")
+    } else if activity == "ACT_MP_RUN" {
+        format!("ACT_MP_RUN_{role}")
     } else {
         activity.to_owned()
     };

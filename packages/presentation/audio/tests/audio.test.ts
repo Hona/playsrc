@@ -17,6 +17,7 @@ class Parameter {
   readonly automation: Array<readonly [string, number, number]> = []
   setValueAtTime(value: number, when: number): void { this.automation.push(["set", value, when]) }
   linearRampToValueAtTime(value: number, when: number): void { this.automation.push(["ramp", value, when]) }
+  cancelScheduledValues(when: number): void { this.automation.push(["cancel", 0, when]) }
 }
 class Node {
   onended: (() => void) | null = null
@@ -71,6 +72,37 @@ test("audio preload closure comes only from selected definitions, never from a s
 })
 
 describe("browser audio graph", () => {
+  test("moving loop sources update stereo gains without restarting the WAV or its envelope", () => {
+    const nodes: Node[] = [], sources: Node[] = []
+    const make = () => { const node = new Node(); nodes.push(node); return node }
+    const context = { state: "running", currentTime: 2, destination: make(),
+      createBufferSource: () => { const node = make(); sources.push(node); return node },
+      createGain: make, createStereoPanner: make, createChannelSplitter: make, createChannelMerger: make,
+      resume: async () => {}, close: async () => {},
+    } as unknown as AudioContext
+    const world = new SourceAudioWorld(new SoundRegistry([targetDocument]), { maxActiveVoices: 16 })
+    const initial = world.start(start({ scheduledTimeSeconds: 2, resourceLoopStartSeconds: 0.2,
+      source: { kind: "entity", identity: 2, ownerIdentity: 2, origin: [0, 100, 0], radius: 0, sourceClass: "tf_weapon" },
+      envelope: { from: 0, to: 1, seconds: 1 } })).voice
+    const audio = createAudioSystem(context, [{ identity: initial.resource,
+      buffer: { length: 352800, numberOfChannels: 2, sampleRate: 44100, duration: 8 } as AudioBuffer }])
+    audio.playNeutral(initial)
+    ;(context as any).currentTime = 2.25
+    const updates = world.refreshSpatial({ ...listener, revision: 8 }, () => [0, -100, 0])
+    expect(updates).toHaveLength(1)
+    expect(updates[0]!.leftGain).toBe(0)
+    expect(updates[0]!.rightGain).toBe(initial.leftGain)
+    expect(updates[0]!.startTimeSeconds).toBe(initial.startTimeSeconds)
+    audio.updateNeutral(updates[0]!)
+    expect(sources).toHaveLength(1)
+    expect(sources[0]!.starts).toBe(1)
+    expect(sources[0]!.stops).toBe(0)
+    expect(sources[0]!.loopStart).toBe(0.2)
+    expect(nodes.some(node => node.gain.automation.some(([kind, gain, when]) => kind === "ramp" && gain > 0 && when === 3))).toBe(true)
+    expect(world.refreshSpatial({ ...listener, revision: 9 }, () => [0, -100, 0])).toEqual([])
+    world.stopDefinition(2, initial.definition); audio.stop(initial.identity)
+    expect(world.refreshSpatial(listener, () => [0, 0, 0])).toEqual([])
+  })
   test("starts, replaces, stops, and closes supplied exact buffers", async () => {
     const sources: Node[] = []
     const buffer = {

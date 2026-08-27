@@ -273,6 +273,7 @@ pub struct PathContext {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub weapon_definition: Option<u32>,
     pub conditions: [u32; 5],
     pub equipped_items: Vec<crate::equipment::EquippedItem>,
     pub identity: u32,
@@ -349,9 +350,6 @@ pub struct Attack {
     pub eye_position: [f32; 3],
     pub pitch_degrees: f32,
     pub yaw_degrees: f32,
-    pub seconds_since_previous_shot: f32,
-    pub damage_multiplier: f32,
-    pub spread_multiplier: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -532,6 +530,7 @@ struct Bot {
     equipment: Option<Box<BotEquipment>>,
     movement_stuns: crate::hitscan::MovementStuns,
     weapon_knockback: bool,
+    scattergun_jumped: bool,
     blast_since_movement: bool,
     blast_jump_state: bool,
     decapitations: i32,
@@ -1149,6 +1148,7 @@ impl BotWorld {
                     equipment: None,
                     movement_stuns: crate::hitscan::MovementStuns::default(),
                     weapon_knockback: false,
+                    scattergun_jumped: false,
                     blast_since_movement: false,
                     blast_jump_state: false,
                     decapitations: 0,
@@ -1542,7 +1542,7 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
-            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); bot.conditions.remove(ConditionId::BLAST_JUMPING, false); }
+            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.scattergun_jumped = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); bot.conditions.remove(ConditionId::BLAST_JUMPING, false); }
 
             if let Some(attack) = take_melee_smack(bot, tick) { attacks.push(attack); }
             let Some(active_weapon) = bot.active_weapon else {
@@ -1568,11 +1568,8 @@ impl BotWorld {
                 apply_minigun_aiming(&mut bot.conditions, previous_minigun, state.minigun_state)?;
             }
             if matches!(primary, PrimaryResult::Fired { .. }) {
-                let previous = bot.last_fire_tick.replace(tick);
+                bot.last_fire_tick = Some(tick);
                 bot.shots = bot.shots.saturating_add(1);
-                let elapsed = previous.map_or(f32::INFINITY, |value| {
-                    tick.saturating_sub(value) as f32 * self.tick_interval
-                });
                 if is_melee(active_weapon) {
                     bot.pending_melee = Some((
                         tick + (ballistics::MELEE_SMACK_DELAY / self.tick_interval).floor() as u64,
@@ -1581,15 +1578,8 @@ impl BotWorld {
                     ));
                     attacks.push(Attack { phase: AttackPhase::MeleeSwing, attacker: bot.identity, team: bot.team,
                         weapon: active_weapon, target: threat.unwrap().identity, position: bot.movement.position,
-                        eye_position, pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees,
-                        seconds_since_previous_shot: elapsed, damage_multiplier: 1.0, spread_multiplier: 1.0 });
+                        eye_position, pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees });
                 } else {
-                    let (damage_multiplier, spread_multiplier) = if active_weapon == Weapon::Minigun
-                    {
-                        state.minigun_penalties(tick, self.tick_interval)
-                    } else {
-                        (1.0, 1.0)
-                    };
                     attacks.push(Attack {
                         phase: AttackPhase::Fire,
                         attacker: bot.identity,
@@ -1600,9 +1590,6 @@ impl BotWorld {
                         eye_position,
                         pitch_degrees: bot.pitch_degrees,
                         yaw_degrees: bot.yaw_degrees,
-                        seconds_since_previous_shot: elapsed,
-                        damage_multiplier,
-                        spread_multiplier,
                     });
                 }
             }
@@ -1719,11 +1706,13 @@ impl BotWorld {
         start: [f32; 3],
         end: [f32; 3],
         excluded: u32,
+        eligible: impl Fn(u32) -> bool,
     ) -> Option<(u32, f32, [f32; 3])> {
         self.bots
             .values()
             .filter(|bot| {
                 bot.identity != excluded
+                    && eligible(bot.identity)
                     && bot.lifecycle == PlayerLifecycle::Active
                     && attacker_team.is_enemy(bot.team)
             })
@@ -1872,7 +1861,7 @@ impl BotWorld {
     pub(crate) fn weapon_definition(&self, identity: u32, weapon: Weapon) -> Option<u32> {
         let bot = self.bots.get(&identity)?;
         if let Some(equipment) = &bot.equipment { return equipped_definition(&equipment.active, bot.class, weapon); }
-        bot.class.data().stock_items.iter().find_map(|item| crate::equipment::supported_item(item.definition)
+        bot.class.data().stock_items.iter().find_map(|item| crate::equipment::registered_item(item.definition)
             .filter(|item| item.weapon_for_class(bot.class) == Some(weapon)).map(|item| item.definition_index))
     }
 
@@ -2021,12 +2010,19 @@ impl BotWorld {
         for bot in self.bots.values_mut() {
             if bot.lifecycle != PlayerLifecycle::Active { bot.conditions.remove_all(); continue; }
             bot.conditions.advance(self.tick_interval, bot.health.healers.len()).expect("valid bot condition tick");
-            if bot.movement_stuns.active() && !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
+            if bot.movement_stuns.active() {
+                if !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
+                bot.conditions.set_active_stun_flags(bot.movement_stuns.flags());
+            }
         }
     }
 
     pub(crate) fn weapon_runtime(&self, identity: u32, weapon: Weapon) -> Option<&WeaponRuntime> {
         self.bots.get(&identity)?.loadout.get(&weapon)
+    }
+
+    pub(crate) fn active_miniguns(&self) -> impl Iterator<Item = u32> + '_ {
+        self.bots.values().filter(|bot| bot.lifecycle == PlayerLifecycle::Active && bot.active_weapon == Some(Weapon::Minigun)).map(|bot| bot.identity)
     }
 
     pub(crate) fn weapon_runtime_mut(&mut self, identity: u32, weapon: Weapon) -> Option<&mut WeaponRuntime> {
@@ -2140,6 +2136,7 @@ impl BotWorld {
             ConditionId::INVULNERABLE_HIDE_UNLESS_DAMAGED].into_iter().any(|condition| bot.conditions.contains(condition)) { return Ok(false); }
         bot.movement_stuns.add(now, duration, amount, forward_only);
         bot.conditions.add(ConditionId::STUNNED, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false).map_err(|_| Error::InvalidEntity)?;
+        bot.conditions.set_active_stun_flags(bot.movement_stuns.flags());
         Ok(true)
     }
 
@@ -2149,6 +2146,27 @@ impl BotWorld {
         self.stun_movement(identity, attacker, now, 0.3, 1.0, true)?;
         self.bots.get_mut(&identity).unwrap().weapon_knockback = true;
         Ok(true)
+    }
+
+    pub(crate) fn scattergun_jump(&mut self, identity: u32, forward: [f32; 3], now: f32) -> Result<(), Error> {
+        let Some(bot) = self.bots.get_mut(&identity) else { return Ok(()); };
+        if bot.movement.ground.is_some() || bot.scattergun_jumped { return Ok(()); }
+        bot.scattergun_jumped = true;
+        bot.movement.velocity = crate::hitscan::scattergun_jump(bot.movement.velocity, forward);
+        self.stun_movement(identity, identity, now, 0.3, 1.0, true)?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_disguise(&mut self, identity: u32, now: f32) {
+        if let Some(bot) = self.bots.get_mut(&identity) {
+            if let Some(spy) = &mut bot.spy { spy.remove_disguise(now); }
+            bot.conditions.remove(ConditionId::DISGUISED, false);
+            bot.conditions.remove(ConditionId::DISGUISING, false);
+        }
+    }
+
+    pub(crate) fn add_head(&mut self, identity: u32) {
+        if let Some(bot) = self.bots.get_mut(&identity) { bot.decapitations = bot.decapitations.saturating_add(1); }
     }
 
     pub fn combat_player(&self, identity: u32) -> Option<crate::CombatPlayerFacts> {
@@ -2174,6 +2192,7 @@ impl BotWorld {
         self.bots
             .values()
             .map(|bot| Snapshot {
+                weapon_definition: bot.active_weapon.and_then(|weapon| self.weapon_definition(bot.identity, weapon)),
                 conditions: bot.conditions.words(),
                 equipped_items: bot.equipment.as_ref().map_or_else(Vec::new, |equipment| equipment.active.iter().filter(|item|
                     !bot.class.data().stock_items.iter().any(|stock| stock.definition == item.definition_index && stock.slot == item.slot as u8))
@@ -2511,7 +2530,7 @@ fn take_melee_smack(bot: &mut Bot, tick: u64) -> Option<Attack> {
     if bot.lifecycle != PlayerLifecycle::Active || bot.health.current <= 0 || bot.active_weapon != Some(weapon) { return None; }
     Some(Attack { phase: AttackPhase::MeleeSmack, attacker: bot.identity, team: bot.team, weapon, target,
         position: bot.movement.position, eye_position: bot_eye(bot), pitch_degrees: bot.pitch_degrees,
-        yaw_degrees: bot.yaw_degrees, seconds_since_previous_shot: f32::INFINITY, damage_multiplier: 1.0, spread_multiplier: 1.0 })
+        yaw_degrees: bot.yaw_degrees })
 }
 
 fn bot_eye(bot: &Bot) -> [f32; 3] {
@@ -2897,6 +2916,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     }
     bot.movement_stuns = crate::hitscan::MovementStuns::default();
     bot.weapon_knockback = false;
+    bot.scattergun_jumped = false;
     bot.blast_since_movement = false;
     bot.blast_jump_state = false;
     crate::admission_metrics::begin_tick(tick);
@@ -2962,7 +2982,7 @@ pub fn segment_player(start: [f32; 3], end: [f32; 3], position: [f32; 3]) -> Opt
     segment_bounds(start, end, mins, maxs)
 }
 
-fn segment_bounds(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<f32> {
+pub(crate) fn segment_bounds(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<f32> {
     let mut enter = 0.0_f32;
     let mut leave = 1.0_f32;
     for axis in 0..3 {
@@ -3484,10 +3504,9 @@ mod tests {
         assert!(matches!(bot.loadout.get_mut(&weapon).unwrap().primary(tick, 0.015, true, false, &mut Vec::new()), PrimaryResult::Fired { .. }));
         bot.pending_melee = Some((tick + (ballistics::MELEE_SMACK_DELAY / 0.015).floor() as u64, crate::PLAYER_IDENTITY, weapon));
         let attack = Attack { phase: AttackPhase::MeleeSwing, attacker: identity, team: bot.team, weapon, target: crate::PLAYER_IDENTITY,
-            position: bot.movement.position, eye_position: bot_eye(bot), pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees,
-            seconds_since_previous_shot: f32::INFINITY, damage_multiplier: 1.0, spread_multiplier: 1.0 };
+            position: bot.movement.position, eye_position: bot_eye(bot), pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees };
         let predicted = session.random_state().predicted_presentation;
-        session.execute_bot_attack(attack, &mut Vec::new(), &mut Vec::new()).unwrap();
+        session.execute_bot_attack(attack, &mut Vec::new(), &mut Vec::new(), &mut crate::MapPhase::default()).unwrap();
         assert_eq!(session.random_state().predicted_presentation, predicted, "bots do not predict weapon sounds or critical rolls");
     }
 
@@ -3997,6 +4016,57 @@ mod tests {
         apply_minigun_aiming(&mut bot.conditions, MinigunState::Spinning, MinigunState::Idle).unwrap();
         assert!(!bot.conditions.contains(ConditionId::AIMING));
         assert_eq!(session.equipped_victim_damage_modifiers(identity, DamageModifiers::default()).spunup_taken, 1.0);
+    }
+
+    #[test]
+    fn bot_hitscan_uses_the_same_item_rules_and_damage_transaction_as_the_local_player() {
+        use crate::schema::LoadoutPosition::{Primary, Secondary};
+        for (definition, class, slot, weapon, headshot) in [
+            (45, PlayerClass::Scout, Primary, Weapon::Scattergun, false),
+            (1103, PlayerClass::Scout, Primary, Weapon::Scattergun, false),
+            (41, PlayerClass::Heavy, Primary, Weapon::Minigun, false),
+            (61, PlayerClass::Spy, Secondary, Weapon::Revolver, true),
+            (460, PlayerClass::Spy, Secondary, Weapon::Revolver, false),
+            (220, PlayerClass::Scout, Primary, Weapon::HandgunScoutPrimary, false),
+            (402, PlayerClass::Sniper, Primary, Weapon::SniperRifle, true),
+            (415, PlayerClass::Soldier, Secondary, Weapon::Shotgun, false),
+        ] {
+            let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+            let mut random = UniformRandomStream::from_seed(7).unwrap();
+            world.apply(Request { operation: Operation::Add, count: 1, class: Some(class), team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }, PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
+            let identity = world.snapshots()[0].identity;
+            world.equip_item(identity, slot, Some(definition)).unwrap();
+            let bot = world.bots.get_mut(&identity).unwrap();
+            apply_bot_equipment(bot);
+            bot.active_weapon = Some(weapon); bot.movement.position = [-64.0, 0.0, 0.0];
+            if definition == 460 { bot.conditions.add(ConditionId::DISGUISED, crate::condition::ConditionDuration::Permanent, None, true, false).unwrap(); }
+            if definition == 402 { bot.conditions.add(ConditionId::ZOOMED, crate::condition::ConditionDuration::Permanent, None, true, false).unwrap(); }
+            let state = bot.loadout.get_mut(&weapon).unwrap();
+            state.charge_begin_tick = Some(0);
+            if weapon == Weapon::Minigun { state.minigun_state = crate::weapon::MinigunState::Firing; state.spin_begin_tick = Some(0); state.firing_begin_tick = Some(0); }
+            let mut session = crate::Session::new(Floor, [0.0; 3], crate::MapRuntime::empty(0.015));
+            session.bots = Some(world); session.tick = 200;
+            session.movement.absolute_view_angles = [0.0; 3];
+            if definition == 415 { session.conditions.insert(crate::Condition::BlastJumping); session.movement.ground = None; }
+            if definition == 402 { session.health = 100; }
+            if headshot { session.set_posed_player_hitboxes(vec![crate::PosedPlayerHitbox {
+                entity: crate::PLAYER_IDENTITY, team: PlayerTeam::Red, hitbox: 0, group: 1, bone: 0, physics_bone: 0,
+                bone_contents: 0x4000_0000, minimum: [-4.0; 3], maximum: [4.0; 3], origin: [0.0; 3],
+                bone_to_world: [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,41.0],
+            }]); }
+            let attack = Attack { attacker: identity, team: PlayerTeam::Blue, weapon, target: crate::PLAYER_IDENTITY,
+                position: [-64.0, 0.0, 0.0], eye_position: [-64.0, 0.0, 41.0], pitch_degrees: 0.0, yaw_degrees: 0.0 };
+            let mut events = Vec::new();
+            session.fire_hitscan(weapon, 0.0, 0.0, &mut events, Some(attack)).unwrap();
+            assert!(session.health < if definition == 402 { 100 } else { 200 }, "{definition}: {events:?}");
+            assert_eq!(session.bots.as_ref().unwrap().weapon_runtime(identity, weapon).unwrap().hitscan.consecutive_shots, 1);
+            if matches!(definition, 1103 | 415) { assert!(events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { crit: CritKind::Mini, .. })), "{definition}"); }
+            if definition == 45 { assert!(session.weapon_knockback); assert!(session.movement.velocity[2] > 268.0); }
+            if definition == 41 { assert!(session.conditions.contains(crate::Condition::Stunned)); assert!((session.movement_stuns.command(3.0, 100.0, 0.0).0 - 40.0).abs() < 0.001); }
+            if definition == 61 { assert!(events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { crit: CritKind::Full, custom: 1, .. }))); }
+            if definition == 460 { assert!(!session.actor_condition(identity, ConditionId::DISGUISED)); }
+            if definition == 402 { assert_eq!(session.bots.as_ref().unwrap().bots[&identity].decapitations, 1); }
+        }
     }
 
     fn capture_graph() -> Graph {

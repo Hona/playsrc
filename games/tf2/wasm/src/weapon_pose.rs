@@ -81,7 +81,10 @@ pub(super) fn prepare(
     states: &mut BTreeMap<u32, AnimationState>,
     gameplay: Option<&playsrc_tf2::Snapshot>,
 ) -> Result<Option<ModelPoseRequest>, ()> {
-    let Some(definition) = request.item_definition else {
+    let actor = gameplay.and_then(|snapshot| snapshot.bots.iter().find(|bot| bot.identity == request.actor_identity));
+    let automatic = actor.filter(|bot| request.item_definition.is_none() && !request.model_panel && !request.class_selection
+        && bot.lifecycle == playsrc_tf2::PlayerLifecycle::Active && request.model == bot.class.data().model);
+    let Some(definition) = request.item_definition.or_else(|| automatic.and_then(|bot| bot.weapon_definition)) else {
         return Ok(None);
     };
     let item = equipment::schema().definition(definition).ok_or(())?;
@@ -96,8 +99,16 @@ pub(super) fn prepare(
         .or_else(|| (item.usable_by.len() == 1).then(|| *item.usable_by.first().unwrap()))
         .ok_or(())?;
     let mut resolved = request.clone();
+    if let Some(bot) = automatic {
+        let presentation = equipment::presentation(definition).ok_or(())?;
+        resolved.item_definition = Some(definition);
+        resolved.item = presentation.model_for_class(bot.class).filter(|model| !model.is_empty()).map(str::to_owned);
+        resolved.item_bodygroups = if let Some(item) = &resolved.item { vec![0; models.get(item).ok_or(())?.body_parts.len()] } else { Vec::new() };
+        resolved.world_item = true;
+        resolved.activity = if request.activity.starts_with("ACT_MP_RUN_") { "ACT_MP_RUN" } else { "ACT_MP_STAND_IDLE" }.to_owned();
+    }
     if item.item_class == "tf_weapon_minigun" && request.activity == "ACT_MP_ATTACK_STAND_PREFIRE"
-        && !request.preparation && !request.model_panel && !request.world_item {
+        && !request.preparation && !request.model_panel && !resolved.world_item {
         let gameplay = gameplay.ok_or(())?;
         let weapon = if request.actor_identity <= 1 {
             gameplay.loadout.iter().find(|weapon| weapon.weapon == playsrc_tf2::Weapon::Minigun)
@@ -113,11 +124,14 @@ pub(super) fn prepare(
             transient = states.get(&request.identity).cloned().unwrap_or_default();
             &mut transient
         } else { states.entry(request.identity).or_default() };
-        resolved.barrel_angle = Some(state.barrel.advance(definition, &request.activity, request.frame_time));
+        let activity = if let Some(bot) = automatic {
+            if bot.weapon.is_some_and(|weapon| weapon.minigun_state != playsrc_tf2::weapon::MinigunState::Idle) { "ACT_MP_ATTACK_STAND_PREFIRE" } else { "ACT_MP_ATTACK_STAND_POSTFIRE" }
+        } else { &request.activity };
+        resolved.barrel_angle = Some(state.barrel.advance(definition, activity, request.frame_time));
     }
-    if request.world_item || request.model_panel || request.class_selection {
+    if resolved.world_item || request.model_panel || request.class_selection {
         resolved.activity =
-            weapon_presentation::world_activity(definition, class, &request.activity).ok_or(())?;
+            weapon_presentation::world_activity(definition, class, &resolved.activity).ok_or(())?;
         return Ok(Some(resolved));
     }
     let model = models.get(&request.model).ok_or(())?;

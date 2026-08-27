@@ -90,7 +90,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
       ownerIdentity: event.ownerIdentity,
       origin: Object.freeze([...event.position]) as Vector3,
       radius: 0,
-      sourceClass: event.identity === 5 || event.sourceKind === 3 ? "player" : event.sourceKind === 4 ? "team_control_point" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
+      sourceClass: event.identity === 5 || event.sourceKind === 3 ? "player" : event.sourceKind === 4 ? "team_control_point" : event.identity === 3 || event.identity === 4 ? "item" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
     }),
     samples: event.samples,
     ...(event.pitchOverride === undefined ? {} : { overrides: Object.freeze({ pitch: event.pitchOverride }) }),

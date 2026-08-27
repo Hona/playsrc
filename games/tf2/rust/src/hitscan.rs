@@ -31,6 +31,17 @@ pub struct DamageGroup {
     pub custom: crate::damage::CustomDamage,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Attack {
+    pub owner: u32,
+    pub team: crate::PlayerTeam,
+    pub weapon: Weapon,
+    pub source: Option<crate::weapon::WeaponSource>,
+    pub position: [f32; 3],
+    pub center: [f32; 3],
+    pub rules: BulletRules,
+}
+
 impl State {
     pub fn fired(&mut self, tick: u64, interval: f32) {
         self.consecutive_shots = self.consecutive_shots.saturating_add(1);
@@ -163,6 +174,7 @@ pub struct MovementStuns {
 
 impl MovementStuns {
     pub fn active(&self) -> bool { self.active.is_some() }
+    pub fn flags(&self) -> Option<u16> { self.active.map(|index| 1 | if self.events[index].forward_only { 4 } else { 0 }) }
     pub fn add(&mut self, now: f32, duration: f32, amount: f32, forward_only: bool) {
         if self.events.len() + 1 >= 250 { return; }
         let event = MovementStun { expires: now + duration, amount: amount.clamp(0.0, 1.0) * 255.0, forward_only };
