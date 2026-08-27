@@ -176,6 +176,8 @@ export type VguiImageMaterialTexture = Readonly<{
 }>
 
 export type VguiImageMaterialPresentation = Readonly<{
+  vertexColorGamma: boolean
+  alphaTestReference: number | null
   shader: "unlit-generic" | "unlit-two-texture"
   base: VguiImageMaterialTexture
   second: VguiImageMaterialTexture | null
@@ -436,7 +438,7 @@ export type VguiOperation =
   | Readonly<{ kind: "reparent-panel"; panel: VguiPanelId; parent: VguiPanelId }>
   | Readonly<{ kind: "set-bounds"; panel: VguiPanelId; bounds: VguiRect }>
   | Readonly<{ kind: "set-minimum-size"; panel: VguiPanelId; width: number; height: number }>
-  | Readonly<{ kind: "set-panel-state"; panel: VguiPanelId; visible?: boolean; enabled?: boolean; mouseInput?: boolean; keyboardInput?: boolean; proportional?: boolean; z?: number; popup?: boolean; topmostPopup?: boolean }>
+  | Readonly<{ kind: "set-panel-state"; panel: VguiPanelId; visible?: boolean; enabled?: boolean; mouseInput?: boolean; keyboardInput?: boolean; proportional?: boolean; z?: number; alpha?: number; popup?: boolean; topmostPopup?: boolean }>
   | Readonly<{ kind: "move-to-front"; panel: VguiPanelId }>
   | Readonly<{ kind: "move-to-back"; panel: VguiPanelId }>
   | Readonly<{ kind: "replace-resource"; parent: VguiPanelId; document: VguiResourceDocument; selection: VguiResourceSelection }>
@@ -576,6 +578,7 @@ export type VguiRuntimeSnapshot = Readonly<{
 }>
 
 export type VguiRuntime = Readonly<{
+  attachSurface(panel: VguiPanelId, surface: HTMLElement): () => void
   apply(operation: VguiOperation): VguiOperationResult
   deferPresentation<T>(callback: () => T): T
   snapshotPanels(panels: readonly VguiPanelId[]): readonly VguiPanelSnapshot[]

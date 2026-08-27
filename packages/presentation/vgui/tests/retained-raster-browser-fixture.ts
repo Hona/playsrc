@@ -14,6 +14,8 @@ for (let y = 0; y < texture.height; y += 1) {
 context.putImageData(new ImageData(bytes, texture.width, texture.height), 0, 0)
 const material: VguiImageMaterialPresentation = {
   shader: "unlit-generic",
+  vertexColorGamma: false,
+  alphaTestReference: null,
   base: { logicalIdentity: "raster-parity", revision: "1", browserUrl: texture.toDataURL(), width: texture.width, height: texture.height, hardwareFiltered: true, colorRead: "srgb" },
   second: null, detail: null, detailScale: [1, 1], detailBlendMode: 0, detailBlendFactor: 1, detailTint: [1, 1, 1],
   distanceAlpha: false, distanceAlphaFromDetail: false, softEdges: false, scaleSoftEdges: false,

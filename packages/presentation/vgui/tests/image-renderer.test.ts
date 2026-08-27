@@ -45,6 +45,8 @@ describe("bounded authored VGUI raster ownership", () => {
 
 const baseMaterial = (overrides: Partial<VguiImageMaterialPresentation> = {}): VguiImageMaterialPresentation => Object.freeze({
   shader: "unlit-generic",
+  vertexColorGamma: false,
+  alphaTestReference: null,
   base: texture("base"),
   second: null,
   detail: null,
@@ -85,6 +87,7 @@ const pixels = (rgba: readonly number[]): VguiImageRasterTexturePixels => Object
 })
 
 const request = (material: VguiImageMaterialPresentation): VguiImageRasterRequest => Object.freeze({
+  pixelRatio: 1,
   width: 1,
   height: 1,
   viewportWidth: 1024,
@@ -95,6 +98,14 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
 })
 
 describe("configured VGUI image material raster", () => {
+  test("uses Source vertex RGB gamma conversion and authored alpha testing for panel corners", () => {
+    const material = baseMaterial({ vertexColorGamma: true, alphaTestReference: 0.1 })
+    const image = { ...request(material), tint: [117, 107, 94, 255] as const }
+    expect([...shadeVguiImage(image, new Map([["base", pixels([255, 255, 255, 128])]]))]).toEqual([118, 107, 94, 128])
+    expect(shadeVguiImage(image, new Map([["base", pixels([255, 255, 255, 20])]]))[3]).toBe(0)
+    expect(shadeVguiImage(image, new Map([["base", pixels([255, 255, 255, 26])]]))[3]).toBe(26)
+    expect(isDirectVguiImageMaterial({ ...material, base: { ...material.base, colorRead: "srgb" } })).toBe(false)
+  })
   test("yields bounded raster rows without changing one authored filtered pixel", async () => {
     const source = Object.freeze({ ...texture("base"), width: 2, height: 2 })
     const rgba = new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255])

@@ -60,6 +60,7 @@ const TRANSPARENT: Rgba = Object.freeze([0, 0, 0, 0])
 const WHITE: Rgba = Object.freeze([255, 255, 255, 255])
 const LABEL_CONTROLS = new Set(["label", "button", "checkbutton", "radiobutton", "framesystembutton", "menuitem", "urllabel"])
 const RETAINED_PAINT_CONTROLS = new Set(["label", "imagepanel", "scalableimagepanel", "panel", "editablepanel"])
+const PRESENTED_BORDERS = new WeakMap<HTMLElement, VguiBorder>()
 
 const BASE_ANIMATION_VARIABLES: readonly VguiAnimationVariable[] = Object.freeze([
   Object.freeze({ name: "alpha", converter: "float" as const, defaultValue: "255" }),
@@ -1217,7 +1218,8 @@ class SourceVguiRuntime implements VguiRuntime {
         || ![0, 8, 9].includes(material.detailBlendMode)
         || !finite(material.detailBlendFactor)
         || !Array.isArray(material.detailTint) || material.detailTint.length !== 3 || material.detailTint.some((value) => !finite(value))
-        || [material.distanceAlpha, material.distanceAlphaFromDetail, material.softEdges, material.scaleSoftEdges, material.outline, material.scaleOutline, material.glow].some((value) => typeof value !== "boolean")
+        || [material.vertexColorGamma, material.distanceAlpha, material.distanceAlphaFromDetail, material.softEdges, material.scaleSoftEdges, material.outline, material.scaleOutline, material.glow].some((value) => typeof value !== "boolean")
+        || (material.alphaTestReference !== null && (!finite(material.alphaTestReference) || material.alphaTestReference < 0 || material.alphaTestReference > 1))
         || [material.edgeSoftnessStart, material.edgeSoftnessEnd, material.outlineAlpha, material.outlineStart0, material.outlineStart1, material.outlineEnd0, material.outlineEnd1, material.glowAlpha, material.glowStart, material.glowEnd, material.glowX, material.glowY].some((value) => !finite(value))
         || !Array.isArray(material.outlineColor) || material.outlineColor.length !== 3 || material.outlineColor.some((value) => !finite(value))
         || !Array.isArray(material.glowColor) || material.glowColor.length !== 3 || material.glowColor.some((value) => !finite(value))) {
@@ -1787,6 +1789,10 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private setPanelState(operation: Extract<VguiOperation, { kind: "set-panel-state" }>): void {
     const panel = this.requirePanel(operation.panel)
+    if (operation.alpha !== undefined) {
+      if (!safeInteger(operation.alpha) || operation.alpha < 0 || operation.alpha > 255) throw new RuntimeFault("MalformedValue", `${panel.name}:alpha`)
+      panel.animationValues.set("alpha", operation.alpha)
+    }
     if (operation.visible !== undefined) {
       const activated = operation.visible && !panel.visible
       panel.visible = operation.visible
@@ -2455,6 +2461,14 @@ class SourceVguiRuntime implements VguiRuntime {
   private reapplyPanelPresentation(panel: PanelState): void {
     const sourceControl = panel.sourceControl
     const labelDerived = LABEL_CONTROLS.has(asciiFold(sourceControl))
+    if (panel.parent !== null && sameName(panel.name, "SubImage")) {
+      const owner = this.requirePanel(panel.parent)
+      if (sameName(owner.control, "CExImageButton")) {
+        const state = !owner.enabled ? "disabled" : owner.selected ? "selected" : owner.depressed ? "depressed" : owner.armed ? "armed" : "draw"
+        const color = owner.properties.get(`image_${state}color`)
+        panel.drawColor = color ? parseColorLiteral(color, 255) ?? WHITE : WHITE
+      }
+    }
     // Geometry, text, accessibility and authored animation clocks are published
     // independently. Retain the paint of simple controls when its inputs agree;
     // composite controls rebuild layered backgrounds in presentControlGeometry.
@@ -2547,6 +2561,11 @@ class SourceVguiRuntime implements VguiRuntime {
         ? `inset 0 0 0 1px ${rgba(this.resolveColor("TextEntry.FocusEdgeColor", TRANSPARENT))}`
         : "none"
     }
+    const presentationBorder = this.presentationBorder(panel)
+    if (presentationBorder && PRESENTED_BORDERS.get(panel.element) !== presentationBorder) {
+      PRESENTED_BORDERS.set(panel.element, presentationBorder)
+      panel.animationValues.set("PaintBackgroundType", presentationBorder.backgroundType)
+    }
     this.presentPanelBackground(panel, background)
     const alpha = panel.animationValues.get("alpha")
     panel.element.style.opacity = String(Math.max(0, Math.min(255, typeof alpha === "number" ? alpha : 255)) / 255)
@@ -2590,13 +2609,13 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.style.paddingLeft = alignment[0] === "left" ? `${insetX}px` : "0px"
       panel.element.style.paddingRight = alignment[0] === "right" ? `${insetX}px` : "0px"
     }
-    const presentationBorder = this.presentationBorder(panel)
     if (presentationBorder) this.presentBorder(panel, presentationBorder)
     if (panel.image) this.presentImage(panel, this.images.get(asciiFold(panel.image))!)
     if (paintSignature !== null) this.paintSignatures.set(panel.id, paintSignature)
   }
 
   private presentationBorder(panel: PanelState): VguiBorder | null {
+    if (panel.properties.get("paintborder") === "0") return null
     if (panel.border) return this.borders.get(asciiFold(panel.border)) ?? null
     const control = panel.sourceControl
     let name: string | null = null
@@ -2611,6 +2630,7 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private textAlignment(value: string | undefined): readonly ["left" | "center" | "right", "top" | "center" | "bottom"] {
     const folded = asciiFold(value ?? "west")
+    if (!["north-west", "north", "north-east", "west", "center", "east", "south-west", "south", "south-east"].includes(folded)) return Object.freeze(["left", "center"])
     const horizontal = folded.includes("west") ? "left" : folded.includes("east") ? "right" : "center"
     const vertical = folded.includes("north") ? "top" : folded.includes("south") ? "bottom" : "center"
     return Object.freeze([horizontal, vertical])
@@ -2702,6 +2722,13 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private presentPanelBackground(panel: PanelState, color: Rgba): void {
+    for (const [key, element] of panel.chromeElements) {
+      if (key === "panel-background" || key.startsWith("panel-corner-")) element.hidden = true
+    }
+    if (panel.properties.get("paintbackground") === "0") {
+      panel.element.style.backgroundColor = "transparent"
+      return
+    }
     const value = panel.animationValues.get("PaintBackgroundType")
     const type = typeof value === "number" ? Math.max(0, Math.min(2, Math.trunc(value))) : 0
     if (type === 0) {
@@ -2770,9 +2797,11 @@ class SourceVguiRuntime implements VguiRuntime {
     const rotation = Number(panel.properties.get("rotation") ?? 0)
     if (!safeInteger(rotation) || rotation < 0 || rotation > 3) throw new RuntimeFault("MalformedValue", `${panel.name}:rotation`)
     const whiteTint = panel.drawColor[0] === 255 && panel.drawColor[1] === 255 && panel.drawColor[2] === 255 && panel.drawColor[3] === 255
+    const alphaOnly = panel.drawColor[0] === 255 && panel.drawColor[1] === 255 && panel.drawColor[2] === 255
+      && panel.fillColor[3] === 0 && panel.children.length === 0 && panel.border === null
     const directMaterial = image.material
       && isDirectVguiImageMaterial(image.material)
-      && whiteTint
+      && (whiteTint || alphaOnly)
       && frame === 0
       && rotation === 0
       && panel.imageFill === 1
@@ -2809,13 +2838,17 @@ class SourceVguiRuntime implements VguiRuntime {
       this.rasterGenerations.set(identity, (this.rasterGenerations.get(identity) ?? 0) + 1)
     }
     const variant = image.variants?.find((candidate) => candidate.frame === frame && candidate.rotation === rotation && candidate.tint.every((channel, index) => channel === panel.drawColor[index]))
-    if ((frame !== 0 || !whiteTint || rotation !== 0) && !variant) {
+    if ((frame !== 0 || (!whiteTint && !directMaterial) || rotation !== 0) && !variant) {
       panel.element.removeAttribute("src")
       panel.element.style.backgroundImage = "none"
       this.recordDiagnostic("MissingReference", "frame", `${panel.name}:image-variant:${frame}:${panel.drawColor.join(",")}`)
       return
     }
     const url = variant?.browserUrl ?? image.browserUrl
+    if (directMaterial && alphaOnly) {
+      const alpha = panel.animationValues.get("alpha")
+      panel.element.style.opacity = String(Math.max(0, Math.min(255, typeof alpha === "number" ? alpha : 255)) / 255 * panel.drawColor[3] / 255)
+    }
     const tiled = panel.properties.get("tileImage") === "1" || panel.properties.get("tileHorizontally") === "1" || panel.properties.get("tileVertically") === "1"
     panel.element.removeAttribute("src")
     panel.element.style.backgroundImage = `url(${JSON.stringify(url)})`
@@ -2861,6 +2894,8 @@ class SourceVguiRuntime implements VguiRuntime {
       this.auxiliaryNodes.add(raster)
       panel.element.append(raster)
     }
+    if (raster.parentElement !== panel.element) panel.element.append(raster)
+    raster.hidden = false
     const style = raster.style
     const left = `${rect.x}px`
     const top = `${rect.y}px`
@@ -2873,27 +2908,33 @@ class SourceVguiRuntime implements VguiRuntime {
     if (style.height !== height) style.height = height
     if (style.zIndex !== order) style.zIndex = order
     const identity = `${panel.id}:${key}`
+    const pixelRatio = this.viewport.devicePixelRatio
+    const rasterWidth = Math.max(1, Math.round(rect.width * pixelRatio))
+    const rasterHeight = Math.max(1, Math.round(rect.height * pixelRatio))
+    const rasterGeometry: VguiImageRasterGeometry = geometry.kind === "nine-slice"
+      ? Object.freeze({ ...geometry, drawCornerWidth: geometry.drawCornerWidth * pixelRatio, drawCornerHeight: geometry.drawCornerHeight * pixelRatio }) : geometry
     const signature = JSON.stringify([
       image.logicalIdentity,
       image.revision,
-      Math.max(1, Math.trunc(rect.width)),
-      Math.max(1, Math.trunc(rect.height)),
+      rasterWidth,
+      rasterHeight,
       this.viewport.width,
       this.viewport.height,
       tint,
-      geometry,
+      rasterGeometry,
     ])
     if (this.rasterSignatures.get(identity) === signature) return
     this.rasterSignatures.set(identity, signature)
     const generation = (this.rasterGenerations.get(identity) ?? 0) + 1
     this.rasterGenerations.set(identity, generation)
     void this.imageRasterizer.render(raster, Object.freeze({
-      width: Math.max(1, Math.trunc(rect.width)),
-      height: Math.max(1, Math.trunc(rect.height)),
-      viewportWidth: this.viewport.width,
-      viewportHeight: this.viewport.height,
+      width: rasterWidth,
+      height: rasterHeight,
+      pixelRatio,
+      viewportWidth: Math.round(this.viewport.width * pixelRatio),
+      viewportHeight: Math.round(this.viewport.height * pixelRatio),
       tint,
-      geometry,
+      geometry: rasterGeometry,
       material: image.material,
     })).catch((error) => {
       if (!this.destroyed && this.rasterGenerations.get(identity) === generation) {
@@ -4936,6 +4977,28 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.editable, panel.multiline, panel.numericOnly, panel.allowUnicode, panel.textHidden, panel.maximumCharacters, panel.compositionActive, panel.compositionText,
       panel.compositionCaret, [...panel.animationValues], this.keyFocus === panel.id, this.applicationModal === panel.id,
     ])
+  }
+
+  attachSurface(panelId: VguiPanelId, surface: HTMLElement): () => void {
+    const panel = this.requirePanel(panelId)
+    if (this.destroyed || surface.ownerDocument !== this.document || this.panels.size + this.auxiliaryNodes.size + 1 > this.limits.maxDomNodes) {
+      throw new RuntimeFault("DomLimit", `${panel.name}:surface`)
+    }
+    const parent = surface.parentElement
+    const next = surface.nextSibling
+    const pointerEvents = surface.style.pointerEvents
+    surface.style.pointerEvents = "none"
+    panel.element.append(surface)
+    this.auxiliaryNodes.add(surface)
+    let attached = true
+    return () => {
+      if (!attached) return
+      attached = false
+      this.auxiliaryNodes.delete(surface)
+      surface.style.pointerEvents = pointerEvents
+      if (parent) parent.insertBefore(surface, next?.parentNode === parent ? next : null)
+      else surface.remove()
+    }
   }
 
   private publishDom(): void {

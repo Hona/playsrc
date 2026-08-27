@@ -89,6 +89,8 @@ export type Tf2VguiResourceRequest = Readonly<{
 }>
 
 type RawUiMaterial = Readonly<{
+  vertexColorGamma: boolean
+  alphaTestReference: number | null
   configuredValue: string
   material: string
   materialSha256: string
@@ -726,7 +728,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   try { materialInput = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(materialBytes)) }
   catch { throw new Error("TF2 UI material descriptor is malformed") }
   if (!materialInput || typeof materialInput !== "object" || Array.isArray(materialInput)
-    || (materialInput as Record<string, unknown>).schema !== "playsrc-tf2-ui-materials-v1"
+    || (materialInput as Record<string, unknown>).schema !== "playsrc-tf2-ui-materials-v2"
     || (materialInput as Record<string, unknown>).descriptor !== descriptor.identity
     || !Array.isArray((materialInput as Record<string, unknown>).images)
     || !Array.isArray((materialInput as Record<string, unknown>).textures)) {
@@ -786,6 +788,8 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     const second = raw.secondTexture ? texturePresentation(raw.secondTexture, raw.secondColorRead) : null
     const detail = raw.detailTexture ? texturePresentation(raw.detailTexture, raw.detailColorRead) : null
     const material: VguiImageMaterialPresentation = Object.freeze({
+      vertexColorGamma: raw.vertexColorGamma,
+      alphaTestReference: raw.alphaTestReference,
       shader: raw.shader.toLowerCase() === "unlittwotexture" ? "unlit-two-texture" : "unlit-generic",
       base,
       second,
@@ -835,6 +839,8 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     const second = raw.secondTexture ? texturePresentation(raw.secondTexture, raw.secondColorRead) : null
     const detail = raw.detailTexture ? texturePresentation(raw.detailTexture, raw.detailColorRead) : null
     const material: VguiImageMaterialPresentation = Object.freeze({
+      vertexColorGamma: raw.vertexColorGamma,
+      alphaTestReference: raw.alphaTestReference,
       shader: raw.shader.toLowerCase() === "unlittwotexture" ? "unlit-two-texture" : "unlit-generic",
       base, second, detail,
       detailScale: raw.detailScale,

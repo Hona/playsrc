@@ -133,7 +133,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_Class_Name_Soldier")?.definitions[0]?.value).toBe("Soldier")
-    expect(tf2UiResources.images).toHaveLength(412)
+    expect(tf2UiResources.images).toHaveLength(420)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(80)

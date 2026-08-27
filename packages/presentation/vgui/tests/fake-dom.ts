@@ -128,6 +128,17 @@ export class FakeElement {
   get childNodes(): readonly FakeElement[] {
     return this.children
   }
+  get parentNode(): FakeElement | null { return this.parentElement }
+  get nextSibling(): FakeElement | null {
+    return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null
+  }
+  insertBefore(node: FakeElement, next: FakeElement | null): void {
+    node.remove()
+    const index = next === null ? this.children.length : this.children.indexOf(next)
+    if (index < 0) throw new Error("insertBefore reference is not a child")
+    node.parentElement = this
+    this.children.splice(index, 0, node)
+  }
 
   get textContent(): string {
     return this.ownText + this.children.map((child) => child.textContent).join("")

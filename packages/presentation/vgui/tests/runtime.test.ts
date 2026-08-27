@@ -151,6 +151,38 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("borrows a renderer surface at the panel paint position and restores its DOM/input owner", () => {
+    const { runtime, root, document } = setup()
+    const owner = document.createElement("div")
+    const canvas = document.createElement("canvas")
+    const following = document.createElement("div")
+    owner.append(canvas, following)
+    canvas.style.pointerEvents = "auto"
+    const model = operation(runtime, { kind: "create-panel", parent: 1, control: "Panel", name: "Model" }).panel!
+    const release = runtime.attachSurface(model, canvas as unknown as HTMLElement)
+    expect(canvas.parentElement!.dataset.vguiName).toBe("Model")
+    expect(canvas.style.pointerEvents).toBe("none")
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    expect(root.contains(canvas)).toBe(true)
+    release()
+    release()
+    expect(owner.children).toEqual([canvas, following])
+    expect(canvas.style.pointerEvents).toBe("auto")
+  })
+  test("honors independent authored background and border paint gates without inventing alignment aliases", () => {
+    const { runtime, root } = setup()
+    operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Portrait", properties: [
+      { name: "wide", value: "50" }, { name: "tall", value: "100" },
+      { name: "paintbackground", value: "0" }, { name: "paintborder", value: "0" },
+      { name: "border", value: "BaseBorder" }, { name: "textAlignment", value: "left" },
+    ] })
+    const portrait = descendants(root).find((value) => value.dataset.vguiName === "Portrait")!
+    expect(portrait.style.backgroundColor).toBe("transparent")
+    expect(portrait.style.backgroundImage).toBe("none")
+    expect(portrait.style.justifyContent).toBe("flex-start")
+    operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "Right", properties: [{ name: "textAlignment", value: "right" }] })
+    expect(descendants(root).find((value) => value.dataset.vguiName === "Right")!.style.justifyContent).toBe("flex-start")
+  })
   test("leaves foreign keyboard and input events to their owning DOM context", () => {
     const { document, root, runtime } = setup()
     const entry = operation(runtime, {

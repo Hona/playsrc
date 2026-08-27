@@ -1,4 +1,5 @@
 mod crosshair;
+mod class_selection;
 
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::{ConditionEnvironment, EscapeMode, Node, ScalarKind, Value};
@@ -1452,7 +1453,7 @@ fn effective_textures(node: &EffectiveNode, output: &mut BTreeSet<String>) -> Re
     Ok(())
 }
 
-fn image_record(content: &Content, value: &str, index: usize) -> Result<ImageRecord, String> {
+fn image_record(content: &Content, value: &str, index: usize, surface_path: bool) -> Result<ImageRecord, String> {
     if value.to_ascii_lowercase().ends_with(".pic") {
         return Ok(ImageRecord {
             identity: format!("image-{index:04}"),
@@ -1462,7 +1463,7 @@ fn image_record(content: &Content, value: &str, index: usize) -> Result<ImageRec
             textures: Vec::new(),
         });
     }
-    let material_path = material_logical_path(value)?;
+    let material_path = if surface_path { format!("materials/{value}.vmt") } else { material_logical_path(value)? };
     let (material, material_bytes) = dependency(content, &material_path)?;
     let Some(material_bytes) = material_bytes else {
         return Ok(ImageRecord {
@@ -1677,6 +1678,7 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let mut resources = Vec::new();
+    class_selection::generate(&content, repository)?;
     let mut unique_controls = BTreeSet::new();
     let mut code_localization_tokens = CODE_LOCALIZATION_TOKENS
         .iter()
@@ -1823,13 +1825,17 @@ fn main() -> Result<(), String> {
         };
         resources.push(summary);
     }
+    unique_image_values.extend(["chalkboard_scroll_up", "chalkboard_scroll_down", "chalkboard_scroll_line", "chalkboard_scroll_box"].map(str::to_owned));
     let mut folded_images = BTreeSet::new();
     unique_image_values.retain(|value| folded_images.insert(value.to_ascii_lowercase()));
-    let images = unique_image_values
+    let mut images = unique_image_values
         .iter()
         .enumerate()
-        .map(|(index, value)| image_record(&content, value, index + 1))
+        .map(|(index, value)| image_record(&content, value, index + 1, false))
         .collect::<Result<Vec<_>, _>>()?;
+    for corner in 1..=4 {
+        images.push(image_record(&content, &format!("vgui/hud/8x800corner{corner}"), images.len() + 1, true)?);
+    }
     let fonts = unique_font_values
         .iter()
         .enumerate()

@@ -488,6 +488,7 @@ impl<'source> TextureDecoders<'source> {
 }
 
 struct CompiledPresentationModel {
+    flex: Arc<playsrc_studio_model::ModelFlex>,
     model: Arc<playsrc_studio_model::PresentationModel>,
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
@@ -496,6 +497,7 @@ struct CompiledPresentationModel {
 }
 
 struct CachedPresentationModel {
+    flex: Arc<playsrc_studio_model::ModelFlex>,
     model: Weak<playsrc_studio_model::PresentationModel>,
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
@@ -528,6 +530,7 @@ fn presentation_model_cache()
 
 #[derive(Clone)]
 struct StudioModelLightingMetadata {
+    flex: Arc<playsrc_studio_model::ModelFlex>,
     position: playsrc_studio_model::Vector3,
     attachment: i32,
     eyes: Vec<playsrc_studio_model::EyeDefinition>,
@@ -565,6 +568,7 @@ struct Slot {
     model_lighting_world: Option<playsrc_map::ModelLightingWorld<'static>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
+    class_scenes: BTreeMap<u32, (String, playsrc_tf2::class_selection::ScenePlayer)>,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     visibility_candidates: Option<playsrc_visibility::CandidateSet>,
@@ -1504,6 +1508,7 @@ unsafe fn compile_map(
             model_lighting_world: Some(model_lighting_world),
             model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
+            class_scenes: BTreeMap::new(),
             model_output: Vec::new(),
             visibility_candidates: playsrc_visibility::CandidateSet::compile(&visibility, 0, &[])
                 .ok(),
@@ -1548,6 +1553,7 @@ unsafe fn compile_map(
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            class_scenes: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             visibility_candidates: None,
@@ -1964,9 +1970,13 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
     .unwrap_or(0)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ModelPoseRequest {
     identity: u32,
+    class_selection: bool,
+    model_panel: bool,
+    model_panel_reset: bool,
+    flex_controllers: Option<BTreeMap<&'static str, f32>>,
     sample_tick: u64,
     attachments_only: bool,
     fire_view: Option<([f32; 3], [f32; 4])>,
@@ -2063,6 +2073,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         &slot.studio_models,
         &slot.model_material_opacity,
         &mut slot.viewmodel_bob,
+        &mut slot.class_scenes,
         &requests,
         &mut world,
         std::mem::take(&mut slot.model_output),
@@ -2153,7 +2164,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 7 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 8 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2168,12 +2179,13 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let kind = reader.u8()?;
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
-        if kind > 2
+        let model_panel_reset = reader.u8()?;
+        if kind > 4
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
-            || reader.u8()? != 0
+            || model_panel_reset > 1 || (model_panel_reset != 0 && kind < 3)
         {
             return Err(());
         }
@@ -2194,7 +2206,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
-            0 | 2 if item_text.is_empty() => None,
+            0 | 2 | 3 | 4 if item_text.is_empty() => None,
             1 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
@@ -2221,7 +2233,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
             4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
             5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
-            u8::MAX if kind == 0 => None,
+            u8::MAX if kind == 0 || kind == 3 || kind == 4 => None,
             _ => return Err(()),
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
@@ -2291,6 +2303,10 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
             identity,
+            class_selection: kind == 3,
+            model_panel: kind == 3 || kind == 4,
+            model_panel_reset: model_panel_reset != 0,
+            flex_controllers: None,
             sample_tick,
             attachments_only: attachments_only == 1,
             fire_view,
@@ -2452,18 +2468,34 @@ fn encode_model_poses(
     models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
+    class_scenes: &mut BTreeMap<u32, (String, playsrc_tf2::class_selection::ScenePlayer)>,
     requests: &[ModelPoseRequest],
     world: &mut ModelPoseWorld<'_>,
     mut out: Vec<u8>,
 ) -> Result<Vec<u8>, ()> {
     out.clear();
     out.extend_from_slice(b"PMPO");
-    out.extend_from_slice(&8u32.to_le_bytes());
+    out.extend_from_slice(&9u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
         BTreeMap::<(String, usize, u32, u32), playsrc_studio_model::SampledPose>::new();
-    for request in requests {
+    for original in requests {
+        let mut scene_request;
+        let mut scene_event_clock = None;
+        let request = if original.class_selection {
+            let scene = playsrc_tf2::class_selection::scene_for_model(&original.model).ok_or(())?;
+            let retained = class_scenes.entry(original.identity).or_default();
+            if retained.0 != original.model || original.model_panel_reset { *retained = (original.model.clone(), Default::default()); }
+            let sample = retained.1.advance(scene, original.elapsed).map_err(|_| ())?;
+            scene_event_clock = sample.event_sequence.map(|sequence| (sequence, sample.event_elapsed));
+            scene_request = original.clone();
+            scene_request.flex_controllers = Some(sample.controllers);
+            if let Some(sequence) = sample.sequence { scene_request.activity = sequence.to_owned(); }
+            scene_request.elapsed = sample.sequence_elapsed;
+            scene_request.previous_elapsed = (sample.sequence_elapsed - original.frame_time).max(0.0);
+            &scene_request
+        } else { original };
         let model = models.get(&request.model).ok_or(())?;
         let bodygroups = if let Some(body) = request.packed_body {
             model
@@ -2499,12 +2531,13 @@ fn encode_model_poses(
         let pose_parameters = model
             .pose_parameters
             .iter()
-            .map(|_| playsrc_studio_model::Float32(0))
+            .map(|parameter| playsrc_studio_model::Float32(if request.class_selection && parameter.name.eq_ignore_ascii_case(b"move_x") { 1.0f32.to_bits() } else { 0 }))
             .collect::<Vec<_>>();
         let timing = playsrc_studio_model::sequence_timing(model, sequence, &pose_parameters)
             .map_err(|_| ())?;
         let previous_cycle = pose_cycle(request.previous_elapsed, timing);
         let cycle = pose_cycle(request.elapsed, timing);
+        let class_pose_parameters = request.class_selection.then(|| pose_parameters.clone());
         if let Some(item_identity) = request.item.as_ref() {
             let item = models.get(item_identity).ok_or(())?;
             let frame = playsrc_studio_model::produce_viewmodel_frame(
@@ -2660,15 +2693,24 @@ fn encode_model_poses(
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 sampled_poses.entry(pose_key.clone())
             {
+                let (base_sequence, base_cycle, layers) = if request.class_selection {
+                    let base = *playsrc_studio_model::sequences_for_activity_name(model, original.activity.as_bytes()).first().ok_or(())?;
+                    let base_timing = playsrc_studio_model::sequence_timing(model, base, &pose_parameters).map_err(|_| ())?;
+                    let base_cycle = original.elapsed * f32::from_bits(timing.frames_per_second.0)
+                        / (f32::from_bits(base_timing.weighted_frame_count.0) - 1.0).max(1.0);
+                    (base, base_cycle - base_cycle.trunc(), vec![playsrc_studio_model::AnimationLayer {
+                        sequence, cycle: playsrc_studio_model::Float32(cycle.to_bits()), weight: playsrc_studio_model::Float32(1.0f32.to_bits()),
+                    }])
+                } else { (sequence, cycle, Vec::new()) };
                 let pose = playsrc_studio_model::sample_pose_at_time(
                     model,
                     &playsrc_studio_model::AnimationState {
-                        base_sequence: sequence,
-                        cycle: playsrc_studio_model::Float32(cycle.to_bits()),
+                        base_sequence,
+                        cycle: playsrc_studio_model::Float32(base_cycle.to_bits()),
                         pose_parameters,
-                        layers: Vec::new(),
+                        layers,
                     },
-                    playsrc_studio_model::Float32(request.elapsed.to_bits()),
+                    playsrc_studio_model::Float32(original.elapsed.to_bits()),
                 )
                 .map_err(|_| ())?;
                 entry.insert(pose);
@@ -2684,13 +2726,21 @@ fn encode_model_poses(
                 request.lod,
             )
             .map_err(|_| ())?;
-            let events = playsrc_studio_model::presentation_events_between(
+            let events = if request.class_selection {
+                if let Some((label, elapsed)) = scene_event_clock {
+                    let event_sequence = model.sequences.iter().find(|sequence| sequence.label.eq_ignore_ascii_case(label.as_bytes())).ok_or(())?;
+                    let event_timing = playsrc_studio_model::sequence_timing(model, event_sequence.index, class_pose_parameters.as_ref().ok_or(())?).map_err(|_| ())?;
+                    let (previous, current) = class_scenes.get_mut(&original.identity).ok_or(())?.1.event_range(event_sequence.index,
+                        elapsed * f32::from_bits(event_timing.cycles_per_second.0));
+                    playsrc_studio_model::model_panel_events(&event_sequence.events, previous, current)
+                } else { Vec::new() }
+            } else { playsrc_studio_model::presentation_events_between(
                 model,
                 sequence,
                 playsrc_studio_model::Float32(previous_cycle.to_bits()),
                 playsrc_studio_model::Float32(cycle.to_bits()),
             )
-            .map_err(|_| ())?;
+            .map_err(|_| ())? };
             let legacy_view = if let playsrc_studio_model::PresentationDescriptor::ViewModel {
                 default_horizontal_fov_4_by_3,
                 ..
@@ -2778,6 +2828,21 @@ fn encode_model_poses(
                 world,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
+            if request.class_selection {
+                let scene = playsrc_tf2::class_selection::scene_for_model(&request.model).ok_or(())?;
+                let item = models.get(scene.held_model).ok_or(())?;
+                let item_pose = playsrc_studio_model::sample_pose(item, &playsrc_studio_model::AnimationState {
+                    base_sequence: 0, cycle: playsrc_studio_model::Float32(0),
+                    pose_parameters: vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()], layers: Vec::new(),
+                }).map_err(|_| ())?;
+                let merged = playsrc_studio_model::merge_model_pose(model, pose, item, &item_pose).map_err(|_| ())?;
+                let item_skin = if request.skin < item.skins.len() { request.skin } else { 0 };
+                let item_selected = playsrc_studio_model::select_primitives(item, &vec![0; item.body_parts.len()], item_skin, 0).map_err(|_| ())?;
+                let item_timing = playsrc_studio_model::sequence_timing(item, 0, &vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()]).map_err(|_| ())?;
+                encode_model_pose_part(&mut out, request, 2, item, 0, item_timing, 0.0, 0.0, &[], &merged,
+                    &item_selected, item_selected.len(), None, world)?;
+                output_count = output_count.checked_add(1).ok_or(())?;
+            }
         }
         if out.len() > 64 * 1024 * 1024 {
             return Err(());
@@ -3047,6 +3112,29 @@ fn encode_model_pose_part(
         }
     }
     encode_model_lighting(out, request, model, pose, selected, world)?;
+    let mut flex_primitives = Vec::new();
+    if let Some(controllers) = &request.flex_controllers {
+        let flex = &world.metadata.get(&model.identity).ok_or(())?.flex;
+        let weights = flex.weights(controllers).map_err(|_| ())?;
+        let deltas = flex.deltas(&weights);
+        for selected in selected {
+            let geometry = &model.geometry[selected.primitive];
+            let vertices = geometry.vertices.iter().enumerate().filter_map(|(index, vertex)| {
+                deltas.get(&vertex.source_index).map(|(position, normal)| (index, std::array::from_fn::<_, 3, _>(|axis| f32::from_bits(vertex.position.0[axis].0) + position[axis]),
+                    std::array::from_fn::<_, 3, _>(|axis| f32::from_bits(vertex.normal.0[axis].0) + normal[axis])))
+            }).collect::<Vec<_>>();
+            if !vertices.is_empty() { flex_primitives.push((selected.primitive, vertices)); }
+        }
+    }
+    out.extend_from_slice(&(flex_primitives.len() as u32).to_le_bytes());
+    for (primitive, vertices) in flex_primitives {
+        out.extend_from_slice(&(primitive as u32).to_le_bytes());
+        out.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
+        for (index, position, normal) in vertices {
+            out.extend_from_slice(&(index as u32).to_le_bytes());
+            for value in position.into_iter().chain(normal) { out.extend_from_slice(&value.to_le_bytes()); }
+        }
+    }
     Ok(())
 }
 
@@ -3074,6 +3162,18 @@ fn encode_model_lighting(
         vector(lighting_request.angles),
     )
     .map_err(|_| ())?;
+    if request.model_panel {
+        // CPotteryWheelPanel's default light rig is independent of the loaded map.
+        out.extend_from_slice(&[1, 1, 1, 0]);
+        for value in [0.0f32; 3].into_iter().chain(lighting_request.camera) { out.extend_from_slice(&value.to_le_bytes()); }
+        for _ in 0..18 { out.extend_from_slice(&0.4f32.to_le_bytes()); }
+        out.extend_from_slice(&[1, 0, 0, 0]);
+        for value in [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        pbytes(out, b"")?;
+        return encode_model_eyes(out, request, lighting_request, model, pose, selected, world, transform);
+    }
     let posed = if metadata.attachment == 0 {
         None
     } else {
@@ -3184,7 +3284,7 @@ fn encode_model_eyes(
     transform: playsrc_studio_model::Matrix3x4,
 ) -> Result<(), ()> {
     let definitions = &world.metadata.get(&model.identity).ok_or(())?.eyes;
-    let target = source_tf2_eye_target(request.identity, lighting, world.gameplay);
+    let target = if request.model_panel { lighting.camera } else { source_tf2_eye_target(request.identity, lighting, world.gameplay) };
     let states = source_model_eye_states(
         model,
         definitions,
@@ -4474,6 +4574,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.model_lighting_world = None;
     slot.model_material_opacity = BTreeMap::new();
     slot.viewmodel_bob = BTreeMap::new();
+    slot.class_scenes = BTreeMap::new();
     slot.model_output = Vec::new();
     slot.visibility = None;
     slot.visibility_candidates = None;
@@ -8517,6 +8618,7 @@ fn build_model_presentation(
                 if valid {
                     PRESENTATION_MODEL_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
                     return Ok(Box::new(CompiledPresentationModel {
+                        flex: Arc::clone(&retained.flex),
                         model,
                         identity: retained.identity,
                         illumination_position: retained.illumination_position,
@@ -8565,6 +8667,7 @@ fn build_model_presentation(
         .insert(
             key,
             CachedPresentationModel {
+                flex: Arc::clone(&built.flex),
                 model: Arc::downgrade(&model),
                 identity,
                 illumination_position: built.illumination_position,
@@ -8573,6 +8676,7 @@ fn build_model_presentation(
             },
         );
     Ok(Box::new(CompiledPresentationModel {
+        flex: built.flex,
         model,
         identity,
         illumination_position: built.illumination_position,
@@ -11002,6 +11106,7 @@ fn load_cached_presentation(
             (
                 identity.clone(),
                 StudioModelLightingMetadata {
+                    flex: Arc::clone(&artifact.flex),
                     position: artifact.illumination_position,
                     attachment: artifact.illumination_attachment,
                     eyes: artifact.eyes.clone(),
@@ -11664,6 +11769,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             (
                 identity.clone(),
                 StudioModelLightingMetadata {
+                    flex: Arc::clone(&artifact.flex),
                     position: artifact.illumination_position,
                     attachment: artifact.illumination_attachment,
                     eyes: artifact.eyes.clone(),
@@ -14676,6 +14782,7 @@ mod tests {
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            class_scenes: BTreeMap::new(),
             model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
             visibility: None,
             visibility_candidates: None,
@@ -14758,6 +14865,7 @@ mod tests {
             model_lighting_world: None,
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
+            class_scenes: BTreeMap::new(),
             model_output: Vec::new(),
             visibility: None,
             visibility_candidates: None,
