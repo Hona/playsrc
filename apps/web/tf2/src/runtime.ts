@@ -74,6 +74,8 @@ import {
   createParticleBatchEncoder,
   createProjectilePresentationMapper,
   createViewmodelPresenter,
+  classPipelinePoseRequests,
+  classPreviewBaseActivity,
   encodeModelPoseBatch,
   projectileFrame,
   projectileModels,
@@ -1962,6 +1964,24 @@ export class Tf2Application {
       })
       await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
       this.#requireOperation(operation)
+      if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
+      const classPreparation = classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
+        warmupViewport.width / warmupViewport.height)
+      const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
+      const classPoses = await this.#client!.models(this.#generation, encodeModelPoseBatch(classPreparation.map(value => value.request)))
+      this.#requireOperation(operation)
+      await this.#renderer.prepareModelPipelines(classPoses.map(pose => {
+        const preparation = preparationByIdentity.get(pose.identity)
+        const artifact = this.#artifacts!.models.get(pose.model)
+        if (!preparation || !artifact || !pose.lighting) throw new Error(`Class pipeline pose unavailable: ${pose.model}`)
+        return { panel: preparation.panel, item: {
+          identity: pose.identity, model: pose.model, skin: preparation.request.skin < artifact.skinCount ? preparation.request.skin : 0,
+          position: warmupCamera.position, angles: [0, 0, 0] as const, scale: 1,
+          pose, modelLighting: pose.lighting, eyeStates: pose.eyes,
+        } }
+      }), warmupCamera)
+      this.#requireOperation(operation)
+      }
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
       this.#recordCrouch(this.#snapshot)
@@ -2210,7 +2230,7 @@ export class Tf2Application {
         if (!classSelection && !randomSequence) throw new Error("Authored random-class idle sequence is unavailable")
         const poses = await client.models(generation, encodeModelPoseBatch([{
           identity: 0x2001 + player.skin, model: player.model, classSelection, modelPanel: true, modelPanelReset,
-          activity: randomSequence?.label ?? (selected === 5 ? "ACT_MP_STAND_SECONDARY" : selected === 8 || selected === 9 ? "ACT_MP_STAND_MELEE" : "ACT_MP_STAND_PRIMARY"),
+          activity: randomSequence?.label ?? classPreviewBaseActivity(selected as Tf2Class),
           previousElapsedSeconds: previous, elapsedSeconds: elapsed,
           currentTimeSeconds: now, frameTimeSeconds: elapsed - previous, planarSpeed: 0,
           screenAspectRatio: player.bounds.width / player.bounds.height, worldFarPlane: 16384 * Math.sqrt(3),

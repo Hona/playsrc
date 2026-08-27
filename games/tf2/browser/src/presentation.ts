@@ -245,6 +245,8 @@ export function projectileModels(models: readonly ProjectileModelRequest[]): rea
     ),
   )
 }
+export { classPipelinePoseRequests, classPreviewBaseActivity } from "./class-pipeline-preparation"
+
 export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let actionTick = 0n
   let priorTick = 0n
