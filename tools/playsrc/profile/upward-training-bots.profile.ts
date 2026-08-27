@@ -1216,18 +1216,27 @@ test("profile authored headed Upward offline-practice default roster and actual 
         visibleText: (element as HTMLElement).innerText,
       })) })
     }
+    await writeFile(path.join(directory, `${label}-engineer-ui.json`), JSON.stringify({ menus, performanceSample: false }))
     if (process.env.PROFILE_ENGINEER_BINDING_AUDIT === "1") {
       await page.keyboard.press("Escape")
       await page.locator("[data-vgui-name='SettingsButton']").click()
       await expect(page.locator("main")).toHaveAttribute("data-options-visible", "true")
       const list = page.locator("[data-vgui-name='listpanel_keybindlist']")
-      await list.locator("[data-vgui-item='1']").click()
       const row = tf2UiResources.keyboardActions.findIndex(action => action.binding === "lastinv")
       expect(row).toBeGreaterThanOrEqual(0)
-      for (let index = 0; index < row; index++) await page.keyboard.press("ArrowDown")
+      const target = list.locator(`[data-vgui-item='${row + 1}']`)
+      await list.hover()
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const bounds = await target.boundingBox(), viewport = await list.boundingBox()
+        if (bounds && viewport && bounds.y >= viewport.y && bounds.y + bounds.height <= viewport.y + viewport.height) break
+        await page.mouse.wheel(0, 240)
+        await page.waitForTimeout(40)
+      }
+      await target.click({ timeout: 3000 })
       await page.locator("[data-vgui-name='ChangeKeyButton']").click()
       await page.keyboard.press("F8")
-      await expect(list.locator(`[data-vgui-item='${row + 1}'] [data-vgui-column='Key']`)).toHaveText("F8")
+      await page.screenshot({ path: path.join(directory, `${label}-options-rebound.png`) })
+      await expect(list.locator(`[data-vgui-item='${row + 1}'] [data-vgui-column='Key']`)).toHaveText("F8", { timeout: 3000 })
       await page.locator("[data-vgui-name='OptionsDialog'] [data-vgui-name='OKButton']").click()
       await expect(page.locator("main")).toHaveAttribute("data-options-visible", "false")
       await page.locator("[data-vgui-name='ResumeButton']").click()
@@ -1239,7 +1248,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         await page.keyboard.press(key)
         await expect(root).toHaveAttribute("data-engineer-menu", menu)
         const labelControl = page.locator(`.engineer-layer [data-vgui-name='${menu === "build" ? "HudMenuEngyBuild" : "HudMenuEngyDestroy"}'] [data-vgui-name='CancelLabel']`)
-        await expect(labelControl).toContainText(/\[f8\]/i)
+        await expect(labelControl).toContainText(/'F8'/i)
         const file = path.join(directory, `${label}-engineer-${menu}-rebound.png`)
         await page.screenshot({ path: file })
         const text = await labelControl.innerText()

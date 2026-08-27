@@ -156,6 +156,8 @@ describe("generic Source VGUI runtime", () => {
     const registration = { name: "AuthoredButton", baseControl: "CheckButton" as const, element: "button", role: null,
       focusable: true, animationVariables: [], acceptedProperties }
     const { runtime } = setup(emptyAnimations, [registration])
+    const indexes = runtime as unknown as { resourceProperties: Map<unknown, unknown>; resolvedSchemeColors: Map<string, unknown> }
+    expect(indexes.resourceProperties.size).toBe(0)
     acceptedProperties[0] = "replacementValue"
     for (let index = 0; index < 24; index++) {
       const id = operation(runtime, { kind: "create-panel", parent: 1, control: "AuthoredButton", name: `Card${index}`, properties: [
@@ -168,12 +170,20 @@ describe("generic Source VGUI runtime", () => {
       expect(panel.text).toBe(`Card ${index}`)
     }
     const invalid = runtime.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "Invalid", properties: [{ name: "replacementValue", value: "1" }] })
+    expect(indexes.resourceProperties.size).toBe(1)
+    const colors = indexes.resolvedSchemeColors.size
+    expect(colors).toBeGreaterThan(0)
+    operation(runtime, { kind: "replace-scheme", scheme: { ...scheme, revision: "second", colors: scheme.colors.map(color => color.name === "Panel.FgColor" ? { ...color, value: "4 5 6 255" } : color) } })
+    expect(indexes.resolvedSchemeColors.get("panel.fgcolor")).toEqual([4, 5, 6, 255])
+    expect(indexes.resolvedSchemeColors.size).toBe(colors)
     expect(invalid.ok).toBeFalse()
     if (!invalid.ok) expect(invalid.diagnostic.subject).toBe("AuthoredButton.replacementValue")
     const replacement = setup(emptyAnimations, [registration]).runtime
     expect(replacement.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "New", properties: [{ name: "replacementValue", value: "2" }] }).ok).toBeTrue()
     expect(replacement.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "Old", properties: [{ name: "customValue", value: "2" }] }).ok).toBeFalse()
     runtime.destroy()
+    expect(indexes.resourceProperties.size).toBe(0)
+    expect(indexes.resolvedSchemeColors.size).toBe(0)
     replacement.destroy()
   })
   test("child lookup is case insensitive, scoped, and immediately follows resource lifecycle", () => {

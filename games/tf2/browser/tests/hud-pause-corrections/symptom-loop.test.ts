@@ -247,7 +247,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const root = createRoot(new FakeDocument())
     let binding: string | null = "q"
     const configured = resources()
-    const localized = { ...configured, localization: { ...configured.localization, tokens: [{ name: "Hud_Menu_Build_Cancel", value: "Hit [%lastinv%] to Cancel" }] } }
+    const localized = { ...configured, localization: { ...configured.localization, tokens: [{ name: "Hud_Menu_Build_Cancel", value: "Hit '%lastinv%' to Cancel" }] } }
     const engineer = initializeTf2EngineerPresentation({ root: root as unknown as HTMLElement, resources: localized, viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true, clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, lookupBinding(action) { expect(action).toBe("lastinv"); return binding } })
     const base = { tick: 1n, class: 9, team: 2, lifecycle: 1, weapon: 43, metal: 200, buildings: [] } as never
     engineer.publish(base)
@@ -262,11 +262,11 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     binding = "f8"
     engineer.publish({ ...base as object, tick: 3n, weapon: 40 } as never)
     engineer.publish({ ...base as object, tick: 4n } as never)
-    expect(descendants(root).some(element => element.textContent.includes("[f8]"))).toBeTrue()
+    expect(descendants(root).some(element => element.textContent.includes("'f8'"))).toBeTrue()
     binding = null
     engineer.publish({ ...base as object, tick: 5n, weapon: 40 } as never)
     engineer.publish({ ...base as object, tick: 6n } as never)
-    expect(descendants(root).some(element => element.textContent.includes("[< not bound >]"))).toBeTrue()
+    expect(descendants(root).some(element => element.textContent.includes("'< not bound >'"))).toBeTrue()
     engineer.destroy()
   })
 
