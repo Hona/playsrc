@@ -51,13 +51,18 @@ export function summarizeFreezeTimeline(timestamps: readonly number[], window: F
     }
     return output
   }
+  const rolling250Milliseconds = rolling(250), rolling1000Milliseconds = rolling(1000)
   return {
     frames: inside.length, framesPerSecond: inside.length * 1000 / (end - start),
     completeObservedIntervals: summarizeFrameTimes(gaps.flatMap(gap => gap.observedMilliseconds === null ? [] : [gap.observedMilliseconds])),
     maximumActiveSilenceMilliseconds: gaps.reduce((max, gap) => Math.max(max, gap.activeMilliseconds), 0),
     maximumObservedGapMilliseconds: gaps.reduce<number | null>((max, gap) => gap.observedMilliseconds === null ? max : Math.max(max ?? 0, gap.observedMilliseconds), null),
     boundaryCensoredIntervals: gaps.filter(gap => gap.leftWindowCensored || gap.rightWindowCensored),
-    rolling250Milliseconds: rolling(250), rolling1000Milliseconds: rolling(1000),
+    rolling250Milliseconds, rolling1000Milliseconds,
+    emptyFullRollingWindows: {
+      milliseconds250: rolling250Milliseconds.filter(row => !row.partial && row.frames === 0).length,
+      milliseconds1000: rolling1000Milliseconds.filter(row => !row.partial && row.frames === 0).length,
+    },
     stalls: THRESHOLDS.map(threshold => {
       const long = gaps.filter(gap => gap.minimumMilliseconds > threshold)
       const covered = long.reduce((sum, gap) => sum + gap.activeMilliseconds, 0)

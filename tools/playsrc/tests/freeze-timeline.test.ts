@@ -21,11 +21,19 @@ test("empty and edge-censored samples retain silence and unknown context", () =>
   expect(empty.stalls.at(-1)!.count).toBe(1)
   expect(empty.boundaryCensoredIntervals[0]).toMatchObject({ missingPreviousObservation: true, missingFollowingObservation: true })
   expect(empty.rolling250Milliseconds.at(-1)).toMatchObject({ partial: true, framesPerSecond: 0 })
+  expect(empty.emptyFullRollingWindows.milliseconds250).toBe(4)
   const known = summarizeFreezeTimeline([-500, 100, 1500], { startedMilliseconds: 0, endedMilliseconds: 1000 })
   expect(known.maximumObservedGapMilliseconds).toBe(1400)
   expect(known.maximumActiveSilenceMilliseconds).toBe(900)
   expect(known.boundaryCensoredIntervals).toHaveLength(2)
   expect(known.boundaryCensoredIntervals[0]!.missingPreviousObservation).toBe(false)
+})
+
+test("a tiny empty final bucket remains visible but is not a 250ms freeze", () => {
+  const result = summarizeFreezeTimeline([0, 100, 200, 300, 400, 499], { startedMilliseconds: 0, endedMilliseconds: 501 })
+  expect(result.rolling250Milliseconds.at(-1)).toMatchObject({ partial: true, frames: 0 })
+  expect(result.emptyFullRollingWindows.milliseconds250).toBe(0)
+  expect(result.maximumActiveSilenceMilliseconds).toBe(100)
 })
 
 test("repeated compositor content does not become new visible game frames", () => {
