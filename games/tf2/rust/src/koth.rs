@@ -322,6 +322,43 @@ mod tests {
     }
 
     #[test]
+    fn real_session_round_respawn_restores_dead_local_player_before_next_round_movement() {
+        let fixture = Match::new();
+        let mut session = crate::Session::new(CaptureBrush, [0.0; 3], fixture.map);
+        session.health = 0;
+        session.lifecycle = crate::PlayerLifecycle::Dying;
+        session.ammo.primary = 0;
+        session.movement.position = [1000.0; 3];
+        session.round.win(PlayerTeam::Red, 1).unwrap();
+        let mut respawn = None;
+        for _ in 0..1003 {
+            let snapshot = session.advance(crate::Command::default()).unwrap();
+            if snapshot
+                .events
+                .iter()
+                .any(|event| matches!(event, crate::Event::Respawned))
+            {
+                respawn = Some(snapshot);
+                break;
+            }
+        }
+        let snapshot = respawn.expect("round transition force-respawns the local player");
+        assert_eq!(session.lifecycle, crate::PlayerLifecycle::Active);
+        assert_eq!(snapshot.health, 200.0);
+        assert_eq!(snapshot.movement.position[0], 0.0);
+        assert_eq!(snapshot.round.state, round::State::Preround);
+        assert!(snapshot.control_points.unwrap().points[0].locked);
+        assert_eq!(
+            snapshot
+                .round
+                .koth_timers
+                .unwrap()
+                .map(|timer| (timer.remaining, timer.paused)),
+            [(180.0, true); 2]
+        );
+    }
+
+    #[test]
     fn named_delayed_input_routes_through_real_entity_scheduler_without_changing_clock_rate() {
         let mut game = Match::new();
         game.map

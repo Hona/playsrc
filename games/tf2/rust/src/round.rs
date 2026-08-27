@@ -736,9 +736,19 @@ impl Rules {
         } else if self.state == State::Running {
             self.advance_timer(interval, facts, &mut events)?;
         }
-        if self.configuration.koth.is_some() && !self.waiting_for_players() {
+        if !self.waiting_for_players() {
+            let hud_timer = self
+                .timer()
+                .filter(|timer| timer.configuration.show_in_hud)
+                .map(|timer| timer.configuration.identity);
             for timer in &mut self.timers {
-                if timer.disabled || timer.paused || !timer.configuration.auto_countdown {
+                if timer.disabled
+                    || timer.paused
+                    || timer.state == TimerState::Setup
+                    || !timer.configuration.auto_countdown
+                    || self.configuration.koth.is_none()
+                        && hud_timer != Some(timer.configuration.identity)
+                {
                     continue;
                 }
                 for (index, seconds) in OUTPUT_SECONDS.into_iter().enumerate().skip(4) {
