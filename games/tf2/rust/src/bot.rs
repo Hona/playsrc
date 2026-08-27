@@ -2115,6 +2115,14 @@ impl BotWorld {
         if let Some(bot) = self.bots.get_mut(&player) { bot.assists = bot.assists.saturating_add(1); }
     }
 
+    pub fn hitbox_poses(&self) -> Vec<crate::PlayerHitboxPose> {
+        self.bots.values().filter(|bot| bot.lifecycle == PlayerLifecycle::Active).filter_map(|bot| {
+            Some(crate::PlayerHitboxPose { identity: bot.identity, team: bot.team, class: bot.class,
+                definition: self.weapon_definition(bot.identity, bot.active_weapon?)?, position: bot.movement.position,
+                velocity: bot.movement.velocity, yaw_degrees: bot.yaw_degrees })
+        }).collect()
+    }
+
     pub fn hitscan_target(&self, identity: u32) -> Option<crate::hitscan::Target> {
         let bot = self.bots.get(&identity)?;
         if bot.lifecycle != PlayerLifecycle::Active { return None; }

@@ -804,6 +804,17 @@ pub struct ProducerSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct PlayerHitboxPose {
+    pub identity: u32,
+    pub team: PlayerTeam,
+    pub class: PlayerClass,
+    pub definition: u32,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub yaw_degrees: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct PosedPlayerHitbox {
     pub entity: u32,
     pub team: PlayerTeam,
@@ -4867,6 +4878,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
         } else { self.bots.as_ref().and_then(|bots| bots.conditions(identity)).is_some_and(|state| state.contains(condition)) }
     }
 
+    fn refresh_player_hitboxes(&mut self) -> Result<(), Error> {
+        if !self.collision.has_player_hitbox_models() { return Ok(()); }
+        let mut actors = self.bots.as_ref().map_or_else(Vec::new, bot::BotWorld::hitbox_poses);
+        if self.lifecycle == PlayerLifecycle::Active {
+            if let Some(definition) = self.weapon.and_then(|weapon| self.active_equipment.weapon_definition(self.class, weapon)) {
+                actors.push(PlayerHitboxPose { identity: PLAYER_IDENTITY, team: self.team_selection.local_team(),
+                    class: self.class, definition, position: self.movement.position, velocity: self.movement.velocity,
+                    yaw_degrees: self.movement.absolute_view_angles[1] });
+            }
+        }
+        let poses = self.collision.pose_player_hitboxes(&actors, self.tick, self.movement_configuration.tick_interval)?;
+        self.set_posed_player_hitboxes(poses);
+        Ok(())
+    }
+
     fn hitscan_target(&self, identity: u32) -> Option<hitscan::Target> {
         if identity != PLAYER_IDENTITY { return self.bots.as_ref()?.hitscan_target(identity); }
         if self.lifecycle != PlayerLifecycle::Active || self.health <= 0 { return None; }
@@ -5015,6 +5041,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let accumulate = matches!(weapon, Weapon::Minigun | Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun);
         let mut accumulated = BTreeMap::<u32, hitscan::DamageGroup>::new();
         let mut phase = MapPhase::default();
+        self.refresh_player_hitboxes()?;
         let current_poses = self.posed_hitbox_tick == Some(self.tick);
         let attack = hitscan::Attack { owner, team, weapon, source: source_weapon, position: attacker_position, center: attacker_center, rules };
         let posed_actors: BTreeSet<u32> = if current_poses { self.posed_player_hitboxes.iter().map(|hitbox| hitbox.entity).collect() } else { BTreeSet::new() };
@@ -5647,6 +5674,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             maxs: [0.0; 3],
         };
         let line = self.collision.trace(origin, end, line_hull, MASK_SOLID)?;
+        self.refresh_player_hitboxes()?;
         let line_player = self.trace_melee_players(owner, origin, end, line_hull, line.fraction)?;
         let line_actor = self.melee_player_trace(owner, origin, end, line_hull, line.fraction);
         let (impact, player, actor) = if line.fraction < 1.0 || line.start_solid || line_player.is_some() || line_actor.is_some() {

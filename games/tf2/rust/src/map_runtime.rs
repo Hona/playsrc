@@ -60,6 +60,12 @@ pub struct CombatPlayerFacts {
 }
 
 pub trait GameplayWorld: Tracer {
+    fn has_player_hitbox_models(&self) -> bool { false }
+
+    fn pose_player_hitboxes(&self, _actors: &[crate::PlayerHitboxPose], _tick: u64, _interval: f32) -> Result<Vec<crate::PosedPlayerHitbox>, MoveError> {
+        Ok(Vec::new())
+    }
+
     fn combat_player(&self, _identity: u32) -> Option<CombatPlayerFacts> {
         None
     }
