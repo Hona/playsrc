@@ -2610,10 +2610,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             };
             if active_weapon == Weapon::Minigun {
                 let state = self.loadout[&active_weapon].minigun_state;
-                if state == weapon::MinigunState::Idle {
-                    self.conditions.remove(Condition::Aiming);
-                } else {
-                    self.conditions.insert(Condition::Aiming);
+                if let Some(aiming) = weapon::minigun_aiming_transition(previous_minigun_state, state) {
+                    if aiming { self.conditions.insert(Condition::Aiming); }
+                    else { self.conditions.remove(Condition::Aiming); }
                 }
             }
             if let PrimaryResult::Fired { charge_seconds } = primary {

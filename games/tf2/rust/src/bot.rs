@@ -1502,6 +1502,7 @@ impl BotWorld {
                 modifiers: MovementModifiers::default(),
             }
             .resolve();
+            apply_aiming_policy(bot, &mut policy);
             if let Some(winner) = self.round_winner.filter(|team| team.is_gameplay()) { policy.maximum_speed *= if winner == bot.team { 1.1 } else { 0.9 }; }
             let should_move = planar > 5.0 && !(matches!(scenario, Scenario::ControlPoints { .. }) && objectives.is_some_and(|o| o.in_setup));
             let move_yaw = if planar > 0.0 {
@@ -1584,7 +1585,11 @@ impl BotWorld {
                 .loadout
                 .get_mut(&active_weapon)
                 .ok_or(Error::InvalidEntity)?;
+            let previous_minigun = state.minigun_state;
             let primary = state.primary(tick, self.tick_interval, in_range, false, &mut activities);
+            if active_weapon == Weapon::Minigun {
+                apply_minigun_aiming(&mut bot.conditions, previous_minigun, state.minigun_state)?;
+            }
             if matches!(primary, PrimaryResult::Fired { .. }) {
                 let previous = bot.last_fire_tick.replace(tick);
                 bot.shots = bot.shots.saturating_add(1);
@@ -1862,9 +1867,7 @@ impl BotWorld {
 
     pub(crate) fn equipped_player_attribute(&mut self, identity: u32, hook: &str, input: f32) -> f32 {
         let Some(bot) = self.bots.get_mut(&identity) else { return input; };
-        let Some(equipment) = &mut bot.equipment else { return input; };
-        equipment.providers.set_active(bot.active_weapon);
-        equipment.providers.player(hook, input)
+        bot_player_attribute(bot, hook, input)
     }
 
     pub fn teleport(
@@ -2652,6 +2655,28 @@ fn apply_bot_equipment(bot: &mut Bot) {
     bot.health.maximum_for_buffing = maximum.maximum_for_buffing;
     if bot.active_weapon.is_none_or(|weapon| !bot.loadout.contains_key(&weapon)) { bot.active_weapon = bot_default_weapon(bot); }
     bot.equipment.as_mut().unwrap().providers.set_active(bot.active_weapon);
+}
+
+fn bot_player_attribute(bot: &mut Bot, hook: &str, input: f32) -> f32 {
+    let Some(equipment) = &mut bot.equipment else { return input; };
+    equipment.providers.set_active(bot.active_weapon);
+    equipment.providers.player(hook, input)
+}
+
+fn apply_aiming_policy(bot: &mut Bot, policy: &mut playsrc_movement::Policy) {
+    if !bot.conditions.contains(ConditionId::AIMING) { return; }
+    if bot.class == PlayerClass::Heavy {
+        policy.maximum_speed = policy.maximum_speed.min(bot_player_attribute(bot, "mult_player_aiming_movespeed", 110.0));
+        policy.allow_jump = false;
+    } else if bot.class == PlayerClass::Sniper { policy.maximum_speed = policy.maximum_speed.min(80.0); }
+}
+
+fn apply_minigun_aiming(conditions: &mut ConditionState, previous: crate::weapon::MinigunState, current: crate::weapon::MinigunState) -> Result<(), Error> {
+    if let Some(aiming) = crate::weapon::minigun_aiming_transition(previous, current) {
+        if aiming { conditions.add(ConditionId::AIMING, crate::condition::ConditionDuration::Permanent, None, true, false).map_err(|_| Error::InvalidEntity)?; }
+        else { conditions.remove(ConditionId::AIMING, false); }
+    }
+    Ok(())
 }
 
 fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32) {
@@ -3525,6 +3550,38 @@ mod tests {
         world.apply(Request { operation: Operation::KickAll, count: 0, class: None, team: None, difficulty: Difficulty::Normal },
             PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
         assert!(world.bots.is_empty());
+    }
+
+    #[test]
+    fn minigun_bot_transitions_enable_aiming_cap_and_spunup_resistance() {
+        use crate::weapon::MinigunState;
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }, PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
+        let identity = world.snapshots()[0].identity;
+        let bot = world.bots.get_mut(&identity).unwrap();
+        let selected = crate::equipment::Equipment::default();
+        let mut active = selected.equipped_items(PlayerClass::Heavy);
+        *active.iter_mut().find(|item| item.slot == crate::schema::LoadoutPosition::Primary).unwrap() = crate::equipment::EquippedItem {
+            item_id: 313, definition_index: 312, quality: 6, style: 0, slot: crate::schema::LoadoutPosition::Primary, attributes: Vec::new(),
+        };
+        let providers = crate::equipment::AttributeProviders::new(&active, PlayerClass::Heavy);
+        bot.equipment = Some(Box::new(BotEquipment { selected, active, providers, class: PlayerClass::Heavy, next_generation: 1 }));
+        apply_minigun_aiming(&mut bot.conditions, MinigunState::Idle, MinigunState::Starting).unwrap();
+        apply_minigun_aiming(&mut bot.conditions, MinigunState::Starting, MinigunState::Spinning).unwrap();
+        assert!(bot.conditions.contains(ConditionId::AIMING));
+        let mut policy = MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve();
+        apply_aiming_policy(bot, &mut policy);
+        assert_eq!(policy.maximum_speed, 44.0);
+        assert!(!policy.allow_jump);
+        let mut session = crate::Session::new(Floor, [0.0; 3], crate::MapRuntime::empty(0.015));
+        session.bots = Some(world);
+        assert_eq!(session.equipped_victim_damage_modifiers(identity, DamageModifiers::default()).spunup_taken, 0.8);
+        let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap();
+        apply_minigun_aiming(&mut bot.conditions, MinigunState::Spinning, MinigunState::Idle).unwrap();
+        assert!(!bot.conditions.contains(ConditionId::AIMING));
+        assert_eq!(session.equipped_victim_damage_modifiers(identity, DamageModifiers::default()).spunup_taken, 1.0);
     }
 
     fn capture_graph() -> Graph {
