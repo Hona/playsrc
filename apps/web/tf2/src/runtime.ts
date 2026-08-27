@@ -430,6 +430,7 @@ export class Tf2Application {
   #pendingProjectileTimeline:Snapshot["projectileTimeline"][number][]=[]
   #audioRunning = false
   #artifacts?: PresentationArtifacts
+  #mapArtifacts?: PresentationArtifacts
   #projectiles?: ProjectileMapper
   #viewmodels?: ReturnType<typeof createViewmodelPresenter>
   #viewmodelClass?: Snapshot["class"]
@@ -1736,6 +1737,7 @@ export class Tf2Application {
       this.#requireOperation(operation)
       finishLoadPhase("stage")
       this.#artifacts = await parsePresentationArtifacts(this.#loaded.presentation, this.#dependencyEntries)
+      this.#mapArtifacts = this.#artifacts
       finishLoadPhase("presentationParse")
       this.#resetMapBlockers()
       this.#recordVisualOutputBlockers(this.#artifacts)
@@ -3683,14 +3685,18 @@ export class Tf2Application {
     const loaded = await this.#client.stage(generation, bytes, profile, candidate?.dependencies ?? this.#dependencies, key)
     // The active renderer already verified this immutable byte identity. Keep
     // its exact backing owner rather than retain two identical map payloads.
-    const staged = loaded.payloadSha256 === this.#loaded.payloadSha256
-      ? Object.freeze({ ...loaded, payload: this.#loaded.payload }) : loaded
+    const samePresentation = loaded.presentationKey === this.#loaded.presentationKey
+    const staged = Object.freeze({ ...loaded,
+      payload: loaded.payloadSha256 === this.#loaded.payloadSha256 ? this.#loaded.payload : loaded.payload,
+      presentation: samePresentation ? this.#loaded.presentation : loaded.presentation,
+    })
     this.#profileMapResidency("compiled", candidate?.dependencies, staged)
     if (operation) this.#requireOperation(operation)
     const coverageSamples=await this.#client.coverage(generation)
     if (operation) this.#requireOperation(operation)
     finishReplacePhase("stage")
-    let artifacts = await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
+    let artifacts = samePresentation && this.#mapArtifacts ? this.#mapArtifacts
+      : await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
     this.#profileMapResidency("presentation-parsed", candidate?.dependencies, staged)
     finishReplacePhase("presentationParse")
     this.#resetMapBlockers()
@@ -3816,6 +3822,7 @@ export class Tf2Application {
     this.#loaded = staged
     this.#coverageSamples=coverageSamples
     this.#artifacts = artifacts
+    this.#mapArtifacts = artifacts
     await this.#admitRestoredEquipment()
     artifacts = this.#artifacts!
     this.#lockerAnimations.clear()
@@ -5997,6 +6004,7 @@ export class Tf2Application {
     this.#dependencyEntries.clear()
     this.#snapshot = undefined
     this.#artifacts = undefined
+    this.#mapArtifacts = undefined
     this.#viewmodels = undefined
     this.#viewmodelClass = undefined
     this.#attachments.clear()
