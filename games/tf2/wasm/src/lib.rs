@@ -8967,7 +8967,7 @@ fn resolve_models(
             }
         }
         let mut bodies = std::collections::BTreeSet::from([0]);
-        if graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point") && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(e,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
+        if graph.is_some_and(|graph| graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point") && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(e,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes()))))) {
             if let Some(part) = model.body_parts.first() {
                 for team in [2,3] { if team < part.model_names.len() { bodies.insert(part.base * team as i32); } }
             }
