@@ -637,7 +637,7 @@ export type MaterialStateInput = Readonly<{
 export type ModelMaterialInput = Readonly<{
   identity: string
   cloakProxy: number
-  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes" | "refract"
   vertexRequirements: number
   bindings: readonly Readonly<{
     kind: "material" | "model"
@@ -653,6 +653,7 @@ export type ModelMaterialInput = Readonly<{
     | Readonly<{ kind: "unlit-generic"; colorModulation: readonly [number, number, number] }>
     | Readonly<{ kind: "modulate" }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
+    | Readonly<{ kind: "refract"; normalFrame: number; normalTransform: readonly number[]; refractAmount: number; refractTint: readonly [number, number, number]; blurAmount: 0 | 1; ignoreDepth: boolean }>
 }>
 export type AuthoredTextureInput = Readonly<{
   logicalPath: string
@@ -1068,7 +1069,7 @@ function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplat
       const eye = typed?.shader === "eye-refract" || typed?.shader === "eyes"
       const baseTexture = eye ? createModelTexture(resolved.logicalPath, 8, "model") : createModelTexture(resolved.logicalPath, 0)
       if (eye && !baseTexture) throw new RenderingError("MissingInput", `authored Studio eye iris ${resolved.logicalPath} is unavailable`)
-      if (typed && typed.shader !== "unlit-generic" && typed.shader !== "unlit-two-texture") {
+      if (typed && typed.shader !== "unlit-generic" && typed.shader !== "unlit-two-texture" && typed.shader !== "refract") {
         const warp = createModelTexture(resolved.logicalPath, 6, "model")?.texture
         const exponent = createModelTexture(resolved.logicalPath, 5, "model")?.texture
         const iris = eye ? baseTexture?.texture : undefined
@@ -1077,7 +1078,14 @@ function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplat
         const normal = typed.state.kind === "vertex-lit-generic" && typed.state.cloak?.enabled ? () => createModelTexture(resolved.logicalPath, 7)?.texture : undefined
         if (warp || exponent || iris || ambientOcclusion || environment || normal) modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({ warp, exponent, iris, ambientOcclusion, environment, normal }))
       }
-      const material = new THREE.MeshBasicNodeMaterial({ ...materialOptions(resolved, materialState), side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!) })
+      const refract = typed?.state.kind === "refract" ? typed.state : undefined
+      const material = refract ? (() => {
+        const normal = createModelTexture(resolved.logicalPath, 8)
+        if (!normal || refract.normalFrame >= normal.input.frameCount) throw new RenderingError("MissingInput", `authored model Refract normal ${resolved.logicalPath} is unavailable`)
+        const texture = context.frames(normal.input, THREE.NoColorSpace).select(refract.normalFrame, `model-refract:${model.logicalPath}:${resolved.logicalPath}`)
+        return createSourceRefractMaterial({ state: refract, normal: texture, normalTransform: refract.normalTransform }).material
+      })() : new THREE.MeshBasicNodeMaterial(materialOptions(resolved, materialState))
+      material.side = materialState?.cull === 1 ? THREE.DoubleSide : sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!)
       const sampled = baseTexture ? swizzle(TSL.texture(baseTexture.texture, TSL.uv()), baseTexture.input) : undefined
       const first = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture" ? sampled! : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
       const baseKey = baseTexture && typed?.shader !== "unlit-two-texture" ? `${baseTexture.texture.uuid}:${baseTexture.input.sourceFormat}` : undefined
@@ -1094,8 +1102,9 @@ function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplat
         modelPanelMaterialAnimations.set(model.logicalPath.toLowerCase(), records)
         base = TSL.vec4(first.rgb.mul(swizzle(TSL.texture(second.texture, TSL.uv().add(TSL.vec2(scrollX, scrollY))), second.input).rgb), 1)
       }
-      SOURCE_MODEL_BASE_COLOR.set(geometry, base); SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
-      material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms); material.toneMapped = false; disposables.add(material)
+      const color = refract ? material.colorNode : sourceFragmentColor(base, materialState, waterFogUniforms)
+      SOURCE_MODEL_BASE_COLOR.set(geometry, refract ? color : base); SOURCE_MODEL_BASE_COLOR.set(bindGeometry, refract ? color : base)
+      material.colorNode = color; material.toneMapped = false; disposables.add(material)
       const mesh = new THREE.Mesh(geometry, material)
       mesh.userData.primitiveMaterial = primitive.material; mesh.userData.sourcePrimitive = primitiveIndex; mesh.userData.materialIdentity = resolved.logicalPath
       template.add(mesh)
@@ -4728,7 +4737,7 @@ class RendererOwner implements Renderer {
               : requirement === "local-environment"
                 ? item.modelLighting?.localEnvironment === null || item.modelLighting?.localEnvironment === undefined
                 : requirement === "current-framebuffer"
-                  ? item.currentFramebufferAvailable !== true
+                   ? item.currentFramebufferAvailable !== true && material.shader !== "refract"
                   : requirement === "game-proxy-values"
                     ? item.gameProxyValuesAvailable !== true
                     : false,
@@ -4739,7 +4748,7 @@ class RendererOwner implements Renderer {
             required: material.requiredInputs as readonly ModelDrawRequirement[],
             lighting: item.modelLighting,
             eyes: item.eyeStates,
-            currentFramebuffer: item.currentFramebufferAvailable === true,
+            currentFramebuffer: item.currentFramebufferAvailable === true || material.shader === "refract",
             authoredTexturePlanes: true,
             gameProxyValues: item.gameProxyValuesAvailable === true,
           })
@@ -5558,7 +5567,7 @@ class RendererOwner implements Renderer {
         bindModelLighting(mesh, uniforms)
         const identity = String(mesh.userData.materialIdentity).toLowerCase()
         const authored = resources.materials?.get(identity)
-        if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture" || authored.shader === "modulate") continue
+        if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture" || authored.shader === "modulate" || authored.shader === "refract") continue
         if (mesh.userData.dynamicMaterial !== true) {
           mesh.material = Array.isArray(mesh.material)
             ? mesh.material.map((material) => this.#cloneDynamicMaterial(material))

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelShader {
+    Refract,
     UnlitGeneric,
     UnlitTwoTexture,
     Modulate,
@@ -184,6 +185,7 @@ pub struct EyesState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelShaderState {
+    Refract,
     UnlitGeneric(Box<UnlitGenericState>),
     UnlitTwoTexture(Box<UnlitTwoTextureState>),
     Modulate,
@@ -254,7 +256,7 @@ pub fn model_draw_state(
         .as_ref()
         .ok_or_else(|| error(ErrorCode::InvalidParameter, None))?;
     let (cloak, sheen) = match &model.state {
-        ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_) | ModelShaderState::Modulate => (
+        ModelShaderState::UnlitGeneric(_) | ModelShaderState::UnlitTwoTexture(_) | ModelShaderState::Modulate | ModelShaderState::Refract => (
             CloakState {
                 enabled: false,
                 factor: 0.0,
@@ -290,12 +292,12 @@ pub fn model_draw_state(
         cloak.enabled && cloak_factor.is_some_and(|factor| factor > 0.0 && factor < 1.0);
     let static_state = static_state_with_alpha(material, texture_alpha, runtime.alpha_modulation)?;
     let opacity =
-        if static_state.translucent_queue || runtime.alpha_modulation < 1.0 || cloak_current {
+        if model.shader == ModelShader::Refract || static_state.translucent_queue || runtime.alpha_modulation < 1.0 || cloak_current {
             ModelOpacity::Translucent
         } else {
             ModelOpacity::Opaque
         };
-    let framebuffer = if sheen || cloak_current {
+    let framebuffer = if model.shader == ModelShader::Refract || sheen || cloak_current {
         ModelFramebufferRequirement::Current
     } else if cloak.enabled {
         ModelFramebufferRequirement::Potential
@@ -669,7 +671,12 @@ pub(crate) fn resolve_model_state(
     proxy_program: &ProxyProgram,
     environment: SelectionEnvironment,
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
-    if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
+    if environment.model && shader.eq_ignore_ascii_case(b"Refract") {
+        let mut state = unlit(textures, [1.0; 3]);
+        state.shader = ModelShader::Refract;
+        state.state = ModelShaderState::Refract;
+        Ok((Some(state), Vec::new()))
+    } else if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
         Ok((Some(unlit(textures, unlit_color_modulation(parameters, environment)?)), Vec::new()))
     } else if shader.eq_ignore_ascii_case(b"Modulate") || shader.eq_ignore_ascii_case(b"Modulate_DX9") {
         let mut state = unlit(textures, [1.0; 3]);

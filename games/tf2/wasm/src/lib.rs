@@ -10702,7 +10702,7 @@ fn prepare_model_materials(
     }
     let mut material_section = Vec::new();
     material_section.extend_from_slice(b"PMDL");
-    material_section.extend_from_slice(&3_u32.to_le_bytes());
+    material_section.extend_from_slice(&4_u32.to_le_bytes());
     material_section.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
@@ -10778,6 +10778,7 @@ fn encode_model_material(
         | u16::from(requirements.studio_eye_parameters) << 7;
     out.extend_from_slice(&[
         match model.shader {
+            playsrc_material::ModelShader::Refract => 6,
             playsrc_material::ModelShader::UnlitGeneric => 3,
             playsrc_material::ModelShader::UnlitTwoTexture => 4,
             playsrc_material::ModelShader::Modulate => 5,
@@ -10829,6 +10830,12 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
+        State::Refract => {
+            let state = playsrc_material::refract_material_output(material).map_err(|_| ())?.ok_or(())?;
+            out.extend_from_slice(&state.normal_frame.to_le_bytes());
+            for value in state.normal_transform.into_iter().chain([state.refract_amount]).chain(state.refract_tint) { out.extend_from_slice(&value.to_le_bytes()); }
+            out.extend_from_slice(&[state.blur_amount, u8::from(state.ignore_depth), 0, 0]);
+        }
         State::UnlitGeneric(state) => {
             for value in state.color_modulation { out.extend_from_slice(&value.to_le_bytes()); }
         }
