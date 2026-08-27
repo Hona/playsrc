@@ -24,14 +24,16 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
     const model = tf2ClassPresentation(identity as Tf2Class).model
     const artifact = artifacts.models.get(model)
     if (!artifact) throw new Error(`Class pipeline model unavailable: ${model}`)
+    const activity = classPreviewBaseActivity(identity as Tf2Class)
+    if (!artifact.sequences.some(sequence => sequence.activity === activity)) throw new Error(`Class pipeline standing pose unavailable: ${model}:${activity}`)
     output.push({ pass: "panel", request: {
       ...common, identity: 0xfffc0000 + output.length, model, skin, classSelection: true,
-      activity: classPreviewBaseActivity(identity as Tf2Class),
+      activity,
       bodygroups: artifact.bodygroupCounts.map(() => 0),
     } })
     for (const worldSkin of [0, 1]) output.push({ pass: "world", request: {
       ...common, identity: 0xfffc0000 + output.length, model, skin: worldSkin,
-      activity: "ACT_MP_STAND_PRIMARY", bodygroups: artifact.bodygroupCounts.map(() => 0),
+      activity, bodygroups: artifact.bodygroupCounts.map(() => 0),
     } })
   }
   for (const [model, artifact] of artifacts.models) {
