@@ -36,6 +36,7 @@ import {
   type Tf2ScoreboardPlayer,
 } from "../hud"
 import type { CaptureObjectives, RoundSnapshot, Tf2Team } from "../codec"
+import { TimerDeltas } from "./timer-delta"
 import { tf2ClassPresentation } from "../class"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
@@ -131,6 +132,7 @@ const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
 const HUD_MATCH_STATUS = "resource/ui/hudmatchstatus.res"
 const HUD_TIME_PANEL = "resource/ui/hudobjectivetimepanel.res"
 const HUD_KOTH_TIME_PANEL = "resource/ui/hudobjectivekothtimepanel.res"
+const NO_ROUND_EVENTS: RoundSnapshot["events"] = Object.freeze([])
 const HUD_WAITING_PANEL = "resource/ui/waitingforplayerspanel.res"
 const HUD_SCOREBOARD = "resource/ui/scoreboard.res"
 const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
@@ -274,6 +276,8 @@ class Integration implements Tf2HudIntegration {
   #kothPanels?: Readonly<{ root: VguiPanelId; timers: readonly Readonly<{ root: VguiPanelId; value: VguiPanelId; children: ReadonlyMap<string, VguiPanelId> }>[] }>
   #kothOvertime = [false, false]
   #kothActive = -1
+  readonly #timerDeltas = new Map<VguiPanelId, TimerDeltas>()
+  #lastRoundEventTick = -1n
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
@@ -489,6 +493,20 @@ class Integration implements Tf2HudIntegration {
     this.#publishKoth(round)
     if (!round.waitingForPlayers && !round.timer && !this.#roundPanels) return
     const panels = this.#initializeRoundPanels()
+    for (const event of round.events) {
+      if (event.kind === 5) for (const delta of this.#timerDeltas.values()) delta.reset()
+      if (event.kind !== 16 || event.value === 0) continue
+      const kothIndex = round.kothTimers?.findIndex(timer => timer.identity === event.identity) ?? -1
+      const root = kothIndex >= 0 ? this.#kothPanels?.timers[kothIndex]?.root
+        : round.timer?.identity === event.identity ? panels.timer : undefined
+      if (root === undefined) continue
+      let deltas = this.#timerDeltas.get(root)
+      if (!deltas) {
+        deltas = new TimerDeltas(this.#runtime, this.#runtime.snapshot().panels.find(panel => panel.id === root)!)
+        this.#timerDeltas.set(root, deltas)
+      }
+      deltas.add(event.value, this.#clock.nowSeconds())
+    }
     const timerVisible = round.waitingForPlayers || (!round.kothTimers && round.timer !== null && round.timer.showInHud && !round.timer.disabled)
     const setVisible = (panel: VguiPanelId, visible: boolean, name: string): void => {
       this.#objectiveValue(`round-visible:${name}`, String(visible), { kind: "set-panel-state", panel, visible })
@@ -1083,7 +1101,16 @@ class Integration implements Tf2HudIntegration {
       this.#scope.hide()
     }
     const round = publication.snapshot.round
-    if (round) this.#publishRound(round, publication.snapshot.team)
+    if (round) {
+      let retained: Array<RoundSnapshot["events"][number]> | undefined
+      for (const batch of publication.eventBatches) {
+        if (batch.snapshot.tick <= this.#lastRoundEventTick) continue
+        if (batch.snapshot.round?.events.length) (retained ??= []).push(...batch.snapshot.round.events)
+        this.#lastRoundEventTick = batch.snapshot.tick
+      }
+      const events = retained ?? NO_ROUND_EVENTS
+      this.#publishRound(events.length === 0 && round.events.length === 0 ? round : { ...round, events }, publication.snapshot.team)
+    }
     const objectives = publication.snapshot.objectives
     if (objectives) {
       this.#publishObjectives(objectives, context.playerIdentity, publication.snapshot.team, publication.snapshot.tick)
@@ -1145,6 +1172,12 @@ class Integration implements Tf2HudIntegration {
   frame(timeSeconds: number): void {
     apply(this.#runtime, { kind: "frame", timeSeconds })
     this.#damage?.frame(timeSeconds, this.#viewport)
+    for (const deltas of this.#timerDeltas.values()) if (deltas.active) {
+      this.#runtime.deferPresentation(() => {
+        for (const active of this.#timerDeltas.values()) active.frame(timeSeconds)
+      })
+      break
+    }
   }
   setViewport(viewport: VguiViewport): void {
     if (viewport.width === this.#viewport.width
@@ -1156,6 +1189,10 @@ class Integration implements Tf2HudIntegration {
       this.#scope.setViewport(viewport)
       this.#deathNotices.setViewport(viewport)
       this.#captureBaseBounds()
+      if (this.#timerDeltas.size) {
+        const panels = this.#runtime.snapshot().panels
+        for (const [root, deltas] of this.#timerDeltas) deltas.resize(panels.find(panel => panel.id === root)!)
+      }
       if (this.#binding) {
         this.#publishedValues.clear()
         this.#publishedScoreboard = undefined
@@ -1285,6 +1322,9 @@ class Integration implements Tf2HudIntegration {
       }
       this.#kothOvertime = [false, false]
       this.#kothActive = -1
+      this.#lastRoundEventTick = -1n
+      for (const deltas of this.#timerDeltas.values()) deltas.destroy()
+      this.#timerDeltas.clear()
       this.#notificationDeadline = 0n
       this.#objectiveCarrying = false
       this.#waitingPanelVisible = false

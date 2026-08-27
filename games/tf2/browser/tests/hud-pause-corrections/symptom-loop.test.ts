@@ -126,7 +126,15 @@ function resources(): Tf2VguiResources {
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,
       focusable: /button|slider|combo|dialog/iu.test(control.name),
-      animationVariables: Object.freeze([]),
+      animationVariables: Object.freeze(control.name === "CTFHudTimeStatus" ? [
+        { name: "delta_item_start_y", converter: "proportional_float" as const, defaultValue: "100" },
+        { name: "delta_item_end_y", converter: "proportional_float" as const, defaultValue: "0" },
+        { name: "delta_item_x", converter: "proportional_float" as const, defaultValue: "0" },
+        { name: "PositiveColor", converter: "Color" as const, defaultValue: "0 255 0 255" },
+        { name: "NegativeColor", converter: "Color" as const, defaultValue: "255 0 0 255" },
+        { name: "delta_lifetime", converter: "float" as const, defaultValue: "2.0" },
+        { name: "delta_item_font", converter: "HFont" as const, defaultValue: "Default" },
+      ] : []),
       acceptedProperties: Object.freeze([
         ...(accepted.get(control.name) ?? []),
         ...(/COptionsSubVideoAdvancedDlg|CGammaDialog/u.test(control.name) ? ["sizeable", "moveable", "title"] : []),
@@ -657,11 +665,11 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
     })
     const timer = { identity: 10, remaining: 180, initialSeconds: 180, setupSeconds: 0, maximumSeconds: 0, paused: true, showInHud: true, disabled: false }
-    const publish = (tick: bigint, red: typeof timer, blue: typeof timer, overtime = false, waiting = false) => {
+    const publish = (tick: bigint, red: typeof timer, blue: typeof timer, overtime = false, waiting = false, events: readonly any[] = []) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
       const round = Object.freeze({ state: 4 as const, waitingForPlayers: waiting, waitingRemaining: waiting ? 29 : null,
         inSetup: false, inOvertime: overtime, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0,
-        timer: red, kothTimers: Object.freeze([red, blue] as const), events: Object.freeze([]) })
+        timer: red, kothTimers: Object.freeze([red, blue] as const), events: Object.freeze(events) })
       const snapshot = Object.freeze({ ...base.snapshot, round })
       hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as any, context)
     }
@@ -682,6 +690,19 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(panels.find(panel => panel.parent === redRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(true)
     publish(4n, timer, blue)
     expect(hud.snapshot().vgui.panels.find(panel => panel.parent === redRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(false)
+    publish(5n, timer, blue, false, false, [{ kind: 16, detail: 0, team: 0, flags: 0, identity: timer.identity, value: 70 }])
+    hud.frame(0)
+    let delta = hud.snapshot().vgui.panels.find(panel => panel.parent === redRoot && panel.name === "TimerDelta0")!
+    expect(delta.text).toBe("+1:10")
+    expect(delta.bounds.x).toBe(75)
+    expect(delta.bounds.y).toBe(18)
+    expect(delta.state.foregroundColor).toEqual([0, 255, 0, 255])
+    hud.frame(1.125)
+    delta = hud.snapshot().vgui.panels.find(panel => panel.id === delta.id)!
+    expect(delta.bounds.y).toBe(60)
+    expect(delta.state.foregroundColor).toEqual([0, 255, 0, 127])
+    hud.frame(1.5)
+    expect(hud.snapshot().vgui.panels.find(panel => panel.id === delta.id)?.visible).toBe(false)
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudKothTimeStatus"])).toEqual([])
     hud.destroy()

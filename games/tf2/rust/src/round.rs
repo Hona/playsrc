@@ -123,9 +123,9 @@ impl Timer {
         self.recalculate_outputs();
     }
 
-    pub fn add_time(&mut self, seconds: i32) {
+    pub fn add_time(&mut self, seconds: i32) -> Option<i32> {
         if self.disabled {
-            return;
+            return None;
         }
         let maximum = self.configuration.maximum_seconds;
         let seconds = if maximum > 0 && self.remaining + seconds as f32 > maximum as f32 {
@@ -140,6 +140,7 @@ impl Timer {
         }
         self.refresh(self.now);
         self.recalculate_outputs();
+        Some(seconds)
     }
 
     fn refresh(&mut self, now: f32) {
@@ -285,6 +286,7 @@ pub enum Event {
     TimerFinished { timer: u32 },
     TimerThreshold { timer: u32, seconds: u16 },
     TimerWarning { timer: u32, seconds: u16 },
+    TimerTimeAdded { timer: u32, seconds: i32 },
     MapRoundWin { entity: u32 },
     OvertimeChanged { active: bool },
     RoundWon { team: PlayerTeam, reason: u8 },
@@ -515,11 +517,12 @@ impl Rules {
                     if add && !matches!(self.state, State::Running | State::TeamWin) {
                         return;
                     }
-                    let timer = self.timer_mut(identity).expect("KOTH timer");
                     if add {
-                        timer.add_time(value);
+                        self.add_timer_seconds(identity, value);
                     } else {
-                        timer.set_time(value);
+                        self.timer_mut(identity)
+                            .expect("KOTH timer")
+                            .set_time(value);
                     }
                     return;
                 }
@@ -532,6 +535,10 @@ impl Rules {
             }
         }
         let running = matches!(self.state, State::Running | State::TeamWin);
+        if input.eq_ignore_ascii_case(b"AddTime") && running {
+            self.add_timer_seconds(entity, value);
+            return;
+        }
         let Some(timer) = self.timer_mut(entity) else {
             return;
         };
@@ -541,8 +548,6 @@ impl Rules {
             timer.resume();
         } else if input.eq_ignore_ascii_case(b"SetTime") {
             timer.set_time(value);
-        } else if input.eq_ignore_ascii_case(b"AddTime") && running {
-            timer.add_time(value);
         } else if input.eq_ignore_ascii_case(b"ShowInHUD") {
             timer.configuration.show_in_hud = value != 0;
         } else if input.eq_ignore_ascii_case(b"Disable") {
@@ -558,6 +563,23 @@ impl Rules {
         std::mem::take(&mut self.pending_events)
     }
 
+    fn add_timer_seconds(&mut self, identity: u32, seconds: i32) {
+        if !matches!(self.state, State::Running | State::TeamWin) {
+            return;
+        }
+        let Some(timer) = self.timer_mut(identity) else {
+            return;
+        };
+        if let Some(seconds) = timer.add_time(seconds)
+            && timer.configuration.show_in_hud
+        {
+            self.pending_events.push(Event::TimerTimeAdded {
+                timer: identity,
+                seconds,
+            });
+        }
+    }
+
     pub fn set_respawn_wave(&mut self, team: PlayerTeam, seconds: f32) {
         if seconds >= 0.0 && seconds.is_finite() && team.is_gameplay() {
             let index = usize::from(team == PlayerTeam::Blue);
@@ -567,7 +589,9 @@ impl Rules {
     }
 
     pub fn add_respawn_wave(&mut self, team: PlayerTeam, seconds: f32) {
-        if !team.is_gameplay() || !seconds.is_finite() { return; }
+        if !team.is_gameplay() || !seconds.is_finite() {
+            return;
+        }
         let index = usize::from(team == PlayerTeam::Blue);
         let current = self.respawn_waves[index].unwrap_or(crate::bot::RESPAWN_WAVE_SECONDS);
         self.original_respawn_waves[index].get_or_insert(current);
@@ -1068,6 +1092,29 @@ mod tests {
                 .advance(11.06, 0.015, facts())
                 .unwrap()
                 .contains(&threshold)
+        );
+    }
+
+    #[test]
+    fn time_added_event_preserves_signed_seconds_and_disabled_inputs_do_not_publish() {
+        let mut rules = koth();
+        rules.apply_input(0, b"AddRedTimer", -100_000, 0.0);
+        assert_eq!(
+            rules.take_events(),
+            [Event::TimerTimeAdded {
+                timer: 2,
+                seconds: -100_000
+            }]
+        );
+        assert_eq!(rules.koth_timers().unwrap()[0].remaining, 0.0);
+        rules.apply_input(2, b"Disable", 0, 0.0);
+        rules.apply_input(0, b"AddRedTimer", 10, 0.0);
+        assert!(rules.take_events().is_empty());
+        rules.restart(false);
+        rules.apply_input(0, b"AddBlueTimer", 10, 0.0);
+        assert!(
+            rules.take_events().is_empty(),
+            "AddTimerSeconds is inert during preround"
         );
     }
 

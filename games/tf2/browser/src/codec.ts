@@ -493,11 +493,12 @@ export type ControlPoints = Readonly<{
 
 export type RoundState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
 export type RoundEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
   detail: number
   team: 0 | Tf2Team
   flags: number
   identity: number
+  value: number
 }>
 export type RoundTimer = Readonly<{
   identity: number
@@ -1464,11 +1465,11 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
   const waiting = view.getFloat32(20, true), identity = view.getUint32(24, true), remaining = view.getFloat32(28, true)
   const count = view.getUint32(44, true)
   const headerLength = flags !== undefined && (flags & 128) !== 0 ? 96 : 48
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 2
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 3
     || state === undefined || state > 10 || flags === undefined
     || (winning !== 0 && winning !== 2 && winning !== 3) || reason === undefined
     || !finite([waiting, remaining]) || waiting < -1 || remaining < -1 || count > 4096
-    || length !== headerLength + count * 8 || ((flags & 1) !== 0) !== (waiting !== -1)
+    || length !== headerLength + count * 12 || ((flags & 1) !== 0) !== (waiting !== -1)
     || ((flags & 8) !== 0) !== (identity !== 0xffff_ffff) || ((flags & 8) === 0 && remaining !== -1)) {
     throw new Tf2CodecError("Round rules section is invalid")
   }
@@ -1481,10 +1482,10 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
       paused: (bits & 1) !== 0, showInHud: (bits & 2) !== 0, disabled: (bits & 4) !== 0 })
   }
   for (let index = 0; index < count; index += 1) {
-    const at = headerLength + index * 8, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
-    if (kind === undefined || kind < 1 || kind > 15 || detail === undefined || bits === undefined
+    const at = headerLength + index * 12, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
+    if (kind === undefined || kind < 1 || kind > 16 || detail === undefined || bits === undefined
       || (team !== 0 && team !== 2 && team !== 3)) throw new Tf2CodecError("Round rules event is invalid")
-    events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true) }))
+    events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true), value: view.getInt32(at + 8, true) }))
   }
   return Object.freeze({
     state: state as RoundState, waitingForPlayers: (flags & 1) !== 0,
@@ -2392,7 +2393,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     at += 76
   }
   requireBytes(48,"Round rules header")
-   const roundLength=((data[at+9]!&128)!==0?96:48)+view.getUint32(at+44,true)*8
+   const roundLength=((data[at+9]!&128)!==0?96:48)+view.getUint32(at+44,true)*12
   requireBytes(roundLength,"Round rules")
   const round=decodeRound(buffer,base+at,roundLength)
   at+=roundLength
