@@ -6,9 +6,10 @@ function audio(patches: number, includeRows = true) {
   const bytes: number[] = [], encoder = new TextEncoder()
   const u32 = (value: number) => { const word = new Uint8Array(4); new DataView(word.buffer).setUint32(0, value, true); bytes.push(...word) }
   const text = (value: string) => { const encoded = encoder.encode(value); u32(encoded.length); bytes.push(...encoded) }
-  bytes.push(...encoder.encode("PAUD")); u32(3); bytes.push(...new Uint8Array(32)); u32(0x3f800000); u32(1)
+  bytes.push(...encoder.encode("PAUD")); u32(4); bytes.push(...new Uint8Array(32)); u32(0x3f800000); u32(1)
   text("scripts/game_sounds_weapons.txt"); bytes.push(...new Uint8Array(32)); u32(0); u32(patches)
   if (includeRows) for (let index = 0; index < patches; index++) { text(`sound/weapons/fixture-${index}.wav`); u32(44100); u32(1000); u32(index % 2 ? 0xffffffff : 441) }
+  u32(0)
   return new Uint8Array(bytes)
 }
 
