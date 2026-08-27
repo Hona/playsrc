@@ -16,7 +16,7 @@ const material: VguiImageMaterialPresentation = {
   shader: "unlit-generic",
   vertexColorGamma: false,
   alphaTestReference: null,
-  base: { logicalIdentity: "raster-parity", revision: "1", browserUrl: texture.toDataURL(), width: texture.width, height: texture.height, hardwareFiltered: true, colorRead: "srgb" },
+  base: { logicalIdentity: "raster-parity", revision: "1", browserUrl: texture.toDataURL(), width: texture.width, height: texture.height, hardwareFiltered: true, colorRead: "srgb", clampS: false, clampT: false },
   second: null, detail: null, detailScale: [1, 1], detailBlendMode: 0, detailBlendFactor: 1, detailTint: [1, 1, 1],
   distanceAlpha: false, distanceAlphaFromDetail: false, softEdges: false, scaleSoftEdges: false,
   edgeSoftnessStart: 0.6, edgeSoftnessEnd: 0.5, outline: false, outlineColor: [1, 1, 1], outlineAlpha: 0,
@@ -28,7 +28,7 @@ const request: VguiImageRasterRequest = {
   tint: [210, 160, 255, 200], geometry: { kind: "stretch", rotation: 0 }, material,
 }
 const original = shadeVguiImage(request, new Map([[material.base.logicalIdentity, {
-  width: texture.width, height: texture.height, filtered: true, colorRead: "srgb",
+  width: texture.width, height: texture.height, filtered: true, colorRead: "srgb", clampS: false, clampT: false,
   rgba: context.getImageData(0, 0, texture.width, texture.height).data,
 }]]))
 baseline.width = request.width

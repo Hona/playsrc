@@ -4859,6 +4859,10 @@ class RendererOwner implements Renderer {
         position.needsUpdate = true
         normal.needsUpdate = true
         this.#instrumentation?.poseUpload(count * 2 * Float32Array.BYTES_PER_ELEMENT)
+        if (this.#uploadEvidence) {
+          this.#uploadEvidence.poseAttributes += 2
+          this.#uploadEvidence.poseUploadBytes += count * 2 * Float32Array.BYTES_PER_ELEMENT
+        }
       }
       if (object.userData.dynamicMaterial !== true) {
         object.material = Array.isArray(object.material) ? object.material.map((material) => material.clone()) : object.material.clone()

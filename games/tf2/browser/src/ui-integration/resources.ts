@@ -213,7 +213,7 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CTFClassTipsPanel: "EditablePanel",
   CTFFlagStatus: "EditablePanel",
   CTFFooter: "EditablePanel",
-  CTFImagePanel: "ImagePanel",
+  CTFImagePanel: "ScalableImagePanel",
   CTFLogoPanel: "Panel",
   CTFParticlePanel: "Panel",
   CTFPlayerModelPanel: "Panel",
@@ -450,10 +450,10 @@ function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiContr
     const baseControl = CUSTOM_BASES[control.name]
     if (!baseControl) return []
     const element = baseControl === "Button" || baseControl === "CheckButton" ? "button"
-      : baseControl === "ImagePanel" ? "div"
+      : baseControl === "ImagePanel" || baseControl === "ScalableImagePanel" ? "div"
         : baseControl === "TextEntry" ? "textarea" : "div"
     const role = baseControl === "Button" ? "button" : baseControl === "CheckButton" ? "checkbox"
-      : baseControl === "ImagePanel" ? "img" : baseControl === "Slider" ? "slider"
+      : baseControl === "ImagePanel" || baseControl === "ScalableImagePanel" ? "img" : baseControl === "Slider" ? "slider"
         : baseControl === "ComboBox" ? "combobox" : baseControl === "Frame" ? "dialog" : null
     return [Object.freeze({
       name: control.name,
@@ -768,6 +768,8 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     return Object.freeze({
       logicalIdentity: logicalPath,
       revision: texture.sha256,
+      clampS: (texture.rawFlags & 4) !== 0,
+      clampT: (texture.rawFlags & 8) !== 0,
       browserUrl,
       width: texture.width,
       height: texture.height,

@@ -3,6 +3,7 @@ import { isDirectVguiImageMaterial, shadeVguiImage, shadeVguiImageIncrementally,
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
+  clampS: false, clampT: false,
   logicalIdentity: identity,
   revision: `${identity}-1`,
   browserUrl: `memory:${identity}`,
@@ -79,6 +80,7 @@ const baseMaterial = (overrides: Partial<VguiImageMaterialPresentation> = {}): V
 })
 
 const pixels = (rgba: readonly number[]): VguiImageRasterTexturePixels => Object.freeze({
+  clampS: false, clampT: false,
   width: 1,
   height: 1,
   rgba: new Uint8ClampedArray(rgba),
@@ -98,6 +100,13 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
 })
 
 describe("configured VGUI image material raster", () => {
+  test("clamped masks never bleed the opposite texture edge when proportionally enlarged", () => {
+    const material = baseMaterial({ base: { ...texture("base"), width: 2, clampS: true, clampT: true } })
+    const input = { ...pixels([0,0,0,0,255,255,255,255]), width: 2, filtered: true, clampS: true, clampT: true }
+    const result = shadeVguiImage({ ...request(material), width: 8 }, new Map([["base", input]]))
+    expect(result[3]).toBe(0)
+    expect(result[result.length - 1]).toBe(255)
+  })
   test("uses Source vertex RGB gamma conversion and authored alpha testing for panel corners", () => {
     const material = baseMaterial({ vertexColorGamma: true, alphaTestReference: 0.1 })
     const image = { ...request(material), tint: [117, 107, 94, 255] as const }

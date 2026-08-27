@@ -5,6 +5,8 @@ import type {
 } from "./runtime-contract"
 
 export type VguiImageRasterTexturePixels = Readonly<{
+  clampS: boolean
+  clampT: boolean
   width: number
   height: number
   rgba: Uint8ClampedArray
@@ -67,11 +69,11 @@ const linearToSrgb = (value: number): number => value <= 0.0031308
 function wrap(value: number): number { return value - Math.floor(value) }
 
 function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, output: Float64Array): void {
-  const wrappedU = wrap(u)
-  const wrappedV = wrap(v)
+  const wrappedU = texture.clampS ? clamp(u) : wrap(u)
+  const wrappedV = texture.clampT ? clamp(v) : wrap(v)
   if (!texture.filtered) {
-    const x = Math.floor(wrappedU * texture.width)
-    const y = Math.floor(wrappedV * texture.height)
+    const x = Math.min(texture.width - 1, Math.floor(wrappedU * texture.width))
+    const y = Math.min(texture.height - 1, Math.floor(wrappedV * texture.height))
     const offset = (y * texture.width + x) * 4
     const colors = texture.colorRead === "srgb" ? SRGB_TEXTURE_SAMPLES : LINEAR_TEXTURE_SAMPLES
     output[0] = colors[texture.rgba[offset]!]!
@@ -86,10 +88,10 @@ function sample(texture: VguiImageRasterTexturePixels, u: number, v: number, out
   const y0 = Math.floor(y)
   const fx = x - x0
   const fy = y - y0
-  const firstX = x0 < 0 ? x0 + texture.width : x0
-  const nextX = x0 + 1 >= texture.width ? x0 + 1 - texture.width : x0 + 1
-  const firstY = y0 < 0 ? y0 + texture.height : y0
-  const nextY = y0 + 1 >= texture.height ? y0 + 1 - texture.height : y0 + 1
+  const firstX = texture.clampS ? clamp(x0, 0, texture.width - 1) : x0 < 0 ? x0 + texture.width : x0
+  const nextX = texture.clampS ? clamp(x0 + 1, 0, texture.width - 1) : x0 + 1 >= texture.width ? x0 + 1 - texture.width : x0 + 1
+  const firstY = texture.clampT ? clamp(y0, 0, texture.height - 1) : y0 < 0 ? y0 + texture.height : y0
+  const nextY = texture.clampT ? clamp(y0 + 1, 0, texture.height - 1) : y0 + 1 >= texture.height ? y0 + 1 - texture.height : y0 + 1
   const firstRow = firstY * texture.width * 4
   const nextRow = nextY * texture.width * 4
   for (let channel = 0; channel < 4; channel += 1) {
@@ -344,6 +346,8 @@ export class VguiImageRasterizer {
         rgba: context.getImageData(0, 0, texture.width, texture.height).data,
         filtered: texture.hardwareFiltered,
         colorRead: texture.colorRead,
+        clampS: texture.clampS,
+        clampT: texture.clampT,
       })
     })()
     this.#textures.set(texture.logicalIdentity, loading, texture.width * texture.height * 4)

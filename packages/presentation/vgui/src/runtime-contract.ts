@@ -166,6 +166,8 @@ export type VguiImagePresentation = Readonly<{
 }>
 
 export type VguiImageMaterialTexture = Readonly<{
+  clampS: boolean
+  clampT: boolean
   logicalIdentity: string
   revision: string
   browserUrl: string

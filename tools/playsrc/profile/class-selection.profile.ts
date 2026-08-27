@@ -69,6 +69,7 @@ test("all nine authored class scenes, teams, viewport geometry and native resume
   await page.keyboard.press("Escape")
   await expect(main).toHaveAttribute("data-class-selection-visible", "true")
   const samples: unknown[] = []
+  let cadence: unknown
   for (const team of [2, 3]) {
     if (team === 3) {
       await page.keyboard.press("Digit1")
@@ -102,6 +103,13 @@ test("all nine authored class scenes, teams, viewport geometry and native resume
       await page.screenshot({ path: path.join(output, `${team}-${name}.png`) })
       samples.push({ team, name, changed, animation })
     }
+    await menu.locator("[data-vgui-name='random']").hover()
+    await expect.poll(async () => JSON.parse(await main.getAttribute("data-class-selection-animation") || "{}").model)
+      .toBe("models/class_menu/random_class_icon.mdl")
+    await expect(menu.locator("[data-vgui-name='EditLoadoutButton']")).toBeHidden()
+    await page.screenshot({ path: path.join(output, `${team}-random.png`) })
+    await menu.locator("[data-vgui-name='spy']").hover()
+    await expect.poll(async () => JSON.parse(await main.getAttribute("data-class-selection-animation") || "{}").model).toBe("models/player/spy.mdl")
   }
   for (const viewport of [{ width: 1280, height: 960 }, { width: 1280, height: 1024 }, { width: 1950, height: 1080 }, { width: 2560, height: 1080 }]) {
     await page.setViewportSize(viewport)
@@ -113,8 +121,35 @@ test("all nine authored class scenes, teams, viewport geometry and native resume
     expect(footer!.x + footer!.width).toBeLessThanOrEqual(viewport.width)
     await page.screenshot({ path: path.join(output, `${viewport.width}x${viewport.height}.png`) })
   }
-  await page.keyboard.press("Digit1")
+  if (process.env.PLAYSRC_CLASS_SELECTION_SAMPLE === "1") {
+    await page.setViewportSize({ width: 1950, height: 1080 })
+    await page.bringToFront()
+    expect(await page.evaluate(() => document.hasFocus() && document.visibilityState === "visible")).toBe(true)
+    cadence = await page.evaluate(() => new Promise<{ milliseconds: number; frames: number; poses: number; ticks: number; p95: number }>(resolve => {
+      const main = document.querySelector<HTMLElement>("main")!
+      const started = performance.now(), initialTick = Number(main.dataset.snapshotTick)
+      const intervals: number[] = []
+      let previous = started, poses = 0, lastPose = ""
+      const sample = (now: number) => {
+        intervals.push(now - previous); previous = now
+        const pose = main.dataset.classSelectionAnimation ?? ""
+        if (pose !== lastPose) { poses += 1; lastPose = pose }
+        if (now - started < 5_000) requestAnimationFrame(sample)
+        else { const sorted = intervals.toSorted((a,b) => a-b); resolve({ milliseconds: now-started, frames: intervals.length, poses,
+          ticks: Number(main.dataset.snapshotTick)-initialTick, p95: sorted[Math.floor(sorted.length*.95)]! }) }
+      }
+      requestAnimationFrame(sample)
+    }))
+    const sample = cadence as { milliseconds: number; frames: number; poses: number; ticks: number; p95: number }
+    expect(sample.ticks).toBeGreaterThanOrEqual(Math.floor(sample.milliseconds / 15) - 3)
+    expect(sample.frames).toBeGreaterThan(240)
+    expect(sample.poses).toBeGreaterThan(200)
+    expect(sample.p95).toBeLessThan(25)
+  }
+  const oldClass = (await main.getAttribute("data-hud-probe"))?.split(":")[1]
+  await menu.locator("[data-vgui-name='random']").click({ timeout: 5_000 })
   await expect(main).toHaveAttribute("data-class-selection-visible", "false")
+  await expect.poll(async () => (await main.getAttribute("data-hud-probe"))?.split(":")[1]).not.toBe(oldClass)
   await page.setViewportSize({ width: 1600, height: 900 })
   await page.bringToFront()
   await page.locator("canvas.world-canvas").focus()
@@ -136,7 +171,7 @@ test("all nine authored class scenes, teams, viewport geometry and native resume
   await menu.locator("[data-vgui-name='CancelButton']").click({ timeout: 5_000 })
   await expect(main).toHaveAttribute("data-class-selection-visible", "false")
   expect(failures).toEqual([])
-  await writeFile(path.join(output, "samples.json"), JSON.stringify({ samples, failures }, null, 2))
+  await writeFile(path.join(output, "samples.json"), JSON.stringify({ samples, cadence, failures }, null, 2))
   await testInfo.attach("class-selection-matrix", { path: path.join(output, "samples.json"), contentType: "application/json" })
 })
 
