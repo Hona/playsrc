@@ -4832,7 +4832,7 @@ export class Tf2Application {
         waterPlanProbe:`${visibility.water.visibleWater?.eyeInVolume?"below":visibility.water.visibleWater?"above":"none"}:${visibility.water.render.cheap?"cheap":"expensive"}:${visibility.water.render.reflect?1:0}:${visibility.water.render.refract?1:0}:${visibility.water.nearPlaneIntersects?1:0}`,
         waterPasses:rendered.waterPasses,
         waterStateRestored:rendered.waterStateRestored,
-        waterNormalFrame:visibility.water.visibleWater?.evaluated.normalFrame,
+        waterNormalFrame:visibility.water.visibleWater?.evaluated?.normalFrame,
         waterOverlay:visibility.water.visibleWater?.overlay?.identity,
         worldMaterialFrames:visibility.worldMaterials.map(material=>`${material.identity}:${material.textures.find(texture=>texture.role===7)?.frame??"none"}`).join("|"),
         performanceProbe:`${this.#phaseTimings.map(value=>value.toFixed(3)).join(",")}:${this.#wasmCalls.observe},${this.#wasmCalls.models},${this.#wasmCalls.visibility},${this.#wasmCalls.particles}:${this.#maximumScheduledSamples},${this.#maximumPublicationTicks}:${prepared.particleOutputBytes},${prepared.publication.snapshotByteLength}`,

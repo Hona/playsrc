@@ -4031,6 +4031,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     if slot.generation != generation {
         return 0;
     }
+    slot.visibility_output.clear();
     let (Some(world), Some(candidates), Some(area), Some(environment)) = (
         slot.visibility.as_ref(),
         slot.visibility_candidates.as_ref(),
@@ -4039,15 +4040,16 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     ) else {
         return 0;
     };
-    let Ok(view) = world.view(
+    let view = match world.view(
         area,
         candidates,
         &playsrc_visibility::ViewQuery {
             origins: vec![visibility_position],
             bypass_pvs: false,
         },
-    ) else {
-        return 0;
+    ) {
+        Ok(view) => view,
+        Err(error) => { slot.visibility_output = format!("PVQEvisibility: {error:?}").into_bytes(); return 0; }
     };
     let area_filter = (input[13] >= 0.0).then_some(input[13] as u16);
     let qualified_leaves = view
@@ -4095,8 +4097,9 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         draw_sky_2d: view.sky == playsrc_visibility::SkyVisibility::Sky2d,
         policy,
     };
-    let Ok(preliminary) = environment.world.water.plan_view(world, base_water_input) else {
-        return 0;
+    let preliminary = match environment.world.water.plan_view(world, base_water_input) {
+        Ok(plan) => plan,
+        Err(error) => { slot.visibility_output = format!("PVQEwater selection: {error:?}").into_bytes(); return 0; }
     };
     let intersects = preliminary.visible_water.as_ref().is_some_and(|water| {
         near_plane_intersects_water(
@@ -4112,14 +4115,15 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             input[10],
         )
     });
-    let Ok(water_plan) = environment.world.water.plan_view(
+    let water_plan = match environment.world.water.plan_view(
         world,
         playsrc_map::WaterViewInput {
             near_plane_intersects_selected_volume: intersects,
             ..base_water_input
         },
-    ) else {
-        return 0;
+    ) {
+        Ok(plan) => plan,
+        Err(error) => { slot.visibility_output = format!("PVQEwater view: {error:?}").into_bytes(); return 0; }
     };
     let evaluated_water = water_plan.visible_water.as_ref().and_then(|water| {
         let identity = match &water.material {
@@ -4145,7 +4149,12 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             .ok()
             .map(|state| (identity, state))
     });
-    if water_plan.visible_water.is_some() != evaluated_water.is_some() {
+    let ordinary_water_surface = water_plan.visible_water.as_ref().is_some_and(|water| {
+        water.state.is_none()
+            && water_plan.render.cheap && !water_plan.render.reflect && !water_plan.render.refract
+    });
+    if water_plan.visible_water.is_some() && evaluated_water.is_none() && !ordinary_water_surface {
+        slot.visibility_output = format!("PVQEwater material evaluation: {:?}", water_plan.visible_water.as_ref().map(|w| &w.material)).into_bytes();
         return 0;
     }
     let evaluated_overlay = water_plan
@@ -4204,7 +4213,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         }
     }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&6u32.to_le_bytes());
+    output.extend_from_slice(&7u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
@@ -4240,8 +4249,14 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         u8::from(water_plan.render.opaque),
         u8::from(intersects),
     ]);
-    if let (Some(water), Some((identity, evaluated))) = (&water_plan.visible_water, evaluated_water)
-    {
+    if let Some(water) = &water_plan.visible_water {
+        let identity = match &water.material {
+            playsrc_map::WaterMaterialIdentity::Map(index) => {
+                let Some(identity) = environment.map_materials.get(index) else { return 0; };
+                identity
+            },
+            playsrc_map::WaterMaterialIdentity::Dependency(identity) => identity,
+        };
         output.extend_from_slice(
             &u32::try_from(water.volume)
                 .unwrap_or(u32::MAX)
@@ -4261,7 +4276,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
             u8::from(water.eye_in_volume),
             u8::from(water.translucent),
             u8::from(evaluated_overlay.is_some()),
-            0,
+            u8::from(evaluated_water.is_some()),
         ]);
         output.extend_from_slice(&water.surface_z.to_le_bytes());
         output.extend_from_slice(
@@ -4270,12 +4285,14 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         if pbytes(&mut output, identity.as_bytes()).is_err() {
             return 0;
         }
-        output.extend_from_slice(&evaluated.normal_frame.to_le_bytes());
-        for value in evaluated.normal_transform {
-            output.extend_from_slice(&value.to_le_bytes());
+        if let Some((_, evaluated)) = &evaluated_water {
+            output.extend_from_slice(&evaluated.normal_frame.to_le_bytes());
+            for value in evaluated.normal_transform {
+                output.extend_from_slice(&value.to_le_bytes());
+            }
+            output.extend_from_slice(&evaluated.cheap_start.to_le_bytes());
+            output.extend_from_slice(&evaluated.cheap_end.to_le_bytes());
         }
-        output.extend_from_slice(&evaluated.cheap_start.to_le_bytes());
-        output.extend_from_slice(&evaluated.cheap_end.to_le_bytes());
         if let Some((identity, overlay)) = &evaluated_overlay {
             if pbytes(&mut output, identity.as_bytes()).is_err() {
                 return 0;
@@ -14033,10 +14050,13 @@ fn compile_environment_artifact(
         );
     }
     for (index, material) in materials.iter().enumerate() {
+        let reference = canonical.materials.get(index).ok_or(())?;
         if material.water.is_none() {
+            if env.water.volumes.iter().any(|volume| volume.surface_material == reference.index) {
+                map_materials.insert(reference.index, reference.logical_path.to_ascii_lowercase());
+            }
             continue;
         }
-        let reference = canonical.materials.get(index).ok_or(())?;
         let identity = reference.logical_path.to_ascii_lowercase();
         let output = playsrc_material::water_material_output(material)
             .map_err(|_| ())?

@@ -1,5 +1,6 @@
 use playsrc_asset_graph::{ResourceGraph, decode, encode_resource_set, hex_hash};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[derive(Deserialize)]
@@ -16,10 +17,10 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && arguments[2] == "--control-point-match") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && arguments[2] == "--control-point-match" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
-            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256>".to_owned(),
+            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match]".to_owned(),
         );
     }
     let target = &arguments[0];
@@ -105,11 +106,31 @@ fn main() -> Result<(), String> {
         fs::write(output.join(format!("{target}-control-point-match.json")),serde_json::to_vec(&frames).unwrap()).map_err(|error|error.to_string())?;
         return result;
     }
-    let artifact = playsrc_tf2_wasm::compile_artifact(&bsp, 1, &resources)
-        .map_err(|error| format!("native HDR compilation failed: {error}"))?;
+    let section = playsrc_tf2_wasm::ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
+    let resource_hash: [u8; 32] = Sha256::digest(&resources).into();
+    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, resource_hash.as_ptr()) };
+    let result = (|| {
+        let error = playsrc_tf2_wasm::playsrc_result_error(handle);
+        if error != 0 { return Err(format!("native HDR compilation failed: {error}")); }
+        if arguments.len() == 6 {
+            let position = arguments[3..].iter().map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let view = [position[0], position[1], position[2], position[0], position[1], position[2], 0.0, 0.0, 75.0, 16.0 / 9.0, 1.0, 30_000.0, 0.0, -1.0];
+            if unsafe { playsrc_tf2_wasm::playsrc_visibility_query(handle, view.as_ptr()) } != 1 {
+                let length = playsrc_tf2_wasm::playsrc_visibility_output_length(handle);
+                let pointer = playsrc_tf2_wasm::playsrc_visibility_output_pointer(handle);
+                let reason = if !pointer.is_null() && length <= 4096 { String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(pointer, length) }).into_owned() } else { String::new() };
+                return Err(format!("native visibility failed at {position:?}: {reason}"));
+            }
+        }
+        let mut payload = vec![0; playsrc_tf2_wasm::playsrc_result_length(handle)];
+        if unsafe { playsrc_tf2_wasm::playsrc_result_copy(handle, payload.as_mut_ptr(), payload.len()) } != payload.len() { return Err("native artifact copy failed".to_owned()); }
+        Ok(payload)
+    })();
+    playsrc_tf2_wasm::playsrc_dispose(handle);
+    let payload = result?;
     let output = config.source_cache_dir.join("evidence/map-runtime");
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    fs::write(output.join(format!("{target}.psmp")), &artifact.payload)
+    fs::write(output.join(format!("{target}.psmp")), &payload)
         .map_err(|error| error.to_string())?;
     let parsed = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).map_err(|error| error.to_string())?;
     let entities = playsrc_entity::parse(parsed.lumps[0].bytes(&parsed), playsrc_entity::Limits::default()).map_err(|error| error.to_string())?;
@@ -126,7 +147,7 @@ fn main() -> Result<(), String> {
     fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     println!(
         "{}",
-        serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": artifact.payload.len(), "sha256": hex_hash(&artifact.payload)})
+        serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": payload.len(), "sha256": hex_hash(&payload)})
     );
     Ok(())
 }

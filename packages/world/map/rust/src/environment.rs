@@ -285,7 +285,7 @@ pub struct WaterVolume {
     pub plane: [f32; 4],
     pub surface_bindings: WaterBindings,
     pub bottom_bindings: Option<WaterBindings>,
-    pub surface_state: WaterState,
+    pub surface_state: Option<WaterState>,
     pub bottom_state: Option<WaterState>,
     pub surface_translucent: bool,
     pub bottom_translucent: Option<bool>,
@@ -580,7 +580,7 @@ impl WaterEnvironment {
                 source
                     .bottom_state
                     .as_ref()
-                    .unwrap_or(&source.surface_state),
+                    .or(source.surface_state.as_ref()),
                 source
                     .bottom_bindings
                     .as_ref()
@@ -592,7 +592,7 @@ impl WaterEnvironment {
         } else {
             (
                 WaterMaterialIdentity::Map(source.surface_material),
-                &source.surface_state,
+                source.surface_state.as_ref(),
                 &source.surface_bindings,
                 source.surface_translucent,
             )
@@ -610,7 +610,7 @@ impl WaterEnvironment {
             surface_z: source.surface_z,
             distance_to_water,
             material,
-            state: state.clone(),
+            state: state.cloned(),
             bindings: bindings.clone(),
             translucent,
         }))
@@ -654,7 +654,7 @@ pub struct VisibleWater {
     pub surface_z: f32,
     pub distance_to_water: Option<u16>,
     pub material: WaterMaterialIdentity,
-    pub state: WaterState,
+    pub state: Option<WaterState>,
     pub bindings: WaterBindings,
     pub translucent: bool,
 }
@@ -744,15 +744,20 @@ fn water_render_selection(
             environment: water.bindings.environment.clone(),
         };
     }
-    let force_cheap = water.state.force_cheap;
-    let force_expensive = !force_cheap && (policy.force_expensive || water.state.force_expensive);
+    let Some(state) = &water.state else {
+        return WaterRenderSelection { cheap: true, reflect: false, refract: false,
+            reflect_entities: false, draw_surface: true, opaque: !water.translucent,
+            environment: water.bindings.environment.clone() };
+    };
+    let force_cheap = state.force_cheap;
+    let force_expensive = !force_cheap && (policy.force_expensive || state.force_expensive);
     let local_reflection = policy.expensive_supported
         && force_expensive
         && policy.draw_reflection
         && water.bindings.reflection;
     let beyond_lod = water
         .distance_to_water
-        .is_some_and(|distance| f32::from(distance) >= water.state.cheap_end);
+        .is_some_and(|distance| f32::from(distance) >= state.cheap_end);
     if !policy.expensive_supported || force_cheap || beyond_lod && !local_reflection {
         return WaterRenderSelection {
             cheap: true,
@@ -770,7 +775,7 @@ fn water_render_selection(
         reflect: local_reflection,
         refract,
         reflect_entities: local_reflection
-            && (policy.force_reflect_entities || water.state.reflect_entities),
+            && (policy.force_reflect_entities || state.reflect_entities),
         draw_surface: true,
         opaque: !water.translucent && !refract,
         environment: water.bindings.environment.clone(),
@@ -1790,18 +1795,22 @@ fn compile_water_volumes(
                     .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(index)))
             })
             .transpose()?;
-        let surface_state = state
-            .or_else(|| bottom_state.clone())
-            .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
+        let surface_state = state;
         let bottom_material = bottom.as_ref().map(|(identity, _)| identity.clone());
         let center = bounds_center(bounds);
-        let surface_bindings = if material_output.water.is_some() {
-            water_bindings(material_output, &surface_state, center, cubemaps)?
+        let surface_bindings = if let Some(state) = &surface_state {
+            water_bindings(material_output, state, center, cubemaps)?
         } else {
-            let (_, bottom_material_output) = bottom
-                .as_ref()
-                .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material)))?;
-            water_bindings(bottom_material_output, &surface_state, center, cubemaps)?
+            // %compilewater describes a BSP volume, not a shader family. A
+            // LightmappedGeneric surface keeps its own cubemap and ordinary
+            // draw path; the underwater material never supplies its RT bindings.
+            WaterBindings {
+                environment: material_output.textures.iter().find(|texture| texture.role == TextureRole::Environment)
+                    .filter(|_| material_output.active_textures.contains(&TextureRole::Environment))
+                    .map(|texture| texture_cubemap(texture, center, cubemaps)).transpose()?.flatten(),
+                reflection: false,
+                refraction: false,
+            }
         };
         let bottom_bindings = bottom
             .as_ref()
@@ -1877,12 +1886,16 @@ fn water_cubemap(
     position: [f32; 3],
     cubemaps: &[CubemapSample],
 ) -> Result<Option<CubemapSelection>, EnvironmentError> {
-    match state.environment_map.disposition {
+    texture_cubemap(&state.environment_map, position, cubemaps)
+}
+
+fn texture_cubemap(texture: &playsrc_material::TextureRequest, position: [f32; 3], cubemaps: &[CubemapSample]) -> Result<Option<CubemapSelection>, EnvironmentError> {
+    match texture.disposition {
         TextureDisposition::BuiltInEnvironment => Ok(Some(CubemapSelection::Nearest {
             sample: select_cubemap(cubemaps, position, None)?.index,
         })),
         TextureDisposition::Source => {
-            let Some(path) = state.environment_map.logical_path.as_ref() else {
+            let Some(path) = texture.logical_path.as_ref() else {
                 return Ok(None);
             };
             let declared = cubemap_stem(path).and_then(|requested| {
@@ -3587,7 +3600,7 @@ mod tests {
                     refraction: true,
                 },
                 bottom_bindings: None,
-                surface_state: test_water_state(),
+                surface_state: Some(test_water_state()),
                 bottom_state: None,
                 surface_translucent: true,
                 bottom_translucent: None,
@@ -3643,7 +3656,7 @@ mod tests {
                     reflection: false,
                     refraction: true,
                 }),
-                surface_state: state,
+                surface_state: Some(state),
                 bottom_state: Some(bottom),
                 surface_translucent: true,
                 bottom_translucent: Some(true),
@@ -3763,6 +3776,28 @@ mod tests {
         );
         assert!(underwater.passes[0].draw_sky_2d);
         assert!(!underwater.passes[1].draw_sky_2d);
+        let mut ordinary = environment.clone();
+        ordinary.volumes[0].surface_state = None;
+        ordinary.volumes[0].surface_bindings.reflection = false;
+        ordinary.volumes[0].surface_bindings.refraction = false;
+        for distance in [0, 5000] {
+            ordinary.leaf_minimum_distance_to_water = Some(vec![distance, 0]);
+            let selected = ordinary.plan_view(&visibility, WaterViewInput {
+                origin: [0.0, 0.0, 10.0], angles: [0.0; 3], eye_leaf: 0,
+                qualified_visible_leaves: &[1], near_plane_intersects_selected_volume: false,
+                draw_sky_2d: true, policy,
+            }).unwrap();
+            assert!(selected.render.cheap && !selected.render.reflect && !selected.render.refract);
+            assert!(selected.visible_water.unwrap().state.is_none());
+            assert_eq!(selected.passes.len(), 1, "ordinary surface must not borrow the expensive underwater shader at distance {distance}");
+        }
+        let selected = ordinary.plan_view(&visibility, WaterViewInput {
+            origin: [0.0, 0.0, -4.0], angles: [0.0; 3], eye_leaf: 1,
+            qualified_visible_leaves: &[], near_plane_intersects_selected_volume: false,
+            draw_sky_2d: true, policy,
+        }).unwrap();
+        assert!(selected.render.refract && !selected.render.cheap);
+        assert!(selected.visible_water.unwrap().state.is_some());
 
         assert!(
             environment
