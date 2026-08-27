@@ -64,6 +64,8 @@ pub fn schema() -> &'static crate::schema::ItemSchema {
 pub struct AttributeProviders {
     graph: crate::attribute::AttributeGraph,
     weapons: std::collections::BTreeMap<Weapon, u32>,
+    active_only: Vec<(Weapon, u32)>,
+    active: Option<Weapon>,
 }
 
 impl AttributeProviders {
@@ -92,7 +94,29 @@ impl AttributeProviders {
             graph.set_owner(identity, Some(1)).unwrap();
             graph.provide_to(identity, 1).unwrap();
         }
-        Self { graph, weapons }
+        let mut providers = Self { graph, weapons, active_only: Vec::new(), active: None };
+        for (weapon, identity) in providers.weapons.clone() {
+            if providers.numeric(identity, "provide_on_active", 0.0).round_ties_even() == 1.0 {
+                providers.active_only.push((weapon, identity));
+                providers.graph.stop_providing_to(identity, 1).unwrap();
+            }
+        }
+        providers
+    }
+
+    /// Reapply only active-state-dependent provision. The weapon keeps its own
+    /// attributes while holstered; its owner and sibling weapons lose them.
+    pub fn set_active(&mut self, active: Option<Weapon>) {
+        if self.active == active { return; }
+        for &(weapon, identity) in &self.active_only {
+            if self.active == Some(weapon) {
+                self.graph.stop_providing_to(identity, 1).unwrap();
+            }
+            if active == Some(weapon) {
+                self.graph.provide_to(identity, 1).unwrap();
+            }
+        }
+        self.active = active;
     }
 
     pub fn weapon(&mut self, weapon: Weapon, hook: &str, input: f32) -> f32 {
@@ -285,6 +309,19 @@ pub fn encode_items(out: &mut Vec<u8>, items: &[EquippedItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_provision_transitions_are_idempotent_and_leave_weapon_ownership_intact() {
+        let mut providers = AttributeProviders::new(&Equipment::default(), PlayerClass::Pyro);
+        let identity = providers.weapons[&Weapon::FireAxe];
+        providers.graph.stop_providing_to(identity, 1).unwrap();
+        providers.active_only.push((Weapon::FireAxe, identity));
+        for active in [Some(Weapon::FireAxe), Some(Weapon::FireAxe), Some(Weapon::Shotgun), None, Some(Weapon::FireAxe), None] {
+            providers.set_active(active);
+            assert_eq!(providers.graph.entity(1).unwrap().providers.contains(&identity), active == Some(Weapon::FireAxe));
+            assert_eq!(providers.graph.entity(identity).unwrap().owner, Some(1));
+        }
+    }
 
     #[test]
     fn implemented_catalog_has_one_stable_instance_per_definition() {

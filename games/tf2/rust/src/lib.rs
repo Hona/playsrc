@@ -1215,6 +1215,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if self.weapon.is_none_or(|weapon| !self.loadout.contains_key(&weapon)) {
             self.weapon = self.active_equipment.weapons(self.class).next();
         }
+        self.equipment_attributes.set_active(self.weapon);
     }
 
     pub fn round_snapshot(&self) -> round::Snapshot {
@@ -1298,6 +1299,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             };
             if !team.is_gameplay() {
                 self.weapon = None;
+                self.equipment_attributes.set_active(None);
                 self.loadout.clear();
                 self.health = 0;
             } else if self.weapon.is_none() {
@@ -3564,6 +3566,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn deploy_active_weapon(&mut self) {
+        self.equipment_attributes.set_active(self.weapon);
         let Some(active_weapon) = self.weapon else {
             return;
         };
@@ -6716,6 +6719,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.stop_flame(false);
+        self.equipment_attributes.set_active(None);
         self.lifecycle = PlayerLifecycle::Dying;
         self.death_tick = Some(self.tick);
         self.scoreboard.local_death();
