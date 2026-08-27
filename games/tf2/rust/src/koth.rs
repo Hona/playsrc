@@ -330,8 +330,9 @@ mod tests {
         session.ammo.primary = 0;
         session.movement.position = [1000.0; 3];
         session.round.win(PlayerTeam::Red, 1).unwrap();
+        session.tick = 1000; // The exact 15-second bonus boundary is still TEAM_WIN.
         let mut respawn = None;
-        for _ in 0..1003 {
+        for _ in 0..3 {
             let snapshot = session.advance(crate::Command::default()).unwrap();
             if snapshot
                 .events
