@@ -1778,7 +1778,11 @@ export class Tf2Application {
         preload: false,
         entries: document.entries,
       })))
-      const audioPaths = this.#audioRegistry.resources()
+      const audioPaths = this.#audioRegistry.resources().filter(identity => {
+        if (!this.#artifacts!.audio.unavailable.has(identity)) return true
+        this.#blockers.add(`Authored sound precache unavailable: ${identity}`)
+        return false
+      })
       const audioStarted = performance.now()
       const audioResourcesReady = Promise.all(audioPaths.map(async (identity) => {
         const bytes = this.#dependencyEntries.get(identity)
@@ -4233,6 +4237,9 @@ export class Tf2Application {
       }
       const definition = this.#audioRegistry.get(request.definition)
       const resource = definition?.waves[request.samples.wave]?.resource
+      // A failed Source wave precache does not invalidate its script handle or
+      // the map. Preserve the selected event/random sample; never invent audio.
+      if (resource && this.#artifacts.audio.unavailable.has(resource)) continue
       const buffer = resource ? this.#audioBuffers.get(resource) : undefined
       if (!resource || !buffer) throw new Error(`Audio resource for ${request.definition} is missing`)
       const patch = this.#artifacts.audio.patches.get(resource)

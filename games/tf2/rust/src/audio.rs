@@ -123,6 +123,9 @@ pub const FLAG_SOUNDS: &[SoundDefinition] = &[
     SoundDefinition::FlagSpawn,
 ];
 
+pub const SOUND_PRECACHE_ABSENCES_PATH: &str = "playsrc/audio-precache-absences.txt";
+pub const SOUND_PRECACHE_ABSENCES_HEADER: &str = "playsrc-audio-precache-absences-v1\n";
+
 impl SoundDefinition {
     pub const fn identity(self) -> &'static str {
         match self {

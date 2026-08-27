@@ -11202,7 +11202,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     documents.push(("scripts/game_sounds.txt", &round_targets));
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
-    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&4u32.to_le_bytes());
     out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(mixer)));
     out.extend_from_slice(&0.72f32.to_le_bytes());
     out.extend_from_slice(
@@ -11249,7 +11249,35 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
         out.extend_from_slice(&metadata.frames.to_le_bytes());
         out.extend_from_slice(&metadata.cue_frame.unwrap_or(u32::MAX).to_le_bytes());
     }
+    let absences = sound_precache_absences(bundle)?;
+    out.extend_from_slice(&(absences.len() as u32).to_le_bytes());
+    for path in absences { pbytes(out, path.as_bytes())?; }
     Ok(())
+}
+
+fn sound_precache_absences(bundle: &BTreeMap<String, &[u8]>) -> Result<Vec<String>, ()> {
+    let bytes = *bundle.get(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH).ok_or(())?;
+    if bytes.len() > 128 * 1024 || !bytes.ends_with(b"\n") { return Err(()); }
+    let text = std::str::from_utf8(bytes).map_err(|_| ())?.strip_prefix(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER).ok_or(())?;
+    let paths = text.split_terminator('\n').map(str::to_owned).collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    if paths.len() > 128 || paths.iter().any(|path| !path.starts_with("sound/") || path != &path.to_ascii_lowercase()
+        || path.contains('\\') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || bundle.contains_key(path) || !seen.insert(path)) { return Err(()); }
+    Ok(paths)
+}
+
+#[cfg(test)]
+#[test]
+fn precache_absence_requires_an_explicit_noncontradictory_source_witness() {
+    let identity = playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH.to_owned();
+    let mut bundle = BTreeMap::new();
+    assert!(sound_precache_absences(&bundle).is_err());
+    let witness = format!("{}sound/items/itembk2.wav\n", playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER);
+    bundle.insert(identity, witness.as_bytes());
+    assert_eq!(sound_precache_absences(&bundle).unwrap(), vec!["sound/items/itembk2.wav"]);
+    bundle.insert("sound/items/itembk2.wav".to_owned(), b"unexpected".as_slice());
+    assert!(sound_precache_absences(&bundle).is_err());
 }
 
 fn map_prop_pipeline_animations(graph: &playsrc_entity::Graph) -> BTreeMap<usize, Vec<&[u8]>> {

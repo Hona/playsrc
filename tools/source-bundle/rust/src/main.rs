@@ -3276,10 +3276,15 @@ fn main() -> Result<(), String> {
         round_scripts.push(("scripts/game_sounds_vo.txt", playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|d| d.identity()).collect()));
         round_scripts.push(("scripts/game_sounds.txt", playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|d| d.identity()).collect()));
     }
+    let mut sound_precache_absences = BTreeSet::new();
     for (script, targets) in round_scripts {
             let bytes = resolver.required(script, "round-audio-script")?;
             for wave in sound_wave_dependencies(&bytes, &targets).map_err(|error| format!("{script}: {error}"))? {
-                resolver.required(&wave, "round-audio-wave")?;
+                // Source's script precache visits every wave but does not make
+                // a missing authored wave fatal to map admission.
+                if resolver.optional(&wave, "round-audio-wave")?.is_none() {
+                    sound_precache_absences.insert(wave);
+                }
             }
     }
     for dependency in &tf2_ui.dependencies {
@@ -3610,6 +3615,9 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     stage("ui-materials", &mut stage_started);
     let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
+    ui_bundle.insert(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH.to_owned(),
+        format!("{}{}", playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER,
+            sound_precache_absences.iter().map(|path| format!("{path}\n")).collect::<String>()).into_bytes());
     if let Some(bytes) = static_prop_vhv_aggregate {
         ui_bundle.insert(STATIC_PROP_VHV_AGGREGATE_PATH.to_owned(), bytes);
     }
@@ -3734,7 +3742,7 @@ fn main() -> Result<(), String> {
     for (logical_path, bytes) in &ui_bundle {
         resources.push(Resource {
             logical_path: logical_path.clone(),
-            roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH {
+            roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH || logical_path == playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH {
                 "gameplay".to_owned()
             } else if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm"
             {
@@ -3954,7 +3962,7 @@ fn sound_wave_dependencies(source: &[u8], targets: &[&str]) -> Result<Vec<String
                 playsrc_keyvalues::Value::Object(children) => pending.extend(children),
                 playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => {
                     let wave = std::str::from_utf8(&value.token.bytes).map_err(|_| format!("Sound wave {target} is not UTF-8"))?;
-                    waves.insert(format!("sound/{}", wave.trim_start_matches('#')));
+                    waves.insert(format!("sound/{}", wave.trim_start_matches('#')).to_ascii_lowercase());
                 }
                 _ => {}
             }
