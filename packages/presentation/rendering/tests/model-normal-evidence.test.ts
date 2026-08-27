@@ -16,11 +16,17 @@ test("normal evidence uses the posed triangle and authored normals, not Raycaste
   const hit = new THREE.Raycaster(new THREE.Vector3(0, 0, 10), new THREE.Vector3(0, 0, -1)).intersectObject(mesh)[0]!
   expect(modelNormalEvidence(hit).worldNormal).toEqual([0, 0, 1])
   expect(modelNormalEvidence(hit).worldPosition[2]).toBeCloseTo(0.5)
-  expect(visibleModelIntersection(hit)).toBe(true)
+  const camera = new THREE.PerspectiveCamera(75, 1, 1, 100)
+  camera.position.set(0, 0, 10)
+  camera.updateMatrixWorld(true)
+  expect(visibleModelIntersection(hit, camera)).toBe(true)
+  camera.near = 10
+  expect(visibleModelIntersection(hit, camera)).toBe(false)
+  camera.near = 1
   const parent = new THREE.Group()
   parent.add(mesh)
   parent.visible = false
-  expect(visibleModelIntersection(hit)).toBe(false)
+  expect(visibleModelIntersection(hit, camera)).toBe(false)
   skeleton.dispose(); geometry.dispose(); material.dispose()
 })
 

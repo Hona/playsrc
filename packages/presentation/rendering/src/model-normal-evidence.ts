@@ -1,12 +1,13 @@
 import * as THREE from "three/webgpu"
 
-export function visibleModelIntersection(hit: THREE.Intersection): boolean {
+export function visibleModelIntersection(hit: THREE.Intersection, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera): boolean {
   for (let object: THREE.Object3D | null = hit.object; object; object = object.parent) {
     if (!object.visible) return false
   }
   if (!(hit.object instanceof THREE.Mesh)) return false
   const material = Array.isArray(hit.object.material) ? hit.object.material[hit.face?.materialIndex ?? 0] : hit.object.material
-  return material?.visible === true
+  const depth = -hit.point.clone().applyMatrix4(camera.matrixWorldInverse).z
+  return material?.visible === true && depth >= camera.near && depth <= camera.far
 }
 
 // On-demand profiling only. Raycaster's interpolated normal is unskinned and

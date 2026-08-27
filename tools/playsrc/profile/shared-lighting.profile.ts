@@ -99,7 +99,7 @@ test("configured maps retain world, viewmodel, and panel illumination", async ({
     await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     const tick = Number(await main.getAttribute("data-snapshot-tick"))
     await page.waitForFunction(tick => Number(document.querySelector<HTMLElement>("main")!.dataset.snapshotTick) >= tick + 40, tick)
-    await capture(`${map}-world`)
+    const initial = await capture(`${map}-world`)
     if (map === "pl_upward") {
       await command("noclip")
       await expect(main).toHaveAttribute("data-movement-mode", "1")
@@ -127,6 +127,35 @@ test("configured maps retain world, viewmodel, and panel illumination", async ({
         const evidence = await capture(`${map}-${team}-${classname}`)
         expect(evidence.lighting.worldGeometry.samples.some((sample: any) => sample.identity === 0x6000_0000 + target.identity)).toBe(true)
       }
+      const spawn = initial.state.cameraPosition!.split(",").map(Number)
+      const outdoor = await page.evaluate(spawn => {
+        const profile = (globalThis as any).__playsrcProfile
+        return profile.coverageSamples.filter((sample: any) => sample.area !== profile.materialAnimation?.skyController?.area
+          && Math.hypot(...sample.position.map((v: number, i: number) => v - spawn[i]!)) > 768)
+          .sort((a: any, b: any) => b.position[2] - a.position[2])[0].position
+      }, spawn)
+      const offset = Number((await main.getAttribute("data-view-offset"))!.split(",")[2])
+      await command(`setpos ${outdoor[0]} ${outdoor[1]} ${outdoor[2] - offset}`)
+      await page.waitForFunction(position => {
+        const current = document.querySelector<HTMLElement>("main")!.dataset.cameraPosition!.split(",").map(Number)
+        return Math.hypot(current[0]! - position[0], current[1]! - position[1]) < 2
+      }, outdoor)
+      await aim([spawn[0]!, spawn[1]!, outdoor[2] - 96])
+      const exterior = await capture(`${map}-exterior`)
+      expect(exterior.lighting.viewmodel.localLights.some((light: any) => light.kind === "directional")).toBe(true)
+
+      const generation = Number(await main.getAttribute("data-generation"))
+      await command("mat_hdr_level 2")
+      await page.waitForFunction(previous => Number(document.querySelector<HTMLElement>("main")!.dataset.generation) > previous, generation)
+      await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 45_000 })
+      if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+      await expect(main).toHaveAttribute("data-class-selection-visible", "true")
+      await page.keyboard.press("Digit2")
+      await expect(main).toHaveAttribute("data-class-selection-visible", "false")
+      const hdr = await capture(`${map}-hdr`)
+      expect(hdr.lighting.profile).toBe("hdr")
+      expect(JSON.parse(hdr.canvas.staticProps!).total).toBe(JSON.parse(initial.canvas.staticProps!).total)
     }
   }
   const cadence = await page.evaluate(() => new Promise<{ frames: number[]; ticks: number; milliseconds: number }>(resolve => {

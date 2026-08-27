@@ -1813,7 +1813,7 @@ class RendererOwner implements Renderer {
     for (const y of [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6]) {
       for (const x of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
         viewRay.setFromCamera(new THREE.Vector2(x, y), this.#viewCamera)
-        const hit = viewRay.intersectObjects(this.#viewModels.children, true).find(visibleModelIntersection)
+        const hit = viewRay.intersectObjects(this.#viewModels.children, true).find(hit => visibleModelIntersection(hit, this.#viewCamera))
         if (!hit || samples.length >= 12) continue
         let owner: THREE.Object3D | null = hit.object
         while (owner && !Number.isSafeInteger(owner.userData.identity)) owner = owner.parent
@@ -1854,7 +1854,7 @@ class RendererOwner implements Renderer {
       for (const x of [-0.4, -0.25, -0.1, 0, 0.1, 0.25, 0.4]) {
         if (samples.length >= 12) break
         ray.setFromCamera(new THREE.Vector2(x, y), this.#camera)
-        const hit = ray.intersectObjects(instances, true).find(visibleModelIntersection)
+        const hit = ray.intersectObjects(instances, true).find(hit => visibleModelIntersection(hit, this.#camera))
         if (!hit) continue
         let owner: THREE.Object3D | null = hit.object
         while (owner && !Number.isSafeInteger(owner.userData.identity)) owner = owner.parent
