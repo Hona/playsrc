@@ -4,6 +4,9 @@ export type ClassSwitchLifecycleEvent = Readonly<{
   playerClass?: number
   key?: string
   visible?: boolean
+  button?: number
+  trusted?: boolean
+  controllerAction?: string | null
 }>
 
 // fireAt records a physical +attack press, not a claimed shot. The shared gate

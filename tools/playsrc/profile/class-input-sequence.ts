@@ -1,3 +1,20 @@
+import type { ClassSwitchLifecycleEvent } from "./class-switch-lifecycle"
+
+/** Observe interference; never cancel, rewrite, or suppress real input. */
+export function classInputViolations(events: readonly ClassSwitchLifecycleEvent[]) {
+  return events.filter(event => {
+    if (event.phase === "key-down") {
+      return event.trusted !== true || !(event.controllerAction === "scoreboard" && event.key === "Tab"
+        || event.controllerAction === "select" && (event.key === "Comma" || /^Digit[1-9]$/u.test(event.key ?? "")))
+    }
+    if (event.phase === "pointer-capture" || event.phase === "weapon-fire") {
+      return event.trusted !== true || event.button !== 0
+        || event.controllerAction !== (event.phase === "pointer-capture" ? "capture" : "attack")
+    }
+    return event.phase === "other-pointer-button"
+  })
+}
+
 /** All setup and native waits stay inside the same bounded sample clock. */
 export async function prepareClassCapture(options: {
   earliestCapture: number
