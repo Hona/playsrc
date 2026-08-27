@@ -2,6 +2,13 @@ use super::Weapon;
 use crate::class::AmmoType;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WeaponSource {
+    pub owner: u32,
+    pub definition_index: u32,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttributeTarget {
     Weapon,
     Player,
@@ -422,6 +429,7 @@ pub struct WeaponRuntime {
     pub deploy_multiplier: f32,
     pub spinup_seconds: f32,
     pub discard_chambered_on_reload: bool,
+    pub generation: u64,
     pub critical: crate::critical::WeaponState,
     pub resolved_profile: WeaponProfile,
     pub weapon: Weapon,
@@ -459,6 +467,7 @@ impl WeaponRuntime {
 
     pub fn full_with_profile(weapon: Weapon, profile: WeaponProfile) -> Self {
         Self {
+            generation: 0,
             critical: crate::critical::WeaponState::default(),
             hitscan: crate::hitscan::State::default(),
             deploy_multiplier: 1.0,

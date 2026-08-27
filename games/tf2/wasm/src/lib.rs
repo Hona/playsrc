@@ -16021,6 +16021,7 @@ mod tests {
             playsrc_movement::Policy::default(),
         );
         let projectile = playsrc_tf2::Projectile {
+            source_weapon: None,
             identity: 12,
             kind: playsrc_tf2::ProjectileKind::Rocket,
             team: playsrc_tf2::PlayerTeam::Blue,
@@ -16110,6 +16111,7 @@ mod tests {
                 deploy_multiplier: 1.0,
                 spinup_seconds: 0.75,
                 discard_chambered_on_reload: false,
+                generation: 0,
                 critical: playsrc_tf2::critical::WeaponState::default(),
                 resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
                 weapon: playsrc_tf2::Weapon::Original,
