@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { installNodeBuilderInstrumentation, RendererFrameInstrumentation, type BrowserFrameProfiler } from "../src/frame-instrumentation"
+import * as THREE from "three/webgpu"
+import { installNodeBuilderInstrumentation, observeStaticPropUse, RendererFrameInstrumentation, type BrowserFrameProfiler } from "../src/frame-instrumentation"
 
 test("cold-model pass attribution does not turn loading into completed gameplay", () => {
   const profile: BrowserFrameProfiler = { active: false, captureModelPrograms: true, currentPass: null, completedFrames: [], counters: {}, capabilities: { timestampQuery: false, longAnimationFrame: false }, losses: [] }
@@ -23,6 +24,26 @@ function fixture(active = true) {
   const profile: BrowserFrameProfiler = { active, currentPass: null, completedFrames: [], counters: {}, capabilities: { timestampQuery: false, longAnimationFrame: false }, losses: [] }
   return { info, profile, resets: () => resets }
 }
+
+test("static-prop first-use evidence preserves draw callbacks, excludes loading and retains only scalar identities", () => {
+  const { profile, info } = fixture(false)
+  const mesh = new THREE.Mesh(), material = mesh.material as THREE.Material
+  mesh.userData.materialIdentity = "authored-prop"
+  mesh.userData.sourceStaticFade = { value: .75 }
+  let calls = 0
+  const original = mesh.onBeforeRender = () => { calls++ }
+  observeStaticPropUse(mesh, profile, 2, 208)
+  const draw = () => mesh.onBeforeRender(null as any, null as any, null as any, mesh.geometry, material, null as any)
+  draw()
+  expect(profile.firstStaticPropUses).toBeUndefined()
+  profile.active = true
+  new RendererFrameInstrumentation(info, profile).pass("main", draw)
+  draw()
+  expect(calls).toBe(3)
+  expect(mesh.onBeforeRender).toBe(original)
+  expect(profile.firstStaticPropUses).toHaveLength(1)
+  expect(profile.firstStaticPropUses![0]).toMatchObject({ generation: 2, source: 208, material: material.id, identity: "authored-prop", pass: "main", fade: .75 })
+})
 
 describe("completed multi-pass renderer instrumentation", () => {
   test("accumulates sky, world, viewmodel and HUD until exactly one completed-frame reset", () => {
