@@ -24,6 +24,8 @@ import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
 import { startGameplayReplayJournal } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
+import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
+import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
@@ -377,9 +379,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
   if (!Number.isFinite(totalDeadline)) throw new Error("Invalid bounded profile deadline")
   if (totalDeadline - Date.now() < seconds * 1000 + 20_000) throw new Error("Insufficient bounded capture/retention time after lock and startup; partial replay retained")
-  await cdp.send("HeapProfiler.enable")
-  await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true })
-  const heapBefore = await cdp.send("Runtime.getHeapUsage")
+  const allocationCapture = await startAllocationCapture(cdp, evidenceDirectory)
   const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
   await mkdir(path.dirname(rawPartial), { recursive: true })
   await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
@@ -415,15 +415,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
     finally { clearTimeout(timer) }
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
     await retainEvidenceBlob(evidenceDirectory, raw.bytes, "trace.json.gz")
-    return { workerCapture, workerArtifact, completion, raw, mainCapture, collectionErrors }
+    const allocation = await allocationCapture.stop()
+    const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
+    const memoryAfter = await captureProcessMemory(processAfter?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
+    return { workerCapture, workerArtifact, completion, raw, mainCapture, collectionErrors, allocation, processAfter, memoryAfter }
   }
   let nativeResult: ReturnType<typeof collectNative> | undefined
   const finishNative = () => nativeResult ??= collectNative()
   const persistNativeEvidence = async (probes: TraceProbes, details: Record<string, unknown>) => {
-    const { raw, completion, workerArtifact, mainCapture, collectionErrors } = await finishNative()
+    const { raw, completion, workerArtifact, mainCapture, collectionErrors, allocation, memoryAfter } = await finishNative()
     const sourceFingerprintAfter = await applicationBuildIdentity().catch(error => `unavailable: ${String(error)}`)
     return retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
       complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture, collectionErrors,
+      memory: { schema: "playsrc-allocation-memory-v1", main: allocation,
+        snapshotTransport: snapshotBoundaries, processes: { before: memoryBefore, after: memoryAfter } },
       identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
         sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
         gpu: system?.gpu ?? null, availableCategories, origin: new URL(page.url()).origin,
@@ -431,6 +436,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex"), ...details }, probes })
   }
   let retained: ReturnType<typeof persistNativeEvidence> | undefined
+  let snapshotBoundaries: { before: SnapshotTransportBoundary; after: SnapshotTransportBoundary } | null = null
   const retainNativeEvidence = (probes: TraceProbes, details: Record<string, unknown>) => retained ??= persistNativeEvidence(probes, details)
   const retainInterrupted = () => retainNativeEvidence({ started: 0, ended: 0, joins: [], dropped: 1 }, { sampleError: "Capture interrupted before measurement retention" })
   const interrupt = () => {
@@ -467,7 +473,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstFrame = Number(surface.dataset.displayFrame)
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
-    const firstSnapshots = structuredClone((globalThis as any).__playsrcProfile.snapshotTransport ?? {}) as Record<string, number>
+    const firstSnapshotOwner = (globalThis as any).__playsrcProfile.snapshotTransport
+    const firstSnapshots = structuredClone(firstSnapshotOwner ?? {}) as Record<string, number>
+    const firstSnapshotAt = performance.now()
     const started = performance.now()
     ;(globalThis as any).__playsrcProfile.classInputSampleStarted = started
     performance.mark(startMark, { startTime: started })
@@ -589,8 +597,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
       },
       modelUploads: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.modelParticleUploads ?? {})
         .map(([key, value]) => [key, typeof value === "number" ? value - (firstUploads[key] ?? 0) : value])),
-      snapshotTransport: Object.fromEntries(Object.entries((globalThis as any).__playsrcProfile.snapshotTransport ?? {})
-        .map(([key, value]) => [key, typeof value === "number" ? value - (firstSnapshots[key] ?? 0) : value])),
+      snapshotTransport: {
+        // Tokens denote reference equality of the actual stream.metrics object
+        // within this sample, not an inferred application/map generation.
+        before: { at: firstSnapshotAt, ownerToken: firstSnapshotOwner ? 0 : null, values: firstSnapshots },
+        after: { at: performance.now(), ownerToken: !(globalThis as any).__playsrcProfile.snapshotTransport ? null
+          : firstSnapshotOwner === (globalThis as any).__playsrcProfile.snapshotTransport ? 0 : 1,
+          values: structuredClone((globalThis as any).__playsrcProfile.snapshotTransport ?? {}) as Record<string, number> },
+      },
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
       gpuOperations: instrumentation.gpuOperations, gpuOperationsDropped: instrumentation.gpuOperationsDropped,
       deviceEvidence: { adapters: instrumentation.adapters, devices: instrumentation.devices, shaders: instrumentation.shaders,
@@ -770,16 +784,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const replayArtifact = await replay?.stop(!interrupted && sample.error === null)
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
-  const { workerCapture, workerArtifact, mainCapture } = await finishNative()
+  const { workerCapture, workerArtifact, mainCapture, allocation, processAfter, memoryAfter } = await finishNative()
   const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
-  // Stop samplers now, but a detached renderer or failed optional sampler must not discard the browser trace.
-  const supplemental = Promise.all([cdp.send("HeapProfiler.stopSampling"),
-    cdp.send("Runtime.getHeapUsage"), browserCdp.send("SystemInfo.getProcessInfo")])
-    .then(value => ({ value, error: null }), error => ({ value: null, error: String(error) }))
   if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
   const joins: TraceJoin[] = []
   const measured = sample.measurement
+  snapshotBoundaries = measured?.snapshotTransport ?? null
   if (measured) {
     for (const record of measured.gpuOperations) joins.push({ kind: "gpu", at: record.at, end: record.end ?? measured.ended, detail: record })
     for (const record of measured.lifecycle) joins.push({ kind: "class-lifecycle", at: measured.started + record.at, detail: record })
@@ -806,16 +817,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
   if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
-  const collected = await supplemental
-  if (!collected.value) throw new Error(`Optional profiling extraction failed; compositor evidence retained: ${collected.error}`)
-  const [allocationResult, heapAfter, processAfter] = collected.value
+  const memoryEvidence = await loadAllocationMemoryEvidence(path.join(evidenceDirectory, evidence.artifact.file), evidence)
+  if (allocation.errors.length || !allocation.heapBefore || !allocation.heapAfter) throw new Error(`Allocation capture failed; diagnostics retained: ${allocation.errors.join("; ")}`)
+  const heapBefore = allocation.heapBefore.value, heapAfter = allocation.heapAfter.value
   const cpuProfile = mainCapture.profile
-  const allocationProfile = allocationResult.profile
-  const memoryAfter = await captureProcessMemory(processAfter.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const measurement = measured
   const traceEvents: ChromiumTraceEvent[] = evidence.events
   const exactTraceWindow = evidence.manifest.analysis.window
-  const allocations = (node: { selfSize: number; children: any[] }): number => node.selfSize + node.children.reduce((total, child) => total + allocations(child), 0)
   const layerDetails = await Promise.all(compositorLayers.filter(layer => layer.drawsContent).map(async layer => {
     const [reasons, node] = await Promise.all([
       cdp.send("LayerTree.compositingReasons", { layerId: layer.layerId }).catch(() => null),
@@ -880,7 +888,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    schema: "playsrc-tf2-upward-training-bots-profile-v2", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
+    schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -987,7 +995,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       commandBuffersPerSubmission: Number((measurement.counters.commandBuffers / Math.max(1, measurement.counters.submissions)).toFixed(3)),
     },
     screen: measurement.screen,
-    snapshotTransport: measurement.snapshotTransport,
+    snapshotTransport: summarizeSnapshotTransport(measurement.snapshotTransport.before, measurement.snapshotTransport.after),
     longAnimationFrames: { ...summarizeDistribution(measurement.longAnimationFrames.map((frame: { duration: number }) => frame.duration)), events: measurement.longAnimationFrames },
     longTasks: { ...summarizeDistribution(measurement.longTasks.map((task: { duration: number }) => task.duration)), events: measurement.longTasks },
     memory: {
@@ -1000,7 +1008,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       privateAfterBytes: memoryAfter.privateBytes,
       wasm: wasmWorkers,
       load: loadPerformance,
-      sampledAllocationBytesIncludingCollected: allocations(allocationProfile.head),
+      evidence: memoryEvidence,
       tracedGarbageCollection: summarizeDistribution(traceEvents.filter(event => /^(?:MajorGC|MinorGC)$/u.test(event.name ?? "")
         && exactTraceWindow && (event.ts ?? 0) >= exactTraceWindow.startedMicroseconds && (event.ts ?? 0) < exactTraceWindow.endedMicroseconds && event.dur !== undefined).map(event => event.dur! / 1000)),
     },

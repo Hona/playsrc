@@ -8,6 +8,7 @@ import { attributeCompositorEvidence } from "./compositor-attribution"
 import { CPU_PROFILE_LIMITS, reconstructCpuProfile } from "./cpu-profile-time"
 import type { CpuProfile } from "./gameui-profile"
 import { validateUpwardCapturePlan, type UpwardCapturePlan } from "./upward-capture-plan"
+import type { AllocationMemoryEvidence } from "./allocation-memory-evidence"
 
 export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
   "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "toplevel.flow", "blink.user_timing",
@@ -126,7 +127,7 @@ export function analyzeCompositorEvidence(events: readonly RawTraceEvent[], prob
 export type BlobIdentity = Readonly<{ file: string; sha256: string; bytes: number }>
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json" | "main.cpuprofile" | "plan.json"): Promise<BlobIdentity> {
+export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json" | "main.cpuprofile" | "main.heapprofile" | "plan.json"): Promise<BlobIdentity> {
   const sha256 = digest(bytes)
   const file = `${sha256}.${suffix}`
   await mkdir(directory, { recursive: true })
@@ -238,7 +239,7 @@ function validateMainCpuProvenance(main: MainCpuEvidence, identity: Record<strin
 }
 
 /** Authenticates bytes even for failed captures; failures never become sampled CPU. */
-export async function loadMainCpuEvidence(filename: string, loaded: Awaited<ReturnType<typeof loadCompositorEvidence>>) {
+export async function loadMainCpuEvidence(filename: string, loaded: Pick<Awaited<ReturnType<typeof loadCompositorEvidence>>, "manifest" | "analysis">) {
   const main = loaded.manifest.mainCpu as MainCpuEvidence | undefined
   if (loaded.manifest.schema === "playsrc-compositor-evidence-v1") {
     if (main !== undefined) throw new Error("Historical compositor manifest cannot authenticate main CPU evidence")
@@ -314,6 +315,7 @@ export async function retainCompositorEvidence(options: Readonly<{
   categories?: readonly string[];
   maximumEvents?: number;
   mainCpu?: { evidence: MainCpuEvidence; profile: CpuProfile | undefined };
+  memory?: AllocationMemoryEvidence;
   collectionErrors?: readonly string[];
 }>) {
   // Persist original bytes before parsing/analysis: malformed and overflow traces are evidence too.
@@ -342,12 +344,17 @@ export async function retainCompositorEvidence(options: Readonly<{
     catch (error) { mainCpu.errors.push(String(error)) }
     errors.push(...mainCpu.errors)
   }
-  const manifest = { schema: mainCpu ? "playsrc-compositor-evidence-v2" : "playsrc-compositor-evidence-v1", identity: options.identity, limits,
+  if (options.memory) {
+    if (!mainCpu) throw new Error("Memory evidence requires main CPU provenance")
+    errors.push(...options.memory.main.errors)
+  }
+  const manifest = { schema: options.memory ? "playsrc-compositor-evidence-v3" : mainCpu ? "playsrc-compositor-evidence-v2" : "playsrc-compositor-evidence-v1", identity: options.identity, limits,
+    ...(options.memory ? { memory: options.memory } : {}),
     ...(mainCpu ? { mainCpu } : {}),
     categories: options.categories ?? COMPOSITOR_TRACE_CATEGORIES, trace, probes, complete: options.complete && !options.dataLossOccurred && !errors.length && !analysis.issues.length,
     errors, analysis }
   const artifact = await retainEvidenceBlob(options.directory, Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json")
-  return { artifact, manifest, events }
+  return { artifact, manifest, events, analysis, probes: capturedProbes }
 }
 
 export async function loadCompositorEvidence(filename: string) {
@@ -355,7 +362,7 @@ export async function loadCompositorEvidence(filename: string) {
   const bytes = await readFile(filename)
   if (path.basename(filename) !== `${digest(bytes)}.manifest.json`) throw new Error("Trace manifest identity mismatch")
   const manifest = JSON.parse(bytes.toString("utf8"))
-  if (!["playsrc-compositor-evidence-v1", "playsrc-compositor-evidence-v2"].includes(manifest.schema)) throw new Error("Unsupported trace evidence schema")
+  if (!["playsrc-compositor-evidence-v1", "playsrc-compositor-evidence-v2", "playsrc-compositor-evidence-v3"].includes(manifest.schema)) throw new Error("Unsupported trace evidence schema")
   const blob = async (identity: BlobIdentity) => {
     if (!/^[0-9a-f]{64}\.(trace|probes)\.json\.gz$/u.test(identity.file) || !identity.file.startsWith(identity.sha256)) throw new Error("Trace blob identity is invalid")
     const file = path.join(path.dirname(filename), identity.file)

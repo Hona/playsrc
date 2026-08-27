@@ -5,6 +5,7 @@ import { loadWorkerIncidents } from "./worker-incident-attribution"
 import { loadCompositorEvidence, loadMainCpuEvidence } from "./compositor-evidence"
 import { CPU_PROFILE_LIMITS } from "./cpu-profile-time"
 import { assertMatchingCapturePlans } from "./upward-capture-plan"
+import { loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 
 /** Offline only. v2 resolves main bytes exclusively through the manifest; v1
  * supplied profiles stay explicitly unauthenticated and are never migrated. */
@@ -26,7 +27,8 @@ export async function replayCpuProfiles(manifest: string, mainProfile?: string) 
       authenticated: false, identity: "separately supplied; not linked by compositor manifest",
       cpu: summarizeCpuProfile(profile), activeCpu: summarizeCpuProfile(profile, worker.window) }
   }
-  return { schema: "playsrc-cpu-profile-reanalysis-v3", offline: true, capturePlan: worker.capturePlan,
+  return { schema: "playsrc-cpu-profile-reanalysis-v4", offline: true, capturePlan: worker.capturePlan,
+    memory: await loadAllocationMemoryEvidence(manifest, loaded),
     workerInstrumentation: worker.workerInstrumentation,
     window: worker.window, compositorComplete: worker.compositorComplete, compositorErrors: worker.compositorErrors,
     workerArtifact: worker.workerArtifact, unsampledTargets: worker.unsampledTargets,

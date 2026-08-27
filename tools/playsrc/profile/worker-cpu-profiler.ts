@@ -59,6 +59,7 @@ export class WorkerCdpSession extends EventEmitter {
 export type WorkerCpuCapture = Readonly<{
   target: { targetId: string; type: string; url: string; browserContextId?: string }
   samplingIntervalMicroseconds: number
+  executionContextId?: number
   deadlineStopped?: boolean
   profile: CpuProfile
   execution: {
@@ -101,7 +102,7 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
         const { profile } = await session.send("Profiler.stop")
         const result = await session.send("Runtime.evaluate", { expression: "globalThis.__playsrcWorkerTasks.stop()", returnByValue: true, contextId })
         if (result.exceptionDetails) throw new Error(`Worker profiler collection failed: ${JSON.stringify(result.exceptionDetails)}`)
-        return { target, samplingIntervalMicroseconds: 1_000, profile, execution: result.result.value, deadlineStopped }
+        return { target, executionContextId: contextId, samplingIntervalMicroseconds: 1_000, profile, execution: result.result.value, deadlineStopped }
       }))
       return stopped
     }
