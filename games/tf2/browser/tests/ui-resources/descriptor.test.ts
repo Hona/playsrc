@@ -80,10 +80,10 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
-    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-9c85bfadc5bb2137")
+    expect(tf2UiResources.identity).toBe("tf2-ui-24245096-65e7ecf5e9a86f13")
     expect(tf2UiResources.providers).toHaveLength(14)
-    expect(tf2UiResources.sources).toHaveLength(137)
-    expect(tf2UiResources.panels).toHaveLength(123)
+    expect(tf2UiResources.sources).toHaveLength(140)
+    expect(tf2UiResources.panels).toHaveLength(126)
     expect(tf2UiResources.sources.filter(source => source.domain === "equipment").map(source => [source.logicalPath, source.sha256])).toEqual([
       ["resource/ui/charinfoloadoutsubpanel.res", "017e977f498fc0eb326b8b0a4f26ffd40b6914f80502d4670736673d47ee16be"],
       ["resource/ui/classloadoutpanel.res", "868c75b730375b8a099e03103643be76430d089d992a227a163a7b3c3ccb0d38"],
@@ -156,14 +156,14 @@ describe("configured TF2 UI resource descriptor", () => {
 
   test("retains every selected inventory with no unclassified item", () => {
     expect(tf2UiResources.controls).toHaveLength(90)
-    expect(tf2UiResources.properties).toHaveLength(26_310)
+    expect(tf2UiResources.properties).toHaveLength(26_569)
     expect(tf2UiResources.commands).toHaveLength(162)
-    expect(tf2UiResources.localization.tokens).toHaveLength(747)
+    expect(tf2UiResources.localization.tokens).toHaveLength(772)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_Class_Name_Soldier")?.definitions[0]?.value).toBe("Soldier")
-    expect(tf2UiResources.images).toHaveLength(490)
+    expect(tf2UiResources.images).toHaveLength(512)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(85)

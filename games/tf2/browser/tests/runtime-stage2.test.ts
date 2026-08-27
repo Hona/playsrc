@@ -501,7 +501,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(requests[0]!.fadeSeconds).toBe(3.5)
     expect(new Set(requests.map(request => request.voiceIdentity)).size).toBe(9)
     const pitched = first.slice()
-    pitched[977 + 11] = 109; pitched[977 + 15] = 4
+    pitched[977 + 11] = 115; pitched[977 + 15] = 4
     new DataView(pitched.buffer).setFloat32(977 + 48, 92, true)
     expect(tf2Audio(decodeSnapshot(pitched))[0]).toMatchObject({ definition: "Weapon_Minigun.FireCrit", action: "play", overrides: { pitch: 92 } })
     for (const invalid of [5, 255]) {
