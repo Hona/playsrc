@@ -4066,6 +4066,7 @@ mod tests {
                 position: [-64.0, 0.0, 0.0], eye_position: [-64.0, 0.0, 41.0], pitch_degrees: 0.0, yaw_degrees: 0.0 };
             let mut events = Vec::new();
             session.fire_hitscan(weapon, 0.0, 0.0, &mut events, Some(attack)).unwrap();
+            assert!(session.random_draws.iter().all(|draw| draw.context == crate::RandomContext::Authority), "bots have no predicted bullet or sound pass");
             assert!(session.health < if definition == 402 { 100 } else { 200 }, "{definition}: {events:?}");
             assert_eq!(session.bots.as_ref().unwrap().weapon_runtime(identity, weapon).unwrap().hitscan.consecutive_shots, 1);
             if matches!(definition, 1103 | 415) { assert!(events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { crit: CritKind::Mini, .. })), "{definition}"); }
