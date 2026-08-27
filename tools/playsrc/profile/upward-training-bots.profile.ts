@@ -363,7 +363,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
   const workerCpu = capturePlan.workerCpu === "required" ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
-  const nativeScreenshot = process.env.PROFILE_NATIVE_SCREENSHOT === "1" ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
+  // Mac acceptance retains physical desktop pixels before the active sample,
+  // not only a tab screenshot that cannot establish native window occlusion.
+  const nativeScreenshot = process.platform === "darwin" || process.env.PROFILE_NATIVE_SCREENSHOT === "1"
+    ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
   if (nativeScreenshot) {
     if (process.platform !== "darwin") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
     const captured = spawnSync("screencapture", ["-x", nativeScreenshot], { timeout: 5_000 })
