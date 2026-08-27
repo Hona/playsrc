@@ -84,10 +84,10 @@ async function configuration(generation: number, values: readonly number[] = [])
 function visibilityOutput(animated = false): ArrayBuffer {
   const words = [2, 4, 9, 1, 9, 3, 1, 3, 1, 7]
   const identity = new TextEncoder().encode("materials/water/test.vmt")
-  const bytes = new Uint8Array(76 + words.length * 4 + 8 + 8 + (animated ? 12 + identity.length + 72 : 0))
+  const bytes = new Uint8Array(76 + words.length * 4 + 8 + 8 + (animated ? 12 + identity.length + 72 : 0) + 4)
   const view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x56, 0x49, 0x53])
-  view.setUint32(4, 7, true)
+  view.setUint32(4, 8, true)
   bytes.fill(0x11, 8, 40)
   bytes.fill(0x22, 40, 72)
   let offset = 76

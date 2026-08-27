@@ -336,7 +336,11 @@ pub struct SupplyTarget {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AttackPhase { Fire, MeleeSwing, MeleeSmack }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Attack {
+    pub phase: AttackPhase,
     pub attacker: u32,
     pub team: PlayerTeam,
     pub weapon: Weapon,
@@ -1497,12 +1501,7 @@ impl BotWorld {
                 bot.yaw_degrees = delta[1].atan2(delta[0]).to_degrees();
                 bot.pitch_degrees = 0.0;
             }
-            let mut policy = MovementPolicy {
-                class: bot.class,
-                modifiers: MovementModifiers::default(),
-            }
-            .resolve();
-            apply_aiming_policy(bot, &mut policy);
+            let mut policy = bot_movement_policy(bot);
             if let Some(winner) = self.round_winner.filter(|team| team.is_gameplay()) { policy.maximum_speed *= if winner == bot.team { 1.1 } else { 0.9 }; }
             let should_move = planar > 5.0 && !(matches!(scenario, Scenario::ControlPoints { .. }) && objectives.is_some_and(|o| o.in_setup));
             let move_yaw = if planar > 0.0 {
@@ -1543,31 +1542,9 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
-            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); }
+            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); bot.conditions.remove(ConditionId::BLAST_JUMPING, false); }
 
-            if let Some((due, target, weapon)) = bot.pending_melee
-                && tick > due
-            {
-                bot.pending_melee = None;
-                if let Some(victim) = actors.get(target).filter(|actor| actor.alive)
-                    && distance(bot.movement.position, victim.position)
-                        <= ballistics::MELEE_RANGE + ballistics::MELEE_HULL_RADIUS
-                {
-                    attacks.push(Attack {
-                        attacker: bot.identity,
-                        team: bot.team,
-                        weapon,
-                        target,
-                        position: bot.movement.position,
-                        eye_position: bot_eye(bot),
-                        pitch_degrees: bot.pitch_degrees,
-                        yaw_degrees: bot.yaw_degrees,
-                        seconds_since_previous_shot: f32::INFINITY,
-                        damage_multiplier: 1.0,
-                        spread_multiplier: 1.0,
-                    });
-                }
-            }
+            if let Some(attack) = take_melee_smack(bot, tick) { attacks.push(attack); }
             let Some(active_weapon) = bot.active_weapon else {
                 continue;
             };
@@ -1602,6 +1579,10 @@ impl BotWorld {
                         threat.unwrap().identity,
                         active_weapon,
                     ));
+                    attacks.push(Attack { phase: AttackPhase::MeleeSwing, attacker: bot.identity, team: bot.team,
+                        weapon: active_weapon, target: threat.unwrap().identity, position: bot.movement.position,
+                        eye_position, pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees,
+                        seconds_since_previous_shot: elapsed, damage_multiplier: 1.0, spread_multiplier: 1.0 });
                 } else {
                     let (damage_multiplier, spread_multiplier) = if active_weapon == Weapon::Minigun
                     {
@@ -1610,6 +1591,7 @@ impl BotWorld {
                         (1.0, 1.0)
                     };
                     attacks.push(Attack {
+                        phase: AttackPhase::Fire,
                         attacker: bot.identity,
                         team: bot.team,
                         weapon: active_weapon,
@@ -1630,6 +1612,10 @@ impl BotWorld {
             state.advance_reload(tick, self.tick_interval, &mut activities, &mut ammo);
         }
         Ok(attacks)
+    }
+
+    pub fn due_melee_attacks(&mut self, tick: u64) -> Vec<Attack> {
+        self.bots.values_mut().filter_map(|bot| take_melee_smack(bot, tick)).collect()
     }
 
     pub fn patient(&self, identity: u32, origin: [f32; 3]) -> Option<PatientFacts> {
@@ -1674,6 +1660,31 @@ impl BotWorld {
     ) -> Option<(&mut HealthState, &mut ConditionState)> {
         let bot = self.bots.get_mut(&identity)?;
         Some((&mut bot.health, &mut bot.conditions))
+    }
+
+    pub fn has_condition(&self, identity: u32, condition: ConditionId) -> bool {
+        self.bots.get(&identity).is_some_and(|bot| bot.conditions.contains(condition))
+    }
+
+    pub(crate) fn melee_actor(&self, identity: u32) -> Option<crate::melee::Actor> {
+        let bot = self.bots.get(&identity)?;
+        if bot.lifecycle != PlayerLifecycle::Active || bot.health.current <= 0 { return None; }
+        let hull = bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve());
+        Some(crate::melee::Actor { class: bot.class, team: bot.team, position: bot.movement.position, eye: bot_eye(bot),
+            center: crate::add(bot.movement.position, crate::scale(crate::add(hull.mins, hull.maxs), 0.5)),
+            hull, health: bot.health.current, maximum_health: bot.health.maximum })
+    }
+
+    /// MASK_SOLID melee clips player collision hulls, including teammates.
+    pub fn melee_trace(&self, owner: u32, start: [f32; 3], end: [f32; 3], hull: Hull, maximum_fraction: f32) -> Option<(u32, f32, [f32; 3])> {
+        self.bots.values().filter(|bot| bot.identity != owner && bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0)
+            .filter_map(|bot| {
+                let bounds = bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve());
+                let mins = std::array::from_fn(|axis| bot.movement.position[axis] + bounds.mins[axis] - hull.maxs[axis]);
+                let maxs = std::array::from_fn(|axis| bot.movement.position[axis] + bounds.maxs[axis] - hull.mins[axis]);
+                let fraction = crate::ray_box_fraction(start, end, mins, maxs)?;
+                (fraction <= maximum_fraction).then_some((bot.identity, fraction, crate::add(start, crate::scale(crate::sub(end, start), fraction))))
+            }).min_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.0.cmp(&right.0)))
     }
 
     pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
@@ -1762,17 +1773,20 @@ impl BotWorld {
         }
         match definition.kind {
             crate::pickup::MapPickupKind::Health => {
-                let maximum = bot.class.data().maximum_health;
-                if bot.health.current >= maximum && bot.afterburn.is_none() {
+                let maximum = bot.health.maximum;
+                if bot.health.current >= maximum && bot.afterburn.is_none() && !bot.conditions.contains(ConditionId::BLEEDING) && !bot.conditions.contains(ConditionId::BURNING) {
                     return None;
                 }
-                let requested = (maximum as f32 * definition.size.ratio()).ceil() as i32;
-                let before = bot.health.current;
-                if bot.health.current < maximum {
-                    bot.health.current = bot.health.current.saturating_add(requested).min(maximum);
-                }
+                let (packs, received) = if let Some(equipment) = &mut bot.equipment {
+                    equipment.providers.set_active(bot.active_weapon);
+                    (equipment.providers.player("mult_health_frompacks", 1.0), bot.active_weapon.map_or(1.0, |weapon| equipment.providers.weapon(weapon, "mult_healing_received", 1.0)))
+                } else { (1.0, 1.0) };
+                let requested = (maximum as f32 * definition.size.ratio()).ceil() * packs;
+                let gained = bot.health.take_health(requested, false, received, &mut bot.conditions).ok()?;
                 bot.afterburn = None;
-                Some((bot.health.current - before) as u16)
+                bot.conditions.remove(ConditionId::BLEEDING, false);
+                bot.conditions.remove(ConditionId::BURNING, false);
+                Some(gained as u16)
             }
             crate::pickup::MapPickupKind::Ammo => {
                 sync_bot_ammo(bot);
@@ -1815,6 +1829,10 @@ impl BotWorld {
         apply_bot_equipment(bot);
         bot.health.current = bot.health.maximum.max(bot.health.current);
         bot.afterburn = None;
+        let energy = bot.conditions.contains(ConditionId::ENERGY_BUFF);
+        for condition in crate::resupply_removed_conditions(energy) {
+            bot.conditions.remove(ConditionId::new(condition as u8).unwrap(), false);
+        }
         bot.ammo = bot_maximum_ammo(bot);
         for state in bot.loadout.values_mut() {
             state.regenerate(tick, self.tick_interval);
@@ -1957,6 +1975,7 @@ impl BotWorld {
         let killed = result.death.is_some();
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
+            victim.conditions.remove_all();
             victim.deaths = victim.deaths.saturating_add(1);
             victim.killstreak = 0;
             victim.death_tick = Some(tick);
@@ -1988,6 +2007,8 @@ impl BotWorld {
     pub fn navigation_diagnostics(&self) -> Vec<String> {
         self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
     }
+    pub(crate) fn position(&self, identity: u32) -> Option<[f32; 3]> { self.bots.get(&identity).map(|bot| bot.movement.position) }
+
     pub(crate) fn conditions(&self, identity: u32) -> Option<&ConditionState> {
         Some(&self.bots.get(&identity)?.conditions)
     }
@@ -2483,6 +2504,16 @@ fn select_supply(
         .map(|(supply, _)| supply)
 }
 
+fn take_melee_smack(bot: &mut Bot, tick: u64) -> Option<Attack> {
+    let (due, target, weapon) = bot.pending_melee?;
+    if tick <= due { return None; }
+    bot.pending_melee = None;
+    if bot.lifecycle != PlayerLifecycle::Active || bot.health.current <= 0 || bot.active_weapon != Some(weapon) { return None; }
+    Some(Attack { phase: AttackPhase::MeleeSmack, attacker: bot.identity, team: bot.team, weapon, target,
+        position: bot.movement.position, eye_position: bot_eye(bot), pitch_degrees: bot.pitch_degrees,
+        yaw_degrees: bot.yaw_degrees, seconds_since_previous_shot: f32::INFINITY, damage_multiplier: 1.0, spread_multiplier: 1.0 })
+}
+
 fn bot_eye(bot: &Bot) -> [f32; 3] {
     [
         bot.movement.position[0],
@@ -2679,6 +2710,14 @@ fn apply_minigun_aiming(conditions: &mut ConditionState, previous: crate::weapon
     Ok(())
 }
 
+fn bot_movement_policy(bot: &mut Bot) -> playsrc_movement::Policy {
+    let mut policy = MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve();
+    apply_aiming_policy(bot, &mut policy);
+    policy.maximum_speed = bot_player_attribute(bot, "mult_player_movespeed", policy.maximum_speed);
+    if policy.bunnyhop_speed_cap.is_some() { policy.bunnyhop_speed_cap = Some(policy.maximum_speed * 1.2); }
+    policy
+}
+
 fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32) {
     let Some(primary) = bot_default_weapon(bot) else {
         return;
@@ -2728,12 +2767,14 @@ fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32)
         }
     }
     if bot.active_weapon != Some(selected) {
+        bot.pending_melee = None;
         if let Some(previous) = bot
             .active_weapon
             .and_then(|weapon| bot.loadout.get_mut(&weapon))
         {
             previous.abort_reload();
             previous.charge_begin_tick = None;
+            previous.smack_due_tick = None;
         }
         if let Some(weapon) = bot.loadout.get_mut(&selected) {
             weapon.deploy(tick, interval);
@@ -3384,6 +3425,380 @@ mod tests {
             damage_type: weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
             modifiers: DamageModifiers::default(), killing_weapon: None }
+    }
+
+    fn melee_session(definition: u32, class: PlayerClass, weapon: Weapon) -> (crate::Session<Floor>, u32) {
+        melee_session_map(definition, class, weapon, crate::MapRuntime::empty(0.015))
+    }
+
+    fn melee_session_map(definition: u32, class: PlayerClass, weapon: Weapon, map: crate::MapRuntime) -> (crate::Session<Floor>, u32) {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], map);
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        session.equip_item(class, crate::schema::LoadoutPosition::Melee, Some(definition)).unwrap();
+        session.advance(crate::Command { nextbot_stop: true, select_class: Some(class), respawn: true, bot_request: Some(Request {
+            operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy), team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal,
+        }), ..Default::default() }).unwrap();
+        session.advance(crate::Command { nextbot_stop: true, select_weapon: Some(weapon), ..Default::default() }).unwrap();
+        for _ in 0..400 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        session.movement.position = [0.0; 3];
+        let bot = session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap();
+        bot.movement.position = [50.0, 0.0, 0.0];
+        session.loadout.get_mut(&weapon).unwrap().critical.bucket.token_bucket = -250.0;
+        (session, target)
+    }
+
+    fn melee_swing(session: &mut crate::Session<Floor>) -> crate::Snapshot {
+        let started = session.advance(crate::Command { fire: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        assert!(session.pending_melee_tick.is_some() || session.loadout.get(&Weapon::Fists).is_some_and(|weapon| weapon.smack_due_tick.is_some()));
+        for _ in 0..13 {
+            let frame = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+            assert!(!frame.events.iter().any(|event| matches!(event, crate::Event::MeleeImpact { .. })));
+        }
+        let hit = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(hit.tick - started.tick, 14);
+        hit
+    }
+
+    fn equipped_bot_melee(definition: u32, class: PlayerClass, weapon: Weapon) -> (crate::Session<Floor>, u32) {
+        let mut session = crate::Session::new(Floor, [0.0,0.0,1.0], crate::MapRuntime::empty(0.015));
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        session.advance(crate::Command { select_class: Some(PlayerClass::Heavy), respawn: true, nextbot_stop: true,
+            bot_request: Some(Request { operation: Operation::Add, count: 1, class: Some(class), team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }), ..Default::default() }).unwrap();
+        let identity = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        session.equip_bot_item(identity, crate::schema::LoadoutPosition::Melee, Some(definition)).unwrap();
+        assert_ne!(session.equipped_weapon_definition(identity, weapon), Some(definition));
+        assert!(session.bots.as_mut().unwrap().regenerate(identity, session.tick));
+        assert_eq!(session.equipped_weapon_definition(identity, weapon), Some(definition));
+        for _ in 0..400 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        session.movement.position = [0.0;3];
+        let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap();
+        bot.movement.position = [50.0,0.0,0.0]; bot.active_weapon = Some(weapon); bot.yaw_degrees = 180.0; bot.pitch_degrees = 0.0;
+        bot.loadout.get_mut(&weapon).unwrap().critical.bucket.token_bucket = -250.0;
+        (session, identity)
+    }
+
+    fn begin_bot_swing(session: &mut crate::Session<Floor>, identity: u32, weapon: Weapon) {
+        let tick = session.tick;
+        let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap();
+        assert!(matches!(bot.loadout.get_mut(&weapon).unwrap().primary(tick, 0.015, true, false, &mut Vec::new()), PrimaryResult::Fired { .. }));
+        bot.pending_melee = Some((tick + (ballistics::MELEE_SMACK_DELAY / 0.015).floor() as u64, crate::PLAYER_IDENTITY, weapon));
+        let attack = Attack { phase: AttackPhase::MeleeSwing, attacker: identity, team: bot.team, weapon, target: crate::PLAYER_IDENTITY,
+            position: bot.movement.position, eye_position: bot_eye(bot), pitch_degrees: bot.pitch_degrees, yaw_degrees: bot.yaw_degrees,
+            seconds_since_previous_shot: f32::INFINITY, damage_multiplier: 1.0, spread_multiplier: 1.0 };
+        let predicted = session.random_state().predicted_presentation;
+        session.execute_bot_attack(attack, &mut Vec::new(), &mut Vec::new()).unwrap();
+        assert_eq!(session.random_state().predicted_presentation, predicted, "bots do not predict weapon sounds or critical rolls");
+    }
+
+    fn finish_bot_swing(session: &mut crate::Session<Floor>) -> crate::Snapshot {
+        for _ in 0..14 {
+            let frame = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+            assert!(!frame.events.iter().any(|event| matches!(event, crate::Event::MeleeImpact { .. })));
+        }
+        session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap()
+    }
+
+    fn submit_bot_swing(session: &mut crate::Session<Floor>, identity: u32, weapon: Weapon) -> crate::Snapshot {
+        begin_bot_swing(session, identity, weapon);
+        finish_bot_swing(session)
+    }
+
+    #[test]
+    fn ten_bot_melee_sources_use_the_same_delayed_trace_damage_and_condition_owner() {
+        for (definition, class, weapon, amount, bleed) in [
+            (155, PlayerClass::Engineer, Weapon::Wrench, 65, true), (171, PlayerClass::Sniper, Weapon::Kukri, 33, true),
+            (214, PlayerClass::Pyro, Weapon::FireAxe, 65, false), (232, PlayerClass::Sniper, Weapon::Kukri, 65, false),
+            (310, PlayerClass::Heavy, Weapon::Fists, 85, false), (325, PlayerClass::Scout, Weapon::Bat, 35, true),
+            (326, PlayerClass::Pyro, Weapon::FireAxe, 81, false), (355, PlayerClass::Scout, Weapon::Bat, 9, false),
+            (401, PlayerClass::Sniper, Weapon::Kukri, 49, false), (416, PlayerClass::Soldier, Weapon::Shovel, 65, false),
+        ] {
+            let (mut session, identity) = equipped_bot_melee(definition, class, weapon);
+            let hit = submit_bot_swing(&mut session, identity, weapon);
+            assert_eq!(hit.health, (300 - amount) as f32, "definition={definition}");
+            assert_eq!(session.conditions.contains(crate::Condition::Bleeding), bleed);
+            assert_eq!(session.conditions.contains(crate::Condition::MarkedForDeath), definition == 355);
+            assert!(hit.events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { attacker, victim: crate::PLAYER_IDENTITY, amount: actual, .. } if *attacker == identity && *actual == amount)));
+        }
+    }
+
+    #[test]
+    fn bot_melee_kill_healing_and_active_speed_follow_the_equipped_provider() {
+        for (definition, class, weapon, before, after) in [(214, PlayerClass::Pyro, Weapon::FireAxe, 100, 125), (310, PlayerClass::Heavy, Weapon::Fists, 200, 250)] {
+            let (mut session, identity) = equipped_bot_melee(definition, class, weapon);
+            session.health = 20;
+            let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap(); bot.health.current = before;
+            if definition == 214 {
+                assert_eq!(bot_movement_policy(bot).maximum_speed, 345.0);
+                bot.active_weapon = Some(Weapon::Flamethrower);
+                assert_eq!(bot_movement_policy(bot).maximum_speed, 300.0);
+                bot.active_weapon = Some(weapon);
+            }
+            submit_bot_swing(&mut session, identity, weapon);
+            assert_eq!(session.bots.as_ref().unwrap().health(identity), Some(after));
+        }
+    }
+
+    #[test]
+    fn bot_basher_misses_and_holsters_use_the_live_delayed_swing_not_the_old_target() {
+        let (mut session, identity) = equipped_bot_melee(325, PlayerClass::Scout, Weapon::Bat);
+        session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap().movement.position[0] = 60.0;
+        begin_bot_swing(&mut session, identity, Weapon::Bat);
+        session.movement.position[0] = 500.0;
+        finish_bot_swing(&mut session);
+        let world = session.bots.as_ref().unwrap();
+        assert_eq!(world.health(identity), Some(107));
+        assert!(world.has_condition(identity, ConditionId::BLEEDING));
+        assert_eq!(world.bots[&identity].movement.velocity[2], 157.5);
+        let (mut session, identity) = equipped_bot_melee(325, PlayerClass::Scout, Weapon::Bat);
+        begin_bot_swing(&mut session, identity, Weapon::Bat);
+        let bot = session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap();
+        select_weapon(bot, None, session.tick, 0.015);
+        assert!(bot.pending_melee.is_none());
+        bot.active_weapon = Some(Weapon::Bat);
+        finish_bot_swing(&mut session);
+        assert_eq!(session.health, 300);
+        assert_eq!(session.bots.as_ref().unwrap().health(identity), Some(125));
+    }
+
+    #[test]
+    fn bot_melee_impact_uses_live_health_airborne_state_and_mark_conversion() {
+        let (mut session, identity) = equipped_bot_melee(401, PlayerClass::Sniper, Weapon::Kukri);
+        begin_bot_swing(&mut session, identity, Weapon::Kukri);
+        session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap().health.current = 62;
+        assert_eq!(finish_bot_swing(&mut session).health, 219.0);
+        let (mut session, identity) = equipped_bot_melee(416, PlayerClass::Soldier, Weapon::Shovel);
+        begin_bot_swing(&mut session, identity, Weapon::Shovel);
+        session.bots.as_mut().unwrap().bots.get_mut(&identity).unwrap().conditions.add(ConditionId::BLAST_JUMPING, crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
+        assert_eq!(finish_bot_swing(&mut session).health, 105.0);
+        let (mut session, identity) = equipped_bot_melee(355, PlayerClass::Scout, Weapon::Bat);
+        assert_eq!(submit_bot_swing(&mut session, identity, Weapon::Bat).health, 291.0);
+        for _ in 0..40 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        session.movement.position = [0.0;3]; session.movement.velocity = [0.0;3];
+        assert_eq!(submit_bot_swing(&mut session, identity, Weapon::Bat).health, 265.0);
+    }
+
+    #[test]
+    fn bot_back_scratcher_pack_scaling_and_full_health_bleed_cleansing_are_passive() {
+        let (mut session, identity) = equipped_bot_melee(326, PlayerClass::Pyro, Weapon::FireAxe);
+        let world = session.bots.as_mut().unwrap();
+        let bot = world.bots.get_mut(&identity).unwrap();
+        bot.active_weapon = Some(Weapon::Flamethrower); bot.health.current = 100;
+        let definition = crate::pickup::map_pickup_definition(b"item_healthkit_small").unwrap();
+        assert_eq!(world.grant_pickup(identity, definition), Some(52));
+        assert_eq!(world.health(identity), Some(152));
+        let bot = world.bots.get_mut(&identity).unwrap(); bot.health.current = 175;
+        bot.conditions.add(ConditionId::BLEEDING, crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
+        assert_eq!(world.grant_pickup(identity, definition), Some(0));
+        assert!(!world.has_condition(identity, ConditionId::BLEEDING));
+    }
+
+    #[test]
+    fn ten_equipped_melee_unlocks_resolve_real_session_swing_damage_and_bleed() {
+        for (definition, class, weapon, expected, bleed) in [
+            (155, PlayerClass::Engineer, Weapon::Wrench, 65, true),
+            (171, PlayerClass::Sniper, Weapon::Kukri, 33, true),
+            (214, PlayerClass::Pyro, Weapon::FireAxe, 65, false),
+            (232, PlayerClass::Sniper, Weapon::Kukri, 65, false),
+            (310, PlayerClass::Heavy, Weapon::Fists, 85, false),
+            (325, PlayerClass::Scout, Weapon::Bat, 35, true),
+            (326, PlayerClass::Pyro, Weapon::FireAxe, 81, false),
+            (355, PlayerClass::Scout, Weapon::Bat, 9, false),
+            (401, PlayerClass::Sniper, Weapon::Kukri, 49, false),
+            (416, PlayerClass::Soldier, Weapon::Shovel, 65, false),
+        ] {
+            let (mut session, target) = melee_session(definition, class, weapon);
+            assert_eq!(session.equipped_weapon_definition(crate::PLAYER_IDENTITY, weapon), Some(definition));
+            let hit = melee_swing(&mut session);
+            assert!(hit.events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { victim, amount, .. } if *victim == target && *amount == expected)), "item={definition}: {:?}", hit.events);
+            assert_eq!(session.bots.as_ref().unwrap().has_condition(target, ConditionId::BLEEDING), bleed);
+            let frame = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+            assert_eq!(session.bots.as_ref().unwrap().health(target), Some(300 - expected as i32 - if bleed { 4 } else { 0 }));
+            assert_eq!(frame.events.iter().filter(|event| matches!(event, crate::Event::PlayerDamaged { custom: 34, .. })).count(), usize::from(bleed));
+            let persisted = session.equipment.persist();
+            assert_eq!(crate::equipment::Equipment::restore(&persisted).unwrap().weapon_definition(class, weapon), Some(definition));
+        }
+    }
+
+    #[test]
+    fn melee_holster_cancels_pending_bash_and_active_powerjack_provision() {
+        let (mut session, target) = melee_session(325, PlayerClass::Scout, Weapon::Bat);
+        session.advance(crate::Command { fire: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        session.advance(crate::Command { select_weapon: Some(Weapon::Pistol), nextbot_stop: true, ..Default::default() }).unwrap();
+        for _ in 0..20 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(300));
+        assert!(session.melee.bleeds.is_empty());
+        let (mut session, target) = melee_session(214, PlayerClass::Pyro, Weapon::FireAxe);
+        assert_eq!(session.equipped_player_attribute(crate::PLAYER_IDENTITY, "mult_player_movespeed", 300.0), 345.0);
+        let mut incoming = direct_damage(Weapon::Pistol, crate::PLAYER_IDENTITY, 10.0); incoming.attacker = target;
+        assert_eq!(session.apply_actor_damage(incoming, PlayerTeam::Blue, &mut Vec::new()).unwrap().unwrap().health_damage, 12);
+        session.advance(crate::Command { select_weapon: Some(Weapon::Shotgun), nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.equipped_player_attribute(crate::PLAYER_IDENTITY, "mult_player_movespeed", 300.0), 300.0);
+        assert_eq!(session.apply_actor_damage(incoming, PlayerTeam::Blue, &mut Vec::new()).unwrap().unwrap().health_damage, 10);
+    }
+
+    #[test]
+    fn basher_clean_miss_self_damage_bleed_push_and_respawn_cleanup_are_live() {
+        let (mut session, target) = melee_session(325, PlayerClass::Scout, Weapon::Bat);
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position = [500.0, 0.0, 0.0];
+        let hit = melee_swing(&mut session);
+        assert_eq!(hit.health, 107.0);
+        assert!(session.conditions.contains(crate::Condition::Bleeding));
+        assert_eq!(session.movement.velocity[2], 157.5);
+        let bleed = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(bleed.health, 103.0);
+        session.advance(crate::Command { respawn: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.health, 125);
+        assert!(!session.conditions.contains(crate::Condition::Bleeding));
+        assert!(!session.melee.bleeds.contains_key(&crate::PLAYER_IDENTITY));
+        assert_eq!(session.equipment.weapon_definition(PlayerClass::Scout, Weapon::Bat), Some(325));
+    }
+
+    #[test]
+    fn fan_marks_after_first_damage_and_bushwacka_promotes_minicrits() {
+        for (definition, class, weapon, first, promoted) in [(355, PlayerClass::Scout, Weapon::Bat, 9, 26), (232, PlayerClass::Sniper, Weapon::Kukri, 65, 195)] {
+            let (mut session, target) = melee_session(definition, class, weapon);
+            melee_swing(&mut session);
+            assert_eq!(session.bots.as_ref().unwrap().health(target), Some(300 - first));
+            if definition == 355 { assert!(session.bots.as_ref().unwrap().has_condition(target, ConditionId::MARKED_FOR_DEATH)); }
+            else { session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().conditions.add(ConditionId::URINE, crate::condition::ConditionDuration::Finite(10.0), None, true, false).unwrap(); }
+            for _ in 0..60 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+            let hit = melee_swing(&mut session);
+            assert!(hit.events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { amount, crit: CritKind::Full, .. } if *amount == promoted)));
+        }
+    }
+
+    #[test]
+    fn warriors_spirit_heals_on_kill_and_provides_vulnerability_only_while_active() {
+        let (mut session, target) = melee_session(310, PlayerClass::Heavy, Weapon::Fists);
+        session.health = 200;
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().health.current = 40;
+        melee_swing(&mut session);
+        assert_eq!(session.health, 250);
+        assert!((session.equipped_player_attribute(crate::PLAYER_IDENTITY, "mult_dmgtaken", 1.0) - 1.3).abs() < 0.00001);
+        session.advance(crate::Command { select_weapon: Some(Weapon::HeavyShotgun), nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.equipped_player_attribute(crate::PLAYER_IDENTITY, "mult_dmgtaken", 1.0), 1.0);
+    }
+
+    #[test]
+    fn equipped_fists_keep_left_right_and_critical_swing_activities_with_one_smack() {
+        for (secondary, critical, activity) in [
+            (false, false, crate::weapon::WeaponActivity::FistLeft),
+            (true, false, crate::weapon::WeaponActivity::FistRight),
+            (true, true, crate::weapon::WeaponActivity::MeleeCritical),
+        ] {
+            let (mut session, target) = melee_session(310, PlayerClass::Heavy, Weapon::Fists);
+            if critical { session.conditions.words[0] |= 1 << crate::condition::ConditionId::CRIT_BOOSTED.value(); }
+            let swing_tick = session.tick;
+            session.advance(crate::Command { fire: !secondary, detonate: secondary, nextbot_stop: true, ..Default::default() }).unwrap();
+            assert!(session.activity_events.iter().any(|event| event.tick == swing_tick && event.activity == activity));
+            let mut smacks = 0;
+            for _ in 0..20 {
+                let frame = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+                smacks += frame.events.iter().filter(|event| matches!(event, crate::Event::MeleeImpact { target: Some(victim), .. } if *victim == target)).count();
+            }
+            assert_eq!(smacks, 1);
+            assert_eq!(session.bots.as_ref().unwrap().health(target), Some(if critical { 46 } else { 215 }));
+        }
+    }
+
+    #[test]
+    fn market_gardener_checks_blast_jump_at_impact_and_landing_clears_it() {
+        for blast in [false, true] {
+            let (mut session, target) = melee_session(416, PlayerClass::Soldier, Weapon::Shovel);
+            session.movement.position[2] = 100.0;
+            session.movement.ground = None;
+            session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position[2] = 100.0;
+            if blast { session.conditions.insert(crate::Condition::BlastJumping); }
+            let hit = melee_swing(&mut session);
+            assert!(hit.events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { amount, crit, .. } if *amount == if blast { 195 } else { 65 } && *crit == if blast { CritKind::Full } else { CritKind::None })));
+            assert!((session.loadout[&Weapon::Shovel].profile().fire_delay - 0.96).abs() < 0.00001);
+        }
+        let (mut session, target) = melee_session(416, PlayerClass::Soldier, Weapon::Shovel);
+        session.movement.position[2] = 100.0; session.movement.ground = None;
+        session.conditions.insert(crate::Condition::BlastJumping);
+        session.advance(crate::Command { fire: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        session.movement.position[2] = 0.0; session.movement.velocity = [0.0; 3];
+        for _ in 0..14 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        assert!(!session.conditions.contains(crate::Condition::BlastJumping));
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(235));
+    }
+
+    #[test]
+    fn shahanshah_uses_smack_health_and_powerjack_heals_only_a_real_kill() {
+        let (mut session, target) = melee_session(401, PlayerClass::Sniper, Weapon::Kukri);
+        session.advance(crate::Command { fire: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        session.health = 62;
+        for _ in 0..14 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(219));
+        for (before, target_health, after) in [(100, 300, 100), (100, 40, 125), (160, 40, 175)] {
+            let (mut session, target) = melee_session(214, PlayerClass::Pyro, Weapon::FireAxe);
+            session.health = before;
+            session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().health.current = target_health;
+            melee_swing(&mut session);
+            assert_eq!(session.health, after);
+        }
+    }
+
+    #[test]
+    fn back_scratcher_scales_the_authored_pack_before_takehealth_truncation() {
+        let graph = playsrc_entity::parse(b"{\"classname\"\"item_healthkit_small\"\"origin\"\"0 0 0\"}\0", playsrc_entity::Limits::default()).unwrap();
+        let map = crate::MapRuntime::compile(&graph, 0.015, 7, Vec::new()).unwrap();
+        let (mut session, _) = melee_session_map(326, PlayerClass::Pyro, Weapon::FireAxe, map);
+        session.health = 100;
+        session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.health, 152, "ceil(175*.2)*1.5=52.5, TakeHealth truncates the sum");
+        assert!(!session.map.pickups()[0].available);
+        session.advance(crate::Command { select_weapon: Some(Weapon::Shotgun), nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.equipped_player_attribute(crate::PLAYER_IDENTITY, "mult_health_fromhealers", 24.0), 6.0);
+    }
+
+    #[test]
+    fn southern_hospitality_fire_vulnerability_is_passive_and_does_not_affect_bullets() {
+        let (mut session, target) = melee_session(155, PlayerClass::Engineer, Weapon::Wrench);
+        for held in [Weapon::Wrench, Weapon::EngineerShotgun] {
+            session.advance(crate::Command { select_weapon: Some(held), nextbot_stop: true, ..Default::default() }).unwrap();
+            let mut fire = direct_damage(Weapon::Flamethrower, crate::PLAYER_IDENTITY, 10.0); fire.attacker = target;
+            assert_eq!(session.apply_actor_damage(fire, PlayerTeam::Blue, &mut Vec::new()).unwrap().unwrap().health_damage, 12);
+            let mut bullet = direct_damage(Weapon::Pistol, crate::PLAYER_IDENTITY, 10.0); bullet.attacker = target;
+            assert_eq!(session.apply_actor_damage(bullet, PlayerTeam::Blue, &mut Vec::new()).unwrap().unwrap().health_damage, 10);
+        }
+    }
+
+    #[test]
+    fn delayed_bleed_does_not_acquire_a_replacement_fans_crit_promotion() {
+        let (mut session, target) = melee_session(325, PlayerClass::Scout, Weapon::Bat);
+        melee_swing(&mut session);
+        let source = session.melee.bleeds[&target][0].source_weapon.unwrap();
+        session.equip_item(PlayerClass::Scout, crate::schema::LoadoutPosition::Melee, Some(355)).unwrap();
+        session.advance(crate::Command { respawn: true, nextbot_stop: true, ..Default::default() }).unwrap();
+        assert!(!session.source_weapon_is_live(source, Weapon::Bat));
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().conditions.add(ConditionId::MARKED_FOR_DEATH, crate::condition::ConditionDuration::Finite(15.0), Some(crate::PLAYER_IDENTITY), true, false).unwrap();
+        let mut amounts = Vec::new();
+        for _ in 0..40 {
+            let snapshot = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+            amounts.extend(snapshot.events.into_iter().filter_map(|event| match event {
+                crate::Event::PlayerDamaged { custom: 34, amount, .. } => Some(amount), _ => None,
+            }));
+        }
+        assert_eq!(amounts, [5], "expired weapon handle cannot query the new Fan's attributes");
+    }
+
+    #[test]
+    fn cleansing_bleed_does_not_turn_a_mark_timer_permanent() {
+        let graph = playsrc_entity::parse(b"{\"classname\"\"item_healthkit_small\"\"origin\"\"0 0 0\"}\0", playsrc_entity::Limits::default()).unwrap();
+        let map = crate::MapRuntime::compile(&graph, 0.015, 8, Vec::new()).unwrap();
+        let (mut session, target) = melee_session_map(325, PlayerClass::Scout, Weapon::Bat, map);
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().movement.position = [500.0, 0.0, 0.0];
+        session.add_melee_condition(crate::PLAYER_IDENTITY, crate::Condition::MarkedForDeath, 3.6, target);
+        melee_swing(&mut session);
+        session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+        assert_eq!(session.health, 125);
+        assert!(!session.conditions.contains(crate::Condition::Bleeding));
+        assert!(!session.melee.bleeds.contains_key(&crate::PLAYER_IDENTITY));
+        assert!(session.melee.local_mark_remaining.is_some());
+        for _ in 0..245 { session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap(); }
+        assert!(!session.conditions.contains(crate::Condition::MarkedForDeath));
     }
 
     #[test]

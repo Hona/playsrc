@@ -44,5 +44,14 @@
   {"definitionIndex":460,"weapon":"Revolver","quality":6},
   {"definitionIndex":220,"weapon":"HandgunScoutPrimary","quality":6,"extraSounds":["Weapon_Hands.Push","Weapon_Hands.PushImpact"]},
   {"definitionIndex":402,"weapon":"SniperRifle","quality":6},
-  {"definitionIndex":326,"weapon":"FireAxe","quality":6,"implemented":false}
+  {"definitionIndex":155,"weapon":"Wrench","quality":6},
+  {"definitionIndex":171,"weapon":"Kukri","quality":6},
+  {"definitionIndex":214,"weapon":"FireAxe","quality":6},
+  {"definitionIndex":232,"weapon":"Kukri","quality":6},
+  {"definitionIndex":310,"weapon":"Fists","quality":6},
+  {"definitionIndex":325,"weapon":"Bat","quality":6},
+  {"definitionIndex":326,"weapon":"FireAxe","quality":6},
+  {"definitionIndex":355,"weapon":"Bat","quality":6,"extraSounds":["Weapon_Marked_for_Death.Indicator","Weapon_Marked_for_Death.Initial"]},
+  {"definitionIndex":401,"weapon":"Kukri","quality":6},
+  {"definitionIndex":416,"weapon":"Shovel","quality":6}
 ]

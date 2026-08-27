@@ -23,6 +23,7 @@ pub fn player_damage_force(size: [f32; 3], amount: f32, multiplier: f32) -> f32 
 pub struct DamageType(u32);
 
 impl DamageType {
+    pub const fn from_source_bits(bits: u32) -> Self { Self(bits) }
     pub const GENERIC: Self = Self(0);
     pub const BULLET: Self = Self(1 << 1);
     pub const BUCKSHOT: Self = Self(1 << 29);

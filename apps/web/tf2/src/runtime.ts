@@ -78,6 +78,7 @@ import {
   encodeLegacyParticleFrame,
   createProjectilePresentationMapper,
   createViewmodelPresenter,
+  createMeleeConditionPresenter,
   classPipelinePoseRequests,
   mapPropPipelinePoseRequests,
   classPreviewBaseActivity,
@@ -165,6 +166,7 @@ const BOT_MODEL_IDENTITY_BASE = 0x6000_0000
 const OBJECTIVE_MODEL_IDENTITY_BASE = 0x6100_0000
 const BUILDING_BLUEPRINT_IDENTITY = 0x5fff_ffff
 const PARTICLE_SYSTEMS = new Set([
+  "mark_for_death",
   "rockettrail",
   "rocketbackblast",
   "stickybombtrail_red",
@@ -438,6 +440,7 @@ export class Tf2Application {
   #mapArtifacts?: PresentationArtifacts
   #projectiles?: ProjectileMapper
   #viewmodels?: ReturnType<typeof createViewmodelPresenter>
+  #meleeConditions = createMeleeConditionPresenter()
   #viewmodelClass?: Snapshot["class"]
   #watchActivity?: "ACT_VM_DRAW" | "ACT_VM_IDLE" | "ACT_VM_HOLSTER"
   #watchActivityTick = 0n
@@ -4751,6 +4754,22 @@ export class Tf2Application {
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}
+      if (profile.captureMelee === true) {
+        if (profile.meleeGeneration !== generation) { profile.meleeGeneration = generation; profile.meleeTimeline = []; profile.meleeRecordedTick = "-1" }
+        const timeline = profile.meleeTimeline as unknown[]
+        let recorded = BigInt(String(profile.meleeRecordedTick))
+        for (const batch of prepared.publication.eventBatches) if (batch.snapshot.tick > recorded) {
+          for (const event of batch.snapshot.events) if ([14, 15, 17, 18, 19].includes(event.kind)) timeline.push({ tick: batch.snapshot.tick.toString(), ...event })
+          recorded = batch.snapshot.tick
+        }
+        profile.meleeRecordedTick = recorded.toString()
+        if (timeline.length > 256) timeline.splice(0, timeline.length - 256)
+        profile.melee = { tick: prepared.snapshot.tick.toString(), class: prepared.snapshot.class, weapon: prepared.snapshot.weapon, health: prepared.snapshot.health,
+          lifecycle: prepared.snapshot.lifecycle, position: prepared.snapshot.position, velocity: prepared.snapshot.velocity,
+          conditions: prepared.snapshot.conditions, equipment: prepared.snapshot.equippedItems,
+          overlay: visibility.screenOverlay && { identity: visibility.screenOverlay.identity, frame: visibility.screenOverlay.normalFrame, tint: visibility.screenOverlay.refractTint },
+          bots: prepared.snapshot.bots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, health: bot.health, conditions: bot.conditions, position: bot.position })) }
+      }
       profile.pickups=prepared.snapshot.pickups.map(pickup=>({...pickup,respawnTick:pickup.respawnTick?.toString()??null}))
       profile.buildings=prepared.snapshot.buildings.map(building=>({...building,startedTick:building.startedTick.toString(),rechargeEndTick:building.rechargeEndTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
       profile.placement=prepared.snapshot.placement
@@ -5307,7 +5326,7 @@ export class Tf2Application {
       const blueprintPose=modelPoses.find(pose=>pose.identity===BUILDING_BLUEPRINT_IDENTITY)
       if(buildingPoses.length!==snapshot.buildings.length||Boolean(blueprintPose)!==Boolean(snapshot.placement))throw new Error("TF2 building pose output differs from authoritative object state")
       if(botPoses.length!==posedBots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
-      if(viewmodel!==undefined&&((snapshot.weapon===11||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
+      if(viewmodel!==undefined&&((viewmodel.request.handsOnlyViewmodel||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       const weaponPoseProfile = (globalThis as any).__playsrcProfile
       if (weaponPoseProfile?.captureWeaponPoses) {
@@ -5363,7 +5382,8 @@ export class Tf2Application {
         this.#combatTracerCount=result.state.tracerCount
         return [...muzzles,...result.particles]
       })
-      const supplementalParticles=[...combatParticles,...pyroParticles,...medicBeam]
+      const conditionParticles=this.#meleeConditions.map(snapshot)
+      const supplementalParticles=[...combatParticles,...pyroParticles,...medicBeam,...conditionParticles]
       const combinedParticles=supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles].sort((left,right)=>left.tick<right.tick?-1:left.tick>right.tick?1:0)
       const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,combinedParticles)
       if(!ownsGeneration())return

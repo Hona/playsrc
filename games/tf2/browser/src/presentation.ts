@@ -97,6 +97,40 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
   })))
 }
 
+export function createMeleeConditionPresenter() {
+  let previousTick = -1n
+  const running = new Set<number>()
+  return Object.freeze({
+    map(snapshot: Snapshot): readonly ProjectileParticleRequest[] {
+      if (snapshot.tick < previousTick) running.clear()
+      previousTick = snapshot.tick
+      const requests: ProjectileParticleRequest[] = [], desired = new Set<number>()
+      for (const actor of snapshot.bots) {
+        const has = (condition: number) => ((actor.conditions[condition >>> 5] ?? 0) & (1 << (condition & 31))) !== 0
+        if (actor.lifecycle !== 1 || ![30,48,119].some(has) || [3,4,64,66].some(has)) continue
+        desired.add(actor.identity)
+        const effectIdentity = `condition:${actor.identity}:mark_for_death`, identity = `${snapshot.tick}:${effectIdentity}`
+        const controlPoint = Object.freeze({ index: 0 as const, position: Object.freeze([actor.position[0], actor.position[1], actor.position[2] + actor.overheadHeight] as const),
+          orientation: sourceViewOrientation(0, actor.yawDegrees), ownerIdentity: actor.identity })
+        if (!running.has(actor.identity)) {
+          requests.push(Object.freeze({ kind: "start", identity, effectIdentity, eventIdentity: identity, tick: snapshot.tick,
+            projectileIdentity: actor.identity, ownerIdentity: actor.identity, launcherIdentity: actor.identity,
+            team: actor.team === 2 ? "red" : "blue", system: "mark_for_death", attachment: null, controlPoints: Object.freeze([controlPoint]) }))
+          running.add(actor.identity)
+        } else requests.push(Object.freeze({ kind: "set-control-point", identity, effectIdentity, eventIdentity: identity,
+          tick: snapshot.tick, projectileIdentity: actor.identity, controlPoint }))
+      }
+      for (const actor of running) if (!desired.has(actor)) {
+        const effectIdentity = `condition:${actor}:mark_for_death`, identity = `${snapshot.tick}:${effectIdentity}:stop`
+        requests.push(Object.freeze({ kind: "stop", identity, effectIdentity, eventIdentity: identity, tick: snapshot.tick,
+          projectileIdentity: actor, immediate: true }))
+        running.delete(actor)
+      }
+      return Object.freeze(requests)
+    },
+  })
+}
+
 export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
   return Object.freeze({
     ticks: Object.freeze(snapshot.projectileTimeline.map((entry) => Object.freeze({
@@ -1082,7 +1116,7 @@ export function combatImpactParticles(
         position: Object.freeze([event.values[0], event.values[1], event.values[2]]) as Vector3 })
       continue
     }
-    if(event.kind===14&&event.subject!==0&&event.subject!==1){
+    if(event.kind===14&&event.subject!==1&&snapshot.bots.some(bot=>bot.identity===event.subject)){
       const hit=Object.freeze([event.values[0],event.values[1],event.values[2]]) as Vector3
       emit("blood_impact_red_01",event.subject,event.detail,Object.freeze([hit]),ordinal)
       const delta=hit.map((component,axis)=>component-snapshot.position[axis]!)

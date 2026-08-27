@@ -14,7 +14,6 @@ impl ConditionId {
     pub const PHASE: Self = Self(14);
     pub const STUNNED: Self = Self(15);
     pub const MEGAHEAL: Self = Self(28);
-    pub const STEALTHED_USER_FADING: Self = Self(66);
     pub const OFFENSE_BUFF: Self = Self(16);
     pub const ENERGY_BUFF: Self = Self(19);
     pub const HEALTH_BUFF: Self = Self(21);
@@ -25,6 +24,7 @@ impl ConditionId {
     pub const DEFENSE_BUFF: Self = Self(26);
     pub const MAD_MILK: Self = Self(27);
     pub const MARKED_FOR_DEATH: Self = Self(30);
+    pub const SPEED_BOOST: Self = Self(32);
     pub const NO_HEALING_DAMAGE_BUFF: Self = Self(31);
     pub const CRIT_BOOSTED_PUMPKIN: Self = Self(33);
     pub const CRIT_BOOSTED_USER: Self = Self(34);
@@ -47,11 +47,13 @@ impl ConditionId {
     pub const SMALL_BLAST_RESIST: Self = Self(62);
     pub const SMALL_FIRE_RESIST: Self = Self(63);
     pub const STEALTHED_USER: Self = Self(64);
+    pub const STEALTHED_USER_FADING: Self = Self(66);
     pub const BULLET_IMMUNE: Self = Self(67);
     pub const BLAST_IMMUNE: Self = Self(68);
     pub const FIRE_IMMUNE: Self = Self(69);
     pub const PREVENT_DEATH: Self = Self(70);
     pub const GHOST: Self = Self(77);
+    pub const BLAST_JUMPING: Self = Self(81);
     pub const PASSTIME_INTERCEPTION: Self = Self(106);
     pub const PLAGUE: Self = Self(112);
     pub const HEALING_DEBUFF: Self = Self(118);

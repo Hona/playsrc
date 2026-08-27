@@ -412,6 +412,10 @@ pub struct MapRuntime {
 }
 
 impl MapRuntime {
+    pub(crate) fn is_brush_model(&self, source: u32) -> bool {
+        self.source_handles.get(&source).and_then(|handle| self.world.entity(*handle)).is_some_and(|entity| entity.render.brush_model.is_some())
+    }
+
     pub fn compile(
         graph: &playsrc_entity::Graph,
         tick_interval: f32,

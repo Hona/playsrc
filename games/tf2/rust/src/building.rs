@@ -574,6 +574,7 @@ impl World {
         position: [f32; 3],
         health: i32,
         maximum_health: i32,
+        healing_multiplier: f32,
         bots: &[bot::Snapshot],
         metal: &mut u16,
     ) -> Result<Effects, playsrc_movement::Error> {
@@ -718,7 +719,7 @@ impl World {
                         {
                             building.accumulated_heal += [0.0, 10.0, 15.0, 20.0]
                                 [building.snapshot.level as usize]
-                                * self.interval;
+                                * self.interval * healing_multiplier;
                             let amount = (building.accumulated_heal.floor() as i32)
                                 .min((maximum_health - health).max(0));
                             if amount > 0 {
@@ -962,6 +963,7 @@ mod tests {
                     [0.0; 3],
                     125,
                     125,
+                    1.0,
                     &[],
                     &mut metal,
                 )
@@ -978,6 +980,7 @@ mod tests {
                     [0.0; 3],
                     125,
                     125,
+                    1.0,
                     &[],
                     &mut metal,
                 )
@@ -1076,6 +1079,7 @@ mod tests {
                 [3000.0, 0.0, 0.0],
                 125,
                 125,
+                1.0,
                 &[friendly, enemy],
                 &mut metal,
             )
@@ -1105,6 +1109,7 @@ mod tests {
                 [0.0; 3],
                 100,
                 125,
+                1.0,
                 &[],
                 &mut metal,
             )
@@ -1121,6 +1126,7 @@ mod tests {
                     [0.0; 3],
                     100 + healed,
                     125,
+                    1.0,
                     &[],
                     &mut metal,
                 )
@@ -1137,6 +1143,7 @@ mod tests {
                 [500.0, 0.0, 0.0],
                 110,
                 125,
+                1.0,
                 &[],
                 &mut metal,
             )

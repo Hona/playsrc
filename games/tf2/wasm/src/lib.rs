@@ -4380,7 +4380,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
         }
     }
     let mut output = b"PVIS".to_vec();
-    output.extend_from_slice(&7u32.to_le_bytes());
+    output.extend_from_slice(&8u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
@@ -4586,6 +4586,18 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
                 output.extend_from_slice(&value.to_le_bytes());
             }
         }
+    }
+    let bleeding = slot.latest_game_snapshot.as_ref().is_some_and(|snapshot| snapshot.conditions & (1 << playsrc_tf2::Condition::Bleeding as u8) != 0);
+    output.extend_from_slice(&[u8::from(bleeding), 0, 0, 0]);
+    if bleeding {
+        let identity = "materials/effects/bleed_overlay.vmt";
+        let Some(material) = environment.refract_materials.get(identity) else { return 0; };
+        let context = playsrc_material::ProxyEvaluationContext { time: input[12], frame_time: 0.015, water_lod: None,
+            texture_frames: BTreeMap::from([(b"$normalmap".to_vec(), material.normal_frame_count)]), model_inputs: Default::default() };
+        let Ok(evaluated) = playsrc_material::evaluate_refract_material(&material.material, &context) else { return 0; };
+        if pbytes(&mut output, identity.as_bytes()).is_err() { return 0; }
+        output.extend_from_slice(&evaluated.normal_frame.to_le_bytes());
+        for value in evaluated.normal_transform.into_iter().chain(evaluated.refract_tint) { output.extend_from_slice(&value.to_le_bytes()); }
     }
     slot.visibility_output = output;
     1
@@ -13727,6 +13739,7 @@ fn compile_environment_artifact(
         encode_water_material(&mut out, identity, *map_material, material)?;
     }
     let mut overlay_paths = std::collections::BTreeSet::new();
+    overlay_paths.insert("materials/effects/bleed_overlay.vmt".to_owned());
     for (_, _, material) in &water_materials {
         let state = playsrc_material::water_material_output(material)
             .map_err(|_| ())?

@@ -2983,6 +2983,7 @@ fn main() -> Result<(), String> {
         true,
         "combat-damage-indicator",
     )?;
+    collect_material(&mut resolver, "materials/effects/bleed_overlay.vmt", true, SelectionEnvironment::default(), false, "player-bleeding-overlay")?;
     let decal_script = resolver.required("scripts/decals_subrect.txt", "combat-decal-registry")?;
     let decal_document = playsrc_keyvalues::parse_text(
         &decal_script,

@@ -88,7 +88,7 @@ export function createSourceRefractMaterial(input: Readonly<{
   normalTransform?: readonly number[]
   tint?: THREE.Texture
   framebuffer?: THREE.Texture
-}>): Readonly<{ material: THREE.MeshBasicNodeMaterial; normalNode: ReturnType<typeof TSL.texture> }> {
+}>): Readonly<{ material: THREE.MeshBasicNodeMaterial; normalNode: ReturnType<typeof TSL.texture>; setTint(tint: Vector3): void }> {
   validate(input.state)
   const transform = input.normalTransform
   if (transform && (transform.length !== 16 || !transform.every(Number.isFinite))) throw new SourceRefractError("Refract normal transform is invalid")
@@ -96,6 +96,7 @@ export function createSourceRefractMaterial(input: Readonly<{
   const normalUv = transform ? TSL.vec2(uv.x.mul(transform[0]!).add(uv.y.mul(transform[1]!)).add(transform[3]!),
     uv.x.mul(transform[4]!).add(uv.y.mul(transform[5]!)).add(transform[7]!)) : uv
   const normalNode = TSL.texture(input.normal, normalUv)
+  const tint = TSL.uniform(new THREE.Vector3(...input.state.refractTint.map(sourceShaderGammaToLinear) as unknown as Vector3))
   const warped = TSL.screenUV.add(normalNode.xy.mul(2).sub(1).mul(normalNode.a).mul(input.state.refractAmount))
   const coordinate = input.state.blurAmount === 1 ? warped.add(TSL.vec2(-0.5 / 512, -0.5 / 512)) : warped
   const first = input.framebuffer ? TSL.texture(input.framebuffer, coordinate) : TSL.viewportSharedTexture(coordinate)
@@ -117,9 +118,12 @@ export function createSourceRefractMaterial(input: Readonly<{
   })
   if (input.tint) color = color.mul(TSL.texture(input.tint, TSL.uv()).rgb).mul(2)
   material.colorNode = TSL.vec4(
-    color.mul(TSL.vec3(...input.state.refractTint.map(sourceShaderGammaToLinear) as unknown as Vector3)),
+    color.mul(tint),
     normalNode.a,
   )
   material.toneMapped = false
-  return Object.freeze({ material, normalNode })
+  return Object.freeze({ material, normalNode, setTint(value: Vector3) {
+    if (!value.every(Number.isFinite)) throw new Error("Refract tint is not finite")
+    tint.value.set(...value.map(sourceShaderGammaToLinear) as unknown as Vector3)
+  } })
 }

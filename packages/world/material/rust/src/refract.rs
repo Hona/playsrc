@@ -20,6 +20,7 @@ pub struct RefractMaterialOutput {
 pub struct EvaluatedRefractState {
     pub normal_frame: i32,
     pub normal_transform: [f32; 16],
+    pub refract_tint: [f32; 3],
     pub proxy: EvaluatedProxyState,
 }
 
@@ -97,6 +98,7 @@ pub fn evaluate_refract_material(
         }
     }
     initial.insert(b"$bumpframe".to_vec(), ProxyValue::Int(output.normal_frame));
+    initial.insert(b"$refracttint".to_vec(), ProxyValue::Vector { values: [output.refract_tint[0], output.refract_tint[1], output.refract_tint[2], 0.0], size: 3 });
     initial.insert(
         b"$bumptransform".to_vec(),
         ProxyValue::Matrix(output.normal_transform),
@@ -123,6 +125,10 @@ pub fn evaluate_refract_material(
     Ok(EvaluatedRefractState {
         normal_frame,
         normal_transform,
+        refract_tint: match proxy.variables.get(b"$refracttint".as_slice()) {
+            Some(ProxyValue::Vector { values, size: 3 }) => [values[0], values[1], values[2]],
+            _ => return Err(RefractEvaluationError::InvalidVariable(b"$refracttint".to_vec())),
+        },
         proxy,
     })
 }
@@ -203,5 +209,29 @@ mod tests {
         assert_eq!(output.proxy.trace.len(), 2);
         assert!(output.normal_transform[3] > 0.0);
         assert!(output.normal_transform[7] > 0.0);
+    }
+
+    #[test]
+    fn bleeding_overlay_proxies_write_default_tint_components_in_source_order() {
+        let source = br#"Refract {
+            "$normalmap" "water/tfwater001_normal" "$refractamount" ".03" "$bleedalpha" "0"
+            "Proxies" {
+                "AnimatedTexture" { "animatedtexturevar" "$normalmap" "animatedtextureframenumvar" "$bumpframe" "animatedtextureframerate" "30" }
+                "TextureScroll" { "texturescrollvar" "$bumptransform" "texturescrollrate" ".1" "texturescrollangle" "45" }
+                "Sine" { "resultVar" "$bleedalpha" "sineperiod" "1" "sinemin" "1" "sinemax" ".8" }
+                "Equals" { "srcVar1" "$bleedalpha" "resultVar" "$refracttint[1]" }
+                "Equals" { "srcVar1" "$bleedalpha" "resultVar" "$refracttint[2]" }
+            }
+        }"#;
+        let Composition::Complete(document) = compose(source, "materials/effects/bleed_overlay.vmt", &[], &ConditionEnvironment::default(), Limits::default()).unwrap() else { panic!("unexpected include"); };
+        let material = crate::resolve(&document).unwrap();
+        for (time, expected) in [(0.25, 0.8), (0.75, 1.0)] {
+            let context = ProxyEvaluationContext { time, frame_time: 0.015, texture_frames: BTreeMap::from([(b"$normalmap".to_vec(), 60)]), ..Default::default() };
+            let output = evaluate_refract_material(&material, &context).unwrap();
+            assert_eq!(output.proxy.trace.len(), 5);
+            assert_eq!(output.refract_tint[0], 1.0);
+            assert!((output.refract_tint[1] - expected).abs() < 0.00001);
+            assert_eq!(output.refract_tint[1], output.refract_tint[2]);
+        }
     }
 }
