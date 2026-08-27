@@ -1399,7 +1399,7 @@ unsafe fn compile_map(
             (identity.clone(), Arc::clone(model.source()))).collect())
             .map_err(|_| 5_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
-            attack_defend: runtime.entities.entities.iter().any(|entity| {
+            attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity
                     .classname
                     .as_deref()
@@ -6395,7 +6395,7 @@ fn encode_round(
 ) -> Option<()> {
     use playsrc_tf2::round::Event;
     extend(out, b"PGRL", maximum)?;
-    u32_field(out, 3, maximum)?;
+    u32_field(out, 4, maximum)?;
     let timer = round.timer;
     let flags = u8::from(round.waiting_for_players)
         | (u8::from(round.in_setup) << 1)
@@ -6408,7 +6408,7 @@ fn encode_round(
     extend(
         out,
         &[
-            round.state as u8,
+            round.state as u8 | (u8::from(!round.full_round) << 7),
             flags,
             round.winning_team.map_or(0, team_code),
             round.win_reason,
@@ -6458,7 +6458,7 @@ fn encode_round(
             Event::RoundRespawn => (11, 0, 0, 0, 0),
             Event::ScoresReset => (12, 0, 0, 0, 0),
             Event::TimerThreshold { timer, seconds } => (13, (seconds & 255) as u8, 0, (seconds >> 8) as u8, timer),
-            Event::TimerWarning { timer, seconds } => (14, seconds as u8, 0, 0, timer),
+            Event::TimerWarning { timer, seconds, .. } => (14, seconds as u8, 0, 0, timer),
             Event::MapRoundWin { entity } => (15, 0, 0, 0, entity),
             Event::TimerTimeAdded { timer, .. } => (16, 0, 0, 0, timer),
             Event::WinningCapper { player } => (17, 0, 0, 0, player),
@@ -7046,6 +7046,12 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::HologramStop => 100,
         playsrc_tf2::SoundDefinition::HologramMove => 101,
         playsrc_tf2::SoundDefinition::HologramInterrupted => 102,
+        playsrc_tf2::SoundDefinition::RoundBegins60 => 103,
+        playsrc_tf2::SoundDefinition::RoundBegins30 => 104,
+        playsrc_tf2::SoundDefinition::RoundBegins10 => 105,
+        playsrc_tf2::SoundDefinition::RoundStartSiren => 106,
+        playsrc_tf2::SoundDefinition::TimeAdded => 107,
+        playsrc_tf2::SoundDefinition::EndRoundScored => 108,
     }
 }
 
@@ -16047,7 +16053,7 @@ mod tests {
         assert_eq!(&encoded[1060..], &[0; 16]);
         assert_eq!(&encoded[944..948], b"PCPN");
         assert_eq!(&encoded[956..964], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[992..1000], b"PGRL\x03\0\0\0");
+        assert_eq!(&encoded[992..1000], b"PGRL\x04\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

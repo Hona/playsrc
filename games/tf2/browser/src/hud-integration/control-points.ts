@@ -115,10 +115,18 @@ export class ControlPointHud {
     const x = state.customPosition[0] === -1 ? (viewport.width - width) / 2 : state.customPosition[0] * viewport.width
     const y = state.customPosition[1] === -1 ? viewport.height - height : state.customPosition[1] * viewport.height
     this.#bounds(this.#root, x, y, width, height)
+    for (let index = 0; index < this.#icons.length; index++) {
+      const icon = this.#icons[index]
+      if (icon && (!state.points[index]?.visible || !lines.some(line => line.includes(index)))) {
+        this.#visible(icon.wrapper, false); this.#visible(icon.finish, false); this.#visible(icon.highlight, false)
+        icon.pulseStart = null; icon.finishStart = null; icon.swoopStart = null
+      }
+    }
     for (let line = 0; line < lines.length; line++) {
       for (let column = 0; column < lines[line]!.length; column++) {
         const index = lines[line]![column]!, point = state.points[index]
         if (!point) throw new Error("Authored control point layout references missing point")
+        if (!point.visible) continue
         const icon = this.#icon(index), ix = (width - widths[line]!) / 2 + gap + column * (size + gap), iy = vertical + line * (vertical + size)
         this.#bounds(icon.wrapper, ix, iy, size, size)
         this.#bounds(icon.root, 0, 0, size, size); this.#bounds(icon.base, 0, 0, size, size); this.#bounds(icon.swipe, 0, 0, size, size)

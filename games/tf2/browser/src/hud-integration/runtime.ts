@@ -685,11 +685,16 @@ class Integration implements Tf2HudIntegration {
     }
     const winPanels = this.#winPanels
     if (winPanels === undefined) throw new Error("TF2 authored round-win panel inventory is unavailable")
+    const background = winPanels.get("winpanelbgborder")
+    if (background === undefined) throw new Error("TF2 authored round-win background is unavailable")
+    const border = draw ? "TFFatLineBorder" : winner === 2 ? "TFFatLineBorderRedBG" : "TFFatLineBorderBlueBG"
+    this.#objectiveValue("ctf-win:border", border, { kind: "mutate-control", panel: background, mutation: { border } })
     const alreadyVisible = this.#publishedValues.get("ctf-win:visible") === "true"
     this.#objectiveValue("ctf-win:visible", "true", { kind: "set-panel-state", panel, visible: true })
     const localized = (name: string): string => this.#localization.get(`#${name.replace(/^#/u, "").toLowerCase()}`) ?? name
     const team = winner === 2 ? "RED" : "BLU"
-    const winning = draw ? localized("#Winpanel_Stalemate") : localized("#Winpanel_TeamWins")
+    const fullRound = round ? round.fullRound : true
+    const winning = draw ? localized("#Winpanel_Stalemate") : localized(fullRound ? "#Winpanel_TeamWins" : round?.winReason === 4 ? "#Winpanel_TeamDefends" : "#Winpanel_TeamAdvances")
       .replace("%s1", team)
       .replace("%s2", localized("#Winpanel_Team1"))
     const reasonToken = round?.winReason === 1 ? "#Winreason_AllPointsCaptured"
@@ -710,8 +715,8 @@ class Integration implements Tf2HudIntegration {
       : capturingPlayer ? localized("#Winpanel_WinningCapture").replace("%s1", capturingPlayer.name)
       : alreadyVisible ? this.#publishedValues.get("ctf-win:DetailsLabel") ?? "" : ""
     for (const [name, value] of [
-      ["WinningTeamLabel", winning],
-      ["AdvancingTeamLabel", ""],
+      ["WinningTeamLabel", fullRound ? winning : ""],
+      ["AdvancingTeamLabel", fullRound ? "" : winning],
       ["WinReasonLabel", reason],
       ["DetailsLabel", details],
       ["TopPlayersLabel", localized(draw ? "#Winpanel_TopPlayers" : winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],

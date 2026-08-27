@@ -5482,6 +5482,7 @@ export class Tf2Application {
         }),
         audioVoices: this.#audio?.activeVoices() ?? Object.freeze([]),
         snapshotTick: snapshot.tick.toString(),
+        teamSelectionLocal: snapshot.team,
         projectileStates: snapshot.projectiles.map((projectile) => `${projectile.identity}:${projectile.state}`).join(","),
         particleProbe: [...new Set(particleItems.map((item) => `${item.primitive}:${item.material}:${item.primarySheet ? "sheet" : "missing"}`))].sort().join("|"),
         audioStarts: this.#view.audioStarts?.length === this.#audioStarts.length

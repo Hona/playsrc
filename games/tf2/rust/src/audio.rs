@@ -103,6 +103,12 @@ pub enum SoundDefinition {
     HologramStop,
     HologramMove,
     HologramInterrupted,
+    RoundBegins60,
+    RoundBegins30,
+    RoundBegins10,
+    RoundStartSiren,
+    TimeAdded,
+    EndRoundScored,
 }
 
 impl SoundDefinition {
@@ -211,11 +217,18 @@ impl SoundDefinition {
             Self::HologramStop => "Hologram.Stop",
             Self::HologramMove => "Hologram.Move",
             Self::HologramInterrupted => "Hologram.Interrupted",
+            Self::RoundBegins60 => "Announcer.RoundBegins60Seconds",
+            Self::RoundBegins30 => "Announcer.RoundBegins30Seconds",
+            Self::RoundBegins10 => "Announcer.RoundBegins10Seconds",
+            Self::RoundStartSiren => "Ambient.Siren",
+            Self::TimeAdded => "Announcer.TimeAdded",
+            Self::EndRoundScored => "Hud.EndRoundScored",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
+            Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::EndRoundScored => 1,
             Self::PointSuccess | Self::PointContestedNeutral | Self::CaptureWarn => 2,
             Self::PointContested => 3,
             Self::PointEnabled => 4,

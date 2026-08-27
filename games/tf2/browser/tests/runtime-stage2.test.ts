@@ -133,7 +133,7 @@ function snapshot(): ArrayBuffer {
   at += 52
   at += 4
   data.set(new TextEncoder().encode("PGRL"), at)
-  view.setUint32(at + 4, 3, true)
+  view.setUint32(at + 4, 4, true)
   data[at + 8] = 4
   view.setFloat32(at + 20, -1, true)
   view.setUint32(at + 24, 0xffff_ffff, true)
@@ -142,6 +142,16 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 0xffff_ffff, true)
   return bytes
 }
+
+test("mini-round completion is authoritative and does not change the round state or framing", () => {
+  const bytes = snapshot(), data = new Uint8Array(bytes), at = Buffer.from(bytes).indexOf("PGRL")
+  data[at + 8] = 0x85; data[at + 10] = 3; data[at + 11] = 1
+  expect(decodeSnapshot(bytes).round).toMatchObject({ state: 5, winningTeam: 3, fullRound: false })
+  data[at + 8] = 5
+  expect(decodeSnapshot(bytes).round?.fullRound).toBe(true)
+  data[at + 8] = 0x45
+  expect(() => decodeSnapshot(bytes)).toThrow("Round rules section is invalid")
+})
 
 test("persistent authored view corrections survive snapshot decode and reject nonfinite angles", () => {
   const bytes = snapshot(), view = new DataView(bytes)
@@ -380,7 +390,7 @@ class CourseWorker implements WorkerLike {
 
 describe("TF2 canonical gameplay command and snapshot contract", () => {
   test("accepts every authored KOTH and capture announcer wave ordinal, rejecting the first out-of-range wave", () => {
-    for (const [definition, waveCount] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2]] as const) {
+    for (const [definition, waveCount] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2], [103, 1], [104, 1], [105, 1], [106, 1], [107, 1], [108, 1]] as const) {
       const source = rosterSnapshot(1n, 0, 0), at = 913
       const bytes = new Uint8Array(source.length + 52), view = new DataView(bytes.buffer)
       bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)

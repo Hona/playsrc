@@ -248,6 +248,8 @@ impl Configuration {
                         b"win_reason",
                         i32::from(WIN_REASON_DEFEND_UNTIL_TIME_LIMIT),
                     )? as u8,
+                    full_reset: boolean(entity, b"force_map_reset", true)?,
+                    switch_teams: boolean(entity, b"switch_teams", false)?,
                 });
             }
             if !class(entity, b"team_round_timer") {
@@ -295,6 +297,8 @@ pub struct RoundWin {
     identity: u32,
     team: i32,
     reason: u8,
+    full_reset: bool,
+    switch_teams: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,7 +312,7 @@ pub enum Event {
     SetupFinished { timer: u32 },
     TimerFinished { timer: u32 },
     TimerThreshold { timer: u32, seconds: u16 },
-    TimerWarning { timer: u32, seconds: u16 },
+    TimerWarning { timer: u32, seconds: u16, setup: bool },
     TimerTimeAdded { timer: u32, seconds: i32 },
     WinningCapper { player: u32 },
     MapRoundWin { entity: u32 },
@@ -321,6 +325,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub state: State,
+    pub full_round: bool,
     pub waiting_for_players: bool,
     pub waiting_remaining: Option<f32>,
     pub in_setup: bool,
@@ -377,6 +382,8 @@ pub struct Rules {
     next_respawn_wave: [f32; 2],
     respawn_wave_due: [bool; 2],
     populations: [usize; 2],
+    next_full_reset: bool,
+    switch_teams: bool,
 }
 
 impl Rules {
@@ -424,6 +431,8 @@ impl Rules {
             next_respawn_wave: [0.0; 2],
             respawn_wave_due: [false; 2],
             populations: [0; 2],
+            next_full_reset: true,
+            switch_teams: false,
         })
     }
 
@@ -500,15 +509,17 @@ impl Rules {
             if input.eq_ignore_ascii_case(b"SetTeam") {
                 win.team = value;
             } else if input.eq_ignore_ascii_case(b"RoundWin") {
-                let (team, reason) = (win.team, win.reason);
+                let (team, reason, full_reset, switch_teams) = (win.team, win.reason, win.full_reset, win.switch_teams);
                 if team == 2 || team == 3 {
-                    if let Ok(events) = self.win(
+                    if let Ok(events) = self.win_with_reset(
                         if team == 2 {
                             PlayerTeam::Red
                         } else {
                             PlayerTeam::Blue
                         },
                         reason,
+                        full_reset,
+                        switch_teams,
                     ) {
                         self.pending_events.extend(events);
                     }
@@ -610,6 +621,12 @@ impl Rules {
     pub fn record_capture(&mut self, cappers: &[u32]) {
         self.most_recent_cappers.clear();
         self.most_recent_cappers.extend_from_slice(cappers);
+    }
+
+    pub fn take_team_switch(&mut self) -> bool {
+        let switch = std::mem::take(&mut self.switch_teams);
+        if switch { std::mem::swap(&mut self.red_score, &mut self.blue_score); }
+        switch
     }
 
     pub fn recreate_map_entities(&mut self, authored: &Configuration) {
@@ -724,6 +741,7 @@ impl Rules {
     pub fn snapshot(&self, events: Vec<Event>) -> Snapshot {
         Snapshot {
             state: self.state,
+            full_round: self.next_full_reset,
             waiting_for_players: self.waiting_for_players(),
             waiting_remaining: self.waiting_until.map(|until| (until - self.now).max(0.0)),
             in_setup: self
@@ -743,6 +761,10 @@ impl Rules {
     }
 
     pub fn win(&mut self, team: PlayerTeam, reason: u8) -> Result<Vec<Event>, Error> {
+        self.win_with_reset(team, reason, true, false)
+    }
+
+    pub fn win_with_reset(&mut self, team: PlayerTeam, reason: u8, full_reset: bool, switch_teams: bool) -> Result<Vec<Event>, Error> {
         if (!team.is_gameplay()
             && !(team == PlayerTeam::Unassigned && reason == WIN_REASON_STALEMATE))
             || reason == 0
@@ -754,12 +776,14 @@ impl Rules {
         }
         self.winning_team = Some(team);
         self.win_reason = reason;
-        if self.configuration.score_per_round && team == PlayerTeam::Red {
+        self.next_full_reset = full_reset;
+        self.switch_teams = switch_teams;
+        if full_reset && self.configuration.score_per_round && team == PlayerTeam::Red {
             self.red_score = self.red_score.saturating_add(1);
-        } else if self.configuration.score_per_round && team == PlayerTeam::Blue {
+        } else if full_reset && self.configuration.score_per_round && team == PlayerTeam::Blue {
             self.blue_score = self.blue_score.saturating_add(1);
         }
-        self.rounds_played = self.rounds_played.saturating_add(1);
+        if full_reset { self.rounds_played = self.rounds_played.saturating_add(1); }
         for timer in &mut self.timers {
             timer.pause();
         }
@@ -800,7 +824,8 @@ impl Rules {
             self.rounds_played = 0;
             events.push(Event::ScoresReset);
         }
-        self.enter_preround(reset_scores, &mut events);
+        self.next_full_reset = true;
+        self.enter_preround(true, &mut events);
         events
     }
 
@@ -846,7 +871,7 @@ impl Rules {
                 self.transition(State::Pregame, &mut events);
             }
             State::TeamWin if self.transition_at.is_some_and(|time| now > time) => {
-                self.enter_preround(false, &mut events);
+                self.enter_preround(self.next_full_reset, &mut events);
             }
             State::Stalemate => self.stalemate(facts, &mut events),
             _ => {}
@@ -874,7 +899,6 @@ impl Rules {
             for timer in &mut self.timers {
                 if timer.disabled
                     || timer.paused
-                    || timer.state == TimerState::Setup
                     || !timer.configuration.auto_countdown
                     || self.configuration.koth.is_none()
                         && hud_timer != Some(timer.configuration.identity)
@@ -889,6 +913,7 @@ impl Rules {
                         events.push(Event::TimerWarning {
                             timer: timer.configuration.identity,
                             seconds,
+                            setup: timer.state == TimerState::Setup,
                         });
                         break;
                     }

@@ -134,6 +134,8 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#TF_CLOAK",
     "#Gametype_Escort",
     "#Winpanel_TeamWins",
+    "#Winpanel_TeamAdvances",
+    "#Winpanel_TeamDefends",
     "#Winpanel_Team1",
     "#Winpanel_RedMVPs",
     "#Winpanel_BlueMVPs",

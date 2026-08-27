@@ -3025,6 +3025,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.fixedDetailUv !== undefined && typeof mutation.fixedDetailUv !== "boolean") throw new RuntimeFault("MalformedValue", `${panel.name}:fixedDetailUv`)
     if (mutation.drawColor !== undefined && !this.validColor(mutation.drawColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:drawColor`)
     if (mutation.foregroundColor !== undefined && !this.validColor(mutation.foregroundColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:foregroundColor`)
+    if (mutation.border !== undefined && (!validString(mutation.border, this.limits.maxStringCodeUnits, false) || !this.borders.has(asciiFold(mutation.border)))) throw new RuntimeFault("MissingReference", `${panel.name}:border:${mutation.border}`)
     if (mutation.scalarProperties !== undefined && (!mutation.scalarProperties || typeof mutation.scalarProperties !== "object" || Array.isArray(mutation.scalarProperties)
       || Object.keys(mutation.scalarProperties).length > this.limits.maxPropertiesPerPanel
       || Object.entries(mutation.scalarProperties).some(([name, value]) => !validString(name, 255, false) || !finite(value)))) throw new RuntimeFault("MalformedValue", `${panel.name}:scalarProperties`)
@@ -3138,6 +3139,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.fixedDetailUv !== undefined) panel.fixedDetailUv = mutation.fixedDetailUv
     if (mutation.drawColor !== undefined) panel.drawColor = Object.freeze([...mutation.drawColor]) as Rgba
     if (mutation.foregroundColor !== undefined) panel.foregroundColor = Object.freeze([...mutation.foregroundColor]) as Rgba
+    if (mutation.border !== undefined) this.applyBorder(panel, mutation.border)
     if (mutation.scalarProperties !== undefined) for (const [name, value] of Object.entries(mutation.scalarProperties)) panel.scalarProperties.set(name, value)
     if (mutation.sections !== undefined) panel.sections = mutation.sections.map((section: VguiSectionedListSection) => Object.freeze({ ...section, columns: Object.freeze(section.columns.map((column: VguiSectionedListColumn) => Object.freeze({ ...column }))) }))
     if (mutation.sectionedItems !== undefined) panel.sectionedItems = mutation.sectionedItems.map((item) => Object.freeze({ ...item, cells: Object.freeze({ ...item.cells }) }))

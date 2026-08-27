@@ -78,7 +78,10 @@ function scheme(): VguiScheme {
       name, cssFamily: "sans-serif", sizePx: 12, lineHeightPx: 12, weight: 400, style: "normal" as const, available: true,
       measure: () => Object.freeze({ width: 0, height: 12 }),
     }))),
-    borders: Object.freeze([]),
+    borders: Object.freeze(["TFFatLineBorder", "TFFatLineBorderRedBG", "TFFatLineBorderBlueBG"].map((name, backgroundType) => Object.freeze({
+      kind: "line" as const, name, inset: { left: 0, top: 0, right: 0, bottom: 0 }, backgroundType, paintFirst: false,
+      sides: { left: [], top: [], right: [], bottom: [] },
+    }))),
     images: Object.freeze(presentedImages),
   })
 }
@@ -626,7 +629,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const timer = Object.freeze({ identity: 9, remaining: 70, initialSeconds: 330, setupSeconds: 70, maximumSeconds: 600, paused: false, showInHud: true, disabled: false })
     const publish = (tick: bigint, overrides: Record<string, unknown> = {}) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
-      const round = Object.freeze({ state: 4 as const, waitingForPlayers: false, waitingRemaining: null, inSetup: true, inOvertime: false, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0, timer, kothTimers: null, events: Object.freeze([]), ...overrides })
+      const round = Object.freeze({ state: 4 as const, fullRound: true, waitingForPlayers: false, waitingRemaining: null, inSetup: true, inOvertime: false, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0, timer, kothTimers: null, events: Object.freeze([]), ...overrides })
       const snapshot = Object.freeze({ ...base.snapshot, round })
       return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as any, context)
     }
@@ -655,9 +658,16 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
     expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toContain("defended")
+    expect(panels.find(panel => panel.name === "WinPanelBGBorder")?.animationVariables.PaintBackgroundType).toBe(1)
     publish(7n, { state: 5, inSetup: false, winningTeam: 3, winReason: 1, blueScore: 1, events: [{ kind: 17, identity: 1, detail: 0, team: 0, flags: 0, value: 0 }] })
     expect(hud.snapshot().vgui.panels.find(panel => panel.name === "WinReasonLabel")?.text).toContain("control points")
     expect(hud.snapshot().vgui.panels.find(panel => panel.name === "DetailsLabel")?.text).toContain("Winning capture:")
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "WinPanelBGBorder")?.animationVariables.PaintBackgroundType).toBe(2)
+    publish(8n, { state: 5, fullRound: false, inSetup: false, winningTeam: 3, winReason: 1 })
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "AdvancingTeamLabel")?.text).toBe("BLU TEAM SEIZES AREA")
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "WinningTeamLabel")?.text).toBe("")
+    publish(9n, { state: 5, inSetup: false, winningTeam: null, winReason: 5 })
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "WinPanelBGBorder")?.animationVariables.PaintBackgroundType).toBe(0)
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudMatchStatus", "WaitingForPlayersPanel", "WinPanel"])).toEqual([])
     hud.destroy()
@@ -676,7 +686,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const timer = { identity: 10, remaining: 180, initialSeconds: 180, setupSeconds: 0, maximumSeconds: 0, paused: true, showInHud: true, disabled: false }
     const publish = (tick: bigint, red: typeof timer, blue: typeof timer, overtime = false, waiting = false, events: readonly any[] = []) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
-      const round = Object.freeze({ state: 4 as const, waitingForPlayers: waiting, waitingRemaining: waiting ? 29 : null,
+      const round = Object.freeze({ state: 4 as const, fullRound: true, waitingForPlayers: waiting, waitingRemaining: waiting ? 29 : null,
         inSetup: false, inOvertime: overtime, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0,
         timer: red, kothTimers: Object.freeze([red, blue] as const), events: Object.freeze(events) })
       const snapshot = Object.freeze({ ...base.snapshot, round })
