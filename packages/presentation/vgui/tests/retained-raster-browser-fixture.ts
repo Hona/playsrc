@@ -24,7 +24,7 @@ const material: VguiImageMaterialPresentation = {
   glow: false, glowColor: [1, 1, 1], glowAlpha: 1, glowStart: 0.7, glowEnd: 0.5, glowX: 0, glowY: 0,
 }
 const request: VguiImageRasterRequest = {
-  width: 256, height: 128, viewportWidth: innerWidth, viewportHeight: innerHeight,
+  width: 256, height: 128, pixelRatio: 1, viewportWidth: innerWidth, viewportHeight: innerHeight,
   tint: [210, 160, 255, 200], geometry: { kind: "stretch", rotation: 0 }, material,
 }
 const original = shadeVguiImage(request, new Map([[material.base.logicalIdentity, {

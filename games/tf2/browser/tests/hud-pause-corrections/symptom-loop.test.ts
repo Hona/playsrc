@@ -55,11 +55,6 @@ function scheme(): VguiScheme {
       browserUrl: "data:image/png;base64,AA==", width: 128, height: 128, frames: 1, hardwareFiltered: false,
     }))
   }
-  for (let corner = 1; corner <= 4; corner += 1) presentedImages.push(Object.freeze({
-    name: `vgui/hud/8x800corner${corner}`,
-    logicalIdentity: `materials/vgui/symptom-loop/corner${corner}.vtf`, revision: `corner${corner}`,
-    browserUrl: "data:image/png;base64,AA==", width: 8, height: 800, frames: 1, hardwareFiltered: false,
-  }))
   for (const [index, name] of ["../console/background_2fort", "../console/background_2fort_widescreen"].entries()) presentedImages.push(Object.freeze({
     name, logicalIdentity: `materials/console/background_2fort${index ? "_widescreen" : ""}.vmt`, revision: `background-${index}`,
     browserUrl: "data:image/png;base64,AA==", width: 1, height: 1, frames: 1, hardwareFiltered: false,

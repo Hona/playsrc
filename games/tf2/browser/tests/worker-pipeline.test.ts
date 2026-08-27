@@ -177,7 +177,7 @@ function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0
     const bytes = new TextEncoder().encode(value)
     u32(bytes.length); values.push(...bytes)
   }
-  u32(8); u32(1); u32(9); u32(7); u32(0)
+  u32(9); u32(1); u32(9); u32(7); u32(0)
   values.push(0, 0, 0, 0)
   text("model"); text("ACT_IDLE")
   u32(0)
@@ -186,7 +186,7 @@ function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0
   for (let index = 0; index < 4; index++) u32(0)
   u32(1)
   for (const bits of bones) u32(bits)
-  u32(0); u32(0); u32(0); u32(0)
+  u32(0); u32(0); u32(0); u32(0); u32(0)
   return Uint8Array.from(values)
 }
 
