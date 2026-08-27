@@ -1265,8 +1265,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn reset_last_weapon(&mut self) {
         // Default TF2 spawn last slot is secondary, or melee if unavailable.
-        self.last_weapon = [1, 2].into_iter().find_map(|slot| self.active_equipment.weapons(self.class)
-            .find(|weapon| self.weapon_hud(*weapon).is_some_and(|hud| hud.bucket == slot)));
+        self.last_weapon = [1, 2].into_iter().find_map(|selection| {
+            schema::LoadoutPosition::ALL.into_iter().find_map(|slot| {
+                let item = equipment::supported_item(self.active_equipment.definition(self.class, slot)?)?;
+                (item.selection_slot(self.class, slot) == Some(selection)).then(|| item.weapon_for_class(self.class)).flatten()
+            })
+        });
         self.secondary_last_weapon = None;
     }
 
@@ -1381,6 +1385,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             } else if self.weapon.is_none() {
                 self.weapon = default_weapon(self.class);
                 self.apply_equipment();
+                self.reset_last_weapon();
                 self.ammo = self.maximum_ammo();
                 self.health = self.maximum_health();
                 self.deploy_active_weapon();
@@ -6879,6 +6884,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for weapon in self.loadout.values_mut() {
             weapon.reset_for_spawn();
         }
+        self.reset_last_weapon();
         self.deploy_active_weapon();
         self.select_respawn_transform();
         self.movement = MovementState::from_player(
@@ -8557,6 +8563,8 @@ mod tests {
         session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
         assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
         assert_eq!(session.last_weapon, Some(Weapon::Wrench));
+        session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+        assert_eq!(session.last_weapon, Some(Weapon::EngineerPistol));
         session.advance(Command { select_class: Some(PlayerClass::Scout), ..Command::default() }).unwrap();
         assert_eq!(session.last_weapon, Some(Weapon::Pistol));
         session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
