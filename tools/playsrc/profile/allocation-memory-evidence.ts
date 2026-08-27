@@ -138,8 +138,8 @@ export async function loadAllocationMemoryEvidence(filename: string, loaded: Omi
   const plan = await loadCapturePlan(filename, loaded.manifest)
   if (!plan || JSON.stringify(main.plan) !== JSON.stringify(ALLOCATION_PLAN)) throw new Error("Allocation effective capture plan missing or invalid")
   const cpu = await loadMainCpuEvidence(filename, loaded)
-  const worker = await loadWorkerIncidents(filename, loaded)
   if (main.errors.length || !cpu?.profile || !loaded.manifest.complete) return { status: "incomplete", evidence: memory, estimatedAllocation: null } as const
+  const worker = await loadWorkerIncidents(filename, loaded)
   if (!bytes || bytes.length !== main.capturedBytes) throw new Error("Allocation profile missing or truncated")
   const { start, stop } = main.clock
   const window = loaded.analysis.window!
