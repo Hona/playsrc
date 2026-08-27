@@ -2,7 +2,7 @@ import { profileSampleSeconds } from "./profile-window"
 
 /** Effective choices, not an environment dump. The capture consumes this same
  * plan that is durably retained before browser/map admission. */
-export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
+function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   const createServer = environment.PROFILE_STARTUP_CREATE_SERVER === "1"
   const exerciseClasses = environment.PROFILE_UPWARD_CLASS_SWITCH === "1"
   const acceptance = environment.PROFILE_INTEGRATED_ACCEPTANCE === "1"
@@ -26,10 +26,16 @@ export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   } as const)
 }
 
-export type UpwardCapturePlan = ReturnType<typeof upwardCapturePlan>
+export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
+  const base = baseCapturePlan(environment)
+  return Object.freeze({ ...base, schema: "playsrc-upward-capture-plan-v2" as const,
+    replacement: !base.stockOnly && environment.PROFILE_CLASS_REPLACEMENT === "1" })
+}
+
+export type UpwardCapturePlan = ReturnType<typeof upwardCapturePlan> | ReturnType<typeof baseCapturePlan>
 
 export function validateUpwardCapturePlan(value: any): asserts value is UpwardCapturePlan {
-  if (!value || value.schema !== "playsrc-upward-capture-plan-v1"
+  if (!value || !["playsrc-upward-capture-plan-v1", "playsrc-upward-capture-plan-v2"].includes(value.schema)
     || !["pl_upward", "ctf_2fort"].includes(value.target) || !["training", "create-server"].includes(value.entry)
     || ["exerciseClasses", "acceptance", "stockOnly", "combat", "warmReload"].some(key => typeof value[key] !== "boolean")
     || !(value.playersOverride === null || typeof value.playersOverride === "string")
@@ -38,7 +44,9 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
     || !["stock-loadouts", "class-input", "movement-weapon", "forward-movement"].includes(value.interaction)
     || !["required", "not-requested"].includes(value.workerCpu)) throw new Error("Invalid effective capture plan")
   // Reuse the exact resolver to reject internally contradictory plans.
-  const resolved = upwardCapturePlan({
+  if (value.schema === "playsrc-upward-capture-plan-v2" && typeof value.replacement !== "boolean") throw new Error("Invalid replacement capture plan")
+  const resolve = value.schema === "playsrc-upward-capture-plan-v1" ? baseCapturePlan : upwardCapturePlan
+  const resolved = resolve({
     PROFILE_STARTUP_CREATE_SERVER: value.entry === "create-server" ? "1" : "0",
     PROFILE_UPWARD_CLASS_SWITCH: value.exerciseClasses ? "1" : "0",
     PROFILE_INTEGRATED_ACCEPTANCE: value.acceptance ? "1" : "0",
@@ -50,6 +58,7 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
     PROFILE_SAMPLE_SECONDS: String(value.sampleSeconds),
     PROFILE_UPWARD_TRAINING_INTERACTION: value.interaction === "movement-weapon" ? "1" : "0",
     PROFILE_RENDER_OWNERS: value.renderOwners ? "1" : "0",
+    PROFILE_CLASS_REPLACEMENT: value.replacement ? "1" : "0",
   })
   if (Object.keys(value).length !== Object.keys(resolved).length
     || Object.entries(resolved).some(([key, expected]) => value[key] !== expected)) throw new Error("Inconsistent effective capture plan")

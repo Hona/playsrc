@@ -76,7 +76,7 @@ test("prepares only registered eligible wearables without creating effects", () 
 })
 
 test("an unassigned replacement still prepares both world rosters without inventing a panel team", () => {
-  const prepared = classPipelinePoseRequests(artifacts(), null, camera, 16 / 9)
+  const prepared = classPipelinePoseRequests(artifacts(), null, camera, 16 / 9, [])
   expect(prepared).toHaveLength(18)
   expect(prepared.every(value => value.pass === "world")).toBe(true)
   for (let identity = 1; identity <= 9; identity++) {
