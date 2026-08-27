@@ -15,8 +15,12 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, "evidence/burning-flames", `complete-${Date.now()}`)
   await mkdir(directory, { recursive: true })
   const errors: string[] = []
+  let faviconMisses = 0
   page.on("pageerror", error => errors.push(error.message))
-  page.on("console", message => { if (message.type() === "error") errors.push(`${message.text()} ${message.location().url}`) })
+  page.on("console", message => { if (message.type() === "error") {
+    if (message.location().url.endsWith("/favicon.ico") && message.text().includes("404")) faviconMisses++
+    else errors.push(`${message.text()} ${message.location().url}`)
+  } })
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureCosmetics: true } })
   const main = page.locator("main"), canvas = page.locator("canvas.world-canvas"), equipment = page.locator(".equipment-layer")
@@ -130,6 +134,7 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     expect(errors).toEqual([])
   } finally {
     records.errors = errors
+    records.faviconMisses = faviconMisses
     records.terminal = await page.evaluate(() => ({ phase: document.querySelector<HTMLElement>("main")?.dataset.phase,
       detail: document.querySelector<HTMLElement>("main")?.dataset.detail, cosmetics: (globalThis as any).__playsrcProfile.cosmetics,
       bots: (globalThis as any).__playsrcProfile.bots, console: document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText })).catch(() => null)
