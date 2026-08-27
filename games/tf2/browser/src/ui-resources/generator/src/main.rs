@@ -433,6 +433,7 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("equipment", "resource/ui/charinfoloadoutsubpanel.res", true),
     ("equipment", "resource/ui/classloadoutpanel.res", true),
     ("equipment", "resource/ui/econ/backpackpanel.res", true),
+    ("equipment", "resource/ui/econ/itemmodelpanel.res", true),
     ("class-selection", "resource/ui/classtipslist.res", true),
     ("class-selection", "resource/ui/classtipsitem.res", true),
     ("team-selection", "resource/ui/teammenu.res", true),

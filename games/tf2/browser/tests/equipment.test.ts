@@ -21,6 +21,8 @@ test("equipment projection preserves canonical definition identity independently
   expect(state.classes[0]!.items).toEqual([state.inventory[0]!.item])
   expect(state.classes.length).toBe(9)
   expect(Object.isFrozen(state.inventory)).toBe(true)
+  const shared = new Uint8Array(new SharedArrayBuffer(packet().length)); shared.set(packet())
+  expect(decodeEquipmentState(shared)).toEqual(state)
 })
 
 test("equipment projections reject truncated records and invalid stable identities", () => {

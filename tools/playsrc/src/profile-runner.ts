@@ -64,6 +64,7 @@ const PROFILES = Object.freeze({
   hud: { config: "playwright.hud-profile.config.ts", target: "jump_beef" },
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
+  equipment: { config: "playwright.equipment-profile.config.ts", target: "jump_beef" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
   "application-upgrade": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "application-upgrade" } },

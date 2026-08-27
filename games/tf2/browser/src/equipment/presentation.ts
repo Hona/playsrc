@@ -88,7 +88,7 @@ export class Tf2EquipmentPresentation {
   #render(): void {
     if (!this.#visible || !this.#state) return
     this.#releaseSurface?.(); this.#releaseSurface = undefined
-    this.#request.onPreview(null)
+    if (this.#page !== "loadout") this.#request.onPreview(null)
     this.#runtime.deferPresentation(() => {
       if (this.#content !== undefined) this.#apply({ kind: "delete-panel", panel: this.#content, deferred: false })
       const page = this.#page

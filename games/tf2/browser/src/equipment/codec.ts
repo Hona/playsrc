@@ -24,6 +24,9 @@ export function decodeEquippedItems(view: DataView, start: number): Readonly<{ i
 }
 
 export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
+  // Browser TextDecoder rejects views over the threaded WASM shared memory.
+  // This UI-only projection takes one owned copy, never one copy per string.
+  if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) bytes = new Uint8Array(bytes)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 1) throw new Error("invalid equipment state")
   const revision = view.getUint32(8, true), count = view.getUint32(12, true)
@@ -40,7 +43,7 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
     const decoded = decodeEquippedItems(view, at); at = decoded.end
     if (decoded.items.length !== 1) throw new Error("invalid owned item count")
     const weapon = view.getUint8(at++), classes = view.getUint8(at++)
-    if (classes < 1 || classes > 9) throw new Error("invalid class eligibility")
+    if (classes < 1 || classes > 27) throw new Error("invalid class eligibility")
     const classSlots = Array.from({ length: classes }, () => {
       const identity = view.getUint8(at++), slot = view.getUint8(at++)
       if (identity < 1 || identity > 9 || slot > 18) throw new Error("invalid class slot")
