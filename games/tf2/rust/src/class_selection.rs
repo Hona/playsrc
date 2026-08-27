@@ -25,6 +25,53 @@ pub fn scene_for_model(model: &str) -> Option<&'static SceneDefinition> {
         .find(|scene| scene.model.eq_ignore_ascii_case(model))
 }
 
+pub struct ModelPanelFlexState {
+    normalized: [f32; 96],
+}
+
+impl Default for ModelPanelFlexState {
+    fn default() -> Self {
+        Self {
+            normalized: [0.0; 96],
+        }
+    }
+}
+
+impl ModelPanelFlexState {
+    /// CTFPlayerModelPanel retains normalized controller slots across class and
+    /// scene changes, decays their real values, then rescales for the MDL draw.
+    pub fn decay(
+        &mut self,
+        controllers: &[(String, f32, f32)],
+    ) -> std::collections::BTreeMap<String, f32> {
+        controllers
+            .iter()
+            .zip(&mut self.normalized)
+            .map(|((name, min, max), normalized)| {
+                let range = max - min;
+                let value = if range != 0.0 {
+                    *normalized * range + min
+                } else {
+                    *normalized
+                } * 0.95;
+                *normalized = if range != 0.0 {
+                    ((value - min) / range).clamp(0.0, 1.0)
+                } else {
+                    value
+                };
+                (
+                    name.clone(),
+                    if range != 0.0 {
+                        *normalized * range + min
+                    } else {
+                        *normalized
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ScenePlayer {
     elapsed: f32,
@@ -42,7 +89,7 @@ pub struct SceneSample {
     pub sequence: Option<&'static str>,
     pub sequence_elapsed: f32,
     pub scene_time: f32,
-    pub controllers: std::collections::BTreeMap<&'static str, f32>,
+    pub controllers: std::collections::BTreeMap<String, f32>,
     pub event_sequence: Option<&'static str>,
     pub event_elapsed: f32,
 }
@@ -52,6 +99,7 @@ impl ScenePlayer {
         &mut self,
         scene: &'static SceneDefinition,
         elapsed: f32,
+        controllers: std::collections::BTreeMap<String, f32>,
     ) -> Result<SceneSample, &'static str> {
         if !elapsed.is_finite() || elapsed < self.elapsed {
             return Err("class-select model clock reversed");
@@ -123,7 +171,7 @@ impl ScenePlayer {
             sequence: self.sequence.map(|index| scene.events[index].parameters[0]),
             sequence_elapsed: elapsed - self.sequence_began,
             scene_time,
-            controllers: expression_controllers(scene, scene_time),
+            controllers: expression_controllers(scene, scene_time, controllers),
             event_sequence,
             event_elapsed,
         })
@@ -144,8 +192,8 @@ impl ScenePlayer {
 fn expression_controllers(
     scene: &SceneDefinition,
     time: f32,
-) -> std::collections::BTreeMap<&'static str, f32> {
-    let mut result = std::collections::BTreeMap::new();
+    mut result: std::collections::BTreeMap<String, f32>,
+) -> std::collections::BTreeMap<String, f32> {
     let mut events = scene
         .events
         .iter()
@@ -155,7 +203,7 @@ fn expression_controllers(
     for event in events {
         let intensity = ramp_intensity(event.ramp, time - event.start, event.end - event.start);
         for &(name, weight, influence) in event.expression {
-            let value = result.entry(name).or_insert(0.0);
+            let value = result.entry(name.to_ascii_lowercase()).or_insert(0.0);
             let scale = (intensity * influence).clamp(0.0, 1.0);
             *value = *value * (1.0 - scale) + weight * scale;
         }
@@ -205,20 +253,20 @@ mod tests {
     fn preview_clock_and_event_delivery_follow_the_two_scene_thinks() {
         let scene = scene_for_model("models/player/scout.mdl").unwrap();
         let mut player = ScenePlayer::default();
-        let first = player.advance(scene, 1.0).unwrap();
+        let first = player.advance(scene, 1.0, Default::default()).unwrap();
         assert_eq!(first.sequence, Some("selectionMenu_Anim01"));
         assert_eq!(first.sequence_elapsed, 0.0);
         assert_eq!(first.scene_time, 0.0);
         assert_eq!(first.event_sequence, None);
         assert!(!first.controllers.is_empty());
-        let second = player.advance(scene, 1.015).unwrap();
+        let second = player.advance(scene, 1.015, Default::default()).unwrap();
         assert_eq!(second.scene_time, 0.1);
         assert_eq!(second.event_sequence, first.sequence);
         assert!((second.event_elapsed - 0.015).abs() < 0.000001);
         assert_eq!(player.event_range(5, 0.25), (-0.01, 0.0));
         assert_eq!(player.event_range(5, 0.5), (0.0, 0.5));
         assert_eq!(player.event_range(6, 0.5), (-0.01, 0.0));
-        assert!(player.advance(scene, 0.0).is_err());
+        assert!(player.advance(scene, 0.0, Default::default()).is_err());
     }
     #[test]
     fn configured_loop_retains_idle_layer_and_does_not_replay_the_intro() {
@@ -227,7 +275,9 @@ mod tests {
         let mut prior = 0.0;
         let mut loops = 0;
         for frame in 0..1000 {
-            let sample = player.advance(scene, frame as f32 * 0.015).unwrap();
+            let sample = player
+                .advance(scene, frame as f32 * 0.015, Default::default())
+                .unwrap();
             if sample.scene_time < prior {
                 loops += 1;
                 assert_eq!(sample.scene_time, 2.66);
@@ -243,5 +293,20 @@ mod tests {
         assert_eq!(ramp_intensity(&[(0.5, 1.0)], 0.0, 1.0), 0.0);
         assert_eq!(ramp_intensity(&[(0.5, 1.0)], 0.25, 1.0), 0.5625);
         assert_eq!(ramp_intensity(&[(0.5, 1.0)], 0.5, 1.0), 1.0);
+    }
+
+    #[test]
+    fn normalized_flex_slots_decay_real_ranges_and_survive_a_scene_reset() {
+        let mut flex = ModelPanelFlexState::default();
+        let controllers = vec![
+            ("lid".to_owned(), -1.0, 1.0),
+            ("eye".to_owned(), -45.0, 45.0),
+        ];
+        let first = flex.decay(&controllers);
+        assert_eq!(first["lid"], -0.95);
+        assert_eq!(first["eye"], -42.75);
+        let second = flex.decay(&controllers);
+        assert!((second["lid"] + 0.9025).abs() < 0.000001);
+        assert!((second["eye"] + 40.6125).abs() < 0.00001);
     }
 }
