@@ -5,7 +5,7 @@ import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, tf2MapBsp } from "@play
 
 describe("map target registry", () => {
   test("separates released targets from explicit integration admission", () => {
-    expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
+    expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort", "cp_dustbowl", "cp_gorge"])
     expect(TF2_DEVELOPMENT_TARGET_NAMES.slice(0, 3)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
     for (const [name, map] of Object.entries(maps)) {
       expect(TF2_DEVELOPMENT_TARGET_NAMES.includes(name as keyof typeof maps)).toBe(map.admission !== "source")
@@ -78,10 +78,10 @@ describe("map target registry", () => {
     }
   })
 
-  test("pins the six control-point and four king-of-the-hill installed BSPs", () => {
+  test("pins the eight control-point and four king-of-the-hill installed BSPs", () => {
     const additions = Object.keys(maps).map(resolveMapTarget).filter((map) =>
       map.mode === "control-point" || map.mode === "king-of-the-hill")
-    expect(additions.filter((map) => map.mode === "control-point")).toHaveLength(6)
+    expect(additions.filter((map) => map.mode === "control-point")).toHaveLength(8)
     expect(additions.filter((map) => map.mode === "king-of-the-hill")).toHaveLength(4)
     for (const map of additions) {
       expect(map.download).toBeUndefined()

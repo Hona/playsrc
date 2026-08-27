@@ -456,6 +456,10 @@ impl MapRuntime {
                         .into_iter().map(<[u8]>::to_vec).collect(),
                 },
                 playsrc_entity::ExternalClassBinding {
+                    classname: b"team_control_point_round".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable", b"RoundSpawn"].into_iter().map(<[u8]>::to_vec).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
                     classname: b"trigger_capture_area".to_vec(),
                     inputs: [b"Enable".as_slice(), b"Disable", b"Toggle", b"RoundSpawn", b"SetTeamCanCap", b"SetControlPoint", b"CaptureCurrentCP"]
                         .into_iter().map(<[u8]>::to_vec).collect(),
@@ -585,7 +589,18 @@ impl MapRuntime {
             .collect(),
             ..EntityWorldConfig::default()
         };
-        let (mut world, _) = EntityWorld::compile(graph, config)?;
+        // CTFGameRules::CreateStandardEntities provides the named rules proxy
+        // even when a map has no authored tf_gamerules entity.
+        let mut standard_graph;
+        let entity_graph = if !graph.entities.iter().any(|e| class(e, b"tf_gamerules")) {
+            standard_graph = graph.clone();
+            let mut proxy = playsrc_entity::parse(b"{\"classname\"\"tf_gamerules\"\"targetname\"\"tf_gamerules\"}\0", Default::default()).expect("standard rules proxy").entities.remove(0);
+            // KOTH's two generated timer identities immediately follow the BSP.
+            proxy.index = graph.entities.iter().map(|e| e.index).max().unwrap_or(0) + 3;
+            standard_graph.entities.push(proxy);
+            &standard_graph
+        } else { graph };
+        let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
             for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
                 let mut definition = playsrc_entity::parse(
@@ -1395,13 +1410,19 @@ impl MapRuntime {
         self.control_point_facts = facts;
     }
 
-    pub fn activate_control_point_round(&mut self, tick: u64, facts: crate::control_point::Facts) -> Result<MapPhase, RuntimeFailure> {
+    pub fn activate_control_point_round(&mut self, tick: u64, facts: crate::control_point::Facts, random: &mut crate::UniformRandomStream) -> Result<MapPhase, RuntimeFailure> {
         self.control_point_facts = facts;
         let sources: Vec<_> = self.source_handles.iter().map(|(source, handle)| (*source, *handle)).collect();
         let mut result = MapPhase::default();
         for input in [b"RoundSpawn".as_slice(), b"RoundActivate"] {
             for (source, handle) in &sources {
                 if !self.world.accepts_external_input(*handle, input) { continue; }
+                if input == b"RoundActivate" && self.control_points.as_ref().is_some_and(|p| p.master().identity == *source) {
+                    let mut events = Vec::new();
+                    self.control_points.as_mut().unwrap().select_round(None, random, &mut events);
+                    result.append(self.emit_control_point_outputs(tick, &events)?);
+                    result.control_point_events.extend(events);
+                }
                 let batch = self.world.phase(tick, &[WorldCommand::Input(InputRecord { target: EventTarget::Direct(*handle), input: input.to_vec(), value: Variant::Void, activator: None, caller: None, output_action: None, producer_sequence: self.next_producer_sequence })])?;
                 self.next_producer_sequence += 1;
                 result.append(self.consume(batch)?);
@@ -2469,8 +2490,9 @@ mod tests {
         for _ in 0..200 { text += r#"{"classname" "logic_relay"}"#; }
         let graph = playsrc_entity::parse(text.as_bytes(), Default::default()).unwrap();
         let mut map = MapRuntime::compile(&graph, 0.015, 42, Vec::new()).unwrap();
+        let mut random = crate::UniformRandomStream::from_seed(1).unwrap();
         for tick in 1..100 {
-            map.activate_control_point_round(tick, crate::control_point::Facts::default()).unwrap();
+            map.activate_control_point_round(tick, crate::control_point::Facts::default(), &mut random).unwrap();
         }
     }
 

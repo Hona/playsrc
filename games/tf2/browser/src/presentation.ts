@@ -60,6 +60,7 @@ export type Tf2AudioRequest = Readonly<{
     | "Announcer.Success" | "Announcer.Failure" | "Hud.PointCaptured" | "Announcer.ControlPointContested" | "Announcer.ControlPointContested_Neutral" | "Announcer.AM_CapEnabledRandom"
     | "Announcer.RoundBegins5Seconds" | "Announcer.RoundBegins4Seconds" | "Announcer.RoundBegins3Seconds" | "Announcer.RoundBegins2Seconds" | "Announcer.RoundBegins1Seconds" | "Game.Stalemate" | "ControlPoint.CaptureWarn"
     | "Hologram.Start" | "Hologram.Stop" | "Hologram.Move" | "Hologram.Interrupted"
+    | "Announcer.RoundBegins60Seconds" | "Announcer.RoundBegins30Seconds" | "Announcer.RoundBegins10Seconds" | "Ambient.Siren" | "Announcer.TimeAdded" | "Hud.EndRoundScored"
   source: Readonly<{
     kind: "entity" | "world" | "local-listener"
     identity: number
@@ -156,6 +157,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     "Announcer.Success", "Announcer.Failure", "Hud.PointCaptured", "Announcer.ControlPointContested", "Announcer.ControlPointContested_Neutral", "Announcer.AM_CapEnabledRandom",
     "Announcer.RoundBegins5Seconds", "Announcer.RoundBegins4Seconds", "Announcer.RoundBegins3Seconds", "Announcer.RoundBegins2Seconds", "Announcer.RoundBegins1Seconds", "Game.Stalemate", "ControlPoint.CaptureWarn",
     "Hologram.Start", "Hologram.Stop", "Hologram.Move", "Hologram.Interrupted",
+    "Announcer.RoundBegins60Seconds", "Announcer.RoundBegins30Seconds", "Announcer.RoundBegins10Seconds", "Ambient.Siren", "Announcer.TimeAdded", "Hud.EndRoundScored",
   ]
 
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({

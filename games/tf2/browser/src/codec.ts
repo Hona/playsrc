@@ -520,6 +520,7 @@ export type RoundTimer = Readonly<{
   disabled: boolean
 }>
 export type RoundSnapshot = Readonly<{
+  fullRound: boolean
   state: RoundState
   waitingForPlayers: boolean
   waitingRemaining: number | null
@@ -1477,12 +1478,12 @@ function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): 
 function decodeRound(buffer: ArrayBuffer, offset: number, length: number): RoundSnapshot {
   if (length < 48) throw new Tf2CodecError("Round rules section is truncated")
   const data = new Uint8Array(buffer, offset, length), view = new DataView(buffer, offset, length)
-  const state = data[8], flags = data[9], winning = data[10], reason = data[11]
+  const stateFlags = data[8]!, state = stateFlags & 15, flags = data[9], winning = data[10], reason = data[11]
   const waiting = view.getFloat32(20, true), identity = view.getUint32(24, true), remaining = view.getFloat32(28, true)
   const count = view.getUint32(44, true)
   const headerLength = flags !== undefined && (flags & 128) !== 0 ? 96 : 48
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 3
-    || state === undefined || state > 10 || flags === undefined
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 4
+    || (stateFlags & 112) !== 0 || state > 10 || flags === undefined
     || (winning !== 0 && winning !== 2 && winning !== 3) || reason === undefined
     || !finite([waiting, remaining]) || waiting < -1 || remaining < -1 || count > 4096
     || length !== headerLength + count * 12 || ((flags & 1) !== 0) !== (waiting !== -1)
@@ -1504,7 +1505,7 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
     events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true), value: view.getInt32(at + 8, true) }))
   }
   return Object.freeze({
-    state: state as RoundState, waitingForPlayers: (flags & 1) !== 0,
+    state: state as RoundState, fullRound: (stateFlags & 128) === 0, waitingForPlayers: (flags & 1) !== 0,
     waitingRemaining: waiting === -1 ? null : waiting, inSetup: (flags & 2) !== 0,
     inOvertime: (flags & 4) !== 0, winningTeam: winning === 0 ? null : winning,
     winReason: reason, redScore: view.getUint16(12, true), blueScore: view.getUint16(14, true),
@@ -2136,7 +2137,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 && decision !== 14 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 102 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 108 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8 || decision === 14) ? resultKind === 1 : resultKind !== 1) ||
@@ -2164,7 +2165,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 || definition === 89 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 || definition === 86 || definition === 90 || definition === 98 ? 2 : 1
     if (
-      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 102 ||
+      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 108 ||
       (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||

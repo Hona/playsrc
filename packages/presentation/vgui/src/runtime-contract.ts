@@ -384,6 +384,7 @@ export type VguiKey =
 
 export type VguiControlMutation = Readonly<{
   accessibleName?: string
+  border?: string
   text?: string
   command?: string | null
   value?: number

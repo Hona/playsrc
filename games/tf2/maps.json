@@ -49,6 +49,42 @@
       "sha256": "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7"
     }
   },
+  "cp_dustbowl": {
+    "displayName": "Dustbowl",
+    "pakProvider": "cp_dustbowl-pak",
+    "loadingPhoto": {
+      "material": { "byteLength": 128, "sha256": "4aad583ae79263f72365353851eb9754b3652034161fc6084867f00e6cc5aa7e" },
+      "texture": { "byteLength": 349784, "sha256": "57dc34a7ba72b8917e2c15996890322c4c31694c523d9184fcf11b11bd351559" }
+    },
+    "admission": "playable",
+    "mode": "control-point",
+    "navigation": "content",
+    "logicalPath": "maps/cp_dustbowl.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 21945050,
+      "sha256": "f2595d3f6af19f21d7beaeed7ecb7a130246a5b934641a44f0f68d54edfc421e"
+    }
+  },
+  "cp_gorge": {
+    "displayName": "Gorge",
+    "pakProvider": "cp_gorge-pak",
+    "loadingPhoto": {
+      "material": { "byteLength": 125, "sha256": "b0cfc7e17d8f9be1fb12a6f9496a9dc0e961da98d1e459486e4bed46c8456085" },
+      "texture": { "byteLength": 349784, "sha256": "062f6fc6ba828069b6e111c8c5b8d2b7d0314c7fe9d56f741b385b142fc26437" }
+    },
+    "admission": "playable",
+    "mode": "control-point",
+    "navigation": "content",
+    "logicalPath": "maps/cp_gorge.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 50238340,
+      "sha256": "94db834e88f98048326513133a8c98178866cef2f72d6406515ed1af0a4a5f46"
+    }
+  },
   "cp_badlands": {
     "displayName": "Badlands",
     "pakProvider": "cp_badlands-pak",

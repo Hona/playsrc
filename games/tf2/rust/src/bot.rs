@@ -625,6 +625,12 @@ impl BotWorld {
         }
     }
 
+    pub fn switch_teams(&mut self) {
+        for bot in self.bots.values_mut() {
+            bot.team = if bot.team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red };
+        }
+    }
+
     pub fn new<W: GameplayWorld>(
         mut mesh: Mesh,
         graph: &Graph,

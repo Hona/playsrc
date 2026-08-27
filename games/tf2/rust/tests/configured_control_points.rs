@@ -4,6 +4,63 @@ use playsrc_tf2::{PlayerTeam, control_point};
 use sha2::{Digest, Sha256};
 
 #[test]
+#[ignore = "requires exact configured build 24245096 attack/defend BSPs"]
+fn attack_defend_authored_stages_and_spawn_sets() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let config = fs::read_to_string(root.join("playsrc.local.json")).unwrap();
+    let value = &config[config.find("\"tf2Dir\"").unwrap() + "\"tf2Dir\"".len()..];
+    let value = value[value.find(':').unwrap() + 1..].trim_start();
+    let tf2 = PathBuf::from(&value[1..value[1..].find('"').unwrap() + 1]);
+    for (name, length, hash, count) in [
+        ("cp_dustbowl", 21_945_050, "f2595d3f6af19f21d7beaeed7ecb7a130246a5b934641a44f0f68d54edfc421e", 6),
+        ("cp_gorge", 50_238_340, "94db834e88f98048326513133a8c98178866cef2f72d6406515ed1af0a4a5f46", 2),
+    ] {
+        let bytes = fs::read(tf2.join(format!("maps/{name}.bsp"))).unwrap();
+        assert_eq!(bytes.len(), length);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), hash);
+        let bsp = playsrc_bsp::parse(&bytes, playsrc_bsp::Profile::Source2013V20, Default::default()).unwrap();
+        let graph = playsrc_entity::parse(bsp.lump(0).unwrap().bytes(&bsp), Default::default()).unwrap();
+        let mut world = control_point::World::from_graph(&graph).unwrap().unwrap();
+        assert_eq!(world.points().len(), count);
+        assert!(world.points().iter().all(|p| p.owner == PlayerTeam::Red));
+        let mut random = playsrc_tf2::UniformRandomStream::from_seed(42).unwrap();
+        let facts = control_point::Facts { points_may_be_captured: true, round_running: true, ..Default::default() };
+        let stages = if count == 6 { 3 } else { 1 };
+        for stage in 0..stages {
+            let mut events = Vec::new();
+            world.select_round(None, &mut random, &mut events);
+            if stages == 3 {
+                assert_eq!(world.current_round(), Some(stage));
+                assert_eq!(world.rounds()[stage].name, format!("round_{}", stage + 1));
+                assert_eq!(world.snapshot(vec![]).points.iter().filter(|p| p.visible).map(|p| p.index).collect::<Vec<_>>(), [stage * 2, stage * 2 + 1]);
+            }
+            for team in [PlayerTeam::Red, PlayerTeam::Blue] {
+                assert!(world.spawns().iter().any(|s| s.team == team && !s.disabled), "{name} stage {stage} {team:?}");
+            }
+            assert!(world.team_may_capture(PlayerTeam::Blue, stage * 2, false));
+            assert!(!world.team_may_capture(PlayerTeam::Blue, stage * 2 + 1, false));
+            for point in stage * 2..stage * 2 + 2 {
+                let identity = world.points()[point].identity;
+                world.apply_input(identity, b"SetOwner", &playsrc_entity::Variant::Integer(3), stage as f32, facts, &mut events);
+            }
+            let full_reset = stage == stages - 1;
+            assert!(events.iter().any(|e| matches!(e, control_point::Event::RoundWon { team: PlayerTeam::Blue, full_reset: reset, switch_teams, .. } if *reset == full_reset && *switch_teams == full_reset)));
+            world.end_round(&mut events);
+            world.round_spawn(stage as f32 + 1.0, full_reset, &mut events);
+            if !full_reset { assert!(world.points()[..(stage + 1) * 2].iter().all(|p| p.owner == PlayerTeam::Blue)); }
+        }
+        assert!(world.points().iter().all(|p| p.owner == PlayerTeam::Red));
+        let playsrc_bsp::LumpData::Models(models) = &bsp.lump(14).unwrap().records else { panic!("missing models"); };
+        let bounds = models.iter().enumerate().map(|(model, value)| playsrc_entity::ModelBounds {
+            model,
+            mins: [value.mins.x.value(), value.mins.y.value(), value.mins.z.value()],
+            maxs: [value.maxs.x.value(), value.maxs.y.value(), value.maxs.z.value()],
+        }).collect();
+        playsrc_tf2::MapRuntime::compile(&graph, 0.015, 42, bounds).unwrap();
+    }
+}
+
+#[test]
 #[ignore = "requires exact configured build 24245096 cp_badlands BSP"]
 fn badlands_authored_capture_chain_and_master() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");

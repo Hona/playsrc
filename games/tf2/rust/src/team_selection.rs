@@ -162,6 +162,16 @@ impl TeamSelection {
         self.local().team
     }
 
+    pub fn switch_teams(&mut self) {
+        for player in &mut self.roster {
+            player.team = match player.team {
+                PlayerTeam::Red => PlayerTeam::Blue,
+                PlayerTeam::Blue => PlayerTeam::Red,
+                other => other,
+            };
+        }
+    }
+
     fn would_unbalance(&self, team: PlayerTeam, current: PlayerTeam) -> bool {
         if team == current
             || !team.is_gameplay()

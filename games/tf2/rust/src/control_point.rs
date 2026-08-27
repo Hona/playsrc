@@ -7,8 +7,13 @@ use playsrc_entity::{Entity, Graph, Variant};
 use crate::{GameplayWorld, PlayerClass, PlayerTeam};
 use crate::{AudioAction, SoundDefinition};
 
-pub const VOICE_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointSuccess, SoundDefinition::PointFailure, SoundDefinition::PointContested, SoundDefinition::PointContestedNeutral, SoundDefinition::PointEnabled, SoundDefinition::RoundBegins5, SoundDefinition::RoundBegins4, SoundDefinition::RoundBegins3, SoundDefinition::RoundBegins2, SoundDefinition::RoundBegins1, SoundDefinition::CaptureWarn];
-pub const GENERAL_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointCaptured, SoundDefinition::Stalemate, SoundDefinition::HologramStart, SoundDefinition::HologramStop, SoundDefinition::HologramMove, SoundDefinition::HologramInterrupted];
+mod rounds;
+#[cfg(test)]
+mod session_tests;
+pub use rounds::Round;
+
+pub const VOICE_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointSuccess, SoundDefinition::PointFailure, SoundDefinition::PointContested, SoundDefinition::PointContestedNeutral, SoundDefinition::PointEnabled, SoundDefinition::RoundBegins60, SoundDefinition::RoundBegins30, SoundDefinition::RoundBegins10, SoundDefinition::RoundBegins5, SoundDefinition::RoundBegins4, SoundDefinition::RoundBegins3, SoundDefinition::RoundBegins2, SoundDefinition::RoundBegins1, SoundDefinition::TimeAdded, SoundDefinition::CaptureWarn];
+pub const GENERAL_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointCaptured, SoundDefinition::Stalemate, SoundDefinition::HologramStart, SoundDefinition::HologramStop, SoundDefinition::HologramMove, SoundDefinition::HologramInterrupted, SoundDefinition::RoundStartSiren, SoundDefinition::EndRoundScored];
 
 pub const AREA_THINK_SECONDS: f32 = 0.1;
 pub const MASTER_THINK_SECONDS: f32 = 0.2;
@@ -121,6 +126,7 @@ pub struct Point {
     pub angles: [f32; 3],
     pub owner: PlayerTeam,
     pub default_owner: PlayerTeam,
+    pub group: usize,
     pub locked: bool,
     pub unlock_at: Option<f32>,
     pub visible: bool,
@@ -234,6 +240,9 @@ pub struct Spawn {
     pub disabled: bool,
     initial_disabled: bool,
     pub class_flags: u32,
+    pub round_blue: Option<usize>,
+    pub round_red: Option<usize>,
+    initial_team: PlayerTeam,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -290,6 +299,7 @@ pub enum Event {
         team: PlayerTeam,
         reason: u8,
         switch_teams: bool,
+        full_reset: bool,
     },
 }
 
@@ -310,7 +320,6 @@ pub struct Snapshot {
 pub enum Error {
     InvalidEntity(u32),
     MissingPoint(u32),
-    UnsupportedRounds,
     TooManyPoints,
     Collision(playsrc_movement::Error),
 }
@@ -329,6 +338,12 @@ pub struct World {
     spawns: Vec<Spawn>,
     spawn_revision: u64,
     now: f32,
+    rounds: Vec<Round>,
+    current_round: Option<usize>,
+    previous_rounds: Vec<usize>,
+    first_round: Option<usize>,
+    first_after_restart: bool,
+    round_after_waiting: Option<usize>,
 }
 
 impl World {
@@ -348,13 +363,6 @@ impl World {
         else {
             return Ok(None);
         };
-        if graph
-            .entities
-            .iter()
-            .any(|e| class(e, b"team_control_point_round"))
-        {
-            return Err(Error::UnsupportedRounds);
-        }
         let mut definitions: Vec<_> = graph
             .entities
             .iter()
@@ -393,6 +401,7 @@ impl World {
                 angles: vector(entity, b"angles")?,
                 owner,
                 default_owner: owner,
+                group: integer(entity, b"point_group", 0).clamp(0, 7) as usize,
                 locked,
                 unlock_at: None,
                 visible: integer(entity, b"spawnflags", 0) & 1 == 0,
@@ -483,10 +492,15 @@ impl World {
             }
         });
         let disabled = integer(master, b"StartDisabled", 0) != 0;
+        let rounds = rounds::compile(graph, &points);
         let spawns = graph.entities.iter().filter(|e| class(e, b"info_player_teamspawn")).map(|e| {
             let disabled = integer(e, b"StartDisabled", 0) != 0;
             Ok(Spawn { identity: e.index as u32, team: team(integer(e, b"TeamNum", 0)).ok_or(Error::InvalidEntity(e.index as u32))?,
-                point: points.iter().position(|p| p.name == text(e, b"controlpoint")), position: vector(e, b"origin")?, angles: vector(e, b"angles")?, disabled, initial_disabled: disabled, class_flags: integer(e, b"spawnflags", 0) as u32 })
+                point: points.iter().position(|p| p.name == text(e, b"controlpoint")), position: vector(e, b"origin")?, angles: vector(e, b"angles")?, disabled, initial_disabled: disabled, class_flags: integer(e, b"spawnflags", 0) as u32,
+                initial_team: team(integer(e, b"TeamNum", 0)).ok_or(Error::InvalidEntity(e.index as u32))?,
+                round_blue: rounds.iter().position(|r| r.name == text(e, b"round_bluespawn")),
+                round_red: rounds.iter().position(|r| r.name == text(e, b"round_redspawn")),
+            })
         }).collect::<Result<Vec<_>, Error>>()?;
         let mut world = Self {
             points,
@@ -500,6 +514,12 @@ impl World {
             spawns,
             spawn_revision: 0,
             now: 0.0,
+            rounds,
+            current_round: None,
+            previous_rounds: Vec::new(),
+            first_round: None,
+            first_after_restart: true,
+            round_after_waiting: None,
             master: Master {
                 identity: master.index as u32,
                 disabled,
@@ -543,15 +563,15 @@ impl World {
 
     pub fn bot_capture_points(&self, team: PlayerTeam) -> impl Iterator<Item = &Point> {
         self.points.iter().filter(move |point| {
-            (self.koth && self.points.len() == 1) || (point.owner != team && !point.bots_ignore
+            self.in_round(point.index) && ((self.koth && self.points.len() == 1) || (point.owner != team && !point.bots_ignore
                 && self.areas.iter().any(|a| a.point == point.index && a.teams[slot(team)].can_cap)
-                && self.team_may_capture(team, point.index, self.facts.waiting_for_players))
+                && self.team_may_capture(team, point.index, self.facts.waiting_for_players)))
         })
     }
 
     pub fn bot_defend_points(&self, team: PlayerTeam) -> impl Iterator<Item = &Point> {
         let enemy = if team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red };
-        self.points.iter().filter(move |point| point.owner == team && !point.bots_ignore
+        self.points.iter().filter(move |point| self.in_round(point.index) && point.owner == team && !point.bots_ignore
             && self.areas.iter().any(|a| a.point == point.index && a.teams[slot(enemy)].can_cap)
             && self.team_may_capture(enemy, point.index, self.facts.waiting_for_players))
     }
@@ -567,6 +587,7 @@ impl World {
 
     fn recalculate_spawns(&mut self) {
         self.spawn_revision += 1;
+        if !self.rounds.is_empty() { return; }
         for team in TEAMS {
             let Some(base) = self.master.base_points[slot(team)] else { continue; };
             let end = if base == 0 { self.points.len() - 1 } else { 0 };
@@ -586,9 +607,9 @@ impl World {
         self.configuration
     }
     pub fn snapshot(&self, events: Vec<Event>) -> Snapshot {
-        let local_area = self.areas.iter().find(|a| a.touching.contains(&crate::PLAYER_IDENTITY));
+        let local_area = self.areas.iter().find(|a| self.in_round(a.point) && a.touching.contains(&crate::PLAYER_IDENTITY));
         Snapshot {
-            points: self.points.clone(),
+            points: self.points.iter().cloned().map(|mut point| { point.visible &= self.in_round(point.index); point }).collect(),
             local_point: local_area.map(|a| a.point),
             local_capture_text: local_area.map_or("", |a| self.capture_text(a)),
             display_progress: self.points.iter().map(|p| self.presentation_progress(p.index)).collect(),
@@ -680,6 +701,7 @@ impl World {
             return false;
         }
         if previous[0].is_none() {
+            if !self.rounds.is_empty() { return true; }
             let farthest = self.farthest_owned(team).map_or(-1, |i| i as i32);
             return (farthest - index as i32).abs() <= 1;
         }
@@ -708,12 +730,22 @@ impl World {
     }
 
     pub fn reset(&mut self, now: f32, events: &mut Vec<Event>) {
+        self.round_spawn(now, true, events);
+    }
+
+    pub fn round_spawn(&mut self, now: f32, full_reset: bool, events: &mut Vec<Event>) {
         self.now = now;
         self.local_actor = None;
         self.won = false;
+        self.next_master_think = now + 0.1;
+        if !full_reset { return; }
         self.master.disabled = self.master.initial_disabled;
         self.master.cap_layout = self.master.initial_layout.clone();
         self.master.custom_position = self.master.initial_position;
+        self.current_round = None;
+        self.previous_rounds.clear();
+        self.first_after_restart = true;
+        for round in &mut self.rounds { round.disabled = round.initial_disabled; }
         self.next_master_think = now + 0.1;
         for p in &mut self.points {
             if let Some(definition) = p.loop_sound.take() { events.push(Event::Sound { point: p.index, recipient: None, definition, action: AudioAction::Stop }); }
@@ -731,9 +763,11 @@ impl World {
             output(events, p.identity, owner_output(p.owner), Variant::Void);
         }
         for a in &mut self.areas {
-            a.disabled = a.initial_disabled;
-            a.teams = a.initial_teams;
-            a.point = a.initial_point;
+            if full_reset {
+                a.disabled = a.initial_disabled;
+                a.teams = a.initial_teams;
+                a.point = a.initial_point;
+            }
             a.capturing_team = PlayerTeam::Unassigned;
             a.team_in_zone = PlayerTeam::Unassigned;
             a.remaining = 0.0;
@@ -745,7 +779,7 @@ impl World {
             a.attempt = 0;
             a.next_think = now + AREA_THINK_SECONDS;
         }
-        for spawn in &mut self.spawns { spawn.disabled = spawn.initial_disabled; }
+        if full_reset { for spawn in &mut self.spawns { spawn.disabled = spawn.initial_disabled; spawn.team = spawn.initial_team; } }
         self.recalculate_spawns();
     }
 
@@ -767,6 +801,12 @@ impl World {
     ) -> bool {
         self.facts = facts;
         self.now = now;
+        if let Some(round) = self.rounds.iter_mut().find(|r| r.identity == entity) {
+            if input.eq_ignore_ascii_case(b"Enable") { round.disabled = false; }
+            else if input.eq_ignore_ascii_case(b"Disable") { round.disabled = true; }
+            else if !input.eq_ignore_ascii_case(b"RoundSpawn") { return false; }
+            return true;
+        }
         if let Some(spawn) = self.spawns.iter_mut().find(|s| s.identity == entity) {
             self.spawn_revision += 1;
             if input.eq_ignore_ascii_case(b"Enable") { spawn.disabled = false; }
@@ -778,7 +818,7 @@ impl World {
             if input.eq_ignore_ascii_case(b"SetOwner") {
                 if let Some(owner) = team(variant_integer(value)) {
                     if facts.points_may_be_captured && self.points[i].owner != owner {
-                        if self.master.score_per_capture && owner.is_gameplay() { events.push(Event::TeamScore { team: owner }); }
+                        self.score_point(i, owner, events);
                         self.change_owner(i, owner, false, events);
                     }
                 }
@@ -878,7 +918,7 @@ impl World {
             if let Some(t) = team(variant_integer(value)) {
                 if input.eq_ignore_ascii_case(b"SetWinnerAndForceCaps") {
                     for i in 0..self.points.len() {
-                        self.change_owner(i, t, false, events);
+                        if self.in_round(i) { self.change_owner(i, t, false, events); }
                     }
                 }
                 self.win(t, events);
@@ -1005,6 +1045,7 @@ impl World {
         events: &mut Vec<Event>,
     ) {
         self.areas[index].next_think = now + AREA_THINK_SECONDS;
+        if !self.in_round(self.areas[index].point) { return; }
         if !facts.points_may_be_captured {
             break_capture(&mut self.areas[index], events);
             return;
@@ -1208,7 +1249,7 @@ impl World {
         }
         area.capturing_team = PlayerTeam::Unassigned;
         area.remaining = 0.0;
-        if self.master.score_per_capture { events.push(Event::TeamScore { team }); }
+        self.score_point(point, team, events);
         self.change_owner(point, team, true, events);
         events.push(Event::Captured {
             point,
@@ -1217,6 +1258,14 @@ impl World {
         });
         self.check_win(events);
         num_cappers(&self.areas[index], 0, false, events);
+    }
+
+    fn score_point(&self, index: usize, team: PlayerTeam, events: &mut Vec<Event>) {
+        if !self.master.score_per_capture || !team.is_gameplay() { return; }
+        events.push(Event::TeamScore { team });
+        if self.group_winner((0..self.points.len()).filter(|i| self.in_round(*i)), Some((index, team))) != team {
+            events.push(Event::Sound { point: index, recipient: Some(team), definition: SoundDefinition::EndRoundScored, action: AudioAction::Play });
+        }
     }
 
     fn change_owner(
@@ -1281,10 +1330,16 @@ impl World {
     }
 
     fn check_win(&mut self, events: &mut Vec<Event>) {
-        if self.won || self.master.disabled || self.master.restricted_winner == 1 {
+        if self.won || self.master.disabled {
             return;
         }
-        let team = self.points[0].owner;
+        let (team, restricted) = if self.rounds.is_empty() {
+            (self.group_winner(0..self.points.len(), None), self.master.restricted_winner)
+        } else {
+            let Some(round) = self.current_round.map(|i| &self.rounds[i]) else { return; };
+            (self.group_winner(round.points.iter().copied(), None), round.restricted_winner)
+        };
+        if restricted == 1 { return; }
         if self.koth && team.is_gameplay() {
             if let Some(timers) = self.facts.koth_timer_remaining {
                 if timers[slot(team) - 2] > 0.0 || !self.facts.timer_may_expire || self.contested() {
@@ -1293,9 +1348,11 @@ impl World {
             }
         }
         if team.is_gameplay()
-            && slot(team) != self.master.restricted_winner as usize
-            && self.points.iter().all(|p| p.owner == team)
+            && slot(team) != restricted as usize
         {
+            if let Some(round) = self.current_round.map(|i| &self.rounds[i]) {
+                output(events, round.identity, if team == PlayerTeam::Red { "OnWonByTeam1" } else { "OnWonByTeam2" }, Variant::Void);
+            }
             self.win(team, events);
         }
     }
@@ -1305,10 +1362,12 @@ impl World {
             return;
         }
         self.won = true;
+        let full_reset = self.rounds.is_empty() || !(0..self.rounds.len()).any(|i| self.round_playable(i));
         events.push(Event::RoundWon {
             team,
             reason: WIN_REASON_ALL_POINTS_CAPTURED,
-            switch_teams: self.master.switch_teams,
+            switch_teams: full_reset && self.master.switch_teams,
+            full_reset,
         });
         if team.is_gameplay() {
             output(

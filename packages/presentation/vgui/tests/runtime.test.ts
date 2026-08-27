@@ -192,6 +192,15 @@ describe("generic Source VGUI runtime", () => {
     expect(owner.children).toEqual([canvas, following])
     expect(canvas.style.pointerEvents).toBe("auto")
   })
+  test("SetBorder mutations use the authored scheme and update insets atomically", () => {
+    const { runtime } = setup()
+    const panel = operation(runtime, { kind: "create-panel", parent: 1, control: "Panel", name: "Winner" }).panel!
+    operation(runtime, { kind: "mutate-control", panel, mutation: { border: "BaseBorder" } })
+    expect(runtime.snapshot().panels.find(p => p.id === panel)!.inset).toEqual({ left: 1, top: 2, right: 3, bottom: 4 })
+    expect(runtime.apply({ kind: "mutate-control", panel, mutation: { border: "MissingBorder", text: "not committed" } }).ok).toBe(false)
+    expect(runtime.snapshot().panels.find(p => p.id === panel)!.inset).toEqual({ left: 1, top: 2, right: 3, bottom: 4 })
+  })
+
   test("honors independent authored background and border paint gates without inventing alignment aliases", () => {
     const { runtime, root } = setup()
     operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Portrait", properties: [

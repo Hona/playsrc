@@ -1815,7 +1815,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if let Some(team) = self.pending_team_change.take() {
             self.stop_flame(false);
-            self.fizzle_projectiles(&mut projectile_events);
+            self.fizzle_projectiles(&mut projectile_events, false);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
                 kind: LifecycleEventKind::TeamChanged,
@@ -2038,13 +2038,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
         map_phase.append(round_phase);
         for event in &round_events {
             let sound = match *event {
-                round::Event::TimerWarning { seconds, .. } => match seconds {
+                round::Event::TimerWarning { seconds, setup: true, .. } => match seconds {
+                    60 => Some(SoundDefinition::RoundBegins60), 30 => Some(SoundDefinition::RoundBegins30),
+                    10 => Some(SoundDefinition::RoundBegins10), 5 => Some(SoundDefinition::RoundBegins5),
+                    4 => Some(SoundDefinition::RoundBegins4), 3 => Some(SoundDefinition::RoundBegins3),
+                    2 => Some(SoundDefinition::RoundBegins2), 1 => Some(SoundDefinition::RoundBegins1), _ => None,
+                },
+                round::Event::TimerWarning { seconds, setup: false, .. } => match seconds {
                     60 => Some(SoundDefinition::RoundEnds60), 30 => Some(SoundDefinition::RoundEnds30),
                     10 => Some(SoundDefinition::RoundEnds10), 5 => Some(SoundDefinition::RoundEnds5),
                     4 => Some(SoundDefinition::RoundEnds4), 3 => Some(SoundDefinition::RoundEnds3),
                     2 => Some(SoundDefinition::RoundEnds2), 1 => Some(SoundDefinition::RoundEnds1), _ => None,
                 },
                 round::Event::OvertimeChanged { active: true } => Some(SoundDefinition::Overtime),
+                round::Event::SetupFinished { timer } if self.round.timer().is_some_and(|t| t.configuration.identity == timer && t.configuration.show_in_hud && t.configuration.auto_countdown && !t.paused) => Some(SoundDefinition::RoundStartSiren),
                 _ => None,
             };
             if let Some(sound) = sound { self.emit_objective_sound(PLAYER_IDENTITY, sound, self.movement.position); }
@@ -2067,24 +2074,39 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .any(|event| matches!(event, round::Event::RoundRespawn));
         if reset_round {
             self.restrictions.team_win = None;
-            if self.map.control_points().is_some() {
+            let full_reset = round_events.iter().any(|e| matches!(e, round::Event::RoundStarted { full_reset: true }))
+                || self.map.control_points().is_some_and(|p| p.rounds().is_empty());
+            let mut end_events = Vec::new();
+            if let Some(points) = self.map.control_points_mut() {
+                if round_events.contains(&round::Event::WaitingEnded) { points.preserve_waiting_round(); }
+                points.end_round(&mut end_events);
+            }
+            map_phase.append(self.map.emit_control_point_outputs(self.tick, &end_events)?);
+            map_phase.control_point_events.extend(end_events);
+            if self.map.control_points().is_some() && full_reset {
                 map_phase.append(self.map.restart_control_point_map(self.tick)?);
                 self.round.recreate_map_entities(&self.map.round_configuration());
-                self.buildings.reset();
                 self.mover_requests.clear();
                 self.respawn_touch_count = 0;
             }
+            self.buildings.reset();
             let mut point_events = Vec::new();
+            self.fizzle_projectiles(&mut projectile_events, true);
             let facts = self.control_point_facts();
             if let Some(points) = self.map.control_points_mut() {
-                points.reset(self.tick as f32 * self.movement_configuration.tick_interval, &mut point_events);
+                points.round_spawn(self.tick as f32 * self.movement_configuration.tick_interval, full_reset, &mut point_events);
             }
             let phase = self.map.emit_control_point_outputs(self.tick, &point_events)?;
             map_phase.append(phase);
             map_phase.control_point_events.extend(point_events);
             if self.map.control_points().is_some() {
-                map_phase.append(self.map.activate_control_point_round(self.tick, facts)?);
+                map_phase.append(self.map.activate_control_point_round(self.tick, facts, &mut self.authority_random)?);
                 if let Some(bots) = &mut self.bots { bots.control_point_round_spawn(self.map.control_points().unwrap(), self.tick as f32 * self.movement_configuration.tick_interval); }
+            }
+            if self.round.take_team_switch() {
+                self.team_selection.switch_teams();
+                self.pending_team_change = Some(self.team_selection.local_team());
+                if let Some(bots) = &mut self.bots { bots.switch_teams(); }
             }
             let scores = self.round.snapshot(Vec::new());
             if let Some(objectives) = self.map.objectives_mut() {
@@ -2758,7 +2780,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     jump::Request::FizzleOwnedProjectiles { player_identity }
                         if *player_identity == PLAYER_IDENTITY =>
                     {
-                        self.fizzle_projectiles(&mut projectile_events)
+                        self.fizzle_projectiles(&mut projectile_events, false)
                     }
                     jump::Request::Respawn { player_identity }
                         if *player_identity == PLAYER_IDENTITY =>
@@ -2899,11 +2921,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     if *player == PLAYER_IDENTITY { self.scoreboard.local_defense(); }
                     else if let Some(bots) = &mut self.bots { bots.record_point_defense(*player); }
                 }
-                control_point::Event::RoundWon { team, reason, .. } => {
-                    round_events.extend(if *team == PlayerTeam::Unassigned { self.round.set_stalemate() } else { self.round.win(*team, *reason).map_err(Error::Round)? });
-                    self.enter_bonus_round(*team);
-                    let definition = if *team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost };
-                    self.emit_objective_sound(PLAYER_IDENTITY, definition, self.movement.position);
+                control_point::Event::RoundWon { team, reason, full_reset, switch_teams } => {
+                    let won = if *team == PlayerTeam::Unassigned { self.round.set_stalemate() } else { self.round.win_with_reset(*team, *reason, *full_reset, *switch_teams).map_err(Error::Round)? };
+                    if won.iter().any(|event| matches!(event, round::Event::RoundWon { .. })) {
+                        self.enter_bonus_round(*team);
+                        let definition = if *team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost };
+                        self.emit_objective_sound(PLAYER_IDENTITY, definition, self.movement.position);
+                    }
+                    round_events.extend(won);
                 }
                 _ => {}
             }
@@ -2911,6 +2936,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.apply_round_inputs(&mut self.round, self.tick as f32 * self.movement_configuration.tick_interval);
         let input_events = self.round.take_events();
         for event in &input_events {
+            if matches!(event, round::Event::TimerTimeAdded { .. }) && self.round.state() == round::State::Running && self.round.koth_configuration().is_none() {
+                self.emit_objective_sound(PLAYER_IDENTITY, SoundDefinition::TimeAdded, self.movement.position);
+            }
             if let round::Event::RoundWon { team, .. } = event {
                 self.enter_bonus_round(*team);
                 self.emit_objective_sound(PLAYER_IDENTITY, if *team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost }, self.movement.position);
@@ -3015,7 +3043,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn control_point_facts(&self) -> control_point::Facts {
         let round = self.round.snapshot(Vec::new());
         control_point::Facts {
-            points_may_be_captured: matches!(round.state, round::State::Running | round::State::Stalemate) && !round.waiting_for_players,
+            points_may_be_captured: matches!(round.state, round::State::Running | round::State::Stalemate) && !round.waiting_for_players && !round.in_setup,
             round_running: round.state == round::State::Running,
             waiting_for_players: round.waiting_for_players,
             in_overtime: round.in_overtime,
@@ -3395,7 +3423,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.pending_team_change = None;
             self.stop_flame(false);
             self.buildings.reset();
-            self.fizzle_projectiles(projectile_events);
+            self.fizzle_projectiles(projectile_events, false);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
                 kind: LifecycleEventKind::TeamChanged,
@@ -3444,7 +3472,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.conditions.clear();
             self.ctf_capture_bonus_until = None;
             self.lifecycle = PlayerLifecycle::Active;
-            self.fizzle_projectiles(projectile_events);
+            self.fizzle_projectiles(projectile_events, false);
             self.movement = MovementState::from_player(
                 Player {
                     position: self.spawn,
@@ -6695,10 +6723,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
     }
 
-    fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>) {
+    fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>, all_owners: bool) {
         let mut retained = Vec::new();
         for projectile in std::mem::take(&mut self.projectiles) {
-            if projectile.presentation.owner_identity != PLAYER_IDENTITY {
+            if !all_owners && projectile.presentation.owner_identity != PLAYER_IDENTITY {
                 retained.push(projectile);
                 continue;
             }
@@ -6739,7 +6767,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             class: self.class,
             team: self.team_selection.local_team(),
         });
-        self.fizzle_projectiles(projectile_events);
+        self.fizzle_projectiles(projectile_events, false);
         self.fire_was_held = false;
         self.pending_melee_tick = None;
         for weapon in self.loadout.values_mut() {
@@ -6758,7 +6786,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.stop_flame(true);
         self.decapitations = 0;
         self.critical_history.reset_for_spawn();
-        self.fizzle_projectiles(projectile_events);
+        self.fizzle_projectiles(projectile_events, false);
         self.damagers = deathnotice::DamagerHistory::default();
         self.health = self.maximum_health();
         self.ammo = self.class.data().maximum_ammo;
