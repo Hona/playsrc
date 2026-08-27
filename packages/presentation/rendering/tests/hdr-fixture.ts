@@ -20,7 +20,7 @@ const encoder = new TextEncoder()
 const hash = (bytes: Uint8Array): Uint8Array =>
   new Uint8Array(new Bun.CryptoHasher("sha256").update(bytes).digest())
 
-export function hdrFixture(styles: readonly number[] = [0], linearAttenuation = 0): HdrFixture {
+export function hdrFixture(styles: readonly number[] = [0], linearAttenuation = 0, radius = 100): HdrFixture {
   const bytes: number[] = []
   const u8 = (value: number) => bytes.push(value & 0xff)
   const u16 = (value: number) => bytes.push(value & 0xff, value >>> 8 & 0xff)
@@ -168,7 +168,7 @@ export function hdrFixture(styles: readonly number[] = [0], linearAttenuation = 
   i32(1)
   u8(0)
   raw([0, 0, 0])
-  for (const value of [0.9, 0.8, 1, 100, 1, linearAttenuation, 0]) f32(value)
+  for (const value of [0.9, 0.8, 1, radius, 1, linearAttenuation, 0]) f32(value)
   i32(0)
   i32(-1)
   i32(-1)

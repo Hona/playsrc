@@ -1,5 +1,7 @@
 {
   "jump_beef": {
+    "mode": "custom",
+    "navigation": null,
     "logicalPath": "maps/jump_beef.bsp",
     "download": {
       "url": "https://static.tempus2.xyz/tempus/server/maps/jump_beef.bsp.bz2",
@@ -11,6 +13,8 @@
     }
   },
   "pl_upward": {
+    "mode": "payload",
+    "navigation": "local",
     "logicalPath": "maps/pl_upward.bsp",
     "installed": {
       "contentBuild": "24245096",
@@ -19,7 +23,119 @@
       "sha256": "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709"
     }
   },
+  "cp_badlands": {
+    "mode": "control-point",
+    "navigation": "content",
+    "logicalPath": "maps/cp_badlands.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 25981141,
+      "sha256": "872f6e77abda907d095000009cfbe8c50d62d15e304c80c7dc86a6591ebc08e3"
+    }
+  },
+  "cp_granary": {
+    "mode": "control-point",
+    "navigation": "content",
+    "logicalPath": "maps/cp_granary.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 60353484,
+      "sha256": "6080d8b69cd526aa3e76252d61138ccd4d371953ea0ef2787e5a56bd3399f08d"
+    }
+  },
+  "cp_well": {
+    "mode": "control-point",
+    "navigation": "local",
+    "logicalPath": "maps/cp_well.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 69715720,
+      "sha256": "d66a82edd7aaefe3290bef2d0397d2380f958d5c4e99f4dc57d4d4431a8f92b4"
+    }
+  },
+  "cp_freight_final1": {
+    "mode": "control-point",
+    "navigation": "local",
+    "logicalPath": "maps/cp_freight_final1.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 77271944,
+      "sha256": "f997458041ce58e0b1c7eaa9bea12bc683552e198d44551f01d45c425868dd86"
+    }
+  },
+  "cp_gullywash_final1": {
+    "mode": "control-point",
+    "navigation": "content",
+    "logicalPath": "maps/cp_gullywash_final1.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 24500234,
+      "sha256": "6f60fa38954ea1fd104c27eb73a83282ab6ceea02cbcce033999c6b61ced233f"
+    }
+  },
+  "cp_process_final": {
+    "mode": "control-point",
+    "navigation": "local",
+    "logicalPath": "maps/cp_process_final.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 19794859,
+      "sha256": "52c74027ac179b9686af9ce40d7418f08ef6845d945587b4ccae335cf7081a71"
+    }
+  },
+  "koth_viaduct": {
+    "mode": "king-of-the-hill",
+    "navigation": "content",
+    "logicalPath": "maps/koth_viaduct.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 41690668,
+      "sha256": "b3574e496550311f5036997ed7bf3d1007be7fe28236f8f33a2352fe0518729c"
+    }
+  },
+  "koth_sawmill": {
+    "mode": "king-of-the-hill",
+    "navigation": "content",
+    "logicalPath": "maps/koth_sawmill.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 27758576,
+      "sha256": "3efbcfc7fd6be31e2a6949b1ec51d410072409253dbf230f97054642cc8cc5a3"
+    }
+  },
+  "koth_harvest_final": {
+    "mode": "king-of-the-hill",
+    "navigation": "local",
+    "logicalPath": "maps/koth_harvest_final.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 26691032,
+      "sha256": "441e18e3b8053aa55e9ddef7a4bc6681756518045701adee0d13eaf3b052320a"
+    }
+  },
+  "koth_lakeside_final": {
+    "mode": "king-of-the-hill",
+    "navigation": "content",
+    "logicalPath": "maps/koth_lakeside_final.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 41123424,
+      "sha256": "1d9a761337c213122ce98e9e1f79bfc3cb7ec550851c8f0237c4db76f50d7fe7"
+    }
+  },
   "ctf_2fort": {
+    "mode": "capture-the-flag",
+    "navigation": "local",
     "logicalPath": "maps/ctf_2fort.bsp",
     "installed": {
       "contentBuild": "24245096",

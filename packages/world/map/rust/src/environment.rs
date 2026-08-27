@@ -1346,15 +1346,7 @@ fn compile_sky(
     let mut requests = Vec::with_capacity(6);
     let mut faces = Vec::with_capacity(6);
     for face in CubeFace::ALL {
-        let profile_suffix = if map.lighting_profile == LightingProfile::Hdr {
-            "_hdr"
-        } else {
-            ""
-        };
-        let path = format!(
-            "materials/skybox/{sky}{profile_suffix}{}.vmt",
-            face.suffix()
-        );
+        let path = format!("materials/skybox/{sky}{}.vmt", face.suffix());
         let request = DependencyRequest {
             role: DependencyRole::SkyMaterial(face),
             profile: map.lighting_profile,

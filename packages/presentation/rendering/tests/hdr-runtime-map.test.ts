@@ -38,6 +38,13 @@ describe("schema-7 HDR runtime map", () => {
     expect(map.lighting.descriptor.worldLights[0]!.linearAttenuation).toBe(Math.fround(-0.00020752029377035797))
   })
 
+  test("retains the signed radius computed from linear attenuation", () => {
+    const map = parseRuntimeMap(hdrFixture([0], -2, -1).bytes)
+    if (map.lighting.profile !== "hdr") throw new Error("expected HDR")
+    expect(map.lighting.descriptor.worldLights[0]!.radius).toBe(-1)
+    expect(map.lighting.descriptor.worldLights[0]!.linearAttenuation).toBe(-2)
+  })
+
   test("constructs four float planes and applies integer-HDR quantization without RGBA8", () => {
     const map = parseRuntimeMap(hdrFixture().bytes)
     const lightmap = map.lightmap!

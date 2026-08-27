@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { resolveMapTarget, TargetError } from "../src/targets"
+import maps from "../../../games/tf2/maps.json"
 
 describe("map target registry", () => {
   test("resolves only the exact declared jump_beef identity", () => {
     expect(resolveMapTarget("jump_beef")).toEqual({
+      mode: "custom",
+      navigation: null,
       logicalPath: "maps/jump_beef.bsp",
       download: {
         url: "https://static.tempus2.xyz/tempus/server/maps/jump_beef.bsp.bz2",
@@ -18,6 +21,8 @@ describe("map target registry", () => {
 
   test("resolves the exact configured pl_upward installed-build identity", () => {
     expect(resolveMapTarget("pl_upward")).toEqual({
+      mode: "payload",
+      navigation: "local",
       logicalPath: "maps/pl_upward.bsp",
       installed: {
         contentBuild: "24245096",
@@ -30,6 +35,8 @@ describe("map target registry", () => {
 
   test("resolves the exact configured ctf_2fort installed-build identity", () => {
     expect(resolveMapTarget("ctf_2fort")).toEqual({
+      mode: "capture-the-flag",
+      navigation: "local",
       logicalPath: "maps/ctf_2fort.bsp",
       installed: {
         contentBuild: "24245096",
@@ -55,6 +62,21 @@ describe("map target registry", () => {
         expect(error).toBeInstanceOf(TargetError)
         expect((error as TargetError).code).toBe(code)
       }
+    }
+  })
+
+  test("pins the six control-point and four king-of-the-hill installed BSPs", () => {
+    const additions = Object.keys(maps).map(resolveMapTarget).filter((map) =>
+      map.mode === "control-point" || map.mode === "king-of-the-hill")
+    expect(additions.filter((map) => map.mode === "control-point")).toHaveLength(6)
+    expect(additions.filter((map) => map.mode === "king-of-the-hill")).toHaveLength(4)
+    for (const map of additions) {
+      expect(map.download).toBeUndefined()
+      expect(map.installed?.contentBuild).toBe("24245096")
+      expect(map.installed?.provider).toBe("game-09-tf")
+      expect(map.installed?.byteLength).toBeGreaterThan(0)
+      expect(map.installed?.sha256).toMatch(/^[0-9a-f]{64}$/)
+      expect(["local", "content"]).toContain(map.navigation)
     }
   })
 })

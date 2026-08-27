@@ -1574,6 +1574,14 @@ pub(crate) fn logical_path(
     extension: &str,
     parameter: &[u8],
 ) -> Result<String, Error> {
+    let normalized = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        return Err(error(ErrorCode::InvalidPath, Some(parameter.to_vec())));
+    }
     let lower = normalized.to_ascii_lowercase();
     let prefix = if lower.starts_with("materials/") {
         ""
@@ -1603,6 +1611,21 @@ mod tests {
     use super::*;
     use playsrc_keyvalues::ConditionEnvironment;
     use playsrc_vmt::{Composition, Limits, compose};
+    #[test]
+    fn texture_separators_resolve_within_the_materials_root() {
+        let request = texture(
+            b"$bumpmap",
+            TextureRole::Bump,
+            br"\models\effects\flat_normal",
+        )
+        .unwrap();
+        assert_eq!(
+            request.logical_path.as_deref(),
+            Some("materials/models/effects/flat_normal.vtf")
+        );
+        assert!(logical_path("../outside", ".vtf", b"$basetexture").is_err());
+        assert!(logical_path("/", ".vtf", b"$basetexture").is_err());
+    }
     #[test]
     fn projects_semantics_without_changing_syntax() {
         let bytes=b"LightmappedGeneric{\"$baseTexture\"\"Wood/Wall\"\"$translucent\"\"1\"\"$envmap\"\"env_cubemap\"\"$surfaceprop\"\"wood\"\"Proxies\"{\"AnimatedTexture\"{\"rate\"\"2\"}}}";

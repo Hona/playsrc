@@ -4,6 +4,7 @@ import path from "node:path"
 import { type LocalConfig, repositoryRoot } from "./config"
 import { fileFingerprint } from "./file-fingerprint"
 import type { Tf2ContentBuildContract } from "@playsrc/game-tf2-browser/content-build"
+import { resolveMapTarget } from "./targets"
 
 export async function configuredProfileIdentity(config: LocalConfig, target: string): Promise<string> {
   const content = JSON.parse(await readFile(path.join(repositoryRoot, "games/tf2/content-build.json"), "utf8")) as Tf2ContentBuildContract
@@ -20,7 +21,7 @@ export async function configuredProfileIdentity(config: LocalConfig, target: str
     if (digest !== expected) throw new Error(`Configured TF2 ${name} differs from its pinned content contract`)
     hash.update(name).update(digest)
   }
-  if (target === "pl_upward" || target === "ctf_2fort") hash.update(await fileFingerprint(path.join(config.tf2Dir, "maps", `${target}.nav`)))
+  if (resolveMapTarget(target).navigation === "local") hash.update(await fileFingerprint(path.join(config.tf2Dir, "maps", `${target}.nav`)))
   return hash.digest("hex")
 }
 

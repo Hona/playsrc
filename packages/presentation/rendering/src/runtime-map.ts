@@ -772,7 +772,7 @@ function parseHdrProfile(
     const flags = reader.i32()
     const textureInfo = reader.i32()
     const owner = reader.i32()
-    if (kind < 0 || kind > 5 || style > 63 || radius < 0) {
+    if (kind < 0 || kind > 5 || style > 63) {
       throw new RuntimeMapError(`world light record is invalid: kind=${kind} style=${style} radius=${radius} attenuation=${constantAttenuation},${linearAttenuation},${quadraticAttenuation}`)
     }
     worldLights.push(Object.freeze({

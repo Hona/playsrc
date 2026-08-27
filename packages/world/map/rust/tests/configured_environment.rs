@@ -437,7 +437,7 @@ fn environment_dependencies(
         (CubeFace::Up, "up"),
         (CubeFace::Down, "dn"),
     ] {
-        let path = format!("materials/skybox/{sky}_hdr{suffix}.vmt");
+        let path = format!("materials/skybox/{sky}{suffix}.vmt");
         let source = &bundle[&path];
         let material = resolve_material(&path, bundle, material_environment()).unwrap();
         let selected_textures = material
