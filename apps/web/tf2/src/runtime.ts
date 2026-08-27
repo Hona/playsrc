@@ -1861,7 +1861,7 @@ export class Tf2Application {
       }
       this.#requireOperation(operation)
       this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
-      await this.#prepareGameplayPipelines(this.#snapshot.team)
+      await this.#prepareGameplayPipelines(this.#snapshot.team, true)
       this.#requireOperation(operation)
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
@@ -3849,7 +3849,7 @@ export class Tf2Application {
     }
     if (operation) this.#requireOperation(operation)
     this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
-    await this.#prepareGameplayPipelines(preparationTeam)
+    await this.#prepareGameplayPipelines(preparationTeam, false)
     if (operation) this.#requireOperation(operation)
     this.#resetHudIntegration()
     this.#recordAuthorityBlockers(this.#snapshot)
@@ -4062,12 +4062,15 @@ export class Tf2Application {
     if (this.#crouchHistory.length > 128) this.#crouchHistory.splice(0, this.#crouchHistory.length - 128)
   }
 
-  async #prepareGameplayPipelines(team: number | undefined): Promise<void> {
+  async #prepareGameplayPipelines(team: number | undefined, prepareVisibleWorld: boolean): Promise<void> {
     const renderer = this.#renderer!, client = this.#client!, artifacts = this.#artifacts!, snapshot = this.#snapshot!
     const generation = this.#generation, camera = tf2Camera(snapshot, this.#yaw, this.#pitch), viewport = this.#viewport()
     const checkOwner = () => {
       if (renderer !== this.#renderer || client !== this.#client || artifacts !== this.#artifacts || generation !== this.#generation) throw new Error("Gameplay pipeline preparation generation was replaced")
     }
+    // loadMap already prepares the replacement world. The initial team-camera
+    // visibility pass is separate from class/prop resource admission.
+    if (prepareVisibleWorld) {
     const visibility = await client.visibility(generation, {
       position: camera.position, yawDegrees: camera.yawDegrees, pitchDegrees: camera.pitchDegrees,
       verticalFovDegrees: camera.verticalFovDegrees, aspectRatio: viewport.width / viewport.height,
@@ -4076,6 +4079,7 @@ export class Tf2Application {
     checkOwner()
     await renderer.prepareVisiblePipelines(camera, visibility.leaves)
     checkOwner()
+    }
     await renderer.prepareParticlePipelines(camera, this.#mainFog(artifacts))
     checkOwner()
     // Replacement resets the simulation's team. Keep the admitted presentation
