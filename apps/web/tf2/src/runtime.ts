@@ -3,6 +3,7 @@ import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
+import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
@@ -4524,6 +4525,8 @@ export class Tf2Application {
     this.#displayFrame+=1
     if(profile?.stage==="outdoor"&&Array.isArray(profile.completedDisplays))profile.completedDisplays.push(performance.now())
     const frameProfiler=browserFrameProfiler()
+    const admissionProfile=botAdmissionProfile()
+    if(admissionProfile)recordBotAdmission(admissionProfile,"frame-submitted",prepared.snapshot.tick,{displayFrame:this.#displayFrame,actors:models?.filter(model=>model.identity>=BOT_MODEL_IDENTITY_BASE&&model.identity<BOT_MODEL_IDENTITY_BASE+0x10000).map(model=>({actor:model.identity-BOT_MODEL_IDENTITY_BASE,model:model.model,skin:model.skin}))??[]})
     const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
     if(frameProfiler?.active&&rendererProfile){
       frameProfiler.counters.completedFrames!+=1
@@ -4737,6 +4740,8 @@ export class Tf2Application {
         previousSnapshot=batch.snapshot
       }
       this.#snapshot = snapshot
+      const admissionProfile=botAdmissionProfile()
+      if(admissionProfile)recordBotAdmission(admissionProfile,"publication",snapshot.tick,{bytes:publication.snapshotByteLength,firstHostTick:publication.firstHostTick.toString(),lastHostTick:publication.lastHostTick.toString(),actors:snapshot.bots.map(bot=>({actor:bot.identity,class:bot.class,team:bot.team,weapon:bot.weapon?.identity??null,lifecycle:bot.lifecycle}))})
       if (this.#classSelection?.state().visible && this.#classSelection.state().team !== snapshot.team) {
         this.#classSelection.dispatch({ kind: "team-changed", team: snapshot.team })
       }
@@ -4964,11 +4969,13 @@ export class Tf2Application {
           skin: occurrence.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition, state.worldAngles) })]
       })
       const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
+      if(admissionProfile)recordBotAdmission(admissionProfile,"model-request",snapshot.tick,{actors:botRequests.map(request=>({actor:request.identity-BOT_MODEL_IDENTITY_BASE,model:request.model,skin:request.skin,activity:request.activity,itemModel:"itemModel" in request?request.itemModel:null}))})
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
       const modelPoses=modelOutput===undefined?[]:modelOutput
       const modelMilliseconds=performance.now()-modelStart
+      if(admissionProfile)recordBotAdmission(admissionProfile,"model-complete",snapshot.tick,{milliseconds:modelMilliseconds})
       const viewmodelIdentities=new Set([...historicalViewmodels.map(request=>request.identity),...(viewmodel?[viewmodel.item.identity]:[])])
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)

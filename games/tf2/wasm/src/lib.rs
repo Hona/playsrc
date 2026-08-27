@@ -4578,6 +4578,7 @@ pub unsafe extern "C" fn playsrc_simulation_observe(
         return 0;
     };
     entry.output = output;
+    playsrc_tf2::admission_metrics::emit_value(playsrc_tf2::admission_metrics::PUBLISHED, 0, entry.output.len() as u64);
     gameplay_replay::published(handle, &entry.output);
     1
 }
@@ -4700,6 +4701,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     macro_rules! fail {
         ($code:expr) => {{
             GAME_ADVANCE_ERROR.store($code, Ordering::Relaxed);
+            playsrc_tf2::admission_metrics::emit_value(playsrc_tf2::admission_metrics::ROLLBACK, 0, $code as u64);
             return 0;
         }};
     }
@@ -4723,7 +4725,10 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let Some(session) = slot.session.as_ref() else {
         fail!(6);
     };
+    playsrc_tf2::admission_metrics::begin_tick(session.tick());
+    playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::TRANSACTION, 0);
     let mut candidate = session.clone();
+    playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::CLONED, 0);
     let Some(collision) = slot.collision.clone() else {
         fail!(7);
     };
@@ -4742,6 +4747,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let mut consumed_mover_results = Vec::new();
     let mut collision_snapshot_bytes = Vec::new();
     for index in 0..tick_count {
+        playsrc_tf2::admission_metrics::begin_tick(candidate.tick());
         pushers.retain(|request_id, _| {
             candidate
                 .mover_requests()
@@ -4815,6 +4821,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             },
         };
         let mut mover_phase = playsrc_tf2::MapPhase::default();
+        playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::COLLISION, 0);
         if !pushers.is_empty() {
             let movement = candidate.movement_state();
             let hull = candidate.last_movement_result().map_or_else(
@@ -4966,6 +4973,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         }
         match candidate.into_advanced(input.command, physics_results, &rocket_results, None) {
             Ok((advanced, mut value)) => {
+                playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::ADVANCED, 0);
                 candidate = advanced;
                 let mut current_producer = candidate.producer_snapshot();
                 if !mover_phase.events.is_empty()
@@ -5037,6 +5045,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
         },
         None => fail!(20),
     };
+    playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::ENCODE, 0);
     let Some(encoded) = encode_snapshot(
         &snapshot,
         &producer,
@@ -5061,7 +5070,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     slot.latest_game_snapshot = Some(snapshot);
     slot.collision_revision = collision_revision;
     slot.snapshot = Arc::from(encoded);
-    playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::SNAPSHOT_ENCODED, 0);
+    playsrc_tf2::admission_metrics::emit_value(playsrc_tf2::admission_metrics::SNAPSHOT_ENCODED, 0, slot.snapshot.len() as u64);
     slot.error = 0;
     collision_transaction.committed = true;
     1

@@ -1,8 +1,26 @@
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static HIGH_WATER_BYTES: AtomicUsize = AtomicUsize::new(0);
+static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn track_allocations(enabled: bool) {
+    TRACK_ALLOCATIONS.store(enabled, Ordering::Relaxed);
+}
+
+pub fn allocation_totals() -> (usize, usize) {
+    (ALLOCATIONS.load(Ordering::Relaxed), ALLOCATED_BYTES.load(Ordering::Relaxed))
+}
+
+fn allocation(bytes: usize) {
+    if TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
 
 pub struct MeasuredAllocator;
 
@@ -15,6 +33,7 @@ unsafe impl GlobalAlloc for MeasuredAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
+            allocation(layout.size());
             retain(layout.size());
         }
         pointer
@@ -23,6 +42,7 @@ unsafe impl GlobalAlloc for MeasuredAllocator {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let pointer = unsafe { System.alloc_zeroed(layout) };
         if !pointer.is_null() {
+            allocation(layout.size());
             retain(layout.size());
         }
         pointer
@@ -36,6 +56,7 @@ unsafe impl GlobalAlloc for MeasuredAllocator {
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         let replacement = unsafe { System.realloc(pointer, layout, size) };
         if !replacement.is_null() {
+            allocation(size);
             if size >= layout.size() {
                 retain(size - layout.size());
             } else {
