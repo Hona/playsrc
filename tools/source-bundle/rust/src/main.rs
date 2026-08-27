@@ -221,6 +221,7 @@ struct Tf2GameUiBackgroundVariant {
 #[serde(rename_all = "camelCase")]
 struct MapTarget {
     logical_path: String,
+    pak_provider: String,
     mode: String,
     navigation: Option<String>,
     download: Option<Download>,
@@ -2245,11 +2246,7 @@ fn main() -> Result<(), String> {
         playsrc_bsp::Limits::default(),
     )
     .map_err(|error| error.to_string())?;
-    let pak_provider = if target == "jump_beef" {
-        "jump-beef-pak".to_owned()
-    } else {
-        format!("{target}-pak")
-    };
+    let pak_provider = map_target.pak_provider.clone();
     let pak = bsp.lumps[40]
         .pak
         .as_ref()

@@ -25,6 +25,12 @@ describe("TF2 browser multi-map configuration", () => {
     expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
   })
 
+  test("admits explicitly prepared Badlands only for local integration", () => {
+    const integration = { ...valid, defaultTarget: "cp_badlands", targets: [target("cp_badlands", 1)] }
+    expect(parseBrowserConfiguration(integration, valid.assetOrigin).targets[0]!.target).toBe("cp_badlands")
+    expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
+  })
+
   test("accepts only the complete bounded target table", () => {
     const configuration = parseBrowserConfiguration(valid, valid.assetOrigin)
     expect(configuration).toEqual(valid)

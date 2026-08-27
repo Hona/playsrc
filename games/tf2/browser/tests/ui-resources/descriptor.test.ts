@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import bundleManifest from "../../../../../tools/source-bundle/tf2-ui.generated.json" with { type: "json" }
 import { TF2_CLASS_IMAGES, TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
 import { configuredTf2UiResourceInput } from "../../src/ui-resources/configured.generated"
+import { TF2_MAPS } from "../../src/maps"
 import {
   classifyTf2UiCommand,
   createTf2AuthoredCrosshairDescriptor,
@@ -14,6 +15,15 @@ import {
 const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 
 describe("configured TF2 UI resource descriptor", () => {
+  test("includes each pinned map photograph in the drawable UI image closure", () => {
+    for (const [target, declaration] of Object.entries(TF2_MAPS)) {
+      if (!declaration.loadingPhoto) continue
+      const image = tf2UiResources.images.find((candidate) => candidate.configuredValue === `maps/menu_photos_${target}`)
+      expect(image?.classification, target).toBe("content-vtf")
+      expect(image?.material, target).toMatchObject(declaration.loadingPhoto.material)
+      expect(image?.textures[0]?.source, target).toMatchObject(declaration.loadingPhoto.texture)
+    }
+  })
   test("exports every code-selected HUD image through the generated source-bundle closure", () => {
     const staticImages = new Set(tf2UiResources.images.map((image) => image.configuredValue.toLowerCase()))
     const dependencies = new Map(bundleManifest.dependencies.map((dependency) => [dependency.logicalPath, dependency]))
@@ -140,7 +150,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_Class_Name_Soldier")?.definitions[0]?.value).toBe("Soldier")
-    expect(tf2UiResources.images).toHaveLength(466)
+    expect(tf2UiResources.images).toHaveLength(476)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(83)

@@ -1714,8 +1714,14 @@ fn main() -> Result<(), String> {
     let mut unique_localization_tokens = code_localization_tokens.iter().cloned().collect::<BTreeSet<_>>();
     let mut unique_image_values = class_images.into_iter().collect::<BTreeSet<_>>();
     unique_image_values.extend(equipment.images);
-    unique_image_values.insert("maps/menu_photos_ctf_2fort".to_owned());
-    unique_image_values.insert("maps/menu_photos_pl_upward".to_owned());
+    let map_declarations: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        &fs::read(repository.join("games/tf2/maps.json")).map_err(|error| error.to_string())?,
+    ).map_err(|error| error.to_string())?;
+    for (identity, declaration) in map_declarations {
+        if declaration.get("installed").is_some() {
+            unique_image_values.insert(format!("maps/menu_photos_{identity}"));
+        }
+    }
     unique_image_values.insert("training/screenshots/pl_upward".to_owned());
     unique_image_values.insert("illustrations/gamemode_cp".to_owned());
     unique_image_values.insert("illustrations/gamemode_koth".to_owned());
