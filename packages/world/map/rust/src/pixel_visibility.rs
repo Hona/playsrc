@@ -32,6 +32,19 @@ pub struct Proxy {
 }
 
 impl View {
+    pub fn perspective(origin: [f32; 3], yaw: f32, pitch: f32, fov: f32, aspect: f32, near: f32, far: f32, height: u32) -> Self {
+        let (sy, cy) = yaw.to_radians().sin_cos();
+        let (sp, cp) = pitch.to_radians().sin_cos();
+        let forward = [cp*cy, cp*sy, -sp];
+        let right = [sy, -cy, 0.0];
+        let up = [sp*cy, sp*sy, cp];
+        let row = |axis: [f32; 3], amount: f32, offset: f32| {
+            let a = scale(axis, amount);
+            [a[0], a[1], a[2], offset - (a[0]*origin[0]+a[1]*origin[1]+a[2]*origin[2])]
+        };
+        let sy = 1.0 / (fov.to_radians() * 0.5).tan();
+        Self { origin, forward, right, up, height, world_to_clip: [row(right,sy/aspect,0.0),row(up,sy,0.0),row(forward,far/(far-near),-near*far/(far-near)),row(forward,1.0,0.0)] }
+    }
     fn clip(&self, point: [f32; 3]) -> [f32; 4] {
         self.world_to_clip.map(|row| row[0] * point[0] + row[1] * point[1] + row[2] * point[2] + row[3])
     }
@@ -117,6 +130,8 @@ impl Query {
     }
 
     pub fn active(&self, frame: u64) -> bool { self.issued.is_some_and(|issued| frame.saturating_sub(issued) <= 1) }
+    /// EndScene already retired queries unused for two frames before this draw.
+    pub fn expired_before_frame(&self, frame:u64)->bool {self.issued.is_some_and(|issued|frame.saturating_sub(issued)>2)}
 }
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] { std::array::from_fn(|axis| a[axis] + b[axis]) }
@@ -178,5 +193,12 @@ mod tests {
         assert_eq!(state.sample(2, 0.03125, 0.0, Some((100, 100))), 0.0);
         state.issue(2, Some(&proxy));
         assert_eq!(state.sample(3, 0.03125, 0.0, Some((0, 0))), 0.0);
+    }
+
+    #[test]
+    fn inactivity_is_retired_at_the_previous_end_scene_not_before_the_current_draw() {
+        let proxy=view().proxy(Parameters{position:[10.0,0.0,0.0],size:2.0,aspect:1.0,screen_space:false}).unwrap();
+        let mut query=Query::default();query.issue(2,Some(&proxy));
+        assert!(!query.expired_before_frame(4));assert!(query.expired_before_frame(5));
     }
 }

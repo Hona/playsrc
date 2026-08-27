@@ -411,6 +411,8 @@ pub struct MapRuntime {
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
     particle_systems: playsrc_entity::particle_system::Systems,
     smokestacks: playsrc_entity::smokestack::Systems,
+    sprites: playsrc_entity::sprite::Sprites,
+    sprite_models: std::sync::Arc<BTreeMap<Vec<u8>,u32>>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     control_points: Option<crate::control_point::World>,
@@ -653,6 +655,7 @@ impl MapRuntime {
             &standard_graph
         } else { graph };
         config.external_classes.extend(playsrc_entity::soundscape::bindings());
+        config.external_classes.extend(playsrc_entity::sprite::bindings());
         let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
             for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
@@ -965,6 +968,8 @@ impl MapRuntime {
             smokestacks,
             soundscapes: playsrc_entity::soundscape::Systems::default(),
             soundscape_player: playsrc_entity::soundscape::Player::default(),
+            sprites: playsrc_entity::sprite::Sprites::default(),
+            sprite_models: std::sync::Arc::default(),
             world,
             player,
             actor_handles: BTreeMap::new(),
@@ -1443,6 +1448,19 @@ impl MapRuntime {
         self.source_handles.get(&source).copied()
     }
 
+    pub fn visual_entity(&self, source: u32) -> Option<(EntityHandle, playsrc_entity::Transform, playsrc_entity::EntityRenderState)> {
+        let entity = self.world.entity(self.source_handle(source)?)?;
+        Some((entity.handle, entity.world_transform, entity.render.clone()))
+    }
+
+    pub fn install_sprite_models(&mut self, models:BTreeMap<Vec<u8>,u32>) -> Result<(),RuntimeFailure> {
+        let sprites=playsrc_entity::sprite::Sprites::from_world(&self.world,self.world.current_tick() as f32*self.tick_interval,|name|models.get(name).copied())
+            .map_err(|source|invalid(source as usize))?;
+        self.sprites=sprites;self.sprite_models=std::sync::Arc::new(models);Ok(())
+    }
+
+    pub fn sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.sprites.presentation(&self.world,source) }
+
     pub fn round_configuration(&self) -> crate::round::Configuration {
         self.round_configuration.clone()
     }
@@ -1532,6 +1550,8 @@ impl MapRuntime {
         self.prop_animations.clear();
         self.payload_watchers=crate::payload::Watcher::from_entities(&definitions);
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
+        self.sprites=playsrc_entity::sprite::Sprites::from_world(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied())
+            .map_err(|source|invalid(source as usize))?;
         if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
         result.append(self.consume(spawned)?);
         Ok(result)
@@ -1778,7 +1798,9 @@ impl MapRuntime {
                 pickup.respawn_tick = None;
             }
         }
-        self.consume(batch).map_err(MapError::from)
+        let output=self.consume(batch).map_err(MapError::from)?;
+        self.sprites.advance(input.tick as f32*self.tick_interval);
+        Ok(output)
     }
 
     pub fn apply_mover_results(
@@ -2368,6 +2390,12 @@ impl MapRuntime {
                         }
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
+                        if let Some(color)=self.sprites.input(&self.world,entity,&input,&value,self.world.current_tick() as f32*self.tick_interval) {
+                            let color_batch=self.world.phase(self.world.current_tick(),&[WorldCommand::Input(InputRecord{
+                                target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:Variant::Color(color),activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence,
+                            })])?;
+                            self.next_producer_sequence+=1;output.append(self.consume(color_batch)?);
+                        }
                         let mut point_events = Vec::new();
                         if input.eq_ignore_ascii_case(b"RoundActivate")
                             && let Some(koth) = self.round_configuration.koth

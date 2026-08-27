@@ -6,6 +6,8 @@ pub use lighting::*;
 mod environment;
 pub use environment::*;
 pub mod pixel_visibility;
+pub mod legacy_glow;
+pub mod legacy_sprite;
 mod displacement;
 pub use displacement::{CollisionDisplacement, DisplacementSurface};
 mod area_portals;

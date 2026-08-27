@@ -1483,7 +1483,7 @@ impl EntityWorld {
             .filter(|name| !name.is_empty());
         let local_transform = Transform {
             origin: field_vector(&definition, b"origin", [0.0; 3])?,
-            angles: field_vector(&definition, b"angles", [0.0; 3])?,
+            angles: crate::sprite::spawn_angles(&classname,field_vector(&definition, b"angles", [0.0; 3])?),
         };
         let (behavior, coverage) = self.behavior_for(&definition, local_transform)?;
         let mut render = render_state(&definition)?;
