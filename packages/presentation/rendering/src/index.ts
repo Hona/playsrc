@@ -2405,6 +2405,9 @@ class RendererOwner implements Renderer {
     this.#requireReady()
     if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "particle pipeline preparation requires an idle active map")
     const owner = this.#active, backend = this.#backend, ordinal = this.#loadOrdinal, deviceGeneration = this.#deviceGeneration
+    // Pipeline compilation initializes bindings, but a never-drawn particle
+    // texture must not become permanently GPU-resident merely through loading.
+    const coldTextures = [...owner.particleTextures.values()].filter(texture => !backend.backend.has(texture))
     const previousFog = this.#scene.fog as THREE.Fog | null
     const started = performance.now()
     this.#renderBusy = true
@@ -2428,6 +2431,10 @@ class RendererOwner implements Renderer {
         profile.counters.particlePipelinePreparationMilliseconds = performance.now() - started
       }
     } finally {
+      for (const texture of coldTextures) {
+        texture.dispose()
+        texture.needsUpdate = true
+      }
       this.#setSceneFog(previousFog)
       this.#renderBusy = false
     }
