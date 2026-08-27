@@ -5048,7 +5048,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for pellet in 0..profile.pellets {
             let seed = ((random::prediction_seed(self.tick as u32) & 255) + u32::from(pellet)) as i32;
             let mut direction = forward;
-            for context in [RandomContext::Authority, RandomContext::PredictedPresentation] {
+            for context in [RandomContext::Authority, RandomContext::PredictedPresentation].into_iter().take(if owner == PLAYER_IDENTITY { 2 } else { 1 }) {
                 match context {
                     RandomContext::Authority => self.authority_random = UniformRandomStream::from_seed(seed).unwrap(),
                     RandomContext::PredictedPresentation => self.predicted_presentation_random = UniformRandomStream::from_seed(seed).unwrap(),

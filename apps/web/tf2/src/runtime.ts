@@ -4769,7 +4769,7 @@ export class Tf2Application {
         const timeline = profile.meleeTimeline as unknown[]
         let recorded = BigInt(String(profile.meleeRecordedTick))
         for (const batch of prepared.publication.eventBatches) if (batch.snapshot.tick > recorded) {
-          for (const event of batch.snapshot.events) if ([14, 15, 17, 18, 19].includes(event.kind)) timeline.push({ tick: batch.snapshot.tick.toString(), ...event })
+          for (const event of batch.snapshot.events) if ([14, 15, 17, 18, 19].includes(event.kind) || profile.captureHitscan && (event.kind === 12 || event.kind === 13)) timeline.push({ tick: batch.snapshot.tick.toString(), ...event })
           recorded = batch.snapshot.tick
         }
         profile.meleeRecordedTick = recorded.toString()
@@ -5338,6 +5338,15 @@ export class Tf2Application {
         weaponPoseProfile.weaponPose = item ? { model: item.model, definition: currentViewmodelRequest?.itemDefinition,
           class: snapshot.class, weapon: snapshot.weapon, ammo: snapshot.loadout.find(value => value.weapon === snapshot.weapon),
           tick: String(snapshot.tick), bones: Array.from(item.boneMatrices) } : null
+        if (weaponPoseProfile.captureHitscan) {
+          weaponPoseProfile.hitscan = { heads: snapshot.decapitations, conditions: snapshot.conditions,
+            ammo: snapshot.loadout.find(value => value.weapon === snapshot.weapon),
+            actors: botPoses.map(pose => {
+              const bot = snapshot.bots.find(bot => bot.identity + BOT_MODEL_IDENTITY_BASE === pose.identity)!
+              return { identity: bot.identity, attachments: Object.fromEntries(pose.attachments.map(attachment =>
+                [attachment.name.toLowerCase(), transformAttachment(attachment.matrix, bot.position, sourceViewOrientation(0, bot.yawDegrees)).position])) }
+            }) }
+        }
       }
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>

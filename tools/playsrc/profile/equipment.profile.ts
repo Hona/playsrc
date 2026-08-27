@@ -151,11 +151,12 @@ test("twelve hitscan items admit their models, native firing and authored audio"
   test.skip(process.env.PLAYSRC_HITSCAN_MATRIX !== "1")
   test.setTimeout(140_000)
   const subset = process.env.PLAYSRC_HITSCAN_ITEMS?.split(",").map(Number)
+  const combat = process.env.PLAYSRC_HITSCAN_COMBAT === "1"
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, subset ? "profiles/equipment/hitscan-targeted" : "profiles/equipment/hitscan")
   await mkdir(directory, { recursive: true })
   const errors: string[] = [], records: unknown[] = []
   page.on("pageerror", error => errors.push(error.message))
-  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true } })
+  await page.addInitScript(combat => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true, captureMelee: combat, captureHitscan: combat } }, combat)
   const main = page.locator("main"), equipment = page.locator(".equipment-layer")
   const command = async (text: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
@@ -171,6 +172,12 @@ test("twelve hitscan items admit their models, native firing and authored audio"
   await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
   await page.locator(".class-selection-layer [data-vgui-name='soldier']").click()
   await expect(main).toHaveAttribute("data-phase", "Ready")
+  if (combat) {
+    await command("tf_bot_quota 0"); await command("nb_stop 1")
+    // The Force-a-Nature suppresses FireBullet itself during the real pre-round
+    // freeze. Let the authored waiting and pre-round clocks elapse unchanged.
+    await expect.poll(() => page.evaluate(() => { const round = (globalThis as any).__playsrcProfile.round; return !round.waitingForPlayers && round.state === 4 }), { timeout: 40_000 }).toBe(true)
+  }
   const cases = [
     [45, 1, "scout", 0], [1103, 1, "scout", 0], [425, 6, "heavyweapons", 1], [1153, 9, "engineer", 0],
     [415, 3, "soldier", 1], [424, 6, "heavyweapons", 0], [312, 6, "heavyweapons", 0], [41, 6, "heavyweapons", 0],
@@ -204,15 +211,84 @@ test("twelve hitscan items admit their models, native firing and authored audio"
     await page.keyboard.press(`Digit${selection + 1}`)
     await expect.poll(async () => (await actual())?.definition).toBe(definition)
     await expect.poll(async () => (await actual())?.model).toBe(metadata.modelPlayer)
-    const before = (await actual())!
+    let target: { identity: number; health: number; position: number[] } | undefined
+    if (combat) {
+      await command("tf_bot_kick all")
+      await command("tf_bot_add 1 heavy blue easy")
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.bots.length)).toBe(1)
+      const name = await page.evaluate(() => (globalThis as any).__playsrcProfile.combat.scores.find((player: any) => player.identity !== 1).name)
+      await command("setpos -2528 -1360 17")
+      await command(`bot_teleport "${name}" -2440 -1360 17 0 ${definition === 61 || definition === 402 ? 180 : 0} 0`)
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0].position)).toEqual([-2440, -1360, 17])
+      target = await page.evaluate(() => { const bot = (globalThis as any).__playsrcProfile.bots[0]; return { identity: bot.identity, health: bot.health, position: bot.position } })
+      await page.evaluate(() => { (globalThis as any).__playsrcProfile.meleeTimeline = [] })
+    }
     await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 400 } })
+    if (combat) {
+      const capturedTick = await page.evaluate(() => Number((globalThis as any).__playsrcProfile.melee.tick))
+      await expect.poll(() => page.evaluate(() => Number((globalThis as any).__playsrcProfile.melee.tick))).toBeGreaterThan(capturedTick + 75)
+      await page.evaluate(head => {
+        const profile = (globalThis as any).__playsrcProfile, camera = profile.displacementCamera
+        let yaw = 0, pitch = 0
+        if (head) {
+          const point = profile.hitscan.actors[0].attachments.head
+          if (!point) throw new Error("Authored target head attachment unavailable")
+          const delta = point.map((value: number, axis: number) => value - camera.position[axis])
+          yaw = Math.atan2(delta[1], delta[0]) * 180 / Math.PI
+          pitch = -Math.atan2(delta[2], Math.hypot(delta[0], delta[1])) * 180 / Math.PI
+        }
+        const input = new MouseEvent("mousemove", { bubbles: true })
+        Object.defineProperty(input, "movementX", { value: (camera.yawDegrees - yaw) / 0.066 })
+        Object.defineProperty(input, "movementY", { value: (pitch - camera.pitchDegrees) / 0.066 })
+        dispatchEvent(input)
+      }, definition === 61 || definition === 402)
+      if (definition === 402) {
+        await page.mouse.click(640, 400, { button: "right" })
+        await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.hitscan.conditions[0] & 2)).toBe(2)
+        const scopedTick = await page.evaluate(() => Number((globalThis as any).__playsrcProfile.melee.tick))
+        await expect.poll(() => page.evaluate(() => Number((globalThis as any).__playsrcProfile.melee.tick)), { timeout: 7000 }).toBeGreaterThan(scopedTick + 300)
+      }
+      await page.evaluate(() => { (globalThis as any).__playsrcProfile.meleeTimeline = [] })
+    }
+    const before = await page.evaluate(() => { const p = (globalThis as any).__playsrcProfile; return { ammo: p.weaponPose?.ammo ?? p.hitscan.ammo } })
     await page.mouse.down({ button: "left" })
+    if (combat) {
+      try {
+        await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.meleeTimeline.filter((event: any) => event.kind === 17 && event.auxiliary === 1).length), { timeout: 5000 }).toBeGreaterThan(0)
+      } catch (error) {
+        await page.mouse.up({ button: "left" })
+        await page.screenshot({ path: path.join(directory, `${definition}-failed-combat.png`) })
+        await writeFile(path.join(directory, `${definition}-failed-combat.json`), JSON.stringify(await page.evaluate(() => {
+          const p = (globalThis as any).__playsrcProfile
+          return { camera: p.displacementCamera, combat: p.melee, hitscan: p.hitscan, events: p.meleeTimeline, weapon: p.weaponPose }
+        }), (_, value) => typeof value === "bigint" ? String(value) : value, 2))
+        throw error
+      }
+    }
     await expect.poll(async () => {
-      const pose = await actual()
-      return pose ? pose.ammo.clip + pose.ammo.reserve : Infinity
+      return page.evaluate(() => { const p = (globalThis as any).__playsrcProfile, ammo = p.weaponPose?.ammo ?? p.hitscan.ammo; return ammo.clip + ammo.reserve })
     }).toBeLessThan(before.ammo.clip + before.ammo.reserve)
     await page.mouse.up({ button: "left" })
-    const after = (await actual())!
+    let damage: any[] = []
+    if (combat) {
+      damage = await page.evaluate(() => (globalThis as any).__playsrcProfile.meleeTimeline.filter((event: any) => event.kind === 17 && event.auxiliary === 1))
+      if (definition === 1103) expect(damage.some(event => event.values[2] === 2)).toBe(true)
+      if (definition === 61 || definition === 402) expect(damage.some(event => event.values[2] === 1 && event.values[3] === 1)).toBe(true)
+      if (definition === 41) expect(await page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0].conditions[0] & (1 << 15))).not.toBe(0)
+      if (definition === 45) {
+        expect(await page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0].velocity[0])).toBeGreaterThan(0)
+        await command("nb_stop 0")
+        await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0].position[0])).toBeGreaterThan(target!.position[0])
+        await command("nb_stop 1")
+      }
+      if (definition === 402) expect(await page.evaluate(() => (globalThis as any).__playsrcProfile.hitscan.heads)).toBe(1)
+      await page.screenshot({ path: path.join(directory, `${definition}-impact.png`) })
+      await writeFile(path.join(directory, `${definition}-damage.json`), JSON.stringify(await page.evaluate(() => {
+        const p = (globalThis as any).__playsrcProfile
+        return { camera: p.displacementCamera, combat: p.melee, hitscan: p.hitscan, events: p.meleeTimeline }
+      }), (_, value) => typeof value === "bigint" ? String(value) : value, 2))
+    }
+    const after = await page.evaluate(() => { const p = (globalThis as any).__playsrcProfile; return { model: p.weaponPose?.model ?? null, ammo: p.weaponPose?.ammo ?? p.hitscan.ammo } })
     expect(after.ammo.clip + after.ammo.reserve).toBeLessThan(before.ammo.clip + before.ammo.reserve)
     const sounds = metadata.soundOverrides.filter(([slot]) => slot === "sound_single_shot" || slot === "sound_double_shot" || slot === "sound_burst").map(([, name]) => name)
     await expect.poll(async () => {
@@ -222,7 +298,18 @@ test("twelve hitscan items admit their models, native firing and authored audio"
     const audio = await main.getAttribute("data-audio-starts") ?? ""
     expect(sounds.some(sound => audio.includes(sound)), `${definition}: ${audio}`).toBe(true)
     await page.screenshot({ path: path.join(directory, `${definition}.png`) })
-    records.push({ definition, model: after.model, before: { clip: before.ammo.clip, reserve: before.ammo.reserve },
+    if (combat && after.ammo.clip < before.ammo.clip && after.ammo.reserve > 0) {
+      await page.keyboard.press("KeyR")
+      await expect.poll(async () => (await actual())?.ammo.clip, { timeout: 7000 }).toBeGreaterThan(after.ammo.clip)
+    }
+    if (combat && definition === 220) {
+      await page.mouse.down({ button: "right" })
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.meleeTimeline.some((event: any) => event.kind === 14 && event.detail === 60 && event.subject !== 0))).toBe(true)
+      await page.mouse.up({ button: "right" })
+      expect(await main.getAttribute("data-audio-starts")).toContain("Weapon_Hands.PushImpact")
+      await page.screenshot({ path: path.join(directory, "220-shove.png") })
+    }
+    records.push({ definition, model: after.model, target, damage, before: { clip: before.ammo.clip, reserve: before.ammo.reserve },
       after: { clip: after.ammo.clip, reserve: after.ammo.reserve }, sounds: sounds.filter(sound => audio.includes(sound)) })
     await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ platform: process.platform, requested, complete: false, records, errors }, null, 2))
     await command("-attack")
