@@ -2502,6 +2502,7 @@ class RendererOwner implements Renderer {
     const staticPropBatches: { ownership: 0 | 1; batch: StaticPropBatch }[] = []
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
+    const modelBaseSamples = new Map<string, any>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
     const modelLightingGraphs = new ModelLightingGraphs()
     const modelPanelLightingGraphs = new ModelLightingGraphs()
@@ -3225,7 +3226,16 @@ class RendererOwner implements Renderer {
             const first = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture"
               ? sampled!
               : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
-             let base = first
+             // Static base sampling is texture/interpretation state, not an
+             // occurrence or primitive. Sharing it also lets equivalent VMT
+             // graphs hit the node-builder cache before WGSL generation.
+             const baseKey = baseTexture && typedMaterial?.shader !== "unlit-two-texture"
+               ? `${baseTexture.texture.uuid}:${baseTexture.input.sourceFormat}` : undefined
+             let base = baseKey ? modelBaseSamples.get(baseKey) : undefined
+             if (!base) {
+               base = first
+               if (baseKey) modelBaseSamples.set(baseKey, base)
+             }
             if (typedMaterial?.shader === "unlit-two-texture") {
               const second = createModelTexture(resolved.logicalPath, 6)
               if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
