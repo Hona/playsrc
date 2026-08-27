@@ -111,6 +111,12 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     }
     const cpuStarted = process.cpuUsage(), rssBefore = process.memoryUsage().rss
     const observations: Array<{ milliseconds: number; ticks: number; counters: number[] }> = []
+    const counterTotals = Array(11).fill(0)
+    const captureCounters = () => Array.from({ length: counterTotals.length }, (_, index) => {
+      const count = e.playsrc_collision_replay_counter(index)
+      counterTotals[index] += count
+      return count
+    })
     const tickTimes: number[] = [], groups: Array<{ ticks: number; milliseconds: number }> = []
     let groupTicks = 0, groupMilliseconds = 0, groupIndex = 0
     for (const [index, record] of replay.records.entries()) {
@@ -131,7 +137,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         if (active) {
           let ticks = 0
           for (let next = index + 1; replay.records[next]?.kind === 2; next++) ticks++
-          observations.push({ milliseconds, ticks, counters: Array.from({ length: 11 }, (_, index) => e.playsrc_collision_replay_counter(index)) })
+          observations.push({ milliseconds, ticks, counters: captureCounters() })
         }
       } else if (record.kind === 2) {
         verifiedTicks++
@@ -145,6 +151,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
           e.playsrc_free(pointer, command.length)
           verify(hash(output(handle, "snapshot")), data.subarray(16, 48).toString("hex"), `tick:${data.readBigUInt64LE(0)}`)
           if (active) {
+            captureCounters()
             tickTimes.push(elapsed)
             groupMilliseconds += elapsed
             if (++groupTicks === [2, 3, 4, 6][groupIndex % 4]) { groups.push({ ticks: groupTicks, milliseconds: groupMilliseconds }); groupTicks = 0; groupMilliseconds = 0; groupIndex++ }
@@ -188,7 +195,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations, historicalHashMismatches,
       cpuMicroseconds: process.cpuUsage(cpuStarted), rssBefore, rssAfter: process.memoryUsage().rss,
       tickMilliseconds: summarizeDistribution(tickTimes), observeMilliseconds: summarizeDistribution(observations.map(value => value.milliseconds)), observations,
-      counters: observations.reduce((sum, value) => sum.map((count, index) => count + value.counters[index]!), Array(11).fill(0)),
+      counters: counterTotals,
       authoritativeTickGroups: groups, liveBytes: e.playsrc_memory_bytes(0) >>> 0, linearBytes: e.memory.buffer.byteLength })
     e.playsrc_dispose(handle)
     for (const section of sections) e.playsrc_resource_release(section.pointer, section.length)
