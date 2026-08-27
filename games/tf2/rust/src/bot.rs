@@ -2063,6 +2063,12 @@ impl BotWorld {
             }
         }
     }
+
+    pub(crate) fn set_respawn_waves(&mut self, waves: [Option<f32>; 2]) {
+        for (index, value) in waves.into_iter().enumerate() {
+            if let Some(seconds) = value { self.respawn_waves[index] = seconds; }
+        }
+    }
 }
 
 fn sync_bot_ammo(bot: &mut Bot) {

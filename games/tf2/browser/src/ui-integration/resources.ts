@@ -497,6 +497,7 @@ function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiContr
         "HealthBonusPosAdj", "HealthDeathWarning", "HealthDeathWarningColor", "MeterFG", "MeterBG",
         "MaxDeathNotices", "IconScale", "LineHeight", "LineSpacing", "CornerRadius", "RightJustify",
         "TextFont", "TeamBlue", "TeamRed", "IconColor", "LocalPlayerColor", "BaseBackgroundColor", "LocalBackgroundColor",
+        "blue_active_xpos", "red_active_xpos",
       ]),
     }),
     Object.freeze({

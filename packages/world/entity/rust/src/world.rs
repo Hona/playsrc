@@ -693,6 +693,7 @@ pub enum BlockContactKind {
 pub enum WorldCommand {
     Spawn(Entity),
     Input(InputRecord),
+    QueueInput { input: InputRecord, delay: f32 },
     Contact(ContactRecord),
     Damage {
         entity: EntityHandle,
@@ -3232,6 +3233,7 @@ impl EntityWorld {
                 self.schedule_activation(handle, batch)
             }
             WorldCommand::Input(input) => self.dispatch_record(input, batch),
+            WorldCommand::QueueInput { input, delay } => self.schedule_event(input.target, input.input, input.value, delay, input.activator, input.caller, input.output_action, batch).map(|_| ()),
             WorldCommand::Contact(contact) => self.apply_contact(contact, batch),
             WorldCommand::Damage { entity, attacker } => {
                 self.damage_entity(entity, attacker, batch)

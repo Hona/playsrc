@@ -130,6 +130,7 @@ const HUD_AMMO = "resource/ui/hudammoweapons.res"
 const HUD_WEAPONS = "resource/ui/hudweaponselection.res"
 const HUD_MATCH_STATUS = "resource/ui/hudmatchstatus.res"
 const HUD_TIME_PANEL = "resource/ui/hudobjectivetimepanel.res"
+const HUD_KOTH_TIME_PANEL = "resource/ui/hudobjectivekothtimepanel.res"
 const HUD_WAITING_PANEL = "resource/ui/waitingforplayerspanel.res"
 const HUD_SCOREBOARD = "resource/ui/scoreboard.res"
 const HUD_OBJECTIVE_FLAGS = "resource/ui/hudobjectiveflagpanel.res"
@@ -270,6 +271,9 @@ class Integration implements Tf2HudIntegration {
     timerChildren: ReadonlyMap<string, VguiPanelId>
     waitingChildren: ReadonlyMap<string, VguiPanelId>
   }>
+  #kothPanels?: Readonly<{ root: VguiPanelId; timers: readonly Readonly<{ root: VguiPanelId; value: VguiPanelId; children: ReadonlyMap<string, VguiPanelId> }>[] }>
+  #kothOvertime = [false, false]
+  #kothActive = -1
   #destroyed = false
 
   constructor(request: Tf2HudIntegrationRequest) {
@@ -482,9 +486,10 @@ class Integration implements Tf2HudIntegration {
   }
 
   #publishRound(round: RoundSnapshot, team: Tf2Team): void {
+    this.#publishKoth(round)
     if (!round.waitingForPlayers && !round.timer && !this.#roundPanels) return
     const panels = this.#initializeRoundPanels()
-    const timerVisible = round.waitingForPlayers || (round.timer !== null && round.timer.showInHud && !round.timer.disabled)
+    const timerVisible = round.waitingForPlayers || (!round.kothTimers && round.timer !== null && round.timer.showInHud && !round.timer.disabled)
     const setVisible = (panel: VguiPanelId, visible: boolean, name: string): void => {
       this.#objectiveValue(`round-visible:${name}`, String(visible), { kind: "set-panel-state", panel, visible })
     }
@@ -528,6 +533,89 @@ class Integration implements Tf2HudIntegration {
       const panel = panels.waitingChildren.get(name.toLowerCase())
       if (panel !== undefined) setVisible(panel, visible, `waiting-${name}`)
     }
+  }
+
+  #publishKoth(round: RoundSnapshot): void {
+    if (!round.kothTimers && !this.#kothPanels) return
+    if (!this.#kothPanels) {
+      const selection = { activeConditions: Object.freeze([...this.#resources.activeConditions, "if_match"]), resolutionSuffixes: this.#resources.resolutionSuffixes }
+      const root = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name: "HudKothTimeStatus" })!
+      const layout = this.#resources.document(HUD_LAYOUT)
+      const authoredRoot = layout.root.children.find(value => (scalar(value, "fieldName") ?? value.name) === "HudKothTimeStatus")
+      if (!authoredRoot) throw new Error("TF2 authored KOTH root is unavailable")
+      apply(this.#runtime, { kind: "replace-resource", parent: 1, document: document(layout, "koth-root", node(layout.root.name, [shallow(authoredRoot)])), selection })
+      const resource = this.#resources.document(HUD_KOTH_TIME_PANEL)
+      const timers = ["RedTimer", "BlueTimer"].map(name => {
+        const timer = apply(this.#runtime, { kind: "create-panel", parent: root, control: "CTFHudTimeStatus", name })!
+        const value = apply(this.#runtime, { kind: "create-panel", parent: timer, control: "CExLabel", name: "TimePanelValue" })!
+        applyPanelResource(this.#runtime, timer, this.#resources.document(HUD_TIME_PANEL), selection)
+        return { root: timer, value, children: new Map<string, VguiPanelId>() }
+      })
+      applyPanelResource(this.#runtime, root, resource, selection)
+      // Child ApplySchemeSettings loads the common time panel, then reapplies
+      // the per-clock settings saved by the KOTH parent.
+      for (const timer of timers) {
+        const name = timer === timers[0] ? "RedTimer" : "BlueTimer"
+        const authored = resource.root.children.find(block => (scalar(block, "fieldName") ?? block.name) === name)!
+        const common = this.#resources.document(HUD_TIME_PANEL)
+        const merge = (base: VguiResourceNode, override: VguiResourceNode): VguiResourceNode => node(base.name, [
+          ...base.children.filter(child => !override.children.some(value => value.name.toLowerCase() === child.name.toLowerCase())),
+          ...override.children.map(child => {
+            const previous = base.children.find(value => value.name.toLowerCase() === child.name.toLowerCase())
+            return child.value === null && previous?.value === null ? merge(previous, child) : child
+          }),
+        ])
+        const children = common.root.children.map(block => {
+          const override = resourceChildren(authored).find(value => value.name.toLowerCase() === block.name.toLowerCase())
+          return override ? merge(block, override) : block
+        })
+        applyChildren(this.#runtime, timer.root, common, children, selection)
+      }
+      for (const panel of this.#runtime.snapshot().panels) {
+        for (const timer of timers) if (panel.parent === timer.root) timer.children.set(panel.name.toLowerCase(), panel.id)
+        apply(this.#runtime, { kind: "set-panel-state", panel: panel.id, mouseInput: false, keyboardInput: false })
+      }
+      this.#kothPanels = Object.freeze({ root, timers })
+      this.#captureBaseBounds()
+    }
+    const panels = this.#kothPanels
+    const visible = round.kothTimers !== null && !round.waitingForPlayers
+    this.#objectiveValue("koth-visible", String(visible), { kind: "set-panel-state", panel: panels.root, visible })
+    if (!round.kothTimers) return
+    if (round.events.some(event => event.kind === 5)) {
+      for (const panel of panels.timers) apply(this.#runtime, { kind: "stop-animation-sequence", parent: panel.root, sequence: "OvertimeLabelPulseRed" })
+      this.#kothOvertime = [false, false]
+    }
+    const active = !round.kothTimers[0].paused ? 2 : !round.kothTimers[1].paused ? 3 : 0
+    for (let index = 0; index < 2; index++) {
+      const timer = round.kothTimers[index]!, panel = panels.timers[index]!, team = index === 0 ? 2 : 3
+      const seconds = Math.max(0, Math.floor(timer.remaining))
+      const text = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+      this.#objectiveValue(`koth-time:${team}`, text, { kind: "mutate-control", panel: panel.value, mutation: { text } })
+      const previousOvertime = this.#kothOvertime[index]
+      if (timer.remaining > 0) this.#kothOvertime[index] = false
+      else if (round.inOvertime) this.#kothOvertime[index] = true
+      if (previousOvertime !== this.#kothOvertime[index]) {
+        apply(this.#runtime, this.#kothOvertime[index]
+          ? { kind: "start-animation-sequence", parent: panel.root, sequence: "OvertimeLabelPulseRed", cancelable: true }
+          : { kind: "stop-animation-sequence", parent: panel.root, sequence: "OvertimeLabelPulseRed" })
+      }
+      for (const [name, show] of [
+        ["OvertimeLabel", this.#kothOvertime[index]], ["OvertimeBG", this.#kothOvertime[index]],
+        ["SetupLabel", false], ["SetupBG", false], ["WaitingForPlayersLabel", false], ["WaitingForPlayersBG", false],
+        ["SuddenDeathLabel", false], ["SuddenDeathBG", false], ["ServerTimeLimitLabel", false], ["ServerTimeLimitLabelBG", false],
+      ] as const) {
+        const child = panel.children.get(name.toLowerCase())
+        if (child !== undefined) this.#objectiveValue(`koth-${team}:${name}`, String(show), { kind: "set-panel-state", panel: child, visible: show })
+      }
+      const background = panel.children.get("timepanelbg")
+      if (background !== undefined) {
+        const image = `../hud/objectives_timepanel_${team === 2 ? "red" : "blue"}_bg`
+        this.#objectiveValue(`koth-background:${team}`, image, { kind: "mutate-control", panel: background, mutation: { image } })
+      }
+      if (active !== this.#kothActive) apply(this.#runtime, { kind: "start-animation-sequence", parent: panel.root, sequence: active === team ? "ActiveTimerHighlight" : "ActiveTimerDim", cancelable: false })
+    }
+    this.#kothActive = active
   }
 
   #publishWinPanel(
@@ -1191,6 +1279,12 @@ class Integration implements Tf2HudIntegration {
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#roundPanels.match, visible: false })
         apply(this.#runtime, { kind: "set-panel-state", panel: this.#roundPanels.waiting, visible: false })
       }
+      if (this.#kothPanels) {
+        apply(this.#runtime, { kind: "set-panel-state", panel: this.#kothPanels.root, visible: false })
+        for (const panel of this.#kothPanels.timers) apply(this.#runtime, { kind: "stop-animation-sequence", parent: panel.root, sequence: "OvertimeLabelPulseRed" })
+      }
+      this.#kothOvertime = [false, false]
+      this.#kothActive = -1
       this.#notificationDeadline = 0n
       this.#objectiveCarrying = false
       this.#waitingPanelVisible = false

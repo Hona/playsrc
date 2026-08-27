@@ -63,6 +63,7 @@ type WasmExports = Readonly<{
   playsrc_equipment_update(handle: number, pointer: number, length: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_player_set_position(handle: number, x: number, y: number, z: number): number
+  playsrc_entity_fire(handle: number, pointer: number, length: number): number
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number, snapshotTick: bigint): number
   playsrc_simulation_output_length(handle: number): number
   playsrc_simulation_output_pointer(handle: number): number
@@ -231,6 +232,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_equipment_update,
         candidate.playsrc_jump_configure,
         candidate.playsrc_player_set_position,
+        candidate.playsrc_entity_fire,
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
         candidate.playsrc_simulation_output_pointer,
@@ -843,6 +845,23 @@ function setPosition(request: Extract<WorkerRequest, { kind: "set-position" }>):
   post({ id: request.id, kind: "position-set", generation: request.generation })
 }
 
+function fireEntityInput(request: Extract<WorkerRequest, { kind: "entity-input" }>): void {
+  const value = requireActive(request.id, request.generation)
+  if (!value) return
+  if (![request.target, request.input, request.value].every(text => typeof text === "string" && text.length <= 1024 && !text.includes("\0")) || !Number.isFinite(request.delay)) {
+    fail(request.id, "MalformedRequest"); return
+  }
+  const fields = new TextEncoder().encode([request.target, request.input, request.value].join("\0"))
+  const bytes = new Uint8Array(4 + fields.length)
+  new DataView(bytes.buffer).setFloat32(0, request.delay, true)
+  bytes.set(fields, 4)
+  const pointer = allocateCopy(value.exports, bytes.buffer)
+  const accepted = value.exports.playsrc_entity_fire(value.handle, pointer, bytes.byteLength)
+  value.exports.playsrc_free(pointer, bytes.byteLength)
+  if (accepted !== 1) { fail(request.id, "TransitionFailed", 203); return }
+  post({ id: request.id, kind: "entity-input-queued", generation: request.generation })
+}
+
 function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const started = performance.now()
   const value = requireActive(request.id, request.generation)
@@ -1082,6 +1101,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return configureCourse(request)
     case "set-position":
       return setPosition(request)
+    case "entity-input":
+      return fireEntityInput(request)
     case "observe":
       return observe(request)
     case "particles":

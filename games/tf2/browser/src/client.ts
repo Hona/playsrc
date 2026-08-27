@@ -635,6 +635,11 @@ export class Tf2WorkerClient {
     }
   }
 
+  async fireEntityInput(generation: number, target: string, input: string, value = "", delay = 0): Promise<void> {
+    const response = await this.#request({ kind: "entity-input", generation, target, input, value, delay })
+    if (response.kind !== "entity-input-queued" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
+  }
+
   async configureCourse(generation: number, definition: Uint8Array): Promise<void> {
     if (definition.byteLength < 52 || definition.byteLength > 64 * 1024) {
       throw new Tf2WorkerError("BoundExceeded")

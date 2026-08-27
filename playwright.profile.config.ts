@@ -5,6 +5,7 @@ export default headedProfileConfiguration({
   match: process.env.PROFILE_SKINNING_EQUIVALENCE === "1"
     ? "skinning-equivalence.profile.ts"
     : process.env.PROFILE_SCENARIOS === "deathnotice" ? "combat-lifecycle.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "koth" ? "koth.profile.ts"
     : process.env.PROFILE_SCENARIOS === "spy-cloak" ? "spy-cloak.profile.ts"
     : process.env.PROFILE_SCENARIOS === "trigger-door"
     ? "trigger-door.profile.ts"

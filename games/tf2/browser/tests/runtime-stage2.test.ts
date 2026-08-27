@@ -133,7 +133,7 @@ function snapshot(): ArrayBuffer {
   at += 52
   at += 4
   data.set(new TextEncoder().encode("PGRL"), at)
-  view.setUint32(at + 4, 1, true)
+  view.setUint32(at + 4, 2, true)
   data[at + 8] = 4
   view.setFloat32(at + 20, -1, true)
   view.setUint32(at + 24, 0xffff_ffff, true)
@@ -165,6 +165,27 @@ test("death event wire retains exact uint32 damage bits, killing names and repea
   expect(() => decodeSnapshot(invalid.buffer)).toThrow("gameplay event record is invalid")
 })
 function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(80+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,3,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);view.setUint32(at+12,state.length,true);data.set(state,at+24);return output}
+
+test("round codec keeps two independent KOTH timer records and rejects malformed clocks", () => {
+  const base = new Uint8Array(snapshot())
+  const at = base.findIndex((_, index) => base[index] === 80 && base[index + 1] === 71 && base[index + 2] === 82 && base[index + 3] === 76)
+  expect(at).toBeGreaterThan(0)
+  const bytes = new Uint8Array(base.length + 48)
+  bytes.set(base.subarray(0, at + 48))
+  bytes.set(base.subarray(at + 48), at + 96)
+  bytes[at + 9] = 128
+  const view = new DataView(bytes.buffer)
+  for (let team = 0; team < 2; team++) {
+    const timer = at + 48 + team * 24
+    view.setUint32(timer, 100 + team, true)
+    view.setFloat32(timer + 4, team === 0 ? 12.5 : 0, true)
+    view.setInt32(timer + 8, 180, true)
+    view.setUint32(timer + 20, team === 0 ? 2 : 3, true)
+  }
+  expect(decodeSnapshot(bytes.buffer).round.kothTimers?.map(timer => [timer.identity, timer.remaining, timer.paused])).toEqual([[100, 12.5, false], [101, 0, true]])
+  view.setFloat32(at + 52, Number.NaN, true)
+  expect(() => decodeSnapshot(bytes.buffer)).toThrow("KOTH timer is invalid")
+})
 
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
   const source = new Uint8Array(snapshot())

@@ -181,6 +181,10 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         const pointer = copy(data)
         require(e.playsrc_jump_configure(handle, pointer, data.length) === 1, "Replay course mutation failed")
         e.playsrc_free(pointer, data.length); mutations++
+      } else if (record.kind === 7) {
+        const pointer = copy(data)
+        require(e.playsrc_entity_fire(handle, pointer, data.length) === 1, "Replay entity input failed")
+        e.playsrc_free(pointer, data.length); mutations++
       }
     }
     require(e.playsrc_gameplay_replay_stop(handle) === 1, "Replay owner journal failed")
