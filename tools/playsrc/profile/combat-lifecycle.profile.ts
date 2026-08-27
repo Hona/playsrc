@@ -25,6 +25,9 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 120_000 })
   if (await page.locator("main").getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
   await command("joinclass scout")
+  // Keep genuine notices through the respawn phases to verify stacking. This
+  // is the native HUD cvar, not a change to simulation time or damage.
+  await command("hud_deathnotice_time 60")
   await command("tf_bot_add red scout easy")
   await expect(page.locator("main")).toHaveAttribute("data-bot-count", "1")
   await command("jointeam blue")
@@ -128,15 +131,20 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   const measurement = await page.evaluate(async (duration) => {
     const root = document.querySelector<HTMLElement>("main")!
     const started = performance.now(), firstTick = Number(root.dataset.snapshotTick)
+    let hudMutations = 0
+    const observer = new MutationObserver(records => { hudMutations += records.length })
+    observer.observe(document.querySelector("[data-tf2-deathnotice]")!, { subtree: true, attributes: true, childList: true, characterData: true })
     let prior = started
     const frames: number[] = []
     await new Promise<void>(resolve => {
       const frame = (now: number) => { frames.push(now - prior); prior = now; now - started >= duration * 1000 ? resolve() : requestAnimationFrame(frame) }
       requestAnimationFrame(frame)
     })
-    return { seconds: (performance.now() - started) / 1000, firstTick, lastTick: Number(root.dataset.snapshotTick), frames }
+    observer.disconnect()
+    return { seconds: (performance.now() - started) / 1000, firstTick, lastTick: Number(root.dataset.snapshotTick), frames, hudMutations }
   }, seconds)
   expect(measurement.lastTick - measurement.firstTick).toBeGreaterThan(seconds * 60)
+  expect(measurement.hudMutations).toBe(0)
   await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.bots?.[0]?.lifecycle), { timeout: 30_000 }).toBe(1)
   const respawned = await page.evaluate(() => ({ bot: (globalThis as any).__playsrcProfile.bots[0], scores: (globalThis as any).__playsrcProfile.combat.scores }))
   expect(respawned.bot.health).toBe(125)
@@ -193,17 +201,24 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   const world = page.locator("[data-vgui-name^='DeathNotice']").last()
   await expect(world.locator("[data-death-icon='dneg_skull_tf']")).toBeVisible()
   await expect(world).toContainText("fell to a clumsy, painful death")
+  await expect(page.locator("[data-vgui-name^='DeathNotice']")).toHaveCount(4)
+  expect(await page.locator("[data-vgui-name^='DeathNotice']").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().y))).toEqual([30, 60, 90, 120])
   await captureDeathNotice(page, testInfo, "world-fall")
   await page.setViewportSize({ width: 390, height: 844 })
   await captureDeathNotice(page, testInfo, "world-fall-narrow")
   const narrow = await world.boundingBox()
   expect(narrow!.x + narrow!.width).toBe(390 - Math.trunc(12 * 844 / 480))
   await page.setViewportSize({ width: 1280, height: 720 })
+  await page.keyboard.press("Backquote")
+  await command("hud_deathnotice_time 6")
+  await expect(page.locator("[data-vgui-name^='DeathNotice']")).toHaveCount(1)
+  await command("disconnect")
+  await expect(page.locator("[data-vgui-name^='DeathNotice']")).toHaveCount(0)
 
   const report = { schema: "playsrc-tf2-headed-combat-lifecycle-v1", headed: true, target: "pl_upward",
     killed, respawned, authored, simulation: { seconds: measurement.seconds, firstTick: measurement.firstTick,
       lastTick: measurement.lastTick, ticksPerSecond: (measurement.lastTick - measurement.firstTick) / measurement.seconds },
-    frames: summarizeFrameTimes(measurement.frames) }
+    frames: summarizeFrameTimes(measurement.frames), idleDeathNoticeMutations: measurement.hudMutations }
   const local = await loadLocalConfig()
   const directory = path.join(local.sourceCacheDir, "evidence", "tf2-combat-lifecycle")
   await mkdir(directory, { recursive: true })

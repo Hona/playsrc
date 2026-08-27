@@ -313,6 +313,7 @@ class Integration implements Tf2HudIntegration {
       ["HudItemEffectMeter", "CTFHudElement"],
       ["HudMenuSpyDisguise", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
+      ["HudDeathNotice", "CTFHudElement"],
       ["HudMedicCharge", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
@@ -380,7 +381,7 @@ class Integration implements Tf2HudIntegration {
     this.#captureBaseBounds(panels)
     })
     this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
-    this.#deathNotices = new Tf2HudDeathNoticePresentation(request.root, request.resources, request.viewport)
+    this.#deathNotices = new Tf2HudDeathNoticePresentation(request.root, request.resources, request.viewport, this.#runtime, find(this.#runtime, "HudDeathNotice")!)
     this.#scope = new Tf2HudScopePresentation(request.root)
     if (request.damageIndicator) this.#damage = new Tf2HudDamagePresentation(request.root, request.damageIndicator)
   }

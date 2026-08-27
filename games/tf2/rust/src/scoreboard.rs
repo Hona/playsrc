@@ -3,6 +3,7 @@ use crate::{PLAYER_IDENTITY, PlayerClass, PlayerLifecycle, PlayerTeam, bot, ctf}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
     pub kills: u32,
+    pub assists: u32,
     pub deaths: u32,
     pub captures: u32,
     pub damage: u32,
@@ -43,6 +44,10 @@ impl State {
         self.local.kills = self.local.kills.saturating_add(1);
     }
 
+    pub fn local_assist(&mut self) {
+        self.local.assists = self.local.assists.saturating_add(1);
+    }
+
     pub fn local_death(&mut self) {
         self.local.deaths = self.local.deaths.saturating_add(1);
     }
@@ -71,6 +76,7 @@ impl State {
             score: i32::try_from(
                 self.local
                     .kills
+                    .saturating_add(self.local.assists / 2)
                     .saturating_add(self.local.captures.saturating_mul(2))
                     .saturating_add(self.local.damage / 600),
             )
@@ -85,10 +91,11 @@ impl State {
                 class: bot.class,
                 alive: bot.lifecycle == PlayerLifecycle::Active,
                 fake: true,
-                score: i32::try_from(bot.kills.saturating_add(bot.captures.saturating_mul(2)))
+                score: i32::try_from(bot.kills.saturating_add(bot.assists / 2).saturating_add(bot.captures.saturating_mul(2)))
                     .unwrap_or(i32::MAX),
                 counters: Counters {
                     kills: bot.kills,
+                    assists: bot.assists,
                     deaths: bot.deaths,
                     captures: bot.captures,
                     damage: bot.damage,
@@ -150,6 +157,7 @@ mod tests {
         assert_eq!(
             red.players[0].counters,
             Counters {
+                assists: 0,
                 kills: 1,
                 deaths: 1,
                 captures: 0,

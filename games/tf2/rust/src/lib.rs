@@ -423,6 +423,7 @@ pub struct Projectile {
 #[derive(Clone, Debug)]
 struct LiveProjectile {
     presentation: Projectile,
+    killing_weapon: &'static str,
     armed: bool,
     creation_tick: u64,
     arm_tick: u64,
@@ -3863,6 +3864,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    pub fn equipped_weapon_definition(&self, owner: u32, weapon: Weapon) -> Option<u32> {
+        if owner == PLAYER_IDENTITY { return self.active_equipment.weapon_definition(self.class, weapon); }
+        let class = self.bots.as_ref()?.class(owner)?;
+        self.bot_equipment.get(&owner).cloned().unwrap_or_default().weapon_definition(class, weapon)
+    }
+
+    fn killing_weapon_name(&self, owner: u32, weapon: Weapon) -> &'static str {
+        let class = if owner == PLAYER_IDENTITY { self.class }
+            else { self.bots.as_ref().and_then(|bots| bots.class(owner)).unwrap_or(self.class) };
+        self.equipped_weapon_definition(owner, weapon).and_then(equipment::presentation).and_then(|item| item.death_notice_icon)
+            .unwrap_or_else(|| deathnotice::weapon_name(weapon, class))
+    }
+
     fn apply_actor_damage(
         &mut self,
         input: bot::Damage,
@@ -4037,17 +4051,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if after == 0 {
             let curtime = self.tick as f32 * self.movement_configuration.tick_interval;
             let assister = if input.attacker == input.victim { None }
-                else if killing_weapon.is_none() && self.class == PlayerClass::Medic
+                else if !killing_weapon.is_some_and(|name| name.starts_with("obj_sentrygun")) && self.class == PlayerClass::Medic
                     && self.medigun.target == Some(input.attacker) { Some(PLAYER_IDENTITY) }
                 else if input.victim == PLAYER_IDENTITY { self.damagers.assister(input.attacker, curtime) }
                 else { self.bots.as_ref().and_then(|bots| bots.damage_assister(input.victim, input.attacker, curtime)) };
             let assister = assister.filter(|identity| *identity == PLAYER_IDENTITY || self.bots.as_ref().is_some_and(|bots| bots.contains(*identity)));
+            if assister == Some(PLAYER_IDENTITY) { self.scoreboard.local_assist(); }
+            else if let Some(identity) = assister && let Some(bots) = self.bots.as_mut() { bots.record_assist(identity); }
             events.push(Event::PlayerKilled {
                 attacker: input.attacker,
                 victim: input.victim,
                 weapon: Some(input.weapon),
-                killing_weapon: killing_weapon.unwrap_or_else(|| deathnotice::weapon_name(input.weapon, if input.attacker == PLAYER_IDENTITY { self.class }
-                    else { self.bots.as_ref().and_then(|bots| bots.class(input.attacker)).unwrap_or(self.class) })),
+                killing_weapon: killing_weapon.unwrap_or_else(|| self.killing_weapon_name(input.attacker, input.weapon)),
                 assister: assister.unwrap_or(0),
                 damage_bits: 0,
                 critical,
@@ -5651,6 +5666,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.next_projectile = self.next_projectile.wrapping_add(1).max(1);
         let tick_interval = self.movement_configuration.tick_interval;
         let projectile = LiveProjectile {
+            killing_weapon: self.killing_weapon_name(owner, weapon),
             presentation: Projectile {
                 identity,
                 kind,
@@ -5927,13 +5943,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     continue;
                 }
                 if let Some(target) = result.direct_target {
-                    let presentation = self.publish_explosion(projectile, projectile_events);
+                    let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events);
                     if target != PLAYER_IDENTITY
                         && !self.bots.as_ref().is_some_and(|bots| bots.contains(target))
                     {
                         map_phase.append(self.map.damage(self.tick, target)?);
                     }
-                    self.apply_blast(&presentation, Some(target), events)?;
+                    self.apply_blast(&presentation, killing_weapon, Some(target), events)?;
                 } else {
                     self.explode(projectile, projectile_events, events)?;
                 }
@@ -6051,13 +6067,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         let direct = projectile.direct_target;
-        let presentation = self.publish_explosion(projectile, projectile_events);
-        self.apply_blast(&presentation, direct, events)
+        let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events);
+        self.apply_blast(&presentation, killing_weapon, direct, events)
     }
 
     fn apply_blast(
         &mut self,
         projectile: &Projectile,
+        killing_weapon: &'static str,
         direct: Option<u32>,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
@@ -6065,7 +6082,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             else if projectile.owner_identity == PLAYER_IDENTITY && projectile.launcher_identity == Weapon::Original as u32 { Weapon::Original }
             else { Weapon::RocketLauncher };
         if projectile.owner_identity == PLAYER_IDENTITY {
-            self.apply_self_blast(projectile, weapon, events);
+            self.apply_self_blast(projectile, weapon, killing_weapon, events);
         } else if projectile.team.is_enemy(self.team_selection.local_team())
             && self.lifecycle == PlayerLifecycle::Active
         {
@@ -6098,7 +6115,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self_damage: false,
                 },
             ) {
-                self.apply_actor_damage(
+                self.apply_actor_damage_from(
                     bot::Damage {
                         attacker: projectile.owner_identity,
                         victim: PLAYER_IDENTITY,
@@ -6107,6 +6124,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         position: projectile.position,
                     },
                     projectile.team,
+                    Some(killing_weapon),
+                    Some(0),
                     events,
                 )?;
             }
@@ -6161,7 +6180,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         false,
                     );
                 }
-                self.apply_actor_damage(
+                self.apply_actor_damage_from(
                     bot::Damage {
                         attacker: projectile.owner_identity,
                         victim: victim.identity,
@@ -6170,6 +6189,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         position: projectile.position,
                     },
                     projectile.team,
+                    Some(killing_weapon),
+                    Some(0),
                     events,
                 )?;
             }
@@ -6181,7 +6202,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         &mut self,
         projectile: LiveProjectile,
         projectile_events: &mut Vec<ProjectileEvent>,
-    ) -> Projectile {
+    ) -> (Projectile, &'static str) {
         let definition = match (
             projectile.presentation.kind,
             projectile.presentation.launcher_identity,
@@ -6240,10 +6261,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &projectile.presentation,
             self.tick,
         ));
-        projectile.presentation
+        (projectile.presentation, projectile.killing_weapon)
     }
 
-    fn apply_self_blast(&mut self, projectile: &Projectile, weapon: Weapon, events: &mut Vec<Event>) {
+    fn apply_self_blast(&mut self, projectile: &Projectile, weapon: Weapon, killing_weapon: &'static str, events: &mut Vec<Event>) {
         let policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -6300,7 +6321,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
             if health_before > 0 && self.health == 0 {
                 events.push(Event::PlayerKilled { attacker: PLAYER_IDENTITY, victim: PLAYER_IDENTITY,
-                    weapon: Some(weapon), killing_weapon: deathnotice::weapon_name(weapon, self.class),
+                    weapon: Some(weapon), killing_weapon,
                     assister: 0, damage_bits: 64, critical: false, custom: 0 });
             }
             let impulse = combat::self_blast_impulse(
@@ -8470,6 +8491,7 @@ mod tests {
             PlayerTeam::Red
         };
         let create = |identity, team| LiveProjectile {
+            killing_weapon: "tf_projectile_rocket",
             presentation: Projectile {
                 identity,
                 kind: ProjectileKind::Rocket,
@@ -8845,6 +8867,7 @@ mod tests {
 
     fn explosive(kind: ProjectileKind, position: [f32; 3]) -> LiveProjectile {
         LiveProjectile {
+            killing_weapon: if kind == ProjectileKind::Rocket { "tf_projectile_rocket" } else { "tf_projectile_pipe_remote" },
             presentation: Projectile {
                 identity: 99,
                 kind,

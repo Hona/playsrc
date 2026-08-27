@@ -12,11 +12,11 @@ import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1185)
+  const bytes = new ArrayBuffer(1189)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 21, true)
+  view.setUint32(4, 23, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -123,10 +123,11 @@ function snapshot(): ArrayBuffer {
   const scoreboard = at
   data.set([1, 0, 1, 0], scoreboard + 8)
   view.setUint32(scoreboard + 12, 1, true)
+  view.setUint32(scoreboard + 40, 3, true)
   data.set([3, 2, 1, 0], scoreboard + 16)
-  data[scoreboard + 40] = 7
-  data.set(new TextEncoder().encode("unnamed"), scoreboard + 41)
-  at += 48
+  data[scoreboard + 44] = 7
+  data.set(new TextEncoder().encode("unnamed"), scoreboard + 45)
+  at += 52
   at += 4
   data.set(new TextEncoder().encode("PGRL"), at)
   view.setUint32(at + 4, 1, true)
@@ -156,6 +157,7 @@ test("death event wire retains exact uint32 damage bits, killing names and repea
     values: [3, 0x8010_0040, 1, 0], killingWeapon: "tf_projectile_rocket" })
   expect(decoded.events[1]).toEqual(decoded.events[0])
   expect(decoded.scoreboard.players[0]!.name).toBe("unnamed")
+  expect(decoded.scoreboard.players[0]!.assists).toBe(3)
   const invalid = bytes.slice(); new DataView(invalid.buffer).setUint16(567, 0, true)
   expect(() => decodeSnapshot(invalid.buffer)).toThrow("gameplay event record is invalid")
 })
@@ -216,14 +218,14 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 144, brushHeader = objective - 64
+  const objective = original.length - 148, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
-  const scoreboardBytes = names.reduce((sum, name) => sum + 29 + name.length, 0)
+  const scoreboardBytes = names.reduce((sum, name) => sum + 33 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes + roster * 4)
   bytes.set(original.subarray(0, brushHeader + 52))
   bytes.set(original.subarray(brushHeader + 52, objective), brushHeader + 52 + insert)
-  bytes.set(original.subarray(objective, objective + 68), objective + insert + botBytes)
-  bytes.set(original.subarray(objective + 68), objective + insert + botBytes + 68 + scoreboardBytes)
+  bytes.set(original.subarray(objective, objective + 72), objective + insert + botBytes)
+  bytes.set(original.subarray(objective + 72), objective + insert + botBytes + 72 + scoreboardBytes)
   const view = new DataView(bytes.buffer)
   view.setBigUint64(8, tick, true)
   view.setBigUint64(424, tick, true) // projectile event
@@ -240,7 +242,7 @@ function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   view.setUint32(objective + insert - 4, roster, true)
   let score = objective + insert + botBytes + 20
   bytes[score + 9] = roster; bytes[score + 10] = roster + 1
-  score += 48
+  score += 52
   for (let i = 0; i < roster; i++) {
     const at = objective + insert + i * 128
     view.setUint32(at, i + 2, true); bytes.set([3, 3, 1, 1, 1], at + 4)
@@ -251,8 +253,8 @@ function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
     view.setBigUint64(at + 96, 0xffff_ffff_ffff_ffffn, true)
     view.setBigUint64(at + 104, 0xffff_ffff_ffff_ffffn, true)
     view.setUint32(score, i + 2, true); bytes.set([3, 3, 1, 1], score + 4)
-    bytes[score + 28] = names[i]!.length; bytes.set(names[i]!, score + 29)
-    score += 29 + names[i]!.length
+    bytes[score + 32] = names[i]!.length; bytes.set(names[i]!, score + 33)
+    score += 33 + names[i]!.length
   }
   return bytes
 }
@@ -666,13 +668,13 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 144
+    const objectiveOffset = prior.byteLength - 148
     const botName = new TextEncoder().encode("Chucklenuts")
-    const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length + 4)
+    const bytes = new Uint8Array(prior.byteLength + 128 + 33 + botName.length + 4)
     const roundOffset = prior.byteLength - 72
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
-    bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)
+    bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 33 + botName.length)
     const view = new DataView(bytes.buffer)
     view.setUint32(objectiveOffset - 4, 1, true)
     const at = objectiveOffset
@@ -700,11 +702,11 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     const scoreboard = scoreboardOffset + 128
     bytes[scoreboard + 9] = 1
     bytes[scoreboard + 10] = 2
-    const scoreboardBot = scoreboard + 48
+    const scoreboardBot = scoreboard + 52
     view.setUint32(scoreboardBot, 2, true)
     bytes.set([3, 3, 1, 1], scoreboardBot + 4)
-    bytes[scoreboardBot + 28] = botName.length
-    bytes.set(botName, scoreboardBot + 29)
+    bytes[scoreboardBot + 32] = botName.length
+    bytes.set(botName, scoreboardBot + 33)
     const decoded = decodeSnapshot(bytes)
     expect(decoded.scoreboard).toMatchObject({ redCount: 1, blueCount: 1, players: [{ name: "unnamed" }, { name: "Chucklenuts", fake: true }] })
     expect(decoded.bots).toEqual([{

@@ -186,6 +186,12 @@ impl Equipment {
         self.classes[class as usize - 1][slot as usize]
     }
 
+    pub fn weapon_definition(&self, class: PlayerClass, weapon: Weapon) -> Option<u32> {
+        self.classes[class as usize - 1].iter().copied().flatten().find(|definition| {
+            supported_item(*definition).is_some_and(|item| item.implementation == Implementation::Weapon(weapon))
+        })
+    }
+
     pub fn equip(&mut self, class: PlayerClass, slot: LoadoutPosition, definition: Option<u32>) -> Result<bool, EquipmentError> {
         let definition = definition.or_else(|| class.data().stock_items.iter()
             .find(|item| item.slot == slot as u8).map(|item| item.definition));

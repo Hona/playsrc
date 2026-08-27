@@ -24,6 +24,7 @@
     "profile:acceptance": "bun tools/playsrc/src/integrated-acceptance.ts",
     "profile:main-menu": "bun tools/playsrc/src/profile-runner.ts main-menu",
     "profile:hud": "bun tools/playsrc/src/profile-runner.ts hud",
+    "profile:deathnotice": "bun tools/playsrc/src/profile-runner.ts deathnotice",
     "profile:class-hud": "bun tools/playsrc/src/profile-runner.ts class-hud",
     "profile:class-selection": "bun tools/playsrc/src/profile-runner.ts class-selection",
     "profile:spy-cloak": "bun tools/playsrc/src/profile-runner.ts spy-cloak",

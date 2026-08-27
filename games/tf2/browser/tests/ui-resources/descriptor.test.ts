@@ -133,7 +133,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.controls).toHaveLength(86)
     expect(tf2UiResources.properties).toHaveLength(25_668)
     expect(tf2UiResources.commands).toHaveLength(162)
-    expect(tf2UiResources.localization.tokens).toHaveLength(722)
+    expect(tf2UiResources.localization.tokens).toHaveLength(728)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")

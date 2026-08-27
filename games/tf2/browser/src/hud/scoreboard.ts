@@ -4,11 +4,11 @@ import type { Tf2HudScoreboard, Tf2ScoreboardCounters, Tf2ScoreboardPlayer } fro
 
 const sources = new WeakMap<Tf2HudScoreboard, Readonly<{ authority: ScoreboardSnapshot; localTeam: Tf2Team }>>()
 
-function counters(kills: number, deaths: number, captures: number, damage: number): Tf2ScoreboardCounters {
+function counters(kills: number, deaths: number, captures: number, damage: number, assists: number): Tf2ScoreboardCounters {
   return Object.freeze({
     kills,
     deaths,
-    assists: 0,
+    assists,
     destruction: 0,
     captures,
     defenses: 0,
@@ -59,6 +59,7 @@ export function adaptTf2Scoreboard(
       && (visibleClass ? prior.class.kind === "available" && prior.class.value === player.class : prior.class.kind === "unavailable")
       && (player.fake ? prior.ping.kind === "available" && prior.ping.value === "bot" : prior.ping.kind === "unavailable")
       && priorCounters?.kills === player.kills && priorCounters.deaths === player.deaths
+      && priorCounters.assists === player.assists
       && priorCounters.captures === player.captures && priorCounters.damage === player.damage) {
       players.push(prior)
       continue
@@ -75,7 +76,7 @@ export function adaptTf2Scoreboard(
       killstreak: 0,
       activeDominations: 0,
       relationship: "none",
-      counters: tf2HudAvailable(counters(player.kills, player.deaths, player.captures, player.damage)),
+      counters: tf2HudAvailable(counters(player.kills, player.deaths, player.captures, player.damage, player.assists)),
     }))
   }
   players.sort((left, right) => right.score - left.score || right.identity - left.identity)
