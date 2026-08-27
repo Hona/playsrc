@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
-import { BrowserConfigurationError, parseBrowserConfiguration } from "../src/config"
+import { BrowserConfigurationError, parseBrowserConfiguration, tf2SelectableMapNames } from "../src/config"
+import { tf2MapBsp } from "@playsrc/game-tf2-browser/maps"
 
 const object = (kind: "source-object" | "derived-object" | "source-root" | "catalog", value: string, mediaType = "application/octet-stream") => ({ kind, mediaType, byteLength: "1", sha256: value.repeat(64) })
 const target = (name: keyof typeof TF2_MAP_LOADING, offset: number) => ({
   target: name,
   contentBuild: "24245096",
-  objects: { bsp: object("source-object", String(offset)), resources: object("source-root", String(offset + 1), "application/vnd.playsrc.resource-graph+json"), dependencyLedger: object("derived-object", String(offset + 2), "application/vnd.playsrc.source-dependency-ledger+json") },
+  objects: { bsp: { ...object("source-object", String(offset)), ...tf2MapBsp(name) }, resources: object("source-root", String(offset + 1), "application/vnd.playsrc.resource-graph+json"), dependencyLedger: object("derived-object", String(offset + 2), "application/vnd.playsrc.source-dependency-ledger+json") },
   loading: { mapPhotoLocations: TF2_MAP_LOADING[name].photoLocations, mapPhoto: TF2_MAP_LOADING[name].photo, stampBackground: TF2_STAMP_BACKGROUND },
 })
 const valid = Object.freeze({
@@ -21,7 +22,10 @@ const valid = Object.freeze({
 describe("TF2 browser multi-map configuration", () => {
   test("admits explicitly prepared Viaduct only for local integration", () => {
     const integration = { ...valid, defaultTarget: "koth_viaduct", targets: [target("koth_viaduct", 1)] }
-    expect(parseBrowserConfiguration(integration, valid.assetOrigin).targets[0]!.target).toBe("koth_viaduct")
+    const configuration = parseBrowserConfiguration(integration, valid.assetOrigin)
+    expect(configuration.targets[0]!.target).toBe("koth_viaduct")
+    expect(tf2SelectableMapNames(configuration, valid.assetOrigin)).toContain("koth_viaduct")
+    expect(tf2SelectableMapNames(configuration, valid.assetOrigin)).not.toContain("cp_badlands")
     expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
   })
 
@@ -37,9 +41,11 @@ describe("TF2 browser multi-map configuration", () => {
     expect(configuration.targets[2]!.loading.mapPhoto?.material.logicalPath).toBe("materials/vgui/maps/menu_photos_ctf_2fort.vmt")
     expect(parseBrowserConfiguration({ ...valid, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online").targets).toHaveLength(3)
     expect(parseBrowserConfiguration({ ...valid, targets: valid.targets.slice(0, 1) }, valid.assetOrigin).targets).toHaveLength(1)
-    expect(() => parseBrowserConfiguration({
+    const published = parseBrowserConfiguration({ ...valid, assetOrigin: "https://assets.playsrc.online", targets: valid.targets.slice(0, 1) }, "https://playsrc.online")
+    expect(tf2SelectableMapNames(published, "https://playsrc.online")).toEqual(["jump_beef"])
+    expect(parseBrowserConfiguration({
       ...valid, assetOrigin: "https://assets.playsrc.online", targets: valid.targets.slice(0, 1),
-    }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
+    }, "https://playsrc.online").targets).toHaveLength(1)
   })
 
   test("rejects old shape, target table mutations, bounds, origins and presentation changes", () => {
@@ -52,6 +58,7 @@ describe("TF2 browser multi-map configuration", () => {
       { ...valid, targets: valid.targets.map((entry) => ({ ...entry, objects: { ...entry.objects, resources: valid.targets[0].objects.resources } })) },
       { ...valid, targets: [{ ...valid.targets[0], loading: valid.targets[1].loading }, valid.targets[1], valid.targets[2]] },
       { ...valid, wasm: { ...valid.wasm, byteLength: "536870913" } },
+      { ...valid, targets: [{ ...valid.targets[0], objects: { ...valid.targets[0].objects, bsp: object("source-object", "f") } }] },
       { ...valid, assetOrigin: "https://other.invalid" },
       { ...valid, extra: true },
     ]

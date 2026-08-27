@@ -14,7 +14,7 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { applyParticleDepthState, configureWorldLightmap, sourceFragmentUsesAlpha, worldMaterialSide } from "./material-state"
+import { applyParticleDepthState, configureWorldLightmap, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
@@ -575,7 +575,7 @@ export type EnvironmentInput = Readonly<{
   refractMaterials: ReadonlyMap<string, RefractMaterialInput>
   worldMaterials: ReadonlyMap<string, WorldMaterialInput>
   leafMinimumDistanceToWater: Uint16Array
-  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[]}>[]}>
+  sky:null|Readonly<{name:string;faces:readonly Readonly<{face:number;material:string;encoding:"srgb"|"linear"|"hdr-rgbs";selectedTextures:readonly Readonly<{logicalPath:string;sha256:string}>[];textureTransform:readonly number[];color:readonly [number,number,number]}>[]}>
   cubemapFacts:readonly Readonly<{index:number;origin:readonly[number,number,number];logicalPath:string;sha256:string;width:number;height:number}>[]
 }>
 
@@ -590,6 +590,7 @@ export type MaterialStateInput = Readonly<{
   depthWrite: boolean
   depthFunction: number
   polygonOffset: number
+  fog: number
   wireframe: boolean
   noDraw: boolean
   wrapS: number
@@ -636,7 +637,8 @@ export type ModelMaterialInput = Readonly<{
   opacity: "opaque" | "translucent"
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
-  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"; cloak?: SourceCloakState }>
+  state: Readonly<{ kind: "vertex-lit-generic" | "eye-refract" | "eyes"; cloak?: SourceCloakState }>
+    | Readonly<{ kind: "unlit-generic"; colorModulation: readonly [number, number, number] }>
     | Readonly<{ kind: "modulate" }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
 }>
@@ -1294,6 +1296,7 @@ function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput):
     polygonOffsetFactor: bias.slopeScale,
     polygonOffsetUnits: bias.units,
     wireframe: state?.wireframe ?? false,
+    fog: sourceMaterialUsesFog(state),
   }
 }
 
@@ -3191,11 +3194,13 @@ class RendererOwner implements Renderer {
             if(face.encoding==="hdr-rgbs"){texture.minFilter=THREE.NearestMipmapNearestFilter;texture.magFilter=THREE.NearestFilter;texture.needsUpdate=true}
             const geometry=new THREE.BufferGeometry(),positions=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.position)),uv=Float32Array.from(geometryFace.vertices.flatMap(vertex=>vertex.uv))
             geometry.setAttribute("position",new THREE.BufferAttribute(positions,3));geometry.setAttribute("uv",new THREE.BufferAttribute(uv,2));geometry.setIndex([...geometryFace.indices]);disposables.add(geometry)
-            const material=new THREE.MeshBasicNodeMaterial({depthTest:false,depthWrite:false,side:THREE.BackSide})
+            const material=new THREE.MeshBasicNodeMaterial({depthTest:false,depthWrite:false,side:THREE.BackSide,fog:false})
+            if(face.textureTransform.length!==16||!face.textureTransform.every(Number.isFinite)||face.color.length!==3||!face.color.every(Number.isFinite))throw new RenderingError("MalformedInput","2D sky shader state is invalid")
+            const sourceUv=TSL.uv(),matrix=face.textureTransform,skyUv=TSL.vec2(sourceUv.x.mul(matrix[0]!).add(sourceUv.y.mul(matrix[1]!)).add(matrix[3]!),sourceUv.x.mul(matrix[4]!).add(sourceUv.y.mul(matrix[5]!)).add(matrix[7]!)),skyColor=TSL.vec3(...face.color)
             if(face.encoding==="hdr-rgbs"){
-              const baseUv=TSL.uv(),fudge=0.01/Math.max(authored.width,authored.height),increment=TSL.vec2(0.5/authored.width-fudge,0.5/authored.height-fudge),uv00=baseUv.sub(increment),uv10=TSL.vec2(baseUv.x.add(increment.x),baseUv.y.sub(increment.y)),uv01=TSL.vec2(baseUv.x.sub(increment.x),baseUv.y.add(increment.y)),uv11=baseUv.add(increment),s00=TSL.texture(texture,uv00),s10=TSL.texture(texture,uv10),s01=TSL.texture(texture,uv01),s11=TSL.texture(texture,uv11),fraction=TSL.fract(uv00.mul(TSL.vec2(authored.width,authored.height))),top=TSL.mix(s00.rgb.mul(s00.a),s10.rgb.mul(s10.a),fraction.x),bottom=TSL.mix(s01.rgb.mul(s01.a),s11.rgb.mul(s11.a),fraction.x)
-              material.colorNode=TSL.vec4(TSL.mix(top,bottom,fraction.y).mul(8).mul(exposureUniform),1)
-            }else{const sample=TSL.texture(texture,TSL.uv());material.colorNode=TSL.vec4(sample.rgb.mul(exposureUniform),sample.a)}
+              const baseUv=skyUv,fudge=0.01/Math.max(authored.width,authored.height),increment=TSL.vec2(0.5/authored.width-fudge,0.5/authored.height-fudge),uv00=baseUv.sub(increment),uv10=TSL.vec2(baseUv.x.add(increment.x),baseUv.y.sub(increment.y)),uv01=TSL.vec2(baseUv.x.sub(increment.x),baseUv.y.add(increment.y)),uv11=baseUv.add(increment),s00=TSL.texture(texture,uv00),s10=TSL.texture(texture,uv10),s01=TSL.texture(texture,uv01),s11=TSL.texture(texture,uv11),fraction=TSL.fract(uv00.mul(TSL.vec2(authored.width,authored.height))),top=TSL.mix(s00.rgb.mul(s00.a),s10.rgb.mul(s10.a),fraction.x),bottom=TSL.mix(s01.rgb.mul(s01.a),s11.rgb.mul(s11.a),fraction.x)
+              material.colorNode=TSL.vec4(TSL.mix(top,bottom,fraction.y).mul(8).mul(skyColor).mul(exposureUniform),1)
+            }else{const sample=TSL.texture(texture,skyUv);material.colorNode=TSL.vec4(sample.rgb.mul(skyColor).mul(exposureUniform),1)}
             material.toneMapped=false;disposables.add(material)
             const mesh=new THREE.Mesh(geometry,material);mesh.userData.skyFace=geometryFace.face;mesh.renderOrder=-1;skyGroup.add(mesh)
           }
@@ -3340,7 +3345,14 @@ class RendererOwner implements Renderer {
               else if (second.input.sourceFormat === 16) sampledSecond = TSL.vec4(sampledSecond.bgr, 1)
               base = TSL.vec4(first.rgb.mul(sampledSecond.rgb), 1)
             }
-          if (typedMaterial?.shader === "modulate") {
+           if (typedMaterial?.state.kind === "unlit-generic") {
+             const modulation = typedMaterial.state.colorModulation
+             if (!Array.isArray(modulation) || modulation.length !== 3 || !modulation.every(Number.isFinite)) throw new RenderingError("MalformedInput", "unlit model color modulation is invalid")
+             if (modulation.some(value => value !== 1)) {
+               base = TSL.vec4(base.rgb.mul(TSL.uniform(new THREE.Vector3(...modulation))), base.a)
+             }
+           }
+           if (typedMaterial?.shader === "modulate") {
             const rgba = TSL.clamp(base, 0, 1)
             base = TSL.vec4(TSL.mix(TSL.vec3(0.5), rgba.rgb, rgba.a), rgba.a)
           }

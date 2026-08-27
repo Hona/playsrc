@@ -106,9 +106,9 @@ import {
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
-import { loadBrowserConfiguration, parseBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
+import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
-import { TF2_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
+import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
@@ -869,7 +869,7 @@ export class Tf2Application {
     this.#localMatch = initializeTf2LocalMatchPresentation({
       root: this.#localMatchRoot,
       resources: this.#uiResources,
-      configuredMaps: TF2_TARGET_NAMES,
+      configuredMaps: this.#selectableMaps(),
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
       clock: { nowSeconds: () => this.#frameClock.current },
@@ -1362,6 +1362,7 @@ export class Tf2Application {
     this.#set({ menuPreparation: "vgui-resources" })
     this.#uiResources = await initializeTf2VguiResources({
       dependencies: this.#dependencyEntries,
+      mapTargets: [...new Set([...this.#selectableMaps(), ...this.#configuration.targets.map((target) => target.target)])],
       viewportHeight: Math.max(1, Math.trunc(this.#viewport().height)),
       platform: navigator.platform.toLowerCase().startsWith("mac") ? "macos" : navigator.platform.toLowerCase().startsWith("win") ? "windows" : "linux",
     })
@@ -2636,7 +2637,7 @@ export class Tf2Application {
     if (request.kind === "completion") {
       const candidates =
         request.commandName.toLowerCase() === "map"
-          ? TF2_TARGET_NAMES.map((target) => `map ${target}`)
+          ? this.#selectableMaps().map((target) => `map ${target}`)
           : request.commandName.toLowerCase() === "class"
             ? TF2_CLASS_NAMES.map((name) => `class ${name}`)
             : request.commandName.toLowerCase() === "jointeam"
@@ -3186,7 +3187,7 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      if (TF2_TARGET_NAMES.includes(tokens[0] as Tf2TargetName) || this.#configuration?.targets.some((target) => target.target === tokens[0])) {
+      if (this.#selectableMaps().includes(tokens[0] as Tf2TargetName) || this.#configuration?.targets.some((target) => target.target === tokens[0])) {
         const target = await this.#preparedTarget(tokens[0]!)
         if (this.#view.phase === "Startup") this.#startup?.key("Escape")
         if (this.#gameUi?.state().kind === "failure") {
@@ -3202,14 +3203,18 @@ export class Tf2Application {
         }
       }
       else if (tokens[0]?.startsWith("https://")) await this.#replaceExternalMap(tokens[0])
-      else this.#output(`Usage: map ${this.#configuration ? TF2_TARGET_NAMES.join("|") : "<unavailable>"}`)
+      else this.#output(`Usage: map ${this.#configuration ? this.#selectableMaps().join("|") : "<unavailable>"}`)
       return
     }
     this.#output(`Unknown command: ${command}`)
   }
 
+  #selectableMaps(): readonly Tf2TargetName[] {
+    return this.#configuration ? tf2SelectableMapNames(this.#configuration, window.location.origin) : []
+  }
+
   async #preparedTarget(identity: string): Promise<BrowserTargetConfiguration> {
-    if (!this.#configuration || (!TF2_TARGET_NAMES.includes(identity as Tf2TargetName) && !this.#configuration.targets.some((target) => target.target === identity))) {
+    if (!this.#configuration || (!this.#selectableMaps().includes(identity as Tf2TargetName) && !this.#configuration.targets.some((target) => target.target === identity))) {
       throw new Error(`Undeclared map request ${identity}`)
     }
     const ready = this.#configuration.targets.find((candidate) => candidate.target === identity)

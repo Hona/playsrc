@@ -132,6 +132,27 @@ pub fn attachment_world_position(pose: &SampledWorldPose, attachment: usize) -> 
         .map(|value| matrix_translation(&value.model_transform))
 }
 
+pub fn transform_model_render_bounds(bounds: [Vector3; 2], transform: Matrix3x4) -> Result<[Vector3; 2], PresentationError> {
+    let [mins, maxs] = bounds.map(values3);
+    if (0..3).any(|axis| !mins[axis].is_finite() || !maxs[axis].is_finite() || mins[axis] > maxs[axis]) {
+        return Err(invalid_lighting_origin("model-render-bounds"));
+    }
+    let center = std::array::from_fn(|axis| (mins[axis] + maxs[axis]) * 0.5);
+    let extent: [f32; 3] = std::array::from_fn(|axis| maxs[axis] - center[axis]);
+    let world_center = transform_point(&transform, center);
+    let world_extent: [f32; 3] = std::array::from_fn(|row| {
+        f32::from_bits(transform.0[row * 4].0).abs() * extent[0]
+            + f32::from_bits(transform.0[row * 4 + 1].0).abs() * extent[1]
+            + f32::from_bits(transform.0[row * 4 + 2].0).abs() * extent[2]
+    });
+    let result = [
+        vector(std::array::from_fn(|axis| world_center[axis] - world_extent[axis])),
+        vector(std::array::from_fn(|axis| world_center[axis] + world_extent[axis])),
+    ];
+    if result.into_iter().any(|value| !finite_vector(value)) { return Err(invalid_lighting_origin("model-render-bounds")); }
+    Ok(result)
+}
+
 fn invalid_lighting_origin(identity: &str) -> PresentationError {
     PresentationError {
         code: PresentationErrorCode::InvalidState,
@@ -153,6 +174,20 @@ fn vector(values: [f32; 3]) -> Vector3 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_prop_boxes_use_transformed_render_bounds() {
+        let bounds = crate::Bounds {
+            eye: super::vector([0.0; 3]), illumination: super::vector([0.0; 3]),
+            hull_min: super::vector([-8.0; 3]), hull_max: super::vector([8.0; 3]),
+            view_min: super::vector([-2.0, -1.0, -3.0]), view_max: super::vector([2.0, 1.0, 3.0]),
+        };
+        let transform = crate::source_entity_transform(super::vector([10.0, 20.0, 30.0]), super::vector([0.0, 90.0, 0.0])).unwrap();
+        let result = super::transform_model_render_bounds(bounds.render_bounds(), transform).unwrap();
+        assert_eq!(result.map(|value| value.0.map(|value| f32::from_bits(value.0))), [[9.0, 18.0, 27.0], [11.0, 22.0, 33.0]]);
+        let unset = crate::Bounds { view_min: super::vector([0.0; 3]), view_max: super::vector([-0.0; 3]), ..bounds };
+        assert_eq!(unset.render_bounds(), [unset.hull_min, unset.hull_max]);
+    }
+
     use super::*;
 
     #[test]

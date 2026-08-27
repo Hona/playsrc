@@ -37,23 +37,23 @@ export function parseTf2Release(value: unknown): Tf2Release {
     || !record(value.objects)
     || Object.keys(value.objects).sort().join("\0") !== "catalog\0wasm"
     || !Array.isArray(value.targets)
-    || value.targets.length !== TF2_TARGET_NAMES.length
+    || value.targets.length < 1 || value.targets.length > TF2_TARGET_NAMES.length
   ) throw new Error("TF2 release descriptor is malformed")
 
   const objects = Object.freeze({
     wasm: objectDescriptor(value.objects.wasm, "derived-object", "application/octet-stream"),
     catalog: objectDescriptor(value.objects.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json"),
   })
-  const targets = value.targets.map((candidate, index): Tf2ReleaseTarget => {
-    const target = TF2_TARGET_NAMES[index]
+  const targets = value.targets.map((candidate): Tf2ReleaseTarget => {
     if (
       !record(candidate)
       || Object.keys(candidate).sort().join("\0") !== "contentBuild\0objects\0target"
-      || candidate.target !== target
+      || !TF2_TARGET_NAMES.includes(candidate.target as Tf2TargetName)
       || candidate.contentBuild !== TF2_CONTENT_BUILD.contentBuild
       || !record(candidate.objects)
       || Object.keys(candidate.objects).sort().join("\0") !== "bsp\0dependencyLedger\0resources"
     ) throw new Error("TF2 release target descriptor is malformed")
+    const target = candidate.target as Tf2TargetName
     const bsp = objectDescriptor(candidate.objects.bsp, "source-object", "application/octet-stream")
     const expectedBsp = tf2MapBsp(target)
     if (bsp.byteLength !== expectedBsp.byteLength || bsp.sha256 !== expectedBsp.sha256) {
@@ -69,6 +69,10 @@ export function parseTf2Release(value: unknown): Tf2Release {
       }),
     })
   })
+  if (!targets.some((target) => target.target === value.defaultTarget)
+    || targets.some((target, index) => index > 0 && TF2_TARGET_NAMES.indexOf(targets[index - 1]!.target) >= TF2_TARGET_NAMES.indexOf(target.target))) {
+    throw new Error("TF2 release target order or default is invalid")
+  }
   for (const field of ["bsp", "resources", "dependencyLedger"] as const) {
     if (new Set(targets.map((target) => target.objects[field].sha256)).size !== targets.length) {
       throw new Error(`TF2 release ${field} identities are duplicated`)

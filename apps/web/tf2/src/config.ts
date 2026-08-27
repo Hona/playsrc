@@ -1,7 +1,7 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONFIGURED_STARTUP, validateTf2StartupDescriptor, type Tf2StartupDescriptor } from "@playsrc/game-tf2-browser/startup-presentation"
 import { tf2MapLoading, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
-import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
+import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, tf2MapBsp, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
 const HASH = /^[0-9a-f]{64}$/
 const PRODUCTION_APPLICATION_ORIGIN = "https://playsrc.online"
@@ -52,7 +52,6 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     || !descriptor(value.wasm, "derived-object")
     || !descriptor(value.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json")
     || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > names.length
-    || (applicationOrigin === PRODUCTION_APPLICATION_ORIGIN && value.targets.length !== TF2_TARGET_NAMES.length)
     || !validateTf2StartupDescriptor(value.startup).ok || JSON.stringify(value.startup) !== JSON.stringify(TF2_CONFIGURED_STARTUP)
     || !validPresentation(value.presentation)
   ) throw new BrowserConfigurationError("Browser configuration fields are invalid")
@@ -78,11 +77,13 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
 
 function parseTarget(value: unknown, target: Tf2TargetName): BrowserTargetConfiguration {
   const loading = tf2MapLoading(target)
+  const bsp = tf2MapBsp(target)
   if (
     !record(value) || Object.keys(value).sort().join("\0") !== "contentBuild\0loading\0objects\0target"
     || value.target !== target || value.contentBuild !== "24245096"
     || !record(value.objects) || Object.keys(value.objects).sort().join("\0") !== "bsp\0dependencyLedger\0resources"
     || !descriptor(value.objects.bsp, "source-object")
+    || value.objects.bsp.sha256 !== bsp.sha256 || value.objects.bsp.byteLength !== bsp.byteLength
     || !descriptor(value.objects.resources, "source-root", "application/vnd.playsrc.resource-graph+json")
     || !descriptor(value.objects.dependencyLedger, "derived-object", "application/vnd.playsrc.source-dependency-ledger+json")
     || !record(value.loading) || Object.keys(value.loading).sort().join("\0") !== "mapPhoto\0mapPhotoLocations\0stampBackground"
@@ -91,6 +92,12 @@ function parseTarget(value: unknown, target: Tf2TargetName): BrowserTargetConfig
     || JSON.stringify(value.loading.stampBackground) !== JSON.stringify(TF2_STAMP_BACKGROUND)
   ) throw new BrowserConfigurationError("Browser target configuration is invalid")
   return Object.freeze(value as BrowserTargetConfiguration)
+}
+
+export function tf2SelectableMapNames(configuration: BrowserConfiguration, applicationOrigin: string): readonly Tf2TargetName[] {
+  return applicationOrigin === PRODUCTION_APPLICATION_ORIGIN
+    ? configuration.targets.map((target) => target.target)
+    : TF2_DEVELOPMENT_TARGET_NAMES.filter((name) => TF2_TARGET_NAMES.includes(name) || configuration.targets.some((target) => target.target === name))
 }
 
 function invalidExternalOrigin(origin: unknown): boolean {

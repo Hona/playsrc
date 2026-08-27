@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, sourceFragmentUsesAlpha, worldMaterialSide } from "../src/material-state"
+import { applyParticleDepthState, configureWorldLightmap, sourceDepthBias, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "../src/material-state"
 
 test("world materials keep front-face culling unless no-cull is explicit", () => {
   expect(worldMaterialSide(0)).toBe(THREE.FrontSide)
   expect(worldMaterialSide(8)).toBe(THREE.DoubleSide)
+})
+
+test("Source fog tags preserve color and black fog while disabling no-fog materials", () => {
+  expect(sourceMaterialUsesFog({ fog: 0 })).toBe(true)
+  expect(sourceMaterialUsesFog({ fog: 1 })).toBe(true)
+  expect(sourceMaterialUsesFog({ fog: 2 })).toBe(false)
+  expect(sourceMaterialUsesFog(undefined)).toBe(true)
 })
 
 test("categorical decal bias maps to the fixed WebGPU adapter", () => {

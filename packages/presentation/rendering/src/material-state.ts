@@ -13,6 +13,10 @@ export function sourceFragmentUsesAlpha(state: SourceFragmentAlphaState | undefi
   return state === undefined || state.blendEnabled || state.alphaOwnership.opacity || dynamicFade
 }
 
+export function sourceMaterialUsesFog(state: Readonly<{ fog: number }> | undefined): boolean {
+  return state?.fog !== 2
+}
+
 export function sourceDepthBias(category: "none" | "decal"): Readonly<{ enabled: boolean; slopeScale: number; units: number }> {
   return category === "decal"
     ? Object.freeze({ enabled: true, slopeScale: -0.5, units: -262_144 })

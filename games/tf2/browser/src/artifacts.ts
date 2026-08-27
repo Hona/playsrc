@@ -156,7 +156,7 @@ export type ModelMaterialArtifact = Readonly<{
         cloak: CloakState
       }>
     | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
-    | Readonly<{ kind: "unlit-generic" }>
+    | Readonly<{ kind: "unlit-generic"; colorModulation: readonly [number, number, number] }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
     | Readonly<{ kind: "modulate" }>
 }>
@@ -392,7 +392,7 @@ export type EnvironmentArtifact = Readonly<{
   markRecords: readonly EnvironmentMark[]
   textures: readonly SupplementalTexture[]
   directionalTextures: readonly DirectionalTextureArtifact[]
-  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string; encoding: "srgb" | "linear" | "hdr-rgbs"; selectedTextures: readonly Readonly<{ logicalPath: string; sha256: string }>[] }>[] }> | null
+  sky: Readonly<{ name: string; faces: readonly Readonly<{ face: number; material: string; sha256: string; encoding: "srgb" | "linear" | "hdr-rgbs"; selectedTextures: readonly Readonly<{ logicalPath: string; sha256: string }>[]; textureTransform: readonly number[]; color: readonly [number, number, number] }>[] }> | null
   cubemapFacts: readonly CubemapFact[]
   waterSurfaceFacts: readonly WaterSurfaceFact[]
   waterVolumeFacts: readonly WaterVolumeFact[]
@@ -540,7 +540,7 @@ function parseEnvironment(
   sharedTextures: Map<string, AuthoredTextureArtifact>,
 ): EnvironmentArtifact {
   const r = new Reader(bytes)
-  if (r.decode(r.take(4)) !== "PENV" || r.u32() !== 6) throw new ArtifactError("environment identity")
+  if (r.decode(r.take(4)) !== "PENV" || r.u32() !== 7) throw new ArtifactError("environment identity")
   const profile = r.u8()
   if ((profile !== 0 && profile !== 1) || r.u8() || r.u8() || r.u8()) throw new ArtifactError("environment profile")
   const identity = hex(r.take(32)),
@@ -875,9 +875,9 @@ function parseEnvironment(
     return Object.freeze({ ...controller, rawFields, state })
   }))
   const masterFogValue = r.u32(), masterFogController = masterFogValue === 0xffff_ffff ? null : masterFogValue, skyFaceCount = r.u32()
-  let extendedSky = sky
+  let extendedSky: EnvironmentArtifact["sky"] = null
   if (skyFaceCount !== (sky?.faces.length ?? 0)) throw new ArtifactError("sky texture extension count")
-  if (sky) extendedSky = Object.freeze({ ...sky, faces: Object.freeze(sky.faces.map((face) => Object.freeze({ ...face, selectedTextures: Object.freeze(Array.from({ length: r.u32() }, () => Object.freeze({ logicalPath: r.text(), sha256: hex(r.take(32)) }))) }))) })
+  if (sky) extendedSky = Object.freeze({ ...sky, faces: Object.freeze(sky.faces.map((face) => Object.freeze({ ...face, selectedTextures: Object.freeze(Array.from({ length: r.u32() }, () => Object.freeze({ logicalPath: r.text(), sha256: hex(r.take(32)) }))), textureTransform: Object.freeze(Array.from({ length: 16 }, () => r.f32())), color: tuple3(r) }))) })
   if (r.offset !== bytes.length) throw new ArtifactError("environment trailing bytes")
   return Object.freeze({
     profile: profile === 0 ? "ldr" : "hdr",
@@ -1079,7 +1079,7 @@ function cloak(r: Reader): CloakState {
 }
 
 function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifact> {
-  if (r.decode(r.take(4)) !== "PMDL" || r.u32() !== 2) throw new ArtifactError("PMDL identity")
+  if (r.decode(r.take(4)) !== "PMDL" || r.u32() !== 3) throw new ArtifactError("PMDL identity")
   const output = new Map<string, ModelMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase(), shaderCode = r.u8(), cloakProxy = r.u8()
@@ -1170,8 +1170,10 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
       }
       state = Object.freeze({ kind: "unlit-two-texture", secondFrameRate: frame ? frameRate : null,
         secondScrollRate: scroll ? scrollRate : null, secondScrollAngle: scroll ? scrollAngle : null })
+    } else if (shaderCode === 3) {
+      state = Object.freeze({ kind: "unlit-generic", colorModulation: tuple3(r) })
     } else {
-      state = Object.freeze({ kind: shaderCode === 5 ? "modulate" : "unlit-generic" })
+      state = Object.freeze({ kind: "modulate" })
     }
     const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({

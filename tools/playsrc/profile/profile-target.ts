@@ -1,6 +1,6 @@
-export type HeadedProfileTarget = "jump_beef" | "pl_upward" | "ctf_2fort" | "koth_viaduct" | "cp_badlands"
+import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
-export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env, fallback: HeadedProfileTarget = "jump_beef"): HeadedProfileTarget {
+export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env, fallback: Tf2TargetName = "jump_beef"): Tf2TargetName {
   if (environment.PROFILE_SCENARIOS === "control-points") return "cp_badlands"
   if (environment.PROFILE_SCENARIOS === "koth") return "koth_viaduct"
   if (environment.PROFILE_UPGRADE_ROSTER === "23") return "ctf_2fort"

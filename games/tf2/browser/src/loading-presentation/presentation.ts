@@ -1,6 +1,7 @@
 import type { Tf2GameUiState } from "../gameui"
 import type { Tf2UiPanelDocument } from "../ui-resources"
 import type { Tf2LoadingBackgroundResult } from "./background"
+import { TF2_MAPS, tf2MapTypeToken, type Tf2TargetName } from "../maps"
 
 export type Tf2LoadingPresentationRequest =
   | Readonly<{ kind: "disconnect" }>
@@ -35,7 +36,8 @@ export type Tf2LoadingPresentationInput = Readonly<{
 }>
 
 export function tf2LoadingMapDisplayName(identity: string): string {
-  if (identity.toLowerCase() === "pl_upward") return "Upward"
+  const name = identity.toLowerCase()
+  if (Object.hasOwn(TF2_MAPS, name)) return TF2_MAPS[name as Tf2TargetName].displayName
   return identity.toLowerCase()
     .replace(/_final1?$/u, "")
     .replace(/^(?:cp|tc|pl|ad|sd|rd|pd)_|^(?:ctf|plr|mvm)_|^(?:koth|pass)_|^arena_/u, "")
@@ -77,7 +79,7 @@ export function createTf2LoadingPresentation(input: Tf2LoadingPresentationInput)
             kind: "map",
             identity: state.mapIdentity,
             displayName: tf2LoadingMapDisplayName(state.mapIdentity),
-            typeToken: state.mapIdentity.toLowerCase().startsWith("pl_") ? "#Gametype_Escort" : "",
+            typeToken: tf2MapTypeToken(state.mapIdentity.toLowerCase()),
             image: background?.mapPhoto ? `maps/menu_photos_${state.mapIdentity.toLowerCase()}` : null,
           },
           { kind: "bounds", x: viewport.width - 390, y: viewport.height - 122, width: 380, height: 112 },

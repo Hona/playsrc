@@ -8321,10 +8321,16 @@ fn entity_scalar<'a>(entity: &'a playsrc_entity::Entity, key: &[u8]) -> Option<&
 
 fn selected_sky_encoding(
     selected: &[playsrc_material::TextureRole],
+    format: playsrc_vtf::ImageFormat,
 ) -> Option<playsrc_map::SkyEncoding> {
     match selected {
-        [playsrc_material::TextureRole::Base] => Some(playsrc_map::SkyEncoding::Srgb),
-        [playsrc_material::TextureRole::HdrBase] => Some(playsrc_map::SkyEncoding::Linear),
+        [playsrc_material::TextureRole::Base | playsrc_material::TextureRole::HdrBase] => Some(
+            if matches!(format, playsrc_vtf::ImageFormat::Rgba16F | playsrc_vtf::ImageFormat::Rgba16) {
+                playsrc_map::SkyEncoding::Linear
+            } else {
+                playsrc_map::SkyEncoding::Srgb
+            }
+        ),
         [playsrc_material::TextureRole::HdrCompressed] => Some(playsrc_map::SkyEncoding::HdrRgbs),
         _ => None,
     }
@@ -8340,6 +8346,7 @@ fn collision_object_templates(
     let limits = playsrc_collision::SnapshotLimits::default();
     let mut output = Vec::new();
     let mut physics_shapes = BTreeMap::new();
+    let mut render_bounds = BTreeMap::new();
     for entity in &graph.entities {
         let identity = u64::try_from(entity.index).map_err(|_| ())?;
         if identity == 0 {
@@ -8453,15 +8460,41 @@ fn collision_object_templates(
         if prop.solidity == 0 {
             continue;
         }
-        if prop.solidity != 6 {
-            return Err(());
-        }
         let model = &map
             .static_props
             .models
             .get(prop.model)
             .ok_or(())?
             .logical_path;
+        if prop.solidity == 2 {
+            let bounds = if let Some(bounds) = render_bounds.get(model) {
+                *bounds
+            } else {
+                let bounds = playsrc_studio_model::read_model_render_bounds(model, playsrc_studio_model::Profile::SourcePcMdl48, bundle.get(model).ok_or(())?, playsrc_studio_model::Limits::default()).map_err(|_| ())?;
+                render_bounds.insert(model.clone(), bounds);
+                bounds
+            };
+            let vector = |values: [f32; 3]| playsrc_studio_model::Vector3(values.map(|value| playsrc_studio_model::Float32(value.to_bits())));
+            let transform = playsrc_studio_model::source_entity_transform(vector(prop.origin), vector(prop.angles)).map_err(|_| ())?;
+            let [mins, maxs] = playsrc_studio_model::transform_model_render_bounds(bounds, transform).map_err(|_| ())?;
+            output.push(CollisionObjectTemplate {
+                input: playsrc_collision::ObjectInput {
+                    identity: 0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                    role: playsrc_collision::ObjectRole::StaticProp,
+                    enabled: true, volume_contents: false,
+                    transform: playsrc_collision::Transform { origin: prop.origin, angles: [0.0; 3] },
+                    linear_velocity: [0.0; 3], angular_velocity: [0.0; 3], collision_group: 0,
+                    contents: CONTENTS_SOLID, surface_flags: 0,
+                    shape: playsrc_collision::SnapshotShape::BoundingBox { bounds: playsrc_collision::Hull {
+                        mins: std::array::from_fn(|axis| f32::from_bits(mins.0[axis].0) - prop.origin[axis]),
+                        maxs: std::array::from_fn(|axis| f32::from_bits(maxs.0[axis].0) - prop.origin[axis]),
+                    } },
+                },
+                runtime_transform: false,
+            });
+            continue;
+        }
+        if prop.solidity != 6 { return Err(()); }
         let phy_path = model.strip_suffix(".mdl").ok_or(())?.to_owned() + ".phy";
         let Some(bytes) = bundle.get(&phy_path).copied() else {
             continue;
@@ -9316,31 +9349,16 @@ fn compile_static_prop_section(
     };
     let mut direct_requests = Vec::new();
     let mut direct_candidates = Vec::new();
-    let mut origin_query_identities = BTreeMap::new();
     for prop in &runtime_props {
         let origin = lighting_origin(prop).inspect_err(|_| presentation_failure("static prop lighting origin"))?;
-        let origin_identity =
-            0x4000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?;
-        origin_query_identities.insert(prop.source, origin_identity);
-        direct_requests.push(playsrc_collision::LightingRay {
-            identity: origin_identity,
-            start: origin,
-            end: origin,
-            ignored_static_prop: Some(
-                0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
-            ),
-        });
         let origin_leaf = visibility.locate_leaf(origin).map_err(|_| ())?;
-        let origin_cluster = visibility.leaves.get(origin_leaf).ok_or(())?.cluster;
-        if origin_cluster < 0 {
-            #[cfg(not(target_arch = "wasm32"))]
-            eprintln!("static prop {} lighting origin {:?} has cluster {origin_cluster}", prop.source, origin);
-            return Err(());
-        }
+        let leaf = visibility.leaves.get(origin_leaf).ok_or(())?;
+        let origin_cluster = leaf.cluster;
         for (light_index, light) in canonical.lighting.world_lights.iter().enumerate() {
             if light.kind == 5
+                || (light.kind == 3 && (leaf.area_and_flags >> 9) & 0x05 == 0)
                 || (light.kind != 3
-                    && (light.cluster < 0
+                    && (origin_cluster < 0 || light.cluster < 0
                         || !visibility.visible(origin_cluster as usize, light.cluster as usize)))
             {
                 continue;
@@ -9386,14 +9404,6 @@ fn compile_static_prop_section(
     let mut runtime_lighting = BTreeMap::new();
     for prop in runtime_props {
         let origin = lighting_origin(prop)?;
-        let origin_trace = direct_results
-            .get(origin_query_identities.get(&prop.source).ok_or(())?)
-            .ok_or(())?;
-        if origin_trace.trace.start_solid || origin_trace.trace.all_solid {
-            #[cfg(not(target_arch = "wasm32"))]
-            eprintln!("static prop {} lighting origin {:?} is solid", prop.source, origin);
-            return Err(());
-        }
         let mut ambient_cube = surface_world
             .ambient_cube(
                 origin,
@@ -10450,7 +10460,7 @@ fn prepare_model_materials(
     }
     let mut material_section = Vec::new();
     material_section.extend_from_slice(b"PMDL");
-    material_section.extend_from_slice(&2_u32.to_le_bytes());
+    material_section.extend_from_slice(&3_u32.to_le_bytes());
     material_section.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
@@ -10577,7 +10587,10 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
-        State::UnlitGeneric(_) | State::Modulate => {}
+        State::UnlitGeneric(state) => {
+            for value in state.color_modulation { out.extend_from_slice(&value.to_le_bytes()); }
+        }
+        State::Modulate => {}
         State::UnlitTwoTexture(state) => {
             out.extend_from_slice(&[
                 u8::from(state.second_frame_rate.is_some()),
@@ -12810,11 +12823,20 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut dependencies = Vec::new();
+    let mut sky_parameters = BTreeMap::new();
     for face in playsrc_map::CubeFace::ALL {
         let path = face.material_path(sky);
         let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
-        let encoding = selected_sky_encoding(&m.selected_textures).ok_or(())?;
+        let first_texture = m.textures.iter().find(|texture| m.selected_textures.contains(&texture.role)).and_then(|texture| texture.logical_path.as_deref()).ok_or(())?;
+        let format = decoders.metadata(&first_texture.to_ascii_lowercase())?.high_format;
+        let encoding = selected_sky_encoding(&m.selected_textures, format).ok_or(())?;
+        let mut parameters = playsrc_material::sky_parameters(&m).map_err(|_| ())?;
+        if matches!(m.selected_textures.as_slice(), [playsrc_material::TextureRole::Base | playsrc_material::TextureRole::HdrBase])
+            && (format == playsrc_vtf::ImageFormat::Rgba16 || (format == playsrc_vtf::ImageFormat::Rgba16F && profile == playsrc_map::LightingProfile::Hdr)) {
+            parameters.color = parameters.color.map(|channel| channel * 16.0);
+        }
+        sky_parameters.insert(face as u8, parameters);
         let selected_textures = m
             .textures
             .iter()
@@ -13059,9 +13081,14 @@ fn compile_environment_artifact(
         },
         visibility.identity,
     )
-    .map_err(|_| ())?;
+    .map_err(|error| {
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("TF2 environment compilation failed: {error:?}");
+        #[cfg(target_arch = "wasm32")]
+        let _ = error;
+    })?;
     let mut out = b"PENV".to_vec();
-    out.extend_from_slice(&6u32.to_le_bytes());
+    out.extend_from_slice(&7u32.to_le_bytes());
     out.extend_from_slice(&[
         if profile == playsrc_map::LightingProfile::Hdr {
             1
@@ -13804,6 +13831,10 @@ fn compile_environment_artifact(
             for texture in &face.selected_textures {
                 pbytes(&mut out, texture.logical_path.as_bytes())?;
                 out.extend_from_slice(&texture.sha256);
+            }
+            let parameters = sky_parameters.get(&(face.face as u8)).ok_or(())?;
+            for value in parameters.texture_transform.into_iter().chain(parameters.color) {
+                out.extend_from_slice(&value.to_le_bytes());
             }
         }
     } else {
@@ -15227,15 +15258,15 @@ mod tests {
     #[test]
     fn sky_texture_roles_select_explicit_render_encoding() {
         assert_eq!(
-            selected_sky_encoding(&[playsrc_material::TextureRole::Base]),
+            selected_sky_encoding(&[playsrc_material::TextureRole::Base], playsrc_vtf::ImageFormat::Dxt1),
             Some(playsrc_map::SkyEncoding::Srgb)
         );
         assert_eq!(
-            selected_sky_encoding(&[playsrc_material::TextureRole::HdrBase]),
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrBase], playsrc_vtf::ImageFormat::Rgba16F),
             Some(playsrc_map::SkyEncoding::Linear)
         );
         assert_eq!(
-            selected_sky_encoding(&[playsrc_material::TextureRole::HdrCompressed]),
+            selected_sky_encoding(&[playsrc_material::TextureRole::HdrCompressed], playsrc_vtf::ImageFormat::Dxt5),
             Some(playsrc_map::SkyEncoding::HdrRgbs)
         );
         assert_eq!(
@@ -15243,9 +15274,10 @@ mod tests {
                 playsrc_material::TextureRole::HdrCompressed0,
                 playsrc_material::TextureRole::HdrCompressed1,
                 playsrc_material::TextureRole::HdrCompressed2,
-            ]),
+            ], playsrc_vtf::ImageFormat::Dxt1),
             None
         );
+        assert_eq!(selected_sky_encoding(&[playsrc_material::TextureRole::HdrBase], playsrc_vtf::ImageFormat::Dxt1), Some(playsrc_map::SkyEncoding::Srgb));
     }
 
     #[test]
