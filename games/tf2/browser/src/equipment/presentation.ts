@@ -4,6 +4,7 @@ import { tf2ClassPresentation } from "../class"
 import type { Tf2Class } from "../codec"
 import type { Tf2VguiResources } from "../ui-integration"
 import type { Tf2EquipmentState, Tf2EquippedItem, Tf2SupportedItem } from "./types"
+import { attachEquipmentSurface } from "./surface"
 
 export type Tf2EquipmentPreview = Readonly<{ class: Tf2Class; equippedItems: readonly Tf2EquippedItem[]; fov: number; origin: readonly [number, number, number]; angles: readonly [number, number, number]; bounds: Readonly<{ x: number; y: number; width: number; height: number }> }>
 export type Tf2EquipmentPresentationRequest = Readonly<{
@@ -125,7 +126,7 @@ export class Tf2EquipmentPresentation {
         const model = block(document, "classmodelpanel")
         const surface = this.#create(root, "CTFPlayerModelPanel", "EquipmentPlayer", Object.fromEntries(["xpos", "ypos", "wide", "tall"].map(key => [key, scalar(model, key)!])))
         const bounds = this.#runtime.snapshot().panels.find(panel => panel.id === surface)!.bounds
-        if (this.#request.modelSurface) this.#releaseSurface = this.#runtime.attachSurface(surface, this.#request.modelSurface)
+        if (this.#request.modelSurface) this.#releaseSurface = attachEquipmentSurface(this.#runtime, surface, this.#request.modelSurface, this.#viewport, bounds)
         const settings = block(model, "model")
         const vector = (prefix: string) => [Number(scalar(settings, `${prefix}_x`)), Number(scalar(settings, `${prefix}_y`)), Number(scalar(settings, `${prefix}_z`))] as const
         this.#request.onPreview({ class: this.#class, equippedItems: equipped, bounds, fov: Number(scalar(model, "fov")), origin: vector("origin"), angles: vector("angles") })
