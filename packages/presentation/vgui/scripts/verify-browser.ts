@@ -2,10 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
+import { createEvidenceDirectory } from "../../../../tools/playsrc/src/evidence-directory"
 
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const packageRoot = fileURLToPath(new URL("../", import.meta.url))
-const evidenceRoot = path.join(packageRoot, "evidence", "client-diagnostics")
+const evidenceRoot = await createEvidenceDirectory(await loadLocalConfig(path.resolve(packageRoot, "../../..")), "vgui-client-diagnostics")
+console.log(`Evidence: ${evidenceRoot}`)
 const session = `playsrc-vgui-evidence-${process.pid}`
 
 async function agent(args: string[]): Promise<string> {

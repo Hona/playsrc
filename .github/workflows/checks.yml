@@ -28,6 +28,9 @@ jobs:
         with:
           bun-version: canary
 
+      - name: Reject tracked PR evidence
+        run: bun tools/playsrc/src/tracked-evidence.ts
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4.0.1
         with:
