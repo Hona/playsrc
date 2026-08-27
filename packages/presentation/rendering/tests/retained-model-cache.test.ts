@@ -42,3 +42,20 @@ describe("generation-owned retained stock viewmodels", () => {
     expect(() => new RetainedModelCache(0, () => {})).toThrow("capacity is invalid")
   })
 })
+test("world visibility and view weapon transitions share one bounded residency budget without aliasing", () => {
+  const disposed: object[] = []
+  const cache = new RetainedModelCache<object>(2, value => disposed.push(value))
+  const world = { lighting: { value: 1 }, skeleton: {} }, view = { root: {} }, replacement = {}
+  cache.retain("world:7:player:0", world)
+  cache.retain("view:7:player:0", view)
+  expect(cache.take("world:7:player:1")).toBeUndefined()
+  const restored = cache.take("world:7:player:0")
+  expect(restored).toBe(world)
+  expect(disposed).toEqual([])
+  cache.retain("world:7:player:0", restored!)
+  cache.retain("world:8:player:0", replacement)
+  expect(cache.size).toBe(2)
+  expect(disposed).toEqual([view])
+  cache.clear()
+  expect(disposed).toEqual([view, world, replacement])
+})

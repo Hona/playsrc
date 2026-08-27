@@ -1437,7 +1437,8 @@ function validateDirectionalInputs(
   return result
 }
 
-type RetainedViewModel = { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }
+type RetainedDynamicModel = { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }
+type RetainedViewModel = RetainedDynamicModel & { root: THREE.Group; meshes: THREE.Mesh[] }
 
 class RendererOwner implements Renderer {
   readonly configuration: RenderConfiguration
@@ -1475,8 +1476,11 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   #viewModelInstances = new Map<number, RetainedViewModel>()
-  readonly #retainedViewModels = new RetainedModelCache<RetainedViewModel>(32, retained => this.#disposeDynamicInstance(retained.root))
-  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
+  // One existing bounded retention budget, shared across view and world models.
+  // Visibility/idle transitions must not repeatedly rebuild the same material
+  // node graphs. Inactive occurrences are detached, never drawn speculatively.
+  readonly #retainedModels = new RetainedModelCache<RetainedDynamicModel | RetainedViewModel>(32, retained => this.#disposeDynamicInstance("root" in retained ? retained.root : retained.instance))
+  #dynamicModelInstances = new Map<number, RetainedDynamicModel>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
@@ -2248,7 +2252,7 @@ class RendererOwner implements Renderer {
       this.#clearParticleBatches()
       this.#clearDynamic(this.#viewModels)
       this.#viewModelInstances.clear()
-      this.#retainedViewModels.clear()
+      this.#retainedModels.clear()
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
       this.#stagedDynamic = undefined
@@ -4913,9 +4917,11 @@ class RendererOwner implements Renderer {
     if (!retained || retained.model !== key) {
       if (retained) {
         retained.root.parent?.remove(retained.root)
-        this.#retainedViewModels.retain(`${item.identity}:${retained.model}`, retained)
+        this.#retainedModels.retain(`view:${item.identity}:${retained.model}`, retained)
       }
-      retained = this.#retainedViewModels.take(`${item.identity}:${key}`)
+      const cached = this.#retainedModels.take(`view:${item.identity}:${key}`)
+      if (cached && !("root" in cached)) throw new RenderingError("IdentityMismatch", "retained view model namespace differs")
+      retained = cached as RetainedViewModel | undefined
       if (retained) {
         if (item.pose) this.#applyPose(retained.instance, item.pose, true, retained.meshes)
       } else {
@@ -5206,8 +5212,13 @@ class RendererOwner implements Renderer {
         const key = modelKey(item.model, item.skin ?? 0)
         let retained = this.#dynamicModelInstances.get(item.identity)
         if (!retained || retained.model !== key) {
-          if (retained) this.#disposeDynamicInstance(retained.instance)
-          retained = { model: key, instance: this.#active!.modelTemplates.get(key)!.clone(true), seen: revision }
+          if (retained) {
+            retained.instance.parent?.remove(retained.instance)
+            this.#retainedModels.retain(`world:${item.identity}:${retained.model}`, retained)
+          }
+          const parked = this.#retainedModels.take(`world:${item.identity}:${key}`)
+          this.#instrumentation?.retainedWorldModel(parked !== undefined)
+          retained = parked ?? { model: key, instance: this.#active!.modelTemplates.get(key)!.clone(true), seen: revision }
           this.#dynamicModelInstances.set(item.identity, retained)
         }
         retained.seen = revision
@@ -5240,7 +5251,8 @@ class RendererOwner implements Renderer {
     }
     for (const [identity, retained] of this.#dynamicModelInstances) {
       if (retained.seen === revision) continue
-      this.#disposeDynamicInstance(retained.instance)
+      retained.instance.parent?.remove(retained.instance)
+      this.#retainedModels.retain(`world:${identity}:${retained.model}`, retained)
       this.#dynamicModelInstances.delete(identity)
       const staticInstance = this.#active!.modelOccurrenceInstances.get(identity)
       if (staticInstance) staticInstance.visible = frame.modelVisibility?.get(identity) ?? true
@@ -5248,7 +5260,7 @@ class RendererOwner implements Renderer {
     for (const [identity, retained] of this.#viewModelInstances) {
       if (retained.seen === revision) continue
       retained.root.parent?.remove(retained.root)
-      this.#retainedViewModels.retain(`${identity}:${retained.model}`, retained)
+      this.#retainedModels.retain(`view:${identity}:${retained.model}`, retained)
       this.#viewModelInstances.delete(identity)
     }
     // A map occurrence is not a static prop. Its Entity transform includes
@@ -5414,7 +5426,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
-    this.#retainedViewModels.clear()
+    this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
@@ -5525,7 +5537,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
-    this.#retainedViewModels.clear()
+    this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined

@@ -113,6 +113,12 @@ export class RendererFrameInstrumentation {
     if (this.#profile.active) this.#poseUploadBytes += bytes
   }
 
+  retainedWorldModel(reused: boolean): void {
+    if (!this.#profile.active) return
+    const key = reused ? "retainedWorldModelReuses" : "newWorldModelInstances"
+    this.#profile.counters[key] = (this.#profile.counters[key] ?? 0) + 1
+  }
+
   indexUpload(bytes: number): void {
     if (this.#profile.active) this.#indexUploadBytes += bytes
   }
