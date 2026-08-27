@@ -15,6 +15,7 @@ const json = (value: unknown) => JSON.stringify(value, (_, value) => typeof valu
 test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return
   const evidence = await page.evaluate(() => ({ failure: (globalThis as any).__playsrcProfile?.failure,
+    legacyVisuals: (globalThis as any).__playsrcProfile?.legacyVisualEvidence,
     frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
     simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
     dataset: { ...document.querySelector<HTMLElement>("main")?.dataset } })).catch(() => null)
@@ -92,6 +93,48 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if (process.env.PROFILE_MAP_LEGACY_GLOW === "1") {
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.player?.camera)
+    const camera = await page.evaluate(() => (globalThis as any).__playsrcProfile.player.camera)
+    const candidates = facts.legacyVisuals.filter((entity: any) => entity.classname === "env_lightglow").map((entity: any) => {
+      const delta = camera.position.map((value: number,axis: number)=>value-entity.position[axis])
+      const pitch=entity.angles[0]*Math.PI/180,yaw=entity.angles[1]*Math.PI/180
+      const facing=delta[0]*Math.cos(pitch)*Math.cos(yaw)+delta[1]*Math.cos(pitch)*Math.sin(yaw)-delta[2]*Math.sin(pitch)
+      return { ...entity,distance:Math.hypot(...delta),facing }
+    }).filter((entity: any)=>entity.distance>Number(entity.minimumDistance??0)
+      && (!(Number(entity.spawnflags)&1)||entity.facing>=0)
+      && (Number(entity.outerMaximumDistance??0)<=Number(entity.maximumDistance??0)||entity.distance<Number(entity.outerMaximumDistance)))
+      .sort((left: any,right: any)=>left.distance-right.distance)
+    const glow=candidates[0]
+    expect(glow).toBeTruthy()
+    const glowPitch=glow.angles[0]*Math.PI/180,glowYaw=glow.angles[1]*Math.PI/180
+    camera.position=glow.position.map((value:number,axis:number)=>value+[
+      128*Math.cos(glowPitch)*Math.cos(glowYaw)+64*Math.sin(glowYaw),
+      128*Math.cos(glowPitch)*Math.sin(glowYaw)-64*Math.cos(glowYaw),
+      -128*Math.sin(glowPitch),
+    ][axis]!)
+    const delta=glow.position.map((value: number,axis: number)=>value-camera.position[axis])
+    camera.yawDegrees=Math.atan2(delta[1],delta[0])*180/Math.PI
+    camera.pitchDegrees=-Math.atan2(delta[2],Math.hypot(delta[0],delta[1]))*180/Math.PI
+    await writeFile(testInfo.outputPath(`${target}-legacy-glow-camera.json`),json({glow,camera,candidates}))
+    await page.evaluate(camera=>{const profile=(globalThis as any).__playsrcProfile;profile.legacyVisualProbe=true;profile.displacementCameraOverride=camera},camera)
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.some((quad: any)=>quad.source===source),glow.identity,{timeout:10000})
+    const beforeState=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
+    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-glow-on.png`)}))
+    await command('ent_fire env_lightglow Color "0 0 0"');await closeConsole()
+    await page.waitForFunction(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.length===0,undefined,{timeout:5000})
+    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-glow-off.png`)}))
+    let changed=0
+    for(let y=Math.floor(before.height/2)-64;y<before.height/2+64;y++)for(let x=Math.floor(before.width/2)-64;x<before.width/2+64;x++){
+      const at=(y*before.width+x)*before.channels
+      if([0,1,2].some(channel=>before.pixels[at+channel]!==after.pixels[at+channel]))changed++
+    }
+    await writeFile(testInfo.outputPath(`${target}-legacy-glow-pixels.json`),json({glow,camera,changed,beforeState,afterState:await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)}))
+    expect(changed,"authored Color input removes visible glow pixels in the fixed central ROI").toBeGreaterThan(8)
+    expect(beforeState[0].queries.some((query: any)=>query.source===glow.identity&&query.possible>0)).toBe(true)
+    expect(errors).toEqual([])
+    return
+  }
   if (process.env.PROFILE_MAP_SKY_PARTICLE) {
     await page.waitForFunction(() => (globalThis as any).__playsrcProfile.controlPoints?.points.length > 0)
     const emitter = facts.particleSystems.find((value: any) => value.name === process.env.PROFILE_MAP_SKY_PARTICLE)

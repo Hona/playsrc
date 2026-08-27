@@ -687,6 +687,7 @@ describe("TF2 Worker transport ownership", () => {
     await client.shutdown()
   })
 
+
   test("compile-water ordinary shaders retain their material without invented Water uniforms or auxiliary passes", async () => {
     const source = new Uint8Array(visibilityOutput())
     const material = new TextEncoder().encode("maps/ordinary-water.vmt")

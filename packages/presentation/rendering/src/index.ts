@@ -42,6 +42,8 @@ import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
+import { LegacyVisuals, type LegacyVisualFrame, type PixelVisibilityFeedback } from "./legacy-visuals"
+export type { LegacyVisualFrame, PixelVisibilityFeedback } from "./legacy-visuals"
 import { withBoundedPipelineCompilation } from "./bounded-pipeline-compilation"
 import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buffer-names"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
@@ -420,6 +422,7 @@ export type Frame = Readonly<{
   effects: readonly Effect[]
   shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
+  legacyVisuals?:readonly LegacyVisualFrame[]
   combatDecals?: readonly Readonly<{
     identity: number
     face: number
@@ -712,6 +715,7 @@ export type MapLoadRequest = Readonly<{
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null; additiveSprite?: AdditiveSpriteInput | null }>)[]
+  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -1149,6 +1153,7 @@ type SceneResources = {
   particleTextures: Map<string, THREE.Texture>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   particleDepth: SourceParticleDepth
+  legacyVisuals: readonly [LegacyVisuals, LegacyVisuals] | null
   particlePipelineMeshes: THREE.Group
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
@@ -1787,6 +1792,7 @@ class RendererOwner implements Renderer {
   completeFrameProfile(): RendererFrameProfile | undefined {
     if (this.#framePresentation?.begun) this.#pass("frame-output", () => this.#framePresentation!.finish())
     this.#particleVisibility.flushReads()
+    for (const view of this.#active?.legacyVisuals ?? []) view.finishFrame()
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     this.#renderOwnerProbe?.complete()
@@ -2674,6 +2680,7 @@ class RendererOwner implements Renderer {
     this.#renderBusy = true
     try {
       await owner.particleDepth.prepare()
+      if ("legacyVisuals" in owner && owner.legacyVisuals) await Promise.all(owner.legacyVisuals.map(view => view.prepare()))
       this.#setCamera(camera)
       this.#setSceneFog(this.#fog(fog))
       const profile = browserFrameProfiler()
@@ -2706,6 +2713,8 @@ class RendererOwner implements Renderer {
   requestParticleDepthEvidence(): void { this.#active?.particleDepth.requestEvidence() }
   takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[] { return this.#particleVisibility.takeSamples() }
   captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]> { return this.#particleVisibility.evidence() }
+  pixelVisibilityFeedback(sky = false): readonly PixelVisibilityFeedback[] { return this.#active?.legacyVisuals?.[Number(sky)]?.feedback() ?? [] }
+  captureLegacyVisualEvidence() { return this.#active?.legacyVisuals?.map(view=>view.evidence()) ?? [] }
   readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
@@ -2863,6 +2872,7 @@ class RendererOwner implements Renderer {
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const particleDepth = disposables.add(new SourceParticleDepth(this.#backend.backend))
+    let legacyVisuals: readonly [LegacyVisuals, LegacyVisuals] | null = null
     const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
     const attributes = (this.#backend as unknown as {
       _geometries: { attributes: { delete(attribute: THREE.BufferAttribute): unknown } }
@@ -3805,6 +3815,19 @@ class RendererOwner implements Renderer {
         mainModelOccurrences.add(instance)
       }
       this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes, exposureUniform, map.lighting.profile === "hdr")
+      if (request.legacyVisualTextures?.length) {
+        const materials = request.legacyVisualTextures.map(input => {
+          const state = materialStates.get(input.material.toLowerCase())
+          if (!state) throw new RenderingError("MissingInput", `Legacy visual material state ${input.material} is unavailable`)
+          const texture = disposables.add(textureFromAuthored(input, THREE.SRGBColorSpace, 0, this.textureQuality))
+          const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
+          const sampled=TSL.texture(texture,TSL.uv()), color=TSL.attribute("legacyColor","vec4")
+          material.colorNode=sourceFragmentColor(TSL.vec4(sampled.rgb.mul(color.rgb).mul(TSL.attribute("legacyHdr","float")).mul(exposureUniform),sampled.a.mul(color.a)),state,waterFogUniforms)
+          material.toneMapped=false; material.name=`legacy:${input.material}`
+          return material
+        })
+        legacyVisuals = [disposables.add(new LegacyVisuals(this.#backend.backend,materials)),disposables.add(new LegacyVisuals(this.#backend.backend,materials))]
+      }
     } catch (error) {
       const failed = {
         group,
@@ -3978,6 +4001,7 @@ class RendererOwner implements Renderer {
       particleTextures,
       particleBatchMaterials,
       particleDepth,
+      legacyVisuals,
       particlePipelineMeshes,
       materialStates,
       disposables,
@@ -4360,6 +4384,7 @@ class RendererOwner implements Renderer {
         const worldStarted=performance.now()
         sky3dPass=this.#renderSky3dPass(frame)
         const waterResult=this.#renderWaterPasses(frame,sky3dPass!==undefined)
+        this.#renderLegacyVisuals(frame.legacyVisuals?.[0], false)
         worldMilliseconds=performance.now()-worldStarted
         waterPasses = waterResult.passes
         waterPassTimings = waterResult.timings
@@ -4943,6 +4968,7 @@ class RendererOwner implements Renderer {
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
       this.#drawPass("sky3d", this.#scene, this.#camera)
+      this.#renderLegacyVisuals(frame.legacyVisuals?.[1], true)
       rendered = true
       this.#resetDepth("sky-depth-reset")
     } finally {
@@ -4979,6 +5005,19 @@ class RendererOwner implements Renderer {
       fog: Object.freeze({ start: sky.fog.start, end: sky.fog.end, primary: sky.fog.primary }),
       stateRestored: this.#scene.background === background && this.#effects.visible === effects && this.#particles.visible === particles,
     })
+  }
+
+  #renderLegacyVisuals(frame: LegacyVisualFrame | undefined, sky: boolean): void {
+    const owner=this.#active?.legacyVisuals?.[Number(sky)]
+    if (!owner || !frame) return
+    owner.update(frame)
+    owner.capture()
+    if (!frame.quads.length) return
+    const autoClear=this.#backend.autoClear
+    owner.group.fog=this.#scene.fog
+    this.#backend.autoClear=false
+    try { this.#drawPass(sky?"sky-legacy-overlays":"legacy-overlays",owner.group,this.#camera) }
+    finally { this.#backend.autoClear=autoClear }
   }
 
   #renderWaterPasses(
