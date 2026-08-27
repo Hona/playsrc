@@ -142,7 +142,7 @@ export class Tf2EquipmentPresentation {
         this.#request.onPreview({ class: this.#class, equippedItems: equipped, bounds, fov: Number(scalar(model, "fov")), origin: vector("origin"), angles: vector("angles") })
         return
       }
-      const inventory = page === "slot" ? this.#state!.inventory.filter(item => item.classSlots.some(slot => slot.class === this.#class && slot.slot === this.#slot)) : this.#state!.inventory
+      const inventory = this.#pageItems()
       const template = block(authored, "modelpanels_kv")
       const width = Number(scalar(template, "wide")), height = Number(scalar(template, "tall"))
       for (let cell = 0; cell < 50; cell++) {
@@ -280,6 +280,10 @@ export class Tf2EquipmentPresentation {
       })
     })
   }
+  #pageItems() {
+    const inventory = this.#state!.inventory
+    return this.#page === "slot" ? inventory.filter(item => item.classSlots.some(slot => slot.class === this.#class && slot.slot === this.#slot)) : inventory
+  }
   #command(command: string): void {
     if (!this.#visible || this.#busy) return
     if (command === "back") {
@@ -289,13 +293,13 @@ export class Tf2EquipmentPresentation {
     else if (command.startsWith("class ")) { this.#class = Number(command.slice(6)) as Tf2Class; this.#page = "loadout" }
     else if (command.startsWith("slot ")) { this.#slot = Number(command.slice(5)); this.#page = "slot"; this.#pageNumber = 0 }
     else if (command === "prev") this.#pageNumber = Math.max(0, this.#pageNumber - 1)
-    else if (command === "next") this.#pageNumber = Math.min(Math.ceil(this.#state!.inventory.length / 50) - 1, this.#pageNumber + 1)
+    else if (command === "next") this.#pageNumber = Math.min(Math.max(0, Math.ceil(this.#pageItems().length / 50) - 1), this.#pageNumber + 1)
     else if (command === "unequip" || command.startsWith("item ")) {
       const definition = command === "unequip" ? null : Number(command.slice(5))
       if (this.#page === "backpack" && definition !== null) {
         const item = this.#state!.inventory.find(item => item.item.definitionIndex === definition)!
         const slot = item.classSlots.find(slot => slot.class === this.#class) ?? item.classSlots[0]!
-        this.#class = slot.class; this.#slot = slot.slot; this.#selected = definition; this.#page = "slot"
+        this.#class = slot.class; this.#slot = slot.slot; this.#selected = definition; this.#page = "slot"; this.#pageNumber = 0
       } else {
         this.#busy = true
         void this.#request.onEquip(this.#class, this.#slot, definition).then(state => { this.#state = state; this.#page = "loadout"; this.#selected = null })
