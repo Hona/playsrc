@@ -1,4 +1,5 @@
 import type { RenderOwnerEvidence, RENDER_OWNER_PLAN } from "./render-owner-probe"
+import type * as THREE from "three/webgpu"
 
 export type RendererPassProfile = {
   identity: string
@@ -51,6 +52,7 @@ export type BrowserFrameProfiler = {
   losses: { kind: string; at: number; message: string }[]
   gpuTimestamps?: { frame: number; milliseconds: number }[]
   nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
+  firstStaticPropUses?: { at: number; generation: number; source: number; material: number; identity: string; pass: string | null; fade: number }[]
   renderOwnerPlan?: typeof RENDER_OWNER_PLAN
   renderOwners?: RenderOwnerEvidence[]
   captureModelPrograms?: boolean
@@ -75,6 +77,22 @@ const MEMORY_FIELDS = [
 
 export function browserFrameProfiler(): BrowserFrameProfiler | undefined {
   return (globalThis as typeof globalThis & { __playsrcFrameProfiler?: BrowserFrameProfiler }).__playsrcFrameProfiler
+}
+
+/** Opt-in first-use evidence only; no mesh or generation is retained by a record. */
+export function observeStaticPropUse(mesh: THREE.Mesh, profile: BrowserFrameProfiler, generation: number, source: number): void {
+  const original = mesh.onBeforeRender
+  mesh.onBeforeRender = function (...args) {
+    original.apply(this, args)
+    if (!profile.active) return
+    mesh.onBeforeRender = original
+    const records = profile.firstStaticPropUses ??= []
+    if (records.length >= 512) { profile.counters.staticPropUsesDropped = (profile.counters.staticPropUsesDropped ?? 0) + 1; return }
+    const material = args[4]
+    records.push({ at: performance.now(), generation, source, material: material.id,
+      identity: String(mesh.userData.materialIdentity), pass: profile.currentPass?.identity ?? null,
+      fade: mesh.userData.sourceStaticFade?.value ?? 1 })
+  }
 }
 
 export class RendererFrameInstrumentation {
