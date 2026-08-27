@@ -5405,7 +5405,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 20, MAX)?;
+    u32_field(&mut out, 21, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6915,6 +6915,7 @@ fn encode_map_effect(
             trigger,
             damage_per_second,
             contact,
+            ..
         } => (
             2,
             0,
@@ -7123,6 +7124,17 @@ fn floats(output: &mut Vec<u8>, values: impl IntoIterator<Item = f32>, limit: us
 }
 
 fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: usize) -> Option<()> {
+    if let playsrc_tf2::Event::PlayerKilled { attacker, victim, weapon, killing_weapon, assister, damage_bits, critical, custom } = event {
+        extend(output, &[18, weapon.map_or(0, weapon_code)], limit)?;
+        u16_field(output, u16::try_from(killing_weapon.len()).ok()?, limit)?;
+        u32_field(output, *victim, limit)?;
+        u32_field(output, *attacker, limit)?;
+        u32_field(output, *assister, limit)?;
+        u32_field(output, *damage_bits | if *critical { 1 << 20 } else { 0 }, limit)?;
+        u32_field(output, u32::from(*custom), limit)?;
+        u32_field(output, 0, limit)?; // No rivalry/silent/feign facts are produced by current combat.
+        return extend(output, killing_weapon.as_bytes(), limit);
+    }
     let (kind, detail, subject, auxiliary, values) = match event {
         playsrc_tf2::Event::ClassChanged(value) => (1, class_code(*value), 0, 0, [0.0; 4]),
         playsrc_tf2::Event::TeamChanged(value) => (2, team_code(*value), 0, 0, [0.0; 4]),
@@ -7296,19 +7308,7 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
                 f32::from(*custom),
             ],
         ),
-        playsrc_tf2::Event::PlayerKilled {
-            attacker,
-            victim,
-            weapon,
-            critical,
-            custom,
-        } => (
-            18,
-            weapon_code(*weapon),
-            *victim,
-            *attacker,
-            [0.0, f32::from(u8::from(*critical)), f32::from(*custom), 0.0],
-        ),
+        playsrc_tf2::Event::PlayerKilled { .. } => unreachable!(),
         playsrc_tf2::Event::PlayerRespawned { player, team } => {
             (19, team_code(*team), *player, 0, [0.0; 4])
         }
@@ -15425,7 +15425,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x14\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x15\0\0\0");
         assert_eq!(encoded.len(), 1048);
         assert_eq!(&encoded[1044..], &[0; 4]);
         assert_eq!(&encoded[944..952], b"PCTF\x01\0\0\0");

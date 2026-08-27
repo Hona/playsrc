@@ -4,6 +4,7 @@ import { loadLocalConfig } from "../src/config"
 import { expect, test } from "./application-test"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
+import { captureDeathNotice } from "./deathnotice-evidence"
 
 test("headed pl_upward local and bot combat publishes scoreboard, authored killfeed, death and team-wave respawn", async ({ page }, testInfo) => {
   await page.addInitScript(() => { ;(globalThis as any).__playsrcProfile = {} })
@@ -40,9 +41,10 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   await testInfo.attach("headed-team-scoreboard", { body: scoreboardPixels, contentType: "image/png" })
   await page.keyboard.up("Tab")
   await expect(scoreboard).toBeHidden()
-  const initialBot = await page.evaluate(() => (globalThis as any).__playsrcProfile.bots[0])
+  const initialBot = await page.evaluate(() => (globalThis as any).__playsrcProfile.combat.scores.find((player: any) => player.identity !== 1))
   await page.keyboard.press("Backquote")
-  await command(`setpos ${initialBot.position[0] - 55} ${initialBot.position[1]} ${initialBot.position[2]}`)
+  await command("setpos -2528 -1360 17")
+  await command(`bot_teleport "${initialBot.name}" -2450 -1360 17 0 0 0`)
   await expect.poll(async () => page.evaluate(() => {
     const profile = (globalThis as any).__playsrcProfile
     return Math.hypot(profile.bots[0].position[0] - profile.displacementCamera.position[0],
@@ -101,9 +103,23 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   expect(killed.scores[0]).toMatchObject({ kills: 1, damage: 125, killstreak: 1 })
   expect(killed.scores[1]).toMatchObject({ deaths: 1 })
   expect(killed.scores[1].respawnTick).not.toBeNull()
-  expect(killed.killfeed).toContain(killed.bot.name)
+  expect(killed.killfeed).toContain(initialBot.name)
   const killfeed = page.locator("[data-vgui-name^='DeathNotice']")
   await expect(killfeed).toBeVisible()
+  await expect(killfeed.locator("[data-death-icon='dneg_scattergun']")).toBeVisible()
+  const authored = await killfeed.evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    const names = [...element.querySelectorAll("span")].map(span => ({ text: span.textContent, color: getComputedStyle(span).color, font: getComputedStyle(span).font }))
+    return { bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, names,
+      background: element.querySelector("polygon")?.getAttribute("fill"), viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio } }
+  })
+  expect(authored.bounds.x + authored.bounds.width).toBe(authored.viewport.width - Math.trunc(12 * authored.viewport.height / 480))
+  expect(authored.names.map(name => name.color)).toEqual(["rgb(104, 124, 155)", "rgb(180, 92, 77)"])
+  expect(authored.background).toBe("rgba(245,229,196,0.7843137254901961)")
+  await testInfo.attach("headed-authored-killfeed-full-view", { body: await page.screenshot(), contentType: "image/png" })
+  const comparison = await captureDeathNotice(page, testInfo, "blu-kills-red")
+  expect(comparison.compared).toBeGreaterThan(10)
+  expect(comparison.matchedFraction).toBeGreaterThan(.95)
   const noticePixels = await killfeed.screenshot()
   expect(noticePixels.byteLength).toBeGreaterThan(250)
   await testInfo.attach("headed-visible-killfeed", { body: noticePixels, contentType: "image/png" })
@@ -126,8 +142,66 @@ test("headed pl_upward local and bot combat publishes scoreboard, authored killf
   expect(respawned.bot.health).toBe(125)
   expect(respawned.scores[1]).toMatchObject({ deaths: 1, respawnTick: null })
 
+  // Reverse the real combat roles; no injected HUD events or health mutation.
+  await page.keyboard.press("Backquote")
+  await command("setpos -2528 -1360 17")
+  await command(`bot_teleport "${initialBot.name}" -2450 -1360 17 0 180 0`)
+  await page.keyboard.press("Backquote")
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.scores[0].deaths), { timeout: 15_000 }).toBe(1)
+  const reverse = page.locator("[data-vgui-name^='DeathNotice']").last()
+  await expect(reverse).toContainText(initialBot.name)
+  expect(await reverse.locator("span").allTextContents()).toEqual([initialBot.name, "unnamed"])
+  const reversePixels = await captureDeathNotice(page, testInfo, "red-kills-blu")
+  expect(reversePixels.matchedFraction).toBeGreaterThan(.95)
+
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.lifecycle), { timeout: 25_000 }).toBe(1)
+  await page.keyboard.press("Backquote")
+  await command("tf_bot_kick all")
+  await command("joinclass soldier")
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.scores[0].class)).toBe(3)
+  await command("setpos -2528 -1360 17")
+  await page.keyboard.press("Backquote")
+  await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 360 } })
+  await page.evaluate(() => {
+    const camera = (globalThis as any).__playsrcProfile.displacementCamera
+    const event = new MouseEvent("mousemove", { bubbles: true })
+    Object.defineProperty(event, "movementX", { value: 0 })
+    Object.defineProperty(event, "movementY", { value: (89 - camera.pitchDegrees) / .066 })
+    dispatchEvent(event)
+    dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }))
+  })
+  await expect.poll(async () => {
+    const state = await page.evaluate(() => ({ lifecycle: (globalThis as any).__playsrcProfile.combat.lifecycle,
+      health: (globalThis as any).__playsrcProfile.combat.health, camera: (globalThis as any).__playsrcProfile.displacementCamera,
+      ammo: document.querySelector<HTMLElement>("main")!.dataset.weaponTrace }))
+    if (state.ammo?.startsWith("1:0/")) await page.keyboard.press("KeyR")
+    return JSON.stringify(state)
+  }, { timeout: 20_000 }).toMatch(/^\{"lifecycle":2,/u)
+  await page.evaluate(() => dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true })))
+  const self = page.locator("[data-vgui-name^='DeathNotice']").last()
+  await expect(self.locator("[data-death-icon='dneg_tf_projectile_rocket']")).toBeVisible()
+  expect(await self.locator("span").allTextContents()).toEqual(["unnamed"])
+  await captureDeathNotice(page, testInfo, "self-rocket")
+
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.lifecycle), { timeout: 25_000 }).toBe(1)
+  await page.keyboard.press("Backquote")
+  // Configured pl_upward trigger_hurt hammerid 168111, model *28:
+  // origin (-768,1088,-1072), damage 9999, damagetype DMG_FALL (32).
+  await command("setpos -768 1088 -1072")
+  await page.keyboard.press("Backquote")
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.lifecycle)).toBe(2)
+  const world = page.locator("[data-vgui-name^='DeathNotice']").last()
+  await expect(world.locator("[data-death-icon='dneg_skull_tf']")).toBeVisible()
+  await expect(world).toContainText("fell to a clumsy, painful death")
+  await captureDeathNotice(page, testInfo, "world-fall")
+  await page.setViewportSize({ width: 390, height: 844 })
+  await captureDeathNotice(page, testInfo, "world-fall-narrow")
+  const narrow = await world.boundingBox()
+  expect(narrow!.x + narrow!.width).toBe(390 - Math.trunc(12 * 844 / 480))
+  await page.setViewportSize({ width: 1280, height: 720 })
+
   const report = { schema: "playsrc-tf2-headed-combat-lifecycle-v1", headed: true, target: "pl_upward",
-    killed, respawned, simulation: { seconds: measurement.seconds, firstTick: measurement.firstTick,
+    killed, respawned, authored, simulation: { seconds: measurement.seconds, firstTick: measurement.firstTick,
       lastTick: measurement.lastTick, ticksPerSecond: (measurement.lastTick - measurement.firstTick) / measurement.seconds },
     frames: summarizeFrameTimes(measurement.frames) }
   const local = await loadLocalConfig()

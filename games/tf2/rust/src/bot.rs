@@ -468,6 +468,7 @@ struct Bot {
     yaw_degrees: f32,
     pitch_degrees: f32,
     health: HealthState,
+    damagers: crate::deathnotice::DamagerHistory,
     conditions: ConditionState,
     afterburn: Option<crate::pyro::Afterburn>,
     last_flame_damage_time: f32,
@@ -996,6 +997,7 @@ impl BotWorld {
             self.bots.insert(
                 identity,
                 Bot {
+                    damagers: crate::deathnotice::DamagerHistory::default(),
                     identity,
                     name,
                     class,
@@ -1669,6 +1671,14 @@ impl BotWorld {
         self.bots.get(&identity).map(|bot| bot.team)
     }
 
+    pub fn class(&self, identity: u32) -> Option<PlayerClass> {
+        self.bots.get(&identity).map(|bot| bot.class)
+    }
+
+    pub fn damage_assister(&self, victim: u32, scorer: u32, curtime: f32) -> Option<u32> {
+        self.bots.get(&victim)?.damagers.assister(scorer, curtime)
+    }
+
     pub fn damage(
         &mut self,
         input: Damage,
@@ -1709,6 +1719,9 @@ impl BotWorld {
         .map_err(|_| Error::Damage)?;
         if !result.admitted {
             return Ok(None);
+        }
+        if input.attacker != input.victim {
+            victim.damagers.record(input.attacker, tick as f32 * self.tick_interval);
         }
         victim.health.current = victim.health.current.max(0);
         if let Some(spy) = victim.spy.as_mut() {
@@ -2454,6 +2467,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
         policy,
     );
     bot.lifecycle = PlayerLifecycle::Active;
+    bot.damagers = crate::deathnotice::DamagerHistory::default();
     bot.health =
         HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
     bot.conditions = ConditionState::default();

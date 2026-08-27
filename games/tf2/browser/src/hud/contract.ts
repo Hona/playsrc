@@ -185,6 +185,7 @@ export type Tf2HudKillfeedNotice = Readonly<{
   weaponIcon: Tf2HudAvailability<string>
   weaponIdentity: Tf2HudAvailability<number>
   customKill: number
+  damageBits: number
   critical: boolean
   selfInflicted: boolean
   localPlayerInvolved: boolean

@@ -626,7 +626,16 @@ export function resolveVguiSchemeFonts(request: VguiSchemeFontResolutionRequest)
       weight,
       bitmapScale: Object.freeze([scaleX, scaleY]) as readonly [number, number],
       effects,
-      faces,
+      // CSS local() identifies a concrete full face, not a family matched by
+      // the FontFace weight descriptor. Binding local("Verdana") as weight
+      // 900 silently labels the regular face bold. Verdana's published family
+      // has Regular/Bold/Italic/Bold Italic, not a separate Black face.
+      // https://learn.microsoft.com/en-us/typography/font-list/verdana
+      faces: Object.freeze(faces.map(value => Object.freeze({ ...value, sources: Object.freeze(value.sources.map(source => {
+        if (source.kind !== "local" || !sameName(source.faceName, "Verdana")) return source
+        const selectedFace = `Verdana${weight >= 700 ? " Bold" : ""}${effects.italic ? " Italic" : ""}`
+        return localSource(selectedFace, request.context, request.localFonts)
+      })) }))),
     }))
   }
 

@@ -40,6 +40,7 @@ const documents = new Map<string, VguiResourceDocument>([
       ]),
       panel("HudWeaponSelection", { xpos: "0", ypos: "0", wide: "f0", tall: "480" }),
       panel("HudCrosshair", { xpos: "0", ypos: "0", wide: "640", tall: "480" }),
+      panel("HudDeathNotice", { xpos: "r640", ypos: "18", wide: "628", tall: "468" }),
     ]),
   })],
   ["resource/ui/hudplayerclass.res", Object.freeze({

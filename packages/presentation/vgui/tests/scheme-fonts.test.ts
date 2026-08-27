@@ -164,6 +164,13 @@ function resolve(platform: VguiDesktopPlatform, lookups: readonly VguiSchemeFont
 }
 
 describe("Source desktop scheme font selection", () => {
+  test("selects the actual Verdana bold face instead of relabeling regular glyphs as weight 900", () => {
+    const result = resolve("macos", [lookup("bold", "UiBold"), lookup("regular", "Default")])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.fonts[0]!.faces[0]!.sources[0]).toMatchObject({ kind: "local", faceName: "Verdana Bold", identity: "local:macos:verdana bold" })
+    expect(result.fonts[1]!.faces[0]!.sources[0]).toMatchObject({ kind: "local", faceName: "Verdana" })
+  })
   test("evaluates the official desktop condition vocabulary and WIN32 PC meaning", () => {
     expect(evaluateVguiSchemeCondition("[$WIN32]", context("windows"))).toBe(true)
     expect(evaluateVguiSchemeCondition("[$WIN32]", context("macos"))).toBe(true)

@@ -16,7 +16,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 20, true)
+  view.setUint32(4, 21, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -138,6 +138,27 @@ function snapshot(): ArrayBuffer {
   view.setUint32(at + 4, 0xffff_ffff, true)
   return bytes
 }
+
+test("death event wire retains exact uint32 damage bits, killing names and repeated occurrences before later sections", () => {
+  const base = new Uint8Array(snapshot()), name = new TextEncoder().encode("tf_projectile_rocket")
+  const record = new Uint8Array(28 + name.length), event = new DataView(record.buffer)
+  record.set([18, 1]); event.setUint16(2, name.length, true)
+  event.setUint32(4, 2, true); event.setUint32(8, 1, true)
+  event.setUint32(12, 3, true); event.setUint32(16, 0x8010_0040, true)
+  event.setUint32(20, 1, true); record.set(name, 28)
+  const bytes = new Uint8Array(base.length - 28 + record.length * 2)
+  bytes.set(base.subarray(0, 565)); bytes.set(record, 565); bytes.set(record, 565 + record.length)
+  bytes.set(base.subarray(593), 565 + record.length * 2)
+  new DataView(bytes.buffer).setUint32(76, 2, true)
+  const decoded = decodeSnapshot(bytes.buffer)
+  expect(decoded.events).toHaveLength(2)
+  expect(decoded.events[0]).toEqual({ kind: 18, detail: 1, subject: 2, auxiliary: 1,
+    values: [3, 0x8010_0040, 1, 0], killingWeapon: "tf_projectile_rocket" })
+  expect(decoded.events[1]).toEqual(decoded.events[0])
+  expect(decoded.scoreboard.players[0]!.name).toBe("unnamed")
+  const invalid = bytes.slice(); new DataView(invalid.buffer).setUint16(567, 0, true)
+  expect(() => decodeSnapshot(invalid.buffer)).toThrow("gameplay event record is invalid")
+})
 function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(80+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,3,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);view.setUint32(at+12,state.length,true);data.set(state,at+24);return output}
 
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {

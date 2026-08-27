@@ -128,7 +128,7 @@ fn coordinate(node: &Node, name: &[u8]) -> Result<u32, String> {
         .map_err(|_| "authored HUD icon coordinate is not an unsigned integer".to_owned())
 }
 
-fn png_data(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn png_data(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut bytes, width, height);

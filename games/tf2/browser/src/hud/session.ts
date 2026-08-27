@@ -45,6 +45,7 @@ type CompactGameplayEvent = Readonly<{
   subject: number
   auxiliary: number
   values: readonly [number, number, number, number]
+  killingWeapon?: string
 }>
 
 type SessionSnapshot = Readonly<{
@@ -350,20 +351,22 @@ function mapGameplayEvent(
     }
     case 18: {
       const participant = (identity: number) => {
-        const bot = snapshot.bots?.find(value => value.identity === identity)
         const player = snapshot.scoreboard?.players.find(value => value.identity === identity)
+        if (!player) throw new Tf2HudBindingError("MalformedFacts", `death notice participant ${identity} is absent`)
         return Object.freeze({ identity: tf2HudAvailable(identity),
-          name: player?.name ?? (bot ? `Bot ${identity}` : "Player"), team: player?.team ?? bot?.team ?? snapshot.team })
+          name: player.name, team: player.team })
       }
       const killer = source.auxiliary === 0
-        ? Object.freeze({ identity: tf2HudUnavailable<number>("not-applicable"), name: "World", team: snapshot.team })
+        ? Object.freeze({ identity: tf2HudUnavailable<number>("not-applicable"), name: "", team: 0 as const })
         : participant(source.auxiliary)
+      if (!source.killingWeapon) throw new Tf2HudBindingError("MalformedFacts", "death notice killing weapon is absent")
       push({ kind: "killfeed", notice: Object.freeze({ killer, victim: participant(source.subject),
         assister: source.values[0] === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(participant(source.values[0])),
-        weaponIcon: source.detail === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(weaponName(source.detail as Tf2Weapon)),
+        weaponIcon: tf2HudAvailable(source.killingWeapon),
         weaponIdentity: source.detail === 0 ? tf2HudUnavailable("not-applicable") : tf2HudAvailable(source.detail),
-        customKill: source.values[2], critical: source.values[1] === 1,
-        selfInflicted: source.auxiliary === source.subject, localPlayerInvolved: source.auxiliary === 1 || source.subject === 1,
+        customKill: source.values[2], damageBits: source.values[1], critical: (source.values[1] & (1 << 20)) !== 0,
+        selfInflicted: source.auxiliary === 0 || source.auxiliary === source.subject,
+        localPlayerInvolved: source.auxiliary === 1 || source.subject === 1 || source.values[0] === 1,
         domination: false, revenge: false, silent: false }) })
       break
     }

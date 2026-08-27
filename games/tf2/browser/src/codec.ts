@@ -383,6 +383,7 @@ export type GameplayEvent = Readonly<{
   subject: number
   auxiliary: number
   values: readonly [number, number, number, number]
+  killingWeapon?: string
 }>
 
 export type CombatDecal = Readonly<{
@@ -1481,7 +1482,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 20)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 21)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1812,16 +1813,23 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   requireBytes(gameplayEventCount * 28, "gameplay event")
   const events: GameplayEvent[] = []
   for (let index = 0; index < gameplayEventCount; index += 1) {
-    const item = at + index * 28
+    requireBytes(28, "gameplay event")
+    const item = at
     const kind = data[item]
+    const death = kind === 18
+    const readValue = (offset: number) => death ? view.getUint32(offset, true) : view.getFloat32(offset, true)
     const values = Object.freeze([
-      view.getFloat32(item + 12, true),
-      view.getFloat32(item + 16, true),
-      view.getFloat32(item + 20, true),
-      view.getFloat32(item + 24, true),
+      readValue(item + 12),
+      readValue(item + 16),
+      readValue(item + 20),
+      readValue(item + 24),
     ]) as readonly [number, number, number, number]
-    if (kind === undefined || kind < 1 || kind > 19 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || data[item + 2] !== 0 || data[item + 3] !== 0 || !finite(values))
+    const nameLength = view.getUint16(item + 2, true)
+    if (kind === undefined || kind < 1 || kind > 19 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || (death ? nameLength < 1 || nameLength > 255 : nameLength !== 0) || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
+    requireBytes(28 + nameLength, "death notice weapon")
+    const killingWeapon = death ? new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(item + 28, item + 28 + nameLength)) : undefined
+    if (killingWeapon !== undefined && !/^[a-zA-Z0-9_]+$/u.test(killingWeapon)) throw new Tf2CodecError("death notice weapon is invalid")
     events.push(
       Object.freeze({
         kind: kind as GameplayEvent["kind"],
@@ -1829,10 +1837,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
         subject: view.getUint32(item + 4, true),
         auxiliary: view.getUint32(item + 8, true),
         values,
+        ...(killingWeapon === undefined ? {} : { killingWeapon }),
       }),
     )
+    at += 28 + nameLength
   }
-  at += gameplayEventCount * 28
 
   requireBytes(activityCount * 16, "activity")
   const activities: ActivityEvent[] = []

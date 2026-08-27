@@ -9,6 +9,7 @@ pub mod combat;
 pub mod condition;
 pub mod ctf;
 pub mod damage;
+pub mod deathnotice;
 pub mod dynamic_prop;
 pub mod health;
 mod map_runtime;
@@ -683,7 +684,10 @@ pub enum Event {
     PlayerKilled {
         attacker: u32,
         victim: u32,
-        weapon: Weapon,
+        weapon: Option<Weapon>,
+        killing_weapon: &'static str,
+        assister: u32,
+        damage_bits: u32,
         critical: bool,
         custom: u8,
     },
@@ -832,6 +836,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     jump: Option<jump::Session>,
     bots: Option<bot::BotWorld>,
     scoreboard: scoreboard::State,
+    damagers: deathnotice::DamagerHistory,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
     respawn_tick: Option<u64>,
     buildings: building::World,
@@ -1001,6 +1006,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             jump: None,
             bots: None,
             scoreboard: scoreboard::State::default(),
+            damagers: deathnotice::DamagerHistory::default(),
             posed_player_hitboxes: Vec::new(),
             respawn_tick: None,
             buildings: building::World::new(movement_configuration.tick_interval),
@@ -1119,6 +1125,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.deploy_active_weapon();
             }
             self.pending_team_change = Some(team);
+            self.damagers = deathnotice::DamagerHistory::default();
         }
         Ok(selected)
     }
@@ -1973,8 +1980,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if building_effects.healing > 0 && self.health < self.maximum_health() {
             self.health = (self.health + building_effects.healing).min(self.maximum_health());
         }
-        if let Some((target, damage)) = building_effects.sentry_target {
-            self.apply_actor_damage(
+        if let Some((target, damage, level)) = building_effects.sentry_target {
+            self.apply_actor_damage_from(
                 bot::Damage {
                     attacker: PLAYER_IDENTITY,
                     victim: target,
@@ -1983,6 +1990,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     position: self.movement.position,
                 },
                 self.team_selection.local_team(),
+                Some(match level { 2 => "obj_sentrygun2", 3 => "obj_sentrygun3", _ => "obj_sentrygun" }),
+                Some(0),
                 &mut events,
             )?;
         }
@@ -3193,23 +3202,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 MapEffect::Hurt {
                     trigger,
                     damage_per_second,
+                    damage_type,
                     contact,
                 } => match contact {
                     playsrc_entity::ContactKind::Enter => {
                         self.hurt_active.insert(trigger);
                         self.hurt_applied.remove(&trigger);
-                        self.apply_hurt_pulse(trigger, damage_per_second, events);
+                        self.apply_hurt_pulse(trigger, damage_per_second, damage_type, events);
                     }
                     playsrc_entity::ContactKind::Stay => {
                         let due = self.hurt_next_tick.get(&trigger).copied().unwrap_or(0);
                         if self.tick >= due {
-                            self.apply_hurt_pulse(trigger, damage_per_second, events);
+                            self.apply_hurt_pulse(trigger, damage_per_second, damage_type, events);
                         }
                     }
                     playsrc_entity::ContactKind::Exit => {
                         if self.hurt_active.remove(&trigger) && !self.hurt_applied.remove(&trigger)
                         {
-                            self.apply_hurt_pulse(trigger, damage_per_second, events);
+                            self.apply_hurt_pulse(trigger, damage_per_second, damage_type, events);
                         }
                         self.hurt_next_tick.remove(&trigger);
                     }
@@ -3262,7 +3272,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         discontinuity
     }
 
-    fn apply_hurt_pulse(&mut self, trigger: u32, damage_per_second: f32, events: &mut Vec<Event>) {
+    fn apply_hurt_pulse(&mut self, trigger: u32, damage_per_second: f32, damage_type: u32, events: &mut Vec<Event>) {
         let amount = damage_per_second * 0.5;
         if amount < 0.0 {
             let before = self.health;
@@ -3277,12 +3287,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
         } else if amount > 0.0 {
             let points = (amount + 0.5) as i32;
+            let before = self.health;
             self.health = self.health.saturating_sub(points).max(0);
             events.push(Event::Damaged {
                 amount: points as f32,
                 health: self.health as f32,
                 origin: None,
             });
+            if before > 0 && self.health == 0 {
+                events.push(Event::PlayerKilled { attacker: 0, victim: PLAYER_IDENTITY,
+                    weapon: None, killing_weapon: "trigger_hurt", assister: 0, damage_bits: damage_type,
+                    critical: false, custom: 0 });
+            }
         }
         self.hurt_applied.insert(trigger);
         self.hurt_next_tick.insert(
@@ -3780,6 +3796,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
         attacker_team: PlayerTeam,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
+        self.apply_actor_damage_from(input, attacker_team, None, None, events)
+    }
+
+    fn apply_actor_damage_from(
+        &mut self,
+        input: bot::Damage,
+        attacker_team: PlayerTeam,
+        killing_weapon: Option<&'static str>,
+        custom_kill: Option<u8>,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Error> {
         let (critical, custom) = events
             .iter()
             .rev()
@@ -3804,14 +3831,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .and_then(|bots| bots.health(input.victim))
                 .unwrap_or(0)
         };
-        let (critical, custom) = if input.weapon == Weapon::Knife
-            && before > 0
-            && input.amount >= spy::backstab_damage(before)
-        {
-            (true, 2)
-        } else {
-            (critical, custom)
-        };
+        let (critical, custom) = custom_kill.map_or((critical, custom), |custom| (custom == 2, custom));
         let after;
         if input.victim == PLAYER_IDENTITY {
             if self.lifecycle != PlayerLifecycle::Active
@@ -3883,6 +3903,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if !result.admitted {
                 return Ok(());
             }
+            if input.attacker != input.victim {
+                self.damagers.record(input.attacker, self.tick as f32 * self.movement_configuration.tick_interval);
+            }
             self.health = health.current.max(0);
             if let Some(spy) = self.spy.as_mut() {
                 spy.note_damage(
@@ -3939,10 +3962,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         if after == 0 {
+            let curtime = self.tick as f32 * self.movement_configuration.tick_interval;
+            let assister = if input.attacker == input.victim { None }
+                else if killing_weapon.is_none() && self.class == PlayerClass::Medic
+                    && self.medigun.target == Some(input.attacker) { Some(PLAYER_IDENTITY) }
+                else if input.victim == PLAYER_IDENTITY { self.damagers.assister(input.attacker, curtime) }
+                else { self.bots.as_ref().and_then(|bots| bots.damage_assister(input.victim, input.attacker, curtime)) };
+            let assister = assister.filter(|identity| *identity == PLAYER_IDENTITY || self.bots.as_ref().is_some_and(|bots| bots.contains(*identity)));
             events.push(Event::PlayerKilled {
                 attacker: input.attacker,
                 victim: input.victim,
-                weapon: input.weapon,
+                weapon: Some(input.weapon),
+                killing_weapon: killing_weapon.unwrap_or_else(|| deathnotice::weapon_name(input.weapon, if input.attacker == PLAYER_IDENTITY { self.class }
+                    else { self.bots.as_ref().and_then(|bots| bots.class(input.attacker)).unwrap_or(self.class) })),
+                assister: assister.unwrap_or(0),
+                damage_bits: 0,
                 critical,
                 custom,
             });
@@ -5067,7 +5101,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .and_then(|bots| bots.combat_player(identity))
                     .or_else(|| self.collision.combat_player(identity))
             });
-            let damage = facts
+            let backstab = facts
                 .filter(|facts| {
                     facts.team.is_enemy(self.team_selection.local_team())
                         && !facts.backstab_immune
@@ -5077,8 +5111,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                             facts.world_center,
                             facts.eye_forward,
                         )
-                })
-                .map_or(spy::KNIFE_DAMAGE, |facts| {
+                });
+            let damage = backstab.map_or(spy::KNIFE_DAMAGE, |facts| {
                     spy::backstab_damage(facts.health)
                 });
             self.emit_weapon_sound(
@@ -5090,7 +5124,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 position,
             );
             if let Some(identity) = target {
-                self.apply_actor_damage(
+                self.apply_actor_damage_from(
                     bot::Damage {
                         attacker: PLAYER_IDENTITY,
                         victim: identity,
@@ -5099,6 +5133,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         position,
                     },
                     self.team_selection.local_team(),
+                    None,
+                    Some(if backstab.is_some() { 2 } else { 0 }),
                     events,
                 )?;
             }
@@ -5952,8 +5988,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         direct: Option<u32>,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
+        let weapon = if projectile.kind != ProjectileKind::Rocket { Weapon::StickybombLauncher }
+            else if projectile.owner_identity == PLAYER_IDENTITY && projectile.launcher_identity == Weapon::Original as u32 { Weapon::Original }
+            else { Weapon::RocketLauncher };
         if projectile.owner_identity == PLAYER_IDENTITY {
-            self.apply_self_blast(projectile, events);
+            self.apply_self_blast(projectile, weapon, events);
         } else if projectile.team.is_enemy(self.team_selection.local_team())
             && self.lifecycle == PlayerLifecycle::Active
         {
@@ -5990,11 +6029,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     bot::Damage {
                         attacker: projectile.owner_identity,
                         victim: PLAYER_IDENTITY,
-                        weapon: if projectile.kind == ProjectileKind::Rocket {
-                            Weapon::RocketLauncher
-                        } else {
-                            Weapon::StickybombLauncher
-                        },
+                        weapon,
                         amount: damage.damage,
                         position: projectile.position,
                     },
@@ -6057,11 +6092,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     bot::Damage {
                         attacker: projectile.owner_identity,
                         victim: victim.identity,
-                        weapon: if projectile.kind == ProjectileKind::Rocket {
-                            Weapon::RocketLauncher
-                        } else {
-                            Weapon::StickybombLauncher
-                        },
+                        weapon,
                         amount: damage.damage,
                         position: projectile.position,
                     },
@@ -6139,7 +6170,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         projectile.presentation
     }
 
-    fn apply_self_blast(&mut self, projectile: &Projectile, events: &mut Vec<Event>) {
+    fn apply_self_blast(&mut self, projectile: &Projectile, weapon: Weapon, events: &mut Vec<Event>) {
         let policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -6194,6 +6225,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 health: self.health as f32,
                 origin: Some(projectile.position),
             });
+            if health_before > 0 && self.health == 0 {
+                events.push(Event::PlayerKilled { attacker: PLAYER_IDENTITY, victim: PLAYER_IDENTITY,
+                    weapon: Some(weapon), killing_weapon: deathnotice::weapon_name(weapon, self.class),
+                    assister: 0, damage_bits: 64, critical: false, custom: 0 });
+            }
             let impulse = combat::self_blast_impulse(
                 class,
                 grounded,
@@ -6279,6 +6315,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         // WeaponReset destroys sound patches without emitting a winddown.
         self.stop_flame(true);
         self.fizzle_projectiles(projectile_events);
+        self.damagers = deathnotice::DamagerHistory::default();
         self.health = self.maximum_health();
         self.ammo = self.class.data().maximum_ammo;
         self.conditions.clear();
