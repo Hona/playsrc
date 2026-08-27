@@ -77,7 +77,7 @@ impl RenderView {
         for &leaf in leaves { allowed[leaf] = true; }
         let mut leaf_order = vec![usize::MAX; world.leaves.len()];
         for (order, leaf) in super::frustum_world_leaves(world, node_cull_modes, leaves, position, [input[6], input[7]], input[8], input[9])?.into_iter().enumerate() { leaf_order[leaf] = order; }
-        Ok(Self { camera: View { position, forward }, planes: super::world_frustum(position, input[6], input[7], input[8], input[9]), leaves: allowed.into(), leaf_order: leaf_order.into(), query: input.try_into().expect("view query") })
+        Ok(Self { camera: View { position, forward }, planes: super::world_frustum(position, input[6], input[7], input[8], input[9]), leaves: allowed.into(), leaf_order: leaf_order.into(), query: input[..14].try_into().expect("view query prefix") })
     }
 
     pub fn matches(&self, input: &[f32; 14]) -> bool {
