@@ -138,7 +138,16 @@ export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, s
 export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBytes, maximumEvents = TRACE_LIMITS.events): RawTraceEvent[] {
   if (!Number.isSafeInteger(maximumEvents) || maximumEvents < 1 || maximumEvents > TRACE_LIMITS.events) throw new Error("Invalid native event bound")
   const raw = gunzipSync(bytes, { maxOutputLength: limit })
-  const value = JSON.parse(raw.toString("utf8")) as { traceEvents?: RawTraceEvent[] }
+  const value = JSON.parse(raw.toString("utf8"), (_key: string, value: unknown, context?: { source: string }) => {
+    // Chromium surface/display/flow IDs are uint64. Rounding them to a JS
+    // number can merge distinct surfaces and fabricate content-presentation
+    // joins. Preserve unsafe integer tokens exactly; timestamps remain numbers.
+    if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      if (!context?.source) throw new Error("Lossless native trace integer decoding is unavailable")
+      return context.source
+    }
+    return value
+  }) as { traceEvents?: RawTraceEvent[] }
   if (!Array.isArray(value.traceEvents)
     || value.traceEvents.some(event => !event || typeof event !== "object" || Array.isArray(event))) throw new Error("Raw trace event format is invalid")
   if (value.traceEvents.length > maximumEvents) throw new Error(`Raw trace has ${value.traceEvents.length} events, exceeding ${maximumEvents}`)
