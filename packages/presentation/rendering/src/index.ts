@@ -2327,25 +2327,21 @@ class RendererOwner implements Renderer {
         keys.add(key)
         const template = this.#active.modelTemplates.get(model)
         if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
-        const instance = template.clone(true), meshes: THREE.Mesh[] = []
-        instance.traverse(object => { if (object instanceof THREE.Mesh) meshes.push(object) })
-        const skeleton = createSourceModelSkeleton(item.pose.boneMatrices)
-        instance.userData.sourceSkeleton = skeleton
-        const retained = { model, instance, meshes }
+        const instance = template.clone(true)
+        const authoredViewState: { transparent: boolean; depthWrite: boolean }[][] = []
+        if (pass === "view") instance.traverse(object => {
+          if (object instanceof THREE.Mesh) authoredViewState.push((Array.isArray(object.material) ? object.material : [object.material])
+            .map(material => ({ transparent: material.transparent, depthWrite: material.depthWrite })))
+        })
+        const retained = { model, instance, meshes: [] as THREE.Mesh[] }
         staged.push({ key, retained })
-        // Compilation needs the authored bind attributes/palette shape, not a
-        // rendered synthetic gameplay pose. Keep authored material depth/alpha
-        // state; ordinary runtime pose application still owns draw disposition.
-        for (let index = 0; index < meshes.length; index++) {
-          const old = meshes[index]!, authored = SOURCE_MODEL_BIND_GEOMETRY.get(old.geometry)
-          if (!authored || authored.palette.some(bone => bone >= item.pose!.boneMatrices.length / 12)) throw new RenderingError("IdentityMismatch", "prepared model palette differs from authored skeleton")
-          const material = Array.isArray(old.material) ? old.material.map(value => value.clone()) : old.material.clone()
-          const mesh = bindSourceModelMesh(authored.geometry, material, skeleton)
-          mesh.userData = { ...old.userData, dynamicMaterial: true }
-          const parent = old.parent!, position = parent.children.indexOf(old)
-          parent.remove(old); parent.add(mesh)
-          parent.children.splice(parent.children.indexOf(mesh), 1); parent.children.splice(position, 0, mesh)
-          meshes[index] = mesh
+        // Use the same palette, flex, primitive ordering and world/panel depth
+        // state owner as drawing. Standalone viewmodel metadata is not a weapon
+        // composition, so its pass uses the authored material classification.
+        retained.meshes = this.#applyPose(instance, { ...item.pose, flex: undefined }, false)
+        if (pass === "view") for (const [index, mesh] of retained.meshes.entries()) {
+          const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+          for (const [slot, material] of materials.entries()) Object.assign(material, authoredViewState[index]![slot]!)
         }
         this.#applyDynamicModelLighting(retained, item, pass === "panel" ? {
           materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
@@ -3703,12 +3699,14 @@ class RendererOwner implements Renderer {
         let retained = this.#modelPanelInstances.get(instanceIdentity)
         if (retained && retained.model !== identity) {
           retained.instance.parent?.remove(retained.instance)
-          this.#retainedModelPanels.retain(`${instanceIdentity}:${retained.model}`, retained)
+          this.#retainedModelPanels.retain(`${instanceIdentity}:${retained.model}:${!!retained.meshes}`, retained)
           this.#modelPanelInstances.delete(instanceIdentity)
           retained = undefined
         }
         if (!retained) {
-          retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}`) ?? this.#preparedModelInstances.take(`panel:${identity}`) ?? { model: identity, instance: template.clone(true) }
+          retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}:${!!panel.pose}`)
+            ?? (panel.pose && panel.modelLighting ? this.#preparedModelInstances.take(`panel:${identity}`) : undefined)
+            ?? { model: identity, instance: template.clone(true) }
           this.#modelPanelInstances.set(instanceIdentity, retained)
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
@@ -3760,12 +3758,12 @@ class RendererOwner implements Renderer {
           let merged = this.#modelPanelInstances.get(instanceKey)
           if (merged && merged.model !== key) {
             merged.instance.parent?.remove(merged.instance)
-            this.#retainedModelPanels.retain(`${instanceKey}:${merged.model}`, merged)
+            this.#retainedModelPanels.retain(`${instanceKey}:${merged.model}:${!!merged.meshes}`, merged)
             this.#modelPanelInstances.delete(instanceKey)
             merged = undefined
           }
           if (!merged) {
-            merged = this.#retainedModelPanels.take(`${instanceKey}:${key}`) ?? this.#preparedModelInstances.take(`panel:${key}`) ?? { model: key, instance: childTemplate.clone(true) }
+            merged = this.#retainedModelPanels.take(`${instanceKey}:${key}:true`) ?? this.#preparedModelInstances.take(`panel:${key}`) ?? { model: key, instance: childTemplate.clone(true) }
             this.#modelPanelInstances.set(instanceKey, merged)
           }
           merged.meshes = this.#applyPose(merged.instance, child.pose, merged.meshes !== undefined, merged.meshes)
@@ -5347,7 +5345,8 @@ class RendererOwner implements Renderer {
               if (observed) return
               observed = true
               const records = coldProfile.firstModelUses ??= []
-              if (records.length < 256) records.push({ at: performance.now(), model: item.model, skin: item.skin ?? 0, identity: item.identity, pass: coldProfile.currentPass?.identity ?? null })
+              if (records.length < 256) records.push({ at: performance.now(), model: item.model, skin: item.skin ?? 0, identity: item.identity, pass: coldProfile.currentPass?.identity ?? null,
+                materials: (retained.meshes ?? []).flatMap(mesh => (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map(material => ({ id: material.id, identity: String(mesh.userData.materialIdentity) }))) })
             }
           }
         }

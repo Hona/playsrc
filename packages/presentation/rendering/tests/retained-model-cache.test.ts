@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { RetainedModelCache } from "../src/retained-model-cache"
 
+test("a panel without pose input cannot acquire a parked posed occurrence", () => {
+  const cache = new RetainedModelCache<object>(32, () => {})
+  const posed = { skeleton: new Float32Array(16) }, bind = { texture: "authored" }
+  cache.retain("hud:class:skin=0:true", posed)
+  expect(cache.take("hud:class:skin=0:false")).toBeUndefined()
+  cache.retain("hud:class:skin=0:false", bind)
+  expect(cache.take("hud:class:skin=0:false")).toBe(bind)
+  expect(cache.take("hud:class:skin=0:true")).toBe(posed)
+})
+
 test("HUD, class panel and carried model slots retain independent class/skin state within the bound", () => {
   const disposed: object[] = []
   const cache = new RetainedModelCache<object>(32, value => disposed.push(value))

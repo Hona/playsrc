@@ -51,7 +51,7 @@ export type BrowserFrameProfiler = {
   nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
   captureModelPrograms?: boolean
   modelPreparation?: { started: number; ended?: number; models: { model: string; skin: number; pass: string }[] }
-  firstModelUses?: { at: number; model: string; skin: number; identity: number; pass: string | null }[]
+  firstModelUses?: { at: number; model: string; skin: number; identity: number; pass: string | null; materials: { id: number; identity: string }[] }[]
 }
 
 type RendererInfo = {
