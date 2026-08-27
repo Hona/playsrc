@@ -2115,10 +2115,12 @@ fn main() -> Result<(), String> {
     };
     tf2_ui.images.retain(|image| {
         image.configured_value.strip_prefix("maps/menu_photos_")
+            .or_else(|| image.configured_value.strip_prefix("training/screenshots/"))
             .is_none_or(map_image_admitted)
     });
     tf2_ui.dependencies.retain(|dependency| {
         dependency.logical_path.strip_prefix("materials/vgui/maps/menu_photos_")
+            .or_else(|| dependency.logical_path.strip_prefix("materials/vgui/training/screenshots/"))
             .and_then(|name| name.strip_suffix(".vmt").or_else(|| name.strip_suffix(".vtf")))
             .is_none_or(map_image_admitted)
     });

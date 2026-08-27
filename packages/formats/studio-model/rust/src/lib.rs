@@ -154,6 +154,16 @@ pub enum Profile {
 }
 
 impl Profile {
+    pub fn from_version(version: i32) -> Option<Self> {
+        match version {
+            44 => Some(Self::SourcePcMdl44),
+            45 => Some(Self::SourcePcMdl45),
+            46 => Some(Self::SourcePcMdl46),
+            47 => Some(Self::SourcePcMdl47),
+            48 => Some(Self::SourcePcMdl48),
+            _ => None,
+        }
+    }
     fn version(self) -> i32 {
         match self {
             Self::SourcePcMdl44 => 44,
@@ -288,7 +298,8 @@ impl Bounds {
     }
 }
 
-pub fn read_model_render_bounds(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> Result<[Vector3; 2], Error> {
+pub fn read_model_render_bounds(identity: &str, bytes: &[u8], limits: Limits) -> Result<[Vector3; 2], Error> {
+    let profile = Profile::from_version(i32_at(bytes, 4, identity)?).ok_or_else(|| failure(Classification::Unsupported, ErrorCode::ProfileMismatch, identity, Some(4..8)))?;
     Ok(parse_mdl(identity, profile, bytes, limits)?.document.bounds.render_bounds())
 }
 

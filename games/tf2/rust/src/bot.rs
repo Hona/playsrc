@@ -373,7 +373,7 @@ struct Spawn {
     identity: u32,
     class_flags: u32,
     position: [f32; 3],
-    yaw_degrees: f32,
+    angles: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -572,7 +572,7 @@ impl BotWorld {
         if self.point_spawn_revision == Some(points.spawn_revision()) { return; }
         self.point_spawn_revision = Some(points.spawn_revision());
         for team in [PlayerTeam::Red, PlayerTeam::Blue] {
-            self.spawns[team_index(team)] = points.spawns().iter().filter(|s| s.team == team && !s.disabled).map(|s| Spawn { identity: s.identity, class_flags: s.class_flags, position: s.position, yaw_degrees: s.yaw }).collect();
+            self.spawns[team_index(team)] = points.spawns().iter().filter(|s| s.team == team && !s.disabled).map(|s| Spawn { identity: s.identity, class_flags: s.class_flags, position: s.position, angles: s.angles }).collect();
         }
     }
 
@@ -612,12 +612,12 @@ impl BotWorld {
                     _ => continue,
                 };
                 let position = vector(entity, b"origin").ok_or(Error::InvalidEntity)?;
-                let yaw_degrees = vector(entity, b"angles").map_or(0.0, |angles| angles[1]);
+                let angles = vector(entity, b"angles").unwrap_or([0.0; 3]);
                 spawns[team_index(team)].push(Spawn {
                     identity: entity.index as u32,
                     class_flags: scalar(entity, b"spawnflags").and_then(|v| std::str::from_utf8(v).ok()).and_then(|v| v.parse().ok()).unwrap_or(0),
                     position,
-                    yaw_degrees,
+                    angles,
                 });
             } else if classname(entity, b"func_respawnroom")
                 && scalar(entity, b"StartDisabled") != Some(b"1".as_slice())
@@ -1094,7 +1094,7 @@ impl BotWorld {
                         },
                         policy,
                     ),
-                    yaw_degrees: spawn.yaw_degrees,
+                    yaw_degrees: spawn.angles[1],
                     pitch_degrees: 0.0,
                     health: HealthState::spawn(class, 0.0, 0.0)
                         .map_err(|_| Error::InvalidEntity)?,
@@ -1881,15 +1881,16 @@ impl BotWorld {
         team: PlayerTeam,
         class: PlayerClass,
         random: &mut UniformRandomStream,
-    ) -> Option<[f32; 3]> {
+    ) -> Option<crate::PlayerSpawn> {
         let candidates = self.spawns.get(team_index(team))?;
         if matches!(self.scenario, Scenario::ControlPoints { .. }) {
             let index = next_control_point_spawn(candidates, &mut self.last_spawn[team_index(team)], class)?;
-            return Some(candidates[index].position);
+            return Some(crate::PlayerSpawn { position: candidates[index].position, angles: candidates[index].angles });
         }
         let maximum = i32::try_from(candidates.len().checked_sub(1)?).ok()?;
         let index = usize::try_from(random.random_int(0, maximum).ok()?).ok()?;
-        Some(candidates.get(index)?.position)
+        let spawn = candidates.get(index)?;
+        Some(crate::PlayerSpawn { position: spawn.position, angles: spawn.angles })
     }
 
     pub fn record_point_combat(&mut self, tick: u64, human: Option<(Weapon, [f32; 3])>) {
@@ -2605,7 +2606,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.spy = (bot.class == PlayerClass::Spy).then(crate::spy::SpyState::default);
     bot.ammo = bot.class.data().maximum_ammo;
     bot.next_regenerate_tick = 0;
-    bot.yaw_degrees = spawn.yaw_degrees;
+    bot.yaw_degrees = spawn.angles[1];
     bot.pitch_degrees = 0.0;
     bot.target = None;
     bot.known_since.clear();

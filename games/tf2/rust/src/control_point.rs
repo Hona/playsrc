@@ -230,7 +230,7 @@ pub struct Spawn {
     pub team: PlayerTeam,
     pub point: Option<usize>,
     pub position: [f32; 3],
-    pub yaw: f32,
+    pub angles: [f32; 3],
     pub disabled: bool,
     initial_disabled: bool,
     pub class_flags: u32,
@@ -486,7 +486,7 @@ impl World {
         let spawns = graph.entities.iter().filter(|e| class(e, b"info_player_teamspawn")).map(|e| {
             let disabled = integer(e, b"StartDisabled", 0) != 0;
             Ok(Spawn { identity: e.index as u32, team: team(integer(e, b"TeamNum", 0)).ok_or(Error::InvalidEntity(e.index as u32))?,
-                point: points.iter().position(|p| p.name == text(e, b"controlpoint")), position: vector(e, b"origin")?, yaw: vector(e, b"angles")?[1], disabled, initial_disabled: disabled, class_flags: integer(e, b"spawnflags", 0) as u32 })
+                point: points.iter().position(|p| p.name == text(e, b"controlpoint")), position: vector(e, b"origin")?, angles: vector(e, b"angles")?, disabled, initial_disabled: disabled, class_flags: integer(e, b"spawnflags", 0) as u32 })
         }).collect::<Result<Vec<_>, Error>>()?;
         let mut world = Self {
             points,

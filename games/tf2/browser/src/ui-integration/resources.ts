@@ -794,7 +794,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   }
   const images: VguiImagePresentation[] = []
   for (const image of descriptor.images) {
-    const mapPhoto = image.configuredValue.toLowerCase().match(/^maps\/menu_photos_([a-z0-9_]+)$/u)
+    const mapPhoto = image.configuredValue.toLowerCase().match(/^(?:maps\/menu_photos_|training\/screenshots\/)([a-z0-9_]+)$/u)
     if (mapPhoto && !mapTargets.has(mapPhoto[1]!)) continue
     if (image.classification !== "content-vtf") {
       diagnostics.push(Object.freeze({ code: "UnsupportedImageMaterial", subject: image.configuredValue }))

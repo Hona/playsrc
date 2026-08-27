@@ -723,6 +723,7 @@ pub struct Snapshot {
     pub weapon: Option<Weapon>,
     pub player_flags: u32,
     pub movement: MovementState,
+    pub view_angle_offset: [f32; 3],
     pub health: f32,
     pub maximum_health: f32,
     pub spy: Option<spy::SpyState>,
@@ -791,6 +792,12 @@ pub struct PosedPlayerHitbox {
     pub origin: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerSpawn {
+    pub position: [f32; 3],
+    pub angles: [f32; 3],
+}
+
 #[derive(Clone)]
 pub struct Session<W: GameplayWorld + Clone> {
     collision: W,
@@ -818,6 +825,9 @@ pub struct Session<W: GameplayWorld + Clone> {
     auto_reload: bool,
     flip_viewmodels: bool,
     spawn: [f32; 3],
+    spawn_angles: [f32; 3],
+    raw_view_angles: [f32; 3],
+    view_angle_offset: [f32; 3],
     projectiles: Vec<LiveProjectile>,
     next_projectile: u32,
     fire_was_held: bool,
@@ -994,6 +1004,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             auto_reload: true,
             flip_viewmodels: false,
             spawn,
+            spawn_angles: [0.0; 3],
+            raw_view_angles: [0.0; 3],
+            view_angle_offset: [0.0; 3],
             projectiles: Vec::new(),
             next_projectile: 1,
             fire_was_held: false,
@@ -1168,7 +1181,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if team.is_gameplay() && team != before.local_team {
                 if let Some(spawn) = self.map.team_spawn(team) {
-                    self.spawn = spawn;
+                    self.spawn = spawn.position;
+                    self.spawn_angles = spawn.angles;
                 }
                 self.movement = MovementState::from_player(
                     Player {
@@ -1184,6 +1198,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     }
                     .resolve(),
                 );
+                self.snap_spawn_angles();
                 self.buildings.reset();
                 self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
@@ -1214,6 +1229,33 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.damagers = deathnotice::DamagerHistory::default();
         }
         Ok(selected)
+    }
+
+    pub fn set_initial_view_angles(&mut self, angles: [f32; 3]) {
+        self.spawn_angles = angles;
+        self.raw_view_angles = angles;
+        self.view_angle_offset = [0.0; 3];
+        self.movement.local_angles = angles;
+        self.movement.absolute_view_angles = angles;
+    }
+
+    fn snap_spawn_angles(&mut self) {
+        self.snap_view_angles(self.spawn_angles);
+    }
+
+    fn snap_view_angles(&mut self, angles: [f32; 3]) {
+        self.view_angle_offset = std::array::from_fn(|axis| angles[axis] - self.raw_view_angles[axis]);
+        self.movement.local_angles = angles;
+        self.movement.absolute_view_angles = angles;
+    }
+
+    fn select_respawn_transform(&mut self) {
+        let selected = self.bots.as_mut().and_then(|bots| bots.select_spawn(self.team_selection.local_team(), self.class, &mut self.authority_random))
+            .or_else(|| self.map.team_spawn(self.team_selection.local_team()));
+        if let Some(spawn) = selected {
+            self.spawn = spawn.position;
+            self.spawn_angles = spawn.angles;
+        }
     }
 
     pub fn new_with_random_seeds(
@@ -1604,11 +1646,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn advance_inner(
         &mut self,
-        command: Command,
+        mut command: Command,
         physics_results: &[ProjectilePhysicsResult],
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        self.raw_view_angles = [command.pitch_degrees, command.movement.yaw_degrees, 0.0];
         admission_metrics::begin_tick(self.tick);
         self.map.set_control_point_facts(self.control_point_facts());
         match self.movement.water_level {
@@ -1939,6 +1982,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .map_err(Error::Objectives)?;
             }
         }
+        command.pitch_degrees += self.view_angle_offset[0];
+        command.movement.yaw_degrees += self.view_angle_offset[1];
         self.advance_sniper_scope(command);
         self.advance_spy(command);
         let mut movement_policy = MovementPolicy {
@@ -2771,6 +2816,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapon: self.weapon,
             player_flags: self.player_flags(),
             movement: self.movement,
+            view_angle_offset: self.view_angle_offset,
             health: self.health as f32,
             maximum_health: self.maximum_health() as f32,
             spy: self.spy,
@@ -3200,17 +3246,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && team.is_gameplay()
             && team != self.team_selection.local_team()
             && self
-                .team_selection
-                .select(
+                .select_team_choice(
                     if team == PlayerTeam::Red {
                         team_selection::TeamChoice::Red
                     } else {
                         team_selection::TeamChoice::Blue
                     },
-                    false,
                 )
                 .is_ok()
         {
+            self.pending_team_change = None;
             self.stop_flame(false);
             self.buildings.reset();
             self.fizzle_projectiles(projectile_events);
@@ -3275,6 +3320,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 .resolve(),
             );
+            self.snap_spawn_angles();
             self.air_dashes = 0;
             self.in_water = false;
             self.last_movement = None;
@@ -3449,6 +3495,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 } if !discontinuity => {
                     self.movement.position = position;
                     self.movement.ground = None;
+                    if let Some(angles) = angles { self.snap_view_angles(angles); }
                     *teleported = true;
                     discontinuity = true;
                     events.push(Event::Teleported {
@@ -6617,12 +6664,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapon.reset_for_spawn();
         }
         self.deploy_active_weapon();
-        if let Some(bots) = &mut self.bots
-            && let Some(position) =
-                bots.select_spawn(self.team_selection.local_team(), self.class, &mut self.authority_random)
-        {
-            self.spawn = position;
-        }
+        self.select_respawn_transform();
         self.movement = MovementState::from_player(
             Player {
                 position: self.spawn,
@@ -6633,6 +6675,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             movement_policy,
         );
+        self.snap_spawn_angles();
         self.air_dashes = 0;
         self.in_water = false;
         self.last_movement = None;
@@ -7259,6 +7302,33 @@ mod tests {
             session.advance(Command::default()).unwrap().team,
             PlayerTeam::Blue
         );
+    }
+
+    #[test]
+    fn authored_spawn_angles_reset_team_class_and_respawn_without_losing_later_input() {
+        let graph = playsrc_entity::parse(br#"
+{"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "100 200 1" "angles" "-5 180 0"}
+{"classname" "info_player_teamspawn" "TeamNum" "3" "origin" "500 600 1" "angles" "7 330 0"}
+"#, playsrc_entity::Limits::default()).unwrap();
+        let map = MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        let mut session = Session::connected(Floor, [0.0; 3], map, team_selection::TeamRules::default());
+        session.set_initial_view_angles([0.0, 330.0, 0.0]);
+        let command = |yaw, pitch| Command { movement: MoveCommand { yaw_degrees: yaw, ..MoveCommand::default() }, pitch_degrees: pitch, ..Command::default() };
+        session.select_team_choice(team_selection::TeamChoice::Red).unwrap();
+        assert_eq!(session.movement.position, [100.0, 200.0, 1.0]);
+        assert_eq!(session.movement.local_angles, [-5.0, 180.0, 0.0]);
+        assert_eq!(session.movement.absolute_view_angles, [-5.0, 180.0, 0.0]);
+        assert_eq!(session.advance(command(330.0, 0.0)).unwrap().movement.absolute_view_angles, [-5.0, 180.0, 0.0]);
+        assert_eq!(session.advance(command(335.0, 2.0)).unwrap().movement.absolute_view_angles, [-3.0, 185.0, 0.0]);
+        let changed = session.advance(Command { select_class: Some(PlayerClass::Medic), ..command(337.0, 4.0) }).unwrap();
+        assert_eq!(changed.movement.absolute_view_angles, [-5.0, 180.0, 0.0]);
+        let respawned = session.advance(Command { respawn: true, ..command(339.0, 3.0) }).unwrap();
+        assert_eq!(respawned.movement.absolute_view_angles, [-5.0, 180.0, 0.0]);
+        assert_eq!(session.advance(command(340.0, 2.0)).unwrap().movement.absolute_view_angles, [-6.0, 181.0, 0.0]);
+        session.select_team_choice(team_selection::TeamChoice::Blue).unwrap();
+        assert_eq!(session.movement.position, [500.0, 600.0, 1.0]);
+        assert_eq!(session.movement.local_angles, [7.0, 330.0, 0.0]);
+        assert_eq!(session.advance(command(341.0, 3.0)).unwrap().movement.absolute_view_angles, [8.0, 331.0, 0.0]);
     }
 
     #[test]

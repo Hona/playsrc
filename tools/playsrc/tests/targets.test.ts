@@ -6,7 +6,10 @@ import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, tf2MapBsp } from "@play
 describe("map target registry", () => {
   test("separates released targets from explicit integration admission", () => {
     expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
-    expect(TF2_DEVELOPMENT_TARGET_NAMES).toEqual([...TF2_TARGET_NAMES, "cp_badlands", "koth_viaduct"])
+    expect(TF2_DEVELOPMENT_TARGET_NAMES.slice(0, 3)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
+    for (const [name, map] of Object.entries(maps)) {
+      expect(TF2_DEVELOPMENT_TARGET_NAMES.includes(name as keyof typeof maps)).toBe(map.admission !== "source")
+    }
     expect(tf2MapBsp("koth_viaduct")).toEqual({ byteLength: "41690668", sha256: "b3574e496550311f5036997ed7bf3d1007be7fe28236f8f33a2352fe0518729c" })
   })
 

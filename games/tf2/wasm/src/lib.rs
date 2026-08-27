@@ -1411,6 +1411,7 @@ unsafe fn compile_map(
         };
         let mut session =
             playsrc_tf2::Session::connected(gameplay_world.clone(), spawn.position, map, rules);
+        session.set_initial_view_angles(spawn.angles);
         if let Some((_, bytes)) = resources
             .iter()
             .find(|(identity, _)| identity.starts_with("maps/") && identity.ends_with(".nav"))
@@ -5496,7 +5497,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 25, MAX)?;
+    u32_field(&mut out, 26, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6213,6 +6214,7 @@ fn encode_snapshot(
     }
     playsrc_tf2::equipment::encode_items(&mut out, &snapshot.equipped_items);
     for bot in &snapshot.bots { playsrc_tf2::equipment::encode_items(&mut out, &bot.equipped_items); }
+    for value in snapshot.view_angle_offset { f32_field(&mut out, value, MAX)?; }
     Some(out)
 }
 
@@ -8472,7 +8474,7 @@ fn collision_object_templates(
             let bounds = if let Some(bounds) = render_bounds.get(model) {
                 *bounds
             } else {
-                let bounds = playsrc_studio_model::read_model_render_bounds(model, playsrc_studio_model::Profile::SourcePcMdl48, bundle.get(model).ok_or(())?, playsrc_studio_model::Limits::default()).map_err(|_| ())?;
+                let bounds = playsrc_studio_model::read_model_render_bounds(model, bundle.get(model).ok_or(())?, playsrc_studio_model::Limits::default()).map_err(|_| ())?;
                 render_bounds.insert(model.clone(), bounds);
                 bounds
             };
@@ -15618,6 +15620,7 @@ mod tests {
             age_seconds: 0.5,
         };
         let snapshot = playsrc_tf2::Snapshot {
+            view_angle_offset: [0.0; 3],
             equipped_items: Vec::new(),
             tick: 9,
             class: playsrc_tf2::PlayerClass::Soldier,
@@ -15796,9 +15799,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x19\0\0\0");
-        assert_eq!(encoded.len(), 1064);
-        assert_eq!(&encoded[1060..], &[0; 4]);
+        assert_eq!(&encoded[..8], b"PSSN\x1a\0\0\0");
+        assert_eq!(encoded.len(), 1076);
+        assert_eq!(&encoded[1060..], &[0; 16]);
         assert_eq!(&encoded[944..948], b"PCPN");
         assert_eq!(&encoded[956..964], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[992..1000], b"PGRL\x03\0\0\0");

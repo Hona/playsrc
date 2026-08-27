@@ -101,6 +101,19 @@ fn main() -> Result<(), String> {
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
     fs::write(output.join(format!("{target}.psmp")), &artifact.payload)
         .map_err(|error| error.to_string())?;
+    let parsed = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).map_err(|error| error.to_string())?;
+    let entities = playsrc_entity::parse(parsed.lumps[0].bytes(&parsed), playsrc_entity::Limits::default()).map_err(|error| error.to_string())?;
+    let mut spawns = Vec::new();
+    for entity in &entities.entities {
+        if entity.classname.as_deref() != Some(b"info_player_teamspawn") { continue; }
+        let value = |name: &[u8]| entity.pairs.iter().find(|pair| pair.key.eq_ignore_ascii_case(name)).map(|pair| String::from_utf8_lossy(&pair.value).into_owned());
+        let vector = |name: &[u8]| -> Result<[f32; 3], String> {
+            let values = value(name).unwrap_or_else(|| "0 0 0".to_owned()).split_whitespace().map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+            values.try_into().map_err(|_| "spawn vector is invalid".to_owned())
+        };
+        spawns.push(serde_json::json!({ "identity": entity.index, "team": value(b"TeamNum"), "position": vector(b"origin")?, "angles": vector(b"angles")?, "disabled": value(b"StartDisabled"), "classFlags": value(b"spawnflags") }));
+    }
+    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     println!(
         "{}",
         serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": artifact.payload.len(), "sha256": hex_hash(&artifact.payload)})

@@ -3165,6 +3165,17 @@ class RendererOwner implements Renderer {
         if(authored)authoredEnvironmentMaterials.add(texture.material.toLowerCase())
         environmentTextures.set(texture.material.toLowerCase(), value)
       }
+      for (const mark of request.environment?.markRecords ?? []) {
+        if (mark.status !== 0 || !mark.enabled) continue
+        const identity = mark.material.toLowerCase()
+        if (environmentTextures.has(identity)) continue
+        const resolved = map.materials.find(material => material.logicalPath.toLowerCase() === identity)
+        if (!resolved?.baseTexture) throw new RenderingError("MissingInput", `projected mark ${identity} has no authoritative base texture`)
+        const texture = createBase(resolved, identity)
+        if (!texture) throw new RenderingError("MissingInput", `projected mark ${identity} base texture is unavailable`)
+        environmentTextures.set(identity, texture)
+        authoredEnvironmentMaterials.add(identity)
+      }
       combatDecalTexture=environmentTextures.get("materials/decals/decals_mod2x.vmt")??null
       const cubemapIdentities = new Set<number>()
       for (const fact of request.environment?.cubemapFacts ?? []) {
@@ -3211,8 +3222,7 @@ class RendererOwner implements Renderer {
         if (mark.status !== 0 || !mark.enabled) continue
         const texture = environmentTextures.get(mark.material.toLowerCase())
         if (!texture) {
-          diagnostics.push(diagnostic("MissingMaterial", mark.material, "projected mark texture is unavailable"))
-          continue
+          throw new RenderingError("MissingInput", `projected mark texture is unavailable: ${mark.material}`)
         }
         for (const fragment of mark.fragments) {
           const geometry = new THREE.BufferGeometry()
