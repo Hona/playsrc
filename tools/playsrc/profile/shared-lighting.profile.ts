@@ -118,7 +118,12 @@ test("configured maps retain world, viewmodel, and panel illumination", async ({
         }, classId)
         const offset = Number((await main.getAttribute("data-view-offset"))!.split(",")[2])
         await command(`setpos ${target.camera[0]} ${target.camera[1]} ${target.camera[2] - offset}`)
-        await aim([target.position[0], target.position[1], target.position[2] + 52])
+        await page.waitForFunction(position => {
+          const current = document.querySelector<HTMLElement>("main")!.dataset.cameraPosition!.split(",").map(Number)
+          return Math.hypot(current[0]! - position[0], current[1]! - position[1]) < 2
+        }, target.camera)
+        const position = await page.evaluate(id => (globalThis as any).__playsrcProfile.bots.find((bot: any) => bot.identity === id).position, target.identity)
+        await aim([position[0], position[1], position[2] + 52])
         const evidence = await capture(`${map}-${team}-${classname}`)
         expect(evidence.lighting.worldGeometry.samples.some((sample: any) => sample.identity === 0x6000_0000 + target.identity)).toBe(true)
       }

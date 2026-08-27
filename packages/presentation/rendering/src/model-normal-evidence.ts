@@ -1,5 +1,14 @@
 import * as THREE from "three/webgpu"
 
+export function visibleModelIntersection(hit: THREE.Intersection): boolean {
+  for (let object: THREE.Object3D | null = hit.object; object; object = object.parent) {
+    if (!object.visible) return false
+  }
+  if (!(hit.object instanceof THREE.Mesh)) return false
+  const material = Array.isArray(hit.object.material) ? hit.object.material[hit.face?.materialIndex ?? 0] : hit.object.material
+  return material?.visible === true
+}
+
 // On-demand profiling only. Raycaster's interpolated normal is unskinned and
 // face-forwarded, so it cannot diagnose authored Studio lighting directions.
 export function modelNormalEvidence(hit: THREE.Intersection): Readonly<{
