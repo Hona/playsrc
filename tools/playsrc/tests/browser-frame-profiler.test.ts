@@ -179,6 +179,25 @@ describe("opt-in structured browser frame profiler", () => {
     expect(state.counters.workerPending).toBe(0)
   })
 
+  test("the serialized logical reply probe is self-contained and chains an existing observer", () => {
+    const previous: unknown[] = []
+    class Worker {
+      __playsrcProfileReply = (response: unknown) => previous.push(response)
+      postMessage(_message: unknown): void {}
+    }
+    const browser = { ...host(), Worker }
+    const install = new Function("host", `return (${installBrowserFrameProfiler.toString()})(host)`)
+    const state = install(browser)
+    state.active = true
+    const worker = new browser.Worker("gameplay.js")
+    worker.postMessage({ id: 17, kind: "visibility", views: [{}, {}] })
+    const response = { id: 17, kind: "visibility", outputs: [new ArrayBuffer(80), new ArrayBuffer(80)], timings: { mainCopyMilliseconds: 0.01 } }
+    worker.__playsrcProfileReply(response)
+    expect(previous).toEqual([response])
+    expect(state.worker[0]).toMatchObject({ receivedBytes: 160, timings: { mainCopyMilliseconds: 0.01 } })
+    expect(state.counters.workerPending).toBe(0)
+  })
+
   test("accounts for visibility companions sharing a model dispatch and their actual queue depth", () => {
     class Worker {
       listener?: (event: { data: unknown }) => void
