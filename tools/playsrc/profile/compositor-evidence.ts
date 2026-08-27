@@ -5,6 +5,8 @@ import { gunzipSync, gzipSync } from "node:zlib"
 import type { CDPSession } from "@playwright/test"
 import { TRACE_START, TRACE_END, activeGameplayTraceWindow, chromiumPresentationEventName, type ChromiumTraceEvent } from "./compositor-truth"
 import { attributeCompositorEvidence } from "./compositor-attribution"
+import { CPU_PROFILE_LIMITS, reconstructCpuProfile } from "./cpu-profile-time"
+import type { CpuProfile } from "./gameui-profile"
 
 export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
   "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "toplevel.flow", "blink.user_timing",
@@ -120,19 +122,124 @@ export function analyzeCompositorEvidence(events: readonly RawTraceEvent[], prob
     incidents }
 }
 
-type BlobIdentity = Readonly<{ file: string; sha256: string; bytes: number }>
+export type BlobIdentity = Readonly<{ file: string; sha256: string; bytes: number }>
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json"): Promise<BlobIdentity> {
+export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json" | "main.cpuprofile"): Promise<BlobIdentity> {
   const sha256 = digest(bytes)
   const file = `${sha256}.${suffix}`
   await mkdir(directory, { recursive: true })
   try { await writeFile(path.join(directory, file), bytes, { flag: "wx" }) }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-    if (digest(await readFile(path.join(directory, file))) !== sha256) throw new Error("Existing immutable trace evidence is corrupt")
+    if ((await stat(path.join(directory, file))).size !== bytes.byteLength
+      || digest(await readFile(path.join(directory, file))) !== sha256) throw new Error("Existing immutable trace evidence is corrupt")
   }
   return { file, sha256, bytes: bytes.byteLength }
+}
+
+type MainTarget = { targetId: string; type: string; url: string; browserContextId?: string }
+export type MainCpuEvidence = {
+  profile: BlobIdentity | null; capturedBytes: number; errors: string[];
+  source: { sourceCommit: string; sourceFingerprint: string; target: MainTarget | null; targetAfter: MainTarget | null };
+  clock: { domain: "Chromium monotonic microseconds"; source: "CDP Performance.getMetrics.Timestamp"; samplingIntervalMicroseconds: 1000;
+    start: number[]; stop: number[] };
+}
+
+async function boundedMainCommand<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
+  if (Date.now() >= deadline) throw new Error("Main CPU collection exceeded 5 seconds")
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try { return await Promise.race([operation(), new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Main CPU collection exceeded 5 seconds")), Math.max(1, deadline - Date.now()))
+  })]) } finally { clearTimeout(timer) }
+}
+
+/** The page sampler feeds the same immutable evidence owner as the native trace.
+ * Stop is single-shot, including interruption; optional heap failures cannot lose it. */
+export async function startMainCpuEvidence(cdp: Pick<CDPSession, "send">, directory: string,
+  source: { sourceCommit: string; sourceFingerprint: string }) {
+  const evidence: MainCpuEvidence = { profile: null, capturedBytes: 0, errors: [],
+    source: { ...source, target: null, targetAfter: null },
+    clock: { domain: "Chromium monotonic microseconds", source: "CDP Performance.getMetrics.Timestamp", samplingIntervalMicroseconds: 1000, start: [], stop: [] } }
+  let deadline = Date.now() + 5000
+  const attempt = async <T>(operation: () => Promise<T>): Promise<T | undefined> => {
+    try { return await boundedMainCommand(operation, deadline) } catch (error) { evidence.errors.push(String(error)); return undefined }
+  }
+  const timestamp = async (into: number[]) => {
+    const result = await attempt(() => cdp.send("Performance.getMetrics"))
+    const seconds = result?.metrics.find(metric => metric.name === "Timestamp")?.value
+    if (seconds === undefined || !Number.isFinite(seconds)) evidence.errors.push("Missing main CPU monotonic timestamp")
+    else into.push(seconds * 1_000_000)
+  }
+  await attempt(() => cdp.send("Performance.enable"))
+  await attempt(() => cdp.send("Profiler.enable"))
+  await attempt(() => cdp.send("Profiler.setSamplingInterval", { interval: evidence.clock.samplingIntervalMicroseconds }))
+  evidence.source.target = (await attempt(() => cdp.send("Target.getTargetInfo")))?.targetInfo ?? null
+  await timestamp(evidence.clock.start)
+  await attempt(() => cdp.send("Profiler.start"))
+  await timestamp(evidence.clock.start)
+  let stopped: Promise<{ evidence: MainCpuEvidence; profile: CpuProfile | undefined }> | undefined
+  return { stop: () => stopped ??= (async () => {
+    deadline = Date.now() + 5000
+    await timestamp(evidence.clock.stop)
+    const profile = (await attempt(() => cdp.send("Profiler.stop")))?.profile as CpuProfile | undefined
+    await timestamp(evidence.clock.stop)
+    // Retain the exact serialization before any validation or further CDP work.
+    if (profile !== undefined) {
+      const bytes = Buffer.from(JSON.stringify(profile))
+      evidence.capturedBytes = bytes.length
+      evidence.profile = await retainEvidenceBlob(directory, bytes.subarray(0, CPU_PROFILE_LIMITS.bytes), "main.cpuprofile")
+      if (bytes.length > CPU_PROFILE_LIMITS.bytes) evidence.errors.push("Main CPU profile byte bound exceeded; prefix retained")
+      try { reconstructCpuProfile(profile) } catch (error) { evidence.errors.push(String(error)) }
+    } else evidence.errors.push("Main CPU profile missing")
+    evidence.source.targetAfter = (await attempt(() => cdp.send("Target.getTargetInfo")))?.targetInfo ?? null
+    return { evidence, profile }
+  })() }
+}
+
+function validateMainCpuProvenance(main: MainCpuEvidence, identity: Record<string, unknown>, window: ReturnType<typeof compositorTraceWindow> | null, profile?: CpuProfile) {
+  const { source, clock } = main
+  if (!source || source.sourceCommit !== identity.sourceCommit || source.sourceFingerprint !== identity.sourceFingerprint
+    || identity.sourceFingerprintAfter !== source.sourceFingerprint || identity.sourceUnchanged !== true
+    || !/^[0-9a-f]{40}$/u.test(source.sourceCommit) || !/^[0-9a-f]{64}$/u.test(source.sourceFingerprint)) throw new Error("Main CPU source identity mismatch")
+  if (!source.target?.targetId || source.target.type !== "page" || !source.targetAfter
+    || ["targetId", "type", "url", "browserContextId"].some(key => source.target![key as keyof MainTarget] !== source.targetAfter![key as keyof MainTarget])
+    || new URL(source.target.url).origin !== identity.origin) throw new Error("Main CPU page target identity mismatch")
+  if (clock?.domain !== "Chromium monotonic microseconds" || clock.source !== "CDP Performance.getMetrics.Timestamp" || clock.samplingIntervalMicroseconds !== 1000
+    || !Array.isArray(clock.start) || !Array.isArray(clock.stop) || clock.start.length !== 2 || clock.stop.length !== 2
+    || [...clock.start, ...clock.stop].some(value => !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER)
+    || clock.start[0]! > clock.start[1]! || clock.start[1]! > clock.stop[0]! || clock.stop[0]! > clock.stop[1]!) throw new Error("Main CPU clock bounds invalid")
+  if (!window || !Number.isSafeInteger(window.pid) || !Number.isSafeInteger(window.tid)
+    || window.startedMicroseconds < clock.start[1]! - 100 || window.endedMicroseconds > clock.stop[0]! + 100) throw new Error("Main CPU active trace clock join invalid")
+  if (profile && (profile.startTime < clock.start[0]! - 100 || profile.startTime > clock.start[1]! + 100
+    || profile.endTime < clock.stop[0]! - 100 || profile.endTime > clock.stop[1]! + 100
+    || profile.startTime > window.startedMicroseconds + 100 || profile.endTime < window.endedMicroseconds - 100)) throw new Error("Main CPU profile outside captured clock bounds")
+}
+
+/** Authenticates bytes even for failed captures; failures never become sampled CPU. */
+export async function loadMainCpuEvidence(filename: string, loaded: Awaited<ReturnType<typeof loadCompositorEvidence>>) {
+  const main = loaded.manifest.mainCpu as MainCpuEvidence | undefined
+  if (loaded.manifest.schema === "playsrc-compositor-evidence-v1") {
+    if (main !== undefined) throw new Error("Historical compositor manifest cannot authenticate main CPU evidence")
+    return null
+  }
+  if (!main || !Array.isArray(main.errors)) throw new Error("Main CPU evidence missing")
+  let bytes: Buffer | undefined
+  if (main.profile) {
+    const artifact = main.profile
+    if (!/^[0-9a-f]{64}$/u.test(artifact.sha256) || artifact.file !== `${artifact.sha256}.main.cpuprofile`
+      || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > CPU_PROFILE_LIMITS.bytes) throw new Error("Main CPU blob identity or byte bound invalid")
+    const file = path.join(path.dirname(filename), artifact.file)
+    if ((await stat(file)).size !== artifact.bytes) throw new Error("Main CPU blob byte identity mismatch")
+    bytes = await readFile(file)
+    if (bytes.length !== artifact.bytes || digest(bytes) !== artifact.sha256) throw new Error("Main CPU blob hash identity mismatch")
+  }
+  if (main.errors.length) return { evidence: main, profile: null }
+  if (!bytes || main.capturedBytes !== bytes.length) throw new Error("Main CPU profile missing or truncated")
+  const profile = JSON.parse(bytes.toString("utf8")) as CpuProfile
+  reconstructCpuProfile(profile)
+  validateMainCpuProvenance(main, loaded.manifest.identity, loaded.analysis.window, profile)
+  return { evidence: main, profile }
 }
 
 export function decodeRawTrace(bytes: Uint8Array, limit = TRACE_LIMITS.decodedBytes, maximumEvents = TRACE_LIMITS.events): RawTraceEvent[] {
@@ -185,6 +292,7 @@ export async function retainCompositorEvidence(options: Readonly<{
   identity: Record<string, unknown>; probes: TraceProbes;
   categories?: readonly string[];
   maximumEvents?: number;
+  mainCpu?: { evidence: MainCpuEvidence; profile: CpuProfile | undefined };
 }>) {
   // Persist original bytes before parsing/analysis: malformed and overflow traces are evidence too.
   const errors: string[] = []
@@ -205,7 +313,15 @@ export async function retainCompositorEvidence(options: Readonly<{
   let events: RawTraceEvent[] = []
   try { events = decodeRawTrace(options.raw.subarray(0, TRACE_LIMITS.compressedBytes), TRACE_LIMITS.decodedBytes, limits.events) } catch (error) { errors.push(String(error)) }
   const analysis = analyzeCompositorEvidence(events, capturedProbes)
-  const manifest = { schema: "playsrc-compositor-evidence-v1", identity: options.identity, limits,
+  let mainCpu: MainCpuEvidence | undefined
+  if (options.mainCpu) {
+    mainCpu = { ...options.mainCpu.evidence, errors: [...options.mainCpu.evidence.errors] }
+    try { validateMainCpuProvenance(mainCpu, options.identity, analysis.window, options.mainCpu.profile) }
+    catch (error) { mainCpu.errors.push(String(error)) }
+    errors.push(...mainCpu.errors)
+  }
+  const manifest = { schema: mainCpu ? "playsrc-compositor-evidence-v2" : "playsrc-compositor-evidence-v1", identity: options.identity, limits,
+    ...(mainCpu ? { mainCpu } : {}),
     categories: options.categories ?? COMPOSITOR_TRACE_CATEGORIES, trace, probes, complete: options.complete && !options.dataLossOccurred && !errors.length && !analysis.issues.length,
     errors, analysis }
   const artifact = await retainEvidenceBlob(options.directory, Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json")
@@ -217,7 +333,7 @@ export async function loadCompositorEvidence(filename: string) {
   const bytes = await readFile(filename)
   if (path.basename(filename) !== `${digest(bytes)}.manifest.json`) throw new Error("Trace manifest identity mismatch")
   const manifest = JSON.parse(bytes.toString("utf8"))
-  if (manifest.schema !== "playsrc-compositor-evidence-v1") throw new Error("Unsupported trace evidence schema")
+  if (!["playsrc-compositor-evidence-v1", "playsrc-compositor-evidence-v2"].includes(manifest.schema)) throw new Error("Unsupported trace evidence schema")
   const blob = async (identity: BlobIdentity) => {
     if (!/^[0-9a-f]{64}\.(trace|probes)\.json\.gz$/u.test(identity.file) || !identity.file.startsWith(identity.sha256)) throw new Error("Trace blob identity is invalid")
     const file = path.join(path.dirname(filename), identity.file)
@@ -239,7 +355,7 @@ export async function loadCompositorEvidence(filename: string) {
 /** Re-analysis of a complete immutable stream, never repair missing capture data. */
 export async function redecodeCompositorEvidence(filename: string) {
   const { manifest, raw, probes } = await loadCompositorEvidence(filename)
-  if (manifest.complete || manifest.limits.events >= TRACE_LIMITS.events
+  if (manifest.schema !== "playsrc-compositor-evidence-v1" || manifest.complete || manifest.limits.events >= TRACE_LIMITS.events
     || manifest.errors.length !== 1 || !(manifest.errors[0] === "Error: Raw trace event bound or format is invalid" || /^Error: Raw trace has \d+ events, exceeding \d+$/u.test(manifest.errors[0]))
     || manifest.identity.sourceUnchanged !== true || manifest.identity.interrupted !== false) {
     throw new Error("Only a count-limited, uninterrupted, complete native stream can be re-decoded")
