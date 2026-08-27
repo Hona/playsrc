@@ -7,6 +7,13 @@ static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 
+// Native tests use System globally and invoke MeasuredAllocator explicitly.
+// Own this lock for the entire test measurement, including replay/admission
+// teardown: those lifecycles toggle the same process-global tracking flag.
+// Do not lock allocator calls or replace the runtime's cross-thread counters.
+#[cfg(test)]
+pub(crate) static TEST_METRICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn track_allocations(enabled: bool) {
     TRACK_ALLOCATIONS.store(enabled, Ordering::Relaxed);
 }
@@ -86,6 +93,7 @@ mod tests {
 
     #[test]
     fn explicit_allocator_tracks_growth_shrink_and_release() {
+        let _metrics = TEST_METRICS.lock().expect("test metrics");
         track_allocations(true);
         let initial_totals = allocation_totals();
         let baseline = live_bytes();
