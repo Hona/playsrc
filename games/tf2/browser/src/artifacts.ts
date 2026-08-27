@@ -1356,19 +1356,27 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
   if(vhv.length!==count*2-runtimeLightingCount*2)throw new ArtifactError("static prop VHV closure")
   return Object.freeze({aggregateSha256,modelCount,count,source,dictionaryModel,presentationModel,transform,skin,body,lod,fades,flags,solidity,ownership,lightingKind,lightingOrigin,leafOffsets,leaves:Uint16Array.from(leafValues),areas:Uint16Array.from(areaValues),vhvObjects,runtimeAmbient,runtimeLightOffsets,runtimeLights:Object.freeze(runtimeLights),models:Object.freeze([...models]),vhv,runtimeLightingCount})
 }
-export type EquipmentModelArtifacts = Pick<PresentationArtifacts, "models" | "materialStates" | "modelMaterials" | "authoredTextures"> & Readonly<{ geometry: readonly import("@playsrc/rendering/runtime-map").RuntimeModel[] }>
+export type EquipmentModelArtifacts = Pick<PresentationArtifacts, "models" | "materialStates" | "modelMaterials" | "authoredTextures" | "particleMaterials" | "particleTextures"> & Readonly<{ geometry: readonly import("@playsrc/rendering/runtime-map").RuntimeModel[] }>
 
 export function parseEquipmentModelArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EquipmentModelArtifacts {
   const r = new Reader(bytes)
-  if (r.decode(r.take(4)) !== "PEQM" || r.u32() !== 1) throw new ArtifactError("equipment model identity")
+  if (r.decode(r.take(4)) !== "PEQM" || r.u32() !== 2) throw new ArtifactError("equipment model identity")
   const models = parseModelHeaders(r, r.u32())
   const materialStates = parseMaterialStates(r)
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r, resources, new Map())
   const geometry = decodeRuntimeModelRegistry(r.blob(64 * 1024 * 1024))
+  const count = r.u32()
+  if (count > 4096) throw new ArtifactError("equipment particle material count")
+  const particleMaterials = Object.freeze(Array.from({ length: count }, () => r.text()))
+  const particleTextures = parseParticleTextures(r)
+  for (const texture of particleTextures) {
+    if (!materialStates.has(texture.material.toLowerCase())) throw new ArtifactError("equipment particle material state")
+    if (hex(sha256(texture.rgba)) !== texture.sha256) throw new ArtifactError("equipment particle texture identity")
+  }
   if (r.offset !== bytes.byteLength) throw new ArtifactError("equipment model trailing bytes")
   for (const material of modelMaterials.values()) if (material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath))) throw new ArtifactError("equipment texture binding")
-  return Object.freeze({ models, materialStates, modelMaterials, authoredTextures, geometry })
+  return Object.freeze({ models, materialStates, modelMaterials, authoredTextures, geometry, particleMaterials, particleTextures })
 }
 
 function parseModelHeaders(r: Reader, modelCount: number): ReadonlyMap<string, ModelArtifact> {

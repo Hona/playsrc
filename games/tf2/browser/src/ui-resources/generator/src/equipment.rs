@@ -203,9 +203,16 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
         }
         let visuals = object(&item.source, "visuals");
         let (display_name, description) = display(item, supported, &schema, &attributes, &colors, &localized)?;
-        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], animation_slot: {:?}, extra_sounds: &{:?}, image: {:?}, model_player: {:?}, attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
+        let per_class = object(&item.source, "model_player_per_class");
+        let class_models = item.class_slots.keys().map(|class| {
+            let model = scalar(per_class, class.data().source_name).map(str::to_owned)
+                .or_else(|| scalar(per_class, "basename").map(|format| format.replace("%s", class.data().source_name)))
+                .unwrap_or_else(|| scalar(&item.source, "model_player").unwrap_or("").to_owned());
+            format!("(PlayerClass::{class:?}, {model:?})")
+        }).collect::<Vec<_>>().join(", ");
+        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], animation_slot: {:?}, extra_sounds: &{:?}, image: {:?}, model_player: {:?}, class_models: &[{}], attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
             description.iter().map(|(text, color)| format!("DescriptionLine {{ text: {text:?}, color: {color:?} }}")).collect::<Vec<_>>().join(", "), scalar(&item.source, "anim_slot"), supported.extra_sounds, image,
-            scalar(&item.source, "model_player").unwrap_or(""), scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
+            scalar(&item.source, "model_player").unwrap_or(""), class_models, scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
             scalar(&item.source, "item_iconname"),
             item.class_slots.iter().map(|(class, slot)| format!("(PlayerClass::{class:?}, LoadoutPosition::{slot:?})")).collect::<Vec<_>>().join(", ")).unwrap();
     }

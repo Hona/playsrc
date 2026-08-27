@@ -1844,6 +1844,7 @@ fn collect_equipment_resources(resolver: &mut Resolver<'_>) -> Result<(), String
         let mut roots = BTreeSet::new();
         if !presentation.model_player.is_empty() { roots.insert(presentation.model_player); }
         for (class, _) in presentation.class_slots {
+            if let Some(model) = presentation.model_for_class(*class) { roots.insert(model); }
             roots.insert(class.data().model);
             roots.insert(class.data().hand_model);
         }
@@ -1866,6 +1867,14 @@ fn collect_equipment_resources(resolver: &mut Resolver<'_>) -> Result<(), String
                 }
             }
             closures.insert(path.to_owned(), resolver.capture.take().unwrap());
+        }
+        if item.attributes.iter().any(|attribute| attribute.definition == 134 && attribute.value == 13.0) {
+            let bytes = resolver.required("particles/item_fx.pcf", "equipment-particle")?;
+            let registry = playsrc_particle::Registry::from_pcf(&[playsrc_particle::PcfSource { logical_path: "particles/item_fx.pcf", bytes: &bytes }], playsrc_particle::RegistryLimits::default()).map_err(|error| error.to_string())?;
+            let closure = registry.target_closure(&[playsrc_particle::DefinitionLookup::Name("superrare_burning1")]).map_err(|error| error.to_string())?;
+            for material in closure.materials {
+                collect_material(resolver, &material_path(material.as_bytes())?, true, SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..SelectionEnvironment::default() }, true, "equipment-particle-material")?;
+            }
         }
     }
     resolver.consumer_role = None;

@@ -78,11 +78,18 @@ pub struct ItemPresentation {
     pub extra_sounds: &'static [&'static str],
     pub image: &'static str,
     pub model_player: &'static str,
+    pub class_models: &'static [(PlayerClass, &'static str)],
     pub attach_to_hands: bool,
     pub animation_replacements: &'static [(&'static str, &'static str)],
     pub sound_overrides: &'static [(&'static str, &'static str)],
     pub death_notice_icon: Option<&'static str>,
     pub class_slots: &'static [(PlayerClass, LoadoutPosition)],
+}
+
+impl ItemPresentation {
+    pub fn model_for_class(&self, class: PlayerClass) -> Option<&'static str> {
+        self.class_models.iter().find(|(eligible, _)| *eligible == class).map(|(_, model)| *model).filter(|model| !model.is_empty())
+    }
 }
 
 include!("equipment.generated.rs");
