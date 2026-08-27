@@ -40,7 +40,7 @@ export function summarizeAllocationProfile(profile: any) {
     estimatedBytes += node.selfSize
     if (!Number.isSafeInteger(estimatedBytes)) throw new Error("Allocation estimated byte bound exceeded")
     sites.push({ nodeId: node.id, estimatedBytes: node.selfSize, callFrame: node.callFrame })
-    stack.push(...node.children)
+    for (const child of node.children) stack.push(child)
   }
   const ordinals = new Set<number>()
   for (const sample of profile.samples) {
@@ -146,13 +146,15 @@ export async function loadAllocationMemoryEvidence(filename: string, loaded: Omi
   if (main.clock.domain !== "Chromium monotonic microseconds" || start.length !== 2 || stop.length !== 2
     || [...start, ...stop].some(value => !Number.isFinite(value) || value < 0)
     || start[0]! > start[1]! || start[1]! > stop[0]! || stop[0]! > stop[1]!
+    || start[1]! > cpu.evidence.clock.start[0]! || stop[0]! < cpu.evidence.clock.stop[1]!
     || start[1]! > window.startedMicroseconds || stop[0]! < window.endedMicroseconds) throw new Error("Allocation clock boundaries invalid")
-  if (!main.context?.uniqueId || !Number.isSafeInteger(main.context.id) || !main.context.auxData?.isDefault
+  if (typeof main.context?.uniqueId !== "string" || !main.context.uniqueId || !Number.isSafeInteger(main.context.id) || !main.context.auxData?.isDefault
     || !main.frameId || main.context.auxData.frameId !== main.frameId
     || main.context.origin !== loaded.manifest.identity.origin) throw new Error("Allocation execution context invalid")
   for (const heap of [main.heapBefore, main.heapAfter]) {
     if (!heap || !Number.isFinite(heap.before) || !Number.isFinite(heap.after) || heap.before > heap.after
-      || Object.values(heap.value).some(value => !Number.isFinite(value) || value < 0)) throw new Error("Main heap gauge invalid")
+      || !Number.isSafeInteger(heap.value.usedSize) || !Number.isSafeInteger(heap.value.totalSize)
+      || Object.values(heap.value).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error("Main heap gauge invalid")
   }
   if (main.heapBefore!.before < start[1]! || main.heapBefore!.after > window.startedMicroseconds
     || main.heapAfter!.before < stop[1]!) throw new Error("Main heap gauge phase invalid")
