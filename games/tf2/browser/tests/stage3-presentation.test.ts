@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v11 contract", () => {
+test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v12 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,12 +132,14 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(11)
+  expect(view.getUint32(4, true)).toBe(12)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getUint32(16, true)).toBe(0)
   expect(view.getBigUint64(44, true)).toBe(0n)
-  expect(view.getUint32(84, true)).toBe(new TextEncoder().encode(request.model).byteLength)
-  expect(new TextDecoder().decode(bytes.subarray(88, 88 + view.getUint32(84, true)))).toBe(request.model)
+  expect(view.getUint32(56, true)).toBe(0xffff_ffff)
+  expect(view.getBigUint64(60, true)).toBe(0xffff_ffff_ffff_ffffn)
+  expect(view.getUint32(96, true)).toBe(new TextEncoder().encode(request.model).byteLength)
+  expect(new TextDecoder().decode(bytes.subarray(100, 100 + view.getUint32(96, true)))).toBe(request.model)
   const cloak = { identity: 42, localFactor: 0.5, worldFactor: 0.95, rawFactor: 1, playerTint: [0.4, 0.5, 1] as const }
   const encoded = new DataView(encodeModelPoseBatch([{ ...request, cloak }]).buffer)
   expect(encoded.getUint32(16, true)).toBe(42)
@@ -160,6 +162,18 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   expect(itemView.getFloat32(itemOffset + 16, true)).toBe(13)
   expect(() => encodeModelPoseBatch([{ ...request, equippedItems: [item, item] }])).toThrow("equipped model items")
   expect(encodeModelPoseBatch([{ ...request, modelPanel: true, worldItem: true, itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", itemBodygroups: [] }])[52]).toBe(6)
+  const weapon = { ...request, model: "models/weapons/c_models/c_soldier_arms.mdl", activity: "ACT_VM_DRAW",
+    itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", itemBodygroups: [],
+    phase: 0 as const, itemDefinition: 18, activityStartTick: 7n, allowIdleTransition: true }
+  const typed = encodeModelPoseBatch([weapon]), typedView = new DataView(typed.buffer)
+  expect(typedView.getUint32(56, true)).toBe(18)
+  expect(typedView.getBigUint64(60, true)).toBe(7n)
+  const phase = 144 + new TextEncoder().encode(weapon.model).length + new TextEncoder().encode(weapon.itemModel).length + new TextEncoder().encode(weapon.activity).length
+  expect(typed[phase + 3]).toBe(1)
+  expect(() => encodeModelPoseBatch([{ ...weapon, activityStartTick: undefined }])).toThrow("viewmodel activity clock")
+  const hud = encodeModelPoseBatch([{ ...weapon, model: "models/player/soldier.mdl", modelPanel: true, worldItem: true,
+    actorIdentity: 1, hudModel: true, preparation: true, phase: undefined, activityStartTick: undefined }])
+  expect([...hud.subarray(52, 56)]).toEqual([6, 0, 0, 12])
 })
 
 test("keeps exact UTF-8 pose bytes across bounded cache eviction and repeated full-roster batches", () => {
@@ -214,7 +228,7 @@ test("encodes stock fists as one hands-only viewmodel without an invented item",
   const bytes = encodeModelPoseBatch([request])
   expect(bytes[52]).toBe(2)
   const modelBytes = new TextEncoder().encode(request.model).byteLength
-  expect(new DataView(bytes.buffer).getUint32(88 + modelBytes, true)).toBe(0)
+  expect(new DataView(bytes.buffer).getUint32(100 + modelBytes, true)).toBe(0)
   expect(() => encodeModelPoseBatch([{ ...request, itemModel: "models/invented.mdl", itemBodygroups: [] }])).toThrow(ProjectilePresentationError)
 })
 
@@ -248,7 +262,7 @@ test("encodes historical attachment-only fire samples without extra model transa
   expect(view.getUint32(8, true)).toBe(2)
   expect(view.getBigUint64(44, true)).toBe(18n)
   expect([...bytes.subarray(52, 56)]).toEqual([1, 1, 1, 0])
-  expect([0, 1, 2].map((index) => view.getFloat32(56 + index * 4, true))).toEqual([10, 20, 30])
+  expect([0, 1, 2].map((index) => view.getFloat32(68 + index * 4, true))).toEqual([10, 20, 30])
   expect(() => encodeModelPoseBatch([{ ...request, fireView: undefined }]))
     .toThrow(ProjectilePresentationError)
 })
