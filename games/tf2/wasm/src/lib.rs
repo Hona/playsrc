@@ -552,6 +552,13 @@ struct PresentationInputs<'a, 'source> {
     additional_model_roots: &'a [String],
 }
 
+#[derive(Default)]
+struct ClassPreview {
+    model: String,
+    scene: playsrc_tf2::class_selection::ScenePlayer,
+    flex: playsrc_tf2::class_selection::ModelPanelFlexState,
+}
+
 struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
@@ -568,7 +575,7 @@ struct Slot {
     model_lighting_world: Option<playsrc_map::ModelLightingWorld<'static>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
-    class_scenes: BTreeMap<u32, (String, playsrc_tf2::class_selection::ScenePlayer)>,
+    class_scenes: BTreeMap<u32, ClassPreview>,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     visibility_candidates: Option<playsrc_visibility::CandidateSet>,
@@ -1976,7 +1983,7 @@ struct ModelPoseRequest {
     class_selection: bool,
     model_panel: bool,
     model_panel_reset: bool,
-    flex_controllers: Option<BTreeMap<&'static str, f32>>,
+    flex_controllers: Option<BTreeMap<String, f32>>,
     sample_tick: u64,
     attachments_only: bool,
     fire_view: Option<([f32; 3], [f32; 4])>,
@@ -2468,7 +2475,7 @@ fn encode_model_poses(
     models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
-    class_scenes: &mut BTreeMap<u32, (String, playsrc_tf2::class_selection::ScenePlayer)>,
+    class_scenes: &mut BTreeMap<u32, ClassPreview>,
     requests: &[ModelPoseRequest],
     world: &mut ModelPoseWorld<'_>,
     mut out: Vec<u8>,
@@ -2486,8 +2493,12 @@ fn encode_model_poses(
         let request = if original.class_selection {
             let scene = playsrc_tf2::class_selection::scene_for_model(&original.model).ok_or(())?;
             let retained = class_scenes.entry(original.identity).or_default();
-            if retained.0 != original.model || original.model_panel_reset { *retained = (original.model.clone(), Default::default()); }
-            let sample = retained.1.advance(scene, original.elapsed).map_err(|_| ())?;
+            if retained.model != original.model || original.model_panel_reset {
+                retained.model = original.model.clone();
+                retained.scene = Default::default();
+            }
+            let controllers = retained.flex.decay(&world.metadata.get(&original.model).ok_or(())?.flex.controllers);
+            let sample = retained.scene.advance(scene, original.elapsed, controllers).map_err(|_| ())?;
             scene_event_clock = sample.event_sequence.map(|sequence| (sequence, sample.event_elapsed));
             scene_request = original.clone();
             scene_request.flex_controllers = Some(sample.controllers);
@@ -2730,7 +2741,7 @@ fn encode_model_poses(
                 if let Some((label, elapsed)) = scene_event_clock {
                     let event_sequence = model.sequences.iter().find(|sequence| sequence.label.eq_ignore_ascii_case(label.as_bytes())).ok_or(())?;
                     let event_timing = playsrc_studio_model::sequence_timing(model, event_sequence.index, class_pose_parameters.as_ref().ok_or(())?).map_err(|_| ())?;
-                    let (previous, current) = class_scenes.get_mut(&original.identity).ok_or(())?.1.event_range(event_sequence.index,
+                    let (previous, current) = class_scenes.get_mut(&original.identity).ok_or(())?.scene.event_range(event_sequence.index,
                         elapsed * f32::from_bits(event_timing.cycles_per_second.0));
                     playsrc_studio_model::model_panel_events(&event_sequence.events, previous, current)
                 } else { Vec::new() }

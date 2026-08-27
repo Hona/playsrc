@@ -2207,7 +2207,7 @@ export class Tf2Application {
         const randomSequence = classSelection ? undefined : artifact.sequences.find(sequence => sequence.index === 1)
         if (!classSelection && !randomSequence) throw new Error("Authored random-class idle sequence is unavailable")
         const poses = await client.models(generation, encodeModelPoseBatch([{
-          identity: 0x2001, model: player.model, classSelection, modelPanel: true, modelPanelReset,
+          identity: 0x2001 + player.skin, model: player.model, classSelection, modelPanel: true, modelPanelReset,
           activity: randomSequence?.label ?? (selected === 5 ? "ACT_MP_STAND_SECONDARY" : selected === 8 || selected === 9 ? "ACT_MP_STAND_MELEE" : "ACT_MP_STAND_PRIMARY"),
           previousElapsedSeconds: previous, elapsedSeconds: elapsed,
           currentTimeSeconds: now, frameTimeSeconds: elapsed - previous, planarSpeed: 0,

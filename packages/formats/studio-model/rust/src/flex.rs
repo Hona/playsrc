@@ -76,7 +76,7 @@ pub fn read_model_flex(bytes: &[u8]) -> Result<ModelFlex, String> {
     for i in 0..count(bytes, 268, 96)? {
         let at = table + i * 20;
         result.controllers.push((
-            string(bytes, relative(bytes, at, at + 4)?)?,
+            string(bytes, relative(bytes, at, at + 4)?)?.to_ascii_lowercase(),
             float(bytes, at + 12)?,
             float(bytes, at + 16)?,
         ));
@@ -180,7 +180,7 @@ fn remap(v: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
 }
 
 impl ModelFlex {
-    pub fn weights(&self, input: &BTreeMap<&str, f32>) -> Result<Vec<f32>, String> {
+    pub fn weights(&self, input: &BTreeMap<String, f32>) -> Result<Vec<f32>, String> {
         let src = self
             .controllers
             .iter()
@@ -244,7 +244,11 @@ impl ModelFlex {
                             return Err("flex combo underflow".into());
                         }
                         let start = stack.len() - index;
-                        let product = stack[start..].iter().product::<f32>();
+                        let product = if index == 0 {
+                            0.0
+                        } else {
+                            stack[start..].iter().product::<f32>()
+                        };
                         stack.truncate(start);
                         if op == 18 {
                             stack.push(product);
@@ -336,7 +340,7 @@ mod tests {
             ],
             shapes: Vec::new(),
         };
-        let input = BTreeMap::from([("a", -0.5), ("b", 0.5)]);
+        let input = BTreeMap::from([("a".to_owned(), -0.5), ("b".to_owned(), 0.5)]);
         assert_eq!(flex.weights(&input).unwrap(), vec![0.0, 0.0, -0.25]);
     }
     #[test]
