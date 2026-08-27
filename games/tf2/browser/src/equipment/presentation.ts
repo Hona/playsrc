@@ -117,7 +117,7 @@ export class Tf2EquipmentPresentation {
         for (const identity of [1, 3, 7, 4, 6, 9, 5, 2, 8] as const) {
           const source = block(document, identity === 6 ? "heavyweapons" : tf2ClassPresentation(identity).name)
           const button = this.#button(root, `Class${identity}`, "", `class ${identity}`, scalar(source, "xpos")!, scalar(source, "ypos")!, scalar(source, "wide")!, scalar(source, "tall")!)
-          const image = this.#create(button, "ImagePanel", "ClassImage", { xpos: "0", ypos: "0", wide: "f0", tall: "f0", image: scalar(source, "activeimage")!, scaleImage: "1" })
+          const image = this.#create(button, "ImagePanel", "ClassImage", { xpos: "0", ypos: "0", wide: scalar(source, "wide")!, tall: scalar(source, "tall")!, image: scalar(source, "activeimage")!, scaleImage: "1" })
           this.#apply({ kind: "set-panel-state", panel: image, mouseInput: false, keyboardInput: false })
         }
         return
@@ -176,7 +176,7 @@ export class Tf2EquipmentPresentation {
       const available = Number(scalar(template, "wide")) * this.#viewport.height / 480
       const large = this.#request.resources.clientScheme.fonts.find(font => font.name === "ItemFontNameLarge")
       const font = (large?.measure?.(text, null).width ?? Infinity) <= available ? "ItemFontNameLarge" : "ItemFontNameSmall"
-      const label = this.#create(button, "CExLabel", "ItemName", { xpos: "0", ypos: scalar(template, "text_ypos")!, wide: "f0", tall: "16", textAlignment: "center", font,
+      const label = this.#create(button, "CExLabel", "ItemName", { xpos: "0", ypos: scalar(template, "text_ypos")!, wide: scalar(template, "wide")!, tall: "16", textAlignment: "center", font,
         fgcolor: `QualityColor${QUALITY_COLOR[item.item.quality]}`, labelText: item.displayName, zpos: "2" })
       this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
     } else if (this.#state?.classes.some(value => value.items.some(equipped => equipped.itemId === item.item.itemId))) {

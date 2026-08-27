@@ -33,9 +33,19 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await equipment.locator("[data-vgui-name='Itemitem-378']").click()
   await equipment.locator("[data-vgui-name='Itemitem-378']").click()
   await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible()
+  await writeFile(path.join(directory, "equipped-dom.json"), JSON.stringify(await equipment.evaluate(root => [...root.querySelectorAll<HTMLElement>("[data-vgui-name='ItemName'],[data-vgui-name='EquipmentPlayer']")].map(node => ({ name: node.dataset.vguiName, text: node.textContent, style: node.getAttribute("style"), bounds: node.getBoundingClientRect().toJSON() }))), null, 2))
+  await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 15_000 })
   const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
   expect(saved?.length).toBe(924)
-  await page.screenshot({ path: path.join(directory, "equipped.png") })
+  const equippedCapture = decodeScreenshot(await page.screenshot({ path: path.join(directory, "equipped.png") }))
+  const modelBounds = (await equipment.locator("[data-vgui-name='EquipmentPlayer']").boundingBox())!
+  let modelPixels = 0
+  for (let y = Math.ceil(modelBounds.y); y < modelBounds.y + modelBounds.height; y++) for (let x = Math.ceil(modelBounds.x); x < modelBounds.x + modelBounds.width; x++) {
+    const at = (y * equippedCapture.width + x) * equippedCapture.channels
+    const r = equippedCapture.pixels[at]!, g = equippedCapture.pixels[at + 1]!, b = equippedCapture.pixels[at + 2]!
+    if (r > 60 && r > g * 1.4 && r > b * 1.4) modelPixels++
+  }
+  expect(modelPixels, "the standalone loadout must show actual RED Soldier pixels").toBeGreaterThan(1000)
   await page.reload({ waitUntil: "domcontentloaded" })
   await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
   await page.locator("[data-vgui-name='CharacterSetupButton']").click()
@@ -53,5 +63,5 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
   await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "true")
   expect(errors).toEqual([])
-  await writeFile(path.join(directory, "native-summary.json"), JSON.stringify({ purplePixels: purple, storageBytes: 692, mapAdmission: true, errors }))
+  await writeFile(path.join(directory, "native-summary.json"), JSON.stringify({ purplePixels: purple, modelPixels, storageBytes: 692, mapAdmission: true, errors }))
 })
