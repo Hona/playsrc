@@ -24,6 +24,7 @@ import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
+import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { particlePipelineKey, particlePipelineVariant, particlePreparationSides } from "./particle-pipeline"
@@ -1566,6 +1567,7 @@ class RendererOwner implements Renderer {
   #sceneGeneration = 0
   #backend!: Backend
   #instrumentation?: RendererFrameInstrumentation
+  #renderOwnerProbe?: RenderOwnerProbe
   #framePresentation?: WebGpuFramePresentation<THREE.RenderTarget>
   #pendingDepthReset = false
   #timestampFrame = 0
@@ -1772,6 +1774,7 @@ class RendererOwner implements Renderer {
     if (this.#framePresentation?.begun) this.#pass("frame-output", () => this.#framePresentation!.finish())
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
+    this.#renderOwnerProbe?.complete()
     const profile = browserFrameProfiler()
     if (profile?.capabilities.timestampQuery && ++this.#timestampFrame % 32 === 0 && !this.#timestampPending) {
       this.#timestampPending = true
@@ -2118,6 +2121,10 @@ class RendererOwner implements Renderer {
           (backend as unknown as { _nodes: { _createNodeBuilder: (...arguments_: any[]) => any } })._nodes,
           profiler,
         )
+        if (profiler.renderOwnerPlan === RENDER_OWNER_PLAN && (profiler.renderOwners?.length ?? 0) < 4) {
+          this.#renderOwnerProbe = new RenderOwnerProbe(backend, profiler)
+          ;(profiler.renderOwners ??= []).push(this.#renderOwnerProbe.evidence)
+        }
       }
       this.#restoreOrderedBundles = installOrderedWebGpuBundles(backend.backend as unknown as OrderedBundleBackend)
       this.#framePresentation = new WebGpuFramePresentation(
@@ -2161,6 +2168,8 @@ class RendererOwner implements Renderer {
       this.#restoreOrderedBundles = undefined
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
+      this.#renderOwnerProbe?.dispose()
+      this.#renderOwnerProbe = undefined
       this.#restoreBufferNames?.()
       this.#restoreBufferNames = undefined
       backend.dispose()
@@ -4061,6 +4070,7 @@ class RendererOwner implements Renderer {
   }
 
   async render(frame: Frame): Promise<FrameResult> {
+    this.#renderOwnerProbe?.begin(this.#sceneGeneration, this.#deviceGeneration)
     const frameStarted = performance.now()
     this.#cloakFramebuffer.copies = 0
     this.#requireReady()
@@ -5872,6 +5882,8 @@ class RendererOwner implements Renderer {
       this.#uploadBatch = undefined
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
+      this.#renderOwnerProbe?.dispose()
+      this.#renderOwnerProbe = undefined
       this.#restoreBufferNames?.()
       this.#restoreBufferNames = undefined
       this.#exposureSampler?.dispose()
@@ -5992,6 +6004,8 @@ class RendererOwner implements Renderer {
     this.#framePresentation = undefined
     this.#restoreNodeBuilderInstrumentation?.()
     this.#restoreNodeBuilderInstrumentation = undefined
+    this.#renderOwnerProbe?.dispose()
+    this.#renderOwnerProbe = undefined
     this.#restoreBufferNames?.()
     this.#restoreBufferNames = undefined
     this.#exposureSampler?.dispose()

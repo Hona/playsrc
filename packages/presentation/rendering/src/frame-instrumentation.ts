@@ -1,3 +1,5 @@
+import type { RenderOwnerEvidence, RENDER_OWNER_PLAN } from "./render-owner-probe"
+
 export type RendererPassProfile = {
   identity: string
   submissions: number
@@ -49,6 +51,8 @@ export type BrowserFrameProfiler = {
   losses: { kind: string; at: number; message: string }[]
   gpuTimestamps?: { frame: number; milliseconds: number }[]
   nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
+  renderOwnerPlan?: typeof RENDER_OWNER_PLAN
+  renderOwners?: RenderOwnerEvidence[]
   captureModelPrograms?: boolean
   modelPreparation?: { started: number; ended?: number; models: { model: string; skin: number; pass: string }[] }
   particlePreparation?: { started: number; ended?: number; generation: number; materials: { id: number; identity: string; key: string }[] }
