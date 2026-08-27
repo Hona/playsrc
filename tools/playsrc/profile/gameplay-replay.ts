@@ -43,7 +43,8 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string) {
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, generation = 1) {
+  if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Replay generation rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
   const progress = path.join(directory, `${label}.replay-progress.json`)
@@ -65,6 +66,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       const bytes = Buffer.from(result.base64, "base64")
       if (result.offset !== offset || offset + bytes.length !== result.length || result.length > REPLAY_BYTES) throw new Error("Replay stream identity mismatch")
       if (checkpoint && JSON.stringify(checkpoint) !== JSON.stringify(result.checkpoint)) throw new Error("Replay checkpoint changed")
+      if (result.checkpoint.generation !== generation) throw new Error("Replay captured a different map generation")
       checkpoint = result.checkpoint
       await appendFile(partial, bytes)
       offset += bytes.length
@@ -76,11 +78,11 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     if (!value.url().includes("gameplay-worker")) return
     if (worker) { failure = "Replay gameplay owner changed"; return }
     worker = value
-    pending = value.evaluate(async () => {
+    pending = value.evaluate(async ({ generation }) => {
       const deadline = performance.now() + 5000
       while (!(globalThis as any).__playsrcGameplayReplay && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
-      ;(globalThis as any).__playsrcGameplayReplay.arm()
-    }).catch(error => { failure = String(error) })
+      ;(globalThis as any).__playsrcGameplayReplay.arm(generation)
+    }, { generation }).catch(error => { failure = String(error) })
   }
   page.on("worker", attach)
   let busy = false

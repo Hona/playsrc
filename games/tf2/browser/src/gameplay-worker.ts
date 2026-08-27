@@ -104,7 +104,7 @@ let replies: ReplyWriter | undefined
 // Explicit local diagnostics only. No exports, handles, views, asset bytes or
 // arbitrary engine access cross this interface. The Rust owner records the
 // admitted commands and complete authoritative tick/event publication hashes.
-let replayArmed = false
+let replayArmed = 0
 let replayHandle: number | undefined
 let replayCheckpoint: { configurationSha256: string; configurationBytes: number; profile: number; generation: number } | undefined
 Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
@@ -120,9 +120,10 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
-  arm() {
+  arm(generation: number) {
     if (active || pending || replayArmed) throw new Error("Replay must be armed before map construction")
-    replayArmed = true
+    if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Replay generation rejected")
+    replayArmed = generation
   },
   mark(mark: number) {
     if (!wasm || !replayHandle || wasm.playsrc_gameplay_replay_mark(replayHandle, mark) !== 1) throw new Error("Replay mark rejected")
@@ -604,7 +605,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     fail(request.id, "CompileFailed", error)
     return
   }
-  if (replayArmed) {
+  if (replayArmed === request.generation) {
     if (replayHandle || exports.playsrc_gameplay_replay_begin(candidate) !== 1) throw new Error("Replay initial checkpoint rejected")
     replayHandle = candidate
     replayCheckpoint = { configurationSha256: request.configurationSha256, configurationBytes: request.configurationBytes, profile: request.profile, generation: request.generation }
