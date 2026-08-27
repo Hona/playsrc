@@ -23,6 +23,7 @@ import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
+import { particlePipelineKey, particlePipelineVariant } from "./particle-pipeline"
 import { createParticleQuadWriter } from "./particle-geometry"
 import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
@@ -868,6 +869,7 @@ export interface Renderer {
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
   prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void>
+  prepareParticlePipelines(camera: Camera, fog?: FogInput): Promise<void>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   modelVisible(model: string, skin: number, position: readonly [number, number, number], angles: readonly [number, number, number], camera: Camera, views: readonly WaterFramePass[]): boolean
@@ -1006,8 +1008,8 @@ type SceneResources = {
   modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
-  particleMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
+  particlePipelineMeshes: THREE.Group
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
   textureResidency: SharedTextureResidency<THREE.Texture>
@@ -1176,7 +1178,6 @@ function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTem
   ;(scene.refractMaterials as Map<string, RefractMaterialResource> | undefined)?.clear()
   ;(scene.worldMaterials as Map<string, WorldMaterialResource> | undefined)?.clear()
   ;(scene.cubemapTextures as Map<number, THREE.CubeTexture> | undefined)?.clear()
-  for(const material of scene.particleBatchMaterials?.values()??[])material.dispose()
   scene.particleBatchMaterials?.clear()
   for(const decal of scene.combatDecalMeshes?.values()??[]){decal.mesh.geometry.dispose();(decal.mesh.material as THREE.Material).dispose()}
   scene.combatDecalMeshes?.clear()
@@ -2112,6 +2113,7 @@ class RendererOwner implements Renderer {
       )
         throw new RenderingError("MalformedInput", "environment texture input is invalid")
     }
+    if ((request.particleTextures?.length ?? 0) > 256) throw new RenderingError("BoundExceeded", "particle pipeline material closure exceeds 256 variants")
     for (const texture of request.particleTextures ?? []) {
       if (texture.width * texture.height * 4 !== texture.rgba.byteLength || (await digest(texture.rgba)) !== texture.sha256)
         throw new RenderingError("MalformedInput", "particle texture input is invalid")
@@ -2399,6 +2401,38 @@ class RendererOwner implements Renderer {
     }
   }
 
+  async prepareParticlePipelines(camera: Camera, fog?: FogInput): Promise<void> {
+    this.#requireReady()
+    if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "particle pipeline preparation requires an idle active map")
+    const owner = this.#active, backend = this.#backend, ordinal = this.#loadOrdinal, deviceGeneration = this.#deviceGeneration
+    const previousFog = this.#scene.fog as THREE.Fog | null
+    const started = performance.now()
+    this.#renderBusy = true
+    try {
+      this.#setCamera(camera)
+      this.#setSceneFog(this.#fog(fog))
+      const profile = browserFrameProfiler()
+      if (profile) profile.particlePreparation = { started, generation: this.#sceneGeneration,
+        materials: [...owner.particleBatchMaterials].map(([key, material]) => ({ id: material.id, identity: material.name, key })) }
+      // The retained one-quad layouts use the exact authored material closure,
+      // attributes and main-pass attachments. compileAsync submits no pixels.
+      await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
+        if (owner.particlePipelineMeshes.children.length) await backend.compileAsync(owner.particlePipelineMeshes, this.#camera, this.#scene)
+      })
+      this.#checkAbort(undefined, ordinal)
+      this.#requireReady()
+      if (owner !== this.#active || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) throw new RenderingError("InvalidState", "particle pipeline preparation generation was replaced")
+      if (profile) {
+        profile.particlePreparation!.ended = performance.now()
+        profile.counters.preparedParticleVariants = owner.particlePipelineMeshes.children.length
+        profile.counters.particlePipelinePreparationMilliseconds = performance.now() - started
+      }
+    } finally {
+      this.#setSceneFog(previousFog)
+      this.#renderBusy = false
+    }
+  }
+
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
     this.#checkAbort(signal, ordinal)
     const visibleLeaves = new Set(leaves)
@@ -2540,7 +2574,8 @@ class RendererOwner implements Renderer {
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
     const brushModelTemplates=new Map<number,THREE.Group>()
     const particleTextures = new Map<string, THREE.DataTexture>()
-    const particleMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
+    const particleBatchMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
+    const particlePipelineMeshes = new THREE.Group()
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
@@ -3460,7 +3495,15 @@ class RendererOwner implements Renderer {
           waterFogUniforms,
         )
         material.toneMapped = false
-        particleMaterials.set(texture.material.toLowerCase(), material)
+        material.name = `particle:${texture.material.toLowerCase()}`
+        material.blending = THREE.CustomBlending
+        material.transparent = true
+        particleBatchMaterials.set(particlePipelineKey(particlePipelineVariant(texture.material, state)), material)
+        const geometry = this.#createParticleBatchGeometry(1)
+        disposables.add(geometry)
+        const mesh = new THREE.Mesh(geometry, material)
+        mesh.frustumCulled = false
+        particlePipelineMeshes.add(mesh)
         disposables.add(material)
       }
     } catch (error) {
@@ -3470,7 +3513,6 @@ class RendererOwner implements Renderer {
         modelOccurrenceInstances,
         brushModelTemplates,
         particleTextures,
-        particleMaterials,
         skyGroup,
         cubemapTextures,
         mainStaticProps,
@@ -3630,8 +3672,8 @@ class RendererOwner implements Renderer {
       modelOccurrenceLighting: Object.freeze(modelOccurrenceLighting),
       brushModelTemplates,
       particleTextures,
-      particleMaterials,
-      particleBatchMaterials:new Map(),
+        particleBatchMaterials,
+        particlePipelineMeshes,
       materialStates,
       disposables,
       textureResidency,
@@ -4864,15 +4906,13 @@ class RendererOwner implements Renderer {
   #stageParticleBatches(
     items: readonly ParticleItem[],
     camera: Camera,
-    factor: (value: ParticleItem["blendSource"]) => THREE.BlendingDstFactor,
   ): void {
     const count = fillParticleBatchRanges(items, this.#particleBatchRanges)
     this.#particleBatchCount = count
     for (let index = 0; index < count; index += 1) {
       const batch = this.#particleBatchRanges[index]!
       const first = items[batch.start]!
-      const materialIdentity = first.material.toLowerCase()
-      const key = `${materialIdentity}\0${first.blendSource}\0${first.blendDestination}`
+      const key = particlePipelineKey(first)
       const required = batch.end - batch.start
       let retained = this.#particleBatchMeshes[index]
       if (retained && (retained.key !== key || retained.capacity < required)) {
@@ -4893,20 +4933,17 @@ class RendererOwner implements Renderer {
         let capacity = 1
         while (capacity < required) capacity *= 2
         const geometry = this.#createParticleBatchGeometry(capacity)
-        let material = this.#active!.particleBatchMaterials.get(key)
-        if (!material) {
-          material = this.#active!.particleMaterials.get(materialIdentity)!.clone()
-          material.blending = THREE.CustomBlending
-          material.blendSrc = factor(first.blendSource)
-          material.blendDst = factor(first.blendDestination)
-          material.transparent = true
-          const state = this.#active!.materialStates.get(materialIdentity)
-          if (!state) throw new RenderingError("MissingInput", `Particle material state ${first.material} is unavailable`)
-          applyParticleDepthState(material, state)
-          this.#active!.particleBatchMaterials.set(key, material)
-        }
+        const material = this.#active!.particleBatchMaterials.get(key)
+        if (!material) throw new RenderingError("IdentityMismatch", `Particle output blend differs from authored material: ${first.material}`)
         const mesh = new THREE.Mesh(geometry, material)
         mesh.frustumCulled = false
+        const profile = browserFrameProfiler()
+        if (profile && !material.userData.firstParticleUse) mesh.onBeforeRender = () => {
+          mesh.onBeforeRender = () => {}
+          if (material.userData.firstParticleUse) return
+          material.userData.firstParticleUse = true
+          ;(profile.firstParticleUses ??= []).push({ at: performance.now(), id: material.id, identity: material.name, pass: profile.currentPass?.identity ?? null })
+        }
         this.#particles.add(mesh)
         retained = { key, capacity, mesh }
         this.#particleBatchMeshes[index] = retained
@@ -5251,10 +5288,6 @@ class RendererOwner implements Renderer {
   }
 
   #stageDynamicItems(frame: Frame): readonly [number, number] | undefined {
-    const factor = (value: ParticleItem["blendSource"]) => value === "zero" ? THREE.ZeroFactor
-      : value === "one" ? THREE.OneFactor
-      : value === "source-alpha" ? THREE.SrcAlphaFactor
-      : THREE.OneMinusSrcAlphaFactor
     if (frame.modelVisibility) {
       for (const [identity, visible] of frame.modelVisibility) {
         const instance = this.#active!.modelOccurrenceInstances.get(identity)
@@ -5264,7 +5297,7 @@ class RendererOwner implements Renderer {
     }
     const prior = this.#stagedDynamic
     if (prior && prior.particles === frame.particles && prior.models === frame.models && prior.brushModels === frame.brushModels && prior.studioModels === frame.studioModels) {
-      this.#stageParticleBatches(frame.particles ?? [], frame.camera, factor)
+      this.#stageParticleBatches(frame.particles ?? [], frame.camera)
       if (this.#viewCamera.far !== frame.camera.far) {
         this.#viewCamera.far = frame.camera.far
         this.#viewCamera.updateProjectionMatrix()
@@ -5379,7 +5412,7 @@ class RendererOwner implements Renderer {
         retained.instance.userData.identity = item.identity
         this.#placeDynamicInstance(retained.instance, effectOrder++)
       }
-      this.#stageParticleBatches(particleItems, frame.camera, factor)
+      this.#stageParticleBatches(particleItems, frame.camera)
     } catch (error) {
       if (error instanceof RenderingError) throw error
       throw new RenderingError("BoundExceeded", `render item staging failed: ${String(error)}`)

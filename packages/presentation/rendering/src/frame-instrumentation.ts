@@ -51,6 +51,8 @@ export type BrowserFrameProfiler = {
   nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
   captureModelPrograms?: boolean
   modelPreparation?: { started: number; ended?: number; models: { model: string; skin: number; pass: string }[] }
+  particlePreparation?: { started: number; ended?: number; generation: number; materials: { id: number; identity: string; key: string }[] }
+  firstParticleUses?: { at: number; id: number; identity: string; pass: string | null }[]
   firstModelUses?: { at: number; model: string; skin: number; identity: number; pass: string | null; materials: { id: number; identity: string }[] }[]
 }
 
