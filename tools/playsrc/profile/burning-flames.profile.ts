@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { test, expect } from "./application-test"
 import { loadLocalConfig } from "../src/config"
@@ -62,7 +62,25 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     await expect(tooltip).toContainText("Unusual Team Captain")
     await expect(tooltip).toContainText("Unusual Effect: Burning Flames")
     await expect(tooltip).toContainText("Level 1 Hat")
-    await page.screenshot({ path: path.join(directory, "backpack-tooltip.png") }); desktop("backpack-tooltip")
+    // Capture the visible desktop first: browser screenshot preparation can end
+    // a native hover, so a subsequent page raster is not tooltip evidence.
+    desktop("backpack-tooltip")
+    await expect(tooltip).toBeVisible()
+    if (process.platform === "darwin") {
+      const before = decodeScreenshot(await readFile(path.join(directory, "backpack-desktop.png")))
+      const after = decodeScreenshot(await readFile(path.join(directory, "backpack-tooltip-desktop.png")))
+      expect([after.width, after.height, after.channels]).toEqual([before.width, before.height, before.channels])
+      let purpleAdded = 0, lightTextAdded = 0
+      for (let at = 0; at < after.pixels.length; at += after.channels) {
+        const [r, g, b] = after.pixels.subarray(at, at + 3)
+        if (Math.abs(r! - before.pixels[at]!) + Math.abs(g! - before.pixels[at + 1]!) + Math.abs(b! - before.pixels[at + 2]!) < 40) continue
+        if (r! > 60 && b! > 60 && r! > g! * 1.3 && b! > g! * 1.3) purpleAdded++
+        if (r! > 175 && g! > 175 && b! > 140) lightTextAdded++
+      }
+      records.tooltipPixels = { purpleAdded, lightTextAdded }
+      expect(purpleAdded).toBeGreaterThan(1000); expect(lightTextAdded).toBeGreaterThan(50)
+    }
+    if (process.env.PROFILE_COSMETIC_TOOLTIP_ONLY === "1") return
     await hat.click(); await equipment.locator("[data-vgui-name='Itemitem-378']").click()
     await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible()
     await page.waitForFunction(() => (globalThis as any).__playsrcProfile.cosmeticPreview?.particles >= 12, undefined, { timeout: 30_000 })
