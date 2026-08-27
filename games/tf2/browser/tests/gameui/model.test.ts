@@ -78,7 +78,7 @@ describe("TF2 configured GameUI actions", () => {
         { identity: "create-server", text: "Create Server", sourceCommand: "create_server", visibility: "visible", capability: { kind: "request", request: "show-create-server" } },
       ],
       account: [
-        { identity: "items", text: "ITEMS", sourceCommand: "engine open_charinfo", visibility: "visible", capability: { kind: "inactive", owner: "account-items" } },
+        { identity: "items", text: "ITEMS", sourceCommand: "engine open_charinfo", visibility: "visible", capability: { kind: "request", request: "show-equipment" } },
         { identity: "store", text: "SHOP", sourceCommand: "engine open_store", visibility: "visible", capability: { kind: "inactive", owner: "economy-store" } },
       ],
       settings: [
@@ -100,7 +100,6 @@ describe("TF2 configured GameUI actions", () => {
       "competitive",
       "mann-vs-machine",
       "community-servers",
-      "items",
       "store",
     ]
     for (const button of unavailable) {
@@ -168,7 +167,6 @@ describe("TF2 GameUI transition model", () => {
       "competitive",
       "mann-vs-machine",
       "community-servers",
-      "items",
       "store",
     ])
 
