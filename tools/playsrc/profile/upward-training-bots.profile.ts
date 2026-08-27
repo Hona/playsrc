@@ -26,10 +26,13 @@ import { startGameplayReplayJournal } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
 import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
-import { admitMacWindow, macWindowReader } from "./macos-visible-windows"
+import { macPageAdmission, requireMacPageAdmission, type MacPageAdmission } from "./macos-page-admission"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
-test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
+let closeNativeAdmission: (() => Promise<void>) | undefined
+test.afterEach(async () => {
+  try { await retainIncomplete?.() } finally { retainIncomplete = undefined; await closeNativeAdmission?.(); closeNativeAdmission = undefined }
+})
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
@@ -40,10 +43,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
-  const readMacWindows = await macWindowReader(sourceCacheDir)
+  const nativeReader = await macPageAdmission(page, sourceCacheDir)
+  closeNativeAdmission = nativeReader?.close
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
+  const nativeAdmission: MacPageAdmission[] = []
+  const checkNativeWindow = async (desktopScreenshot?: string) => {
+    if (nativeReader) nativeAdmission.push(await nativeReader.read(desktopScreenshot))
+  }
   const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
@@ -312,6 +320,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
     })
   }
   await loadPractice("cold")
+  // Establish the actual Page -> CDP window -> native drawing window before
+  // warm navigation/replacement/resize, not while the new window is animating.
+  if (nativeReader) {
+    await page.bringToFront()
+    await checkNativeWindow()
+    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+    requireMacPageAdmission(nativeAdmission[0]!)
+  }
   if (capturePlan.warmReload) await loadPractice("warm")
   const replacement: Array<Record<string, unknown>> = []
   if (capturePlan.replacement) {
@@ -383,16 +399,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
-  const nativeAdmission: Array<Record<string, unknown>> = []
-  const checkNativeWindow = async () => {
-    if (!readMacWindows) return
-    const snapshot = await readMacWindows()
-    const admission = admitMacWindow(snapshot, processBefore!.processInfo.find(value => value.type === "browser")!.id)
-    nativeAdmission.push({ at: Date.now(), ...admission })
-  }
-  await checkNativeWindow()
+  const nativeScreenshot = nativeReader ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
+  if (!nativeReader && process.env.PROFILE_NATIVE_SCREENSHOT === "1") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
+  await checkNativeWindow(nativeScreenshot ?? undefined)
   await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
-  expect(nativeAdmission.flatMap(value => value.occluders as unknown[] ?? [])).toEqual([])
+  if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
   const memoryBefore = await captureProcessMemory(processBefore?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const browserVersion = await browserCdp.send("Browser.getVersion")
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
@@ -408,15 +419,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
   const workerCpu = capturePlan.workerCpu === "required" ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
-  // Mac acceptance retains physical desktop pixels before the active sample,
-  // not only a tab screenshot that cannot establish native window occlusion.
-  const nativeScreenshot = process.platform === "darwin" || process.env.PROFILE_NATIVE_SCREENSHOT === "1"
-    ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
-  if (nativeScreenshot) {
-    if (process.platform !== "darwin") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
-    const captured = spawnSync("screencapture", ["-x", nativeScreenshot], { timeout: 5_000 })
-    if (captured.status !== 0) throw new Error("Native visible desktop capture failed")
-  }
   // Never enter an active sample that the shared runner's total deadline would
   // necessarily truncate. The construction/command journal is already durable.
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
@@ -831,10 +833,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })() : Promise.resolve()
   let sampling = true
   const nativeMonitor = (async () => {
-    while (sampling && readMacWindows) {
+    while (sampling && nativeReader) {
       await new Promise(resolve => setTimeout(resolve, 500))
       if (!sampling) break
-      try { await checkNativeWindow() } catch (error) { nativeAdmission.push({ at: Date.now(), error: String(error) }); break }
+      await checkNativeWindow()
+      if (nativeAdmission.at(-1)?.error) break
       if (nativeAdmission.length >= 32) break
     }
   })()
@@ -842,11 +845,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
   sampling = false
   await nativeMonitor
-  await checkNativeWindow()
-  if (nativeScreenshot) {
-    const captured = spawnSync("screencapture", ["-x", path.join(directory, `${evidenceLabel}.after.desktop.png`)], { timeout: 5_000 })
-    if (captured.status !== 0) throw new Error("Native post-sample desktop capture failed")
-  }
+  await checkNativeWindow(nativeScreenshot ? path.join(directory, `${evidenceLabel}.after.desktop.png`) : undefined)
+  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
   profilePhases.enter("trace-drain")
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
@@ -1231,10 +1231,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (let phase = 0; phase < 4; phase++) {
       const { beforePixels, afterPixels, ...result } = await page.evaluate(phase => (window as any).probe.compare(phase), phase)
       for (const [side, data] of [["before", beforePixels], ["after", afterPixels]]) await writeFile(path.join(directory, `${label}-static-${phase}-${side}.png`), Buffer.from(data.split(",")[1], "base64"))
-      await checkNativeWindow()
-      // A same-process layer-0 popup must not silently become the admitted
-      // drawing window after navigation. Keep the original native identity.
-      if (readMacWindows) expect((nativeAdmission.at(-1)!.window as any).id).toBe((nativeAdmission[0]!.window as any).id)
+      await checkNativeWindow(nativeReader ? path.join(directory, `${label}-static-${phase}.desktop.png`) : undefined)
+      await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+      if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
       results.push(result)
     }
     await page.screenshot({ path: path.join(directory, `${label}-static-visible.png`) })
