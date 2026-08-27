@@ -2070,10 +2070,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     points: self.map.control_points(),
                     in_setup: self.round.snapshot(Vec::new()).in_setup,
                     in_overtime: self.round.snapshot(Vec::new()).in_overtime,
-                    time_left: self.round.koth_timers().map_or_else(
-                        || [self.round.timer().map_or(0.0, |timer| timer.remaining); 2],
-                        |[red, blue]| [blue.remaining, red.remaining],
-                    ),
+                    time_left: self.round.bot_capture_time_left(),
                 }),
             )
             .map_err(Error::Bot)?
@@ -2571,10 +2568,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .emit_objective_outputs(self.tick, &objective_events)?;
             map_phase.append(phase);
             for event in &objective_events {
-                if let ctf::Event::Captured { player, .. } = event
-                    && *player == PLAYER_IDENTITY
-                {
-                    self.scoreboard.local_capture();
+                if let ctf::Event::Captured { player, .. } = event {
+                    self.round.record_capture(&[*player]);
+                    if *player == PLAYER_IDENTITY { self.scoreboard.local_capture(); }
                 }
                 if let ctf::Event::CaptureBonus {
                     team,
@@ -2665,7 +2661,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for event in &map_phase.control_point_events {
             match event {
                 control_point::Event::RespawnWaveAdjustment { team, seconds } => self.round.add_respawn_wave(*team, *seconds as f32),
-                control_point::Event::Captured { cappers, .. } if cappers.contains(&PLAYER_IDENTITY) => self.scoreboard.local_capture(),
+                control_point::Event::Captured { point, cappers, .. } => {
+                    if !cappers.is_empty() && self.map.control_points().is_some_and(|world| !world.points()[*point].print_name.is_empty()) {
+                        self.round.record_capture(cappers);
+                    }
+                    if cappers.contains(&PLAYER_IDENTITY) { self.scoreboard.local_capture(); }
+                },
                 control_point::Event::RoundWon { team, reason, .. } => {
                     round_events.extend(self.round.win(*team, *reason).map_err(Error::Round)?);
                     self.restrictions.team_win = Some(*team);

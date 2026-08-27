@@ -497,7 +497,7 @@ export type ControlPoints = Readonly<{
 
 export type RoundState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
 export type RoundEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17
   detail: number
   team: 0 | Tf2Team
   flags: number
@@ -1493,7 +1493,7 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
   }
   for (let index = 0; index < count; index += 1) {
     const at = headerLength + index * 12, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
-    if (kind === undefined || kind < 1 || kind > 16 || detail === undefined || bits === undefined
+    if (kind === undefined || kind < 1 || kind > 17 || detail === undefined || bits === undefined
       || (team !== 0 && team !== 2 && team !== 3)) throw new Tf2CodecError("Round rules event is invalid")
     events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true), value: view.getInt32(at + 8, true) }))
   }

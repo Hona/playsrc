@@ -6289,6 +6289,7 @@ fn encode_round(
             Event::TimerWarning { timer, seconds } => (14, seconds as u8, 0, 0, timer),
             Event::MapRoundWin { entity } => (15, 0, 0, 0, entity),
             Event::TimerTimeAdded { timer, .. } => (16, 0, 0, 0, timer),
+            Event::WinningCapper { player } => (17, 0, 0, 0, player),
         };
         extend(out, &[kind, detail, team, flags], maximum)?;
         u32_field(out, identity, maximum)?;

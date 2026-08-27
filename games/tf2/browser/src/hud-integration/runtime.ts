@@ -691,7 +691,8 @@ class Integration implements Tf2HudIntegration {
     const winning = localized("#Winpanel_TeamWins")
       .replace("%s1", team)
       .replace("%s2", localized("#Winpanel_Team1"))
-    const reasonToken = round?.winReason === 4 ? "#Winreason_DefendedUntilTimeLimit"
+    const reasonToken = round?.winReason === 1 ? "#Winreason_AllPointsCaptured"
+      : round?.winReason === 4 ? "#Winreason_DefendedUntilTimeLimit"
       : round?.winReason === 2 ? "#Winreason_OpponentsDead"
         : round?.winReason === 5 ? "#Winreason_Stalemate"
           : objectives?.captureLimit === 1 ? "#Winreason_FlagCaptureLimit_One" : "#Winreason_FlagCaptureLimit"
@@ -700,7 +701,12 @@ class Integration implements Tf2HudIntegration {
       .replace("%s2", String(objectives?.captureLimit ?? 0))
     const capture = objectives?.events.find((event) => event.kind === 2 && event.detail === 2 && event.player !== null)
     const capturingPlayer = scoreboard?.players.find((player) => player.identity === capture?.player)
-    const details = capturingPlayer ? localized("#Winpanel_WinningCapture").replace("%s1", capturingPlayer.name)
+    let winningCappers: string[] | undefined
+    for (const event of round?.events ?? NO_ROUND_EVENTS) if (event.kind === 17) {
+      (winningCappers ??= []).push(scoreboard?.players.find(player => player.identity === event.identity)?.name ?? "")
+    }
+    const details = winningCappers ? localized("#Winpanel_WinningCapture").replace("%s1", winningCappers.join(", "))
+      : capturingPlayer ? localized("#Winpanel_WinningCapture").replace("%s1", capturingPlayer.name)
       : alreadyVisible ? this.#publishedValues.get("ctf-win:DetailsLabel") ?? "" : ""
     for (const [name, value] of [
       ["WinningTeamLabel", winning],
@@ -1103,7 +1109,7 @@ class Integration implements Tf2HudIntegration {
     } else {
       this.#scope.hide()
     }
-    const round = publication.snapshot.round
+    let round = publication.snapshot.round
     if (round) {
       let retained: Array<RoundSnapshot["events"][number]> | undefined
       for (const batch of publication.eventBatches) {
@@ -1112,7 +1118,8 @@ class Integration implements Tf2HudIntegration {
         this.#lastRoundEventTick = batch.snapshot.tick
       }
       const events = retained ?? NO_ROUND_EVENTS
-      this.#publishRound(events.length === 0 && round.events.length === 0 ? round : { ...round, events }, publication.snapshot.team)
+      if (events.length !== 0 || round.events.length !== 0) round = { ...round, events }
+      this.#publishRound(round, publication.snapshot.team)
     }
     const objectives = publication.snapshot.objectives
     if (publication.snapshot.controlPoints && !this.#controlPoints) {
