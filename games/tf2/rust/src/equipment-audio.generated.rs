@@ -1,6 +1,8 @@
 // Generated from the configured item schema and sound manifest.
 pub const MISSING_CONFIGURED_SOUNDS: &[&str] = &[];
 pub const CONFIGURED_SOUNDS: &[(&str, &str, u8)] = &[
+("TFPlayer.CritHit", "scripts/game_sounds_player.txt", 5),
+("TFPlayer.CritHitMini", "scripts/game_sounds_player.txt", 5),
 ("Weapon_Ambassador.Single", "scripts/game_sounds_weapons.txt", 1),
 ("Weapon_Ambassador.SingleCrit", "scripts/game_sounds_weapons.txt", 1),
 ("Weapon_BackShot_Shotty.Single", "scripts/game_sounds_weapons.txt", 1),
@@ -50,12 +52,12 @@ pub const CONFIGURED_SOUNDS: &[(&str, &str, u8)] = &[
 ("Weapon_Wrench.MissCrit", "scripts/game_sounds_weapons.txt", 1),
 ];
 pub const MELEE_CRITICAL_SOUNDS: &[(u32, u8)] = &[
-(0, 6),
-(1, 10),
-(2, 15),
-(3, 26),
-(5, 16),
-(6, 41),
-(7, 46),
-(8, 9),
+(0, 8),
+(1, 12),
+(2, 17),
+(3, 28),
+(5, 18),
+(6, 43),
+(7, 48),
+(8, 11),
 ];

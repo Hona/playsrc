@@ -17,7 +17,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 27, true)
+  view.setUint32(4, 29, true)
   view.setFloat32(bytes.byteLength - 4, 1, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
@@ -447,6 +447,18 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       expect(() => decodeSnapshot(bytes)).toThrow("audio event record is invalid")
     }
   })
+  test("damage events preserve full versus mini critical kinds and reject untyped values", () => {
+    for (const crit of [0, 1, 2, 3, 1.5]) {
+      const bytes = new Uint8Array(snapshot()), view = new DataView(bytes.buffer)
+      const random = bytes.findIndex((_, index) => bytes[index] === 80 && bytes[index + 1] === 82 && bytes[index + 2] === 78 && bytes[index + 3] === 71)
+      const event = random - 24 - 28
+      bytes[event] = 17
+      view.setFloat32(event + 20, crit, true)
+      if (crit <= 2 && Number.isInteger(crit)) expect(decodeSnapshot(bytes).events[0]!.values[2]).toBe(crit)
+      else expect(() => decodeSnapshot(bytes)).toThrow("damage critical kind")
+    }
+  })
+
   test("configured sound identities and bounded cycle masks survive the native wire", () => {
     const source = new Uint8Array(snapshot()), at = 977
     const bytes = new Uint8Array(source.length + 52), view = new DataView(bytes.buffer)

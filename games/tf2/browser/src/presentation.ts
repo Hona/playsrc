@@ -90,7 +90,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
       ownerIdentity: event.ownerIdentity,
       origin: Object.freeze([...event.position]) as Vector3,
       radius: 0,
-      sourceClass: event.sourceKind === 4 ? "team_control_point" : event.sourceKind === 3 ? "player" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
+      sourceClass: event.identity === 5 || event.sourceKind === 3 ? "player" : event.sourceKind === 4 ? "team_control_point" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
     }),
     samples: event.samples,
     ...(event.pitchOverride === undefined ? {} : { overrides: Object.freeze({ pitch: event.pitchOverride }) }),
@@ -1053,6 +1053,7 @@ export function combatImpactParticles(
   state: CombatPresentationState,
   catalog: Pick<ProjectileResourceCatalog, "systems" | "attachmentTransforms"> & Readonly<{
     playerAttachmentTransforms?: ReadonlyMap<number, ReadonlyMap<string, AttachmentTransform>>
+    playerActors?: ReadonlyMap<number, Snapshot["bots"][number]>
   }>,
 ): Readonly<{ particles: readonly ProjectileParticleRequest[]; state: CombatPresentationState }> {
   const particles: ProjectileParticleRequest[] = []
@@ -1088,10 +1089,14 @@ export function combatImpactParticles(
       emit(Math.hypot(...delta)<400?"blood_spray_red_01":"blood_spray_red_01_far",event.subject,event.detail,Object.freeze([hit]),ordinal)
       continue
     }
-    if(event.kind===17&&event.auxiliary===1&&event.values[2]===1&&event.subject!==1){
+    if(event.kind===17&&event.auxiliary===1&&event.values[2]>0&&event.subject!==1){
+      if(!catalog.playerActors)throw new ProjectilePresentationError("MalformedFact","critical feedback requires the current player roster")
+      const actor=catalog.playerActors.get(event.subject)
+      if(!actor)continue
+      if([3,93].some(condition=>((actor.conditions[condition>>>5]??0)&(1<<(condition&31)))!==0))continue
       const head=catalog.playerAttachmentTransforms?.get(event.subject)?.get("head")
       if(!head)throw new ProjectilePresentationError("MissingAttachment",`${event.subject}:head`)
-      emit("crit_text",1,event.detail,Object.freeze([head.position]),ordinal)
+      emit(event.values[2]===1?"crit_text":"minicrit_text",event.subject,event.detail,Object.freeze([head.position]),ordinal)
       continue
     }
     if (event.kind !== 13 || !source || source.weapon !== event.detail) continue

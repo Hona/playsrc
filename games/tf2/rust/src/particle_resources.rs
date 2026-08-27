@@ -18,7 +18,7 @@ pub const GAME_SYSTEMS: &[&str] = &[
     "bullet_shotgun_tracer01_red", "bullet_shotgun_tracer01_blue", "bullet_shotgun_tracer01_red_crit",
     "bullet_shotgun_tracer01_blue_crit", "bullet_tracer01_red", "bullet_tracer01_blue",
     "bullet_tracer01_red_crit", "bullet_tracer01_blue_crit", "impact_concrete", "impact_wood",
-    "impact_metal", "impact_dirt", "impact_glass", "crit_text", "muzzle_revolver",
+    "impact_metal", "impact_dirt", "impact_glass", "crit_text", "minicrit_text", "muzzle_revolver",
     "ExplosionCore_Wall", "ExplosionCore_MidAir", "new_flame", "new_flame_crit_red",
     "new_flame_crit_blue", "flamethrower_underwater", "pyro_blast", "nailtrails_medic_red",
     "nailtrails_medic_blue", "muzzle_syringe", "medicgun_beam_red", "medicgun_beam_blue",

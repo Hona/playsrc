@@ -5837,7 +5837,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 27, MAX)?;
+    u32_field(&mut out, 29, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -7210,6 +7210,7 @@ fn encode_audio_event(
                 playsrc_tf2::AudioEventIdentity::ExplosionSpecial1 => 2,
                 playsrc_tf2::AudioEventIdentity::ItemPickup => 3,
                 playsrc_tf2::AudioEventIdentity::ItemMaterialize => 4,
+                playsrc_tf2::AudioEventIdentity::PlayerFeedback => 5,
             },
             event.definition.code(),
             match event.source_kind {
@@ -7692,7 +7693,7 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             weapon,
             amount,
             health,
-            critical,
+            crit,
             custom,
         } => (
             17,
@@ -7702,7 +7703,7 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
             [
                 *amount as f32,
                 *health as f32,
-                f32::from(u8::from(*critical)),
+                match crit { playsrc_tf2::damage::CritKind::None => 0.0, playsrc_tf2::damage::CritKind::Full => 1.0, playsrc_tf2::damage::CritKind::Mini => 2.0 },
                 f32::from(*custom),
             ],
         ),
@@ -14871,6 +14872,18 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn damage_event_wire_preserves_full_and_mini_critical_kinds() {
+        for (crit, code) in [(playsrc_tf2::damage::CritKind::None, 0.0), (playsrc_tf2::damage::CritKind::Full, 1.0), (playsrc_tf2::damage::CritKind::Mini, 2.0)] {
+            let mut bytes = Vec::new();
+            super::encode_game_event(&mut bytes, &playsrc_tf2::Event::PlayerDamaged {
+                attacker: 1, victim: 2, weapon: playsrc_tf2::Weapon::Bat, amount: 10, health: 0, crit, custom: 0,
+            }, 28).unwrap();
+            assert_eq!(bytes.len(), 28);
+            assert_eq!(bytes[0], 17);
+            assert_eq!(f32::from_le_bytes(bytes[20..24].try_into().unwrap()), code);
+        }
+    }
+    #[test]
     fn sound_patch_wire_actions_preserve_samples_source_and_order() {
         use playsrc_tf2::{
             AudioAction, AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition,
@@ -16164,7 +16177,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x1b\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x1d\0\0\0");
         assert_eq!(encoded.len(), 1152);
         assert_eq!(&encoded[1124..1140], &[0; 16]);
         assert_eq!(i32::from_le_bytes(encoded[1140..1144].try_into().unwrap()), 800);

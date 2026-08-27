@@ -60,6 +60,7 @@ impl ConditionId {
     pub const ROCKETPACK: Self = Self(125);
     pub const KNOCKED_INTO_AIR: Self = Self(115);
     pub const RUNE_KNOCKOUT: Self = Self(103);
+    pub const RUNE_RESIST: Self = Self(93);
     pub const COMPETITIVE_WINNER: Self = Self(116);
     pub const COMPETITIVE_LOSER: Self = Self(117);
     pub const CRIT_BOOSTED_RUNE_TEMP: Self = Self(105);

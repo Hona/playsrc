@@ -1,4 +1,24 @@
 {
+  "TFPlayer.CritHit": [
+    "scripts/game_sounds_player.txt",
+    [
+      "player/crit_hit.wav",
+      "player/crit_hit2.wav",
+      "player/crit_hit3.wav",
+      "player/crit_hit4.wav",
+      "player/crit_hit5.wav"
+    ]
+  ],
+  "TFPlayer.CritHitMini": [
+    "scripts/game_sounds_player.txt",
+    [
+      "player/crit_hit_mini.wav",
+      "player/crit_hit_mini2.wav",
+      "player/crit_hit_mini3.wav",
+      "player/crit_hit_mini4.wav",
+      "player/crit_hit_mini5.wav"
+    ]
+  ],
   "Weapon_Ambassador.Single": [
     "scripts/game_sounds_weapons.txt",
     [

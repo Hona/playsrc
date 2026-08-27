@@ -108,7 +108,7 @@ export type AudioEvent = Readonly<{
   fadeSeconds: number
   tick: bigint
   ordinal: number
-  identity: 1 | 2 | 3 | 4
+  identity: 1 | 2 | 3 | 4 | 5
   definition: number
   sourceKind: 1 | 2 | 3 | 4
   sourceIdentity: number
@@ -1613,7 +1613,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 27)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 29)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1956,6 +1956,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       readValue(item + 24),
     ]) as readonly [number, number, number, number]
     const nameLength = view.getUint16(item + 2, true)
+    if (kind === 17 && ![0, 1, 2].includes(values[2])) throw new Tf2CodecError("damage critical kind is invalid")
     if (kind === undefined || kind < 1 || kind > 19 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || (death ? nameLength < 1 || nameLength > 255 : nameLength !== 0) || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
     requireBytes(28 + nameLength, "death notice weapon")
@@ -2177,7 +2178,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
     const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === undefined ? 0 : definition >= 160 ? configuredEquipmentSoundWaves[definition - 160] ?? 0 : nativeEquipmentSoundWaves[definition] ?? 0
     if (
-      (identity === undefined || identity < 1 || identity > 4) || !isSoundDefinition(definition) ||
+      (identity === undefined || identity < 1 || identity > 5) || !isSoundDefinition(definition) ||
       (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 4 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
