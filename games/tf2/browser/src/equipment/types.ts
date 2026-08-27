@@ -16,6 +16,8 @@ export type Tf2SupportedItem = Readonly<{
   name: string
   displayName: string
   description: readonly Readonly<{ text: string; color: string }>[]
+  animationSlot: string | null
+  extraSounds: readonly string[]
   image: string
   modelPlayer: string
   attachToHands: boolean
@@ -23,7 +25,7 @@ export type Tf2SupportedItem = Readonly<{
   soundOverrides: readonly (readonly [string, string])[]
   deathNoticeIcon: string | null
   weapon: Tf2Weapon | null
-  classSlots: readonly Readonly<{ class: Tf2Class; slot: number; weapon: Tf2Weapon | null }>[]
+  classSlots: readonly Readonly<{ class: Tf2Class; slot: number; weapon: Tf2Weapon | null; selectionSlot: number | null }>[]
 }>
 
 export type Tf2EquipmentState = Readonly<{

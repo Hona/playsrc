@@ -6,7 +6,7 @@ import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
-import { Tf2EquipmentProfile, Tf2EquipmentPresentation, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
+import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -5422,18 +5422,16 @@ export class Tf2Application {
     } else if (action === "+showscores") {
       if (this.#buttons.press(identity, action)) this.#setScoreboardVisible(true)
 
-    } else if (action === "slot1") this.#selectWeapon = this.#snapshot?.class === 8 ? 50 : this.#snapshot?.class === 1 ? 4 : this.#snapshot?.class === 2 ? 12 : this.#snapshot?.class === 4 ? 18 : this.#snapshot?.class === 5 ? 19 : this.#snapshot?.class === 6 ? 9 : this.#snapshot?.class === 9 ? 40 : this.#snapshot?.class === 7 ? 15 : 1
-    else if (action === "slot2") this.#selectWeapon = this.#snapshot?.class === 8 ? 52 : this.#snapshot?.class === 1 ? 5 : this.#snapshot?.class === 2 ? 13 : this.#snapshot?.class === 3 ? 7 : this.#snapshot?.class === 5 ? 20 : this.#snapshot?.class === 6 ? 10 : this.#snapshot?.class === 9 ? 41 : this.#snapshot?.class === 7 ? 7 : 3
-    else if (action === "slot3") this.#selectWeapon = this.#snapshot?.class === 8 ? 51 : this.#snapshot?.class === 1 ? 6 : this.#snapshot?.class === 2 ? 14 : this.#snapshot?.class === 3 ? 8 : this.#snapshot?.class === 4 ? 17 : this.#snapshot?.class === 5 ? 21 : this.#snapshot?.class === 6 ? 11 : this.#snapshot?.class === 9 ? 42 : this.#snapshot?.class === 7 ? 16 : undefined
-    else if (action === "slot4" && this.#snapshot?.class === 8) this.#selectWeapon = 53
-    else if(action==="slot4"&&this.#snapshot?.class===9)this.#selectWeapon=43
-    else if(action==="slot5"&&this.#snapshot?.class===9)this.#selectWeapon=44
+    } else if (/^slot[1-6]$/.test(action) && this.#snapshot && this.#equipmentProfile?.state()) {
+      this.#selectWeapon = equippedWeaponSlots(this.#snapshot, this.#equipmentProfile.state()!.inventory)
+        .find(value => value.slot === Number(action.slice(4)) - 1)?.weapon
+    }
 
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (this.#localMatch?.handleKey(event)) return
-    if (this.#equipment?.handleKey(event)) return
+    if (!this.#view.consoleVisible && this.#equipment?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
     if (!this.#view.consoleVisible && this.#teamSelection?.handleKey(event, this.#keyboardAction(event) === "changeteam")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return

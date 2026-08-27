@@ -18,7 +18,7 @@
   {"definitionIndex":16,"weapon":"Smg"},
   {"definitionIndex":17,"weapon":"SyringeGun"},
   {"definitionIndex":18,"weapon":"RocketLauncher"},
-  {"definitionIndex":19,"weapon":"GrenadeLauncher"},
+  {"definitionIndex":19,"weapon":"GrenadeLauncher","implemented":false},
   {"definitionIndex":20,"weapon":"StickybombLauncher"},
   {"definitionIndex":21,"weapon":"Flamethrower"},
   {"definitionIndex":22,"weapon":"EngineerPistol"},
@@ -30,7 +30,7 @@
   {"definitionIndex":28,"weapon":"BuildPda"},
   {"definitionIndex":29,"weapon":"MediGun"},
   {"definitionIndex":30,"weapon":"InvisibilityWatch"},
-  {"definitionIndex":735,"weapon":"Sapper"},
+  {"definitionIndex":735,"weapon":"Sapper","implemented":false},
   {"definitionIndex":378,"weapon":null,"quality":5,"style":0,"attributes":[{"definition":134,"value":13}]},
   {"definitionIndex":45,"weapon":"Scattergun","quality":6,"implemented":false},
   {"definitionIndex":1103,"weapon":"Scattergun","quality":6,"implemented":false},
@@ -42,6 +42,6 @@
   {"definitionIndex":41,"weapon":"Minigun","quality":6,"implemented":false},
   {"definitionIndex":61,"weapon":"Revolver","quality":6,"implemented":false},
   {"definitionIndex":460,"weapon":"Revolver","quality":6,"implemented":false},
-  {"definitionIndex":525,"weapon":"Revolver","quality":6,"implemented":false},
+  {"definitionIndex":220,"weapon":"HandgunScoutPrimary","quality":6,"implemented":false,"extraSounds":["Weapon_Hands.Push","Weapon_Hands.PushImpact"]},
   {"definitionIndex":402,"weapon":"SniperRifle","quality":6,"implemented":false}
 ]

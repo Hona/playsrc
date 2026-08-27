@@ -12,6 +12,7 @@ struct Registration {
     #[serde(default)] style: u8,
     #[serde(default)] attributes: Vec<Attribute>,
     #[serde(default = "implemented_by_default")] implemented: bool,
+    #[serde(default)] extra_sounds: Vec<String>,
 }
 fn implemented_by_default() -> bool { true }
 
@@ -202,20 +203,24 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
         }
         let visuals = object(&item.source, "visuals");
         let (display_name, description) = display(item, supported, &schema, &attributes, &colors, &localized)?;
-        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], image: {:?}, model_player: {:?}, attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
-            description.iter().map(|(text, color)| format!("DescriptionLine {{ text: {text:?}, color: {color:?} }}")).collect::<Vec<_>>().join(", "), image,
+        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], animation_slot: {:?}, extra_sounds: &{:?}, image: {:?}, model_player: {:?}, attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
+            description.iter().map(|(text, color)| format!("DescriptionLine {{ text: {text:?}, color: {color:?} }}")).collect::<Vec<_>>().join(", "), scalar(&item.source, "anim_slot"), supported.extra_sounds, image,
             scalar(&item.source, "model_player").unwrap_or(""), scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
             scalar(&item.source, "item_iconname"),
             item.class_slots.iter().map(|(class, slot)| format!("(PlayerClass::{class:?}, LoadoutPosition::{slot:?})")).collect::<Vec<_>>().join(", ")).unwrap();
     }
-    output.push_str("];\npub const SUPPORTED_ITEMS: &[SupportedItem] = &[\n");
-    for item in &supported_items {
-        if !item.implemented { continue; }
-        let implementation = item.weapon.as_ref().map_or("Implementation::Wearable".into(), |weapon| format!("Implementation::Weapon(Weapon::{weapon})"));
-        writeln!(output, "SupportedItem {{ definition_index: {}, implementation: {}, quality: {}, style: {}, attributes: &[{}] }},", item.definition_index, implementation, item.quality, item.style,
-            item.attributes.iter().map(|attribute| format!("ItemAttribute {{ definition: {}, value: {:?} }}", attribute.definition, attribute.value)).collect::<Vec<_>>().join(", ")).unwrap();
+    output.push_str("];\n");
+    for (name, implemented_only) in [("REGISTERED_ITEMS", false), ("SUPPORTED_ITEMS", true)] {
+        writeln!(output, "pub const {name}: &[SupportedItem] = &[").unwrap();
+        for item in &supported_items {
+            if implemented_only && !item.implemented { continue; }
+            let implementation = item.weapon.as_ref().map_or("Implementation::Wearable".into(), |weapon| format!("Implementation::Weapon(Weapon::{weapon})"));
+            writeln!(output, "SupportedItem {{ definition_index: {}, implementation: {}, quality: {}, style: {}, attributes: &[{}] }},", item.definition_index, implementation, item.quality, item.style,
+                item.attributes.iter().map(|attribute| format!("ItemAttribute {{ definition: {}, value: {:?} }}", attribute.definition, attribute.value)).collect::<Vec<_>>().join(", ")).unwrap();
+        }
+        output.push_str("];\n");
     }
-    output.push_str("];\nfn configured_schema_input() -> crate::schema::SchemaInput {\nuse crate::schema::{SchemaInput, SchemaNode};\nSchemaInput {\n");
+    output.push_str("fn configured_schema_input() -> crate::schema::SchemaInput {\nuse crate::schema::{SchemaInput, SchemaNode};\nSchemaInput {\n");
     writeln!(output, "content_build: {}, schema_sha256: {:?}.into(), signature_sha256: {:?}.into(),", schema::CONTENT_BUILD, schema::ITEM_SCHEMA_SHA256, schema::ITEM_SCHEMA_SIGNATURE_SHA256).unwrap();
     for (name, nodes) in [("game_info", game_info), ("prefabs", prefabs), ("attributes", attributes), ("items", items)] {
         writeln!(output, "{name}: {},", emit(&nodes)).unwrap();

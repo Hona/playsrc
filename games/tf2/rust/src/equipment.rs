@@ -48,6 +48,18 @@ impl SupportedItem {
             _ => weapon,
         })
     }
+
+    pub fn selection_slot(self, class: PlayerClass, slot: LoadoutPosition) -> Option<u8> {
+        match self.weapon_for_class(class)? {
+            Weapon::InvisibilityWatch | Weapon::Toolbox => None,
+            Weapon::Revolver => Some(0),
+            Weapon::Sapper => Some(1),
+            Weapon::DisguiseKit | Weapon::BuildPda => Some(3),
+            Weapon::DestroyPda => Some(4),
+            _ if matches!(slot, LoadoutPosition::Primary | LoadoutPosition::Secondary | LoadoutPosition::Melee) => Some(slot as u8),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,6 +74,8 @@ pub struct ItemPresentation {
     pub name: &'static str,
     pub display_name: &'static str,
     pub description: &'static [DescriptionLine],
+    pub animation_slot: Option<&'static str>,
+    pub extra_sounds: &'static [&'static str],
     pub image: &'static str,
     pub model_player: &'static str,
     pub attach_to_hands: bool,
@@ -155,6 +169,10 @@ pub fn supported_item(definition_index: u32) -> Option<&'static SupportedItem> {
     SUPPORTED_ITEMS.iter().find(|item| item.definition_index == definition_index)
 }
 
+pub(crate) fn registered_item(definition_index: u32) -> Option<&'static SupportedItem> {
+    REGISTERED_ITEMS.iter().find(|item| item.definition_index == definition_index)
+}
+
 pub fn presentation(definition_index: u32) -> Option<&'static ItemPresentation> {
     ITEM_PRESENTATIONS.iter().find(|item| item.definition_index == definition_index)
 }
@@ -189,7 +207,7 @@ impl Equipment {
     }
 
     pub fn encode_state(&self) -> Vec<u8> {
-        let mut out = b"TFEI\x02\0\0\0".to_vec();
+        let mut out = b"TFEI\x03\0\0\0".to_vec();
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(SUPPORTED_ITEMS.len() as u32).to_le_bytes());
         for supported in SUPPORTED_ITEMS {
@@ -203,7 +221,7 @@ impl Equipment {
                 else { vec![(*class, *slot)] }
             }).collect();
             out.push(eligible.len() as u8);
-            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8)]); }
+            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8), supported.selection_slot(class, slot).unwrap_or(u8::MAX)]); }
             for text in [metadata.name, metadata.display_name, metadata.image] {
                 out.extend_from_slice(&(text.len() as u32).to_le_bytes());
                 out.extend_from_slice(text.as_bytes());
@@ -215,6 +233,10 @@ impl Equipment {
                     out.extend_from_slice(text.as_bytes());
                 }
             }
+            let animation_slot = metadata.animation_slot.unwrap_or("");
+            out.extend_from_slice(&(animation_slot.len() as u32).to_le_bytes()); out.extend_from_slice(animation_slot.as_bytes());
+            out.extend_from_slice(&(metadata.extra_sounds.len() as u32).to_le_bytes());
+            for sound in metadata.extra_sounds { out.extend_from_slice(&(sound.len() as u32).to_le_bytes()); out.extend_from_slice(sound.as_bytes()); }
             out.push(u8::from(metadata.attach_to_hands));
             let death_icon = metadata.death_notice_icon.unwrap_or("");
             out.extend_from_slice(&(death_icon.len() as u32).to_le_bytes());
@@ -250,7 +272,7 @@ impl Equipment {
 
     pub fn equip(&mut self, class: PlayerClass, slot: LoadoutPosition, definition: Option<u32>) -> Result<bool, EquipmentError> {
         let definition = definition.or_else(|| class.data().stock_items.iter()
-            .find(|item| item.slot == slot as u8).map(|item| item.definition));
+            .find(|item| item.slot == slot as u8 && supported_item(item.definition).is_some()).map(|item| item.definition));
         if let Some(definition) = definition {
             supported_item(definition).ok_or(EquipmentError::UnsupportedItem)?;
             if !presentation(definition).is_some_and(|item| item.class_slots.iter().any(|(eligible, position)|
@@ -346,6 +368,18 @@ mod tests {
     }
 
     #[test]
+    fn configured_unusual_description_keeps_quality_effect_and_authored_flavor() {
+        let item = presentation(378).unwrap();
+        assert_eq!(item.display_name, "Unusual Team Captain");
+        assert_eq!(item.description.iter().map(|line| (line.text, line.color)).collect::<Vec<_>>(), [
+            ("Level 1 Hat", "ItemAttribLevel"),
+            ("★ Unusual Effect: Burning Flames", "QualityColorrarity4"),
+            ("Our lawyers say 'YES! YES!'", "ItemAttribNeutral"),
+        ]);
+        assert_eq!(SUPPORTED_ITEMS.iter().filter(|item| item.definition_index == 378).count(), 1);
+    }
+
+    #[test]
     fn generic_weapon_classes_translate_before_runtime_and_provider_keying() {
         let shotgun = *supported_item(10).unwrap();
         assert_eq!(shotgun.weapon_for_class(PlayerClass::Soldier), Some(Weapon::Shotgun));
@@ -375,8 +409,8 @@ mod tests {
         assert_eq!(Equipment::restore(&equipment.persist()), Ok(equipment.clone()));
         for class in PlayerClass::ALL {
             let items = equipment.equipped_items(class);
-            assert_eq!(items.len(), class.data().stock_items.len());
-            for stock in class.data().stock_items {
+            assert_eq!(items.len(), class.data().stock_items.iter().filter(|stock| supported_item(stock.definition).is_some()).count());
+            for stock in class.data().stock_items.iter().filter(|stock| supported_item(stock.definition).is_some()) {
                 assert!(items.iter().any(|item| item.definition_index == stock.definition && item.slot as u8 == stock.slot));
             }
             let mut providers = AttributeProviders::new(&equipment, class);

@@ -1287,6 +1287,9 @@ impl CoreState {
                 && self.players[&input.victim].conditions.contains(ConditionId::AIMING) {
                 self.query_player_attribute(input.victim, "spunup_damage_resistance", 1.0)?
             } else { 1.0 },
+            critical_falloff: if let Some(position) = weapon {
+                self.query_item_attribute(input.attacker, position, "crit_dmg_falloff", 0.0)? != 0.0
+            } else { false },
             pierces_resists,
             minicrits_become_crits,
             crits_become_minicrits,

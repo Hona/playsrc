@@ -219,6 +219,7 @@ pub enum Weapon {
     Sapper = 52,
     DisguiseKit = 53,
     InvisibilityWatch = 54,
+    HandgunScoutPrimary = 60,
     BuildPda = 43,
     DestroyPda = 44,
     Toolbox = 45,
@@ -3490,6 +3491,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if let Some(weapon) = command.select_weapon
             && self.loadout.contains_key(&weapon)
+            && weapon != Weapon::InvisibilityWatch
             && Some(weapon) != self.weapon
         {
             if let Some(active_weapon) = self.weapon
@@ -5785,6 +5787,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::Original => SoundDefinition::OriginalSingle,
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
             Weapon::Scattergun
+            | Weapon::HandgunScoutPrimary
             | Weapon::Pistol
             | Weapon::Bat
             | Weapon::Shotgun
@@ -5835,6 +5838,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::RocketLauncher | Weapon::Original => ProjectileKind::Rocket,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
             Weapon::Scattergun
+            | Weapon::HandgunScoutPrimary
             | Weapon::Pistol
             | Weapon::Bat
             | Weapon::Shotgun
@@ -6832,6 +6836,7 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
         Weapon::RocketLauncher
         | Weapon::Original
         | Weapon::Scattergun
+        | Weapon::HandgunScoutPrimary
         | Weapon::Minigun
         | Weapon::SniperRifle
         | Weapon::EngineerShotgun
@@ -6865,21 +6870,12 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
 }
 
 fn default_weapon(class: PlayerClass) -> Option<Weapon> {
-    match class {
-        PlayerClass::Scout => Some(Weapon::Scattergun),
-        PlayerClass::Sniper => Some(Weapon::SniperRifle),
-        PlayerClass::Soldier => Some(Weapon::RocketLauncher),
-        PlayerClass::Demoman => Some(Weapon::GrenadeLauncher),
-        PlayerClass::Heavy => Some(Weapon::Minigun),
-        PlayerClass::Engineer => Some(Weapon::EngineerShotgun),
-        PlayerClass::Pyro => Some(Weapon::Flamethrower),
-        PlayerClass::Spy => Some(Weapon::Revolver),
-        PlayerClass::Medic => Some(Weapon::SyringeGun),
-    }
+    class.data().stock_items.iter().find_map(|item| equipment::registered_item(item.definition)?.weapon_for_class(class))
 }
 
 fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
-    equipment::Equipment::default().weapons(class)
+    // Preserve the stock bot roster. The local backpack grants only supported items.
+    class.data().stock_items.iter().filter_map(|item| equipment::registered_item(item.definition)?.weapon_for_class(class))
         .map(|weapon| (weapon, WeaponRuntime::full(weapon))).collect()
 }
 
@@ -7792,7 +7788,6 @@ mod tests {
             vec![
                 Weapon::Revolver,
                 Weapon::Knife,
-                Weapon::Sapper,
                 Weapon::DisguiseKit,
                 Weapon::InvisibilityWatch,
             ]
@@ -8621,7 +8616,8 @@ mod tests {
                 .unwrap();
         }
         let state = session.weapon_runtime(Weapon::EngineerPistol).unwrap();
-        assert_eq!((state.clip, state.reserve), (12, 0));
+        assert_eq!((state.clip, state.reserve), (11, 0));
+        assert!(state.next_primary_tick > due);
     }
 
     #[test]
@@ -9158,7 +9154,7 @@ mod tests {
                     );
                 }
                 PlayerClass::Demoman => {
-                    assert_eq!(snapshot.weapon, Some(Weapon::GrenadeLauncher));
+                    assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
                     assert_eq!(
                         snapshot
                             .loadout
@@ -9168,7 +9164,6 @@ mod tests {
                         vec![
                             Weapon::StickybombLauncher,
                             Weapon::Bottle,
-                            Weapon::GrenadeLauncher
                         ],
                     );
                 }
@@ -9210,7 +9205,7 @@ mod tests {
                 }
                 PlayerClass::Spy => {
                     assert_eq!(snapshot.weapon, Some(Weapon::Revolver));
-                    assert_eq!(snapshot.loadout.len(), 5);
+                    assert_eq!(snapshot.loadout.len(), 4);
                     assert_eq!(snapshot.spy, Some(spy::SpyState::default()));
                 }
                 PlayerClass::Medic => {
@@ -10615,10 +10610,10 @@ mod tests {
             .unwrap();
         assert_eq!(changed.class, PlayerClass::Demoman);
         assert!(changed.projectile_events.is_empty());
-        let grenade = session.weapon_runtime(Weapon::GrenadeLauncher).unwrap();
-        assert_eq!(grenade.next_primary_tick, 45);
-        assert_eq!(grenade.first_primary_tick, 45);
-        assert!(grenade.charge_begin_tick.is_none());
+        let sticky = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
+        assert_eq!(sticky.next_primary_tick, 45);
+        assert_eq!(sticky.first_primary_tick, 45);
+        assert!(sticky.charge_begin_tick.is_none());
     }
 
     #[test]

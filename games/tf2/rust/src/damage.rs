@@ -475,6 +475,7 @@ pub struct DamageModifiers {
     pub general_taken: f32,
     pub active_taken: f32,
     pub spunup_taken: f32,
+    pub critical_falloff: bool,
     pub pierces_resists: bool,
     pub minicrits_become_crits: bool,
     pub crits_become_minicrits: bool,
@@ -492,6 +493,7 @@ impl Default for DamageModifiers {
             general_taken: 1.0,
             active_taken: 1.0,
             spunup_taken: 1.0,
+            critical_falloff: false,
             pierces_resists: false,
             minicrits_become_crits: false,
             crits_become_minicrits: false,
@@ -719,8 +721,9 @@ pub fn apply_damage(
     });
 
     let unvaried_base = base;
-    let effective_range = if self_damage || ranged_as_full_crit { 1.0 }
-        else if crit == CritKind::Mini { input.range_multiplier.max(1.0) }
+    let effective_range = if self_damage { 1.0 }
+        else if ranged_as_full_crit { if modifiers.critical_falloff { input.range_multiplier.min(1.0) } else { 1.0 } }
+        else if crit == CritKind::Mini && !modifiers.critical_falloff { input.range_multiplier.max(1.0) }
         else { input.range_multiplier };
     base *= effective_range;
     stages.push(DamageStage {
@@ -733,7 +736,7 @@ pub fn apply_damage(
         CritKind::Mini => (MINICRIT_MULTIPLIER - 1.0) * base,
         CritKind::Full => (CRIT_MULTIPLIER - 1.0) * base,
     }};
-    let variance_bonus = if self_damage || crit == CritKind::None
+    let variance_bonus = if self_damage || crit == CritKind::None || modifiers.critical_falloff
         || ranged_as_full_crit && input.range_multiplier > 1.0 { 0.0 }
         else { (unvaried_base * (input.range_multiplier - 1.0)).abs() };
     let mut bonus = critical_damage + variance_bonus;
@@ -1137,6 +1140,18 @@ mod tests {
             .denial,
             Some(DamageDenial::FriendlyFire)
         );
+    }
+
+    #[test]
+    fn forced_critical_falloff_never_adds_close_range_ramp_or_variance_bonus() {
+        for (range, crit, expected) in [(0.528, CritKind::Full, 54), (1.5, CritKind::Full, 102), (0.528, CritKind::Mini, 24)] {
+            let mut health = HealthState::spawn(PlayerClass::Heavy, 0.0, 0.0).unwrap();
+            let mut info = input(); info.base_damage = 34.0; info.range_multiplier = range; info.crit = crit;
+            let result = apply_damage(true, &mut health, &mut ConditionState::default(), &info,
+                DamageModifiers { critical_falloff: true, ..Default::default() }).unwrap();
+            assert_eq!(result.health_damage, expected);
+            assert!((result.pre_resistance_bonus_damage - result.pre_resistance_base_damage * if crit == CritKind::Full { 2.0 } else { 0.35 }).abs() < 0.0001);
+        }
     }
 
     #[test]

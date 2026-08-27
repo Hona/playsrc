@@ -122,6 +122,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         52 => Some(playsrc_tf2::Weapon::Sapper),
         53 => Some(playsrc_tf2::Weapon::DisguiseKit),
         54 => Some(playsrc_tf2::Weapon::InvisibilityWatch),
+        60 => Some(playsrc_tf2::Weapon::HandgunScoutPrimary),
 
         15 => Some(playsrc_tf2::Weapon::Flamethrower),
         16 => Some(playsrc_tf2::Weapon::FireAxe),
