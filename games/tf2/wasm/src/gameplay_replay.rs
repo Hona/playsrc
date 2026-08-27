@@ -15,12 +15,36 @@ struct Journal {
     records: usize,
     overflow: bool,
     observing: bool,
+    last_attack: Option<AttackAdmission>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AttackAdmission {
+    host_tick: u64,
+    player: u32,
+}
+fn attack_admission(host_tick: u64, command: &[u8], snapshot: &[u8]) -> Option<AttackAdmission> {
+    // PCMD button flags and the PSSN player header are the same public wire
+    // records already retained by this owner. Do not infer admission from a DOM
+    // mouse event, an observe with zero selected ticks, or weapon presentation.
+    let flags = u32::from_le_bytes(command.get(28..32)?.try_into().ok()?);
+    if flags & (1 << 3) == 0 {
+        return None;
+    }
+    Some(AttackAdmission {
+        host_tick,
+        player: u32::from(*snapshot.get(16)?)
+            | (u32::from(*snapshot.get(18)?) << 8)
+            | (u32::from(*snapshot.get(28)?) << 16),
+    })
 }
 fn journal() -> &'static Mutex<Option<Journal>> {
     static VALUE: OnceLock<Mutex<Option<Journal>>> = OnceLock::new();
     VALUE.get_or_init(|| Mutex::new(None))
 }
 fn append(handle: u32, kind: u32, parts: &[&[u8]]) {
+    append_record(handle, kind, parts, None);
+}
+fn append_record(handle: u32, kind: u32, parts: &[&[u8]], attack: Option<AttackAdmission>) {
     if ACTIVE.load(Ordering::Relaxed) != handle {
         return;
     }
@@ -46,6 +70,9 @@ fn append(handle: u32, kind: u32, parts: &[&[u8]]) {
         value.bytes.extend_from_slice(part);
     }
     value.records += 1;
+    if let Some(attack) = attack {
+        value.last_attack = Some(attack);
+    }
     if kind == 1 {
         value.observing = true;
     }
@@ -93,7 +120,7 @@ pub(super) fn tick(
 ) {
     if let Some((mut clock, started)) = started {
         let elapsed = clock.monotonic_nanoseconds().saturating_sub(started);
-        append(
+        append_record(
             handle,
             2,
             &[
@@ -103,8 +130,31 @@ pub(super) fn tick(
                 &(command.len() as u32).to_le_bytes(),
                 command,
             ],
+            attack_admission(host_tick, command, output),
         );
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_gameplay_replay_attack_tick(handle: u32) -> u64 {
+    journal()
+        .lock()
+        .expect("gameplay replay")
+        .as_ref()
+        .filter(|value| value.handle == handle && !value.overflow)
+        .and_then(|value| value.last_attack)
+        .map_or(0, |attack| attack.host_tick)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_gameplay_replay_attack_player(handle: u32) -> u32 {
+    journal()
+        .lock()
+        .expect("gameplay replay")
+        .as_ref()
+        .filter(|value| value.handle == handle && !value.overflow)
+        .and_then(|value| value.last_attack)
+        .map_or(0, |attack| attack.player)
 }
 pub(super) fn mutation(handle: u32, kind: u32, bytes: &[u8]) {
     append(handle, kind, &[bytes]);
@@ -142,6 +192,7 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
         records: 0,
         overflow: false,
         observing: false,
+        last_attack: None,
     });
     ACTIVE.store(handle, Ordering::Relaxed);
     admission_metrics::begin();
@@ -250,6 +301,32 @@ pub extern "C" fn playsrc_collision_replay_counter(index: u32) -> f64 {
 mod tests {
     use super::*;
     #[test]
+    fn attack_admission_is_an_actual_tick_command_not_a_weapon_shot_claim() {
+        let mut command = [0_u8; 84];
+        let mut snapshot = [0_u8; 184];
+        snapshot[16] = 5;
+        snapshot[18] = 19;
+        snapshot[28] = 1;
+        assert_eq!(attack_admission(24, &command, &snapshot), None);
+        command[28] = 1 << 3;
+        assert_eq!(
+            attack_admission(24, &command, &snapshot),
+            Some(AttackAdmission {
+                host_tick: 24,
+                player: 5 | (19 << 8) | (1 << 16),
+            })
+        );
+        // Preserve the owner lifecycle: an input sent while dead cannot pass a
+        // live attack gate, even though the command was consumed by a tick.
+        snapshot[28] = 2;
+        assert_eq!(
+            attack_admission(25, &command, &snapshot).unwrap().player >> 16,
+            2
+        );
+        assert_eq!(attack_admission(25, &command[..28], &snapshot), None);
+        assert_eq!(attack_admission(25, &command, &snapshot[..28]), None);
+    }
+    #[test]
     fn incomplete_and_overflow_journals_keep_their_prefix_but_cannot_pass() {
         let handle = 0xffff_ffff;
         let setup = |bytes| {
@@ -259,9 +336,36 @@ mod tests {
                 records: 0,
                 overflow: false,
                 observing: false,
+                last_attack: None,
             });
             ACTIVE.store(handle, Ordering::Relaxed);
         };
+        setup(b"checkpoint".to_vec());
+        append(handle, 2, &[&[42; 8]]);
+        let without_ack = journal().lock().unwrap().as_ref().unwrap().bytes.clone();
+        setup(b"checkpoint".to_vec());
+        append_record(
+            handle,
+            2,
+            &[&[42; 8]],
+            Some(AttackAdmission {
+                host_tick: 17,
+                player: 3 | (1 << 8) | (1 << 16),
+            }),
+        );
+        assert_eq!(
+            journal().lock().unwrap().as_ref().unwrap().bytes,
+            without_ack
+        );
+        assert_eq!(playsrc_gameplay_replay_attack_tick(handle), 17);
+        assert_eq!(
+            playsrc_gameplay_replay_attack_player(handle),
+            3 | (1 << 8) | (1 << 16)
+        );
+        assert_eq!(playsrc_gameplay_replay_attack_tick(handle - 1), 0);
+        // Observing a command without a selected tick does not manufacture an acknowledgement.
+        observe(handle, 1.0, 0, 0, &[8; 84]);
+        assert_eq!(playsrc_gameplay_replay_attack_tick(handle), 17);
         setup(b"checkpoint".to_vec());
         observe(handle, 1.0, 0, 0, &[0; 84]);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 0);

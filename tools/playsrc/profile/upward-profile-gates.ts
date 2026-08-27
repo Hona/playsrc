@@ -15,6 +15,18 @@ export function assertUpwardProfile(report: any, policy: {
     assert.equal(report.classSwitches.observed.length, policy.classPasses * 9, "all observed class edges")
     assert.equal(report.classSwitches.timing.length, report.classSwitches.observed.length, "class timing coverage")
     assert(report.classSwitches.timing.every((item: any) => Number.isFinite(item.fireAt)), "all class fire edges")
+    assert.equal(report.classSwitches.attacks?.length, policy.classPasses * 9, "all class attack commands admitted by the Rust tick owner")
+    let previousAttackTick = 0n
+    for (const [index, attack] of report.classSwitches.attacks.entries()) {
+      const edge = report.classSwitches.timing[index]
+      assert.equal(attack.playerClass, edge.playerClass, "attack belongs to selected class")
+      assert.equal(attack.lifecycle, 1, "attack admitted for a live local player")
+      assert(Number.isFinite(attack.at) && attack.at >= edge.fireAt && attack.at < report.elapsedMilliseconds, "attack acknowledgement inside the active window")
+      assert(BigInt(attack.hostTick) > previousAttackTick, "distinct ordered authoritative attack ticks")
+      assert(Number.isSafeInteger(attack.weapon) && attack.weapon > 0, "attack weapon identity")
+      if (attack.playerClass === 4) assert.equal(attack.weapon, 17, "Demoman Bottle admission, not an unavailable projectile")
+      previousAttackTick = BigInt(attack.hostTick)
+    }
     assert.equal(report.classSwitches.timing.filter((item: any) => item.admission === "first").length, 9, "first class admissions")
     assert.equal(report.classSwitches.timing.filter((item: any) => item.admission === "retained").length, (policy.classPasses - 1) * 9, "retained class admissions")
     assert.equal(report.classSwitches.visibleScoreboardRows, policy.playerCount, "visible scoreboard")

@@ -7,6 +7,7 @@ import { applicationBuildIdentity } from "../src/build-identity"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
+import { prepareClassCapture } from "./class-input-sequence"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { summarizeCompositorFreezes, summarizeFreezeTimeline } from "./freeze-timeline"
@@ -333,6 +334,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
 
   const canvas = page.locator("canvas.world-canvas")
+  const canvasBox = await canvas.boundingBox()
+  if (!canvasBox) throw new Error("Visible class input surface is absent")
+  const capturePoint = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 }
   await replay?.ready()
   await page.bringToFront()
   await canvas.focus()
@@ -428,6 +432,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
     const firstSnapshots = structuredClone((globalThis as any).__playsrcProfile.snapshotTransport ?? {}) as Record<string, number>
     const started = performance.now()
+    ;(globalThis as any).__playsrcProfile.classInputSampleStarted = started
     performance.mark(startMark, { startTime: started })
     const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean }> = []
     const mark = (phase: string, detail: { playerClass?: number; key?: string; visible?: boolean } = {}) => {
@@ -565,6 +570,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return output
   }, { duration: seconds, startMark: TRACE_START, endMark: TRACE_END })
   const exercisedClasses: string[] = []
+  const admittedAttacks: Array<{ playerClass: number; weapon: number; lifecycle: number; hostTick: string; at: number; requestId: number; playerTick: string; firstPrimaryTick: string; nextPrimaryTick: string; primaryActivities: unknown[] }> = []
   let visibleScoreboardRows: number | null = null
   const exercise = async () => {
     if (!exerciseClasses) return
@@ -588,42 +594,100 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const [position, playerClass] of (acceptance ? classes : [...classes, ...classes]).entries()) {
       const index = position % classes.length
       if (Date.now() >= deadline) break
-      if (acceptance && position > 0 && position % 4 === 0) await page.waitForTimeout(2100)
       // Blink's native limiter starts at one, then resets to zero after two
       // seconds since the last successful lock: four first admissions, then
       // five per reset. Respect the real wall-clock policy; never emulate lock.
-      if (!acceptance && position >= 4 && (position - 4) % 5 === 0) {
-        const cooldown = Math.max(0, lastNativeCapture + 2100 - Date.now())
-        if (Date.now() + cooldown >= deadline) break
-        await page.waitForTimeout(cooldown)
-      }
-      await page.keyboard.press("Comma")
-      if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
-        const started = performance.now()
-        const poll = () => element.dataset.classSelectionVisible === "true" ? resolve(true)
-          : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
-        poll()
-      }), Math.max(0, deadline - Date.now()))) break
-      await page.keyboard.press(`Digit${digits[index]}`)
-      if (!await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
-        const started = performance.now()
-        const poll = () => (element.dataset.hudProbe ?? "").split(":")[1] === String(identity) ? resolve(true)
-          : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
-        poll()
-      }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) break
+      const cooling = acceptance ? position > 0 && position % 4 === 0 : position >= 4 && (position - 4) % 5 === 0
+      if (!await prepareClassCapture({
+        earliestCapture: cooling ? lastNativeCapture + 2100 : 0, deadline, now: Date.now,
+        delay: milliseconds => page.waitForTimeout(milliseconds),
+        select: async () => {
+          exercisedClasses.push(playerClass)
+          await page.keyboard.press("Comma")
+          if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
+            const started = performance.now()
+            const poll = () => element.dataset.classSelectionVisible === "true" ? resolve(true)
+              : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+            poll()
+          }), Math.max(0, deadline - Date.now()))) return false
+          await page.keyboard.press(`Digit${digits[index]}`)
+          if (!await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
+            const started = performance.now()
+            const poll = () => (element.dataset.hudProbe ?? "").split(":")[1] === String(identity) ? resolve(true)
+              : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+            poll()
+          }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) return false
+          // The grenade/sticky rigid-body path is deliberately unavailable.
+          // Exercise the Demoman's authored Bottle via a real slot key instead
+          // of counting a mouse press which the application must reject.
+          if (identities[index] === 4) await page.keyboard.press("Digit3")
+          return root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
+            const started = performance.now()
+            let selectedTick: number | undefined
+            const poll = () => {
+              const hud = (element.dataset.hudProbe ?? "").split(":")
+              if (hud[1] === String(identity) && (identity !== 4 || hud[2] === "17") && element.dataset.classSelectionVisible === "false") {
+                selectedTick ??= Number(element.dataset.snapshotTick)
+                const frames = (globalThis as any).__playsrcFrameProfiler.completedFrames
+                if (frames.length && Number(frames.at(-1).tick) >= selectedTick!) { resolve(true); return }
+              }
+              if (performance.now() - started >= timeout) resolve(false)
+              else requestAnimationFrame(poll)
+            }
+            poll()
+          }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })
+        },
+      })) break
       await page.bringToFront()
       await canvas.focus()
-      await canvas.click()
+      // Visibility, class state and a completed frame were acknowledged above.
+      // Send native coordinates directly: locator.click's two stability frames
+      // are not another Source deploy or a prerequisite for this fixed viewport.
+      await page.mouse.click(capturePoint.x, capturePoint.y)
       // The first native click requests capture; it is not a weapon-fire edge.
       // Both scenario modes must admit capture before sending actual held fire.
       await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - Date.now())) })
       lastNativeCapture = Date.now()
+      const beforeAttack = await page.evaluate(() => {
+        const records = (globalThis as any).__playsrcFrameProfiler.simulation
+        return { index: records.length, hostTick: records.at(-1)?.replayAttack?.hostTick ?? "0" }
+      })
+      const minimumHold = acceptance ? 100 : 20
+      const pressedAt = Date.now()
+      if (pressedAt + minimumHold >= deadline) break
       await page.mouse.down()
-      // The application's +attack press latch preserves the click through the
-      // authoritative command boundary; stock-loadout hold tests stay at 100ms.
-      await page.waitForTimeout(acceptance ? 100 : 20)
-      await page.mouse.up()
-      exercisedClasses.push(playerClass)
+      try {
+        const admitted = await page.evaluate(({ before, identity, timeout }) => new Promise<any>(resolve => {
+          const started = performance.now()
+          let cursor = before.index
+          const poll = () => {
+            const profile = (globalThis as any).__playsrcFrameProfiler
+            const sampleStart = (globalThis as any).__playsrcProfile.classInputSampleStarted
+            for (; cursor < profile.simulation.length; cursor++) {
+              const record = profile.simulation[cursor], attack = record.replayAttack
+              if (!attack || attack.playerClass !== identity || attack.lifecycle !== 1 || BigInt(attack.hostTick) <= BigInt(before.hostTick)) continue
+              for (const publication of record.publications) {
+                if (!publication.selectedTicks || BigInt(attack.hostTick) < BigInt(publication.firstHostTick) || BigInt(attack.hostTick) > BigInt(publication.lastHostTick)) continue
+                const weapon = publication.weapons.find((weapon: any) => weapon.weapon === attack.weapon)
+                if (!weapon) continue
+                resolve({ playerClass: attack.playerClass, weapon: attack.weapon, lifecycle: attack.lifecycle, hostTick: attack.hostTick,
+                  at: record.at - sampleStart, requestId: record.requestId, playerTick: publication.player.tick,
+                  firstPrimaryTick: weapon.firstPrimaryTick, nextPrimaryTick: weapon.nextPrimaryTick,
+                  primaryActivities: publication.activities.filter((activity: any) => activity.weapon === attack.weapon && activity.activity === 2) })
+                return
+              }
+            }
+            if (performance.now() - started >= timeout) resolve(null)
+            else requestAnimationFrame(poll)
+          }
+          poll()
+        }), { before: beforeAttack, identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })
+        if (!admitted || admitted.at >= seconds * 1000) break
+        const remainingHold = Math.max(0, pressedAt + minimumHold - Date.now())
+        if (Date.now() + remainingHold >= deadline) break
+        if (remainingHold) await page.waitForTimeout(remainingHold)
+        admittedAttacks.push(admitted)
+      } finally { await page.mouse.up() }
     }
   }
   const interaction = process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses
@@ -808,7 +872,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
     botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
-    classSwitches: { requested: exercisedClasses, lifecycle: measurement.lifecycle, timing: summarizeClassSwitchLifecycle(measurement.lifecycle), observed: measurement.classSwitches.map((item, index, values) => ({
+    classSwitches: { requested: exercisedClasses, attacks: admittedAttacks, lifecycle: measurement.lifecycle, timing: summarizeClassSwitchLifecycle(measurement.lifecycle), observed: measurement.classSwitches.map((item, index, values) => ({
       ...item,
       millisecondsSincePrevious: Number((item.at - (values[index - 1]?.at ?? 0)).toFixed(3)),
       createdTextures: item.textures - (values[index - 1]?.textures ?? 0),

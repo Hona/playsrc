@@ -106,6 +106,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     const compileMilliseconds = performance.now() - compileStarted
     require(e.playsrc_gameplay_replay_begin(handle) === 1, "Replay initial state rejected")
     let active = false, current: Buffer | undefined, activeTicks = 0, mutations = 0, verifiedTicks = 0, verifiedObserves = 0
+    let expectedAttackTick = 0n, verifiedAttackPublications = 0
     let historicalHashMismatches = 0
     const verify = (actual: string, recorded: string, key: string) => {
       historicalHashMismatches += Number(verifyReplayHash(actual, recorded, key, baseline ? baselineHashes : undefined, reference))
@@ -142,6 +143,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         }
       } else if (record.kind === 2) {
         verifiedTicks++
+        if (data.readUInt32LE(52 + 28) & 8) expectedAttackTick = data.readBigUInt64LE(0)
         if (active) activeTicks++
         if (ticksOnly) {
           const command = data.subarray(52), pointer = copy(command)
@@ -161,6 +163,10 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
       } else if (record.kind === 3 && !ticksOnly) {
         require(current, `Replay publication absent at record ${index}`)
         verify(hash(current), data.toString("hex"), `observe:${index}`)
+        if (displacement && !baseline) {
+          require(e.playsrc_gameplay_replay_attack_tick(handle) === expectedAttackTick, `Rust attack admission differs from the actual tick journal at observe ${index}`)
+          verifiedAttackPublications++
+        }
         verifiedObserves++
       } else if (record.kind === 4) {
         require(e.playsrc_team_select(handle, data.readUInt32LE(0)) === 1, "Replay team mutation failed"); mutations++
@@ -203,7 +209,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         admission = { dropped: e.playsrc_admission_metrics_dropped(), events: decodeAdmissionMetrics(new DataView(e.memory.buffer, pointer, length)) }
       } finally { e.playsrc_free(pointer, Math.max(1, length)) }
     }
-    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations, historicalHashMismatches, admission,
+    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, verifiedAttackPublications, activeTicks, mutations, historicalHashMismatches, admission,
       cpuMicroseconds: process.cpuUsage(cpuStarted), rssBefore, rssAfter: process.memoryUsage().rss,
       tickMilliseconds: summarizeDistribution(tickTimes), observeMilliseconds: summarizeDistribution(observations.map(value => value.milliseconds)), observations,
       counters: counterTotals,
