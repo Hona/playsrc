@@ -6,8 +6,9 @@ function packet(): Uint8Array {
   const u32 = (value: number) => bytes.push(value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24)
   const text = (value: string) => { const encoded = new TextEncoder().encode(value); u32(encoded.length); bytes.push(...encoded) }
   const item = () => { u32(1); u32(14); u32(13); bytes.push(0, 0, 0, 0) }
-  bytes.push(...new TextEncoder().encode("TFEI")); u32(1); u32(0); u32(1)
-  item(); bytes.push(4, 1, 1, 0); text("#TF_Weapon_Scattergun"); text("backpack/weapons/w_scattergun")
+  bytes.push(...new TextEncoder().encode("TFEI")); u32(2); u32(0); u32(1)
+  item(); bytes.push(4, 1, 1, 0, 4); text("#TF_Weapon_Scattergun"); text("Scattergun"); text("backpack/weapons/w_scattergun")
+  u32(1); text("Level 1 Scattergun"); text("ItemAttribLevel")
   bytes.push(1); text(""); text("models/weapons/c_models/c_scattergun.mdl"); u32(0); u32(0)
   item(); for (let index = 1; index < 9; index++) u32(0)
   u32(692); bytes.push(...new Uint8Array(692))

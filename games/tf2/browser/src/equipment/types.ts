@@ -14,6 +14,8 @@ export type Tf2EquippedItem = Readonly<{
 export type Tf2SupportedItem = Readonly<{
   item: Tf2EquippedItem
   name: string
+  displayName: string
+  description: readonly Readonly<{ text: string; color: string }>[]
   image: string
   modelPlayer: string
   attachToHands: boolean
@@ -21,7 +23,7 @@ export type Tf2SupportedItem = Readonly<{
   soundOverrides: readonly (readonly [string, string])[]
   deathNoticeIcon: string | null
   weapon: Tf2Weapon | null
-  classSlots: readonly Readonly<{ class: Tf2Class; slot: number }>[]
+  classSlots: readonly Readonly<{ class: Tf2Class; slot: number; weapon: Tf2Weapon | null }>[]
 }>
 
 export type Tf2EquipmentState = Readonly<{

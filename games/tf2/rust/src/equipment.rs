@@ -51,9 +51,17 @@ impl SupportedItem {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct DescriptionLine {
+    pub text: &'static str,
+    pub color: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct ItemPresentation {
     pub definition_index: u32,
     pub name: &'static str,
+    pub display_name: &'static str,
+    pub description: &'static [DescriptionLine],
     pub image: &'static str,
     pub model_player: &'static str,
     pub attach_to_hands: bool,
@@ -181,7 +189,7 @@ impl Equipment {
     }
 
     pub fn encode_state(&self) -> Vec<u8> {
-        let mut out = b"TFEI\x01\0\0\0".to_vec();
+        let mut out = b"TFEI\x02\0\0\0".to_vec();
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(SUPPORTED_ITEMS.len() as u32).to_le_bytes());
         for supported in SUPPORTED_ITEMS {
@@ -195,10 +203,17 @@ impl Equipment {
                 else { vec![(*class, *slot)] }
             }).collect();
             out.push(eligible.len() as u8);
-            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8]); }
-            for text in [metadata.name, metadata.image] {
+            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8)]); }
+            for text in [metadata.name, metadata.display_name, metadata.image] {
                 out.extend_from_slice(&(text.len() as u32).to_le_bytes());
                 out.extend_from_slice(text.as_bytes());
+            }
+            out.extend_from_slice(&(metadata.description.len() as u32).to_le_bytes());
+            for line in metadata.description {
+                for text in [line.text, line.color] {
+                    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                    out.extend_from_slice(text.as_bytes());
+                }
             }
             out.push(u8::from(metadata.attach_to_hands));
             let death_icon = metadata.death_notice_icon.unwrap_or("");
