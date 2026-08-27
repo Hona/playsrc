@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Default)]
 struct Panel {
-    models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    models: BTreeMap<String, Arc<RetainedPresentationModel>>,
     metadata: BTreeMap<String, StudioModelLightingMetadata>,
     opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     scenes: BTreeMap<u32, ClassPreview>,

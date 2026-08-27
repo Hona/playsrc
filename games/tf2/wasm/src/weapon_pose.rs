@@ -47,7 +47,7 @@ fn sequence(model: &PresentationModel, activity: &str) -> Option<usize> {
 
 pub(super) fn prepare(
     request: &ModelPoseRequest,
-    models: &BTreeMap<String, Arc<PresentationModel>>,
+    models: &BTreeMap<String, Arc<super::RetainedPresentationModel>>,
     states: &mut BTreeMap<u32, AnimationState>,
 ) -> Result<Option<ModelPoseRequest>, ()> {
     let Some(definition) = request.item_definition else {

@@ -987,6 +987,31 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
+  if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1") {
+    // Install only after all active sampling and memory extraction. Compare
+    // actual GPU color/depth/normal planes with the existing CPU skinning oracle
+    // without changing simulation cadence or the measured performance window.
+    await page.evaluate(async url => {
+      const { installSkinningEvidence } = await import(/* @vite-ignore */ url)
+      ;(globalThis as any).__skinningEvidence = installSkinningEvidence()
+    }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/skinning-evidence.ts`)
+    const records = []
+    for (const pass of ["main", "viewmodel"]) {
+      const record = await page.evaluate(async ({ label, pass }) => Promise.race([
+        (globalThis as any).__skinningEvidence.capture(label, pass),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`no skinned ${pass} pass`)), 8_000)),
+      ]), { label, pass }) as any
+      records.push(record)
+      await writeFile(path.join(directory, `${label}-skinning-parity.json`), JSON.stringify(records, null, 2))
+      expect(record.planes).toHaveLength(3)
+      for (const plane of record.planes) {
+        expect(plane.mismatches, `${pass}/${plane.plane}`).toBe(0)
+        expect(plane.referenceSha256).toBe(plane.sha256)
+        if (plane.plane === "color") expect(plane.actorPixels).toBeGreaterThan(40)
+        if (plane.plane === "depth") expect(plane.channels[0]).toBeGreaterThan(1)
+      }
+    }
+  }
   if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
     await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(stock, null, 2))
