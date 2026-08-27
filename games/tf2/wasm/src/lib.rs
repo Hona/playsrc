@@ -6217,7 +6217,7 @@ fn encode_round(
 ) -> Option<()> {
     use playsrc_tf2::round::Event;
     extend(out, b"PGRL", maximum)?;
-    u32_field(out, 2, maximum)?;
+    u32_field(out, 3, maximum)?;
     let timer = round.timer;
     let flags = u8::from(round.waiting_for_players)
         | (u8::from(round.in_setup) << 1)
@@ -6282,9 +6282,11 @@ fn encode_round(
             Event::TimerThreshold { timer, seconds } => (13, (seconds & 255) as u8, 0, (seconds >> 8) as u8, timer),
             Event::TimerWarning { timer, seconds } => (14, seconds as u8, 0, 0, timer),
             Event::MapRoundWin { entity } => (15, 0, 0, 0, entity),
+            Event::TimerTimeAdded { timer, .. } => (16, 0, 0, 0, timer),
         };
         extend(out, &[kind, detail, team, flags], maximum)?;
         u32_field(out, identity, maximum)?;
+        i32_field(out, match *event { Event::TimerTimeAdded { seconds, .. } => seconds, _ => 0 }, maximum)?;
     }
     Some(())
 }
@@ -15657,7 +15659,7 @@ mod tests {
         assert_eq!(&encoded[1060..], &[0; 4]);
         assert_eq!(&encoded[944..948], b"PCPN");
         assert_eq!(&encoded[956..964], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[992..1000], b"PGRL\x02\0\0\0");
+        assert_eq!(&encoded[992..1000], b"PGRL\x03\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

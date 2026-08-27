@@ -133,7 +133,7 @@ function snapshot(): ArrayBuffer {
   at += 52
   at += 4
   data.set(new TextEncoder().encode("PGRL"), at)
-  view.setUint32(at + 4, 2, true)
+  view.setUint32(at + 4, 3, true)
   data[at + 8] = 4
   view.setFloat32(at + 20, -1, true)
   view.setUint32(at + 24, 0xffff_ffff, true)
@@ -170,11 +170,15 @@ test("round codec keeps two independent KOTH timer records and rejects malformed
   const base = new Uint8Array(snapshot())
   const at = base.findIndex((_, index) => base[index] === 80 && base[index + 1] === 71 && base[index + 2] === 82 && base[index + 3] === 76)
   expect(at).toBeGreaterThan(0)
-  const bytes = new Uint8Array(base.length + 48)
+  const bytes = new Uint8Array(base.length + 60)
   bytes.set(base.subarray(0, at + 48))
-  bytes.set(base.subarray(at + 48), at + 96)
+  bytes.set(base.subarray(at + 48), at + 108)
   bytes[at + 9] = 128
   const view = new DataView(bytes.buffer)
+  view.setUint32(at + 44, 1, true)
+  bytes[at + 96] = 16
+  view.setUint32(at + 100, 100, true)
+  view.setInt32(at + 104, -100_000, true)
   for (let team = 0; team < 2; team++) {
     const timer = at + 48 + team * 24
     view.setUint32(timer, 100 + team, true)
@@ -183,6 +187,7 @@ test("round codec keeps two independent KOTH timer records and rejects malformed
     view.setUint32(timer + 20, team === 0 ? 2 : 3, true)
   }
   expect(decodeSnapshot(bytes.buffer).round.kothTimers?.map(timer => [timer.identity, timer.remaining, timer.paused])).toEqual([[100, 12.5, false], [101, 0, true]])
+  expect(decodeSnapshot(bytes.buffer).round.events[0]).toMatchObject({ kind: 16, identity: 100, value: -100_000 })
   view.setFloat32(at + 52, Number.NaN, true)
   expect(() => decodeSnapshot(bytes.buffer)).toThrow("KOTH timer is invalid")
 })
