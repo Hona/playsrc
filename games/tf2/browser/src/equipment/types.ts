@@ -31,6 +31,6 @@ export type Tf2SupportedItem = Readonly<{
 export type Tf2EquipmentState = Readonly<{
   revision: number
   inventory: readonly Tf2SupportedItem[]
-  classes: readonly Readonly<{ class: Tf2Class; items: readonly Tf2EquippedItem[] }>[]
+  classes: readonly Readonly<{ class: Tf2Class; items: readonly Tf2EquippedItem[]; baseItems: readonly Tf2EquippedItem[] }>[]
   persistence: Uint8Array
 }>

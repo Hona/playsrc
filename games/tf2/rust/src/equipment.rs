@@ -214,7 +214,7 @@ impl Equipment {
     }
 
     pub fn encode_state(&self) -> Vec<u8> {
-        let mut out = b"TFEI\x03\0\0\0".to_vec();
+        let mut out = b"TFEI\x04\0\0\0".to_vec();
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(SUPPORTED_ITEMS.len() as u32).to_le_bytes());
         for supported in SUPPORTED_ITEMS {
@@ -260,7 +260,11 @@ impl Equipment {
                 }
             }
         }
-        for class in PlayerClass::ALL { encode_items(&mut out, &self.equipped_items(class)); }
+        let base = Self::default();
+        for class in PlayerClass::ALL {
+            encode_items(&mut out, &self.equipped_items(class));
+            encode_items(&mut out, &base.equipped_items(class));
+        }
         let persistence = self.persist();
         out.extend_from_slice(&(persistence.len() as u32).to_le_bytes());
         out.extend_from_slice(&persistence);
@@ -330,14 +334,23 @@ impl Equipment {
             return Err(EquipmentError::InvalidPersistence);
         }
         let mut equipment = Self::default();
+        let mut normalized = bytes.to_vec();
         for (index, chunk) in bytes[8..].chunks_exact(4).enumerate() {
-            let definition = u32::from_le_bytes(chunk.try_into().unwrap());
+            let mut definition = u32::from_le_bytes(chunk.try_into().unwrap());
             let class = PlayerClass::ALL[index / CLASS_SLOT_COUNT];
             let slot = LoadoutPosition::ALL[index % CLASS_SLOT_COUNT];
+            if definition != u32::MAX && supported_item(definition).is_none() && registered_item(definition).is_some() {
+                // A no-longer-owned implementation cannot be resurrected by local storage.
+                // Keep the class's available base item, as for an absent inventory item.
+                if !presentation(definition).is_some_and(|item| item.class_slots.iter().any(|(eligible, position)|
+                    *eligible == class && (*position == slot || misc_slot(*position) && misc_slot(slot)))) { return Err(EquipmentError::IneligibleSlot); }
+                definition = equipment.definition(class, slot).unwrap_or(u32::MAX);
+                normalized[8 + index * 4..12 + index * 4].copy_from_slice(&definition.to_le_bytes());
+            }
             equipment.equip(class, slot, (definition != u32::MAX).then_some(definition))?;
         }
         equipment.revision = 0;
-        if equipment.persist() != bytes { return Err(EquipmentError::InvalidPersistence); }
+        if equipment.persist() != normalized { return Err(EquipmentError::InvalidPersistence); }
         Ok(equipment)
     }
 }
@@ -437,6 +450,16 @@ mod tests {
             let mut providers = AttributeProviders::new(&equipment, class);
             assert_eq!(providers.player("mult_maxammo_primary", 1.0), 1.0);
         }
+    }
+
+    #[test]
+    fn storage_cannot_restore_known_unimplemented_items() {
+        let base = Equipment::default();
+        let mut old = base.persist();
+        let slot = 8 + (PlayerClass::Demoman as usize - 1) * CLASS_SLOT_COUNT * 4;
+        old[slot..slot + 4].copy_from_slice(&19_u32.to_le_bytes());
+        assert_eq!(Equipment::restore(&old), Ok(base));
+        assert_eq!(Equipment::default().equip(PlayerClass::Demoman, LoadoutPosition::Primary, Some(19)), Err(EquipmentError::UnsupportedItem));
     }
 
     #[test]

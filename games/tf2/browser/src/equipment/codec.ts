@@ -28,7 +28,7 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
   // This UI-only projection takes one owned copy, never one copy per string.
   if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) bytes = new Uint8Array(bytes)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 3) throw new Error("invalid equipment state")
+  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 4) throw new Error("invalid equipment state")
   const revision = view.getUint32(8, true), count = view.getUint32(12, true)
   if (count > 256) throw new Error("invalid supported item count")
   let at = 16
@@ -70,7 +70,8 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
   }
   const classes = Array.from({ length: 9 }, (_, index) => {
     const decoded = decodeEquippedItems(view, at); at = decoded.end
-    return Object.freeze({ class: (index + 1) as Tf2Class, items: decoded.items })
+    const base = decodeEquippedItems(view, at); at = base.end
+    return Object.freeze({ class: (index + 1) as Tf2Class, items: decoded.items, baseItems: base.items })
   })
   const length = view.getUint32(at, true); at += 4
   if (length !== 692 || at + length !== bytes.byteLength) throw new Error("invalid equipment persistence")

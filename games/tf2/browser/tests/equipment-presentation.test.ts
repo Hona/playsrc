@@ -11,7 +11,7 @@ test("authored equipment roots construct class controls and class-slot panels fr
     kind: "line" as const, name, inset: { left: 0, top: 0, right: 0, bottom: 0 }, backgroundType: 0 as const, paintFirst: false,
     sides: { left: [], top: [], right: [], bottom: [] },
   })) } }
-  const state = { revision: 0, inventory: [], classes: Array.from({ length: 9 }, (_, index) => ({ class: index + 1, items: [] })), persistence: new Uint8Array(692) } as Tf2EquipmentState
+  const state = { revision: 0, inventory: [], classes: Array.from({ length: 9 }, (_, index) => ({ class: index + 1, items: [], baseItems: [] })), persistence: new Uint8Array(692) } as Tf2EquipmentState
   const ui = new Tf2EquipmentPresentation({ root: createRoot(fixture.document) as unknown as HTMLElement, resources,
     viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
     clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0 }, onClose() {}, onPreview() {}, onEquip: async () => state })
