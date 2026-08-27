@@ -583,6 +583,7 @@ export type VguiRuntime = Readonly<{
   attachSurface(panel: VguiPanelId, surface: HTMLElement): () => void
   apply(operation: VguiOperation): VguiOperationResult
   deferPresentation<T>(callback: () => T): T
+  findChildByName(parent: VguiPanelId, name: string, recurseDown?: boolean): VguiPanelId | null
   snapshotPanels(panels: readonly VguiPanelId[]): readonly VguiPanelSnapshot[]
   snapshot(): VguiRuntimeSnapshot
 }>

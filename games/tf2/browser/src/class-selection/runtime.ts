@@ -108,9 +108,8 @@ function apply(runtime: VguiRuntime, operation: VguiOperation): VguiPanelId | un
   return result.panel
 }
 
-function panel(runtime: VguiRuntime, name: string, parent?: VguiPanelId): VguiPanelId | null {
-  return runtime.snapshot().panels.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase()
-    && (parent === undefined || candidate.parent === parent))?.id ?? null
+function panel(runtime: VguiRuntime, name: string, parent: VguiPanelId): VguiPanelId | null {
+  return runtime.findChildByName(parent, name)
 }
 
 function shallow(node: VguiResourceNode): VguiResourceNode {
@@ -138,7 +137,7 @@ function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiRe
     const childPanel = panel(runtime, scalar(child, "fieldName") ?? child.name, parent)
     if (childPanel === null) continue
     applyChildren(runtime, childPanel, source, child.children, conditions, resolutionSuffixes)
-    const parentSnapshot = runtime.snapshot().panels.find((candidate) => candidate.id === parent)
+    const parentSnapshot = runtime.snapshotPanels([parent])[0]
     if (parentSnapshot?.control === "CExImageButton" && scalar(child, "ControlName") === "ImagePanel") {
       apply(runtime, { kind: "set-panel-state", panel: childPanel, mouseInput: false, keyboardInput: false })
     }
@@ -320,15 +319,13 @@ class Integration implements Tf2ClassSelectionIntegration {
     const source = this.#resources.document(CLASS_TIPS_ITEM_PATH)
     const authored = source.root.children.find((value) => value.name === "ClassTipsItemPanel")
     if (!authored || !Number.isSafeInteger(count) || count < 0 || count > 32) throw new Error("TF2 class selection authored tip source is invalid")
-    const snapshot = this.#runtime.snapshot()
-    const owner = snapshot.panels.find((value) => value.id === this.#owner)!
-    const list = snapshot.panels.find((value) => value.id === this.#tips)!
-    const scale = owner.bounds.height / 480
+    const [owner, list] = this.#runtime.snapshotPanels([this.#owner, this.#tips])
+    const scale = owner!.bounds.height / 480
     const buffer = Math.trunc(5 * scale)
     const scrollbar = this.#resources.clientScheme.settings.find((value) => value.name.toLowerCase() === "scrollbar.wide")
     const scrollbarWidth = Math.trunc(Number(scrollbar?.value ?? 17) * scale)
     this.#tipScrollbarWidth = scrollbarWidth
-    const itemWidth = list.bounds.width - buffer - scrollbarWidth - 12
+    const itemWidth = list!.bounds.width - buffer - scrollbarWidth - 12
     let position = 0
     for (let index = 1; index <= count; index += 1) {
       if (this.#localization.has(`classtips_${identity}_${index}_mvm`)) continue
@@ -342,7 +339,7 @@ class Integration implements Tf2ClassSelectionIntegration {
       })!
       this.#tipPanels.push(item)
       applyChildren(this.#runtime, item, source, authored.children, this.#resources.activeConditions, this.#resources.resolutionSuffixes)
-      const height = this.#runtime.snapshot().panels.find((value) => value.id === item)!.bounds.height
+      const height = this.#runtime.snapshotPanels([item])[0]!.bounds.height
       position += buffer
       apply(this.#runtime, { kind: "set-bounds", panel: item, bounds: { x: buffer, y: position, width: itemWidth, height } })
       this.#tipRows.push({ panel: item, x: buffer, y: position, width: itemWidth, height })
@@ -521,7 +518,8 @@ class Integration implements Tf2ClassSelectionIntegration {
     return Object.freeze((["MenuBG", "TFPlayerModel"] as const).map((name) => {
       const authored = this.#source.root.children.find((node) => node.name === name)
       const model = authored && object(authored, "model")
-      const snapshot = this.#runtime.snapshot().panels.find((node) => node.name === name)
+      const id = panel(this.#runtime, name, this.#owner)
+      const snapshot = id === null ? undefined : this.#runtime.snapshotPanels([id])[0]
       if (!authored || !model || !snapshot) throw new Error(`TF2 class selection authored model panel is unavailable: ${name}`)
       return Object.freeze({
         name,

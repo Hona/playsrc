@@ -151,6 +151,23 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("child lookup is case insensitive, scoped, and immediately follows resource lifecycle", () => {
+    const { runtime } = setup()
+    runtime.deferPresentation(() => {
+      const a = operation(runtime, { kind: "create-panel", parent: 1, control: "Panel", name: "A" }).panel!
+      const nested = operation(runtime, { kind: "create-panel", parent: a, control: "Label", name: "Label" }).panel!
+      const direct = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "Label" }).panel!
+      // Lookup must not materialize the entire diagnostic snapshot to obtain an ID.
+      Object.defineProperty(runtime, "snapshot", { value: () => { throw new Error("Full snapshot in child lookup") } })
+      expect(runtime.findChildByName(1, "lAbEl")).toBe(direct)
+      expect(runtime.findChildByName(a, "LABEL")).toBe(nested)
+      expect(runtime.findChildByName(1, "Label", true)).toBe(nested)
+      expect(runtime.findChildByName(a, "absent")).toBeNull()
+      operation(runtime, { kind: "delete-panel", panel: nested, deferred: false })
+      expect(runtime.findChildByName(a, "Label")).toBeNull()
+      expect(runtime.findChildByName(1, "Label", true)).toBe(direct)
+    })
+  })
   test("scalable panels fill their bounds without the unrelated ImagePanel scale flag", () => {
     const { runtime, root } = setup()
     operation(runtime, { kind: "create-panel", parent: 1, control: "ScalableImagePanel", name: "Scalable", properties: [
