@@ -74,7 +74,7 @@ export function sourceEyeIrisNode(
   const initial = refract ? projected.mul(0.5).add(0.25) : projected
   const centered = initial.sub(0.5)
   const radius = centered.length().div(0.2).clamp(0, 1)
-  const amount = Math.max(0, Math.min(1, dilation)) * 2.5 - 1.25
+  const amount = scalar(Math.max(0, Math.min(1, dilation)) * 2.5 - 1.25)
   const uv = centered.mul(radius.sub(1).mul(amount).add(1)).add(0.5)
   return TSL.texture(iris, uv)
 }
@@ -220,22 +220,34 @@ export function sourceModelSurfaceNode(
   let lighting = sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp)
   if (state.eye?.ambientOcclusion) {
     const occlusion = TSL.texture(state.eye.ambientOcclusion, TSL.uv()).rgb
-    lighting = lighting.mul(TSL.mix(TSL.vec3(...state.eye.ambientOcclusionColor), TSL.vec3(1), occlusion))
+    lighting = lighting.mul(TSL.mix(TSL.uniform(new THREE.Vector3(...state.eye.ambientOcclusionColor)), TSL.vec3(1), occlusion))
   }
   let result = base.rgb.mul(lighting)
   const phong = state.phong
   if (phong) {
+    // Authored material numbers are shader constants, not program variants.
+    // Keep these nodes local to the material graph: another skin/class may use
+    // the same compiled program while retaining different parameter values.
+    const parameters = {
+      exponent: scalar(Math.max(phong.exponent, 0)),
+      exponentFactor: scalar(phong.exponentFactor),
+      fresnel: TSL.uniform(new THREE.Vector3(...phong.packedFresnel)),
+      boost: scalar(phong.boost),
+      tint: TSL.uniform(new THREE.Vector3(...phong.tint)),
+      rimExponent: scalar(phong.rim?.exponent ?? 0),
+      rimBoost: scalar(phong.rim?.boost ?? 0),
+    }
     const exponentSample = state.exponentTexture ? TSL.texture(state.exponentTexture, TSL.uv()) : undefined
     const exponent = exponentSample
       ? phong.exponentFactor !== 0
-        ? exponentSample.r.mul(phong.exponentFactor).add(1)
-        : phong.exponent >= 0 ? TSL.float(phong.exponent) : exponentSample.r.mul(149).add(1)
-      : TSL.float(Math.max(phong.exponent, 0))
+        ? exponentSample.r.mul(parameters.exponentFactor).add(1)
+        : phong.exponent >= 0 ? parameters.exponent : exponentSample.r.mul(149).add(1)
+      : parameters.exponent
     const reflection = normal.mul(normal.dot(eye).mul(2)).sub(eye)
     const fresnelAmount = TSL.float(1).sub(normal.dot(eye)).clamp(0, 1)
     const fresnelOffset = fresnelAmount.mul(fresnelAmount).sub(0.5)
-    const fresnel = TSL.float(phong.packedFresnel[1]).add(fresnelOffset.greaterThanEqual(0)
-      .select(TSL.float(phong.packedFresnel[2]), TSL.float(phong.packedFresnel[0]))
+    const fresnel = parameters.fresnel.y.add(fresnelOffset.greaterThanEqual(0)
+      .select(parameters.fresnel.z, parameters.fresnel.x)
       .mul(fresnelOffset))
     const specular = TSL.Fn(() => {
       const highlights = TSL.vec3(0).toVar()
@@ -255,26 +267,26 @@ export function sourceModelSurfaceNode(
           const reflected = reflection.dot(direction).clamp(0, 1)
           const color = light.color.mul(attenuation).mul(facing)
           highlights.addAssign(color.mul(reflected.pow(exponent)))
-          if (phong.rim) rim.addAssign(color.mul(reflected.pow(phong.rim.exponent)))
+          if (phong.rim) rim.addAssign(color.mul(reflected.pow(parameters.rimExponent)))
         })
       }
       let mask = phong.maskSource === 0 ? base.a : TSL.float(1)
       if (phong.invertMask) mask = TSL.float(1).sub(mask)
-      highlights.mulAssign(mask.mul(fresnel).mul(phong.boost))
+      highlights.mulAssign(mask.mul(fresnel).mul(parameters.boost))
       if (phong.rim) {
         const rimMask = phong.rim.exponentTextureAlphaMask && exponentSample ? exponentSample.a : TSL.float(1)
         const rimFresnel = fresnelAmount.pow(4).mul(rimMask)
         rim.mulAssign(rimFresnel)
         highlights.assign(TSL.max(highlights, rim))
         highlights.addAssign(ambientCubeNode(uniforms, eye)
-          .mul(phong.rim.boost)
+          .mul(parameters.rimBoost)
           .mul(rimFresnel.mul(normal.z).clamp(0, 1)))
       }
       return highlights
     })()
     const tint = phong.albedoTint && exponentSample
       ? TSL.mix(TSL.vec3(1), base.rgb, exponentSample.g)
-      : TSL.vec3(...phong.tint)
+      : parameters.tint
     result = result.add(specular.mul(tint))
   }
   let environmentNode: any
@@ -282,9 +294,9 @@ export function sourceModelSurfaceNode(
     const reflection = normal.mul(normal.dot(eye).mul(2)).sub(eye)
     environmentNode = TSL.cubeTexture(state.environment.texture, reflection)
     let reflected = environmentNode.rgb
-      .mul(TSL.vec3(...state.environment.tint))
-      .mul(state.environment.scale)
-    if (state.eye) reflected = reflected.mul(state.eye.glossiness).mul(lighting)
+      .mul(TSL.uniform(new THREE.Vector3(...state.environment.tint)))
+      .mul(scalar(state.environment.scale))
+    if (state.eye) reflected = reflected.mul(scalar(state.eye.glossiness)).mul(lighting)
     else reflected = reflected.mul(base.a)
     result = result.add(reflected)
   }
