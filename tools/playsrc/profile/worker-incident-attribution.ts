@@ -136,7 +136,8 @@ export function attributeWorkerIncidents(
       captureComplete: capture.execution.dropped === 0 && capture.deadlineStopped !== true, droppedTasks: capture.execution.dropped,
       deadlineStopped: capture.deadlineStopped === true, slowTaskCount: slow.length, detailsTruncated: slow.length > 64,
       taskMilliseconds: summarizeDistribution(tasks.map(task => task.finished - task.started)),
-      postMessageMilliseconds: summarizeDistribution(tasks.flatMap(task => task.responses.map(response => response.finished - response.started))),
+      postMessageMilliseconds: summarizeDistribution(tasks.flatMap(task => task.responses.filter(response => response.transport !== "atomic").map(response => response.finished - response.started))),
+      atomicPublishMilliseconds: summarizeDistribution(tasks.flatMap(task => task.responses.filter(response => response.transport === "atomic").map(response => response.finished - response.started))),
       slowTasks,
     }
   })

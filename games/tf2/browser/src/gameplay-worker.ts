@@ -47,10 +47,8 @@ type WasmExports = Readonly<{
   playsrc_coverage_copy(handle:number,pointer:number,capacity:number):number
   playsrc_particle_transact(handle: number, pointer: number, length: number): number
   playsrc_particle_output_length(handle: number): number
-  playsrc_particle_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_model_transact(handle: number, pointer: number, length: number): number
   playsrc_model_output_length(handle: number): number
-  playsrc_model_output_copy(handle: number, pointer: number, capacity: number): number
   playsrc_model_output_take(handle: number): number
   playsrc_model_output_capacity(handle: number): number
   playsrc_model_output_recycle(handle: number, pointer: number, capacity: number): void
@@ -59,7 +57,6 @@ type WasmExports = Readonly<{
   playsrc_reply_output_recycle(handle: number, kind: number, pointer: number, capacity: number): void
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
-  playsrc_visibility_output_pointer(handle: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_state_copy(handle: number, pointer: number, capacity: number): number
   playsrc_team_select(handle: number, choice: number): number
@@ -73,7 +70,6 @@ type WasmExports = Readonly<{
   playsrc_entity_fire(handle: number, pointer: number, length: number): number
   playsrc_simulation_observe(handle: number, nowSeconds: number, command: number, length: number, suspended: number, snapshotTick: bigint): number
   playsrc_simulation_output_length(handle: number): number
-  playsrc_simulation_output_pointer(handle: number): number
   playsrc_simulation_error():number
   playsrc_simulation_error_length():number
   playsrc_simulation_error_copy(pointer:number,capacity:number):number
@@ -243,10 +239,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_coverage_copy,
         candidate.playsrc_particle_transact,
         candidate.playsrc_particle_output_length,
-        candidate.playsrc_particle_output_copy,
         candidate.playsrc_model_transact,
         candidate.playsrc_model_output_length,
-        candidate.playsrc_model_output_copy,
         candidate.playsrc_model_output_take,
         candidate.playsrc_model_output_capacity,
         candidate.playsrc_model_output_recycle,
@@ -255,7 +249,6 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_reply_output_recycle,
         candidate.playsrc_visibility_query,
         candidate.playsrc_visibility_output_length,
-        candidate.playsrc_visibility_output_pointer,
         candidate.playsrc_spawn_copy,
         candidate.playsrc_team_state_copy,
         candidate.playsrc_team_select,
@@ -269,7 +262,6 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_entity_fire,
         candidate.playsrc_simulation_observe,
         candidate.playsrc_simulation_output_length,
-        candidate.playsrc_simulation_output_pointer,
         candidate.playsrc_simulation_error,
         candidate.playsrc_simulation_error_length,
         candidate.playsrc_simulation_error_copy,
