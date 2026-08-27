@@ -144,6 +144,7 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
         observing: false,
     });
     ACTIVE.store(handle, Ordering::Relaxed);
+    admission_metrics::begin();
     1
 }
 #[unsafe(no_mangle)]
@@ -166,6 +167,7 @@ pub extern "C" fn playsrc_gameplay_replay_stop(handle: u32) -> u32 {
     let Some(value) = value.as_mut().filter(|value| value.handle == handle) else {
         return 0;
     };
+    playsrc_tf2::admission_metrics::set_observer(None);
     let complete = !value.overflow && !value.observing;
     value.bytes.extend_from_slice(&12_u32.to_le_bytes());
     value.bytes.extend_from_slice(&8_u32.to_le_bytes());

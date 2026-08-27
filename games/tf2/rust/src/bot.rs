@@ -670,6 +670,7 @@ impl BotWorld {
             return Ok(false);
         }
         self.next_quota_think = now + QUOTA_THINK_INTERVAL;
+        crate::admission_metrics::emit(crate::admission_metrics::QUOTA, 0);
 
         let human_on_team = usize::from(human_team.is_gameplay());
         let spectators = usize::from(human_team == PlayerTeam::Spectator);
@@ -924,6 +925,7 @@ impl BotWorld {
             return Err(Error::Limit);
         }
         for _ in 0..request.count {
+            crate::admission_metrics::emit(crate::admission_metrics::REQUEST, self.next_identity);
             let red = self
                 .bots
                 .values()
@@ -969,6 +971,7 @@ impl BotWorld {
             if let Some(weapon) = active_weapon.and_then(|weapon| loadout.get_mut(&weapon)) {
                 weapon.deploy(0, self.tick_interval);
             }
+            crate::admission_metrics::emit(crate::admission_metrics::LOADOUT, identity);
             let name_index = match self.next_name {
                 Some(index) => index,
                 None => random
@@ -980,6 +983,8 @@ impl BotWorld {
             };
             let name = BOT_NAMES[name_index].to_owned();
             self.next_name = Some((name_index + 1) % BOT_NAMES.len());
+            let current_area = self.mesh.nearest_area(spawn.position).map(|area| area.identity);
+            crate::admission_metrics::emit(crate::admission_metrics::NAVIGATION, identity);
             self.bots.insert(
                 identity,
                 Bot {
@@ -1014,10 +1019,7 @@ impl BotWorld {
                     known_since: BTreeMap::new(),
                     next_target_tick: 0,
                     next_repath_tick: 0,
-                    current_area: self
-                        .mesh
-                        .nearest_area(spawn.position)
-                        .map(|area| area.identity),
+                    current_area,
                     path: Vec::new(),
                     path_index: 0,
                     goal,
@@ -1036,6 +1038,7 @@ impl BotWorld {
                     killstreak: 0,
                 },
             );
+            crate::admission_metrics::emit(crate::admission_metrics::CONSTRUCTED, identity);
         }
         Ok(())
     }
@@ -2425,6 +2428,7 @@ fn next_respawn_wave(death_tick: u64, interval: f32, configured: f32, population
     earliest.div_ceil(wave) * wave
 }
 fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f32) {
+    crate::admission_metrics::emit(crate::admission_metrics::RESPAWN, bot.identity);
     let policy = MovementPolicy {
         class: bot.class,
         modifiers: MovementModifiers::default(),
