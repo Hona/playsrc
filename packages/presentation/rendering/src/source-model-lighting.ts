@@ -4,6 +4,12 @@ import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import type { ModelEyeState, ModelLightingInput } from "./model-lighting"
 
+// Studio triangles retain their authored clockwise winding. BackSide selects
+// that winding in Three; it does not mean the authored normal points inward.
+// Use the skinned, inverse-transpose world normal before Three's side-dependent
+// shading flip, for diffuse, ambient, Phong/rim, and reflection alike.
+export const sourceModelWorldNormal = TSL.normalWorldGeometry
+
 type VectorUniform = ReturnType<typeof TSL.uniform>
 
 type LocalLightUniform = Readonly<{
@@ -164,7 +170,7 @@ export function sourceModelLightingNode(
   halfLambert: boolean,
   diffuseWarp?: THREE.Texture,
 ): any {
-  const normal = TSL.normalWorld.normalize()
+  const normal = sourceModelWorldNormal.normalize()
   return TSL.Fn(() => {
     const result = ambientCubeNode(uniforms, normal).toVar()
     for (const light of uniforms.local) {
@@ -209,7 +215,7 @@ export function sourceModelSurfaceNode(
   state: SourceModelSurface,
   exposure: any,
 ): Readonly<{ color: any; environmentNode?: any }> {
-  const normal = TSL.normalWorld.normalize()
+  const normal = sourceModelWorldNormal.normalize()
   const eye = uniforms.cameraPosition.sub(TSL.positionWorld).normalize()
   let lighting = sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp)
   if (state.eye?.ambientOcclusion) {
