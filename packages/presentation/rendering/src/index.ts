@@ -32,6 +32,7 @@ import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
+import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buffer-names"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { RetainedModelCache } from "./retained-model-cache"
@@ -1512,6 +1513,7 @@ class RendererOwner implements Renderer {
   #skyWorldVisibilityIdentity?: string
   #restoreOrderedBundles?: () => void
   #restoreNodeBuilderInstrumentation?: () => void
+  #restoreBufferNames?: () => void
   #uploadBatch?: WebGpuUploadBatch
   #active?: SceneResources
   #renderBusy = false
@@ -1953,6 +1955,7 @@ class RendererOwner implements Renderer {
     try {
       await backend.init()
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
+      this.#restoreBufferNames = installWebGpuBufferNames(backend.backend as unknown as BufferNamingBackend)
       if (profiler) {
         this.#instrumentation = new RendererFrameInstrumentation(
           backend.info as unknown as ConstructorParameters<typeof RendererFrameInstrumentation>[0],
@@ -2004,6 +2007,8 @@ class RendererOwner implements Renderer {
       this.#restoreOrderedBundles = undefined
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
+      this.#restoreBufferNames?.()
+      this.#restoreBufferNames = undefined
       backend.dispose()
       try {
         context?.unconfigure()
@@ -5283,6 +5288,8 @@ class RendererOwner implements Renderer {
       this.#uploadBatch = undefined
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
+      this.#restoreBufferNames?.()
+      this.#restoreBufferNames = undefined
       this.#exposureSampler?.dispose()
       this.#hudMaterials?.dispose()
       this.#hudMaterials = undefined
@@ -5390,6 +5397,8 @@ class RendererOwner implements Renderer {
     this.#uploadBatch = undefined
     this.#restoreNodeBuilderInstrumentation?.()
     this.#restoreNodeBuilderInstrumentation = undefined
+    this.#restoreBufferNames?.()
+    this.#restoreBufferNames = undefined
     this.#exposureSampler?.dispose()
     this.#hudMaterials?.dispose()
     this.#hudMaterials = undefined
