@@ -1040,6 +1040,13 @@ impl BotWorld {
         true
     }
 
+    pub fn apply_damage_impulse(&mut self, identity: u32, impulse: [f32; 3]) -> bool {
+        let Some(bot) = self.bots.get_mut(&identity) else { return false; };
+        if !matches!(bot.lifecycle, PlayerLifecycle::Active | PlayerLifecycle::Dying) || !impulse.iter().all(|value| value.is_finite()) { return false; }
+        for (velocity, added) in bot.movement.velocity.iter_mut().zip(impulse) { *velocity += added; }
+        true
+    }
+
     pub fn apply(
         &mut self,
         request: Request,
@@ -1654,7 +1661,6 @@ impl BotWorld {
     pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
         for bot in self.bots.values_mut() {
             if bot.lifecycle == PlayerLifecycle::Active {
-                if !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
                 bot.health
                     .advance(
                         now,
@@ -1921,10 +1927,11 @@ impl BotWorld {
         self.bots.get(&identity).and_then(|bot| bot.active_weapon)
     }
 
-    pub fn advance_conditions(&mut self) {
+    pub fn advance_conditions(&mut self, now: f32) {
         for bot in self.bots.values_mut() {
             if bot.lifecycle != PlayerLifecycle::Active { bot.conditions.remove_all(); continue; }
             bot.conditions.advance(self.tick_interval, bot.health.healers.len()).expect("valid bot condition tick");
+            if bot.movement_stuns.active() && !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
         }
     }
 

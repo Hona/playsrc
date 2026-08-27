@@ -699,6 +699,7 @@ export type BuildingSnapshot = Readonly<{
 export type Snapshot = Readonly<{
   decapitations: number
   revengeCrits: number
+  weaponCrosshairScale: number
   equippedItems: readonly Tf2EquippedItem[]
   actorCloaks: readonly ActorCloakState[]
   tick: bigint
@@ -1613,7 +1614,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 26)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 27)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2509,6 +2510,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const decapitations = view.getInt32(at, true), revengeCrits = view.getInt32(at + 4, true)
   if (decapitations < 0 || revengeCrits < 0 || revengeCrits > 35) throw new Tf2CodecError("player weapon counters are invalid")
   at += 8
+  requireBytes(4, "weapon crosshair scale")
+  const weaponCrosshairScale = view.getFloat32(at, true)
+  if (!Number.isFinite(weaponCrosshairScale) || weaponCrosshairScale < 0) throw new Tf2CodecError("weapon crosshair scale is invalid")
+  at += 4
   if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
@@ -2521,6 +2526,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     equippedItems,
     decapitations,
     revengeCrits,
+    weaponCrosshairScale,
     class: tf2Class as Tf2Class,
     team,
     weapon: weapon === 0 ? null : weapon as Tf2Weapon,

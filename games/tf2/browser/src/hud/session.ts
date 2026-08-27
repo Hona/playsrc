@@ -52,6 +52,7 @@ type CompactGameplayEvent = Readonly<{
 }>
 
 type SessionSnapshot = Readonly<{
+  weaponCrosshairScale: number
   decapitations: number
   revengeCrits: number
   equippedItems: readonly Tf2EquippedItem[]
@@ -153,7 +154,7 @@ function conditions(value: SessionSnapshot["conditions"]): Tf2ConditionWords {
 function canonicalSnapshot(snapshot: SessionSnapshot, context: SessionHudContext): Tf2HudSnapshot {
   const words = conditions(snapshot.conditions)
   const tfSuppressed = context.crosshair.tfSuppressed || conditionActive(words, 1) || conditionActive(words, 7) || conditionActive(words, 77)
-  const crosshair = Object.freeze({ ...context.crosshair, tfSuppressed })
+  const crosshair = Object.freeze({ ...context.crosshair, tfSuppressed, weaponScale: snapshot.weaponCrosshairScale })
   return Object.freeze({
     tick: snapshot.tick,
     player: tf2HudAvailable(Object.freeze({

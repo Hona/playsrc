@@ -119,6 +119,10 @@ pub fn ambassador_headshot(elapsed: f32, headshot: bool, distance_squared_2d: f3
     elapsed > 1.0 && headshot && distance_squared_2d <= 1200.0 * 1200.0
 }
 
+pub fn ambassador_crosshair_scale(elapsed_accuracy: f32) -> f32 {
+    0.75 + ((1.0 - elapsed_accuracy) / 0.5).clamp(0.0, 1.0) * 1.75
+}
+
 pub fn natascha_slow(distance_squared: f32) -> f32 {
     0.60 * (1.0 - ((distance_squared - 512.0 * 512.0) / (1536.0 * 1536.0 - 512.0 * 512.0)).clamp(0.0, 1.0))
 }
@@ -130,7 +134,7 @@ pub fn knockback_allowed(damage: f32, distance_squared: f32, multiplier: f32) ->
 pub fn knockback_impulse(attacker_center: [f32; 3], victim_center: [f32; 3], victim_size: [f32; 3], damage: f32, multiplier: f32) -> [f32; 3] {
     let delta = std::array::from_fn(|axis| victim_center[axis] - attacker_center[axis]);
     let length = dot(delta, delta).sqrt();
-    let force = (damage * (48.0 * 48.0 * 82.0 / (victim_size[0] * victim_size[1] * victim_size[2])) * multiplier).min(1000.0);
+    let force = crate::damage::player_damage_force(victim_size, damage, multiplier);
     let mut impulse = if length == 0.0 { [0.0; 3] } else { delta.map(|value| value * force / length) };
     impulse[2] += 268.328_16;
     impulse
@@ -158,6 +162,7 @@ pub struct MovementStuns {
 }
 
 impl MovementStuns {
+    pub fn active(&self) -> bool { self.active.is_some() }
     pub fn add(&mut self, now: f32, duration: f32, amount: f32, forward_only: bool) {
         if self.events.len() + 1 >= 250 { return; }
         let event = MovementStun { expires: now + duration, amount: amount.clamp(0.0, 1.0) * 255.0, forward_only };
@@ -290,6 +295,11 @@ mod tests {
         assert!(!ambassador_headshot(1.0, true, 1.0));
         assert!(ambassador_headshot(1.001, true, 1200.0*1200.0));
         assert!(!ambassador_headshot(1.001, true, 1200.1*1200.1));
+        assert_eq!(ambassador_crosshair_scale(0.0), 2.5);
+        assert_eq!(ambassador_crosshair_scale(0.5), 2.5);
+        assert_eq!(ambassador_crosshair_scale(0.75), 1.625);
+        assert_eq!(ambassador_crosshair_scale(1.0), 0.75);
+        assert_eq!(ambassador_crosshair_scale(2.0), 0.75);
         assert!(!knockback_allowed(30.0, 0.0, 3.0));
         assert!(!knockback_allowed(31.0, 160_000.0, 3.0));
         assert!(knockback_allowed(31.0, 159_999.0, 3.0));

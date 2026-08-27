@@ -14,6 +14,11 @@ pub const CRIT_BUCKET_DEFAULT: f32 = 300.0;
 pub const CRIT_BUCKET_CAP: f32 = 1_000.0;
 pub const CRIT_BUCKET_BOTTOM: f32 = -250.0;
 
+/// CTFPlayer's damage-to-velocity magnitude, distinct from ragdoll damage force.
+pub fn player_damage_force(size: [f32; 3], amount: f32, multiplier: f32) -> f32 {
+    (amount * (48.0 * 48.0 * 82.0 / (size[0] * size[1] * size[2])) * multiplier).min(1000.0)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DamageType(u32);
 
