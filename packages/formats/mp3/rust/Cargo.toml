@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nanomp3 = "=0.1.1"
+nanomp3 = { path = "vendor/nanomp3" }
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+sha2 = "0.10.9"

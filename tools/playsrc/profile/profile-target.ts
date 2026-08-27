@@ -6,6 +6,7 @@ export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env
     return environment.PROFILE_MAP_TARGET as Tf2TargetName
   }
   if (environment.PROFILE_SCENARIOS === "control-points") return "cp_badlands"
+  if (environment.PROFILE_SCENARIOS === "soundscape-selection") return "cp_granary"
   if (environment.PROFILE_SCENARIOS === "koth") return "koth_viaduct"
   if (environment.PROFILE_SCENARIOS === "burning-flames") return "pl_upward"
   if (environment.PROFILE_UPGRADE_ROSTER === "23") return "ctf_2fort"

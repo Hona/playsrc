@@ -30,6 +30,7 @@ export function requireBrowserBudget(milliseconds: number, minimum = DEFAULT_BRO
 const PROFILES = Object.freeze({
   "damage-indicator": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "damage-indicator" }, minimumRemainingMilliseconds: environment => environment.PROFILE_DAMAGE_LIFECYCLE === "1" ? 70_000 : environment.PROFILE_DAMAGE_DYNAMIC === "1" ? 40_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "setup-round": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "setup-round" }, minimumRemainingMilliseconds: 140_000 },
+  "soundscape-selection": { config: "playwright.profile.config.ts", target: "cp_granary", environment: { PROFILE_SCENARIOS: "soundscape-selection" } },
   deathnotice: { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "deathnotice" } },
   "control-points": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "control-points" }, minimumRemainingMilliseconds: environment => environment.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },

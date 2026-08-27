@@ -715,10 +715,18 @@ export type BuildingSnapshot = Readonly<{
   timesUsed: number
 }>
 
+export type SoundscapeSelection = Readonly<{
+  entity: number
+  soundscape: number
+  positionBits: number
+  positions: readonly (readonly [number, number, number])[]
+}>
+
 export type Snapshot = Readonly<{
   decapitations: number
   revengeCrits: number
   weaponCrosshairScale: number
+  soundscape: SoundscapeSelection
   equippedItems: readonly Tf2EquippedItem[]
   actorCloaks: readonly ActorCloakState[]
   tick: bigint
@@ -1642,7 +1650,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 29)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 30)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2582,6 +2590,19 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const weaponCrosshairScale = view.getFloat32(at, true)
   if (!Number.isFinite(weaponCrosshairScale) || weaponCrosshairScale < 0) throw new Tf2CodecError("weapon crosshair scale is invalid")
   at += 4
+  requireBytes(108, "soundscape selection")
+  const readSoundscape = (): SoundscapeSelection => {
+    const entity = view.getInt32(at, true)
+    const soundscape = view.getInt32(at + 4, true)
+    const positionBits = view.getUint32(at + 8, true)
+    const positions = Array.from({ length: 8 }, (_, index) => Object.freeze(vector(view, at + 12 + index * 12)))
+    if (entity < 0 || soundscape < -1 || positionBits > 255 || positions.some(position => !finite(position))) {
+      throw new Tf2CodecError("soundscape selection is invalid")
+    }
+    return Object.freeze({ entity, soundscape, positionBits, positions: Object.freeze(positions) })
+  }
+  const soundscape = ranges ? ranges.section("soundscape", at, 108, readSoundscape) : readSoundscape()
+  at += 108
   if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
@@ -2590,6 +2611,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const frozenProjectileEvents = Object.freeze(projectileEvents)
   return Object.freeze({
     tick,
+    soundscape,
     actorCloaks: Object.freeze(actorCloaks),
     equippedItems,
     decapitations,

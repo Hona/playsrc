@@ -8,6 +8,35 @@ use playsrc_keyvalues::{Node, NumericValue, Value};
 use std::collections::BTreeSet;
 
 pub const MANIFEST: &str = "scripts/soundscapes_manifest.txt";
+pub const MAP_BINDING: &str = "derived/soundscape-map.pssm";
+
+/// The compiler receives BSP bytes separately from resource sections. Bind the
+/// configured map name explicitly; do not infer it from optional NAV/cubemaps.
+pub fn encode_map_binding(name: &str, bsp_hash: [u8; 32]) -> Option<Vec<u8>> {
+    if !valid_map_name(name) {
+        return None;
+    }
+    let mut bytes = b"PSSM\x01\0\0\0".to_vec();
+    bytes.extend_from_slice(&bsp_hash);
+    bytes.extend_from_slice(name.as_bytes());
+    Some(bytes)
+}
+
+pub fn read_map_binding(bytes: &[u8], bsp_hash: [u8; 32]) -> Option<&str> {
+    if bytes.get(..8)? != b"PSSM\x01\0\0\0" || bytes.get(8..40)? != bsp_hash {
+        return None;
+    }
+    let name = std::str::from_utf8(bytes.get(40..)?).ok()?;
+    valid_map_name(name).then_some(name)
+}
+
+fn valid_map_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
 pub type Position = [f32; 3];
 pub use playsrc_entity::soundscape::Selection;
 
@@ -16,6 +45,10 @@ pub struct ZoneIndex {
     clusters: Vec<Vec<usize>>,
 }
 impl ZoneIndex {
+    pub fn is_empty(&self) -> bool {
+        self.clusters.is_empty()
+    }
+
     pub fn compile(
         world: &playsrc_visibility::World,
         zones: &[(Position, f32)],
@@ -38,10 +71,7 @@ impl ZoneIndex {
                 continue;
             }
             for (cluster, &(minimum, maximum)) in bounds.iter().enumerate() {
-                let visible = world.pvs
-                    [source_cluster as usize * world.words_per_row + cluster / 32]
-                    & (1 << (cluster % 32))
-                    != 0;
+                let visible = world.visible(source_cluster as usize, cluster);
                 if !visible {
                     continue;
                 }

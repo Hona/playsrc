@@ -1866,6 +1866,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(phase)
     }
 
+    pub fn soundscape_selection(&self) -> playsrc_entity::soundscape::Selection {
+        self.map.soundscape_selection()
+    }
+
+    /// Post-entity-think listener selection. The caller owns the enclosing
+    /// simulation transaction and publishes the returned outputs with that tick.
+    pub fn update_soundscape(
+        &mut self,
+        ear: [f32; 3],
+        candidates: &[usize],
+        trace: impl FnMut([f32; 3], [f32; 3]) -> playsrc_entity::soundscape::Trace,
+    ) -> Result<MapPhase, Error> {
+        let mut phase = self.map.update_soundscape(ear, candidates, trace)?;
+        self.pending_control_point_events.append(&mut phase.control_point_events);
+        merge_mover_requests(&mut self.mover_requests, &phase.mover_requests);
+        Ok(phase)
+    }
+
     pub fn configure_navigation(
         &mut self,
         mesh: playsrc_nav::Mesh,

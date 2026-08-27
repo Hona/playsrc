@@ -3237,7 +3237,7 @@ fn main() -> Result<(), String> {
         let mut roots = Vec::new();
         for entity in &graph.entities {
             if !entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"env_soundscape") || class.eq_ignore_ascii_case(b"env_soundscape_triggerable")) { continue; }
-            if let Some(pair) = entity.pairs.iter().rev().find(|pair| pair.key == b"soundscape") {
+            if let Some(pair) = entity.pairs.iter().rev().find(|pair| pair.key.eq_ignore_ascii_case(b"soundscape")) {
                 let index = registry.find(&pair.value).ok_or_else(|| format!("unresolved map soundscape at entity {}", entity.index))?;
                 roots.push(index);
             }
@@ -3246,14 +3246,9 @@ fn main() -> Result<(), String> {
             let path = std::str::from_utf8(&resource).map_err(|_| "soundscape wave path is not UTF-8")?;
             resolver.required(path, "soundscape-wave")?;
         }
-        let presets = playsrc_audio::dsp::Presets::parse(&resolver.required("scripts/dsp_presets.txt", "soundscape-dsp")?).map_err(|error| error.to_string())?;
-        for requirement in registry.dsp_requirements(&roots) {
-            let indices = if requirement == 1 { (102..134).collect::<Vec<_>>() } else { vec![requirement as usize] };
-            for index in indices {
-                presets.0.get(index).ok_or_else(|| format!("missing soundscape DSP preset {index}"))?.validate_processing()
-                    .map_err(|error| format!("soundscape DSP preset {index}: {error}"))?;
-            }
-        }
+        // This is resource closure, not admission of a processor implementation.
+        // Preserve the configured document without constructing room candidates.
+        resolver.required("scripts/dsp_presets.txt", "soundscape-dsp")?;
     }
     let mut round_scripts: Vec<(&str, Vec<&str>)> = Vec::new();
     if flags {
@@ -3610,6 +3605,9 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     stage("ui-materials", &mut stage_started);
     let mut ui_bundle = BTreeMap::<String, Vec<u8>>::new();
+    ui_bundle.insert(playsrc_audio::soundscape::MAP_BINDING.to_owned(),
+        playsrc_audio::soundscape::encode_map_binding(&target, Sha256::digest(&bsp_bytes).into())
+            .ok_or("invalid soundscape map binding")?);
     ui_bundle.insert(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH.to_owned(),
         format!("{}{}", playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER,
             sound_precache_absences.iter().map(|path| format!("{path}\n")).collect::<String>()).into_bytes());
@@ -3740,7 +3738,8 @@ fn main() -> Result<(), String> {
             logical_path: logical_path.clone(),
             roles: BTreeSet::from([if logical_path == STATIC_PROP_VHV_AGGREGATE_PATH
                 || logical_path == playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH
-                || logical_path == playsrc_tf2::particle_resources::SOURCE_LIST {
+                || logical_path == playsrc_tf2::particle_resources::SOURCE_LIST
+                || logical_path == playsrc_audio::soundscape::MAP_BINDING {
                 "gameplay".to_owned()
             } else if logical_path == "media/startupvids.txt" || logical_path == "media/valve.webm"
             {

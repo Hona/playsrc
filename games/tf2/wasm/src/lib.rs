@@ -3,6 +3,7 @@ mod admission_metrics;
 mod gameplay_replay;
 mod memory;
 mod reply_output;
+mod soundscapes;
 mod wearable;
 mod map_particles;
 mod smokestack;
@@ -616,6 +617,7 @@ struct Slot {
     wearable_particles: wearable::ParticleStates,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
+    soundscapes: playsrc_audio::soundscape::ZoneIndex,
     visibility_candidates: Option<playsrc_visibility::CandidateSet>,
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
@@ -1445,6 +1447,8 @@ unsafe fn compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
+        let soundscapes = soundscapes::prepare(&resources, &runtime.entities, &mut map, &visibility, bsp_sha)
+            .map_err(|_| 5_u32)?;
         map.install_studio_models(&studio_models.iter().map(|(identity, model)|
             (identity.clone(), Arc::clone(model.source()))).collect())
             .map_err(|_| 5_u32)?;
@@ -1515,6 +1519,7 @@ unsafe fn compile_map(
             model_material_opacity,
             environment,
             visibility,
+            soundscapes,
             area_state,
             collision,
             gameplay_world,
@@ -1556,6 +1561,7 @@ unsafe fn compile_map(
             model_material_opacity,
             environment,
             visibility,
+            soundscapes,
             area_state,
             collision,
             gameplay_world,
@@ -1593,6 +1599,7 @@ unsafe fn compile_map(
             visibility_candidates: playsrc_visibility::CandidateSet::compile(&visibility, 0, &[])
                 .ok(),
             visibility: Some(visibility),
+            soundscapes,
             area_state: Some(area_state),
             visibility_output: Vec::new(),
             environment: Some(environment),
@@ -1642,6 +1649,7 @@ unsafe fn compile_map(
             wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
             visibility: None,
+            soundscapes: Default::default(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -5149,6 +5157,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.class_scenes = BTreeMap::new();
     slot.model_output = Vec::new();
     slot.visibility = None;
+    slot.soundscapes = Default::default();
     slot.visibility_candidates = None;
     slot.area_state = None;
     slot.visibility_output = Vec::new();
@@ -5470,6 +5479,26 @@ pub unsafe extern "C" fn playsrc_game_advance(
             Ok((advanced, mut value)) => {
                 playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::ADVANCED, 0);
                 candidate = advanced;
+                if !slot.soundscapes.is_empty() {
+                    let ear = std::array::from_fn(|axis| value.movement.position[axis] + value.movement.view_offset[axis]);
+                    let Some(visibility) = &slot.visibility else { fail!(21); };
+                    let leaf = match visibility.locate_leaf(ear) { Ok(leaf) => leaf, Err(_) => fail!(21) };
+                    let candidates = slot.soundscapes.candidates(visibility.leaves[leaf].cluster);
+                    let mut trace_failed = false;
+                    let phase = candidate.update_soundscape(ear, candidates, |start, end| {
+                        match soundscapes::trace(&gameplay_world, start, end) {
+                            Ok(trace) => trace,
+                            Err(()) => {
+                                trace_failed = true;
+                                playsrc_entity::soundscape::Trace { fraction: 0.0, start_solid: true }
+                            }
+                        }
+                    });
+                    if trace_failed { fail!(21); }
+                    let phase = match phase { Ok(phase) => phase, Err(error) => fail!(gameplay_error_code(&error)) };
+                    value.entity_events.extend(phase.events);
+                    mover_phase.effects.extend(phase.effects);
+                }
                 let mut current_producer = candidate.producer_snapshot();
                 if !mover_phase.events.is_empty()
                     || !mover_phase.effects.is_empty()
@@ -5550,6 +5579,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             random_state: candidate.random_state(),
             random_draws: &random_draws,
             audio_events: &audio_events,
+            soundscape: candidate.soundscape_selection(),
             rocket_results: &consumed_rocket_results,
             mover_results: &consumed_mover_results,
             collision_snapshot: &collision_snapshot_bytes,
@@ -5877,6 +5907,7 @@ struct SnapshotExtensions<'a> {
     random_state: playsrc_tf2::Tf2RandomState,
     random_draws: &'a [playsrc_tf2::RandomDraw],
     audio_events: &'a [playsrc_tf2::AudioEvent],
+    soundscape: playsrc_entity::soundscape::Selection,
     rocket_results: &'a [playsrc_tf2::RocketTraceResult],
     mover_results: &'a [playsrc_tf2::MoverResult],
     collision_snapshot: &'a [u8],
@@ -5904,7 +5935,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 29, MAX)?;
+    u32_field(&mut out, 30, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6646,6 +6677,10 @@ fn encode_snapshot(
     extend(&mut out, &producer.decapitations.to_le_bytes(), MAX)?;
     extend(&mut out, &producer.revenge_crits.to_le_bytes(), MAX)?;
     f32_field(&mut out, snapshot.weapon_crosshair_scale, MAX)?;
+    i32_field(&mut out, extensions.soundscape.entity, MAX)?;
+    i32_field(&mut out, extensions.soundscape.soundscape, MAX)?;
+    u32_field(&mut out, u32::from(extensions.soundscape.position_bits), MAX)?;
+    for position in extensions.soundscape.positions { floats(&mut out, position, MAX)?; }
     Some(out)
 }
 
@@ -16096,6 +16131,7 @@ mod tests {
             wearable_particles: wearable::ParticleStates::default(),
             model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
             visibility: None,
+            soundscapes: Default::default(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -16195,6 +16231,7 @@ mod tests {
             wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
             visibility: None,
+            soundscapes: Default::default(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -16595,6 +16632,9 @@ mod tests {
                 random_state,
                 random_draws: &[],
                 audio_events: &[],
+                soundscape: playsrc_entity::soundscape::Selection {
+                    entity: 9, soundscape: 7, position_bits: 0x81, positions: [[1.0, 2.0, 3.0]; 8],
+                },
                 rocket_results: &[],
                 mover_results: &[],
                 collision_snapshot: &collision_snapshot,
@@ -16604,8 +16644,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x1d\0\0\0");
-        assert_eq!(encoded.len(), 1156);
+        assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
+        assert_eq!(encoded.len(), 1264);
         assert_eq!(&encoded[1128..1144], &[0; 16]);
         assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 800);
         assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 35);
@@ -16613,6 +16653,10 @@ mod tests {
         assert_eq!(&encoded[1012..1016], b"PCPN");
         assert_eq!(&encoded[1024..1032], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[1060..1068], b"PGRL\x04\0\0\0");
+        assert_eq!(&encoded[1156..1168], &[9, 0, 0, 0, 7, 0, 0, 0, 0x81, 0, 0, 0]);
+        for position in encoded[1168..].chunks_exact(12) {
+            assert_eq!(f32::from_le_bytes(position[8..12].try_into().unwrap()), 3.0);
+        }
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -16637,6 +16681,7 @@ mod tests {
                 random_state,
                 random_draws: &[],
                 audio_events: &[],
+                soundscape: Default::default(),
                 rocket_results: &[],
                 mover_results: &[],
                 collision_snapshot: &collision_snapshot,

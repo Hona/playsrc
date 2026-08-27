@@ -1,0 +1,8 @@
+Source: nanomp3 0.1.1, https://crates.io/crates/nanomp3/0.1.1
+Copyright (c) 2025 Robert B. Langer. MIT OR Apache-2.0; licenses included.
+
+Local modification: DCT-II output accumulation groups the two t[3] terms
+before adding t[2], matching the public minimp3 SSE path rather than the
+scalar path. This applies to every synthesis block, without content-specific
+conditions. Reference: lieff/minimp3 commit
+ea99364f61c14656440e8d77e9c233ccf3124633, minimp3.h, mp3d_DCT_II.

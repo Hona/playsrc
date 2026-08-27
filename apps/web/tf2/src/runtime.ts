@@ -4784,6 +4784,7 @@ export class Tf2Application {
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
       profile.round=prepared.snapshot.round
       profile.controlPoints=prepared.snapshot.controlPoints
+      profile.soundscape=prepared.snapshot.soundscape
       profile.player={team:prepared.snapshot.team,class:prepared.snapshot.class,position:prepared.snapshot.position,viewAngleOffset:prepared.snapshot.viewAngleOffset,camera}
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
