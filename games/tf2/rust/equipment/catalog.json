@@ -30,5 +30,17 @@
   {"definitionIndex":28,"weapon":"BuildPda"},
   {"definitionIndex":29,"weapon":"MediGun"},
   {"definitionIndex":30,"weapon":"InvisibilityWatch"},
-  {"definitionIndex":735,"weapon":"Sapper"}
+  {"definitionIndex":735,"weapon":"Sapper"},
+  {"definitionIndex":45,"weapon":"Scattergun","quality":6,"implemented":false},
+  {"definitionIndex":1103,"weapon":"Scattergun","quality":6,"implemented":false},
+  {"definitionIndex":425,"weapon":"HeavyShotgun","quality":6,"implemented":false},
+  {"definitionIndex":1153,"weapon":"Shotgun","quality":6,"implemented":false},
+  {"definitionIndex":415,"weapon":"Shotgun","quality":6,"implemented":false},
+  {"definitionIndex":424,"weapon":"Minigun","quality":6,"implemented":false},
+  {"definitionIndex":312,"weapon":"Minigun","quality":6,"implemented":false},
+  {"definitionIndex":41,"weapon":"Minigun","quality":6,"implemented":false},
+  {"definitionIndex":61,"weapon":"Revolver","quality":6,"implemented":false},
+  {"definitionIndex":460,"weapon":"Revolver","quality":6,"implemented":false},
+  {"definitionIndex":525,"weapon":"Revolver","quality":6,"implemented":false},
+  {"definitionIndex":402,"weapon":"SniperRifle","quality":6,"implemented":false}
 ]

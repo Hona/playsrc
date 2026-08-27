@@ -358,6 +358,7 @@ pub struct Rules {
     state: State,
     timers: Vec<Timer>,
     now: f32,
+    state_started_at: f32,
     transition_at: Option<f32>,
     waiting_until: Option<f32>,
     waiting_warning: bool,
@@ -404,6 +405,7 @@ impl Rules {
             configuration,
             state: State::Init,
             now: 0.0,
+            state_started_at: 0.0,
             transition_at: None,
             waiting_until: None,
             waiting_warning: false,
@@ -1011,7 +1013,13 @@ impl Rules {
                 current,
             });
             self.state = current;
+            self.state_started_at = self.now;
         }
+    }
+
+    pub fn loadout_respawn_allowed(&self, team: PlayerTeam) -> bool {
+        (self.state != State::Stalemate || self.now < self.state_started_at + 20.0)
+            && (self.state != State::TeamWin || self.winning_team == Some(team))
     }
 }
 

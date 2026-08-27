@@ -1224,6 +1224,18 @@ impl MapRuntime {
         }
     }
 
+    pub(crate) fn point_in_friendly_respawn_room<W: crate::GameplayWorld>(&self, world: &W, team: crate::PlayerTeam, position: [f32; 3]) -> Result<bool, MoveError> {
+        let point = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        for volume in &self.volumes {
+            if let VolumeKind::RespawnRoom { enabled: true, team: owner } = volume.kind
+                && owner.is_none_or(|owner| owner == team.source_number())
+                && volume_may_overlap(volume, volume.origin, position, point)
+                && world.overlaps_model_hull(volume.model, volume.origin, position, point)?
+            { return Ok(true); }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn entity_revision(&self) -> u64 {
         self.world.revision()
     }

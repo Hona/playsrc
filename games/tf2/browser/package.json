@@ -7,6 +7,7 @@
     "./artifacts": "./src/artifacts.ts",
     "./codec": "./src/codec.ts",
     "./engineer": "./src/engineer.ts",
+    "./equipment": "./src/equipment/index.ts",
     "./class": "./src/class.ts",
     "./content-build": "./src/content-build.ts",
     "./maps": "./src/maps.ts",

@@ -24,6 +24,7 @@ export type Tf2GameUiRequestIdentity =
   | "show-advanced-options"
   | "show-play-list"
   | "show-training"
+  | "show-equipment"
   | "show-create-server"
   | "resume-game"
   | "disconnect"
@@ -96,7 +97,7 @@ const playList = panel("play-list", [
   button("create-server", "Create Server", "create_server", request("show-create-server")),
 ])
 const account = panel("account", [
-  button("items", "ITEMS", "engine open_charinfo", inactive("account-items")),
+  button("items", "ITEMS", "engine open_charinfo", request("show-equipment")),
   button("store", "SHOP", "engine open_store", inactive("economy-store")),
 ])
 const settings = panel("settings", [
@@ -257,6 +258,7 @@ export type Tf2GameUiRequest =
   | Readonly<{ kind: "show-options"; page: "options" | "advanced-options" }>
   | Readonly<{ kind: "show-play-list" }>
   | Readonly<{ kind: "show-local-match"; entry: "training" | "create-server" }>
+  | Readonly<{ kind: "show-equipment" }>
   | Readonly<{ kind: "load-map"; mapIdentity: string }>
   | Readonly<{ kind: "resume-game" }>
   | Readonly<{ kind: "disconnect" }>
@@ -328,6 +330,7 @@ const buttonRequest = (identity: Tf2GameUiRequestIdentity): Tf2GameUiRequest => 
     case "show-advanced-options": return Object.freeze({ kind: "show-options", page: "advanced-options" })
     case "show-play-list": return Object.freeze({ kind: "show-play-list" })
     case "show-training": return Object.freeze({ kind: "show-local-match", entry: "training" })
+    case "show-equipment": return Object.freeze({ kind: "show-equipment" })
     case "show-create-server": return Object.freeze({ kind: "show-local-match", entry: "create-server" })
     case "resume-game": return Object.freeze({ kind: "resume-game" })
     case "disconnect": return Object.freeze({ kind: "disconnect" })

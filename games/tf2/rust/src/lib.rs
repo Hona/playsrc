@@ -810,6 +810,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     equipment: equipment::Equipment,
     active_equipment: equipment::Equipment,
     equipment_attributes: equipment::AttributeProviders,
+    equipment_respawn_requested: bool,
     bot_equipment: BTreeMap<u32, equipment::Equipment>,
     ammo: class::AmmoLedger,
     movement: MovementState,
@@ -980,6 +981,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             equipment: equipment::Equipment::default(),
             active_equipment: equipment::Equipment::default(),
             equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
+            equipment_respawn_requested: false,
             bot_equipment: BTreeMap::new(),
             ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
@@ -1095,11 +1097,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn equip_item(&mut self, class: PlayerClass, slot: schema::LoadoutPosition, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
-        self.equipment.equip(class, slot, definition_index)
+        let changed = self.equipment.equip(class, slot, definition_index)?;
+        self.equipment_respawn_requested |= changed && class == self.class;
+        Ok(changed)
     }
 
     pub fn restore_equipment(&mut self, bytes: &[u8]) -> Result<(), equipment::EquipmentError> {
         self.equipment = equipment::Equipment::restore(bytes)?;
+        self.equipment_respawn_requested |= !self.equipment.class_matches(&self.active_equipment, self.class);
         Ok(())
     }
 
@@ -1735,6 +1740,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
         )?;
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
+        if std::mem::take(&mut self.equipment_respawn_requested)
+            && self.lifecycle == PlayerLifecycle::Active && self.health > 0
+            && !self.equipment.class_matches(&self.active_equipment, self.class)
+            && self.round.loadout_respawn_allowed(self.team_selection.local_team())
+        {
+            let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+            let center = add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5));
+            if self.map.point_in_friendly_respawn_room(&self.collision, self.team_selection.local_team(), center)? {
+                self.respawn(&mut projectile_events, &mut events, MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+            }
+        }
         if let Some(request) = command.building_request {
             self.buildings.request(request, self.class, self.ammo.metal);
             if matches!(request, building::Request::Build(_))
@@ -3614,6 +3630,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn regenerate(&mut self, entity: u32, associated_model: Option<u32>, events: &mut Vec<Event>) {
+        if !self.equipment.class_matches(&self.active_equipment, self.class) { self.apply_equipment(); }
         let maximum = self.maximum_health();
         self.health = if self.health > maximum {
             self.health.max(maximum)

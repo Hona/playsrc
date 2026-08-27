@@ -163,7 +163,7 @@ const commandClassifications: Readonly<Record<string, readonly [Tf2UiCommandCate
   "engine bug": ["unsupported", "unsupported"],
   "engine cl_coach_find_coach": ["service", "service"],
   "engine cl_coach_toggle": ["service", "service"],
-  "engine open_charinfo": ["service", "service"],
+  "engine open_charinfo": ["application", "tf2"],
   "engine open_store": ["service", "service"],
   "engine replay_reloadbrowser": ["unsupported", "unsupported"],
   "engine vr_toggle": ["unsupported", "unsupported"],

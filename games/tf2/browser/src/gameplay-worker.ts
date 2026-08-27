@@ -718,16 +718,17 @@ function readCoverage(request: Extract<WorkerRequest, { kind: "read-coverage" }>
 function equipment(request: Extract<WorkerRequest, { kind: "equipment" }>): void {
   const selected = pending?.generation === request.generation && resourceSets.loadable(request.generation)
     ? pending : active?.generation === request.generation ? active : undefined
-  if (!wasm || !selected) { fail(request.id, "StaleGeneration"); return }
+  if (!wasm || (request.generation !== 0 && !selected)) { fail(request.id, "StaleGeneration"); return }
+  const handle = request.generation === 0 ? 0 : selected!.handle
   const capacity = 64 * 1024
   const pointer = wasm.playsrc_alloc(capacity) >>> 0
   try {
     if (request.mutation) {
       if (!(request.mutation instanceof ArrayBuffer) || request.mutation.byteLength > 1024) { fail(request.id, "MalformedRequest"); return }
       new Uint8Array(wasm.memory.buffer, pointer, request.mutation.byteLength).set(new Uint8Array(request.mutation))
-      if (wasm.playsrc_equipment_update(selected.handle, pointer, request.mutation.byteLength) !== 1) { fail(request.id, "TransitionFailed"); return }
+      if (wasm.playsrc_equipment_update(handle, pointer, request.mutation.byteLength) !== 1) { fail(request.id, "TransitionFailed"); return }
     }
-    const length = wasm.playsrc_equipment_state_copy(selected.handle, pointer, capacity)
+    const length = wasm.playsrc_equipment_state_copy(handle, pointer, capacity)
     if (length < 16 || length > capacity) { fail(request.id, "InternalFailure"); return }
     const state = decodeEquipmentState(new Uint8Array(wasm.memory.buffer, pointer, length))
     post({ id: request.id, kind: "equipment", generation: request.generation, state })

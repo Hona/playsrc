@@ -6,6 +6,7 @@ import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
+import { Tf2EquipmentProfile, Tf2EquipmentPresentation, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -372,6 +373,14 @@ export class Tf2Application {
   #cache?: DerivedObjectCache
   #openingCache?: Promise<DerivedObjectCache>
   #client?: Tf2WorkerClient
+  #equipmentProfile?: Tf2EquipmentProfile
+  #equipment?: Tf2EquipmentPresentation
+  #equipmentRoot?: HTMLElement
+  #equipmentPreview: Tf2EquipmentPreview | null = null
+  #equipmentRenderTask?: Promise<void>
+  #equipmentPreviewReset = true
+  #equipmentPreviewElapsed = 0
+  #equipmentPreviewStarted = 0
   #resourceRuntime?: Promise<void>
   readonly #immutableObjects = createImmutableObjectAcquirer({
     concurrency: 8,
@@ -919,6 +928,7 @@ export class Tf2Application {
   }
 
   async #gameUiRequest(request: Tf2GameUiRequest): Promise<void> {
+    if (request.kind === "show-equipment") { await this.#showEquipment(); return }
     if (request.kind === "show-console") { this.toggleConsole(); return }
     if (request.kind === "show-options") {
       const options = this.#ensureOptions()
@@ -1142,6 +1152,8 @@ export class Tf2Application {
           await candidate.initialize(wasm, descriptor.sha256)
           if (signal.aborted || this.#closed) throw new DOMException("Resource runtime was superseded", "AbortError")
           this.#client = candidate
+          this.#equipmentProfile = new Tf2EquipmentProfile(candidate, localStorage)
+          await this.#equipmentProfile.initialize()
         } catch (error) {
           candidate.abort()
           throw error
@@ -1513,6 +1525,10 @@ export class Tf2Application {
     this.#options = undefined
     this.#localMatch?.destroy()
     this.#localMatch = undefined
+    this.#equipment?.destroy()
+    this.#equipment = undefined
+    this.#equipmentRoot?.remove()
+    this.#equipmentRoot = undefined
     this.#uiResources?.destroy()
     this.#uiResources = undefined
     this.#console?.apply({ kind: "destroy" })
@@ -2023,6 +2039,8 @@ export class Tf2Application {
       clock: { nowSeconds: () => this.#frameClock.current },
       random: this.#presentationRandom,
       onRequest: (request) => this.#classSelectionRequest(request),
+      loadoutAvailable: () => this.#equipmentProfile?.state() !== undefined,
+      onEditLoadout: identity => { void this.#showEquipment(identity) },
       onModelPanels: (panels) => {
         if (panels.length === 0) this.#classSelectionBackgroundKey = ""
         if (panels[1]?.model !== this.#classSelectionModelPanels[1]?.model || panels[1]?.skin !== this.#classSelectionModelPanels[1]?.skin) {
@@ -2041,6 +2059,65 @@ export class Tf2Application {
         })
       },
     })
+  }
+
+  async #showEquipment(playerClass?: Tf2Class): Promise<void> {
+    await this.#ensureResourceRuntime()
+    const state = this.#equipmentProfile?.state()
+    if (!state || !this.#uiResources || !this.#presentationRandom) throw new Error("Local equipment owner is unavailable")
+    if (!this.#equipment) {
+      const root = document.createElement("div")
+      root.className = "equipment-layer"
+      Object.assign(root.style, { position: "absolute", inset: "0", zIndex: "30", display: "none" })
+      this.#classSelectionRoot.after(root)
+      this.#equipmentRoot = root
+      this.#equipment = new Tf2EquipmentPresentation({ root, resources: this.#uiResources, viewport: this.#viewport(),
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        clock: { nowSeconds: () => this.#frameClock.current }, random: this.#presentationRandom,
+        modelSurface: this.#canvas,
+        onEquip: (identity, slot, definition) => this.#equipmentProfile!.equip(identity, slot, definition),
+        onClose: () => { this.#neutral() },
+        onPreview: preview => { this.#equipmentPreview = preview; this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current },
+      })
+    }
+    this.#neutral()
+    if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
+    this.#classSelection?.dispatch({ kind: "hide" })
+    this.#teamSelection?.dispatch({ kind: "hide" })
+    this.#equipment.show(state, playerClass)
+  }
+
+  #renderEquipment(): void {
+    const preview = this.#equipmentPreview, renderer = this.#renderer, client = this.#client, artifacts = this.#artifacts
+    if (!preview || !renderer || !client || !artifacts || this.#equipmentRenderTask || this.#displayTask || this.#classSelectionRenderTask || this.#teamSelectionRenderTask) return
+    const generation = this.#generation, now = this.#frameClock.current
+    const player = tf2ClassPresentation(preview.class), artifact = artifacts.models.get(player.model)
+    if (!artifact) return
+    const profile = this.#equipmentProfile!.state()!
+    const held = preview.equippedItems.map(item => profile.inventory.find(value => value.item.definitionIndex === item.definitionIndex)).find(item => item?.weapon !== null && item?.modelPlayer)
+    const previous = this.#equipmentPreviewElapsed, elapsed = Math.max(previous, now - this.#equipmentPreviewStarted)
+    this.#equipmentPreviewElapsed = elapsed
+    const reset = this.#equipmentPreviewReset; this.#equipmentPreviewReset = false
+    const skin = this.#snapshot?.team === 3 ? 1 : 0
+    this.#equipmentRenderTask = (async () => {
+      const poses = await client.models(generation, encodeModelPoseBatch([{
+        identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: true,
+        modelPanel: true, modelPanelReset: reset, activity: classPreviewBaseActivity(preview.class),
+        previousElapsedSeconds: previous, elapsedSeconds: elapsed, currentTimeSeconds: now, frameTimeSeconds: elapsed - previous,
+        planarSpeed: 0, screenAspectRatio: preview.bounds.width / preview.bounds.height, worldFarPlane: 16384 * Math.sqrt(3),
+        skin, lod: 0, bodygroups: artifact.bodygroupCounts.map(() => 0),
+        lighting: { origin: preview.origin, angles: preview.angles, cameraPosition: [0, 0, 0], cameraAngles: [0, 0, 0] },
+      }]))
+      if (this.#equipmentPreview !== preview || generation !== this.#generation) return
+      const pose = poses.find(pose => pose.role === "single")
+      if (!pose) throw new Error("Equipment player pose is unavailable")
+      const mergedModels = poses.filter(pose => pose.role !== "single" && pose.role !== "hand").map(pose => ({ model: pose.model,
+        skin: skin < (artifacts.models.get(pose.model)?.skinCount ?? 0) ? skin : 0, pose, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes }))
+      await renderer.renderModelPanels([{ identity: "EquipmentPlayer", model: player.model, skin, kind: "studio", fov: preview.fov,
+        origin: preview.origin, angles: preview.angles, bounds: preview.bounds, background: "clear-transparent", presentationTimeSeconds: now,
+        pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes }])
+    })().catch(error => { if (this.#equipmentPreview === preview) this.#output(`Equipment preview: ${String(error)}`) })
+      .finally(() => { this.#equipmentRenderTask = undefined })
   }
 
   #classSelectionRequest(request: Tf2ClassSelectionRequest): void {
@@ -2340,7 +2417,7 @@ export class Tf2Application {
     const paused = this.#view.gameUi === "pause"
     const loadingImage = this.#view.gameUi === "loading" || this.#view.phase === "Loading" || this.#view.phase === "Replacing"
     const clientModeAllows = this.#view.gameUi === "in-game"
-    const classSelection = this.#view.classSelectionVisible === true
+    const classSelection = this.#view.classSelectionVisible === true || this.#equipment?.visible() === true
     const vguiInput = this.#view.consoleVisible || this.#view.optionsVisible === true || classSelection || this.#view.teamSelectionVisible === true
     const identity = Number(respawnAllowed)
       | Number(paused) << 1
@@ -2611,6 +2688,7 @@ export class Tf2Application {
     this.#teamSelection?.setViewport(viewport)
     this.#options?.setViewport(viewport)
     this.#localMatch?.setViewport(viewport)
+    this.#equipment?.setViewport(viewport)
     this.#loadingVgui?.setViewport(viewport)
     if (this.#loadingPresentationGeneration > 0 && this.#configuration) {
       const target = this.#loadingTarget ?? this.#activeTarget
@@ -4258,6 +4336,7 @@ export class Tf2Application {
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
       if (owners & HUD_FRAME_OWNER) { this.#hudIntegration?.frame(timeSeconds); this.#engineer?.frame(timeSeconds) }
       if (this.#view.localMatchVisible) this.#localMatch?.frame(timeSeconds)
+      if (this.#equipment?.visible()) this.#equipment.frame(timeSeconds)
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
       if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
@@ -4277,14 +4356,15 @@ export class Tf2Application {
       if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
       else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
     }
-    if (this.#classSelection?.state().visible) this.#renderClassSelection()
+    if (this.#equipment?.visible()) this.#renderEquipment()
+    else if (this.#classSelection?.state().visible) this.#renderClassSelection()
     else if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
     else this.#offerDisplay()
   }
 
   #offerDisplay():void{
     if (this.#preparingModelPipelines) return
-    if (this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
+    if (this.#equipment?.visible() || this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const frameProfiler = browserFrameProfiler()
     if (frameProfiler?.active) frameProfiler.counters.displayOffers! += 1
     const required=this.#requiredParticleDisplayFrames.peek()
@@ -5324,6 +5404,7 @@ export class Tf2Application {
 
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (this.#localMatch?.handleKey(event)) return
+    if (this.#equipment?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
     if (!this.#view.consoleVisible && this.#teamSelection?.handleKey(event, this.#keyboardAction(event) === "changeteam")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
@@ -5366,7 +5447,7 @@ export class Tf2Application {
       this.toggleConsole()
       return
     }
-    if (this.#view.consoleVisible || this.#view.optionsVisible || this.#view.localMatchVisible || this.#teamSelection?.state().visible
+    if (this.#equipment?.visible() || this.#view.consoleVisible || this.#view.optionsVisible || this.#view.localMatchVisible || this.#teamSelection?.state().visible
       || this.#view.gameUi !== "in-game" || event.repeat) return
     if (this.#snapshot?.class === 8 && this.#snapshot.weapon === 53 && /^Digit[1-9]$/u.test(event.code)) {
       const classes: readonly Tf2Class[] = [1, 3, 7, 4, 6, 9, 5, 2, 8]
@@ -5565,7 +5646,7 @@ export class Tf2Application {
     }
     this.#canvas = connected
     if (!pointerLockRequestRequired(document.pointerLockElement, connected)) return
-    if (this.#closed || this.#view.consoleVisible || this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
+    if (this.#closed || this.#equipment?.visible() || this.#view.consoleVisible || this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const audioAdmission=this.resumeAudio()
     const request=async(raw:boolean):Promise<"raw"|"adjusted">=>{
       const admission=this.#canvas.requestPointerLock(raw?{unadjustedMovement:true}:undefined)
@@ -5654,6 +5735,8 @@ export class Tf2Application {
     this.#hudContextIdentity = -1
     await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
     await this.#client?.shutdown().catch(() => {})
+    this.#equipmentProfile?.close()
+    this.#equipmentProfile = undefined
     this.#client = undefined
     this.#cache?.close()
     this.#cache = undefined
