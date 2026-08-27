@@ -64,7 +64,24 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
     }, point)
     await automation.player.lookBy(movement)
   }
-  await command(`map ${map}`)
+  if (process.env.PROFILE_ATTACK_DEFEND_TRAINING === "1") {
+    const layer = page.locator(".local-match-layer")
+    await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+    await page.locator(".gameui-layer [data-vgui-name='TrainingEntry'] [data-vgui-name='ModeButton']").click()
+    await layer.locator("[data-vgui-name='OfflinePracticePanel'] [data-vgui-name='StartButton']").click()
+    await expect(layer.locator("[data-vgui-name='GameModeLabel']")).toHaveText("Control Points")
+    await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
+    if (map === "cp_gorge") await layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel'] [data-vgui-name='NextButton']").click()
+    await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText(map === "cp_gorge" ? "Gorge" : "Dustbowl")
+    await layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel'] [data-vgui-name='DifficultyComboBox']").click()
+    await page.getByRole("option", { name: "Normal", exact: true }).click()
+    await layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel'] [data-vgui-name='NumPlayersTextEntry']").fill("16")
+    const path = testInfo.outputPath(`${map}-authored-offline-practice.png`)
+    await page.screenshot({ path }); await testInfo.attach(`${map}-authored-offline-practice`, { path, contentType: "image/png" })
+    await layer.locator("[data-vgui-name='StartOfflinePracticeButton']").click()
+  } else {
+    await command(`map ${map}`)
+  }
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await close()
   await page.locator(".team-selection-layer [data-vgui-name='teambutton0']").click()

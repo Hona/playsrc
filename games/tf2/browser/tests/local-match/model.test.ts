@@ -10,6 +10,18 @@ const source = tf2UiResources.panels.find((panel) => panel.source.logicalPath ==
 const configuredMaps = Object.freeze(["jump_beef", "pl_upward", "ctf_2fort"])
 
 describe("TF2 authored offline practice and local server configuration", () => {
+  test("authored attack/defend defaults and both map limits are available through the shared catalog", () => {
+    const configured = [...configuredMaps, "cp_dustbowl", "cp_gorge"]
+    const practice = createTf2OfflinePracticeCatalog(source, configured)
+    expect(practice.defaults.map).toBe("cp_dustbowl")
+    expect(practice.maps.filter(map => map.mode === "control-point")).toEqual([
+      { identity: "cp_dustbowl", displayName: "Dustbowl", mode: "control-point", minimumPlayers: 12, maximumPlayers: 24 },
+      { identity: "cp_gorge", displayName: "Gorge", mode: "control-point", minimumPlayers: 12, maximumPlayers: 24 },
+    ])
+    for (const map of practice.maps.filter(map => map.mode === "control-point")) {
+      expect(tf2LocalMatchLaunch("training", { mapIdentity: map.identity, difficulty: 1, playerCount: 16, quotaMode: "normal" }, map).configuration).toMatchObject({ quota: 15, maximumPlayers: 24, offlinePractice: true })
+    }
+  })
   test("prepared KOTH maps retain authored practice eligibility and never become custom deathmatch", () => {
     const configured = [...configuredMaps, "koth_viaduct", "koth_sawmill", "koth_harvest_final", "koth_lakeside_final"]
     const practice = createTf2OfflinePracticeCatalog(source, configured)

@@ -71,8 +71,8 @@ export function createTf2OfflinePracticeCatalog(
   const declared = new Set(configuredMaps)
   const selected = maps.children.flatMap((node): Tf2LocalMatchMap[] => {
     if (node.value !== null || !declared.has(node.name)) return []
-    const mode = node.name.startsWith("pl_") ? "payload" : node.name.startsWith("koth_") ? "king-of-the-hill" : null
-    if (!mode) return []
+    const mode = tf2MapMode(node.name)
+    if (mode !== "payload" && mode !== "king-of-the-hill" && mode !== "control-point") return []
     const displayName = scalar(node, "name")
     if (!displayName) throw new Error(`TF2 offline practice configured map name is invalid: ${node.name}`)
     const minimumPlayers = integer(node, "min_players", 1, 32)
@@ -125,7 +125,7 @@ export function tf2LocalMatchLaunch(
     || !TF2_BOT_QUOTA_MODES.includes(settings.quotaMode)) {
     throw new Error("TF2 local match bot settings are invalid")
   }
-   if (entry === "training" && map.mode !== "payload" && map.mode !== "king-of-the-hill") {
+   if (entry === "training" && map.mode !== "payload" && map.mode !== "king-of-the-hill" && map.mode !== "control-point") {
     throw new Error("TF2 offline practice excludes maps absent from its configured mode catalog")
   }
   const count = Math.max(1, Math.min(31, settings.playerCount))
