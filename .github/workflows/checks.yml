@@ -55,6 +55,7 @@ jobs:
         run: bun run build:tf2-wasm-bindings
 
       - name: Verify changed release WASM pin
+        id: release-wasm
         shell: bash
         run: |
           if git diff --quiet HEAD^ HEAD -- apps/web/tf2/releases/current.json; then
@@ -67,6 +68,14 @@ jobs:
             console.log(JSON.stringify({ expected: release.objects.wasm, actual }));
             if (actual.byteLength !== release.objects.wasm.byteLength || actual.sha256 !== release.objects.wasm.sha256) throw new Error("Compiled WASM differs from changed release pin");
           '
+
+      - name: Retain mismatched compiled WASM
+        if: failure() && steps.release-wasm.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-release-wasm
+          path: games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm
+          retention-days: 3
 
       - name: Test
         run: bun test
