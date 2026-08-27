@@ -676,6 +676,7 @@ class SourceVguiRuntime implements VguiRuntime {
   // Compile at first property validation, not before the control is needed.
   // Registrations are immutable runtime-owned copies; no panel values are cached.
   private readonly resourceProperties = new Map<VguiControlRegistration, ReadonlySet<string>>()
+  private readonly resolvedSchemeColors = new Map<string, Rgba | null>()
   private readonly listeners: ListenerRecord[] = []
   private readonly queuedMessages: QueuedMessage[] = []
   private readonly delayedCommands: DelayedAnimationCommand[] = []
@@ -1323,6 +1324,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private installScheme(scheme: VguiScheme): void {
+    this.resolvedSchemeColors.clear()
     this.paintSignatures.clear()
     this.scheme = scheme
     this.colors.clear()
@@ -1385,10 +1387,21 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private resolveColor(name: string, fallback: Rgba): Rgba {
+    const key = asciiFold(name)
+    const prior = this.resolvedSchemeColors.get(key)
+    if (prior !== undefined) return prior ?? fallback
+    // Only scheme-owned names are retained: arbitrary literal colors cannot
+    // grow the cache. A missing alias retains absence, never a caller's fallback.
+    const owned = this.colors.has(key) || this.settings.has(key)
     try {
-      return this.resolveColorFromMaps(name, this.colors, this.settings, new Set())
+      const color = this.resolveColorFromMaps(name, this.colors, this.settings, new Set())
+      if (owned) this.resolvedSchemeColors.set(key, color)
+      return color
     } catch (error) {
-      if (error instanceof RuntimeFault && error.code === "MissingSchemeValue") return fallback
+      if (error instanceof RuntimeFault && error.code === "MissingSchemeValue") {
+        if (owned) this.resolvedSchemeColors.set(key, null)
+        return fallback
+      }
       throw error
     }
   }
@@ -5910,6 +5923,7 @@ class SourceVguiRuntime implements VguiRuntime {
     for (const panel of [...this.panels.values()].sort((left, right) => right.id - left.id)) panel.element.remove()
     this.panels.clear()
     this.resourceProperties.clear()
+    this.resolvedSchemeColors.clear()
     this.auxiliaryNodes.clear()
     this.popups.splice(0)
     this.destroyDom()
