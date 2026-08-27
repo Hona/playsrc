@@ -43,8 +43,8 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string, generation = 1) {
-  if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Replay generation rejected")
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1) {
+  if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
   const progress = path.join(directory, `${label}.replay-progress.json`)
@@ -66,7 +66,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       const bytes = Buffer.from(result.base64, "base64")
       if (result.offset !== offset || offset + bytes.length !== result.length || result.length > REPLAY_BYTES) throw new Error("Replay stream identity mismatch")
       if (checkpoint && JSON.stringify(checkpoint) !== JSON.stringify(result.checkpoint)) throw new Error("Replay checkpoint changed")
-      if (result.checkpoint.generation !== generation) throw new Error("Replay captured a different map generation")
+      if (result.mapOrdinal !== mapOrdinal) throw new Error("Replay captured a different map construction")
       checkpoint = result.checkpoint
       await appendFile(partial, bytes)
       offset += bytes.length
@@ -78,11 +78,11 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     if (!value.url().includes("gameplay-worker")) return
     if (worker) { failure = "Replay gameplay owner changed"; return }
     worker = value
-    pending = value.evaluate(async ({ generation }) => {
+    pending = value.evaluate(async ({ mapOrdinal }) => {
       const deadline = performance.now() + 5000
       while (!(globalThis as any).__playsrcGameplayReplay && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
-      ;(globalThis as any).__playsrcGameplayReplay.arm(generation)
-    }, { generation }).catch(error => { failure = String(error) })
+      ;(globalThis as any).__playsrcGameplayReplay.arm(mapOrdinal)
+    }, { mapOrdinal }).catch(error => { failure = String(error) })
   }
   page.on("worker", attach)
   let busy = false
@@ -126,7 +126,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
         if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
       })
-      const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, error: failure }
+       const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, error: failure }
       const manifestBytes = Buffer.from(JSON.stringify(manifest))
       const manifestFile = `${createHash("sha256").update(manifestBytes).digest("hex")}.replay.json`
       await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" })

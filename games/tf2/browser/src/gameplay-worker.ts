@@ -105,6 +105,7 @@ let replies: ReplyWriter | undefined
 // arbitrary engine access cross this interface. The Rust owner records the
 // admitted commands and complete authoritative tick/event publication hashes.
 let replayArmed = 0
+let replayMapOrdinal = 0
 let replayHandle: number | undefined
 let replayCheckpoint: { configurationSha256: string; configurationBytes: number; profile: number; generation: number } | undefined
 Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
@@ -120,10 +121,10 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
-  arm(generation: number) {
+  arm(mapOrdinal: number) {
     if (active || pending || replayArmed) throw new Error("Replay must be armed before map construction")
-    if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Replay generation rejected")
-    replayArmed = generation
+    if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
+    replayArmed = mapOrdinal
   },
   mark(mark: number) {
     if (!wasm || !replayHandle || wasm.playsrc_gameplay_replay_mark(replayHandle, mark) !== 1) throw new Error("Replay mark rejected")
@@ -141,7 +142,7 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       const bytes = new Uint8Array(wasm.memory.buffer, pointer, count)
       let encoded = ""
       for (let at = 0; at < bytes.length; at += 8192) encoded += String.fromCharCode(...bytes.subarray(at, at + 8192))
-      return { checkpoint: replayCheckpoint, offset, length, complete, base64: btoa(encoded) }
+      return { checkpoint: replayCheckpoint, mapOrdinal: replayArmed, offset, length, complete, base64: btoa(encoded) }
     } finally { wasm.playsrc_free(pointer, Math.max(count, 1)) }
   },
 }) })
@@ -605,7 +606,8 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     fail(request.id, "CompileFailed", error)
     return
   }
-  if (replayArmed === request.generation) {
+  replayMapOrdinal++
+  if (replayArmed === replayMapOrdinal) {
     if (replayHandle || exports.playsrc_gameplay_replay_begin(candidate) !== 1) throw new Error("Replay initial checkpoint rejected")
     replayHandle = candidate
     replayCheckpoint = { configurationSha256: request.configurationSha256, configurationBytes: request.configurationBytes, profile: request.profile, generation: request.generation }
