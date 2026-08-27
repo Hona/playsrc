@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test"
 import { installNodeBuilderInstrumentation, RendererFrameInstrumentation, type BrowserFrameProfiler } from "../src/frame-instrumentation"
 
+test("cold-model pass attribution does not turn loading into completed gameplay", () => {
+  const profile: BrowserFrameProfiler = { active: false, captureModelPrograms: true, currentPass: null, completedFrames: [], counters: {}, capabilities: { timestampQuery: false, longAnimationFrame: false }, losses: [] }
+  const info = { autoReset: true, reset() {}, render: { drawCalls: 0, frameCalls: 0, triangles: 0 }, memory: {} }
+  const instrumentation = new RendererFrameInstrumentation(info, profile)
+  instrumentation.pass("main", () => expect(profile.currentPass?.identity).toBe("main"))
+  expect(profile.currentPass).toBeNull()
+  expect(instrumentation.complete()).toBeUndefined()
+  expect(profile.completedFrames).toHaveLength(0)
+  expect(profile.counters.completedFrames).toBeUndefined()
+})
+
 function fixture(active = true) {
   let resets = 0
   const info = {
