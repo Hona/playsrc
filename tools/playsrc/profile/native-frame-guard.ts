@@ -4,6 +4,7 @@
 export function installNativeFrameGuard(host: any, expected: {
   width: number; height: number; dpr: number; canvasWidth: number; canvasHeight: number;
   bots: number; yaw: number; pitch: number; quality: Record<string, unknown>;
+  quotaRamp?: boolean;
 }, notify: (failure: any) => void = () => {}) {
   const profile = host.__playsrcFrameProfiler
   if (!profile || !Array.isArray(profile.completedFrames)) throw new Error("Native frame profiler is unavailable")
@@ -16,6 +17,7 @@ export function installNativeFrameGuard(host: any, expected: {
   const descriptor = Object.getOwnPropertyDescriptor(frames, "push")
   const push = frames.push
   const state = { checkedFrames: 0, failure: null as any, notificationError: null as string | null }
+  let priorBots = 0
   const fail = (reason: string, actual?: unknown) => {
     if (state.failure) return
     state.failure = { at: host.performance.now(), reason, actual }
@@ -40,8 +42,11 @@ export function installNativeFrameGuard(host: any, expected: {
       if (!actual.visible || !actual.focused || !actual.pointerLocked) fail("native window lost visible focused gameplay capture", actual)
       else if (["width", "height", "dpr", "canvasWidth", "canvasHeight"].some(key => actual[key] !== baseline[key])) fail("native viewport changed", actual)
       else if (qualityKeys.some(key => actual.quality[key] !== baseline.quality[key])) fail("native quality changed", actual.quality)
-      else if (frame.detail?.bots !== baseline.bots) fail("native rendered roster changed", frame.detail?.bots)
-      else if (frame.yaw !== baseline.yaw || frame.pitch !== baseline.pitch) fail("native rendered view changed", { yaw: frame.yaw, pitch: frame.pitch })
+       else if (baseline.quotaRamp
+         ? !Number.isSafeInteger(frame.detail?.bots) || frame.detail.bots < priorBots || frame.detail.bots > baseline.bots
+         : frame.detail?.bots !== baseline.bots) fail("native rendered roster changed", frame.detail?.bots)
+       else if (frame.yaw !== baseline.yaw || frame.pitch !== baseline.pitch) fail("native rendered view changed", { yaw: frame.yaw, pitch: frame.pitch })
+       priorBots = frame.detail?.bots
     }
     return push.apply(this, values)
   } })

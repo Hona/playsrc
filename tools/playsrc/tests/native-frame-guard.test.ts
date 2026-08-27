@@ -67,6 +67,17 @@ test("serialized guard is inactive outside sampling and rejects incomplete quali
   expect(() => install(host, { ...expected, quality: {} })).toThrow("quality expectations")
 })
 
+test("quota ramp admits only monotonic counts up to the unchanged final quota", () => {
+  for (const bad of [-1, 1.5, 16, 2]) {
+    const { host, expected, frame } = fixture()
+    const guard = installNativeFrameGuard(host, { ...expected, quotaRamp: true })
+    for (const bots of [0, 1, 1, 3]) host.__playsrcFrameProfiler.completedFrames.push({ ...frame(), detail: { bots } })
+    expect(guard.state.failure).toBeNull()
+    host.__playsrcFrameProfiler.completedFrames.push({ ...frame(), detail: { bots: bad } })
+    expect(guard.state.failure.reason).toBe("native rendered roster changed")
+  }
+})
+
 test("notification failure cannot prevent application progress or change pinned expectations", () => {
   const { host, expected, frame } = fixture()
   const guard = installNativeFrameGuard(host, expected, () => { throw new Error("controller disconnected") })
