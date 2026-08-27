@@ -52,6 +52,8 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await closeConsole()
   await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  const loading = JSON.parse(await main.getAttribute("data-load-performance") ?? "null")
+  expect(loading?.totalMilliseconds).toBeGreaterThan(0)
   if (skyVisualOnly) {
     await command("tf_bot_quota 0")
     await command("setpos -1710 0 230")
@@ -166,7 +168,6 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     await command("tf_bot_quota 23")
     samples.push(await sample(23))
     expect(bspRequests).toBeLessThanOrEqual(1)
-    const loading = JSON.parse(await main.getAttribute("data-load-performance-probe") ?? "{}")
     const reportPath = testInfo.outputPath("koth-source-clock-samples.json")
     await writeFile(reportPath, JSON.stringify({ schema: "playsrc-koth-headed-v1", bspRequests, loading, samples }))
     await testInfo.attach("koth-source-clock-samples", { path: reportPath, contentType: "application/json" })

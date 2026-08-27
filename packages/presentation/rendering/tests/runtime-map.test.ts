@@ -68,6 +68,10 @@ describe("runtime map rendering input", () => {
     bytes[bytes.length - 12] = 10
     expect(parseRuntimeMap(bytes).materials[0]?.shader).toBe(10)
     bytes[bytes.length - 12] = 11
+    expect(parseRuntimeMap(bytes).materials[0]?.shader).toBe(11)
+    bytes[bytes.length - 12] = 12
+    expect(parseRuntimeMap(bytes).materials[0]?.shader).toBe(12)
+    bytes[bytes.length - 12] = 13
     expect(() => parseRuntimeMap(bytes)).toThrow("runtime material payload is invalid")
   })
 
