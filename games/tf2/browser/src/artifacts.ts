@@ -87,6 +87,7 @@ export type StaticMaterialState = Readonly<{
 export type ParticleTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string; materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
+  unavailable: ReadonlySet<string>
   patches: ReadonlyMap<string, Readonly<{ sampleRate: number; frames: number; loopStartSeconds: number | null }>>
   mixerSha256: string
   mixerGain: number
@@ -1013,7 +1014,7 @@ function soundNode(r: Reader): SoundScriptNode {
 }
 
 function parseAudio(r: Reader): AudioArtifact {
-  if (r.decode(r.take(4)) !== "PAUD" || r.u32() !== 3) throw new ArtifactError("PAUD identity")
+  if (r.decode(r.take(4)) !== "PAUD" || r.u32() !== 4) throw new ArtifactError("PAUD identity")
   const mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), count = r.u32()
   if (mixerGain < 0 || count < 1 || count > 5) throw new ArtifactError("audio mixer or document count")
   const documents = Array.from({ length: count }, () => Object.freeze({
@@ -1032,7 +1033,16 @@ function parseAudio(r: Reader): AudioArtifact {
     if (patches.has(path) || sampleRate === 0 || frames === 0 || (cue !== 0xffff_ffff && cue >= frames)) throw new ArtifactError("sound patch metadata")
     patches.set(path, Object.freeze({ sampleRate, frames, loopStartSeconds: cue === 0xffff_ffff ? null : cue / sampleRate }))
   }
-  return Object.freeze({ mixerSha256, mixerGain, documents: Object.freeze(documents), patches })
+  const unavailable = new Set<string>(), unavailableCount = r.u32()
+  if (unavailableCount > 128) throw new ArtifactError("sound precache absence count")
+  for (let index = 0; index < unavailableCount; index++) {
+    const path = r.text()
+    if (!path.startsWith("sound/") || path !== path.toLowerCase() || path.includes("\\") || path.split("/").some(part => !part || part === "." || part === "..") || unavailable.has(path) || patches.has(path)) {
+      throw new ArtifactError("sound precache absence")
+    }
+    unavailable.add(path)
+  }
+  return Object.freeze({ mixerSha256, mixerGain, documents: Object.freeze(documents), patches, unavailable })
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
