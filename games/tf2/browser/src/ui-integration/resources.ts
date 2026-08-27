@@ -444,7 +444,7 @@ function borders(
   return Object.freeze([...result.values()])
 }
 
-function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiControlRegistration[] {
+export function tf2CustomControls(descriptor: Tf2UiResourceDescriptor): readonly VguiControlRegistration[] {
   const properties = new Map<string, Set<string>>()
   const walk = (node: Tf2UiResourceNode) => {
     const control = scalar(node, "ControlName")
@@ -492,7 +492,9 @@ function customControls(descriptor: Tf2UiResourceDescriptor): readonly VguiContr
     }),
     Object.freeze({
       name: "CTFHudElement", baseControl: "EditablePanel" as const, element: "div" as const, role: null,
-      focusable: false, animationVariables: Object.freeze([]), acceptedProperties: Object.freeze([
+      focusable: false, animationVariables: Object.freeze([
+        { name: "x_offset", converter: "proportional_float" as const, defaultValue: "0" },
+      ]), acceptedProperties: Object.freeze([
         "RightMargin", "SmallBoxWide", "SmallBoxTall", "PlusStyleBoxWide", "PlusStyleBoxTall",
         "PlusStyleExpandSelected", "LargeBoxWide", "LargeBoxTall", "BoxGap", "SelectionNumberXPos",
         "SelectionNumberYPos", "IconXPos", "IconYPos", "TextYPos", "ErrorYPos", "TextColor", "MaxSlots",
@@ -1047,7 +1049,7 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
     animations,
     activeConditions,
     resolutionSuffixes: Object.freeze([]),
-    customControls: customControls(descriptor),
+    customControls: tf2CustomControls(descriptor),
     gameUiBackground,
     diagnostics: Object.freeze(diagnostics),
     document(logicalPath: string) {

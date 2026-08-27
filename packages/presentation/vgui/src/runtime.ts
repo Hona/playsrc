@@ -515,6 +515,7 @@ function asSourceControl(control: VguiControlName): string {
 
 function resourceProperties(registration: VguiControlRegistration): ReadonlySet<string> {
   const accepted = new Set([...BASE_PROPERTIES].map(asciiFold))
+  for (const definition of registration.animationVariables) accepted.add(asciiFold(definition.name))
   const sourceControl = registration.baseControl
   const inherited: string[] = [sourceControl]
   if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem", "URLLabel"].some((name) => sameName(sourceControl, name))) inherited.push("Label")
