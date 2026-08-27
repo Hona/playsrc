@@ -11,6 +11,9 @@ export type SourceModelPanelPresentation = Readonly<{
   viewport: SourceModelPanelViewport
   rendererViewport: SourceModelPanelViewport
   verticalFovDegrees: number
+  near: number
+  far: number
+  projection: Readonly<{ width: number; height: number; offsetX: number; offsetY: number }>
   origin: readonly [number, number, number]
 }>
 
@@ -39,7 +42,8 @@ export function withSourceModelPanelTargetViewport<T>(
 
 export function sourceModelPanelPresentation(request: Readonly<{
   model: string
-  horizontalFov4By3: number
+  kind: "entity" | "studio"
+  fov: number
   origin: readonly [number, number, number]
   bounds: SourceModelPanelViewport
   displayWidth: number
@@ -47,9 +51,10 @@ export function sourceModelPanelPresentation(request: Readonly<{
   devicePixelRatio: number
 }>): SourceModelPanelPresentation {
   if (!request.model
-    || !Number.isFinite(request.horizontalFov4By3)
-    || request.horizontalFov4By3 <= 0
-    || request.horizontalFov4By3 >= 180
+    || (request.kind !== "entity" && request.kind !== "studio")
+    || !Number.isFinite(request.fov)
+    || request.fov <= 0
+    || request.fov >= 180
     || !request.origin.every(Number.isFinite)
     || !Number.isFinite(request.devicePixelRatio)
     || request.devicePixelRatio <= 0
@@ -63,7 +68,7 @@ export function sourceModelPanelPresentation(request: Readonly<{
     throw new TypeError("Source model-panel presentation is invalid")
   }
   const ratio = request.bounds.width / request.bounds.height / (4 / 3)
-  const offset = request.model.toLowerCase().startsWith("models/player/")
+  const offset = request.kind === "entity" && request.model.toLowerCase().startsWith("models/player/")
     ? ratio > 1.05 ? -60 : ratio < 0.95 ? 15 : 0
     : 0
   const left = Math.round(request.bounds.x * request.devicePixelRatio)
@@ -89,7 +94,12 @@ export function sourceModelPanelPresentation(request: Readonly<{
       width: logicalPixel(width),
       height: logicalPixel(height),
     }),
-    verticalFovDegrees: sourceHorizontal4By3FovToVertical(request.horizontalFov4By3),
+    verticalFovDegrees: request.kind === "entity"
+      ? sourceHorizontal4By3FovToVertical(request.fov)
+      : 2 * Math.atan(Math.tan(request.fov * Math.PI / 360) * request.bounds.height / request.bounds.width) * 180 / Math.PI,
+    near: request.kind === "entity" ? 7 : 3,
+    far: request.kind === "entity" ? 1000 : 16384 * 1.73205080757,
+    projection: Object.freeze({ width: right - left, height: bottom - top, offsetX: x - left, offsetY: y - top }),
     origin: Object.freeze([request.origin[0] + offset, request.origin[1], request.origin[2]]) as readonly [number, number, number],
   })
 }

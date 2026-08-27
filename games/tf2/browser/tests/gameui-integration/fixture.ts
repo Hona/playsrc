@@ -79,6 +79,7 @@ function createResources(): Tf2VguiResources {
       name: control.name,
       baseControl: control.name === "CTeamMenu" ? "Frame"
         : control.name === "CCreateMultiplayerGameServerPage" ? "PropertyPage"
+        : /label/iu.test(control.name) ? "Label"
         : /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,
@@ -163,6 +164,7 @@ function createResources(): Tf2VguiResources {
       language: "english",
       tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap((token) => {
         if (!["#LoadingMap", "#Gametype_Escort", "#TF_Matchmaking_HeaderModeSelect"].includes(token.name)
+          && !/^#?ClassTips_/iu.test(token.name)
           && !token.name.startsWith("#MMenu_PlayList_")) return []
         const definition = token.definitions.at(-1)
         return definition

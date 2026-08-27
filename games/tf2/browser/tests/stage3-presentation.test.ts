@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the lit fire-tick PMRQ v7 contract", () => {
+test("encodes each Unicode model/activity exactly once into the lit fire-tick PMRQ v8 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,7 +132,7 @@ test("encodes each Unicode model/activity exactly once into the lit fire-tick PM
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(7)
+  expect(view.getUint32(4, true)).toBe(8)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getBigUint64(16, true)).toBe(0n)
   expect(view.getUint32(56, true)).toBe(new TextEncoder().encode(request.model).byteLength)
@@ -247,7 +247,7 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(8)
+  u32(9)
   u32(1)
   u32(9)
   u32(7)
@@ -273,6 +273,7 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
   u32(6)
   u32(2)
   output.push(1, 0, 0, 0)
+  u32(0)
   u32(0)
   u32(0)
   u32(0)

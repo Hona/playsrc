@@ -146,6 +146,8 @@ struct Tf2UiMaterialTextureRecord {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Tf2UiMaterialRecord {
+    vertex_color_gamma: bool,
+    alpha_test_reference: Option<f32>,
     configured_value: String,
     material: String,
     material_sha256: String,
@@ -1409,6 +1411,8 @@ fn ui_material_record(
         .transpose()?;
     let detail = material.detail.as_ref();
     Ok(Tf2UiMaterialRecord {
+        vertex_color_gamma: shader.eq_ignore_ascii_case("UnlitGeneric") && !ui_boolean(material, b"$linearwrite", false)?,
+        alpha_test_reference: if ui_boolean(material, b"$alphatest", false)? { Some(ui_float(material, b"$alphatestreference", 0.5)?) } else { None },
         configured_value: configured_value.to_owned(),
         material: identity.to_owned(),
         material_sha256: material_sha256.to_owned(),
@@ -3359,13 +3363,7 @@ fn main() -> Result<(), String> {
                 .or_insert(candidate);
         }
     }
-    let mut runtime_ui_materials = (1..=4)
-        .map(|index| {
-            let configured = format!("vgui/hud/8x800corner{index}");
-            let identity = format!("materials/{configured}.vmt");
-            (configured, identity)
-        })
-        .collect::<Vec<_>>();
+    let mut runtime_ui_materials = Vec::new();
     runtime_ui_materials.extend(
         tf2_ui
             .dynamic_images
@@ -3479,7 +3477,7 @@ fn main() -> Result<(), String> {
         )
         .collect::<Vec<_>>();
     let ui_material_bytes = serde_json::to_vec(&Tf2UiMaterialSet {
-        schema: "playsrc-tf2-ui-materials-v1",
+        schema: "playsrc-tf2-ui-materials-v2",
         descriptor: tf2_ui.identity.clone(),
         images: ui_materials.clone(),
         textures: texture_records,

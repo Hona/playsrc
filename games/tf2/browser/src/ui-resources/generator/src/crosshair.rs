@@ -234,7 +234,7 @@ fn authored(
     configured_image: &str,
     crop: Option<Crop>,
 ) -> Result<AuthoredCrosshair, String> {
-    let image = image_record(content, configured_image, 1)?;
+    let image = image_record(content, configured_image, 1, false)?;
     if image.classification != "content-vtf" || image.textures.len() != 1 {
         return Err(format!(
             "authored crosshair {file} does not resolve one exact material and texture"

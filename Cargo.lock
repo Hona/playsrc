@@ -529,6 +529,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-choreography"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-collision"
 version = "0.1.0"
 dependencies = [

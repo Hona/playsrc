@@ -396,6 +396,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-choreography"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-content"
 version = "0.1.0"
 dependencies = [
@@ -409,20 +413,36 @@ name = "playsrc-keyvalues"
 version = "0.1.0"
 
 [[package]]
+name = "playsrc-studio-model"
+version = "0.1.0"
+dependencies = [
+ "playsrc-vhv",
+]
+
+[[package]]
 name = "playsrc-tf2-ui-resources-generator"
 version = "0.1.0"
 dependencies = [
  "base64",
  "flate2",
  "icefast",
+ "playsrc-choreography",
  "playsrc-content",
  "playsrc-keyvalues",
+ "playsrc-studio-model",
  "playsrc-vmt",
  "playsrc-vpk",
  "playsrc-vtf",
  "png",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "playsrc-vhv"
+version = "0.1.0"
+dependencies = [
  "sha2 0.10.9",
 ]
 

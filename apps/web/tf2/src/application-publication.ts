@@ -48,6 +48,7 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("class-selection-team", "classSelectionTeam"),
   attribute("class-selection-selected", "classSelectionSelected"),
   attribute("class-selection-models", "classSelectionModels"),
+  attribute("class-selection-animation", "classSelectionAnimation"),
   attribute("hud-probe", "hudProbe"),
   attribute("hud-animation-trace", "hudAnimationTrace"),
   attribute("hud-operation-probe", "hudOperationProbe"),

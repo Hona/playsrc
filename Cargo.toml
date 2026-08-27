@@ -3,6 +3,7 @@ members = [
   "packages/asset-store/rust",
   "packages/formats/bsp/rust",
   "packages/formats/keyvalues/rust",
+  "packages/formats/choreography/rust",
   "packages/formats/nav/rust",
   "packages/formats/vpk/rust",
   "packages/formats/vmt/rust",

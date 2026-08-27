@@ -351,6 +351,7 @@ export type ApplicationView = Readonly<{
   classSelectionTeam?: number
   classSelectionSelected?: number
   classSelectionModels?: string
+  classSelectionAnimation?: string
   teamSelectionVisible?: boolean
   teamSelectionLocal?: number
   teamSelectionRedCount?: number
@@ -585,6 +586,14 @@ export class Tf2Application {
   #engineer?: Tf2EngineerPresentation
   #classSelection?: Tf2ClassSelectionIntegration
   #classSelectionModelPanels: readonly Tf2ClassSelectionModelPanel[] = Object.freeze([])
+  #classSelectionAnimationStarted = 0
+  #classSelectionAnimationElapsed = 0
+  #classSelectionAnimationReset = true
+  #classSelectionWeaponVisible = true
+  #selectionViewportEpoch = 0
+  #classSelectionBackground: HTMLCanvasElement | undefined
+  #classSelectionBackgroundKey = ""
+  #classSelectionBackgroundPrimitives = 0
   #classSelectionRenderTask?: Promise<void>
   #classSelectionRenderRevision = 0
   #teamSelection?: Tf2TeamSelectionIntegration
@@ -1845,7 +1854,7 @@ export class Tf2Application {
       finishLoadPhase("presentationSetup")
       this.#renderer = await createRenderer({
         canvas: this.#canvas,
-        configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
+        configuration: { ...(this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" },
         powerPreference: "high-performance",
         sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
         textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy },
@@ -2102,6 +2111,9 @@ export class Tf2Application {
     }
     this.#classSelection = initializeTf2ClassSelectionIntegration({
       root: this.#classSelectionRoot,
+      modelSurface: this.#canvas,
+      backgroundSurface: this.#classSelectionBackground ??= Object.assign(document.createElement("canvas"), { className: "class-selection-background-surface" }),
+      roster: () => this.#snapshot?.scoreboard.players ?? [],
       resources: this.#uiResources,
       viewport: this.#viewport(),
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -2109,6 +2121,13 @@ export class Tf2Application {
       random: this.#presentationRandom,
       onRequest: (request) => this.#classSelectionRequest(request),
       onModelPanels: (panels) => {
+        if (panels.length === 0) this.#classSelectionBackgroundKey = ""
+        if (panels[1]?.model !== this.#classSelectionModelPanels[1]?.model || panels[1]?.skin !== this.#classSelectionModelPanels[1]?.skin) {
+          this.#classSelectionAnimationStarted = this.#frameClock.current
+          this.#classSelectionAnimationElapsed = 0
+          this.#classSelectionAnimationReset = true
+          this.#classSelectionWeaponVisible = true
+        }
         this.#classSelectionModelPanels = panels
         this.#classSelectionRenderRevision += 1
         this.#set({
@@ -2131,6 +2150,8 @@ export class Tf2Application {
   #showClassSelection(initialJoin = false): void {
     if (!this.#classSelection || !this.#snapshot || this.#view.gameUi !== "in-game"
       || (this.#snapshot.team !== 2 && this.#snapshot.team !== 3)) return
+    this.#selectionViewportEpoch += 1
+    this.#teamSelection?.dispatch({ kind: "hide" })
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
     this.#classSelection.dispatch({
@@ -2141,25 +2162,92 @@ export class Tf2Application {
   }
 
   #renderClassSelection(): void {
-    if (!this.#renderer || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask || this.#displayTask || this.#teamSelectionRenderTask) return
+    if (!this.#renderer || !this.#client || !this.#artifacts || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask || this.#displayTask || this.#teamSelectionRenderTask) return
     const renderer = this.#renderer
+    const client = this.#client
     const revision = this.#classSelectionRenderRevision
     const generation = this.#generation
-    const panels = this.#classSelectionModelPanels.map((panel, index) => Object.freeze({
+    const authored = this.#classSelectionModelPanels
+    const now = this.#frameClock.current
+    const elapsed = Math.max(0, now - this.#classSelectionAnimationStarted)
+    const previous = Math.min(this.#classSelectionAnimationElapsed, elapsed)
+    this.#classSelectionAnimationElapsed = elapsed
+    const player = authored[1]!
+    const artifact = this.#artifacts.models.get(player.model)
+    this.#classSelectionRenderTask = (async () => {
+      const background = authored[0]!
+      const backgroundKey = `${generation}:${this.#canvas.width}:${this.#canvas.height}:${JSON.stringify(background)}`
+      if (backgroundKey !== this.#classSelectionBackgroundKey) {
+        const animation = this.#artifacts!.models.get(background.model)?.sequences[0]
+        if (animation && animation.weightedFrameCount > 1) throw new Error("Authored class-selection background requires animated-surface presentation")
+        const rendered = await renderer.renderModelPanels([{ identity: background.name, model: background.model, skin: background.skin,
+          kind: "entity", fov: background.fov, origin: background.origin, angles: background.angles, bounds: background.bounds, background: "opaque" }])
+        const bitmap = await createImageBitmap(this.#canvas)
+        if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) { bitmap.close(); return }
+        const surface = this.#classSelectionBackground!
+        surface.width = this.#canvas.width
+        surface.height = this.#canvas.height
+        surface.style.width = "100%"
+        surface.style.height = "100%"
+        surface.style.position = "absolute"
+        const context = surface.getContext("bitmaprenderer")
+        if (!context) { bitmap.close(); throw new Error("Authored class background bitmap presentation is unavailable") }
+        context.transferFromImageBitmap(bitmap)
+        this.#classSelectionBackgroundKey = backgroundKey
+        this.#classSelectionBackgroundPrimitives = rendered.panels[0]!.primitives
+      }
+      let pose: PosedModel | undefined
+      let carried: PosedModel | undefined
+      {
+        if (!artifact) throw new Error(`TF2 class-selection model is unavailable: ${player.model}`)
+        const selected = this.#classSelection!.state().selected
+        const classSelection = selected !== 12
+        const modelPanelReset = this.#classSelectionAnimationReset
+        this.#classSelectionAnimationReset = false
+        const randomSequence = classSelection ? undefined : artifact.sequences.find(sequence => sequence.index === 1)
+        if (!classSelection && !randomSequence) throw new Error("Authored random-class idle sequence is unavailable")
+        const poses = await client.models(generation, encodeModelPoseBatch([{
+          identity: 0x2001, model: player.model, classSelection, modelPanel: true, modelPanelReset,
+          activity: randomSequence?.label ?? (selected === 5 ? "ACT_MP_STAND_SECONDARY" : selected === 8 || selected === 9 ? "ACT_MP_STAND_MELEE" : "ACT_MP_STAND_PRIMARY"),
+          previousElapsedSeconds: previous, elapsedSeconds: elapsed,
+          currentTimeSeconds: now, frameTimeSeconds: elapsed - previous, planarSpeed: 0,
+          screenAspectRatio: player.bounds.width / player.bounds.height, worldFarPlane: 16384 * Math.sqrt(3),
+          skin: player.skin, lod: 0, bodygroups: artifact.bodygroupCounts.map(() => 0),
+          lighting: { origin: player.origin, angles: player.angles, cameraPosition: [0, 0, 0], cameraAngles: [0, 0, 0] },
+        }]))
+        if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return
+        pose = poses.find((value) => value.role === "single")
+        carried = poses.find((value) => value.role === "item")
+        if (!pose) throw new Error("TF2 class-selection pose is unavailable")
+        if (classSelection && !carried) throw new Error("TF2 class-selection carried item is unavailable")
+        for (const event of pose.events) {
+          if (event.name === "AE_WPN_HIDE") this.#classSelectionWeaponVisible = false
+          if (event.name === "AE_WPN_UNHIDE") this.#classSelectionWeaponVisible = true
+        }
+      }
+    const panels = authored.slice(1).map((panel) => Object.freeze({
       identity: panel.name,
       model: panel.model,
       skin: panel.skin,
-      horizontalFov4By3: panel.fov,
+      kind: panel.name === "MenuBG" ? "entity" as const : "studio" as const,
+      fov: panel.fov,
       origin: panel.origin,
       angles: panel.angles,
       bounds: panel.bounds,
-      background: index === 0 ? "opaque" as const : "transparent" as const,
+      background: "clear-transparent" as const,
+      presentationTimeSeconds: now,
+      ...(pose ? { pose, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes } : {}),
+      ...(carried && this.#classSelectionWeaponVisible ? { mergedModels: [{ model: carried.model,
+        skin: panel.skin < (this.#artifacts!.models.get(carried.model)?.skinCount ?? 0) ? panel.skin : 0, pose: carried,
+        modelLighting: carried.lighting ?? undefined, eyeStates: carried.eyes }] } : {}),
     }))
-    this.#classSelectionRenderTask = renderer.renderModelPanels(panels)
-      .then((result) => {
+      const result = await renderer.renderModelPanels(panels)
         if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return
-        this.#set({ classSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
-      })
+        this.#set({ classSelectionModels: [`MenuBG:${background.model}:${background.skin}:${this.#classSelectionBackgroundPrimitives}`, ...result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`)].join("|"),
+          classSelectionAnimation: pose ? JSON.stringify({ model: pose.model, activity: pose.activity, cycle: pose.cycle,
+            flexVertices: pose.flex.reduce((count, primitive) => count + primitive.indices.length, 0),
+            weapon: carried?.model, weaponVisible: this.#classSelectionWeaponVisible }) : "" })
+      })()
       .catch((error) => {
         if (generation !== this.#generation || !this.#classSelection?.state().visible) return
         this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "TF2 class model rendering failed") })
@@ -2223,8 +2311,10 @@ export class Tf2Application {
   async #showTeamSelection(): Promise<void> {
     if (!this.#teamSelection || !this.#client || this.#view.gameUi !== "in-game") return
     const generation = this.#generation
+    const epoch = ++this.#selectionViewportEpoch
     const server = await this.#client.teamSelection(generation)
-    if (generation !== this.#generation || this.#closed) return
+    if (generation !== this.#generation || epoch !== this.#selectionViewportEpoch || this.#closed) return
+    this.#classSelection?.dispatch({ kind: "hide" })
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) await document.exitPointerLock()
     this.#teamSelection.dispatch({ kind: "show", server })
@@ -2286,7 +2376,8 @@ export class Tf2Application {
           identity: panel.name,
           model: panel.model,
           skin: panel.skin,
-          horizontalFov4By3: panel.fov,
+          kind: "entity" as const,
+          fov: panel.fov,
           origin: panel.origin,
           angles: panel.angles,
           bounds: panel.bounds,
@@ -3463,7 +3554,7 @@ export class Tf2Application {
         await this.#renderer.dispose()
         this.#renderer = await createRenderer({
           canvas: this.#canvas,
-          configuration: this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR,
+          configuration: { ...(this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" },
           powerPreference: "high-performance",
           sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
           textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy },
@@ -4355,7 +4446,7 @@ export class Tf2Application {
     if(hudModel){
       const result=await renderer.renderModelPanels([Object.freeze({
         identity:"classmodelpanel",model:hudModel.model,skin:hudModel.skin,
-        horizontalFov4By3:hudModel.fov,origin:hudModel.origin,angles:hudModel.angles,
+        kind:"studio" as const,fov:hudModel.fov,origin:hudModel.origin,angles:hudModel.angles,
         bounds:hudModel.bounds,background:"transparent" as const,presentationTimeSeconds,
       })])
       hudModelMilliseconds=result.milliseconds

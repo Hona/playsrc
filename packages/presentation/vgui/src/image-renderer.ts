@@ -25,6 +25,7 @@ export type VguiImageRasterGeometry =
     }>
 
 export type VguiImageRasterRequest = Readonly<{
+  pixelRatio: number
   width: number
   height: number
   viewportWidth: number
@@ -36,6 +37,7 @@ export type VguiImageRasterRequest = Readonly<{
 
 export function isDirectVguiImageMaterial(material: VguiImageMaterialPresentation): boolean {
   return material.shader === "unlit-generic"
+    && material.alphaTestReference === null
     && material.base.colorRead === "srgb"
     && material.second === null
     && material.detail === null
@@ -143,9 +145,13 @@ function shadeVguiImageRows(
       outlineEnd1 = clamp(endMiddle + resolutionScale * (outlineEnd1 - endMiddle), 0.05, 0.99)
     }
   }
-  const tintRed = request.tint[0] / 255
-  const tintGreen = request.tint[1] / 255
-  const tintBlue = request.tint[2] / 255
+  // Source's generic vertex shader converts vertex RGB (but not alpha) with
+  // GammaToLinear before an sRGB write. UI solid colors and textured corners
+  // must not disagree merely because one passes through a texture shader.
+  const tintChannel = (value: number) => request.material.vertexColorGamma ? (value / 255) ** 2.2 : value / 255
+  const tintRed = tintChannel(request.tint[0])
+  const tintGreen = tintChannel(request.tint[1])
+  const tintBlue = tintChannel(request.tint[2])
   const tintAlpha = request.tint[3] / 255
   const color = new Float64Array(4)
   const secondary = new Float64Array(4)
@@ -154,8 +160,8 @@ function shadeVguiImageRows(
       let u: number
       let v: number
       if (request.geometry.kind === "stretch" || request.geometry.kind === "tile") {
-        u = (x + 0.5) / (request.geometry.kind === "stretch" ? request.width : request.material.base.width)
-        v = (y + 0.5) / (request.geometry.kind === "stretch" ? request.height : request.material.base.height)
+        u = (x + 0.5) / (request.geometry.kind === "stretch" ? request.width : request.material.base.width * request.pixelRatio)
+        v = (y + 0.5) / (request.geometry.kind === "stretch" ? request.height : request.material.base.height * request.pixelRatio)
         const rotation = request.geometry.rotation
         if (rotation === 1) { const previous = u; u = v; v = 1 - previous }
         else if (rotation === 2) { u = 1 - u; v = 1 - v }
@@ -219,6 +225,7 @@ function shadeVguiImageRows(
       color[1] *= tintGreen
       color[2] *= tintBlue
       color[3] *= tintAlpha
+      if (request.material.alphaTestReference !== null && color[3]! < request.material.alphaTestReference) color[3] = 0
       const offset = (y * request.width + x) * 4
       output[offset] = Math.round(clamp(linearToSrgb(color[0]!)) * 255)
       output[offset + 1] = Math.round(clamp(linearToSrgb(color[1]!)) * 255)

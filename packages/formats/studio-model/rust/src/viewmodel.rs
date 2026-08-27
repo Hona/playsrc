@@ -10,6 +10,19 @@ use crate::{
 
 const STUDIO_HEADER_FORCE_OPAQUE: i32 = 0x0000_0004;
 
+/// Model panels deliver all authored sequence events, with end-of-loop events
+/// before the following loop's zero-frame events (CMDLPanel::DoAnimationEvents).
+pub fn model_panel_events(events: &[SequenceEvent], previous: f32, current: f32) -> Vec<&SequenceEvent> {
+    if previous == current { return Vec::new(); }
+    let mut output = Vec::new();
+    let start = if current < previous {
+        output.extend(events.iter().filter(|event| f32::from_bits(event.cycle.0) > previous));
+        -0.01
+    } else { previous };
+    output.extend(events.iter().filter(|event| { let cycle = f32::from_bits(event.cycle.0); cycle > start && cycle <= current }));
+    output
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewModelCompositionRequest {
     pub translated_activity: Vec<u8>,
@@ -859,6 +872,16 @@ pub fn compose_viewmodel(
         },
         item_to_hand_bones,
     })
+}
+
+pub fn merge_model_pose(
+    parent: &PresentationModel,
+    parent_pose: &SampledPose,
+    child: &PresentationModel,
+    child_pose: &SampledPose,
+) -> Result<SampledPose, PresentationError> {
+    let bone_map = child.bones.iter().map(|bone| parent.bones.iter().position(|p| p.name.eq_ignore_ascii_case(&bone.name))).collect::<Vec<_>>();
+    merged_item_pose(child, child_pose, parent, parent_pose, &bone_map)
 }
 
 fn merged_item_pose(

@@ -79,6 +79,9 @@ export type Tf2ClassSelectionIntegration = Readonly<{
 
 export type Tf2ClassSelectionIntegrationRequest = Readonly<{
   root: HTMLElement
+  modelSurface?: HTMLCanvasElement
+  backgroundSurface?: HTMLCanvasElement
+  roster?(): readonly Readonly<{ fake: boolean; team: number; class: number }>[]
   resources: Tf2VguiResources
   viewport: VguiViewport
   reducedMotion: boolean
@@ -111,7 +114,14 @@ function panel(runtime: VguiRuntime, name: string, parent?: VguiPanelId): VguiPa
 }
 
 function shallow(node: VguiResourceNode): VguiResourceNode {
-  return copy(node, node.children.filter((property) => property.value !== null || property.name.toLowerCase() === "controlname"))
+  const children = node.children.filter((property) => property.value !== null || property.name.toLowerCase() === "controlname")
+  // CTFClassMenu::PerformLayout sizes this localized sentence, not its .res placeholder.
+  if (node.name === "CountLabel") {
+    for (const name of ["auto_wide_tocontents", "auto_tall_tocontents"]) {
+      children.push(Object.freeze({ name, value: "1", condition: null, children: Object.freeze([]) }))
+    }
+  }
+  return copy(node, children)
 }
 
 function applyChildren(runtime: VguiRuntime, parent: VguiPanelId, source: VguiResourceDocument,
@@ -152,13 +162,30 @@ class Integration implements Tf2ClassSelectionIntegration {
   readonly #buttons = new Map<Tf2ClassSelectionIdentity, VguiPanelId>()
   readonly #images = new Map<Tf2ClassSelectionIdentity, VguiPanelId>()
   readonly #tipPanels: VguiPanelId[] = []
+  readonly #tipRows: { panel: VguiPanelId; x: number; y: number; width: number; height: number }[] = []
+  readonly #tipChrome = new Map<string, VguiPanelId>()
+  #tipScroll = 0
+  #tipContentHeight = 0
+  #tipItemsHeight = 0
+  #tipScrollbarWidth = 0
+  #tipDrag: { pointer: number; start: number; scroll: number; pixels: number; range: number } | undefined
   #owner: VguiPanelId
   #tips: VguiPanelId
   #state: Tf2ClassSelectionState = TF2_CLASS_SELECTION_INITIAL_STATE
   #destroyed = false
+  readonly #modelSurface: HTMLCanvasElement | undefined
+  readonly #backgroundSurface: HTMLCanvasElement | undefined
+  #viewport: VguiViewport
+  #releaseSurface: (() => void) | undefined
+  readonly #roster: NonNullable<Tf2ClassSelectionIntegrationRequest["roster"]>
+  #rosterKey = ""
 
   constructor(request: Tf2ClassSelectionIntegrationRequest) {
     this.#root = request.root
+    this.#modelSurface = request.modelSurface
+    this.#backgroundSurface = request.backgroundSurface
+    this.#viewport = request.viewport
+    this.#roster = request.roster ?? (() => [])
     this.#resources = request.resources
     this.#onRequest = request.onRequest
     this.#onModelPanels = request.onModelPanels
@@ -182,6 +209,10 @@ class Integration implements Tf2ClassSelectionIntegration {
         if (/^select (?:[1-9]|12)$/u.test(value.command)) {
           this.dispatch({ kind: "select", identity: Number(value.command.slice(7)) as Tf2ClassSelectionIdentity })
         } else if (value.command === "vguicancel" || value.command === "close") this.dispatch({ kind: "cancel" })
+        else if (/^ScrollButtonPressed [01]$/u.test(value.command)) {
+          const height = this.#runtime.snapshotPanels([this.#tips])[0]!.bounds.height
+          this.#scrollTips(this.#tipScroll + Math.trunc(height / 4) * (value.command.endsWith("0") ? -1 : 1))
+        }
       },
     })
     if (!initialized.ok) throw new Error(`TF2 class selection ${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
@@ -218,6 +249,25 @@ class Integration implements Tf2ClassSelectionIntegration {
       applyChildren(this.#runtime, tipsOwner, tipsSource, tipsSource.root.children, request.resources.activeConditions, request.resources.resolutionSuffixes)
       this.#tips = panel(this.#runtime, "ClassTipsListPanel", tipsOwner) ?? 0
       if (this.#tips === 0) throw new Error("TF2 class selection authored tips list is unavailable")
+      for (const [name, image, command] of [
+        ["UpArrow", "chalkboard_scroll_up", "ScrollButtonPressed 0"],
+        ["DownArrow", "chalkboard_scroll_down", "ScrollButtonPressed 1"],
+        ["Line", "chalkboard_scroll_line", ""], ["Box", "chalkboard_scroll_box", ""],
+      ] as const) {
+        const control = apply(this.#runtime, { kind: "create-panel", parent: this.#tips,
+          control: command ? "CExImageButton" : "ImagePanel", name,
+          properties: [{ name: "visible", value: "0" }, { name: "paintbackground", value: "0" },
+            ...(command ? [{ name: "command", value: command }, { name: "labelText", value: "" }, { name: "zpos", value: "501" }]
+              : [{ name: "image", value: image }, { name: "scaleImage", value: "1" }])],
+        })!
+        this.#tipChrome.set(name, control)
+        if (command) {
+          const sub = apply(this.#runtime, { kind: "create-panel", parent: control, control: "ImagePanel", name: "SubImage",
+            properties: [{ name: "image", value: image }, { name: "scaleImage", value: "1" }] })!
+          this.#tipChrome.set(`${name}Image`, sub)
+          apply(this.#runtime, { kind: "set-panel-state", panel: sub, mouseInput: false })
+        } else apply(this.#runtime, { kind: "set-panel-state", panel: control, mouseInput: false })
+      }
       for (const name of ["Offense", "Defense", "Support", "CountLabel", "ClassMenuSelect"]) {
         const label = panel(this.#runtime, name, this.#owner)
         if (label !== null) apply(this.#runtime, { kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
@@ -229,14 +279,25 @@ class Integration implements Tf2ClassSelectionIntegration {
       for (const playerClass of TF2_CLASS_SELECTION_CLASSES.filter((value) => value.identity !== 12)) {
         const variable = playerClass.name === "heavyweapons" ? "numHeavy"
           : `num${playerClass.name[0]!.toUpperCase()}${playerClass.name.slice(1)}`
-        apply(this.#runtime, { kind: "set-dialog-variable", panel: this.#owner, name: variable, value: "0" })
+        apply(this.#runtime, { kind: "set-dialog-variable", panel: this.#owner, name: variable, value: "" })
       }
     })
     request.root.addEventListener("pointermove", this.#pointerMove)
+    request.root.addEventListener("wheel", this.#tipsWheel, { passive: false, capture: true })
+    request.root.addEventListener("pointerdown", this.#tipsPointerDown, true)
+    request.root.addEventListener("pointerup", this.#tipsPointerUp, true)
+    request.root.addEventListener("pointercancel", this.#tipsPointerUp, true)
   }
 
   readonly #pointerMove = (event: Event): void => {
     if (!this.#state.visible) return
+    const pointer = event as PointerEvent
+    if (this.#tipDrag && pointer.pointerId === this.#tipDrag.pointer) {
+      const drag = this.#tipDrag
+      this.#scrollTips(drag.scroll + Math.trunc((pointer.clientY - drag.start) * drag.range / Math.max(1, drag.pixels)))
+      event.preventDefault()
+      return
+    }
     let target = event.target as HTMLElement | null
     while (target && target !== this.#root) {
       const name = target.dataset?.vguiName
@@ -251,20 +312,41 @@ class Integration implements Tf2ClassSelectionIntegration {
 
   #updateTips(identity: Tf2ClassSelectionIdentity): void {
     for (const value of this.#tipPanels.splice(0)) apply(this.#runtime, { kind: "delete-panel", panel: value, deferred: false })
+    this.#tipRows.length = 0
+    this.#tipScroll = this.#tipContentHeight = this.#tipItemsHeight = 0
+    for (const control of this.#tipChrome.values()) apply(this.#runtime, { kind: "set-panel-state", panel: control, visible: false })
     if (identity === 12) return
     const count = Number(this.#localization.get(`classtips_${identity}_count`) ?? "0")
     const source = this.#resources.document(CLASS_TIPS_ITEM_PATH)
     const authored = source.root.children.find((value) => value.name === "ClassTipsItemPanel")
     if (!authored || !Number.isSafeInteger(count) || count < 0 || count > 32) throw new Error("TF2 class selection authored tip source is invalid")
+    const snapshot = this.#runtime.snapshot()
+    const owner = snapshot.panels.find((value) => value.id === this.#owner)!
+    const list = snapshot.panels.find((value) => value.id === this.#tips)!
+    const scale = owner.bounds.height / 480
+    const buffer = Math.trunc(5 * scale)
+    const scrollbar = this.#resources.clientScheme.settings.find((value) => value.name.toLowerCase() === "scrollbar.wide")
+    const scrollbarWidth = Math.trunc(Number(scrollbar?.value ?? 17) * scale)
+    this.#tipScrollbarWidth = scrollbarWidth
+    const itemWidth = list.bounds.width - buffer - scrollbarWidth - 12
     let position = 0
     for (let index = 1; index <= count; index += 1) {
+      if (this.#localization.has(`classtips_${identity}_${index}_mvm`)) continue
       const text = this.#localization.get(`classtips_${identity}_${index}`)
       if (!text) continue
       const name = `ClassTipsItemPanel${index}`
-      const item = apply(this.#runtime, { kind: "create-panel", parent: this.#tips, control: "CTFClassTipsItemPanel", name })!
+      const item = apply(this.#runtime, {
+        kind: "create-panel", parent: this.#tips, control: "CTFClassTipsItemPanel", name,
+        properties: authored.children.filter((value) => value.value !== null && !["controlname", "fieldname"].includes(value.name.toLowerCase()))
+          .map((value) => ({ name: value.name, value: value.value! })),
+      })!
       this.#tipPanels.push(item)
-      apply(this.#runtime, { kind: "set-bounds", panel: item, bounds: { x: 0, y: position, width: 235, height: 30 } })
       applyChildren(this.#runtime, item, source, authored.children, this.#resources.activeConditions, this.#resources.resolutionSuffixes)
+      const height = this.#runtime.snapshot().panels.find((value) => value.id === item)!.bounds.height
+      position += buffer
+      apply(this.#runtime, { kind: "set-bounds", panel: item, bounds: { x: buffer, y: position, width: itemWidth, height } })
+      this.#tipRows.push({ panel: item, x: buffer, y: position, width: itemWidth, height })
+      this.#tipItemsHeight += height
       const label = panel(this.#runtime, "TipLabel", item)
       const icon = panel(this.#runtime, "TipIcon", item)
       if (label === null || icon === null) throw new Error("TF2 class selection authored tip controls are unavailable")
@@ -272,11 +354,117 @@ class Integration implements Tf2ClassSelectionIntegration {
       const image = this.#localization.get(`classtips_${identity}_${index}_icon`)
       if (image) apply(this.#runtime, { kind: "mutate-control", panel: icon, mutation: { image } })
       else apply(this.#runtime, { kind: "set-panel-state", panel: icon, visible: false })
-      position += 30
+      position += height
     }
+    this.#tipContentHeight = position + buffer
+    this.#scrollTips(0)
+  }
+
+  #scrollTips(value: number): void {
+    const list = this.#runtime.snapshotPanels([this.#tips])[0]!
+    const range = Math.max(0, this.#tipContentHeight - list.bounds.height)
+    const scroll = Math.max(0, Math.min(range, Math.trunc(value)))
+    const width = this.#tipScrollbarWidth
+    const track = Math.max(0, list.bounds.height - width * 2 - 1)
+    const size = Math.min(track, Math.max(width - 1, track * list.bounds.height / Math.max(1, this.#tipContentHeight)))
+    const start = range > 0 ? Math.trunc((track - size) * scroll / range) : 0
+    const visible = this.#tipItemsHeight > list.bounds.height
+    this.#runtime.deferPresentation(() => {
+      for (const row of this.#tipRows) apply(this.#runtime, { kind: "set-bounds", panel: row.panel, bounds: { x: row.x, y: row.y - scroll, width: row.width, height: row.height } })
+      for (const [name, y, height] of [["UpArrow", 0, width], ["DownArrow", list.bounds.height - width, width],
+        ["Line", width, list.bounds.height - width * 2], ["Box", width + start, Math.trunc(start + size) - start]] as const) {
+        const control = this.#tipChrome.get(name)!
+        apply(this.#runtime, { kind: "set-bounds", panel: control, bounds: { x: list.bounds.width - width, y, width, height } })
+        apply(this.#runtime, { kind: "set-panel-state", panel: control, visible, enabled: visible,
+          alpha: name === "UpArrow" && scroll === 0 || name === "DownArrow" && scroll === range ? 90 : 255 })
+        const image = this.#tipChrome.get(`${name}Image`)
+        if (image) {
+          apply(this.#runtime, { kind: "set-bounds", panel: image, bounds: { x: 0, y: 0, width, height } })
+          apply(this.#runtime, { kind: "set-panel-state", panel: image, visible })
+        }
+      }
+    })
+    this.#tipScroll = scroll
+  }
+
+  readonly #tipsWheel = (event: WheelEvent): void => {
+    if (!this.#state.visible || this.#tipContentHeight === 0) return
+    const list = this.#runtime.snapshotPanels([this.#tips])[0]!
+    const root = this.#root.getBoundingClientRect()
+    const x = event.clientX - root.left, y = event.clientY - root.top
+    const b = list.absoluteBounds
+    if (x < b.x || x >= b.x + b.width || y < b.y || y >= b.y + b.height) return
+    this.#scrollTips(this.#tipScroll + Math.sign(event.deltaY) * 24)
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+
+  readonly #tipsPointerDown = (event: PointerEvent): void => {
+    if (!this.#state.visible || event.button !== 0) return
+    const list = this.#runtime.snapshotPanels([this.#tips])[0]!
+    if (this.#tipItemsHeight <= list.bounds.height) return
+    const root = this.#root.getBoundingClientRect()
+    const b = list.absoluteBounds, width = this.#tipScrollbarWidth
+    const x = event.clientX - root.left - b.x, y = event.clientY - root.top - b.y
+    if (x < b.width - width || x >= b.width || y < width || y >= b.height - width) return
+    const knob = this.#runtime.snapshotPanels([this.#tipChrome.get("Box")!])[0]!.bounds
+    if (y < knob.y || y >= knob.y + knob.height) this.#scrollTips(this.#tipScroll + (y < knob.y ? -1 : 1) * list.bounds.height)
+    else {
+      this.#tipDrag = { pointer: event.pointerId, start: event.clientY, scroll: this.#tipScroll,
+        pixels: b.height - 2 * width - 1 - knob.height, range: this.#tipContentHeight - b.height }
+      this.#root.setPointerCapture(event.pointerId)
+    }
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+
+  readonly #tipsPointerUp = (event: PointerEvent): void => {
+    if (this.#tipDrag?.pointer !== event.pointerId) return
+    this.#tipDrag = undefined
+    if (this.#root.hasPointerCapture(event.pointerId)) this.#root.releasePointerCapture(event.pointerId)
+  }
+
+  #updateRoster(): void {
+    if (!this.#state.visible || this.#state.team === null) return
+    const counts = new Array<number>(10).fill(0)
+    for (const player of this.#roster()) {
+      if (player.team === this.#state.team && player.class >= 1 && player.class <= 9
+        && !(!player.fake && this.#state.initialJoin)) counts[player.class]! += 1
+    }
+    const key = `${this.#state.team}:${this.#state.current}:${counts.join(",")}`
+    if (key === this.#rosterKey) return
+    this.#rosterKey = key
+    this.#runtime.deferPresentation(() => {
+      const others: Tf2ClassSelectionIdentity[] = []
+      for (const playerClass of TF2_CLASS_SELECTION_CLASSES.filter((value) => value.identity !== 12)) {
+        const count = counts[playerClass.identity]!
+        const variable = playerClass.identity === 6 ? "numHeavy" : `num${playerClass.name[0]!.toUpperCase()}${playerClass.name.slice(1)}`
+        apply(this.#runtime, { kind: "set-dialog-variable", panel: this.#owner, name: variable, value: count > 0 ? String(count) : "" })
+        for (let i = 0; i < count - Number(playerClass.identity === this.#state.current) && others.length < 11; i += 1) others.push(playerClass.identity)
+      }
+      for (let i = 0; i < 11; i += 1) {
+        const image = panel(this.#runtime, `countImage${i}`, this.#owner)
+        if (image === null) continue
+        apply(this.#runtime, { kind: "set-panel-state", panel: image, visible: i < others.length, mouseInput: false })
+        if (i < others.length) apply(this.#runtime, { kind: "mutate-control", panel: image, mutation: { image: tf2ClassSelectionImage(others[i]!, this.#state.team!, true) } })
+      }
+      const label = panel(this.#runtime, "CountLabel", this.#owner)
+      if (label !== null) apply(this.#runtime, { kind: "set-panel-state", panel: label, visible: others.length > 0 })
+      for (const name of ["localPlayerImage", "localPlayerBG"]) {
+        const image = panel(this.#runtime, name, this.#owner)
+        if (image === null) continue
+        apply(this.#runtime, { kind: "set-panel-state", panel: image, visible: this.#state.current !== null, mouseInput: false })
+        if (name === "localPlayerImage" && this.#state.current !== null) apply(this.#runtime, { kind: "mutate-control", panel: image,
+          mutation: { image: tf2ClassSelectionImage(this.#state.current, this.#state.team!, true) } })
+      }
+    })
   }
 
   #present(): void {
+    if (!this.#state.visible && this.#tipDrag) {
+      if (this.#root.hasPointerCapture(this.#tipDrag.pointer)) this.#root.releasePointerCapture(this.#tipDrag.pointer)
+      this.#tipDrag = undefined
+    }
     this.#runtime.deferPresentation(() => {
       apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: this.#state.visible })
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#owner, visible: this.#state.visible })
@@ -290,11 +478,37 @@ class Integration implements Tf2ClassSelectionIntegration {
       }
       const cancel = panel(this.#runtime, "CancelButton", this.#owner)
       if (cancel !== null) apply(this.#runtime, { kind: "set-panel-state", panel: cancel, visible: !this.#state.initialJoin })
+      const select = panel(this.#runtime, "ClassMenuSelect", this.#owner)
+      if (select !== null) apply(this.#runtime, { kind: "set-panel-state", panel: select, visible: this.#state.initialJoin })
       const loadout = panel(this.#runtime, "EditLoadoutButton", this.#owner)
       if (loadout !== null) apply(this.#runtime, { kind: "set-panel-state", panel: loadout, visible: this.#state.selected !== 12 })
       this.#updateTips(this.#state.selected)
+      this.#updateRoster()
     })
     this.#onModelPanels(this.modelPanels())
+    if (this.#state.visible && this.#modelSurface && !this.#releaseSurface) {
+      const background = panel(this.#runtime, "MenuBG", this.#owner)
+      const player = panel(this.#runtime, "TFPlayerModel", this.#owner)
+      if (background === null || player === null || !this.#backgroundSurface) throw new Error("Class-selection model surface owner is unavailable")
+      const width = this.#modelSurface.style.width, height = this.#modelSurface.style.height, backgroundColor = this.#modelSurface.style.backgroundColor
+      this.#modelSurface.style.backgroundColor = "transparent"
+      this.#modelSurface.style.width = `${this.#viewport.width}px`
+      this.#modelSurface.style.height = `${this.#viewport.height}px`
+      const releaseBackground = this.#runtime.attachSurface(background, this.#backgroundSurface)
+      const releasePlayer = this.#runtime.attachSurface(player, this.#modelSurface)
+      this.#releaseSurface = () => {
+        releasePlayer()
+        releaseBackground()
+        this.#modelSurface!.style.width = width
+        this.#modelSurface!.style.height = height
+        this.#modelSurface!.style.backgroundColor = backgroundColor
+        this.#backgroundSurface!.width = 0
+        this.#backgroundSurface!.height = 0
+      }
+    } else if (!this.#state.visible) {
+      this.#releaseSurface?.()
+      this.#releaseSurface = undefined
+    }
   }
 
   state(): Tf2ClassSelectionState { return this.#state }
@@ -316,7 +530,7 @@ class Integration implements Tf2ClassSelectionIntegration {
         fov: finiteScalar(authored, "fov"),
         origin: Object.freeze([finiteScalar(model, "origin_x"), finiteScalar(model, "origin_y"), finiteScalar(model, "origin_z")]) as readonly [number, number, number],
         angles: Object.freeze([finiteScalar(model, "angles_x"), finiteScalar(model, "angles_y"), finiteScalar(model, "angles_z")]) as readonly [number, number, number],
-        bounds: snapshot.bounds,
+        bounds: snapshot.absoluteBounds,
       })
     }))
   }
@@ -351,18 +565,34 @@ class Integration implements Tf2ClassSelectionIntegration {
   }
 
   frame(timeSeconds: number): void {
-    if (this.#state.visible) apply(this.#runtime, { kind: "frame", timeSeconds })
+    if (this.#state.visible) {
+      this.#updateRoster()
+      apply(this.#runtime, { kind: "frame", timeSeconds })
+    }
   }
 
   setViewport(viewport: VguiViewport): void {
+    this.#viewport = viewport
+    if (this.#releaseSurface && this.#modelSurface) {
+      this.#modelSurface.style.width = `${viewport.width}px`
+      this.#modelSurface.style.height = `${viewport.height}px`
+    }
     this.#runtime.deferPresentation(() => apply(this.#runtime, { kind: "set-viewport", viewport }))
-    if (this.#state.visible) this.#onModelPanels(this.modelPanels())
+    if (this.#state.visible) this.#present()
   }
 
   destroy(): void {
     if (this.#destroyed) return
     this.#destroyed = true
+    if (this.#tipDrag && this.#root.hasPointerCapture(this.#tipDrag.pointer)) this.#root.releasePointerCapture(this.#tipDrag.pointer)
+    this.#tipDrag = undefined
+    this.#releaseSurface?.()
+    this.#releaseSurface = undefined
     this.#root.removeEventListener("pointermove", this.#pointerMove)
+    this.#root.removeEventListener("wheel", this.#tipsWheel, true)
+    this.#root.removeEventListener("pointerdown", this.#tipsPointerDown, true)
+    this.#root.removeEventListener("pointerup", this.#tipsPointerUp, true)
+    this.#root.removeEventListener("pointercancel", this.#tipsPointerUp, true)
     this.#onModelPanels(Object.freeze([]))
     apply(this.#runtime, { kind: "destroy" })
   }

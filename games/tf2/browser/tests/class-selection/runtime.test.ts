@@ -39,6 +39,7 @@ describe("authored TF2 class selection VGUI integration", () => {
     ])
     expect(snapshot.panels.find((panel) => panel.name === "scout")?.bounds).toMatchObject({ x: 190, y: -7 })
     expect(snapshot.panels.find((panel) => panel.name === "ClassMenuSelect")?.bounds).toMatchObject({ x: 45, y: 660 })
+    expect(snapshot.panels.find((panel) => panel.name === "ClassMenuSelect")?.effectivelyVisible).toBeFalse()
   })
 
   test("updates team-aware authored portrait and preview without sending a gameplay command", () => {
@@ -52,10 +53,21 @@ describe("authored TF2 class selection VGUI integration", () => {
     expect(requests).toEqual([])
   })
 
+  test("lays out proportional tip items before stretching their authored auto-resize children", () => {
+    const { integration } = fixture()
+    integration.dispatch({ kind: "show", team: 2, current: 6 })
+    const panels = integration.snapshot().panels
+    const item = panels.find((panel) => panel.name === "ClassTipsItemPanel1")!
+    expect(item.bounds).toEqual({ x: 7, y: 7, width: 308, height: 45 })
+    expect(panels.find((panel) => panel.name === "TipLabel" && panel.parent === item.id)?.bounds)
+      .toEqual({ x: 37, y: 3, width: 278, height: 45 })
+  })
+
   test("maps authored number keys to Source class identities and preserves initial-join cancellation", () => {
     const { integration, requests } = fixture()
     integration.dispatch({ kind: "show", team: 2, current: null })
     expect(integration.snapshot().panels.find((panel) => panel.name === "CancelButton")?.effectivelyVisible).toBeFalse()
+    expect(integration.snapshot().panels.find((panel) => panel.name === "ClassMenuSelect")?.effectivelyVisible).toBeTrue()
     let prevented = false
     const key = (code: string) => ({ code, repeat: false, preventDefault() { prevented = true }, stopImmediatePropagation() {} })
     expect(integration.handleKey(key("Escape"), false)).toBeTrue()

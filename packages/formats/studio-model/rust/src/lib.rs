@@ -5431,3 +5431,5 @@ mod tests {
         assert!(derived_strip_triangles(&[0, 1, 2], 3).is_none());
     }
 }
+mod flex;
+pub use flex::*;

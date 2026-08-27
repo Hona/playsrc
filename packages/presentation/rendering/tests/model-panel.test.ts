@@ -3,7 +3,8 @@ import { sourceModelPanelPresentation } from "../src/model-panel"
 
 const request = Object.freeze({
   model: "models/player/soldier.mdl",
-  horizontalFov4By3: 25,
+  kind: "entity" as const,
+  fov: 25,
   origin: Object.freeze([320, 10, -49]) as readonly [number, number, number],
   bounds: Object.freeze({ x: 0, y: 0, width: 960, height: 720 }),
   displayWidth: 1280,
@@ -12,6 +13,13 @@ const request = Object.freeze({
 })
 
 describe("authored Source VGUI model-panel presentation", () => {
+  test("keeps studio-panel horizontal FOV and forced origin independent of entity-panel framing", () => {
+    const result = sourceModelPanelPresentation({ ...request, kind: "studio", bounds: { x: 0, y: 0, width: 720, height: 720 } })
+    expect(result.origin).toEqual([320, 10, -49])
+    expect(result.verticalFovDegrees).toBeCloseTo(25)
+    expect(result.near).toBe(3)
+    expect(result.far).toBeCloseTo(16384 * Math.sqrt(3))
+  })
   test("preserves the exact 4:3 player origin and Source horizontal-field-of-view conversion", () => {
     const presentation = sourceModelPanelPresentation(request)
     expect(presentation.viewport).toEqual({ x: 0, y: 0, width: 960, height: 720 })
@@ -38,7 +46,7 @@ describe("authored Source VGUI model-panel presentation", () => {
       bounds: { x: 0, y: 399, width: 150, height: 300 },
     }).viewport).toEqual({ x: 0, y: 399, width: 150, height: 300 })
     expect(() => sourceModelPanelPresentation({ ...request, bounds: { x: 1280, y: 0, width: 1, height: 1 } })).toThrow("outside the display")
-    expect(() => sourceModelPanelPresentation({ ...request, horizontalFov4By3: Number.NaN })).toThrow("invalid")
+    expect(() => sourceModelPanelPresentation({ ...request, fov: Number.NaN })).toThrow("invalid")
   })
 
   test.each([1, 1.1, 1.25, 1.3, 1.5, 1.75, 2])("keeps right/bottom anchored panels inside the physical framebuffer at DPR %s", (devicePixelRatio) => {

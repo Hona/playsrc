@@ -261,6 +261,7 @@ const MAX_EFFECTS = 4_096
 const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
 const SOURCE_MODEL_BIND_GEOMETRY = new WeakMap<THREE.BufferGeometry, Readonly<{ geometry: THREE.BufferGeometry; palette: Uint16Array }>>()
+const SOURCE_MODEL_BASE_COLOR = new WeakMap<THREE.BufferGeometry, any>()
 
 type Canvas = HTMLCanvasElement | OffscreenCanvas
 
@@ -287,6 +288,7 @@ export type ModelItem = Readonly<{
   pose?: Readonly<{
     viewmodel?: null | Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back"; reflected: boolean; drawDisposition: "draw" | "suppressed-success" | "suppressed" }>
     boneMatrices: Float32Array
+    flex?: readonly Readonly<{ primitive: number; indices: Uint32Array; positions: Float32Array; normals: Float32Array }>[]
     primitives: readonly Readonly<{
       primitive: number
       material: number
@@ -729,13 +731,17 @@ export type ModelPanelPass = Readonly<{
   identity: string
   model: string
   skin: number
-  horizontalFov4By3: number
+  kind: "entity" | "studio"
+  fov: number
   origin: readonly [number, number, number]
   angles: readonly [number, number, number]
   bounds: Readonly<{ x: number; y: number; width: number; height: number }>
-  background: "opaque" | "transparent"
+  background: "opaque" | "transparent" | "clear-transparent"
   presentationTimeSeconds?: number
   pose?: NonNullable<ModelItem["pose"]>
+  modelLighting?: ModelLightingInput
+  eyeStates?: readonly ModelEyeState[]
+  mergedModels?: readonly Readonly<{ model: string; skin: number; pose: NonNullable<ModelItem["pose"]>; modelLighting?: ModelLightingInput; eyeStates?: readonly ModelEyeState[] }>[]
 }>
 
 export type ModelPanelFrameResult = Readonly<{
@@ -960,6 +966,8 @@ type ModelPanelMaterialAnimation = Readonly<{
 
 type ModelLightingScene = Readonly<{
   materials: ReadonlyMap<string, ModelMaterialInput> | undefined
+  states: ReadonlyMap<string, MaterialStateInput>
+  waterFog?: SourceWaterFogUniforms
   textures: ReadonlyMap<string, ModelLightingTextures>
   cubemap: (identity: string) => THREE.CubeTexture | undefined
   exposure: ReturnType<typeof TSL.uniform>
@@ -1457,8 +1465,9 @@ class RendererOwner implements Renderer {
   readonly #underwaterOverlay = new THREE.QuadMesh()
   #hudMaterials?: SourceHudMaterials
   #modelPanelScene = new THREE.Scene()
+  #modelPanelExposure = TSL.uniform(1, "float")
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
-  #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
+  #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   #viewModelInstances = new Map<number, RetainedViewModel>()
   readonly #retainedViewModels = new RetainedModelCache<RetainedViewModel>(32, retained => this.#disposeDynamicInstance(retained.root))
   #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
@@ -3138,6 +3147,8 @@ class RendererOwner implements Renderer {
               else if (second.input.sourceFormat === 16) sampledSecond = TSL.vec4(sampledSecond.bgr, 1)
               base = TSL.vec4(first.rgb.mul(sampledSecond.rgb), 1)
             }
+          SOURCE_MODEL_BASE_COLOR.set(geometry, base)
+          SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
           material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms)
           material.toneMapped = false
           disposables.add(material)
@@ -3260,6 +3271,8 @@ class RendererOwner implements Renderer {
             eyeStates: inputs.eyes,
           }, {
             materials: request.modelMaterials,
+            states: materialStates,
+            waterFog: waterFogUniforms,
             textures: modelLightingTextures,
             cubemap: modelCubemap,
             exposure: exposureUniform,
@@ -3523,15 +3536,19 @@ class RendererOwner implements Renderer {
     this.#renderBusy = true
     const result: { identity: string; model: string; skin: number; primitives: number }[] = []
     const previousAutoClear = this.#backend.autoClear
+    const previousWaterFog = this.#active.waterFogUniforms.enabled.value
+    const previousClearColor = this.#backend.getClearColor(new THREE.Color()).clone()
+    const previousClearAlpha = this.#backend.getClearAlpha()
+    this.#active.waterFogUniforms.enabled.value = 0
     try {
       for (const panel of panels) {
         if (!panel.identity || !panel.model || !Number.isSafeInteger(panel.skin) || panel.skin < 0
-          || (panel.background !== "opaque" && panel.background !== "transparent")
-          || !finite([...panel.origin, ...panel.angles, panel.horizontalFov4By3,
+          || !["opaque", "transparent", "clear-transparent"].includes(panel.background)
+          || !finite([...panel.origin, ...panel.angles, panel.fov,
             panel.bounds.x, panel.bounds.y, panel.bounds.width, panel.bounds.height])
           || panel.bounds.width <= 0 || panel.bounds.height <= 0
           || (panel.presentationTimeSeconds !== undefined && (!Number.isFinite(panel.presentationTimeSeconds) || panel.presentationTimeSeconds < 0))
-          || panel.horizontalFov4By3 <= 0 || panel.horizontalFov4By3 >= 180) {
+          || panel.fov <= 0 || panel.fov >= 180) {
           throw new RenderingError("MalformedInput", `model-panel pass is invalid: ${panel.identity}`)
         }
         const displayWidth = this.#canvas.width
@@ -3545,10 +3562,16 @@ class RendererOwner implements Renderer {
         const identity = modelKey(panel.model.toLowerCase(), panel.skin)
         const template = this.#active.modelTemplates.get(identity)
         if (!template) throw new RenderingError("MissingInput", `model-panel model is unavailable: ${identity}`)
-        let retained = this.#modelPanelInstances.get(identity)
+        const instanceIdentity = panel.identity
+        let retained = this.#modelPanelInstances.get(instanceIdentity)
+        if (retained && retained.model !== identity) {
+          this.#disposeDynamicInstance(retained.instance)
+          this.#modelPanelInstances.delete(instanceIdentity)
+          retained = undefined
+        }
         if (!retained) {
-          retained = { instance: template.clone(true) }
-          this.#modelPanelInstances.set(identity, retained)
+          retained = { model: identity, instance: template.clone(true) }
+          this.#modelPanelInstances.set(instanceIdentity, retained)
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
         const presentationTime = panel.presentationTimeSeconds ?? 0
@@ -3574,7 +3597,8 @@ class RendererOwner implements Renderer {
         this.#modelPanelScene.add(retained.instance)
         const presentation = sourceModelPanelPresentation({
           model: panel.model,
-          horizontalFov4By3: panel.horizontalFov4By3,
+          kind: panel.kind,
+          fov: panel.fov,
           origin: panel.origin,
           bounds: panel.bounds,
           displayWidth,
@@ -3582,14 +3606,51 @@ class RendererOwner implements Renderer {
           devicePixelRatio: this.#devicePixelRatio,
         })
         sourceTransform(retained.instance, presentation.origin, panel.angles)
+        const panelLighting = {
+          materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
+          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure,
+        }
+        if (panel.modelLighting) this.#applyDynamicModelLighting(retained, {
+          identity: 0, model: panel.model, position: presentation.origin, angles: panel.angles, scale: 1,
+          pose: panel.pose, modelLighting: panel.modelLighting, eyeStates: panel.eyeStates,
+        }, panelLighting)
+        for (const [index, child] of (panel.mergedModels ?? []).entries()) {
+          const key = modelKey(child.model.toLowerCase(), child.skin)
+          const childTemplate = this.#active.modelTemplates.get(key)
+          if (!childTemplate) throw new RenderingError("MissingInput", `merged model-panel model is unavailable: ${key}`)
+          const instanceKey = `${panel.identity}:merge:${index}`
+          let merged = this.#modelPanelInstances.get(instanceKey)
+          if (merged && merged.model !== key) {
+            this.#disposeDynamicInstance(merged.instance)
+            this.#modelPanelInstances.delete(instanceKey)
+            merged = undefined
+          }
+          if (!merged) {
+            merged = { model: key, instance: childTemplate.clone(true) }
+            this.#modelPanelInstances.set(instanceKey, merged)
+          }
+          merged.meshes = this.#applyPose(merged.instance, child.pose, merged.meshes !== undefined, merged.meshes)
+          sourceTransform(merged.instance, presentation.origin, panel.angles)
+          if (child.modelLighting) this.#applyDynamicModelLighting(merged, {
+            identity: 0, model: child.model, position: presentation.origin, angles: panel.angles, scale: 1,
+            pose: child.pose, modelLighting: child.modelLighting, eyeStates: child.eyeStates,
+          }, panelLighting)
+          this.#modelPanelScene.add(merged.instance)
+        }
         const { x, y, width, height } = presentation.rendererViewport
-        this.#modelPanelCamera.aspect = presentation.viewport.width / presentation.viewport.height
+        this.#modelPanelCamera.clearViewOffset()
+        this.#modelPanelCamera.aspect = presentation.projection.width / presentation.projection.height
         this.#modelPanelCamera.fov = presentation.verticalFovDegrees
+        this.#modelPanelCamera.near = presentation.near
+        this.#modelPanelCamera.far = presentation.far
+        this.#modelPanelCamera.setViewOffset(presentation.projection.width, presentation.projection.height,
+          presentation.projection.offsetX, presentation.projection.offsetY, presentation.viewport.width, presentation.viewport.height)
         this.#modelPanelCamera.updateProjectionMatrix()
         this.#backend.setViewport(x, y, width, height)
         this.#backend.setScissor(x, y, width, height)
         this.#backend.setScissorTest(true)
-        this.#backend.autoClear = panel.background === "opaque"
+        this.#backend.setClearColor(0x000000, panel.background === "clear-transparent" ? 0 : 1)
+        this.#backend.autoClear = panel.background !== "transparent"
         this.#modelPanelScene.background = panel.background === "opaque" ? new THREE.Color(0x000000) : null
         withSourceModelPanelTargetViewport(this.#backend.getRenderTarget(), presentation, () => {
           if (panel.background === "transparent") this.#resetDepth("hud-depth-reset")
@@ -3602,6 +3663,8 @@ class RendererOwner implements Renderer {
       return Object.freeze({ panels: Object.freeze(result.map((item) => Object.freeze(item))), milliseconds: performance.now() - started })
     } finally {
       this.#modelPanelScene.clear()
+      this.#active.waterFogUniforms.enabled.value = previousWaterFog
+      this.#backend.setClearColor(previousClearColor, previousClearAlpha)
       this.#backend.setScissorTest(false)
       this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight)
       this.#backend.autoClear = previousAutoClear
@@ -4768,6 +4831,35 @@ class RendererOwner implements Renderer {
       }
       if (renderBounds && object instanceof THREE.SkinnedMesh) applyMapModelRenderBounds(object, renderBounds)
       object.userData.posedPrimitive = posed.primitive
+      const flex = pose.flex?.find((value) => value.primitive === posed.primitive)
+      if (flex && flex.indices.length > 0) {
+        if (object.userData.dynamicGeometry !== true) {
+          const source = object.geometry
+          const geometry = new THREE.BufferGeometry()
+          for (const name of Object.keys(source.attributes)) {
+            const attribute = source.getAttribute(name)
+            geometry.setAttribute(name, name === "position" || name === "normal" ? attribute.clone().setUsage(THREE.DynamicDrawUsage) : attribute)
+          }
+          geometry.setIndex(source.getIndex())
+          SOURCE_MODEL_BASE_COLOR.set(geometry, SOURCE_MODEL_BASE_COLOR.get(source))
+          object.geometry = geometry
+          object.userData.dynamicGeometry = true
+        }
+        const position = object.geometry.getAttribute("position") as THREE.BufferAttribute
+        const normal = object.geometry.getAttribute("normal") as THREE.BufferAttribute
+        for (let i = 0; i < flex.indices.length; i += 1) {
+          const vertex = flex.indices[i]!
+          if (vertex >= position.count) throw new RenderingError("IdentityMismatch", "model flex vertex is outside its primitive")
+          position.setXYZ(vertex, flex.positions[i * 3]!, flex.positions[i * 3 + 1]!, flex.positions[i * 3 + 2]!)
+          normal.setXYZ(vertex, flex.normals[i * 3]!, flex.normals[i * 3 + 1]!, flex.normals[i * 3 + 2]!)
+        }
+        const first = flex.indices[0]! * 3, count = (flex.indices[flex.indices.length - 1]! + 1) * 3 - first
+        position.addUpdateRange(first, count)
+        normal.addUpdateRange(first, count)
+        position.needsUpdate = true
+        normal.needsUpdate = true
+        this.#instrumentation?.poseUpload(count * 2 * Float32Array.BYTES_PER_ELEMENT)
+      }
       if (object.userData.dynamicMaterial !== true) {
         object.material = Array.isArray(object.material) ? object.material.map((material) => material.clone()) : object.material.clone()
         object.userData.dynamicMaterial = true
@@ -4867,6 +4959,8 @@ class RendererOwner implements Renderer {
     if (!input) return
     const resources = scene ?? {
       materials: this.#active!.loadRequest.modelMaterials,
+      states: this.#active!.materialStates,
+      waterFog: this.#active!.waterFogUniforms,
       textures: this.#active!.modelLightingTextures,
       cubemap: this.#active!.modelCubemap,
       exposure: this.#active!.exposureUniform,
@@ -4918,7 +5012,8 @@ class RendererOwner implements Renderer {
               scale: authored.shader === "eye-refract" ? 1 : this.configuration.lightingProfile === "hdr" ? 16 : 1,
             })
           }
-          let base = material.colorNode ?? TSL.vec4(1, 1, 1, 1)
+          let base = SOURCE_MODEL_BASE_COLOR.get(mesh.geometry)
+          if (!base) throw new RenderingError("MissingInput", `authored model base sample ${identity} is unavailable`)
           if (authored.shader === "eye-refract" || authored.shader === "eyes") {
             const primitive = Number(mesh.userData.posedPrimitive ?? mesh.userData.sourcePrimitive)
             const eye = item.eyeStates?.find((value) => value.primitive === primitive)
@@ -4946,7 +5041,7 @@ class RendererOwner implements Renderer {
               },
             } : {}),
           }, resources.exposure)
-          material.colorNode = shaded.color
+          material.colorNode = sourceFragmentColor(shaded.color, resources.states.get(identity), resources.waterFog)
           if (shaded.environmentNode && !textures?.environment) cubemapNodes.push(shaded.environmentNode)
           material.needsUpdate = true
         }
