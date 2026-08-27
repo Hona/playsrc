@@ -56,6 +56,13 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     }
     expect(purple).toBeGreaterThan(20); records.purplePixels = purple
     desktop("backpack")
+    await hat.hover()
+    const tooltip = equipment.locator("[data-vgui-name='ItemTooltip']")
+    await expect(tooltip).toBeVisible()
+    await expect(tooltip).toContainText("Unusual Team Captain")
+    await expect(tooltip).toContainText("Unusual Effect: Burning Flames")
+    await expect(tooltip).toContainText("Level 1 Hat")
+    await page.screenshot({ path: path.join(directory, "backpack-tooltip.png") }); desktop("backpack-tooltip")
     await hat.click(); await equipment.locator("[data-vgui-name='Itemitem-378']").click()
     await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible()
     await page.waitForFunction(() => (globalThis as any).__playsrcProfile.cosmeticPreview?.particles >= 12, undefined, { timeout: 30_000 })
