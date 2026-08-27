@@ -594,12 +594,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
         poll()
       }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) break
       await page.mouse.click(Math.round(page.viewportSize()!.width / 2), Math.round(page.viewportSize()!.height / 2))
-      if (acceptance) {
-        await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: 2000 })
-        await page.mouse.down()
-        await page.waitForTimeout(100)
-        await page.mouse.up()
-      }
+      // The first native click requests capture; it is not a weapon-fire edge.
+      // Both scenario modes must admit capture before sending actual held fire.
+      await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - Date.now())) })
+      await page.mouse.down()
+      await page.waitForTimeout(100)
+      await page.mouse.up()
       exercisedClasses.push(playerClass)
     }
   }
