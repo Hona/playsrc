@@ -351,6 +351,9 @@ pub struct Attack {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Damage {
+    /// Captured launcher lifetime. None is an absent source, never a request to
+    /// substitute whichever item the attacker currently holds.
+    pub source_weapon: Option<crate::weapon::WeaponSource>,
     pub damage_type: DamageType,
     pub force: [f32; 3],
     pub crit: CritKind,
@@ -1887,6 +1890,10 @@ impl BotWorld {
         Some(self.bots.get(&identity)?.loadout.get(&weapon)?.critical)
     }
 
+    pub(crate) fn weapon_generation(&self, identity: u32, weapon: Weapon) -> Option<u64> {
+        Some(self.bots.get(&identity)?.loadout.get(&weapon)?.generation)
+    }
+
     pub(crate) fn set_critical_weapon(&mut self, identity: u32, weapon: Weapon, state: crate::critical::WeaponState) {
         self.bots.get_mut(&identity).expect("validated critical owner").loadout.get_mut(&weapon)
             .expect("validated critical weapon").critical = state;
@@ -3125,6 +3132,7 @@ mod tests {
 
     fn direct_damage(weapon: Weapon, victim: u32, amount: f32) -> Damage {
         Damage { attacker: crate::PLAYER_IDENTITY, victim, weapon, amount, position: [0.0; 3],
+            source_weapon: None,
             damage_type: weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
             modifiers: DamageModifiers::default(), killing_weapon: None }
@@ -3569,6 +3577,7 @@ mod tests {
         session
             .apply_actor_damage(
                 Damage {
+                    source_weapon: None,
                     damage_type: weapon_damage_type(Weapon::Knife).unwrap(), force: [0.0; 3],
                     crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
                     modifiers: DamageModifiers::default(), killing_weapon: None,
@@ -3587,6 +3596,7 @@ mod tests {
         let before = session.bot_world().unwrap().snapshots()[0].health;
         let result = session.bots.as_mut().unwrap().damage(
             Damage {
+                source_weapon: None,
                 damage_type: weapon_damage_type(Weapon::Bonesaw).unwrap(), force: [0.0; 3],
                 crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
                 modifiers: DamageModifiers::default(), killing_weapon: None,
@@ -4887,6 +4897,7 @@ mod tests {
         let points = world
             .damage(
                 Damage {
+                    source_weapon: None,
                     damage_type: weapon_damage_type(Weapon::RocketLauncher).unwrap(), force: [0.0; 3],
                     crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
                     modifiers: DamageModifiers::default(), killing_weapon: None,
@@ -5026,6 +5037,7 @@ mod tests {
         world
             .damage(
                 Damage {
+                    source_weapon: None,
                     damage_type: weapon_damage_type(Weapon::Shotgun).unwrap(), force: [0.0; 3],
                     crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
                     modifiers: DamageModifiers::default(), killing_weapon: None,

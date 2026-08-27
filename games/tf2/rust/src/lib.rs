@@ -414,6 +414,7 @@ impl StickyLaunchRandom {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Projectile {
+    pub source_weapon: Option<weapon::WeaponSource>,
     pub identity: u32,
     pub kind: ProjectileKind,
     pub team: PlayerTeam,
@@ -823,6 +824,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     secondary_last_weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     loadout_class: PlayerClass,
+    next_weapon_generation: u64,
     critical_history: critical::PlayerHistory,
     equipment: equipment::Equipment,
     active_equipment: equipment::Equipment,
@@ -1002,6 +1004,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             secondary_last_weapon: None,
             loadout,
             loadout_class: PlayerClass::Soldier,
+            next_weapon_generation: 1,
             critical_history: critical::PlayerHistory::default(),
             equipment: equipment::Equipment::default(),
             active_equipment: equipment::Equipment::default(),
@@ -1145,6 +1148,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.equipment_attributes.player(hook, input)
     }
 
+    pub fn weapon_source(&self, owner: u32, weapon: Weapon) -> Option<weapon::WeaponSource> {
+        let definition_index = self.equipped_weapon_definition(owner, weapon)?;
+        let generation = if owner == PLAYER_IDENTITY { self.loadout.get(&weapon)?.generation }
+            else { self.bots.as_ref()?.weapon_generation(owner, weapon)? };
+        Some(weapon::WeaponSource { owner, definition_index, generation })
+    }
+
+    pub fn source_weapon_is_live(&self, source: weapon::WeaponSource, weapon: Weapon) -> bool {
+        self.weapon_source(source.owner, weapon) == Some(source)
+    }
+
+    pub fn source_weapon_attribute(&mut self, source: Option<weapon::WeaponSource>, weapon: Weapon,
+        hook: &str, input: f32) -> f32 {
+        if let Some(source) = source && self.source_weapon_is_live(source, weapon) {
+            self.equipped_weapon_attribute(source.owner, weapon, hook, input)
+        } else { input }
+    }
+
     /// Resolve one weapon's critical classification before firing. Raw damage
     /// and projectile count are already attribute-resolved, before range,
     /// splash falloff, hitgroup, or target resistance. Bots have no client-side
@@ -1238,6 +1259,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if same_class && definition(&old_items) == definition(&new_items)
                 && let Some(previous) = old_loadout.get(&weapon) {
                 runtime.critical = previous.critical;
+                runtime.generation = previous.generation;
+            } else {
+                runtime.generation = self.next_weapon_generation;
+                self.next_weapon_generation = self.next_weapon_generation.checked_add(1).expect("weapon generation bound");
             }
             self.loadout.insert(weapon, runtime);
         }
@@ -2019,6 +2044,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     let weapon = self.weapon.ok_or(Error::Bot(bot::Error::InvalidEntity))?;
                     self.apply_actor_damage(
                         bot::Damage {
+                            source_weapon: None,
                             damage_type: damage::DamageType::GENERIC,
                             force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                             custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -2400,6 +2426,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if let Some((target, damage, level)) = building_effects.sentry_target {
             self.apply_actor_damage(
                 bot::Damage {
+                    source_weapon: None,
                     damage_type: damage::DamageType::BULLET,
                     force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                     custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(),
@@ -4213,6 +4240,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
             self.apply_actor_damage(
                 bot::Damage {
+                    source_weapon: self.weapon_source(attack.attacker, attack.weapon),
                     damage_type: bot::weapon_damage_type(attack.weapon).expect("melee damage type"),
                     force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                     custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -4338,6 +4366,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for (victim, (amount, position)) in damage {
             self.apply_actor_damage(
                 bot::Damage {
+                    source_weapon: self.weapon_source(attack.attacker, attack.weapon),
                     damage_type: bot::weapon_damage_type(attack.weapon).expect("hitscan damage type"),
                     force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                     custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -5070,6 +5099,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for (victim, (amount, position, crit, custom)) in damage {
             self.apply_actor_damage(
                 bot::Damage {
+                    source_weapon: self.weapon_source(PLAYER_IDENTITY, weapon),
                     damage_type: bot::weapon_damage_type(weapon).expect("hitscan damage type"),
                     force: [0.0; 3], crit, range_multiplier: 1.0,
                     custom, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -5522,6 +5552,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(victim) = actor.map(|(identity, _, _)| identity) {
                 self.apply_actor_damage(
                     bot::Damage {
+                        source_weapon: self.weapon_source(PLAYER_IDENTITY, weapon),
                         damage_type: bot::weapon_damage_type(weapon).expect("melee damage type"),
                         force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                         custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -5654,6 +5685,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(identity) = target {
                 self.apply_actor_damage(
                     bot::Damage {
+                        source_weapon: self.weapon_source(PLAYER_IDENTITY, Weapon::Knife),
                         damage_type: bot::weapon_damage_type(Weapon::Knife).unwrap(),
                         force: [0.0; 3], range_multiplier: 1.0,
                         crit: if backstab.is_some() { damage::CritKind::Full } else { damage::CritKind::None },
@@ -5826,6 +5858,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for (victim, (amount, position)) in victims {
             self.apply_actor_damage(
                 bot::Damage {
+                    source_weapon: self.weapon_source(PLAYER_IDENTITY, Weapon::Minigun),
                     damage_type: bot::weapon_damage_type(Weapon::Minigun).unwrap(),
                     force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                     custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -6116,6 +6149,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let projectile = LiveProjectile {
             killing_weapon: self.killing_weapon_name(owner, weapon),
             presentation: Projectile {
+                source_weapon: self.weapon_source(owner, weapon),
                 identity,
                 kind,
                 team,
@@ -6375,6 +6409,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         if self.bots.as_ref().is_some_and(|bots| bots.contains(target)) {
                             self.apply_actor_damage(
                                 bot::Damage {
+                                    source_weapon: projectile.presentation.source_weapon,
                                     damage_type: bot::weapon_damage_type(Weapon::SyringeGun).unwrap(),
                                     force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                                     custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
@@ -6568,6 +6603,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             ) {
                 self.apply_actor_damage(
                     bot::Damage {
+                        source_weapon: projectile.source_weapon,
                         damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
                         force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                         custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
@@ -6634,6 +6670,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 self.apply_actor_damage(
                     bot::Damage {
+                        source_weapon: projectile.source_weapon,
                         damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
                         force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
                         custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
@@ -7332,6 +7369,40 @@ mod tests {
         assert_eq!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap().roll, None);
         session.tick = 67;
         assert!(session.check_weapon_critical(PLAYER_IDENTITY, Weapon::RocketLauncher, shot).unwrap().roll.is_some());
+    }
+
+    #[test]
+    fn weapon_sources_survive_resupply_but_not_same_item_recreation() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let first = session.weapon_source(PLAYER_IDENTITY, Weapon::RocketLauncher).unwrap();
+        assert_eq!(first.definition_index, 18);
+        session.regenerate(0, None, &mut Vec::new());
+        assert!(session.source_weapon_is_live(first, Weapon::RocketLauncher));
+        session.advance(Command { respawn: true, ..Default::default() }).unwrap();
+        assert!(session.source_weapon_is_live(first, Weapon::RocketLauncher));
+        session.advance(Command { select_weapon: Some(Weapon::Shotgun), ..Default::default() }).unwrap();
+        assert!(session.source_weapon_is_live(first, Weapon::RocketLauncher), "holster is not deletion");
+        session.advance(Command { select_class: Some(PlayerClass::Pyro), ..Default::default() }).unwrap();
+        assert!(!session.source_weapon_is_live(first, Weapon::RocketLauncher));
+        session.advance(Command { select_class: Some(PlayerClass::Soldier), ..Default::default() }).unwrap();
+        let replacement = session.weapon_source(PLAYER_IDENTITY, Weapon::RocketLauncher).unwrap();
+        assert_eq!(replacement.definition_index, first.definition_index);
+        assert_ne!(replacement.generation, first.generation);
+        assert!(!session.source_weapon_is_live(first, Weapon::RocketLauncher));
+        assert!(session.source_weapon_is_live(replacement, Weapon::RocketLauncher));
+    }
+
+    #[test]
+    fn projectile_captures_a_source_owner_independent_of_later_deflection() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        for _ in 0..35 { session.advance(Command::default()).unwrap(); }
+        let source = session.weapon_source(PLAYER_IDENTITY, Weapon::RocketLauncher).unwrap();
+        session.advance(Command { fire: true, ..Default::default() }).unwrap();
+        assert_eq!(session.projectiles[0].presentation.source_weapon, Some(source));
+        session.projectiles[0].presentation.owner_identity = 2;
+        session.projectiles[0].presentation.launcher_identity = Weapon::Flamethrower as u32;
+        assert_eq!(session.projectiles[0].presentation.source_weapon.unwrap().owner, PLAYER_IDENTITY);
+        assert!(session.source_weapon_is_live(source, Weapon::RocketLauncher));
     }
 
     #[test]
@@ -9070,6 +9141,7 @@ mod tests {
         let create = |identity, team| LiveProjectile {
             killing_weapon: "tf_projectile_rocket",
             presentation: Projectile {
+                source_weapon: None,
                 identity,
                 kind: ProjectileKind::Rocket,
                 team,
@@ -9445,6 +9517,7 @@ mod tests {
         LiveProjectile {
             killing_weapon: if kind == ProjectileKind::Rocket { "tf_projectile_rocket" } else { "tf_projectile_pipe_remote" },
             presentation: Projectile {
+                source_weapon: None,
                 identity: 99,
                 kind,
                 team: PlayerTeam::Red,
