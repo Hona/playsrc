@@ -1108,6 +1108,7 @@ type SceneResources = {
   modelTemplates: Map<string, THREE.Group>
   modelBaseSamples: Map<string, any>
   modelTemplateResources: Map<string, (THREE.BufferGeometry | THREE.Material)[]>
+  modelPipelineKeys: Set<string>
   borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[]
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
   modelLightingGraphs: ModelLightingGraphs
@@ -2597,6 +2598,7 @@ class RendererOwner implements Renderer {
       for (const { key, retained } of staged) {
         retained.instance.removeFromParent()
         this.#preparedModelInstances.retain(key, retained)
+        owner.modelPipelineKeys.add(retained.model)
       }
       staged.length = 0
       const profile = browserFrameProfiler()
@@ -2795,6 +2797,7 @@ class RendererOwner implements Renderer {
       ? this.#active : undefined
     const modelTemplates = new Map<string, THREE.Group>()
     const modelTemplateResources = new Map<string, (THREE.BufferGeometry | THREE.Material)[]>()
+    const modelPipelineKeys = new Set<string>()
     const borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[] = []
     const handoffProfile = browserFrameProfiler()
     if (handoffProfile) handoffProfile.counters.retainedModelTemplates = 0
@@ -3474,11 +3477,12 @@ class RendererOwner implements Renderer {
 
       for (const model of map.models) {
         const priorTemplate = retained?.modelTemplates.get(model.logicalPath)
-        if (priorTemplate && model.materials.every(material => request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader !== "unlit-two-texture")) {
+        if (priorTemplate && retained!.modelPipelineKeys.has(model.logicalPath) && model.materials.every(material => request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader !== "unlit-two-texture")) {
           const resources = retained!.modelTemplateResources.get(model.logicalPath)!
           modelTemplates.set(model.logicalPath, priorTemplate)
           if (handoffProfile) handoffProfile.counters.retainedModelTemplates += 1
           modelTemplateResources.set(model.logicalPath, resources)
+          modelPipelineKeys.add(model.logicalPath)
           borrowedModelResources.push(...resources)
           for (const material of model.materials) {
             const identity = material.logicalPath.toLowerCase(), textures = retained!.modelLightingTextures.get(identity)
@@ -3911,6 +3915,7 @@ class RendererOwner implements Renderer {
       modelTemplates,
       modelBaseSamples,
       modelTemplateResources,
+      modelPipelineKeys,
       borrowedModelResources,
       modelLightingTextures,
       modelLightingGraphs,
