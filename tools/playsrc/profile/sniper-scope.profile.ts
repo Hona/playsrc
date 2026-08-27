@@ -58,7 +58,9 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
       try { await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: 750 }); return }
       catch {
         const state = await root.evaluate(element => ({ detail: (element as HTMLElement).dataset.detail, focus: document.hasFocus(), visibility: document.visibilityState, locked: Boolean(document.pointerLockElement) }))
-        if (!state.detail?.includes("Too many pointer lock requests") || attempt === 2) throw new Error(`Native scope capture failed: ${JSON.stringify(state)}`)
+        const cooldown = state.detail?.includes("Too many pointer lock requests")
+          || state.detail?.includes("Pointer lock cannot be acquired immediately after the user has exited the lock")
+        if (!cooldown || attempt === 2) throw new Error(`Native scope capture failed: ${JSON.stringify(state)}`)
         captureRejections.push(state)
         // Respect the browser's real unlock/relock policy outside sampling.
         // Never replace capture or input with synthetic event dispatch.

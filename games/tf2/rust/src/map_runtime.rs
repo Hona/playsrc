@@ -1190,10 +1190,7 @@ impl MapRuntime {
             let definition = if let Some(definition) = definitions.get(&model.identity) {
                 std::sync::Arc::clone(definition)
             } else {
-                let definition = std::sync::Arc::new(
-                    crate::dynamic_prop::Definition::compile(model)
-                        .map_err(|_| invalid(entity.source_index))?,
-                );
+                let definition = std::sync::Arc::new(crate::dynamic_prop::Definition::compile(model));
                 definitions.insert(model.identity.clone(), definition.clone());
                 definition
             };
