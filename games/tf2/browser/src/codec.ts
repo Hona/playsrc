@@ -140,6 +140,7 @@ export type CollisionSnapshot = Readonly<{
   bytes: Uint8Array
 }>
 export type Command = Readonly<{
+  weaponPreferences?: Readonly<{ rememberActive: boolean; rememberLast: boolean }>
   forward: number
   side: number
   up?: number
@@ -874,7 +875,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x43, 0x4d, 0x44])
-  view.setUint32(4, 8, true)
+  view.setUint32(4, 9, true)
   scalars.forEach((value, index) => view.setFloat32(8 + index * 4, value, true))
   let buildingFlags = 0
   if (command.building) {
@@ -947,6 +948,10 @@ export function encodeCommand(command: Command): ArrayBuffer {
   }
   view.setUint32(44, packedConfiguration, true)
   view.setUint32(48, length, true)
+  if (command.weaponPreferences) {
+    if (typeof command.weaponPreferences.rememberActive !== "boolean" || typeof command.weaponPreferences.rememberLast !== "boolean") throw new Tf2CodecError("invalid weapon preferences")
+    view.setUint8(57, 0x80 | Number(command.weaponPreferences.rememberActive) | Number(command.weaponPreferences.rememberLast) << 1)
+  }
   let packedObjectives = 0
   if (command.objectiveConfiguration) {
     const { capturesPerRound, returnOnTouch } = command.objectiveConfiguration

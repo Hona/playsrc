@@ -11,7 +11,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     if bytes.len() < HEADER_BYTES
         || bytes.len() > 64 * 1024
         || &bytes[..4] != b"PCMD"
-        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 8
+        || u32::from_le_bytes(bytes[4..8].try_into().ok()?) != 9
     {
         return None;
     }
@@ -230,9 +230,14 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
             return_on_touch: packed_objectives & (1 << 16) != 0,
         })
     };
+    let weapon_preferences = match bytes[57] {
+        0 => None,
+        value if value & 0xfc == 0x80 => Some(playsrc_tf2::WeaponPreferences { remember_active: value & 1 != 0, remember_last: value & 2 != 0 }),
+        _ => return None,
+    };
     let bot_control = match bytes[56] {
-        0 if bytes[57..84].iter().all(|value| *value == 0) => None,
-        operation @ (1 | 2 | 3 | 4) if bytes[57..60].iter().all(|value| *value == 0) => {
+        0 if bytes[58..84].iter().all(|value| *value == 0) => None,
+        operation @ (1 | 2 | 3 | 4) if bytes[58..60].iter().all(|value| *value == 0) => {
             let identity = u32::from_le_bytes(bytes[60..64].try_into().ok()?);
             if identity <= 1 {
                 return None;
@@ -270,6 +275,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         _ => return None,
     };
     let command = playsrc_tf2::Command {
+        weapon_preferences,
         movement: playsrc_movement::Command {
             forward: f(8)?,
             side: f(12)?,

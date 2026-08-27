@@ -1670,7 +1670,7 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         let (index, _) = decode(handle).ok_or("invalid map handle")?;
         let mut command = [0_u8; gameplay_protocol::HEADER_BYTES];
         command[..4].copy_from_slice(b"PCMD");
-        command[4..8].copy_from_slice(&8_u32.to_le_bytes());
+        command[4..8].copy_from_slice(&9_u32.to_le_bytes());
         command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
         command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
         command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
@@ -15882,7 +15882,7 @@ mod tests {
     fn command_and_snapshot_binary_contract_is_stable() {
         let mut bytes = vec![0; 84];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&8_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&9_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());
         bytes[24..28].copy_from_slice(&(-30_f32).to_le_bytes());
@@ -15908,6 +15908,13 @@ mod tests {
             Some(playsrc_tf2::Weapon::StickybombLauncher)
         );
         assert!(input.physics_results.is_empty());
+        for flags in 0..4 {
+            bytes[57] = 0x80 | flags;
+            assert_eq!(gameplay_protocol::decode(&bytes).unwrap().command.weapon_preferences,
+                Some(playsrc_tf2::WeaponPreferences { remember_active: flags & 1 != 0, remember_last: flags & 2 != 0 }));
+        }
+        for invalid in [1, 4, 0x84, 0xff] { bytes[57] = invalid; assert!(gameplay_protocol::decode(&bytes).is_none()); }
+        bytes[57] = 0;
         bytes[52..56].copy_from_slice(&(0x8000_0000_u32 | 1 | (1 << 16)).to_le_bytes());
         assert_eq!(
             gameplay_protocol::decode(&bytes)
@@ -16262,7 +16269,7 @@ mod tests {
     fn fixed_tick_continuation_retains_buttons_and_consumes_results_and_selectors() {
         let mut bytes = vec![0; 84 + 80];
         bytes[..4].copy_from_slice(b"PCMD");
-        bytes[4..8].copy_from_slice(&8_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&9_u32.to_le_bytes());
         bytes[8..12].copy_from_slice(&240_f32.to_le_bytes());
         bytes[12..16].copy_from_slice(&(-120_f32).to_le_bytes());
         bytes[16..20].copy_from_slice(&100_f32.to_le_bytes());

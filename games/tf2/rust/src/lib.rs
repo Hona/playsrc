@@ -281,6 +281,7 @@ impl WeaponState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Command {
+    pub weapon_preferences: Option<WeaponPreferences>,
     pub movement: MoveCommand,
     pub pitch_degrees: f32,
     pub up: f32,
@@ -835,8 +836,17 @@ pub struct PlayerSpawn {
     pub angles: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WeaponPreferences {
+    pub remember_active: bool,
+    pub remember_last: bool,
+}
+
 #[derive(Clone)]
 pub struct Session<W: GameplayWorld + Clone> {
+    weapon_preferences: WeaponPreferences,
+    active_weapon_prior_to_death: Option<Weapon>,
+    saved_last_weapon_slot: u8,
     collision: W,
     tick: u64,
     class: PlayerClass,
@@ -1030,6 +1040,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pending_team_change: None,
             pending_control_point_events: Vec::new(),
             weapon: Some(Weapon::RocketLauncher),
+            weapon_preferences: WeaponPreferences::default(),
+            active_weapon_prior_to_death: None,
+            saved_last_weapon_slot: 1,
             last_weapon: Some(Weapon::Shotgun),
             secondary_last_weapon: None,
             loadout,
@@ -1317,14 +1330,44 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn reset_last_weapon(&mut self) {
-        // Default TF2 spawn last slot is secondary, or melee if unavailable.
-        self.last_weapon = [1, 2].into_iter().find_map(|selection| {
-            schema::LoadoutPosition::ALL.into_iter().find_map(|slot| {
-                let item = equipment::supported_item(self.active_equipment.definition(self.class, slot)?)?;
-                (item.selection_slot(self.class, slot) == Some(selection)).then(|| item.weapon_for_class(self.class)).flatten()
-            })
-        });
+        self.saved_last_weapon_slot = 1;
+        self.last_weapon = self.weapon_in_selection_slot(1).or_else(|| self.weapon_in_selection_slot(2));
         self.secondary_last_weapon = None;
+    }
+
+    fn weapon_selection_slot(&self, weapon: Weapon) -> Option<u8> {
+        schema::LoadoutPosition::ALL.into_iter().find_map(|slot| {
+            let item = equipment::supported_item(self.active_equipment.definition(self.class, slot)?)?;
+            (item.weapon_for_class(self.class) == Some(weapon)).then(|| item.selection_slot(self.class, slot)).flatten()
+        })
+    }
+
+    fn weapon_in_selection_slot(&self, slot: u8) -> Option<Weapon> {
+        self.active_equipment.weapons(self.class).find(|weapon| self.weapon_selection_slot(*weapon) == Some(slot))
+    }
+
+    fn save_weapon_selection(&mut self, dying: bool) {
+        self.active_weapon_prior_to_death = self.weapon.filter(|weapon| !dying || *weapon != Weapon::Toolbox);
+        let preferences = self.weapon_preferences;
+        if !preferences.remember_active && !preferences.remember_last { return; }
+        if let Some(last) = self.last_weapon.and_then(|weapon| self.weapon_selection_slot(weapon)) {
+            let active = self.weapon.and_then(|weapon| self.weapon_selection_slot(weapon));
+            self.saved_last_weapon_slot = if !preferences.remember_last { if active == Some(0) { 1 } else { 0 } }
+                else if !preferences.remember_active && last == 0 { active.unwrap_or(last) } else { last };
+        }
+    }
+
+    fn restore_spawn_weapon_selection(&mut self) {
+        let preferences = self.weapon_preferences;
+        self.weapon = preferences.remember_active.then_some(self.active_weapon_prior_to_death).flatten()
+            .filter(|weapon| self.loadout.contains_key(weapon))
+            .or_else(|| [0, 1, 2].into_iter().find_map(|slot| self.weapon_in_selection_slot(slot)));
+        if (self.saved_last_weapon_slot == 0 || !preferences.remember_last) && !preferences.remember_active {
+            self.saved_last_weapon_slot = 1;
+        }
+        self.last_weapon = self.weapon_in_selection_slot(self.saved_last_weapon_slot).or_else(|| self.weapon_in_selection_slot(2));
+        self.secondary_last_weapon = None;
+        self.equipment_attributes.set_active(self.weapon);
     }
 
     fn should_set_last_weapon(&self, weapon: Option<Weapon>) -> bool {
@@ -1884,6 +1927,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        if let Some(preferences) = command.weapon_preferences { self.weapon_preferences = preferences; }
         self.raw_view_angles = [command.pitch_degrees, command.movement.yaw_degrees, 0.0];
         admission_metrics::begin_tick(self.tick);
         self.map.set_control_point_facts(self.control_point_facts());
@@ -3618,6 +3662,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.buildings.reset();
             self.weapon = default_weapon(class);
             self.apply_equipment();
+            self.restore_spawn_weapon_selection();
             self.ammo = self.maximum_ammo();
             self.deploy_active_weapon();
             self.health = self.maximum_health();
@@ -6988,6 +7033,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
+        self.save_weapon_selection(true);
         self.stop_flame(false);
         self.equipment_attributes.set_active(None);
         self.melee.reset_victim(PLAYER_IDENTITY);
@@ -7020,6 +7066,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         movement_policy: GenericMovementPolicy,
     ) {
         // WeaponReset destroys sound patches without emitting a winddown.
+        if self.lifecycle == PlayerLifecycle::Active { self.save_weapon_selection(false); }
         self.stop_flame(true);
         self.decapitations = 0;
         self.movement_stuns = hitscan::MovementStuns::default();
@@ -7051,7 +7098,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for weapon in self.loadout.values_mut() {
             weapon.reset_for_spawn();
         }
-        self.reset_last_weapon();
+        self.restore_spawn_weapon_selection();
         self.deploy_active_weapon();
         self.select_respawn_transform();
         self.movement = MovementState::from_player(
@@ -7405,6 +7452,59 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(false)
         }
+    }
+
+    #[test]
+    fn remembered_active_and_last_weapons_follow_spawn_preferences_together() {
+        for class in PlayerClass::ALL {
+            for remember_active in [false, true] {
+                for remember_last in [false, true] {
+                    for dying in [false, true] {
+                        let mut session = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+                        session.advance(Command { select_class: Some(class), weapon_preferences: Some(WeaponPreferences { remember_active, remember_last }), ..Command::default() }).unwrap();
+                        let primary = [0, 1, 2].into_iter().find_map(|slot| session.weapon_in_selection_slot(slot)).unwrap();
+                        let secondary = session.weapon_in_selection_slot(1).unwrap_or(primary);
+                        let melee = session.weapon_in_selection_slot(2).unwrap();
+                        session.advance(Command { select_weapon: Some(melee), ..Command::default() }).unwrap();
+                        session.advance(Command { select_weapon: Some(secondary), ..Command::default() }).unwrap();
+                        assert_eq!(session.last_weapon, Some(melee));
+                        if dying { session.die(&mut Vec::new()); }
+                        let spawned = session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+                        assert_eq!(spawned.weapon, Some(if remember_active { secondary } else { primary }), "{class:?}/{remember_active}/{remember_last}/{dying}");
+                        let last_slot = if remember_last { 2 } else if remember_active && session.weapon_selection_slot(secondary) != Some(0) { 0 } else { 1 };
+                        assert_eq!(session.last_weapon, session.weapon_in_selection_slot(last_slot).or_else(|| session.weapon_in_selection_slot(2)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn respawn_rebinds_remembered_weapon_ids_without_resetting_resupply_selection() {
+        let mut session = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+        session.advance(Command { select_class: Some(PlayerClass::Scout), weapon_preferences: Some(WeaponPreferences { remember_active: true, remember_last: true }), ..Command::default() }).unwrap();
+        session.advance(Command { select_weapon: Some(Weapon::Pistol), ..Command::default() }).unwrap();
+        session.advance(Command { select_weapon: Some(Weapon::Scattergun), ..Command::default() }).unwrap();
+        session.die(&mut Vec::new());
+        session.equip_item(PlayerClass::Scout, schema::LoadoutPosition::Primary, Some(45)).unwrap();
+        session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::Scattergun));
+        assert_eq!(session.active_equipment.weapon_definition(PlayerClass::Scout, Weapon::Scattergun), Some(45));
+        assert_eq!(session.last_weapon, Some(Weapon::Pistol));
+        session.die(&mut Vec::new());
+        session.equip_item(PlayerClass::Scout, schema::LoadoutPosition::Primary, Some(220)).unwrap();
+        session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::HandgunScoutPrimary));
+        session.advance(Command { select_weapon: Some(Weapon::Bat), ..Command::default() }).unwrap();
+        session.apply_equipment();
+        assert_eq!(session.weapon, Some(Weapon::Bat));
+        session.advance(Command { select_class: Some(PlayerClass::Engineer), ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
+        assert_eq!(session.last_weapon, Some(Weapon::EngineerPistol));
+        session.weapon = Some(Weapon::Toolbox);
+        session.die(&mut Vec::new());
+        session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
     }
 
     #[test]
