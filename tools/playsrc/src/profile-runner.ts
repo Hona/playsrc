@@ -16,27 +16,30 @@ export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lo
 const MAX_RUN_MILLISECONDS = 175_000
 const OWNER_IDLE_MILLISECONDS = 60_000
 const HEARTBEAT_MILLISECONDS = 2_000
+const DEFAULT_BROWSER_MINIMUM_MILLISECONDS = 30_000
 
 export class ProfileCapacityDeferred extends Error {}
 
 // Admission is outside Ready and the sample. A queued cold build can consume
 // almost the entire command cap; retain that prepared build rather than launch
 // a browser with too little time for startup, map admission and extraction.
-export function requireBrowserBudget(milliseconds: number, minimum = 30_000): void {
+export function requireBrowserBudget(milliseconds: number, minimum = DEFAULT_BROWSER_MINIMUM_MILLISECONDS): void {
   if (milliseconds < minimum) throw new ProfileCapacityDeferred(`Only ${milliseconds} ms remain after queue/build; reserve ${minimum} ms for the headed workflow. Exact preparation is retained; retry without --fresh.`)
 }
 
 const PROFILES = Object.freeze({
   deathnotice: { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "deathnotice" } },
-  "control-points": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "control-points" } },
+  "control-points": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "control-points" }, minimumRemainingMilliseconds: environment => environment.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" } },
-  "burning-flames": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "burning-flames" } },
+  // Full acceptance measured 60.182s, plus 1.579s observed browser preparation and
+  // source verification. Reserve 65s, without inflating the short tooltip check.
+  "burning-flames": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "burning-flames" }, minimumRemainingMilliseconds: environment => environment.PROFILE_COSMETIC_TOOLTIP_ONLY === "1" ? DEFAULT_BROWSER_MINIMUM_MILLISECONDS : 65_000 },
   "spy-cloak": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "spy-cloak" } },
   "trigger-door": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "trigger-door" } },
   "trigger-door-upward": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "trigger-door", PROFILE_DOOR_MAP: "pl_upward" } },
   "sniper-scope": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "sniper-scope" } },
-  "skinning-equivalence": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SKINNING_EQUIVALENCE: "1" } },
+  "skinning-equivalence": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SKINNING_EQUIVALENCE: "1" }, minimumRemainingMilliseconds: 80_000 },
   gameplay: { config: "playwright.profile.config.ts", target: "jump_beef" },
   "frame-budget": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "frame-budget" } },
   "map-load": { config: "playwright.profile.config.ts", target: "jump_beef" },
@@ -70,9 +73,15 @@ const PROFILES = Object.freeze({
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
   "application-upgrade": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "application-upgrade" } },
   "startup-browser": { config: "playwright.startup-profile.config.ts", target: "jump_beef" },
-} satisfies Record<string, { config: string; target: Tf2TargetName; environment?: Record<string, string>; arguments?: readonly string[] }>)
+} satisfies Record<string, { config: string; target: Tf2TargetName; environment?: Record<string, string>; arguments?: readonly string[]; minimumRemainingMilliseconds?: number | ((environment: Readonly<NodeJS.ProcessEnv>) => number) }>)
 
 export type HeadedProfile = keyof typeof PROFILES
+
+export function profileMinimumRemainingMilliseconds(profile: HeadedProfile, environment: Readonly<NodeJS.ProcessEnv> = process.env): number {
+  const plan = PROFILES[profile]
+  if (!("minimumRemainingMilliseconds" in plan)) return DEFAULT_BROWSER_MINIMUM_MILLISECONDS
+  return typeof plan.minimumRemainingMilliseconds === "number" ? plan.minimumRemainingMilliseconds : plan.minimumRemainingMilliseconds(environment)
+}
 
 type OwnerMetadata = Readonly<{
   schema: "playsrc-profile-owner-v1"
@@ -304,6 +313,11 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let timedOut = false
   let failure: string | null = null
   let cleanupFailure: string | null = null
+  let admission: { remainingMilliseconds: number; minimumRemainingMilliseconds: number } | null = null
+  const checkBrowserBudget = () => {
+    admission = { remainingMilliseconds: remaining(), minimumRemainingMilliseconds: profileMinimumRemainingMilliseconds(profile, { ...process.env, ...environment }) }
+    requireBrowserBudget(admission.remainingMilliseconds, admission.minimumRemainingMilliseconds)
+  }
   let outcome = "failed"
   let child: ReturnType<typeof spawn> | undefined
   let childExited = false
@@ -345,7 +359,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity())
     }
     if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
-    requireBrowserBudget(remaining(), profile === "control-points" && process.env.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : profile === "skinning-equivalence" ? 80_000 : 30_000)
+    checkBrowserBudget()
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
       const launch = await measure("controller-preflight", async () => {
@@ -353,6 +367,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         const use = configuration.use ?? {}
         return { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) }
       })
+      checkBrowserBudget()
       browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token))
       browserOwnerMilliseconds = Date.now() - began
     }
@@ -456,6 +471,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
           outcome,
           failure,
           cleanupFailure,
+          admission,
           queue: observations,
           attempts,
           startedAt: new Date(started).toISOString(),
