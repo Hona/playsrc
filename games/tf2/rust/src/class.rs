@@ -138,6 +138,9 @@ impl AmmoLedger {
 
     pub fn give(&mut self, maximum: Self, kind: AmmoType, requested: u16) -> u16 {
         let before = self.get(kind);
+        if before >= maximum.get(kind) {
+            return 0;
+        }
         let after = before.saturating_add(requested).min(maximum.get(kind));
         self.set(kind, after);
         after - before
@@ -724,5 +727,8 @@ mod tests {
         assert_eq!(ammo.give(maximum, AmmoType::Primary, 10), 1);
         assert_eq!(ammo.primary, 20);
         assert_eq!(ammo.give(maximum, AmmoType::Primary, 1), 0);
+        ammo.primary = 60;
+        assert_eq!(ammo.give(maximum, AmmoType::Primary, 10), 0);
+        assert_eq!(ammo.primary, 60, "a lowered cap must not consume existing ammunition");
     }
 }

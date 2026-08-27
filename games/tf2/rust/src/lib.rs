@@ -2742,6 +2742,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                             let mut grants = Vec::new();
                             pickup::grant_map_ammo(
                                 self.class,
+                                self.maximum_ammo(),
                                 candidate.definition.size,
                                 &mut self.ammo,
                                 &mut grants,
@@ -3389,7 +3390,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for weapon in self.loadout.values_mut() {
             weapon.regenerate(self.tick, self.movement_configuration.tick_interval);
         }
-        self.ammo = self.class.data().maximum_ammo;
+        self.ammo = self.maximum_ammo();
         if let Some(state) = self.spy.as_mut() {
             state.cloak_meter = spy::CLOAK_MAXIMUM;
         }
@@ -6430,6 +6431,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
         });
     }
 
+    pub fn maximum_ammo(&self) -> class::AmmoLedger {
+        let mut maximum = self.class.data().maximum_ammo;
+        for runtime in self.loadout.values() {
+            if let Some(kind) = weapon_ammo_kind(runtime.weapon) {
+                maximum.set(kind, runtime.profile().maximum_reserve);
+            }
+        }
+        maximum
+    }
+
     fn maximum_health(&self) -> i32 {
         if self.jump.is_some() && self.class == PlayerClass::Soldier {
             900
@@ -6824,6 +6835,29 @@ mod tests {
         ) -> Result<bool, MoveError> {
             Ok(false)
         }
+    }
+
+    #[test]
+    fn resupply_uses_resolved_weapon_ammo_caps_without_changing_stock_class_ledgers() {
+        let mut session = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+        for class in PlayerClass::ALL {
+            session.class = class;
+            session.loadout = default_loadout(class);
+            assert_eq!(session.maximum_ammo(), class.data().maximum_ammo);
+        }
+        session.class = PlayerClass::Soldier;
+        session.loadout = default_loadout(PlayerClass::Soldier);
+        let runtime = session.loadout.get_mut(&Weapon::RocketLauncher).unwrap();
+        runtime.resolved_profile.maximum_reserve = 60;
+        runtime.resolved_profile.maximum_clip = 5;
+        runtime.clip = 0;
+        runtime.reserve = 0;
+        session.ammo.primary = 0;
+        session.regenerate(0, None, &mut Vec::new());
+        assert_eq!(session.ammo.primary, 60);
+        assert_eq!(session.ammo.secondary, 32);
+        let runtime = session.weapon_runtime(Weapon::RocketLauncher).unwrap();
+        assert_eq!((runtime.clip, runtime.reserve), (5, 60));
     }
 
     #[test]
