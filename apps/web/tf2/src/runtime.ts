@@ -1978,7 +1978,7 @@ export class Tf2Application {
         const preparation = preparationByIdentity.get(pose.identity)
         const artifact = this.#artifacts!.models.get(pose.model)
         if (!preparation || !artifact || !pose.lighting) throw new Error(`Class pipeline pose unavailable: ${pose.model}`)
-        return { pass: preparation.pass, item: {
+        return { pass: preparation.pass, unposedPanel: preparation.pass === "panel" && pose.role === "single", item: {
           identity: pose.identity, model: pose.model, skin: preparation.request.skin < artifact.skinCount ? preparation.request.skin : 0,
           position: warmupCamera.position, angles: [0, 0, 0] as const, scale: 1,
           pose, modelLighting: pose.lighting, eyeStates: pose.eyes,
