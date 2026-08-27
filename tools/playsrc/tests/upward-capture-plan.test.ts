@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test"
 import { upwardCapturePlan, validateUpwardCapturePlan, assertMatchingCapturePlans } from "../profile/upward-capture-plan"
 
+test("render owner instrumentation is explicit, bounded and comparison-plan significant", () => {
+  const normal = upwardCapturePlan({}), owners = upwardCapturePlan({ PROFILE_RENDER_OWNERS: "1" })
+  expect(owners.renderOwners).toBe("two-frames-after-60-v1")
+  expect(normal.renderOwners).toBeUndefined()
+  expect(() => validateUpwardCapturePlan(owners)).not.toThrow()
+  expect(() => assertMatchingCapturePlans(normal, owners)).toThrow("plans differ")
+  expect(() => assertMatchingCapturePlans(owners, normal)).toThrow("plans differ")
+  expect(() => assertMatchingCapturePlans(owners, upwardCapturePlan({ PROFILE_RENDER_OWNERS: "1" }))).not.toThrow()
+})
+
 test("one effective plan owns existing scenario, interaction and Worker switches", () => {
   const ordinary = upwardCapturePlan({ PROFILE_UPWARD_TRAINING_INTERACTION: "1" })
   expect(ordinary).toMatchObject({ target: "pl_upward", entry: "training", interaction: "movement-weapon", workerCpu: "not-requested", sampleSeconds: 6 })

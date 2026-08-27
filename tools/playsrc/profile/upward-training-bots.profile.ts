@@ -51,6 +51,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   await page.addInitScript(installBrowserFrameProfiler)
+  if (capturePlan.renderOwners) await page.addInitScript(plan => { (globalThis as any).__playsrcFrameProfiler.renderOwnerPlan = plan }, capturePlan.renderOwners)
   await page.addInitScript(() => {
     performance.setResourceTimingBufferSize(4096)
     ;(globalThis as any).__playsrcProfile = {}
@@ -595,6 +596,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
       roster: structuredClone((globalThis as any).__playsrcProfile.bots), scoreboard: JSON.parse(main.dataset.scoreboardProbe ?? "{}"),
       frames: instrumentation.completedFrames, compositorFrames: instrumentation.compositorFrames, particleSamples,
+      renderOwners: instrumentation.renderOwners ?? [],
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       simulationPublications: instrumentation.simulation, simulationPublicationsDropped: instrumentation.simulationDropped,
       classSwitches, lifecycle,
@@ -799,6 +801,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const measured = sample.measurement
   snapshotBoundaries = measured?.snapshotTransport ?? null
   if (measured) {
+    for (const record of measured.renderOwners) joins.push({ kind: "render-owners", at: measured.started, end: measured.ended, detail: record })
     for (const record of measured.gpuOperations) joins.push({ kind: "gpu", at: record.at, end: record.end ?? measured.ended, detail: record })
     for (const record of measured.lifecycle) joins.push({ kind: "class-lifecycle", at: measured.started + record.at, detail: record })
     for (const record of measured.browserLifecycle) joins.push({ kind: "browser-lifecycle", at: record.at, detail: record })
@@ -811,7 +814,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   profilePhases.enter("trace-analysis-retention")
   const evidence = await retainNativeEvidence(
-    { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped : 1 },
+    { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
     { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact })
   const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.

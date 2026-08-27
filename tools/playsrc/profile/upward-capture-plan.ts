@@ -22,6 +22,7 @@ export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     interaction: stockOnly ? "stock-loadouts" : exerciseClasses ? "class-input"
       : environment.PROFILE_UPWARD_TRAINING_INTERACTION === "1" ? "movement-weapon" : "forward-movement",
     workerCpu: !stockOnly && (exerciseClasses || acceptance) ? "required" : "not-requested",
+    ...(!stockOnly && environment.PROFILE_RENDER_OWNERS === "1" ? { renderOwners: "two-frames-after-60-v1" as const } : {}),
   } as const)
 }
 
@@ -48,6 +49,7 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
     PROFILE_ACCEPTANCE_STOCK_TEAM: value.coldTeam,
     PROFILE_SAMPLE_SECONDS: String(value.sampleSeconds),
     PROFILE_UPWARD_TRAINING_INTERACTION: value.interaction === "movement-weapon" ? "1" : "0",
+    PROFILE_RENDER_OWNERS: value.renderOwners ? "1" : "0",
   })
   if (Object.keys(value).length !== Object.keys(resolved).length
     || Object.entries(resolved).some(([key, expected]) => value[key] !== expected)) throw new Error("Inconsistent effective capture plan")
@@ -57,5 +59,6 @@ export function assertMatchingCapturePlans(before: unknown, after: unknown) {
   if (before == null || after == null) throw new Error("Historical capture plan unknown; comparison not admitted")
   validateUpwardCapturePlan(before)
   validateUpwardCapturePlan(after)
-  if (Object.keys(before).some(key => before[key as keyof UpwardCapturePlan] !== after[key as keyof UpwardCapturePlan])) throw new Error("Effective capture comparison plans differ")
+  if (Object.keys(before).length !== Object.keys(after).length
+    || Object.keys(before).some(key => before[key as keyof UpwardCapturePlan] !== after[key as keyof UpwardCapturePlan])) throw new Error("Effective capture comparison plans differ")
 }
