@@ -83,6 +83,8 @@ import {
 } from "./source-water"
 import { sourceWaterTangentAttributes } from "./source-water-geometry"
 import { createSourceRefractMaterial } from "./source-refract"
+import { SourceHudMaterials, type HudMaterialFrame } from "./source-hud-materials"
+export type { HudMaterial, HudTexture, HudMaterialDraw, HudMaterialFrame } from "./source-hud-materials"
 import { prepareWaterPipelineVisibility } from "./water-pipeline-visibility"
 import {
   buildRuntimeLightmap,
@@ -337,7 +339,7 @@ export type ParticleItem = Readonly<{
   secondarySheet:Readonly<{current:readonly(readonly[number,number,number,number])[];next:readonly(readonly[number,number,number,number])[];blend:number}>|null
 }>
 
-export type FrameCaptureRequest = Readonly<{ format: "image/png" }>
+export type FrameCaptureRequest = Readonly<{ format: "image/png"; beforeHud?: boolean }>
 export type WaterFramePass = Readonly<{
   kind: "reflection" | "refraction" | "main" | "intersection"
   origin: readonly [number, number, number]
@@ -378,6 +380,7 @@ export type EvaluatedWorldMaterialInput = Readonly<{
 export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan;worldMaterials:readonly EvaluatedWorldMaterialInput[]}>
 
 export type Frame = Readonly<{
+  hudMaterials?: HudMaterialFrame
   camera: Camera
   effects: readonly Effect[]
   shadows?: readonly ShadowInput[]
@@ -752,6 +755,7 @@ export type WaterPassTiming = Readonly<{
 }>
 
 export type FrameResult = Readonly<{
+  beforeHudCapture?: FrameCapture
   deviceGeneration: number
   sceneGeneration: number
   submission: null
@@ -1445,6 +1449,7 @@ class RendererOwner implements Renderer {
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
   readonly #underwaterOverlay = new THREE.QuadMesh()
+  #hudMaterials?: SourceHudMaterials
   #modelPanelScene = new THREE.Scene()
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { instance: THREE.Group; meshes?: THREE.Mesh[] }>()
@@ -1838,7 +1843,7 @@ class RendererOwner implements Renderer {
     this.#scene.updateMatrixWorld(true)
     const ray = new THREE.Raycaster()
     const world = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
-    const instances = [...this.#dynamicModelInstances.values()].map((instance) => instance.instance)
+    const instances = [...this.#dynamicModelInstances.values()].map((instance) => instance.instance).filter(instance => instance.visible)
     const samples: ModelGeometryEvidence["samples"][number][] = []
     for (const y of [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45]) {
       for (const x of [-0.4, -0.25, -0.1, 0, 0.1, 0.25, 0.4]) {
@@ -1849,7 +1854,7 @@ class RendererOwner implements Renderer {
         let owner: THREE.Object3D | null = hit.object
         while (owner && !Number.isSafeInteger(owner.userData.identity)) owner = owner.parent
         if (!owner) continue
-        const worldDepth = samples.length < 2 ? ray.intersectObjects(world, false)[0]?.distance ?? null : null
+        const worldDepth = ray.intersectObjects(world, false)[0]?.distance ?? null
         if (worldDepth !== null && hit.distance > worldDepth + 0.01) continue
         samples.push(Object.freeze({
           x,
@@ -3597,6 +3602,11 @@ class RendererOwner implements Renderer {
     this.#validateFrame(frame)
     this.#renderBusy = true
     try {
+      if (frame.hudMaterials && !this.#hudMaterials?.prepared) {
+        this.#hudMaterials ??= new SourceHudMaterials(this.textureQuality)
+        await this.#hudMaterials.prepare(frame.hudMaterials.materials)
+        this.#requireReady()
+      }
       if (frame.lightStyles && this.#active.map.lighting.profile === "hdr") {
         const lightmap = buildRuntimeLightmap(this.#active.map, frame.lightStyles)
         this.#replaceLightmapData(this.#active, lightmap)
@@ -3750,6 +3760,7 @@ class RendererOwner implements Renderer {
       const viewModelDepthRange = this.#stageDynamicItems(frame)
       const dynamicItemsMilliseconds = performance.now() - dynamicItemsStarted
       let viewModelPass: FrameResult["viewModelPass"],sky3dPass:FrameResult["sky3dPass"]
+      let beforeHudCapture: FrameCapture | undefined
       let waterPasses: FrameResult["waterPasses"] = Object.freeze([])
       let waterPassTimings: FrameResult["waterPassTimings"] = Object.freeze([])
       let waterStateRestored = true
@@ -3797,6 +3808,13 @@ class RendererOwner implements Renderer {
           Math.floor(this.#viewportWidth * this.#devicePixelRatio),
           Math.floor(this.#viewportHeight * this.#devicePixelRatio),
         )
+        if (frame.capture?.beforeHud) {
+          if (this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
+          beforeHudCapture = await this.#capture(frame.capture)
+        }
+        if (frame.hudMaterials) this.#pass("hud-materials", () => this.#hudMaterials!.render(
+          this.#backend, frame.hudMaterials!, this.#viewportWidth, this.#viewportHeight, this.#devicePixelRatio,
+        ))
       }
       if (frame.capture && this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
       const capture = frame.capture ? await this.#capture(frame.capture) : undefined
@@ -3816,6 +3834,7 @@ class RendererOwner implements Renderer {
         viewModelPass,
         pacing:this.#pacing.records(),
         capture,
+        beforeHudCapture,
       })
     } finally {
       if (this.#renderBusy && this.#pendingDepthReset) this.#pendingDepthReset = false
@@ -5259,6 +5278,8 @@ class RendererOwner implements Renderer {
       this.#restoreNodeBuilderInstrumentation?.()
       this.#restoreNodeBuilderInstrumentation = undefined
       this.#exposureSampler?.dispose()
+      this.#hudMaterials?.dispose()
+      this.#hudMaterials = undefined
       this.#exposureSampler = undefined
       oldBackend.dispose()
       this.#backend = await this.#createBackend()
@@ -5364,6 +5385,8 @@ class RendererOwner implements Renderer {
     this.#restoreNodeBuilderInstrumentation?.()
     this.#restoreNodeBuilderInstrumentation = undefined
     this.#exposureSampler?.dispose()
+    this.#hudMaterials?.dispose()
+    this.#hudMaterials = undefined
     this.#exposureSampler = undefined
     this.#backend.dispose()
     try {

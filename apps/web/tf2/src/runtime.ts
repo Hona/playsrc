@@ -4335,8 +4335,12 @@ export class Tf2Application {
         : prepared.publication.selectedTicks
     const models=prepared.frame.models
     const renderStart=performance.now()
+    const hudPixelRevision = profile?.hudPixelEvidenceRevision
+    const captureHudPixels = Number.isSafeInteger(hudPixelRevision) && hudPixelRevision !== (profile?.hudPixelEvidence as { revision?: number } | undefined)?.revision
     const rendered=await renderer.render({
       ...prepared.frame,
+      hudMaterials:this.#hudIntegration?.materialFrame(),
+      ...(captureHudPixels ? { capture: { format: "image/png" as const, beforeHud: true } } : {}),
       models,
       camera,
       visibility:Object.freeze({...visibility,surfaces:visibility.drawSurfaces}),
@@ -4345,6 +4349,7 @@ export class Tf2Application {
       deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
     })
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
+    if (captureHudPixels && profile) profile.hudPixelEvidence = { revision: hudPixelRevision, before: rendered.beforeHudCapture, after: rendered.capture }
     const hudModel=this.#hudIntegration?.modelPanel()
     let hudModelMilliseconds=0
     if(hudModel){
