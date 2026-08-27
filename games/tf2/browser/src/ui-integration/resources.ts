@@ -193,6 +193,7 @@ const CUSTOM_BASES: Readonly<Record<string, VguiControlRegistration["baseControl
   CExplanationPopup: "EditablePanel",
   CGammaDialog: "Frame",
   CIconPanel: "Panel",
+  CControlPointCountdown: "EditablePanel",
   CImagePanel: "ImagePanel",
   CItemModelPanel: "Panel",
   CLabeledCommandComboBox: "ComboBox",

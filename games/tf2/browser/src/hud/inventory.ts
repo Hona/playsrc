@@ -70,6 +70,12 @@ export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
   "../hud/objectives_timepanel_blue_bg",
 ])
 
+export const TF2_CONTROL_POINT_IMAGES = Object.freeze([
+  ...["neutral", "red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_${team}`, `../sprites/obj_icons/icon_obj_${team}_locked`]),
+  ...["red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_cap_${team}`, `../sprites/obj_icons/icon_obj_cap_${team}_up`]),
+  "progress_bar", "progress_bar_red", "progress_bar_blu",
+])
+
 export const TF2_CLASS_IMAGES: Readonly<Record<Tf2PlayableTeam, Readonly<Record<Tf2Class, string>>>> =
   Object.freeze({
     2: Object.freeze({

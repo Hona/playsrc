@@ -22,6 +22,7 @@ export const VGUI_GENERIC_CONTROL_NAMES = Object.freeze([
   "RadioButton",
   "ProgressBar",
   "ContinuousProgressBar",
+  "CircularProgressBar",
   "Divider",
   "FrameSystemButton",
   "HTML",
@@ -394,6 +395,8 @@ export type VguiControlMutation = Readonly<{
   activeIndex?: number | null
   items?: readonly Readonly<{ id: number; text: string; command?: string; enabled?: boolean; checked?: boolean }>[]
   progress?: number
+  foregroundImage?: string
+  backgroundImage?: string
   previousProgress?: number
   imageFill?: number
   drawColor?: Rgba

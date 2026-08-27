@@ -4,6 +4,7 @@
  * repository's included thirdpartylegalnotices.txt.
  */
 import type { Rgba } from "./contract"
+import { circularProgressClip } from "./circular-progress"
 import {
   VGUI_GENERIC_CONTROL_NAMES,
   type VguiAnimationCommand,
@@ -134,6 +135,7 @@ const CONTROL_PROPERTIES: Readonly<Record<string, ReadonlySet<string>>> = Object
   RadioButton: new Set(["labelText", "text", "font", "command", "default", "selected", "TabPosition", "SubTabPosition"]),
   ProgressBar: new Set(["progress", "variable", "analogValue", "direction", "segment_gap", "segment_width", "bar_inset", "margin"]),
   ContinuousProgressBar: new Set(["progress", "variable", "analogValue", "direction"]),
+  CircularProgressBar: new Set(["progress", "variable", "analogValue", "direction", "fg_image", "bg_image"]),
   Divider: new Set([]),
   FrameSystemButton: new Set(["labelText", "text", "font", "textAlignment", "command", "default", "selected", "Default"]),
   HTML: new Set(["url", "allowjavascript", "scrollbars", "contextmenu", "newwindowsonly"]),
@@ -480,6 +482,7 @@ function roleForControl(control: string): string | null {
   if (sameName(control, "PropertyPage")) return "tabpanel"
   if (sameName(control, "ProgressBar")) return "progressbar"
   if (sameName(control, "ContinuousProgressBar")) return "progressbar"
+  if (sameName(control, "CircularProgressBar")) return "progressbar"
   if (sameName(control, "Divider")) return "separator"
   if (sameName(control, "FrameSystemButton")) return "button"
   if (sameName(control, "HTML")) return "document"
@@ -2283,7 +2286,7 @@ class SourceVguiRuntime implements VguiRuntime {
       const thumb = first("thumbwidth")
       if (thumb !== null) panel.thumbWidth = this.proportional(parseInteger(thumb, `${panel.name}:thumbwidth`), panel)
     }
-    if (sameName(sourceControl, "ProgressBar") || sameName(sourceControl, "ContinuousProgressBar")) {
+    if (sameName(sourceControl, "ProgressBar") || sameName(sourceControl, "ContinuousProgressBar") || sameName(sourceControl, "CircularProgressBar")) {
       const progress = first("progress")
       if (progress !== null) panel.progress = Math.max(0, Math.min(1, parseFloatValue(progress, `${panel.name}:progress`)))
       panel.progressVariable = first("variable") ?? first("analogValue") ?? panel.progressVariable
@@ -3054,6 +3057,9 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.image !== undefined && (!validString(mutation.image, this.limits.maxStringCodeUnits, false) || !this.images.has(asciiFold(mutation.image)))) {
       throw new RuntimeFault("MissingReference", `${panel.name}:image:${mutation.image ?? ""}`)
     }
+    for (const image of [mutation.foregroundImage, mutation.backgroundImage]) {
+      if (image !== undefined && (!sameName(panel.sourceControl, "CircularProgressBar") || !validString(image, this.limits.maxStringCodeUnits, false) || !this.images.has(asciiFold(image)))) throw new RuntimeFault("MissingReference", `${panel.name}:circular-image`)
+    }
     if (mutation.imageFrame !== undefined) {
       const imageName = mutation.image ?? panel.image
       const image = imageName ? this.images.get(asciiFold(imageName)) : null
@@ -3124,6 +3130,8 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.sections !== undefined) panel.sections = mutation.sections.map((section: VguiSectionedListSection) => Object.freeze({ ...section, columns: Object.freeze(section.columns.map((column: VguiSectionedListColumn) => Object.freeze({ ...column }))) }))
     if (mutation.sectionedItems !== undefined) panel.sectionedItems = mutation.sectionedItems.map((item) => Object.freeze({ ...item, cells: Object.freeze({ ...item.cells }) }))
     if (mutation.image !== undefined) panel.image = mutation.image
+    if (mutation.foregroundImage !== undefined) panel.properties.set("fg_image", mutation.foregroundImage)
+    if (mutation.backgroundImage !== undefined) panel.properties.set("bg_image", mutation.backgroundImage)
     if (mutation.imageFrame !== undefined) panel.properties.set("frame", String(mutation.imageFrame))
     if (mutation.url !== undefined) {
       panel.url = mutation.url
@@ -5320,6 +5328,27 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private presentControlGeometry(panel: PanelState): void {
     const control = panel.sourceControl
+    if (sameName(control, "CircularProgressBar")) {
+      for (const [key, property] of [["circular-background", "bg_image"], ["circular-foreground", "fg_image"]] as const) {
+        const name = panel.properties.get(property) ?? panel.properties.get("fg_image")
+        if (!name) continue
+        const image = this.images.get(asciiFold(name))
+        if (!image) throw new RuntimeFault("MissingReference", `${panel.name}:${property}`)
+        let layer = panel.chromeElements.get(key)
+        if (!layer) {
+          if (this.panels.size + this.auxiliaryNodes.size + 1 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
+          layer = this.document.createElement("div")
+          panel.chromeElements.set(key, layer)
+          this.auxiliaryNodes.add(layer)
+          panel.element.append(layer)
+        }
+        layer.style.cssText = `position:absolute;inset:0;pointer-events:none;background-repeat:no-repeat;background-size:100% 100%`
+        layer.style.backgroundImage = `url(${JSON.stringify(image.browserUrl)})`
+        layer.style.clipPath = property === "fg_image" ? circularProgressClip(panel.progress, panel.bounds.width, panel.bounds.height) : "none"
+        layer.style.imageRendering = image.hardwareFiltered ? "auto" : "pixelated"
+      }
+      return
+    }
     const images: string[] = []
     const sizes: string[] = []
     const positions: string[] = []

@@ -342,6 +342,9 @@ const ROOTS: &[(&str, &str, bool)] = &[
     ("hud", "resource/ui/waitingforplayerspanel.res", true),
     ("hud", "resource/ui/hudobjectiveflagpanel.res", true),
     ("hud", "resource/ui/flagstatus.res", true),
+    ("hud", "resource/ui/controlpointicon.res", true),
+    ("hud", "resource/ui/controlpointprogressbar.res", true),
+    ("hud", "resource/ui/controlpointcountdown.res", true),
     ("hud", "resource/ui/winpanel.res", true),
     ("hud", "resource/ui/notifications/base_notification.res", true),
     ("hud", "resource/ui/notifications/notify_your_flag_taken_red.res", true),
@@ -1614,7 +1617,7 @@ fn main() -> Result<(), String> {
         || class_images
             .iter()
             .any(|image| {
-                !(image.starts_with("../hud/") || image.starts_with("hud/")) || image.len() > 128
+                !(image.starts_with("../hud/") || image.starts_with("hud/") || image.starts_with("../sprites/obj_icons/") || matches!(image.as_str(), "progress_bar" | "progress_bar_red" | "progress_bar_blu")) || image.len() > 128
             })
         || class_images
             .iter()
