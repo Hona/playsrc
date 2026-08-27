@@ -351,11 +351,40 @@ pub struct Attack {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Damage {
+    pub damage_type: DamageType,
+    pub force: [f32; 3],
+    pub crit: CritKind,
+    pub range_multiplier: f32,
+    pub custom: CustomDamage,
+    pub modifiers: DamageModifiers,
+    pub killing_weapon: Option<&'static str>,
     pub attacker: u32,
     pub victim: u32,
     pub weapon: Weapon,
     pub amount: f32,
     pub position: [f32; 3],
+}
+
+impl Damage {
+    pub fn normalized_damage_type(self) -> DamageType {
+        match self.custom {
+            CustomDamage::Bleeding => DamageType::SLASH,
+            CustomDamage::Burning => DamageType::BURN | DamageType::PREVENT_FORCE,
+            _ => self.damage_type,
+        }
+    }
+
+    pub fn input(self, attacker_team: PlayerTeam, victim_team: PlayerTeam,
+        attacker_conditions: ConditionState) -> DamageInput {
+        DamageInput {
+            attacker: self.attacker, attacker_team, attacker_conditions,
+            source: if self.attacker == 0 { DamageSourceKind::World } else { DamageSourceKind::Player },
+            weapon_position: None, victim: self.victim, victim_team, base_damage: self.amount,
+            range_multiplier: self.range_multiplier, damage_type: self.normalized_damage_type(),
+            custom: self.custom, crit: self.crit, friendly_fire: false,
+            force_friendly_fire: false, bypass_invulnerability: false, force: self.force,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1784,41 +1813,20 @@ impl BotWorld {
         attacker_team: PlayerTeam,
         tick: u64,
         attacker_conditions: ConditionState,
-        crit: CritKind,
-    ) -> Result<Option<i32>, Error> {
+    ) -> Result<Option<damage::DamageResult>, Error> {
         let Some(victim) = self.bots.get_mut(&input.victim) else {
-            return Ok(None);
-        };
-        let Some(damage_type) = weapon_damage_type(input.weapon) else {
             return Ok(None);
         };
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
             &mut victim.health,
             &mut victim.conditions,
-            &DamageInput {
-                attacker: input.attacker,
-                attacker_team,
-                attacker_conditions,
-                source: DamageSourceKind::Player,
-                weapon_position: None,
-                victim: input.victim,
-                victim_team: victim.team,
-                base_damage: input.amount,
-                range_multiplier: 1.0,
-                damage_type,
-                custom: CustomDamage::None,
-                crit,
-                friendly_fire: false,
-                force_friendly_fire: false,
-                bypass_invulnerability: false,
-                force: [0.0; 3],
-            },
-            DamageModifiers::default(),
+            &input.input(attacker_team, victim.team, attacker_conditions),
+            input.modifiers,
         )
         .map_err(|_| Error::Damage)?;
         if !result.admitted {
-            return Ok(None);
+            return Ok(Some(result));
         }
         if input.attacker != input.victim {
             victim.damagers.record(input.attacker, tick as f32 * self.tick_interval);
@@ -1842,7 +1850,7 @@ impl BotWorld {
             victim.pending_melee = None;
             victim.carrying_flag = None;
         }
-        if input.attacker != crate::PLAYER_IDENTITY
+        if input.attacker != input.victim && input.attacker != crate::PLAYER_IDENTITY
             && let Some(attacker) = self.bots.get_mut(&input.attacker)
         {
             attacker.hits = attacker.hits.saturating_add(1);
@@ -1854,7 +1862,7 @@ impl BotWorld {
                 attacker.killstreak = attacker.killstreak.saturating_add(1);
             }
         }
-        Ok(Some(result.health_damage))
+        Ok(Some(result))
     }
 
     pub fn health(&self, identity: u32) -> Option<i32> {
@@ -1865,6 +1873,10 @@ impl BotWorld {
     pub fn navigation_diagnostics(&self) -> Vec<String> {
         self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
     }
+    pub(crate) fn conditions(&self, identity: u32) -> Option<&ConditionState> {
+        Some(&self.bots.get(&identity)?.conditions)
+    }
+
     pub(crate) fn critical_weapon(&self, identity: u32, weapon: Weapon) -> Option<crate::critical::WeaponState> {
         Some(self.bots.get(&identity)?.loadout.get(&weapon)?.critical)
     }
@@ -2532,22 +2544,22 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::FireAxe
         | Weapon::Bottle
         | Weapon::Knife
-        | Weapon::Bonesaw => DamageType::MELEE,
-        Weapon::Flamethrower => DamageType::BURN | DamageType::IGNITE,
+        | Weapon::Bonesaw => DamageType::MELEE | DamageType::NEVER_GIB | DamageType::CLUB,
+        Weapon::Flamethrower => DamageType::IGNITE | DamageType::PREVENT_FORCE,
         Weapon::RocketLauncher
         | Weapon::Original
-        | Weapon::StickybombLauncher
-        | Weapon::GrenadeLauncher => DamageType::BLAST,
+        | Weapon::GrenadeLauncher => DamageType::BLAST | DamageType::HALF_FALLOFF | DamageType::USE_DISTANCE,
+        Weapon::StickybombLauncher => DamageType::BLAST | DamageType::HALF_FALLOFF | DamageType::NO_CLOSE_DISTANCE,
         Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
-            DamageType::BUCKSHOT
+            DamageType::BUCKSHOT | DamageType::USE_DISTANCE
         }
         Weapon::Pistol
         | Weapon::Minigun
-        | Weapon::SniperRifle
         | Weapon::Smg
         | Weapon::EngineerPistol
-        | Weapon::Revolver
-        | Weapon::SyringeGun => DamageType::BULLET,
+        | Weapon::Revolver => DamageType::BULLET | DamageType::USE_DISTANCE,
+        Weapon::SniperRifle => DamageType::BULLET | DamageType::USE_HITLOCATIONS,
+        Weapon::SyringeGun => DamageType::BULLET | DamageType::USE_DISTANCE | DamageType::NO_CLOSE_DISTANCE | DamageType::PREVENT_FORCE,
         Weapon::Sapper
         | Weapon::DisguiseKit
         | Weapon::InvisibilityWatch
@@ -3104,6 +3116,79 @@ mod tests {
         .unwrap()
     }
 
+    fn direct_damage(weapon: Weapon, victim: u32, amount: f32) -> Damage {
+        Damage { attacker: crate::PLAYER_IDENTITY, victim, weapon, amount, position: [0.0; 3],
+            damage_type: weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
+            crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
+            modifiers: DamageModifiers::default(), killing_weapon: None }
+    }
+
+    #[test]
+    fn native_actor_damage_resolves_typed_crit_range_and_resistance_and_records_once() {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        session.advance(crate::Command { nextbot_stop: true, bot_request: Some(Request {
+            operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal,
+        }), ..Default::default() }).unwrap();
+        let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        let mut hit = direct_damage(Weapon::RocketLauncher, target, 90.0);
+        hit.crit = CritKind::Full;
+        hit.range_multiplier = 0.5;
+        hit.modifiers.critical_bonus_taken = 0.5;
+        hit.force = [1.0, 2.0, 3.0];
+        let mut events = Vec::new();
+        let result = session.apply_actor_damage(hit, PlayerTeam::Red, &mut events).unwrap().unwrap();
+        assert_eq!(result.pre_resistance_base_damage, 45.0);
+        assert_eq!(result.pre_resistance_bonus_damage, 225.0);
+        assert_eq!(result.final_damage, 157.5);
+        assert_eq!(result.health_damage, 158);
+        assert_eq!(result.force, [1.0, 2.0, 3.0]);
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(142));
+        let mut observed = damage::CritState::default();
+        session.critical_history.supply_observed_damage(&mut observed);
+        assert_eq!((observed.total_ranged_damage, observed.random_ranged_crit_damage), (158, 158));
+        assert_eq!(events.iter().filter(|event| matches!(event, crate::Event::PlayerDamaged { .. })).count(), 1);
+    }
+
+    #[test]
+    fn native_self_hit_is_not_friendly_fire_and_bleeding_is_slash_without_reapplication() {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        session.advance(crate::Command { select_class: Some(PlayerClass::Scout), ..Default::default() }).unwrap();
+        let mut hit = direct_damage(Weapon::Bat, crate::PLAYER_IDENTITY, 17.5);
+        hit.force = [0.0, 0.0, 100.0];
+        let result = session.apply_actor_damage(hit, PlayerTeam::Red, &mut Vec::new()).unwrap().unwrap();
+        assert!(result.admitted);
+        assert_eq!(session.health, 107);
+        assert_eq!(result.force, hit.force);
+        let mut observed = damage::CritState::default();
+        session.critical_history.supply_observed_damage(&mut observed);
+        assert_eq!(observed.total_ranged_damage, 0);
+        hit.amount = 4.0;
+        hit.custom = CustomDamage::Bleeding;
+        hit.force = [0.0; 3];
+        assert_eq!(hit.normalized_damage_type().source_bits(CritKind::None), 4);
+        let result = session.apply_actor_damage(hit, PlayerTeam::Red, &mut Vec::new()).unwrap().unwrap();
+        assert_eq!(result.health_damage, 4);
+        assert!(!session.conditions.contains(crate::Condition::Bleeding));
+    }
+
+    #[test]
+    fn native_damage_denial_retains_force_and_does_not_record_history() {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        session.conditions.insert(crate::Condition::Invulnerable);
+        let mut hit = direct_damage(Weapon::RocketLauncher, crate::PLAYER_IDENTITY, 90.0);
+        hit.attacker = 0;
+        hit.force = [5.0, 6.0, 7.0];
+        let mut events = Vec::new();
+        let result = session.apply_actor_damage(hit, PlayerTeam::Unassigned, &mut events).unwrap().unwrap();
+        assert!(!result.admitted);
+        assert_eq!(result.denial, Some(damage::DamageDenial::Invulnerable));
+        assert_eq!(result.force, hit.force);
+        assert_eq!(session.health, 200);
+        assert!(events.is_empty());
+    }
+
     fn capture_graph() -> Graph {
         playsrc_entity::parse(
             b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}\n{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"model\"\"*1\"\"origin\"\"20 50 1\"}\n{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"model\"\"*2\"\"origin\"\"240 50 1\"}\0",
@@ -3477,6 +3562,9 @@ mod tests {
         session
             .apply_actor_damage(
                 Damage {
+                    damage_type: weapon_damage_type(Weapon::Knife).unwrap(), force: [0.0; 3],
+                    crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
+                    modifiers: DamageModifiers::default(), killing_weapon: None,
                     attacker: 3,
                     victim: crate::PLAYER_IDENTITY,
                     weapon: Weapon::Knife,
@@ -3492,6 +3580,9 @@ mod tests {
         let before = session.bot_world().unwrap().snapshots()[0].health;
         let result = session.bots.as_mut().unwrap().damage(
             Damage {
+                damage_type: weapon_damage_type(Weapon::Bonesaw).unwrap(), force: [0.0; 3],
+                crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
+                modifiers: DamageModifiers::default(), killing_weapon: None,
                 attacker: 3,
                 victim: 2,
                 weapon: Weapon::Bonesaw,
@@ -3501,9 +3592,8 @@ mod tests {
             PlayerTeam::Blue,
             100,
             ConditionState::default(),
-            CritKind::None,
         );
-        assert_eq!(result, Ok(None));
+        assert_eq!(result.unwrap().unwrap().denial, Some(damage::DamageDenial::Invulnerable));
         assert_eq!(session.bot_world().unwrap().snapshots()[0].health, before);
         let detached = session.advance(crate::Command::default()).unwrap();
         assert_eq!(detached.medigun_target, None);
@@ -4790,6 +4880,9 @@ mod tests {
         let points = world
             .damage(
                 Damage {
+                    damage_type: weapon_damage_type(Weapon::RocketLauncher).unwrap(), force: [0.0; 3],
+                    crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
+                    modifiers: DamageModifiers::default(), killing_weapon: None,
                     attacker: 3,
                     victim: 2,
                     weapon: Weapon::RocketLauncher,
@@ -4799,10 +4892,9 @@ mod tests {
                 PlayerTeam::Red,
                 50,
                 ConditionState::default(),
-                CritKind::None,
             )
             .unwrap();
-        assert_eq!(points, Some(130));
+        assert_eq!(points.unwrap().health_damage, 130);
         let dead = world
             .snapshots()
             .into_iter()
@@ -4927,6 +5019,9 @@ mod tests {
         world
             .damage(
                 Damage {
+                    damage_type: weapon_damage_type(Weapon::Shotgun).unwrap(), force: [0.0; 3],
+                    crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
+                    modifiers: DamageModifiers::default(), killing_weapon: None,
                     attacker: 1,
                     victim: 2,
                     weapon: Weapon::Shotgun,
@@ -4936,7 +5031,6 @@ mod tests {
                 PlayerTeam::Red,
                 21,
                 ConditionState::default(),
-                CritKind::None,
             )
             .unwrap();
         let events = objectives.advance(&Floor, 0.315, &facts(&world)).unwrap();

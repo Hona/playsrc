@@ -1222,8 +1222,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             runtime.discard_chambered_on_reload = discard_chambered;
             runtime.spinup_seconds = self.equipment_attributes.weapon(weapon, "mult_minigun_spinup_time", 0.75);
             let definition = |items: &[equipment::EquippedItem]| items.iter().find_map(|item| {
-                (equipment::supported_item(item.definition_index).unwrap().implementation
-                    == equipment::Implementation::Weapon(weapon)).then_some(item.definition_index)
+                (equipment::supported_item(item.definition_index).unwrap().weapon_for_class(self.class)
+                    == Some(weapon)).then_some(item.definition_index)
             });
             if same_class && definition(&old_items) == definition(&new_items)
                 && let Some(previous) = old_loadout.get(&weapon) {
@@ -1304,6 +1304,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.snap_spawn_angles();
                 self.buildings.reset();
                 self.critical_history.reset_for_spawn();
+                self.decapitations = 0;
                 self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
                 self.air_dashes = 0;
@@ -1946,6 +1947,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     let weapon = self.weapon.ok_or(Error::Bot(bot::Error::InvalidEntity))?;
                     self.apply_actor_damage(
                         bot::Damage {
+                            damage_type: damage::DamageType::GENERIC,
+                            force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                            custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                             attacker: PLAYER_IDENTITY,
                             victim: identity,
                             weapon,
@@ -2299,8 +2303,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.health = (self.health + building_effects.healing).min(self.maximum_health());
         }
         if let Some((target, damage, level)) = building_effects.sentry_target {
-            self.apply_actor_damage_from(
+            self.apply_actor_damage(
                 bot::Damage {
+                    damage_type: damage::DamageType::BULLET,
+                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(),
+                    killing_weapon: Some(match level { 2 => "obj_sentrygun2", 3 => "obj_sentrygun3", _ => "obj_sentrygun" }),
                     attacker: PLAYER_IDENTITY,
                     victim: target,
                     weapon: Weapon::EngineerPistol,
@@ -2308,8 +2316,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     position: self.movement.position,
                 },
                 self.team_selection.local_team(),
-                Some(match level { 2 => "obj_sentrygun2", 3 => "obj_sentrygun3", _ => "obj_sentrygun" }),
-                Some(0),
                 &mut events,
             )?;
         }
@@ -4100,6 +4106,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             });
             self.apply_actor_damage(
                 bot::Damage {
+                    damage_type: bot::weapon_damage_type(attack.weapon).expect("melee damage type"),
+                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                     attacker: attack.attacker,
                     victim: attack.target,
                     weapon: attack.weapon,
@@ -4222,6 +4231,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for (victim, (amount, position)) in damage {
             self.apply_actor_damage(
                 bot::Damage {
+                    damage_type: bot::weapon_damage_type(attack.weapon).expect("hitscan damage type"),
+                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                     attacker: attack.attacker,
                     victim,
                     weapon: attack.weapon,
@@ -4248,39 +4260,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .unwrap_or_else(|| deathnotice::weapon_name(weapon, class))
     }
 
+    /// One admission, damage-resolution, attribution and history transaction.
+    /// The returned force remains a Source damage-force fact, not a velocity.
     fn apply_actor_damage(
         &mut self,
-        input: bot::Damage,
-        attacker_team: PlayerTeam,
+        mut input: bot::Damage,
+        mut attacker_team: PlayerTeam,
         events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        self.apply_actor_damage_from(input, attacker_team, None, None, events)
-    }
-
-    fn apply_actor_damage_from(
-        &mut self,
-        input: bot::Damage,
-        attacker_team: PlayerTeam,
-        killing_weapon: Option<&'static str>,
-        custom_kill: Option<u8>,
-        events: &mut Vec<Event>,
-    ) -> Result<(), Error> {
-        let (critical, custom) = events
-            .iter()
-            .rev()
-            .find_map(|event| match event {
-                Event::HitscanImpact {
-                    weapon,
-                    target: Some(target),
-                    hitgroup,
-                    critical,
-                    ..
-                } if *weapon == input.weapon && *target == input.victim => {
-                    Some((*critical, if *critical && *hitgroup == 1 { 1 } else { 0 }))
-                }
-                _ => None,
-            })
-            .unwrap_or((false, 0));
+    ) -> Result<Option<damage::DamageResult>, Error> {
+        let custom = u8::try_from(input.custom.source_code()).map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?;
+        let killing_weapon = input.killing_weapon;
+        if input.attacker != PLAYER_IDENTITY && !self.bots.as_ref().is_some_and(|bots| bots.contains(input.attacker)) {
+            input.attacker = 0;
+            attacker_team = PlayerTeam::Unassigned;
+        }
+        let attacker_conditions = if input.attacker == PLAYER_IDENTITY {
+            condition::ConditionState::from_active_words(self.conditions.words()).map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?
+        } else { self.bots.as_ref().and_then(|bots| bots.conditions(input.attacker)).cloned().unwrap_or_default() };
+        let attacker_is_crit_boosted = attacker_conditions.is_crit_boosted();
         let before = if input.victim == PLAYER_IDENTITY {
             self.health
         } else {
@@ -4289,82 +4286,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .and_then(|bots| bots.health(input.victim))
                 .unwrap_or(0)
         };
-        let (critical, custom) = custom_kill.map_or((critical, custom), |custom| (custom == 2, custom));
-        let attacker_conditions = if input.attacker == PLAYER_IDENTITY { self.conditions.runtime_state() }
-            else { self.bots.as_ref().and_then(|bots| bots.player_conditions(input.attacker)).cloned().unwrap_or_default() };
-        let normalized = bot::Damage { amount: if critical { input.amount / damage::CRIT_MULTIPLIER } else { input.amount }, ..input };
-        let requested_crit = if critical { damage::CritKind::Full } else { damage::CritKind::None };
-        let critical = critical || attacker_conditions.is_crit_boosted();
         let after;
+        let result;
         if input.victim == PLAYER_IDENTITY {
-            if self.lifecycle != PlayerLifecycle::Active
-                || !attacker_team.is_enemy(self.team_selection.local_team())
-            {
-                return Ok(());
-            }
-            let Some(damage_type) = bot::weapon_damage_type(input.weapon) else {
-                return Ok(());
-            };
             let mut health = health::HealthState::spawn(self.class, 0.0, 0.0)
                 .map_err(|_| Error::Bot(bot::Error::Damage))?;
             health.current = self.health;
             health.maximum = self.maximum_health();
-            let mut conditions = condition::ConditionState::default();
-            if self.conditions.contains(Condition::Invulnerable) {
-                conditions
-                    .add(
-                        condition::ConditionId::INVULNERABLE,
-                        condition::ConditionDuration::Permanent,
-                        Some(PLAYER_IDENTITY),
-                        true,
-                        false,
-                    )
-                    .map_err(|_| Error::Bot(bot::Error::Damage))?;
-            }
-            if self.conditions.contains(Condition::Phase) {
-                conditions
-                    .add(
-                        condition::ConditionId::PHASE,
-                        condition::ConditionDuration::Permanent,
-                        None,
-                        true,
-                        false,
-                    )
-                    .map_err(|_| Error::Bot(bot::Error::Damage))?;
-            }
-            let result = damage::apply_damage(
-                true,
+            let mut conditions = condition::ConditionState::from_active_words(self.conditions.words())
+                .map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?;
+            result = damage::apply_damage(
+                self.lifecycle == PlayerLifecycle::Active,
                 &mut health,
                 &mut conditions,
-                &damage::DamageInput {
-                    attacker: input.attacker,
-                    attacker_team,
-                    attacker_conditions,
-                    source: damage::DamageSourceKind::Player,
-                    weapon_position: None,
-                    victim: PLAYER_IDENTITY,
-                    victim_team: self.team_selection.local_team(),
-                    base_damage: normalized.amount,
-                    range_multiplier: 1.0,
-                    damage_type,
-                    custom: if custom == 2 {
-                        damage::CustomDamage::Backstab
-                    } else if custom == 1 {
-                        damage::CustomDamage::Headshot
-                    } else {
-                        damage::CustomDamage::None
-                    },
-                    crit: requested_crit,
-                    friendly_fire: false,
-                    force_friendly_fire: false,
-                    bypass_invulnerability: false,
-                    force: [0.0; 3],
-                },
-                damage::DamageModifiers::default(),
+                &input.input(attacker_team, self.team_selection.local_team(), attacker_conditions),
+                input.modifiers,
             )
-            .map_err(|_| Error::Bot(bot::Error::Damage))?;
+            .map_err(Error::Damage)?;
+            self.conditions.words = conditions.words();
             if !result.admitted {
-                return Ok(());
+                return Ok(Some(result));
             }
             if input.attacker != input.victim {
                 self.damagers.record(input.attacker, self.tick as f32 * self.movement_configuration.tick_interval);
@@ -4395,18 +4336,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 );
             }
         } else if let Some(bots) = &mut self.bots {
-            if bots
-                .damage(normalized, attacker_team, self.tick, attacker_conditions, requested_crit)
-                .map_err(Error::Bot)?
-                .is_none()
-            {
-                return Ok(());
-            }
+            let Some(applied) = bots.damage(input, attacker_team, self.tick, attacker_conditions)
+                .map_err(Error::Bot)? else { return Ok(None); };
+            result = applied;
+            if !result.admitted { return Ok(Some(result)); }
             after = bots.health(input.victim).unwrap_or(0);
         } else {
-            return Ok(());
+            return Ok(None);
         }
         let dealt = u32::try_from((before - after).max(0)).unwrap_or(0);
+        let critical = result.crit != damage::CritKind::None;
+        if input.attacker != 0 && input.attacker != input.victim {
+            self.record_weapon_damage(input.attacker, damage::DamageHistoryInput {
+                now: self.tick as f32 * self.movement_configuration.tick_interval,
+                damage: result.pre_resistance_base_damage + result.pre_resistance_bonus_damage,
+                bonus_damage: result.pre_resistance_bonus_damage,
+                victim_previous_health: before, lethal: after == 0,
+                damage_type: input.normalized_damage_type(),
+                counts_toward_crit_rate: !input.normalized_damage_type().contains(damage::DamageType::NO_CRIT_RATE),
+            }, dealt, result.crit, attacker_is_crit_boosted)?;
+        }
         events.push(Event::PlayerDamaged {
             attacker: input.attacker,
             victim: input.victim,
@@ -4416,7 +4365,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             critical,
             custom,
         });
-        if input.attacker == PLAYER_IDENTITY {
+        if input.attacker == PLAYER_IDENTITY && input.attacker != input.victim {
             self.scoreboard.local_damage(dealt);
             if after == 0 {
                 self.scoreboard.local_kill();
@@ -4438,12 +4387,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 weapon: Some(input.weapon),
                 killing_weapon: killing_weapon.unwrap_or_else(|| self.killing_weapon_name(input.attacker, input.weapon)),
                 assister: assister.unwrap_or(0),
-                damage_bits: 0,
+                damage_bits: input.normalized_damage_type().source_bits(result.crit),
                 critical,
                 custom,
             });
         }
-        Ok(())
+        Ok(Some(result))
     }
 
     fn bot_intersection(
@@ -4863,7 +4812,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             owner: PLAYER_IDENTITY,
             origin,
         });
-        let mut damage = BTreeMap::<u32, (f32, [f32; 3])>::new();
+        let mut damage = BTreeMap::<u32, (f32, [f32; 3], damage::CritKind, damage::CustomDamage)>::new();
         for pellet in 0..profile.pellets {
             let direction =
                 profile.pellet_direction(self.tick as u32, pellet, elapsed, forward, right, up);
@@ -4988,7 +4937,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         .as_ref()
                         .is_some_and(|bots| bots.contains(identity))
                 {
-                    damage.entry(identity).or_insert((0.0, position)).0 += amount;
+                    let entry = damage.entry(identity).or_insert((0.0, position, damage::CritKind::None, damage::CustomDamage::None));
+                    entry.0 += if weapon == Weapon::SniperRifle { sniper_damage } else { amount };
+                    if critical {
+                        entry.2 = damage::CritKind::Full;
+                        if hitgroup == 1 { entry.3 = damage::CustomDamage::Headshot; }
+                    }
                 }
                 let damage = amount;
                 events.push(Event::HitscanImpact {
@@ -5007,9 +4961,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 });
             }
         }
-        for (victim, (amount, position)) in damage {
+        for (victim, (amount, position, crit, custom)) in damage {
             self.apply_actor_damage(
                 bot::Damage {
+                    damage_type: bot::weapon_damage_type(weapon).expect("hitscan damage type"),
+                    force: [0.0; 3], crit, range_multiplier: 1.0,
+                    custom, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                     attacker: PLAYER_IDENTITY,
                     victim,
                     weapon,
@@ -5459,6 +5416,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(victim) = actor.map(|(identity, _, _)| identity) {
                 self.apply_actor_damage(
                     bot::Damage {
+                        damage_type: bot::weapon_damage_type(weapon).expect("melee damage type"),
+                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                         attacker: PLAYER_IDENTITY,
                         victim,
                         weapon,
@@ -5586,17 +5546,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 position,
             );
             if let Some(identity) = target {
-                self.apply_actor_damage_from(
+                self.apply_actor_damage(
                     bot::Damage {
+                        damage_type: bot::weapon_damage_type(Weapon::Knife).unwrap(),
+                        force: [0.0; 3], range_multiplier: 1.0,
+                        crit: if backstab.is_some() { damage::CritKind::Full } else { damage::CritKind::None },
+                        custom: if backstab.is_some() { damage::CustomDamage::Backstab } else { damage::CustomDamage::None },
+                        modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                         attacker: PLAYER_IDENTITY,
                         victim: identity,
                         weapon: Weapon::Knife,
-                        amount: damage,
+                        amount: if backstab.is_some() { damage / 3.0 } else { damage },
                         position,
                     },
                     self.team_selection.local_team(),
-                    None,
-                    Some(if backstab.is_some() { 2 } else { 0 }),
                     events,
                 )?;
             }
@@ -5757,6 +5720,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for (victim, (amount, position)) in victims {
             self.apply_actor_damage(
                 bot::Damage {
+                    damage_type: bot::weapon_damage_type(Weapon::Minigun).unwrap(),
+                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                     attacker: PLAYER_IDENTITY,
                     victim,
                     weapon: Weapon::Minigun,
@@ -6301,6 +6267,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         if self.bots.as_ref().is_some_and(|bots| bots.contains(target)) {
                             self.apply_actor_damage(
                                 bot::Damage {
+                                    damage_type: bot::weapon_damage_type(Weapon::SyringeGun).unwrap(),
+                                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
                                     attacker: projectile.presentation.owner_identity,
                                     victim: target,
                                     weapon: Weapon::SyringeGun,
@@ -6489,8 +6458,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self_damage: false,
                 },
             ) {
-                self.apply_actor_damage_from(
+                self.apply_actor_damage(
                     bot::Damage {
+                        damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
+                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
                         attacker: projectile.owner_identity,
                         victim: PLAYER_IDENTITY,
                         weapon,
@@ -6498,8 +6470,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         position: projectile.position,
                     },
                     projectile.team,
-                    Some(killing_weapon),
-                    Some(0),
                     events,
                 )?;
             }
@@ -6554,8 +6524,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         false,
                     );
                 }
-                self.apply_actor_damage_from(
+                self.apply_actor_damage(
                     bot::Damage {
+                        damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
+                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
+                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
                         attacker: projectile.owner_identity,
                         victim: victim.identity,
                         weapon,
@@ -6563,8 +6536,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         position: projectile.position,
                     },
                     projectile.team,
-                    Some(killing_weapon),
-                    Some(0),
                     events,
                 )?;
             }

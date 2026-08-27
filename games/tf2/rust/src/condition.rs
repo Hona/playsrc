@@ -143,6 +143,19 @@ impl ConditionState {
     pub fn is_control_stunned(&self) -> bool {
         self.contains(ConditionId::STUNNED) && self.active_stun_flags.is_some_and(|flags| flags & 2 != 0)
     }
+    pub fn from_active_words(words: [u32; 5]) -> Result<Self, ConditionError> {
+        let mut state = Self::default();
+        for (word, mut bits) in words.into_iter().enumerate() {
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let identity = ConditionId::new((word * 32 + bit) as u8).ok_or(ConditionError::InvalidIdentity)?;
+                state.add(identity, ConditionDuration::Permanent, None, true, true)?;
+                bits &= bits - 1;
+            }
+        }
+        Ok(state)
+    }
+
     pub fn contains(&self, condition: ConditionId) -> bool {
         self.entries[condition.0 as usize].is_some()
     }
@@ -389,6 +402,7 @@ pub fn all_weapon_crit_boost(contains: impl FnMut(ConditionId) -> bool) -> bool 
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConditionError {
+    InvalidIdentity,
     InvalidDuration,
     InvalidTickInterval,
 }
