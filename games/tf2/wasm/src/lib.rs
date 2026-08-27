@@ -72,7 +72,14 @@ impl playsrc_simulation::MetricsClock for RuntimeMetricsClock {
     }
 }
 
+#[derive(Default)]
+struct PlayerHitboxModels {
+    models: BTreeMap<String, Arc<RetainedPresentationModel>>,
+    poses: BTreeMap<u32, (u64, playsrc_tf2::PlayerHitboxPose, Vec<playsrc_tf2::PosedPlayerHitbox>)>,
+}
+
 struct SharedWorld {
+    player_hitboxes: Arc<Mutex<PlayerHitboxModels>>,
     world: Arc<playsrc_collision::World>,
     snapshot: Arc<RwLock<Arc<playsrc_collision::Snapshot>>>,
     impact_surfaces: Arc<BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>>,
@@ -82,6 +89,7 @@ struct SharedWorld {
 impl Clone for SharedWorld {
     fn clone(&self) -> Self {
         Self {
+            player_hitboxes: self.player_hitboxes.clone(),
             world: self.world.clone(),
             snapshot: self.snapshot.clone(),
             impact_surfaces: self.impact_surfaces.clone(),
@@ -97,6 +105,7 @@ impl SharedWorld {
         impact_surfaces: BTreeMap<i16, Vec<(u32, u8, [f32; 4])>>,
     ) -> Self {
         Self {
+            player_hitboxes: Arc::new(Mutex::new(PlayerHitboxModels::default())),
             world,
             snapshot: Arc::new(RwLock::new(Arc::new(snapshot))),
             impact_surfaces: Arc::new(impact_surfaces),
@@ -360,6 +369,23 @@ impl playsrc_movement::Tracer for SharedWorld {
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn has_player_hitbox_models(&self) -> bool { true }
+
+    fn pose_player_hitboxes(&self, actors: &[playsrc_tf2::PlayerHitboxPose], tick: u64, interval: f32) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, playsrc_movement::Error> {
+        let mut retained = self.player_hitboxes.lock().expect("player hitbox models");
+        retained.poses.retain(|identity, _| actors.iter().any(|actor| actor.identity == *identity));
+        let mut output = Vec::new();
+        for actor in actors {
+            if retained.poses.get(&actor.identity).is_none_or(|(previous_tick, previous, _)| *previous_tick != tick || previous != actor) {
+                let poses = pose_player_hitboxes(&retained.models, std::slice::from_ref(actor), tick, interval).map_err(|_| playsrc_movement::Error::new(
+                    playsrc_movement::Operation::Trace, playsrc_movement::FailureKind::Malformed, "authored player hitbox pose"))?;
+                retained.poses.insert(actor.identity, (tick, actor.clone(), poses));
+            }
+            output.extend_from_slice(&retained.poses[&actor.identity].2);
+        }
+        Ok(output)
+    }
+
     fn collision_snapshot_revision(&self) -> Option<u64> {
         Some(self.snapshot().identity())
     }
@@ -2627,16 +2653,14 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     (reader.at == bytes.len()).then_some(requests).ok_or(())
 }
 
-fn pose_bot_hitboxes(
+fn pose_player_hitboxes(
     models: &BTreeMap<String, Arc<RetainedPresentationModel>>,
-    bots: &[playsrc_tf2::bot::Snapshot],
+    actors: &[playsrc_tf2::PlayerHitboxPose],
     tick: u64,
+    interval: f32,
 ) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, String> {
     let mut output = Vec::new();
-    for bot in bots {
-        if bot.lifecycle != playsrc_tf2::PlayerLifecycle::Active {
-            continue;
-        }
+    for bot in actors {
         let model = models.get(bot.class.data().model).ok_or_else(|| {
             format!(
                 "missing model {} for bot {}",
@@ -2644,14 +2668,10 @@ fn pose_bot_hitboxes(
                 bot.identity
             )
         })?;
-        let role = match bot.animation_role {
-            playsrc_tf2::bot::AnimationRole::Primary => "PRIMARY",
-            playsrc_tf2::bot::AnimationRole::Secondary => "SECONDARY",
-            playsrc_tf2::bot::AnimationRole::Melee => "MELEE",
-        };
         let moving =
             (bot.velocity[0] * bot.velocity[0] + bot.velocity[1] * bot.velocity[1]).sqrt() > 1.0;
-        let activity = format!("ACT_MP_{}_{}", if moving { "RUN" } else { "STAND" }, role);
+        let activity = playsrc_tf2::weapon_presentation::world_activity(bot.definition, bot.class,
+            if moving { "ACT_MP_RUN" } else { "ACT_MP_STAND_IDLE" }).ok_or_else(|| format!("missing player weapon activity {}", bot.definition))?;
         let sequence =
             *playsrc_studio_model::sequences_for_activity_name(model, activity.as_bytes())
                 .first()
@@ -2668,7 +2688,7 @@ fn pose_bot_hitboxes(
             .iter()
             .map(|_| playsrc_studio_model::Float32(0))
             .collect::<Vec<_>>();
-        let elapsed = tick as f32 * 0.015;
+        let elapsed = tick as f32 * interval;
         let timing = playsrc_studio_model::sequence_timing(model, sequence, &parameters)
             .map_err(|error| format!("bot {} sequence timing: {error:?}", bot.identity))?;
         let pose = playsrc_studio_model::sample_pose_at_time(
@@ -5391,25 +5411,14 @@ pub unsafe extern "C" fn playsrc_game_advance(
         } else {
             &[]
         };
-        if input.command.fire {
-            let bots = candidate
-                .bot_world()
-                .map_or_else(Vec::new, playsrc_tf2::bot::BotWorld::snapshots);
-            let hitboxes = match pose_bot_hitboxes(
-                &slot.studio_models,
-                &bots,
-                candidate.producer_snapshot().tick,
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    *GAME_ADVANCE_DETAIL
-                        .get_or_init(|| Mutex::new(String::new()))
-                        .lock()
-                        .expect("game advance detail") = format!("; {error}");
-                    fail!(18)
+        if index == 0 {
+            let mut retained = gameplay_world.player_hitboxes.lock().expect("player hitbox models");
+            for class in playsrc_tf2::PlayerClass::ALL {
+                let path = class.data().model;
+                if !retained.models.contains_key(path) && let Some(model) = slot.studio_models.get(path) {
+                    retained.models.insert(path.to_owned(), model.clone());
                 }
-            };
-            candidate.set_posed_player_hitboxes(hitboxes);
+            }
         }
         match candidate.into_advanced(input.command, physics_results, &rocket_results, None) {
             Ok((advanced, mut value)) => {

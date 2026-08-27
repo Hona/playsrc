@@ -235,6 +235,21 @@ mod tests {
             let registry = models.iter().map(|(path, model)| (path.clone(), Arc::clone(&model.model))).collect();
             resolve_models(None, &registry, &resources, &decoders, playsrc_map::LightingProfile::Hdr, None)
                 .unwrap_or_else(|_| panic!("equipment {definition} geometry"));
+            for &(class, _) in playsrc_tf2::equipment::presentation(definition).unwrap().class_slots {
+                for velocity in [[0.0; 3], [200.0, 0.0, 0.0]] {
+                    let actor = playsrc_tf2::PlayerHitboxPose { identity: playsrc_tf2::PLAYER_IDENTITY,
+                        team: playsrc_tf2::PlayerTeam::Red, class, definition, position: [64.0, 32.0, 16.0], velocity, yaw_degrees: 90.0 };
+                    let local = pose_player_hitboxes(&registry, std::slice::from_ref(&actor), 100, 0.015).unwrap();
+                    let bot = pose_player_hitboxes(&registry, &[playsrc_tf2::PlayerHitboxPose { identity: 2, ..actor }], 100, 0.015).unwrap();
+                    assert!(!local.is_empty());
+                    assert!(local.iter().any(|hitbox| hitbox.group == 1), "authored head group {class:?}/{definition}");
+                    assert_eq!(local.len(), bot.len());
+                    for (local, bot) in local.iter().zip(bot) {
+                        assert_eq!(local.bone_to_world, bot.bone_to_world);
+                        assert_eq!(local.group, bot.group);
+                    }
+                }
+            }
             let section = ResourceSection { pointer: bytes.as_ptr(), length: bytes.len() };
             assert_eq!(unsafe { playsrc_equipment_models_admit(0, &definition, 1, &section, 1, 1) }, 1, "equipment {definition} ABI");
         }
