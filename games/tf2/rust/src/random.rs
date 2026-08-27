@@ -53,6 +53,8 @@ pub enum RandomDecision {
     SyringePitchSpread,
     SyringeYawSpread,
     WeaponCritical,
+    EnemySpeedOnHit,
+    BulletSpread,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -4,13 +4,37 @@ use crate::{Weapon, ballistics::HitscanProfile, random::{prediction_seed, Unifor
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct State {
     pub consecutive_shots: u32,
+    pub last_fire_tick: u64,
     pub last_accuracy_tick: u64,
     pub idle_tick: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Target {
+    pub position: [f32; 3],
+    pub center: [f32; 3],
+    pub size: [f32; 3],
+    pub eye_forward: [f32; 3],
+    pub in_air_due_to_explosion: bool,
+    pub healed: bool,
+    pub push_immune: bool,
+    pub knocked_back: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DamageGroup {
+    pub victim: u32,
+    pub amount: f32,
+    pub range_multiplier: f32,
+    pub position: [f32; 3],
+    pub crit: crate::damage::CritKind,
+    pub custom: crate::damage::CustomDamage,
 }
 
 impl State {
     pub fn fired(&mut self, tick: u64, interval: f32) {
         self.consecutive_shots = self.consecutive_shots.saturating_add(1);
+        self.last_fire_tick = tick;
         self.last_accuracy_tick = tick;
         self.idle_tick = tick + crate::weapon::delay_ticks(5.0, interval);
     }
@@ -30,6 +54,7 @@ pub struct BulletRules {
     pub knockback: bool,
     pub knockback_multiplier: f32,
     pub slow_on_hit: f32,
+    pub first_shot_variance: f32,
 }
 
 impl BulletRules {
@@ -50,19 +75,26 @@ impl BulletRules {
             knockback: query("set_scattergun_has_knockback", 0.0) == 1.0,
             knockback_multiplier: query("scattergun_knockback_mult", 3.0),
             slow_on_hit: query("mult_onhit_enemyspeed", 0.0),
+            first_shot_variance: query("mult_spread_scale_first_shot", 0.0),
         }
     }
 
     pub fn direction(self, command: u32, pellet: u8, elapsed: f32, forward: [f32; 3], right: [f32; 3], up: [f32; 3]) -> [f32; 3] {
-        if !self.fixed_pattern { return self.profile.pellet_direction(command, pellet, elapsed, forward, right, up); }
+        let mut random = UniformRandomStream::from_seed(((prediction_seed(command) & 255) + u32::from(pellet)) as i32).unwrap();
+        self.direction_with_random(pellet, elapsed, forward, right, up, |low, high| random.random_float(low, high))
+    }
+
+    pub fn direction_with_random(self, pellet: u8, elapsed: f32, forward: [f32; 3], right: [f32; 3], up: [f32; 3], mut random: impl FnMut(f32, f32) -> f32) -> [f32; 3] {
         const SMALL: [[f32; 2]; 10] = [[0.,0.], [1.,0.], [-1.,0.], [0.,-1.], [0.,1.], [0.85,-0.85], [0.85,0.85], [-0.85,-0.85], [-0.85,0.85], [0.,0.]];
         const LARGE: [[f32; 2]; 15] = [[0.,0.],[-0.5,0.],[-1.,0.],[0.5,0.],[1.,0.], [0.,0.5],[-0.5,0.5],[-1.,0.5],[0.5,0.5],[1.,0.5], [0.,-0.5],[-0.5,-0.5],[-1.,-0.5],[0.5,-0.5],[1.,-0.5]];
-        let [x,y] = if self.profile.pellets >= 15 {
+        let [x,y] = if !self.fixed_pattern {
+            let variance = if pellet == 0 && elapsed > self.profile.accurate_after_seconds { self.first_shot_variance } else { 0.5 };
+            if variance == 0.0 { [0.0, 0.0] } else { [random(-variance, variance) + random(-variance, variance), random(-variance, variance) + random(-variance, variance)] }
+        } else if self.profile.pellets >= 15 {
             let [x,y] = LARGE[usize::from(pellet) % LARGE.len()];
-            let mut random = UniformRandomStream::from_seed(((prediction_seed(command) & 255) + u32::from(pellet)) as i32).unwrap();
-            [x + random.random_float(-0.07, 0.07), y + random.random_float(-0.07, 0.07)]
+            [x + random(-0.07, 0.07), y + random(-0.07, 0.07)]
         } else { SMALL[usize::from(pellet) % SMALL.len()].map(|value| value * 0.5) };
-        let direction = std::array::from_fn(|axis| forward[axis] + self.profile.spread * (x * right[axis] + y * up[axis]));
+        let direction = std::array::from_fn(|axis| forward[axis] + x * self.profile.spread * right[axis] + y * self.profile.spread * up[axis]);
         let length = dot(direction, direction).sqrt();
         direction.map(|value| value / length)
     }

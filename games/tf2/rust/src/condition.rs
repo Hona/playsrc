@@ -57,6 +57,7 @@ impl ConditionId {
     pub const HEALING_DEBUFF: Self = Self(118);
     pub const PASSTIME_PENALTY: Self = Self(119);
     pub const GAS: Self = Self(123);
+    pub const ROCKETPACK: Self = Self(125);
     pub const COMPETITIVE_WINNER: Self = Self(116);
     pub const COMPETITIVE_LOSER: Self = Self(117);
     pub const CRIT_BOOSTED_RUNE_TEMP: Self = Self(105);
