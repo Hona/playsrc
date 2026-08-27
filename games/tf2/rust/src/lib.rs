@@ -769,6 +769,8 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProducerSnapshot {
+    pub decapitations: i32,
+    pub revenge_crits: i32,
     pub tick: u64,
     pub lifecycle: PlayerLifecycle,
     pub class: PlayerClass,
@@ -833,6 +835,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     equipment: equipment::Equipment,
     active_equipment: equipment::Equipment,
     equipment_attributes: equipment::AttributeProviders,
+    revenge_crits: i32,
     equipment_respawn_requested: bool,
     pub(crate) decapitations: i32,
     movement_stuns: hitscan::MovementStuns,
@@ -1014,6 +1017,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             equipment: equipment::Equipment::default(),
             active_equipment: equipment::Equipment::default(),
             equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
+            revenge_crits: 0,
             equipment_respawn_requested: false,
             decapitations: 0,
             movement_stuns: hitscan::MovementStuns::default(),
@@ -1120,6 +1124,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn equipment(&self) -> &equipment::Equipment { &self.equipment }
     pub fn decapitations(&self) -> i32 { self.decapitations }
+    pub fn revenge_crits(&self) -> i32 { self.revenge_crits }
 
     pub fn equip_bot_cosmetic(&mut self, identity: u32, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
         let class = self.bots.as_ref().and_then(|bots| bots.snapshots().into_iter().find(|bot| bot.identity == identity)).map(|bot| bot.class)
@@ -1392,6 +1397,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.buildings.reset();
                 self.critical_history.reset_for_spawn();
                 self.decapitations = 0;
+                self.revenge_crits = 0;
                 self.ammo = self.class.data().maximum_ammo;
                 self.health = self.maximum_health();
                 self.air_dashes = 0;
@@ -1647,6 +1653,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn producer_snapshot(&self) -> ProducerSnapshot {
         ProducerSnapshot {
+            decapitations: self.decapitations,
+            revenge_crits: self.revenge_crits,
             tick: self.tick,
             lifecycle: self.lifecycle,
             class: self.class,
@@ -3571,6 +3579,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.decapitations = 0;
             self.movement_stuns = hitscan::MovementStuns::default();
             self.scattergun_jumped = false;
+            self.revenge_crits = 0;
             self.critical_history.reset_for_spawn();
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
             self.buildings.reset();
@@ -6913,6 +6922,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.decapitations = 0;
         self.movement_stuns = hitscan::MovementStuns::default();
         self.scattergun_jumped = false;
+        self.revenge_crits = 0;
         self.critical_history.reset_for_spawn();
         self.fizzle_projectiles(projectile_events, false);
         self.damagers = deathnotice::DamagerHistory::default();
@@ -10818,10 +10828,13 @@ mod tests {
     fn shared_decapitations_reset_on_spawn_and_class_change_not_resupply() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         session.decapitations = 6;
+        session.revenge_crits = 3;
         session.regenerate(1, None, &mut Vec::new());
         assert_eq!(session.decapitations(), 6);
+        assert_eq!(session.revenge_crits(), 3);
         session.advance(Command { select_class: Some(PlayerClass::Sniper), ..Command::default() }).unwrap();
         assert_eq!(session.decapitations(), 0);
+        assert_eq!(session.revenge_crits(), 0);
         session.decapitations = 8;
         session.health = 0;
         session.advance(Command { respawn: true, ..Command::default() }).unwrap();

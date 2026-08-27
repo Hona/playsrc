@@ -183,7 +183,14 @@ fn weapon_hud(content: &Content, entity: &str) -> Result<(String, String), Strin
     let ammo = if energy || field("primary_ammo").is_none_or(|name| name.eq_ignore_ascii_case("none")) { "Hidden" }
         else if integer("clip_size", -1)? < 0 { "Total" } else { "ClipAndReserve" };
     let suppress = matches!(entity, "tf_weapon_invis" | "tf_weapon_pda_spy" | "tf_weapon_pda_engineer_build" | "tf_weapon_pda_engineer_destroy");
-    Ok((script.clone(), format!("WeaponHud {{ script: {script:?}, ammo: AmmoDisplay::{ammo}, bucket: {}, position: {}, draws_crosshair: {}, suppress_crosshair: {suppress}, allows_auto_switch_to: {} }}",
+    let meter = match entity {
+        "tf_weapon_rocketlauncher_airstrike" => "Kills",
+        "tf_weapon_flaregun_revenge" => "RevengeActive",
+        "tf_weapon_sniperrifle_decap" => "Heads",
+        "tf_weapon_sentry_revenge" => "Revenge",
+        _ => "None",
+    };
+    Ok((script.clone(), format!("WeaponHud {{ script: {script:?}, ammo: AmmoDisplay::{ammo}, count_meter: CountMeter::{meter}, bucket: {}, position: {}, draws_crosshair: {}, suppress_crosshair: {suppress}, allows_auto_switch_to: {} }}",
         integer("bucket", 0)?, integer("bucket_position", 0)?, integer("DrawCrosshair", 1)? > 0, integer("AutoSwitchTo", 1)? != 0)))
 }
 

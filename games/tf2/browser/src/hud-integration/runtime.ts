@@ -1,3 +1,4 @@
+import { weaponCountMeter } from "../hud/weapon-count"
 import {
   initializeVguiRuntime,
   type VguiOperation,
@@ -212,6 +213,7 @@ function applyPanelResource(runtime: VguiRuntime, panel: VguiPanelId, source: Vg
 }
 
 class Integration implements Tf2HudIntegration {
+  readonly #countMeters = new Map<"kills" | "crits" | "heads", Readonly<{ root: VguiPanelId; background: VguiPanelId }>>()
   readonly #runtime: VguiRuntime
   readonly #crosshair: Tf2HudCrosshairPresentation
   readonly #scope: Tf2HudScopePresentation
@@ -370,6 +372,27 @@ class Integration implements Tf2HudIntegration {
       if (panel !== null) apply(this.#runtime, { kind: "set-panel-state", panel, visible: false })
     }
     applyPanelResource(this.#runtime, find(this.#runtime, "HudItemEffectMeter")!, request.resources.document(HUD_SPY_METER), selection)
+    for (const [kind, resource, token] of [
+      ["kills", "resource/ui/huditemeffectmeter_demoman.res", "#tf_kills"],
+      ["crits", "resource/ui/huditemeffectmeter_engineer.res", "#tf_crits"],
+      ["heads", "resource/ui/huditemeffectmeter_sniper.res", "#tf_berzerk"],
+    ] as const) {
+      const name = `HudWeaponCount_${kind}`
+      const root = apply(this.#runtime, { kind: "create-panel", parent: 1, control: "CTFHudElement", name })!
+      const source = request.resources.document(resource)
+      // Resource-local names remain authored. Only the viewport instance's
+      // identity changes, so independent meters never bind each other's children.
+      const blocks = source.root.children.map(block => block.name === "HudItemEffectMeter"
+        ? Object.freeze({ ...block, name, children: Object.freeze(block.children.map(child => child.name === "fieldName" ? Object.freeze({ ...child, value: name }) : child)) }) : block)
+      applyPanelResource(this.#runtime, root, document(source, kind, node(source.root.name, blocks)), selection)
+      const label = find(this.#runtime, "ItemEffectMeterLabel", root)
+      const background = find(this.#runtime, "ItemEffectMeterBG", root)
+      const text = this.#localization.get(token)
+      if (label === null || background === null || !text) throw new Error(`Authored TF2 count meter unavailable: ${resource}`)
+      apply(this.#runtime, { kind: "mutate-control", panel: label, mutation: { text } })
+      apply(this.#runtime, { kind: "set-panel-state", panel: root, visible: false })
+      this.#countMeters.set(kind, Object.freeze({ root, background }))
+    }
     applyPanelResource(this.#runtime, find(this.#runtime, "HudMenuSpyDisguise")!, request.resources.document(HUD_SPY_DISGUISE_MENU), selection)
     applyPanelResource(this.#runtime, find(this.#runtime, "HudMedicCharge")!, request.resources.document(HUD_MEDIC_CHARGE), selection)
     const panels = this.#runtime.snapshot().panels
@@ -1140,6 +1163,16 @@ class Integration implements Tf2HudIntegration {
     }
     this.#publishWinPanel(round, objectives ?? undefined, publication, binding.scoreboard.kind === "available" ? binding.scoreboard.value : undefined)
     this.#deathNotices.publish(binding, Math.fround(Math.fround(Number(publication.snapshot.tick)) * Math.fround(0.015)), Math.fround(0.015))
+    const countMeter = weaponCountMeter(publication.snapshot, context.inventory)
+    const countLive = binding.facts.player.kind === "available" && !binding.facts.player.value.liveHudSuppressed
+    for (const [kind, meter] of this.#countMeters) {
+      const visible = countLive && countMeter?.kind === kind
+      this.#objectiveValue(`count:${kind}:visible`, String(visible), { kind: "set-panel-state", panel: meter.root, visible })
+      if (!visible || !countMeter) continue
+      this.#objectiveValue(`count:${kind}:value`, String(countMeter.count), { kind: "set-dialog-variable", panel: meter.root, name: "progresscount", value: countMeter.count })
+      const image = publication.snapshot.team === 2 ? "../hud/misc_ammo_area_red" : "../hud/misc_ammo_area_blue"
+      this.#objectiveValue(`count:${kind}:background`, image, { kind: "mutate-control", panel: meter.background, mutation: { image } })
+    }
     const medic = this.#medicPanels
     if (medic) {
       const source = publication.snapshot as typeof publication.snapshot & { medigunCharge: number; medigunReleasing: boolean }

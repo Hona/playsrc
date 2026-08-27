@@ -6565,6 +6565,8 @@ fn encode_snapshot(
         out.extend_from_slice(&(bot.class.standing_eye_height() + 20.0).to_le_bytes());
     }
     for value in snapshot.view_angle_offset { f32_field(&mut out, value, MAX)?; }
+    extend(&mut out, &producer.decapitations.to_le_bytes(), MAX)?;
+    extend(&mut out, &producer.revenge_crits.to_le_bytes(), MAX)?;
     Some(out)
 }
 
@@ -16148,6 +16150,8 @@ mod tests {
             medigun_releasing: false,
         };
         let producer = playsrc_tf2::ProducerSnapshot {
+            decapitations: 800,
+            revenge_crits: 35,
             tick: 9,
             lifecycle: playsrc_tf2::PlayerLifecycle::Active,
             class: playsrc_tf2::PlayerClass::Soldier,
@@ -16276,8 +16280,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x1a\0\0\0");
-        assert_eq!(encoded.len(), 1140);
-        assert_eq!(&encoded[1124..], &[0; 16]);
+        assert_eq!(encoded.len(), 1148);
+        assert_eq!(&encoded[1124..1140], &[0; 16]);
+        assert_eq!(i32::from_le_bytes(encoded[1140..1144].try_into().unwrap()), 800);
+        assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 35);
         assert_eq!(&encoded[1008..1012], b"PCPN");
         assert_eq!(&encoded[1020..1028], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[1056..1064], b"PGRL\x04\0\0\0");

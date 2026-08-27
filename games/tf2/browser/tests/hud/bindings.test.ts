@@ -612,6 +612,8 @@ function compactSnapshot(
 ): SessionSimulationPublication["snapshot"] {
   return Object.freeze({
     equippedItems: stockItems(overrides.class ?? 3),
+    decapitations: 0,
+    revengeCrits: 0,
     tick,
     class: 3,
     team: 2,

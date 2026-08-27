@@ -13,7 +13,7 @@ import { tf2Audio } from "../src/presentation"
 import { configuredEquipmentSounds } from "../src/equipment/audio.generated"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1277)
+  const bytes = new ArrayBuffer(1285)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -249,6 +249,15 @@ test("critical draws preserve separate authority and predicted-presentation reco
   expect(() => decodeSnapshot(data)).toThrow("random draw record is invalid")
 })
 
+test("player weapon counters retain full native heads and reject invalid revenge counts", () => {
+  const bytes = snapshot(), view = new DataView(bytes)
+  view.setInt32(bytes.byteLength - 8, 800, true)
+  view.setInt32(bytes.byteLength - 4, 35, true)
+  expect(decodeSnapshot(bytes)).toMatchObject({ decapitations: 800, revengeCrits: 35 })
+  view.setInt32(bytes.byteLength - 4, 36, true)
+  expect(() => decodeSnapshot(bytes)).toThrow("player weapon counters are invalid")
+})
+
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
   const source = new Uint8Array(snapshot())
   const insert = 1097
@@ -307,7 +316,7 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 172, brushHeader = objective - 64
+  const objective = original.length - 180, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 33 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes + roster * 28)
@@ -553,7 +562,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
         bytes[18] = 54
         bytes[276] = 54
         new DataView(bytes.buffer).setFloat32(320, 100, true)
-        const view = new DataView(bytes.buffer), cloak = base.length - 16
+        const view = new DataView(bytes.buffer), cloak = base.length - 24
         view.setUint32(cloak - 4, 1, true)
         view.setUint32(cloak, 1, true)
         ;[0, 0, 0, 1, 0.5, 0.4].forEach((value, index) => view.setFloat32(cloak + 4 + index * 4, value, true))
@@ -793,10 +802,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 172
+    const objectiveOffset = prior.byteLength - 180
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 33 + botName.length + 28)
-    const roundOffset = prior.byteLength - 84
+    const roundOffset = prior.byteLength - 92
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
     bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 33 + botName.length)
@@ -832,7 +841,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     bytes.set([3, 3, 1, 1], scoreboardBot + 4)
     bytes[scoreboardBot + 32] = botName.length
     bytes.set(botName, scoreboardBot + 33)
-    view.setFloat32(bytes.byteLength - 4, 88, true)
+    view.setFloat32(bytes.byteLength - 12, 88, true)
     const decoded = decodeSnapshot(bytes)
     expect(decoded.scoreboard).toMatchObject({ redCount: 1, blueCount: 1, players: [{ name: "unnamed" }, { name: "Chucklenuts", fake: true }] })
     expect(decoded.bots).toEqual([{
@@ -867,7 +876,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       bytes[scoreboardBot + 4] = playerClass
       bytes[at + 64] = weapon
       if (playerClass === 8) {
-        const count = bytes.length - 48
+        const count = bytes.length - 56
         const bound = new Uint8Array(bytes.length + 28)
         bound.set(bytes.subarray(0, count + 4)); bound.set(bytes.subarray(count + 4), count + 32)
         const fields = new DataView(bound.buffer)

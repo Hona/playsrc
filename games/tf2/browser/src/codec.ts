@@ -697,6 +697,8 @@ export type BuildingSnapshot = Readonly<{
 }>
 
 export type Snapshot = Readonly<{
+  decapitations: number
+  revengeCrits: number
   equippedItems: readonly Tf2EquippedItem[]
   actorCloaks: readonly ActorCloakState[]
   tick: bigint
@@ -2503,6 +2505,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const viewAngleOffset = vector(view, at)
   if (!finite(viewAngleOffset)) throw new Tf2CodecError("view angle correction is invalid")
   at += 12
+  requireBytes(8, "player weapon counters")
+  const decapitations = view.getInt32(at, true), revengeCrits = view.getInt32(at + 4, true)
+  if (decapitations < 0 || revengeCrits < 0 || revengeCrits > 35) throw new Tf2CodecError("player weapon counters are invalid")
+  at += 8
   if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
@@ -2513,6 +2519,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     tick,
     actorCloaks: Object.freeze(actorCloaks),
     equippedItems,
+    decapitations,
+    revengeCrits,
     class: tf2Class as Tf2Class,
     team,
     weapon: weapon === 0 ? null : weapon as Tf2Weapon,

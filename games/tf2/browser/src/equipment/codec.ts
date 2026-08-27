@@ -28,7 +28,7 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
   // This UI-only projection takes one owned copy, never one copy per string.
   if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) bytes = new Uint8Array(bytes)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 5) throw new Error("invalid equipment state")
+  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 6) throw new Error("invalid equipment state")
   const revision = view.getUint32(8, true), count = view.getUint32(12, true)
   if (count > 256) throw new Error("invalid supported item count")
   let at = 16
@@ -50,8 +50,9 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
       if (selection !== 255 && selection > 5) throw new Error("invalid weapon selection slot")
       const ammo = view.getUint8(at++), bucket = view.getUint8(at++), position = view.getUint8(at++), flags = view.getUint8(at++)
       const script = text()
-      if (ammo > 2 || bucket > 5 || flags > 3 || (runtime === 0 ? script !== "" || ammo !== 0 || bucket !== 0 || position !== 0 || flags !== 0 : !/^scripts\/tf_weapon_[a-z0-9_]+\.ctx$/u.test(script))) throw new Error("invalid weapon HUD metadata")
-      const hud = runtime === 0 ? null : Object.freeze({ script, ammoDisplay: (["hidden", "total", "clip-and-reserve"] as const)[ammo]!, bucket, position, drawsCrosshair: (flags & 1) !== 0, suppressCrosshair: (flags & 2) !== 0 })
+      if (ammo > 2 || bucket > 5 || (flags >> 2) > 4 || (runtime === 0 ? script !== "" || ammo !== 0 || bucket !== 0 || position !== 0 || flags !== 0 : !/^scripts\/tf_weapon_[a-z0-9_]+\.ctx$/u.test(script))) throw new Error("invalid weapon HUD metadata")
+      const hud = runtime === 0 ? null : Object.freeze({ script, ammoDisplay: (["hidden", "total", "clip-and-reserve"] as const)[ammo]!, bucket, position, drawsCrosshair: (flags & 1) !== 0, suppressCrosshair: (flags & 2) !== 0,
+        countMeter: ([null, "kills", "revenge-active", "heads", "revenge"] as const)[flags >> 2]! })
       return Object.freeze({ class: identity as Tf2Class, slot, weapon: runtime === 0 ? null : runtime as Tf2Weapon, selectionSlot: selection === 255 ? null : selection, hud })
     })
     const name = text(), displayName = text(), image = text()
