@@ -308,6 +308,8 @@ describe("bounded headed profile orchestration", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-owner-retirement-"))
     directories.push(directory)
     const filename = path.join(directory, "owner.json")
+    const lockPath = path.join(directory, "chromium-profile.lock")
+    const lock = await acquireHeadedProfileLock(lockPath, "late-heartbeat-test")
     const child = Bun.spawn([process.execPath, "-e", `import{readFile}from"node:fs/promises";console.log("ready");setInterval(async()=>{try{const lease=JSON.parse(await readFile(${JSON.stringify(`${filename}.lease`)},"utf8"));if(lease.expiresAt<=Date.now())process.exit(0)}catch{}},250)`], { stdout: "pipe", stderr: "pipe" })
     let lateHeartbeat: ReturnType<typeof setTimeout> | undefined
     try {
@@ -316,12 +318,14 @@ describe("bounded headed profile orchestration", () => {
       reader.releaseLock()
       const metadata = { schema: "playsrc-profile-owner-v1" as const, token: "owner", pid: child.pid, identity: "source", target: "map", repository: directory, url: "http://127.0.0.1", startup: {} }
       await writeFile(filename, JSON.stringify(metadata))
+      await browserLease(filename, metadata.token, 60_000)
       lateHeartbeat = setTimeout(() => { void browserLease(filename, "owner", 60_000) }, 75)
       await stopOwner(filename, metadata, 1_000)
       expect(await child.exited).toBe(0)
       await expect(readFile(filename)).rejects.toMatchObject({ code: "ENOENT" })
     } finally {
       if (lateHeartbeat) clearTimeout(lateHeartbeat)
+      await releaseHeadedProfileLock(lockPath, lock.token)
       child.kill()
       await child.exited
     }
@@ -332,6 +336,8 @@ describe("bounded headed profile orchestration", () => {
     directories.push(directory)
     const filename = path.join(directory, "owner.json")
     const child = Bun.spawn([process.execPath, "-e", 'process.once("SIGTERM",()=>process.exit(0));console.log("ready");setInterval(()=>{},1000)'], { stdout: "pipe", stderr: "pipe" })
+    const lockPath = path.join(directory, "chromium-profile.lock")
+    const lock = await acquireHeadedProfileLock(lockPath, "service-retirement-test")
     const metadata = { schema: "playsrc-profile-owner-v1" as const, token: "checked-service", pid: child.pid, identity: "exact", target: "map", repository: directory, url: "", startup: {} }
     let matches = false
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ...metadata, token: matches ? metadata.token : "foreign-service" }) })
@@ -341,13 +347,14 @@ describe("bounded headed profile orchestration", () => {
       await reader.read()
       reader.releaseLock()
       await writeFile(filename, JSON.stringify(metadata))
+      await browserLease(filename, metadata.token, 60_000)
       await expect(stopOwner(filename, { ...metadata, pid: -1 }, 10)).rejects.toThrow("invalid")
       await expect(stopOwner(filename, metadata, 1_200)).rejects.toThrow("remained live")
       expect(child.exitCode).toBeNull()
       matches = true
       await stopOwner(filename, metadata, 2_000)
       expect(await child.exited).toBe(0)
-    } finally { server.stop(true); child.kill(); await child.exited }
+    } finally { await releaseHeadedProfileLock(lockPath, lock.token); server.stop(true); child.kill(); await child.exited }
   })
 
   test("retains failed operation duration rather than dropping its timing", async () => {

@@ -144,46 +144,69 @@ async function verifyOwner(metadata: OwnerMetadata, identity: string, target: st
   } catch { return false }
 }
 
-async function ownerEndpointMatches(metadata: OwnerMetadata): Promise<boolean> {
+async function ownerEndpointMatches(metadata: OwnerMetadata, milliseconds = 2_000): Promise<boolean> {
   try {
-    const response = await fetch(new URL("/__playsrc/profile-owner", metadata.url), { cache: "no-store", signal: AbortSignal.timeout(2_000) })
+    const url = new URL("/__playsrc/profile-owner", metadata.url)
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.username || url.password) return false
+    const response = await fetch(url, { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(Math.max(1, milliseconds)) })
     if (!response.ok) return false
     const value = await response.json() as Partial<OwnerMetadata>
     return value.schema === "playsrc-profile-owner-v1" && value.token === metadata.token && value.identity === metadata.identity
-      && value.target === metadata.target && value.repository === metadata.repository
+      && value.target === metadata.target && value.repository === metadata.repository && value.pid === metadata.pid
   } catch { return false }
+}
+
+function sameOwner(left: OwnerMetadata, right: OwnerMetadata): boolean {
+  return left.token === right.token && left.pid === right.pid && left.identity === right.identity
+    && left.repository === right.repository && left.target === right.target && left.url === right.url
+}
+
+async function checkRetirementLock(metadataPath: string, pid: number): Promise<void> {
+  const holder = JSON.parse(await readFile(path.join(path.dirname(metadataPath), "chromium-profile.lock"), "utf8")) as { pid?: number }
+  if (holder.pid !== process.pid || holder.pid === pid) throw new Error("Development retirement requires the current checked profile lock; never signal its holder")
 }
 
 export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000): Promise<void> {
   if (!Number.isSafeInteger(metadata.pid) || metadata.pid < 1 || metadata.pid === process.pid) throw new Error("Refusing invalid development service PID")
+  if (!Number.isSafeInteger(maximumMilliseconds) || maximumMilliseconds < 1 || maximumMilliseconds > 5_000) throw new Error("Development retirement budget must be within 5000 ms")
+  const deadline = Date.now() + maximumMilliseconds
   if (isAlive(metadata.pid)) {
+    await checkRetirementLock(metadataPath, metadata.pid)
     console.error(`[performance] retiring development owner pid=${metadata.pid} target=${metadata.target} by checked lease`)
-    const deadline = Date.now() + maximumMilliseconds
-    let announcement = Date.now()
-    let nextInterrupt = Date.now() + 1_000
+    const interruptAt = Date.now() + 1_000
+    const forceAt = Date.now() + 2_000
+    let interrupted = false
+    let forced = false
     while (isAlive(metadata.pid) && Date.now() < deadline) {
       const current = await readOwner(metadataPath)
-      if (current && current.token !== metadata.token) throw new Error("Shared development owner changed during retirement")
+      if (current && !sameOwner(current, metadata)) throw new Error("Shared development owner changed during retirement")
+      const lease = JSON.parse(await readFile(`${metadataPath}.lease`, "utf8").catch(error => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "null"
+        throw error
+      })) as { token?: string } | null
+      if (lease && lease.token !== metadata.token) throw new Error("Shared development lease changed during retirement")
       // Older runners may have an in-flight heartbeat after releasing the
       // machine lock. Keep the checked retirement request authoritative.
-      await writeLease(metadataPath, metadata.token, 0)
-      // Some older services hang while closing their Vite sockets. This PID is
-      // the leased development service, not the agent or the lock holder. Only
-      // interrupt that single PID after its live endpoint proves the exact
-      // token/identity/repository again; never signal a foreign process group.
-      if (Date.now() >= nextInterrupt && await ownerEndpointMatches(metadata)) {
-        nextInterrupt = Date.now() + 1_000
-        console.error(`[performance] interrupting verified idle development service pid=${metadata.pid}`)
-        try { process.kill(metadata.pid, "SIGTERM") }
+      if (current && lease) await writeLease(metadataPath, metadata.token, 0)
+      // Escalate only this service PID, never a process group. Re-authenticate
+      // the live PID/endpoint and ownership before *each* signal, including KILL.
+      const signal = !interrupted && Date.now() >= interruptAt ? "SIGTERM" : interrupted && !forced && Date.now() >= forceAt ? "SIGKILL" : null
+      if (signal && current && lease && await ownerEndpointMatches(metadata, Math.min(200, deadline - Date.now()))) {
+        await checkRetirementLock(metadataPath, metadata.pid)
+        const checked = await readOwner(metadataPath)
+        const checkedLease = JSON.parse(await readFile(`${metadataPath}.lease`, "utf8")) as { schema?: string; token?: string; expiresAt?: number }
+        if (!checked || !sameOwner(checked, metadata) || checkedLease.schema !== "playsrc-profile-owner-lease-v1"
+          || checkedLease.token !== metadata.token || !Number.isFinite(checkedLease.expiresAt) || checkedLease.expiresAt! > Date.now()) continue
+        if (Date.now() >= deadline) break
+        console.error(`[performance] ${signal} verified development service pid=${metadata.pid}`)
+        try { process.kill(metadata.pid, signal) }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error }
+        if (signal === "SIGTERM") interrupted = true
+        else forced = true
       }
-      if (Date.now() - announcement >= 5_000) {
-        announcement = Date.now()
-        console.error(`[performance] waiting for development owner retirement pid=${metadata.pid} target=${metadata.target} alive=true`)
-      }
-      await Bun.sleep(50)
+      await Bun.sleep(Math.max(0, Math.min(50, deadline - Date.now())))
     }
-    if (isAlive(metadata.pid)) throw new Error(`Shared headed profile development owner pid=${metadata.pid} remained live through its ${maximumMilliseconds} ms retirement budget; no process was killed`)
+    if (isAlive(metadata.pid)) throw new Error(`Shared headed profile development owner pid=${metadata.pid} remained live through its ${maximumMilliseconds} ms retirement budget; retirement incomplete`)
   }
   const current = await readOwner(metadataPath)
   if (current?.token === metadata.token) await rm(metadataPath, { force: true })
@@ -203,7 +226,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
     await writeLease(metadataPath, current.token, MAX_RUN_MILLISECONDS)
     return Object.freeze({ metadata: current, reused: true, milliseconds: Date.now() - started })
   }
-  if (current) await stopOwner(metadataPath, current, Math.max(1, remaining()))
+  if (current) await stopOwner(metadataPath, current, Math.max(1, Math.min(5_000, remaining())))
   const token = randomUUID()
   await writeLease(metadataPath, token, MAX_RUN_MILLISECONDS)
   const logPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", `profile-owner-${token}.log`)
@@ -280,6 +303,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let exitCode = 1
   let timedOut = false
   let failure: string | null = null
+  let cleanupFailure: string | null = null
   let outcome = "failed"
   let child: ReturnType<typeof spawn> | undefined
   let childExited = false
@@ -324,9 +348,12 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     requireBrowserBudget(remaining(), profile === "control-points" && process.env.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : profile === "skinning-equivalence" ? 80_000 : 30_000)
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
-      const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
-      const use = configuration.use ?? {}
-      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) }, remaining, lock!.token))
+      const launch = await measure("controller-preflight", async () => {
+        const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
+        const use = configuration.use ?? {}
+        return { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) }
+      })
+      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token))
       browserOwnerMilliseconds = Date.now() - began
     }
     heartbeat = setInterval(() => {
@@ -382,7 +409,6 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity()) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
     sourceVerificationMilliseconds = Date.now() - verificationStarted
     outcome = exitCode === 0 ? "passed" : "failed"
-    return exitCode
   } catch (error) {
     exitCode = 1
     failure ??= error instanceof Error ? error.message : String(error)
@@ -394,7 +420,6 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       outcome = timedOut ? "timed-out" : cancellation.signal.aborted ? "cancelled" : "failed"
       console.error(failure)
     }
-    return exitCode
   } finally {
     const cleanupStarted = Date.now()
     if (progress) clearInterval(progress)
@@ -402,8 +427,16 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     if (browserStarted && !childExited) browserMilliseconds = Date.now() - browserStarted
     await heartbeatWrites
     try {
-      if (owner) await writeLease(metadataPath, owner.metadata.token, outcome === "passed" || outcome === "deferred" ? OWNER_IDLE_MILLISECONDS : 0)
+      if (owner) {
+        if (outcome === "passed" || outcome === "deferred") await writeLease(metadataPath, owner.metadata.token, OWNER_IDLE_MILLISECONDS)
+        else await measure("development-retirement", () => stopOwner(metadataPath, owner!.metadata, Math.max(1, Math.min(5_000, started + MAX_RUN_MILLISECONDS - Date.now()))))
+      }
       if (browser) await browserLease(browserPath, browser.token, OWNER_IDLE_MILLISECONDS)
+    } catch (error) {
+      cleanupFailure = error instanceof Error ? error.message : String(error)
+      console.error(`[performance] cleanup failed: ${cleanupFailure}`)
+      exitCode = 1
+      if (outcome === "passed" || outcome === "deferred") outcome = "failed"
     } finally {
       if (lock) await releaseHeadedProfileLock(lockPath, lock.token)
       clearTimeout(deadline)
@@ -422,6 +455,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
           generatedIdentity,
           outcome,
           failure,
+          cleanupFailure,
           queue: observations,
           attempts,
           startedAt: new Date(started).toISOString(),
@@ -452,6 +486,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         console.error(`[performance] ${profile} ${outcome} total=${Date.now() - started}ms queue=${report.phases.lockWaitMilliseconds}ms owner=${owner?.milliseconds ?? 0}ms reused=${owner?.reused ?? false} headed=${browserMilliseconds}ms cleanup=${report.phases.cleanupMilliseconds}ms reportExport=${Date.now() - exportStarted}ms report=${path.join(runDirectory, "command.json")}`)
     }
   }
+  return exitCode
 }
 
 if (import.meta.main) {

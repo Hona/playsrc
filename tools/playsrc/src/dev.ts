@@ -106,6 +106,18 @@ export type DevelopmentOwner = Readonly<{
   waitForInterrupt(): Promise<"SIGINT" | "SIGTERM">
 }>
 
+export async function closeDevelopmentListeners(application: ViteDevServer | undefined, assets: ReturnType<typeof startAssetService> | undefined): Promise<void> {
+  const failures: string[] = []
+  // Vite owns WebSocket closure. Do not await it separately (or twice), and
+  // release the independent asset listener even if a Vite plugin never closes.
+  try { assets?.stop(true) } catch { failures.push("assets") }
+  try {
+    application?.httpServer?.closeAllConnections()
+    await application?.close()
+  } catch { failures.push("application") }
+  if (failures.length) throw new DevelopmentError("CleanupFailure", `${failures.join(", ")} listener cleanup failed`)
+}
+
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const started = performance.now()
   const targetIdentity = target ?? "jump_beef"
@@ -251,23 +263,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   const close = async (): Promise<void> => {
     if (closed) return
     closed = true
-    const failures: string[] = []
-    try {
-      await application?.ws.close()
-      application?.httpServer?.closeAllConnections()
-      await application?.close()
-    } catch {
-      failures.push("application")
-    }
-    try {
-      assets?.stop(true)
-    } catch {
-      failures.push("assets")
-    }
-    restoreEnvironment()
-    if (failures.length) {
-      throw new DevelopmentError("CleanupFailure", `${failures.join(", ")} listener cleanup failed`)
-    }
+    try { await closeDevelopmentListeners(application, assets) }
+    finally { restoreEnvironment() }
   }
   try {
     const publicationStarted = performance.now()
@@ -358,7 +355,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
               response.statusCode = 200
               response.setHeader("content-type", "application/json; charset=utf-8")
               response.setHeader("cache-control", "no-store")
-              response.end(JSON.stringify({ schema: "playsrc-profile-owner-v1", repository: repositoryRoot, identity, token, target: targetIdentity }))
+              response.end(JSON.stringify({ schema: "playsrc-profile-owner-v1", repository: repositoryRoot, pid: process.pid, identity, token, target: targetIdentity }))
             })
           },
         },
