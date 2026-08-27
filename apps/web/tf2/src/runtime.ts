@@ -760,6 +760,7 @@ export class Tf2Application {
   }
 
   #beginLoadingPresentation(): void {
+    if (this.#equipment?.visible()) this.#equipment.hide()
     if (!this.#configuration) throw new Error("TF2 loading configuration is unavailable")
     const target = this.#loadingTarget ?? this.#activeTarget
     if (!target) throw new Error("TF2 loading target is unavailable")
@@ -2062,7 +2063,9 @@ export class Tf2Application {
   }
 
   async #showEquipment(playerClass?: Tf2Class): Promise<void> {
+    const operation = this.#operation
     await this.#ensureResourceRuntime()
+    if (this.#closed || !this.#operations.current(operation) || this.#view.gameUi === "loading") return
     const state = this.#equipmentProfile?.state()
     if (!state || !this.#uiResources || !this.#presentationRandom) throw new Error("Local equipment owner is unavailable")
     if (!this.#equipment) {
