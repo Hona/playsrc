@@ -11,6 +11,7 @@ export type PhysicalBinding = Readonly<{
 type PhysicalBindingResolution = Readonly<{ action: string; match: "exact" | "unmodified" }>
 
 type IndexedPhysicalBinding = Readonly<{
+  displayCode: string
   exact: Map<number, PhysicalBindingResolution>
   unmodified?: PhysicalBindingResolution
 }>
@@ -28,13 +29,23 @@ export class PhysicalBindingIndex {
       const unmodified = binding.modifiers === 0
         ? Object.freeze({ action: binding.action, match: "unmodified" as const })
         : existing?.unmodified
-      this.#codes.set(code, { exact, ...(unmodified ? { unmodified } : {}) })
+      this.#codes.set(code, { displayCode: binding.code, exact, ...(unmodified ? { unmodified } : {}) })
     }
   }
 
   resolve(code: string, modifiers: number): PhysicalBindingResolution | null {
     const binding = this.#codes.get(code.toLowerCase())
     return binding?.exact.get(modifiers) ?? binding?.unmodified ?? null
+  }
+
+  lookupBinding(action: string): string | null {
+    for (const binding of this.#codes.values()) {
+      for (const [modifiers, resolved] of binding.exact) {
+        if (resolved.action !== action) continue
+        return [modifiers & 1 ? "Shift" : "", modifiers & 2 ? "Ctrl" : "", modifiers & 4 ? "Alt" : "", binding.displayCode].filter(Boolean).join("+")
+      }
+    }
+    return null
   }
 
   clear(): void {

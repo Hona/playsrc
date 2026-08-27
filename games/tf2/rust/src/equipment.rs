@@ -74,6 +74,7 @@ pub enum AmmoDisplay { Hidden = 0, Total = 1, ClipAndReserve = 2 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct WeaponHud {
+    pub allows_auto_switch_to: bool,
     pub script: &'static str,
     pub ammo: AmmoDisplay,
     pub bucket: u8,

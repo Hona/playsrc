@@ -73,6 +73,21 @@ test("keeps unmodified physical bindings active under unrelated modifiers", () =
   expect(index.resolve("w", 1)).toEqual({ action: "+use", match: "exact" })
 })
 
+test("binding hints resolve the same current physical owner as cancellation", () => {
+  const index = new PhysicalBindingIndex()
+  expect(index.lookupBinding("lastinv")).toBeNull()
+  index.replace([{ action: "lastinv", code: "q", modifiers: 0 }])
+  expect(index.lookupBinding("lastinv")).toBe("q")
+  index.replace([{ action: "lastinv", code: "F8", modifiers: 0 }])
+  expect(index.lookupBinding("lastinv")).toBe("F8")
+  expect(index.resolve("q", 0)).toBeNull()
+  expect(index.resolve("F8", 0)?.action).toBe("lastinv")
+  index.replace([{ action: "lastinv", code: "F8", modifiers: 2 }, { action: "+attack", code: "F8", modifiers: 2 }])
+  expect(index.lookupBinding("lastinv")).toBeNull()
+  index.clear()
+  expect(index.lookupBinding("lastinv")).toBeNull()
+})
+
 test("indexes exact physical chords without rebuilding settings snapshots per input", () => {
   const index = new PhysicalBindingIndex()
   index.replace([

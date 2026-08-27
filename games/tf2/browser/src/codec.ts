@@ -154,6 +154,7 @@ export type Command = Readonly<{
   selectClass?: Tf2Class | 12
   selectTeam?: Tf2Team
   selectWeapon?: Tf2Weapon
+  selectLastWeapon?: boolean
   disguise?: Readonly<{ class: Tf2Class; team: Tf2Team }>
   modeRequest?: MovementMode
   activateEntity?: number
@@ -823,6 +824,8 @@ function canonicalIdentity(value: number): boolean {
 }
 
 export function encodeCommand(command: Command): ArrayBuffer {
+  if (command.selectLastWeapon !== undefined && typeof command.selectLastWeapon !== "boolean"
+    || command.selectLastWeapon && command.selectWeapon !== undefined) throw new Tf2CodecError("command weapon selectors conflict")
   const scalars = [command.forward, command.side, command.up ?? 0, command.yawDegrees, command.pitchDegrees]
   if (!scalars.every(Number.isFinite)) throw new Tf2CodecError("command contains a non-finite scalar")
   if (command.selectClass !== undefined && (!Number.isInteger(command.selectClass) || command.selectClass < 1 || (command.selectClass > 9 && command.selectClass !== 12))) {
@@ -895,7 +898,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
   const mode = command.modeRequest === undefined ? 0 : command.modeRequest + 1
   view.setUint32(
     32,
-    (command.selectClass ?? 0) | ((command.selectWeapon ?? 0) << 8) | ((command.selectTeam ?? 0) << 16) | (mode << 24),
+    (command.selectClass ?? 0) | ((command.selectLastWeapon ? 255 : command.selectWeapon ?? 0) << 8) | ((command.selectTeam ?? 0) << 16) | (mode << 24),
     true,
   )
   view.setUint32(36, command.activateEntity ?? 0xffff_ffff, true)

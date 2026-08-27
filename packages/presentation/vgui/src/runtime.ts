@@ -513,8 +513,8 @@ function asSourceControl(control: VguiControlName): string {
   return control
 }
 
-function propertyAllowed(control: string, registration: VguiControlRegistration, property: string): boolean {
-  if ([...BASE_PROPERTIES].some((name) => sameName(name, property))) return true
+function resourceProperties(registration: VguiControlRegistration): ReadonlySet<string> {
+  const accepted = new Set([...BASE_PROPERTIES].map(asciiFold))
   const sourceControl = registration.baseControl
   const inherited: string[] = [sourceControl]
   if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem", "URLLabel"].some((name) => sameName(sourceControl, name))) inherited.push("Label")
@@ -524,9 +524,10 @@ function propertyAllowed(control: string, registration: VguiControlRegistration,
   if (["Frame", "PropertyPage"].some((name) => sameName(sourceControl, name))) inherited.push("EditablePanel")
   for (const identity of inherited) {
     const properties = Object.entries(CONTROL_PROPERTIES).find(([name]) => sameName(name, identity))?.[1]
-    if (properties && [...properties].some((name) => sameName(name, property))) return true
+    if (properties) for (const name of properties) accepted.add(asciiFold(name))
   }
-  return registration.acceptedProperties.some((name) => sameName(name, property))
+  for (const name of registration.acceptedProperties) accepted.add(asciiFold(name))
+  return accepted
 }
 
 function validRegistration(registration: VguiControlRegistration, limits: VguiRuntimeLimits): boolean {
@@ -542,10 +543,17 @@ function validRegistration(registration: VguiControlRegistration, limits: VguiRu
     && registration.acceptedProperties.length <= limits.maxPropertiesPerPanel
 }
 
+const GENERIC_RESOURCE_PROPERTIES = new Map<VguiGenericControlName, ReadonlySet<string>>()
+
 export function isVguiGenericResourcePropertySupported(control: VguiGenericControlName, property: string): boolean {
-  if (!VGUI_GENERIC_CONTROL_NAMES.some((name) => sameName(name, control)) || !validString(property, 255, false)) return false
-  const registration = genericRegistration(control)
-  return propertyAllowed(control, registration, property)
+  const canonical = VGUI_GENERIC_CONTROL_NAMES.find((name) => sameName(name, control))
+  if (!canonical || !validString(property, 255, false)) return false
+  let accepted = GENERIC_RESOURCE_PROPERTIES.get(canonical)
+  if (!accepted) {
+    accepted = resourceProperties(genericRegistration(canonical))
+    GENERIC_RESOURCE_PROPERTIES.set(canonical, accepted)
+  }
+  return accepted.has(asciiFold(property))
 }
 
 function validResourceNode(
@@ -665,6 +673,9 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly panels = new Map<VguiPanelId, PanelState>()
   private readonly auxiliaryNodes = new Set<HTMLElement>()
   private readonly registrations = new Map<string, VguiControlRegistration>()
+  // Compile at first property validation, not before the control is needed.
+  // Registrations are immutable runtime-owned copies; no panel values are cached.
+  private readonly resourceProperties = new Map<VguiControlRegistration, ReadonlySet<string>>()
   private readonly listeners: ListenerRecord[] = []
   private readonly queuedMessages: QueuedMessage[] = []
   private readonly delayedCommands: DelayedAnimationCommand[] = []
@@ -1421,7 +1432,7 @@ class SourceVguiRuntime implements VguiRuntime {
       if (!property || !validString(property.name, 255, false) || !validString(property.value, this.limits.maxStringCodeUnits)) {
         throw new RuntimeFault("MalformedValue", `${operation.name}:property`)
       }
-      if (!propertyAllowed(operation.control, registration, property.name)) throw new RuntimeFault("UnknownProperty", `${operation.control}.${property.name}`)
+      if (!this.propertyAllowed(registration, property.name)) throw new RuntimeFault("UnknownProperty", `${operation.control}.${property.name}`)
     }
     const panel = this.createPanelInternal(parent.id, operation.control, operation.name, null)
     try {
@@ -1608,6 +1619,15 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     this.addTrace("panel-create", id, `${control}:${name}`)
     return panel
+  }
+
+  private propertyAllowed(registration: VguiControlRegistration, property: string): boolean {
+    let accepted = this.resourceProperties.get(registration)
+    if (!accepted) {
+      accepted = resourceProperties(registration)
+      this.resourceProperties.set(registration, accepted)
+    }
+    return accepted.has(asciiFold(property))
   }
 
   private registration(control: VguiControlName): VguiControlRegistration {
@@ -2007,7 +2027,7 @@ class SourceVguiRuntime implements VguiRuntime {
           }
           continue
         }
-        if (!propertyAllowed(controlName, registration, property.name)) throw new RuntimeFault("UnknownProperty", `${controlName}.${property.name}`)
+        if (!this.propertyAllowed(registration, property.name)) throw new RuntimeFault("UnknownProperty", `${controlName}.${property.name}`)
         properties.push({ name: property.name, value: property.value })
       }
       const first = resourcePropertyReader(properties)
@@ -5889,6 +5909,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.pendingClipboardReads.clear()
     for (const panel of [...this.panels.values()].sort((left, right) => right.id - left.id)) panel.element.remove()
     this.panels.clear()
+    this.resourceProperties.clear()
     this.auxiliaryNodes.clear()
     this.popups.splice(0)
     this.destroyDom()
