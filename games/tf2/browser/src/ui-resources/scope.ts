@@ -11,7 +11,8 @@ export type Tf2ScopeTexture = Readonly<{
   clampS: boolean
   clampT: boolean
   noLod: boolean
-  mips: readonly Readonly<{ index: number; pngSha256: string; pngDataUrl: string }>[]
+  encoding: "png" | "rgba-deflate"
+  mips: readonly Readonly<{ sha256: string; data: string }>[]
 }>
 export type Tf2AuthoredScope = Readonly<{
   schema: "playsrc-tf2-authored-sniper-scope-v2"
@@ -38,6 +39,7 @@ function texture(input: unknown, path: string): Tf2ScopeTexture {
   if (!value || !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height)
     || (value.width as number) <= 0 || (value.height as number) <= 0 || (value.width as number) > 1024
     || (value.height as number) > 1024 || typeof value.clampS !== "boolean" || typeof value.clampT !== "boolean" || typeof value.noLod !== "boolean"
+    || value.encoding !== (path === "materials/hud/scope_normal_ul.vtf" ? "rgba-deflate" : "png")
     || !Array.isArray(value.mips) || value.mips.length < 1 || value.mips.length > 11) {
     throw new Error(`TF2 authored Sniper scope texture differs: ${path}`)
   }
@@ -48,10 +50,12 @@ function texture(input: unknown, path: string): Tf2ScopeTexture {
     clampS: value.clampS,
     clampT: value.clampT,
     noLod: value.noLod,
+    encoding: value.encoding as "png" | "rgba-deflate",
     mips: Object.freeze(value.mips.map((frame: Record<string, unknown>) => {
-      if (frame.index !== 0 || typeof frame.pngSha256 !== "string" || !SHA256.test(frame.pngSha256)
-        || typeof frame.pngDataUrl !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u.test(frame.pngDataUrl)) throw new Error(`TF2 scope mip differs: ${path}`)
-      return Object.freeze({ index: 0, pngSha256: frame.pngSha256, pngDataUrl: frame.pngDataUrl })
+      const pattern = value.encoding === "png" ? /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u : /^[A-Za-z0-9+/]+={0,2}$/u
+      if (typeof frame.sha256 !== "string" || !SHA256.test(frame.sha256)
+        || typeof frame.data !== "string" || !pattern.test(frame.data)) throw new Error(`TF2 scope mip differs: ${path}`)
+      return Object.freeze({ sha256: frame.sha256, data: frame.data })
     })),
   })
 }

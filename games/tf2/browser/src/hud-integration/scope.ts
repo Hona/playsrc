@@ -20,7 +20,7 @@ export function tf2ScopeGeometry(width: number, height: number): Tf2ScopeGeometr
   })
 }
 
-const texture = (value: typeof tf2AuthoredScope.tint): HudTexture => Object.freeze({ width: value.width, height: value.height, clampS: value.clampS, clampT: value.clampT, noLod: value.noLod, mips: value.mips.map(mip => mip.pngDataUrl) })
+const texture = (value: typeof tf2AuthoredScope.tint): HudTexture => Object.freeze({ width: value.width, height: value.height, clampS: value.clampS, clampT: value.clampT, noLod: value.noLod, encoding: value.encoding, mips: value.mips.map(mip => mip.data) })
 const materials: readonly HudMaterial[] = Object.freeze([
   { kind: "refract", normal: texture(tf2AuthoredScope.normal), tint: texture(tf2AuthoredScope.tint), amount: .1, blur: 1 },
   { kind: "solid", color: [0, 0, 0, 1] },

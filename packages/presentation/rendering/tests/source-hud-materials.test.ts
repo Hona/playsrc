@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SourceHudMaterials, type HudMaterial } from "../src/source-hud-materials"
 
 describe("renderer-owned HUD material lifetime", () => {
-  const texture = { width: 1, height: 1, clampS: true, clampT: true, noLod: true, mips: ["data:image/png;base64,AA=="] } as const
+  const texture = { width: 1, height: 1, clampS: true, clampT: true, noLod: true, encoding: "png", mips: ["data:image/png;base64,AA=="] } as const
   const input: readonly HudMaterial[] = [{ kind: "refract", normal: texture, tint: texture, amount: .1, blur: 1 }]
 
   test("decodes once, retains on reentry, and closes each bitmap exactly once", async () => {

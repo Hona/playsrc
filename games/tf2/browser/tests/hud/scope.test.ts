@@ -5,6 +5,7 @@ import { createTf2AuthoredScope, tf2AuthoredScope } from "../../src/ui-resources
 import { configuredTf2AuthoredScopeInput } from "../../src/ui-resources/scope.generated"
 import { decodeScreenshot } from "../../../../../tools/playsrc/profile/screenshot-pixels"
 import { evaluateSourceRefractPixel } from "../../../../../packages/presentation/rendering/src/source-refract"
+import { inflateSync } from "node:zlib"
 
 describe("authored Source Sniper scope and charge HUD", () => {
   test("retains exact configured refraction quadrants, normal, tint, and two charge textures", () => {
@@ -25,7 +26,9 @@ describe("authored Source Sniper scope and charge HUD", () => {
   test("tint RGB is not an opaque decal; normal alpha owns refraction and blending", () => {
     const rgba = (name: "normal" | "tint", u: number, v: number) => {
       const mip = tf2AuthoredScope[name].mips[0]!
-      const image = decodeScreenshot(Buffer.from(mip.pngDataUrl.split(",")[1]!, "base64"))
+      const source = tf2AuthoredScope[name]
+      const image = source.encoding === "png" ? decodeScreenshot(Buffer.from(mip.data.split(",")[1]!, "base64"))
+        : { width: source.width, height: source.height, pixels: inflateSync(Buffer.from(mip.data, "base64")) }
       const offset = (Math.floor(v * image.height) * image.width + Math.floor(u * image.width)) * 4
       return Array.from(image.pixels.slice(offset, offset + 4))
     }

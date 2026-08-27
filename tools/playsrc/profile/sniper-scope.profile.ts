@@ -124,12 +124,12 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.hudPixelEvidence?.revision === 1)
   const witness = await page.evaluate(() => {
     const evidence = (globalThis as any).__playsrcProfile.hudPixelEvidence
-    return { before: Array.from(evidence.before.bytes) as number[], after: Array.from(evidence.after.bytes) as number[] }
+    return { before: Array.from(evidence.before.bytes) as number[], after: Array.from(evidence.after.bytes) as number[], quality: (globalThis as any).__playsrcProfile.videoQuality }
   })
   const worldBytes = Buffer.from(witness.before), scopeBytes = Buffer.from(witness.after)
   await writeFile(testInfo.outputPath("same-frame-world.png"), worldBytes)
   await writeFile(testInfo.outputPath("same-frame-scope.png"), scopeBytes)
-  const oracle = scopePixelOracle(decodeScreenshot(worldBytes), decodeScreenshot(scopeBytes))
+  const oracle = scopePixelOracle(decodeScreenshot(worldBytes), decodeScreenshot(scopeBytes), witness.quality)
   await writeFile(testInfo.outputPath("pixel-oracle.json"), JSON.stringify(oracle, null, 2))
   expect(oracle.maximumDifference, "Source material RGB must match actual framebuffer samples within 8-bit readback/filter rounding").toBeLessThanOrEqual(3)
   await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 1 })
@@ -249,10 +249,13 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
       const resources = performance.getEntriesByType("resource").length
       const memoryBefore = (performance as any).memory?.usedJSHeapSize ?? null
       const frames: number[] = [], work: unknown[] = []
-      let previous = started
+      let previous: number | undefined
       await new Promise<void>(resolve => {
         const frame = (now: number) => {
-          frames.push(now - previous); previous = now
+          // The first RAF timestamp may precede the task that armed this
+          // sample. It establishes the baseline, not a negative frame interval.
+          if (previous !== undefined) frames.push(now - previous)
+          previous = now
           if (root.dataset.performanceDetail) work.push(JSON.parse(root.dataset.performanceDetail))
           if (now - started >= 5000) resolve(); else requestAnimationFrame(frame)
         }
@@ -262,6 +265,8 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
       return { frames, work, rendererFrames: profiler.completedFrames, losses: profiler.losses, seconds: (performance.now() - started) / 1000, ticks: Number(root.dataset.snapshotTick) - firstTick,
         resources: performance.getEntriesByType("resource").length - resources, memoryBefore, memoryAfter: (performance as any).memory?.usedJSHeapSize ?? null }
     })
+    await writeFile(testInfo.outputPath("measurement.json"), JSON.stringify(measurement, null, 2))
+    await writeFile(testInfo.outputPath("profile.json"), JSON.stringify({ ...measurement, frameTimes: summarizeFrameTimes(measurement.frames) }, null, 2))
     expect(measurement.ticks / measurement.seconds).toBeGreaterThan(64)
     expect(measurement.ticks / measurement.seconds).toBeLessThan(69)
     expect(measurement.resources).toBe(0)
@@ -269,8 +274,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     expect(measurement.rendererFrames.length).toBeGreaterThan(60)
     const passes = measurement.rendererFrames.flatMap((frame: any) => frame.renderer?.passes.filter((pass: any) => pass.identity === "hud-materials") ?? [])
     expect(passes.length).toBeGreaterThan(60)
-    expect(passes.every((pass: any) => pass.drawCalls === 7 && pass.renderPipelines === 0 && pass.nodeBuilderMisses === 0)).toBe(true)
-    await writeFile(testInfo.outputPath("profile.json"), JSON.stringify({ ...measurement, frameTimes: summarizeFrameTimes(measurement.frames) }, null, 2))
+    expect(passes.every((pass: any) => pass.drawCalls === 8 && pass.renderPipelines === 0 && pass.nodeBuilderMisses === 0)).toBe(true)
   }
   await page.keyboard.press("Escape")
   await expect(root).toHaveAttribute("data-gameui", "pause")
@@ -290,6 +294,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     await command(`map ${map}`)
     await expect.poll(async () => Number(await root.getAttribute("data-generation"))).toBeGreaterThan(generation)
     await settleTf2Gameplay(page, "red")
+    await expect(scope).not.toBeVisible()
     await command("joinclass sniper")
     await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("12")
     if (map === "pl_upward") {
