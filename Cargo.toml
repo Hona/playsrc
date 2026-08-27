@@ -10,6 +10,7 @@ members = [
   "packages/formats/studio-model/rust",
   "packages/formats/vhv/rust",
   "packages/formats/phy/rust",
+  "packages/formats/wav/rust",
   "packages/content/rust",
   "packages/world/entity/rust",
   "packages/world/collision/rust",

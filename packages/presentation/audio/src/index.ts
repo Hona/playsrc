@@ -223,8 +223,13 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
         source.playbackRate.value = voice.playbackRate
         source.loop = voice.loopStartSeconds !== null
         if (voice.loopStartSeconds !== null) source.loopStart = voice.loopStartSeconds
-        left.gain.value = voice.leftGain
-        right.gain.value = voice.rightGain
+        const when = Math.max(context.currentTime, voice.startTimeSeconds)
+        for (const [parameter, gain] of [[left.gain, voice.leftGain], [right.gain, voice.rightGain]] as const) {
+          if (voice.envelope) {
+            parameter.setValueAtTime(gain * voice.envelope.from, when)
+            parameter.linearRampToValueAtTime(gain * voice.envelope.to, when + voice.envelope.seconds)
+          } else parameter.value = gain
+        }
         if (buffer.numberOfChannels === 1) {
           source.connect(left)
           source.connect(right)

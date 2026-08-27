@@ -702,6 +702,7 @@ dependencies = [
  "playsrc-visibility",
  "playsrc-vmt",
  "playsrc-vtf",
+ "playsrc-wav",
  "rayon",
  "sha2 0.10.9",
  "wasm-bindgen",
@@ -746,6 +747,10 @@ dependencies = [
 
 [[package]]
 name = "playsrc-vtf"
+version = "0.1.0"
+
+[[package]]
+name = "playsrc-wav"
 version = "0.1.0"
 
 [[package]]

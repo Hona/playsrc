@@ -1054,6 +1054,7 @@ export class Tf2Application {
       if (transition?.disposition !== "applied") return
       this.#paused = document.hidden
       this.#nextSimulationSampleSeconds = 0
+      if (!this.#paused) void this.resumeAudio()
       this.#set({ gameUi: "in-game", detail: `Playing ${this.#mapIdentity}` })
       if (restorePointer && !this.#paused) void this.requestPointer()
       return
@@ -3925,10 +3926,16 @@ export class Tf2Application {
       muted: this.#masterMuted,
     })
     for (const request of requests) {
+      if (request.action === "stop") {
+        for (const identity of this.#audioWorld.stopDefinition(request.source.identity, request.definition)) this.#audio.stop(identity)
+        continue
+      }
       const definition = this.#audioRegistry.get(request.definition)
       const resource = definition?.waves[request.samples.wave]?.resource
       const buffer = resource ? this.#audioBuffers.get(resource) : undefined
       if (!resource || !buffer) throw new Error(`Audio resource for ${request.definition} is missing`)
+      const patch = this.#artifacts.audio.patches.get(resource)
+      if ((request.action === "fade-in" || request.action === "fade-out") && !patch) throw new Error(`Sound patch metadata for ${request.definition} is missing`)
       let started: ReturnType<SourceAudioWorld["start"]>
       try {
         started = this.#audioWorld.start({
@@ -3938,8 +3945,11 @@ export class Tf2Application {
           listener,
           samples: request.samples,
           overrides: request.overrides,
+          ...(request.action === "fade-in" || request.action === "fade-out" ? {
+            envelope: { from: request.action === "fade-in" ? 0 : 1, to: request.action === "fade-in" ? 1 : 0, seconds: request.fadeSeconds! },
+          } : {}),
           resourceDurationSeconds: buffer.duration,
-          resourceLoopStartSeconds: null,
+          resourceLoopStartSeconds: patch?.loopStartSeconds ?? null,
           resourceChannels: buffer.numberOfChannels,
           resourceAvailable: (identity) => this.#audioBuffers.has(identity),
           scheduledTimeSeconds: this.#audioContext.currentTime,
@@ -5169,6 +5179,7 @@ export class Tf2Application {
         } else if (route === "activate" && this.#gameUi?.state().kind === "in-game") {
           this.#neutral()
           this.#paused = true
+          this.#suspendAudio()
           this.#predictedEye.suspend()
           if (document.pointerLockElement) void document.exitPointerLock()
           const transition = this.#gameUi.dispatch({ kind: "escape" })
@@ -5270,6 +5281,8 @@ export class Tf2Application {
   }
   readonly #visibility = (): void => {
     this.#paused = document.hidden || this.#view.gameUi === "pause"
+    if (this.#paused) this.#suspendAudio()
+    else void this.resumeAudio()
     this.#predictedEye.suspend()
     this.#neutral()
     const nowSeconds=this.#frameClock.admit(performance.now()/1_000)
@@ -5415,8 +5428,21 @@ export class Tf2Application {
     await audioAdmission
   }
 
+  #suspendAudio(): void {
+    const context = this.#audioContext
+    if (!context || context.state !== "running") return
+    this.#audioRunning = false
+    // The gameplay context is separate from menu audio. Freeze its clock and
+    // authored envelopes/tails while the simulation is paused, not its voices.
+    void context.suspend().then(() => {
+      if (!this.#paused && context === this.#audioContext) void this.resumeAudio()
+    }).catch(error => {
+      this.#blockers.add(`AudioUnavailable: ${error instanceof Error ? error.message : "suspend failed"}`)
+    })
+  }
+
   async resumeAudio(): Promise<void> {
-    if (!this.#audio || this.#closed) return
+    if (!this.#audio || this.#closed || this.#paused) return
     if (this.#audioRunning && this.#audioContext?.state === "running") return
     try {
       await this.#audio.resume()

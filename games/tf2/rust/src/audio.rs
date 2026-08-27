@@ -273,7 +273,16 @@ pub enum AudioSourceKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AudioAction {
+    Play,
+    FadeIn(f32),
+    FadeOut(f32),
+    Stop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioEvent {
+    pub action: AudioAction,
     pub tick: u64,
     pub ordinal: u16,
     pub identity: AudioEventIdentity,

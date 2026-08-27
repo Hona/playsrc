@@ -23,7 +23,7 @@ pub mod team_selection;
 pub mod weapon;
 
 pub use audio::{
-    AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition, SoundQueryPhase,
+    AudioAction, AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition, SoundQueryPhase,
     SoundSamples, SoundSelectionState,
 };
 pub use random::{
@@ -788,6 +788,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     projectiles: Vec<LiveProjectile>,
     next_projectile: u32,
     fire_was_held: bool,
+    flame_firing: bool,
+    flame_burst_until: f32,
     fire_on_empty: bool,
     secondary_was_held: bool,
     previous_hitscan_ticks: BTreeMap<Weapon, u64>,
@@ -955,6 +957,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             projectiles: Vec::new(),
             next_projectile: 1,
             fire_was_held: false,
+            flame_firing: false,
+            flame_burst_until: 0.0,
             fire_on_empty: false,
             secondary_was_held: false,
             previous_hitscan_ticks: BTreeMap::new(),
@@ -1297,7 +1301,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapons: self.loadout.values().copied().collect(),
             flame_points: self.flames.points().to_vec(),
             shotgun_pellets: self.shotgun_pellets.clone(),
-            flame_firing: self.weapon == Some(Weapon::Flamethrower) && self.fire_was_held,
+            flame_firing: self.flame_firing,
             projectiles: self
                 .projectiles
                 .iter()
@@ -1519,6 +1523,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             objective_events.extend(self.drop_objective(false)?);
         }
         if let Some(team) = self.pending_team_change.take() {
+            self.stop_flame();
             self.fizzle_projectiles(&mut projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
@@ -2015,6 +2020,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             objective_events.extend(current);
         }
         self.apply_pickup_contacts(movement_policy, &mut events, &mut map_phase)?;
+        if self.weapon != Some(Weapon::Flamethrower)
+            || self.lifecycle != PlayerLifecycle::Active
+            || self.health <= 0
+        {
+            self.stop_flame();
+        }
         if discontinuity {
             self.contact_reconcile_requests
                 .push(ContactReconcileRequest {
@@ -2844,6 +2855,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
                 .is_ok()
         {
+            self.stop_flame();
             self.buildings.reset();
             self.fizzle_projectiles(projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
@@ -3424,6 +3436,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         let samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
+            action: AudioAction::Play,
             tick: self.tick,
             ordinal: 0,
             identity: if definition == SoundDefinition::ItemMaterialize {
@@ -3452,6 +3465,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         let samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
+            action: AudioAction::Play,
             tick: self.tick,
             ordinal: 0,
             identity: AudioEventIdentity::WeaponSingle,
@@ -3877,6 +3891,35 @@ impl<W: GameplayWorld + Clone> Session<W> {
             })
     }
 
+    fn stop_flame(&mut self) {
+        if !self.flame_firing {
+            return;
+        }
+        self.flame_firing = false;
+        self.flame_burst_until = 0.0;
+        // StopFlame emits the authored winddown, then destroys both sound patches.
+        self.emit_weapon_sound(SoundDefinition::FlameEnd, self.movement.position);
+        for definition in [SoundDefinition::FlameLoop, SoundDefinition::FlameFire] {
+            self.push_audio_event(AudioEvent {
+                action: AudioAction::Stop,
+                tick: self.tick,
+                ordinal: 0,
+                identity: AudioEventIdentity::WeaponSingle,
+                definition,
+                source_kind: AudioSourceKind::Entity,
+                source_identity: PLAYER_IDENTITY,
+                owner_identity: Some(PLAYER_IDENTITY),
+                position: self.movement.position,
+                samples: SoundSamples {
+                    volume: 0.0,
+                    pitch: 0.0,
+                    wave: 0,
+                    sound_level: 0.0,
+                },
+            });
+        }
+    }
+
     fn advance_flamethrower(
         &mut self,
         command: Command,
@@ -3885,6 +3928,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<(), Error> {
         let interval = self.movement_configuration.tick_interval;
         let now = self.tick as f32 * interval;
+        if !command.fire && now > self.flame_burst_until {
+            self.flame_burst_until = 0.0;
+        }
+        let fire = command.fire || now < self.flame_burst_until;
+        if !fire
+            || self.loadout[&Weapon::Flamethrower].reserve == 0
+            || self.movement.water_level == 3
+        {
+            self.stop_flame();
+        }
         if command.detonate
             && self.movement.water_level != 3
             && self.tick >= self.next_airblast_tick
@@ -3910,6 +3963,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     clip: 0,
                     reserve: state.reserve,
                 });
+                self.stop_flame();
                 self.emit_weapon_sound(SoundDefinition::FlameAirblast, self.movement.position);
                 let (forward, _, _) =
                     angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
@@ -3995,7 +4049,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     }
                 }
             }
-        } else if command.fire && self.movement.water_level != 3 {
+        } else if fire && self.movement.water_level != 3 {
             let state = self
                 .loadout
                 .get_mut(&Weapon::Flamethrower)
@@ -4015,7 +4069,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     MASK_SOLID,
                 )?;
                 if muzzle.fraction == 1.0 {
-                    let began_firing = !self.fire_was_held || self.flames.points().is_empty();
+                    let began_firing = !self.flame_firing;
                     self.flames.add_authored_point(
                         pyro::FlameSpawn {
                             tick: self.tick,
@@ -4047,12 +4101,22 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         });
                     }
                     if began_firing {
-                        self.emit_weapon_sound(SoundDefinition::FlameFire, self.movement.position);
+                        self.flame_firing = true;
+                        if self.flame_burst_until == 0.0 {
+                            self.flame_burst_until = now + 0.2;
+                        }
+                        for (definition, action) in [
+                            (SoundDefinition::FlameFire, AudioAction::FadeOut(3.5)),
+                            (SoundDefinition::FlameLoop, AudioAction::FadeIn(3.5)),
+                        ] {
+                            self.emit_weapon_sound(definition, self.movement.position);
+                            self.audio_events.last_mut().unwrap().action = action;
+                        }
                     }
+                } else {
+                    self.stop_flame();
                 }
             }
-        } else if self.fire_was_held {
-            self.emit_weapon_sound(SoundDefinition::FlameEnd, self.movement.position);
         }
         let world = &self.collision;
         self.flames.advance(
@@ -4132,6 +4196,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         let samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
+            action: AudioAction::Play,
             tick: self.tick,
             ordinal: 0,
             identity: AudioEventIdentity::WeaponSingle,
@@ -5191,6 +5256,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let sound_samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
+            action: AudioAction::Play,
             tick: self.tick,
             ordinal: 0,
             identity: AudioEventIdentity::WeaponSingle,
@@ -5932,6 +5998,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             SoundQueryPhase::Emit,
         );
         self.push_audio_event(AudioEvent {
+            action: AudioAction::Play,
             tick: self.tick,
             ordinal: 0,
             identity: AudioEventIdentity::ExplosionSpecial1,
@@ -6082,6 +6149,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
+        self.stop_flame();
         self.lifecycle = PlayerLifecycle::Dying;
         self.scoreboard.local_death();
         if self.jump.is_none() {
@@ -6111,6 +6179,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events: &mut Vec<Event>,
         movement_policy: GenericMovementPolicy,
     ) {
+        self.stop_flame();
         self.fizzle_projectiles(projectile_events);
         self.health = self.maximum_health();
         self.ammo = self.class.data().maximum_ammo;
@@ -8024,6 +8093,183 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pyro_sound_patches_crossfade_once_and_release_both_without_cutting_winddown() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session
+            .advance(Command {
+                select_class: Some(PlayerClass::Pyro),
+                ..Command::default()
+            })
+            .unwrap();
+        session
+            .loadout
+            .get_mut(&Weapon::Flamethrower)
+            .unwrap()
+            .next_primary_tick = 0;
+        for cycle in 0..3 {
+            session
+                .advance(Command {
+                    fire: true,
+                    ..Command::default()
+                })
+                .unwrap();
+            assert_eq!(
+                session
+                    .audio_events
+                    .iter()
+                    .map(|event| (event.definition, event.action))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (SoundDefinition::FlameFire, AudioAction::FadeOut(3.5)),
+                    (SoundDefinition::FlameLoop, AudioAction::FadeIn(3.5)),
+                ],
+                "cycle {cycle}"
+            );
+            for _ in 0..20 {
+                session
+                    .advance(Command {
+                        fire: true,
+                        ..Command::default()
+                    })
+                    .unwrap();
+                assert!(session.audio_events.is_empty());
+            }
+            session.advance(Command::default()).unwrap();
+            assert_eq!(
+                session
+                    .audio_events
+                    .iter()
+                    .map(|event| (event.definition, event.action))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (SoundDefinition::FlameEnd, AudioAction::Play),
+                    (SoundDefinition::FlameLoop, AudioAction::Stop),
+                    (SoundDefinition::FlameFire, AudioAction::Stop),
+                ]
+            );
+            assert!(
+                session
+                    .audio_events
+                    .iter()
+                    .enumerate()
+                    .all(|(ordinal, event)| event.ordinal == ordinal as u16
+                        && event.source_identity == PLAYER_IDENTITY)
+            );
+            assert!(!session.producer_snapshot().flame_firing);
+            assert!(
+                !session.flames.points().is_empty(),
+                "release must not remove live damaging flame points"
+            );
+            for _ in 0..10 {
+                session.advance(Command::default()).unwrap();
+                assert!(session.audio_events.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn pyro_sound_patch_lifetime_is_not_the_mouse_button_or_live_flame_count() {
+        let mut base = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        base.advance(Command {
+            select_class: Some(PlayerClass::Pyro),
+            ..Command::default()
+        })
+        .unwrap();
+        base.loadout
+            .get_mut(&Weapon::Flamethrower)
+            .unwrap()
+            .next_primary_tick = 0;
+        base.advance(Command {
+            fire: true,
+            ..Command::default()
+        })
+        .unwrap();
+        let until = base.flame_burst_until;
+        let mut tap = base.clone();
+        while (tap.tick as f32 * 0.015) < until {
+            tap.advance(Command::default()).unwrap();
+            assert!(tap.flame_firing);
+        }
+        tap.advance(Command::default()).unwrap();
+        assert!(!tap.flame_firing);
+        for command in [
+            Command {
+                detonate: true,
+                ..Command::default()
+            },
+            Command {
+                select_weapon: Some(Weapon::Shotgun),
+                ..Command::default()
+            },
+            Command {
+                select_class: Some(PlayerClass::Scout),
+                ..Command::default()
+            },
+            Command {
+                select_team: Some(PlayerTeam::Blue),
+                ..Command::default()
+            },
+        ] {
+            let mut session = base.clone();
+            session.advance(command).unwrap();
+            assert!(!session.flame_firing);
+            assert_eq!(
+                session
+                    .audio_events
+                    .iter()
+                    .filter(|event| event.action == AudioAction::Stop)
+                    .count(),
+                2
+            );
+        }
+        let mut spectator = base.clone();
+        spectator
+            .select_team_choice(team_selection::TeamChoice::Spectator)
+            .unwrap();
+        spectator.advance(Command::default()).unwrap();
+        assert!(!spectator.flame_firing);
+        assert_eq!(
+            spectator
+                .audio_events
+                .iter()
+                .filter(|event| event.action == AudioAction::Stop)
+                .count(),
+            2
+        );
+        let mut empty = base.clone();
+        empty
+            .loadout
+            .get_mut(&Weapon::Flamethrower)
+            .unwrap()
+            .reserve = 0;
+        empty
+            .advance(Command {
+                fire: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(!empty.flame_firing);
+        assert_eq!(
+            empty
+                .audio_events
+                .iter()
+                .filter(|event| event.action == AudioAction::Stop)
+                .count(),
+            2
+        );
+        base.audio_events.clear();
+        base.die(&mut Vec::new());
+        assert!(!base.flame_firing);
+        assert_eq!(
+            base.audio_events
+                .iter()
+                .filter(|event| event.action == AudioAction::Stop)
+                .count(),
+            2
+        );
     }
 
     #[test]

@@ -86,6 +86,7 @@ export type StaticMaterialState = Readonly<{
 export type ParticleTextureArtifact = SupplementalTexture & Readonly<{ materialPath: string }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
+  patches: ReadonlyMap<string, Readonly<{ sampleRate: number; frames: number; loopStartSeconds: number | null }>>
   mixerSha256: string
   mixerGain: number
   documents: readonly Readonly<{
@@ -1000,7 +1001,7 @@ function soundNode(r: Reader): SoundScriptNode {
 }
 
 function parseAudio(r: Reader): AudioArtifact {
-  if (r.decode(r.take(4)) !== "PAUD" || r.u32() !== 2) throw new ArtifactError("PAUD identity")
+  if (r.decode(r.take(4)) !== "PAUD" || r.u32() !== 3) throw new ArtifactError("PAUD identity")
   const mixerSha256 = hex(r.take(32)), mixerGain = r.f32(), count = r.u32()
   if (mixerGain < 0 || count < 1 || count > 5) throw new ArtifactError("audio mixer or document count")
   const documents = Array.from({ length: count }, () => Object.freeze({
@@ -1011,7 +1012,15 @@ function parseAudio(r: Reader): AudioArtifact {
   if (new Set(documents.map((document) => document.logicalPath)).size !== documents.length) {
     throw new ArtifactError("audio documents repeat a logical identity")
   }
-  return Object.freeze({ mixerSha256, mixerGain, documents: Object.freeze(documents) })
+  const patches = new Map<string, Readonly<{ sampleRate: number; frames: number; loopStartSeconds: number | null }>>()
+  const patchCount = r.u32()
+  if (patchCount > 128) throw new ArtifactError("sound patch count")
+  for (let index = 0; index < patchCount; index++) {
+    const path = r.text(), sampleRate = r.u32(), frames = r.u32(), cue = r.u32()
+    if (patches.has(path) || sampleRate === 0 || frames === 0 || (cue !== 0xffff_ffff && cue >= frames)) throw new ArtifactError("sound patch metadata")
+    patches.set(path, Object.freeze({ sampleRate, frames, loopStartSeconds: cue === 0xffff_ffff ? null : cue / sampleRate }))
+  }
+  return Object.freeze({ mixerSha256, mixerGain, documents: Object.freeze(documents), patches })
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {

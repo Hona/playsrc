@@ -89,6 +89,8 @@ export type RandomDraw = Readonly<{
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
 }>
 export type AudioEvent = Readonly<{
+  action: "play" | "stop" | "fade-in" | "fade-out"
+  fadeSeconds: number
   tick: bigint
   ordinal: number
   identity: 1 | 2 | 3 | 4
@@ -1992,20 +1994,22 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       definition = data[item + 11], sourceKind = data[item + 12], hasOwner = data[item + 13], wave = data[item + 14]
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
+    const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
     const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 44 ? 4
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 ? 2 : 1
     if (
       (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 76 ||
-      (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || data[item + 15] !== 0 ||
+      (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
       !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||
-      wave === undefined || wave >= waveCount || view.getUint32(item + 48, true) !== 0
+      wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
     ) throw new Tf2CodecError("audio event record is invalid")
     nextOrdinal.set(tick, expectedOrdinal + 1)
     audioEvents.push(Object.freeze({
       tick, ordinal, identity, definition, sourceKind, sourceIdentity,
+      action: (["play", "stop", "fade-in", "fade-out"] as const)[action]!, fadeSeconds,
       ownerIdentity: hasOwner === 1 ? rawOwner : null,
       position,
       samples: Object.freeze({ volume, pitch, wave, soundLevel }),
