@@ -2035,9 +2035,9 @@ impl BotWorld {
         Ok(true)
     }
 
-    pub fn scattergun_push(&mut self, identity: u32, attacker: u32, now: f32, impulse: [f32; 3]) -> Result<bool, Error> {
+    pub fn scattergun_push(&mut self, identity: u32, attacker: u32, now: f32, impulse: [f32; 3], horizontal_scale: f32, vertical_scale: f32) -> Result<bool, Error> {
         if self.hitscan_target(identity).is_none_or(|target| target.push_immune || target.knocked_back) { return Ok(false); }
-        if !self.apply_impulse(identity, impulse) { return Ok(false); }
+        self.generic_push(identity, attacker, impulse, horizontal_scale, vertical_scale)?;
         self.stun_movement(identity, attacker, now, 0.3, 1.0, true)?;
         self.bots.get_mut(&identity).unwrap().weapon_knockback = true;
         Ok(true)

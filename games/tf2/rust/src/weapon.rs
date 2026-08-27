@@ -732,6 +732,7 @@ impl WeaponRuntime {
         released: bool,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
+        if !held && !secondary { self.hitscan.idle(tick); }
         if self.weapon == Weapon::HandgunScoutPrimary && secondary && tick >= self.next_secondary_tick {
             self.next_primary_tick = source_deadline_tick(tick, 0.6, tick_interval);
             self.next_secondary_tick = source_deadline_tick(tick, 1.5, tick_interval);

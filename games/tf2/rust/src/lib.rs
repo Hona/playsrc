@@ -5015,6 +5015,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             origin,
         });
         let mut pending: Option<hitscan::DamageGroup> = None;
+        let accumulate = matches!(weapon, Weapon::Minigun | Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun);
+        let mut accumulated = BTreeMap::<u32, hitscan::DamageGroup>::new();
         let mut phase = MapPhase::default();
         for pellet in 0..profile.pellets {
             let seed = ((random::prediction_seed(self.tick as u32) & 255) + u32::from(pellet)) as i32;
@@ -5146,16 +5148,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let critical = crit == damage::CritKind::Full;
                 let amount = profile.damage * match crit {
                     damage::CritKind::None => range_multiplier,
-                    damage::CritKind::Mini => range_multiplier.max(1.0) * damage::MINICRIT_MULTIPLIER,
+                    damage::CritKind::Mini => (if rules.critical_falloff { range_multiplier } else { range_multiplier.max(1.0) }) * damage::MINICRIT_MULTIPLIER,
                     damage::CritKind::Full => if rules.critical_falloff { range_multiplier.min(1.0) * damage::CRIT_MULTIPLIER } else { damage::CRIT_MULTIPLIER },
                 };
                 if let Some(identity) = target {
-                    if pending.is_some_and(|group| group.victim != identity) {
+                    if !accumulate && pending.is_some_and(|group| group.victim != identity) {
                         self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, pending.take().unwrap(), events, &mut phase)?;
                     }
-                    let group = pending.get_or_insert(hitscan::DamageGroup { victim: identity, amount: 0.0, range_multiplier, position, crit,
-                        custom: if headshot { damage::CustomDamage::Headshot } else { damage::CustomDamage::None } });
+                    let initial = hitscan::DamageGroup { victim: identity, amount: 0.0, range_multiplier, position, crit,
+                        custom: if headshot { damage::CustomDamage::Headshot } else { damage::CustomDamage::None } };
+                    let group = if accumulate { accumulated.entry(identity).or_insert(initial) } else { pending.get_or_insert(initial) };
                     group.amount += profile.damage;
+                    group.position = position;
                 }
                 let damage = amount;
                 events.push(Event::HitscanImpact {
@@ -5175,6 +5179,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         if let Some(group) = pending { self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, group, events, &mut phase)?; }
+        for group in accumulated.into_values() { self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, group, events, &mut phase)?; }
         self.loadout.get_mut(&weapon).unwrap().hitscan.fired(self.tick, interval);
         Ok(phase)
     }
@@ -5192,14 +5197,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && hitscan::knockback_allowed(group.amount, dot(sub(target.center, attacker_center), sub(target.center, attacker_center)), rules.knockback_multiplier);
         let force = if push { hitscan::knockback_impulse(attacker_center, target.center, target.size, group.amount, rules.knockback_multiplier) } else { [0.0; 3] };
         let result = self.apply_actor_damage(bot::Damage {
-            source_weapon, damage_type: bot::weapon_damage_type(weapon).unwrap(), force,
+            source_weapon, damage_type: bot::weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: group.crit, range_multiplier: group.range_multiplier, custom: group.custom, modifiers, killing_weapon: None,
             attacker: PLAYER_IDENTITY, victim: group.victim, weapon, amount: group.amount, position: group.position,
         }, self.team_selection.local_team(), events)?;
         let Some(result) = result else { return Ok(()); };
         let now = self.tick as f32 * self.movement_configuration.tick_interval;
-        if push && result.force != [0.0; 3] {
-            if let Some(bots) = &mut self.bots { bots.scattergun_push(group.victim, PLAYER_IDENTITY, now, result.force).map_err(Error::Bot)?; }
+        if push {
+            let horizontal = self.equipped_player_attribute(group.victim, "airblast_vulnerability_multiplier", 1.0);
+            let vertical = self.equipped_player_attribute(group.victim, "airblast_vertical_vulnerability_multiplier", 1.0);
+            if let Some(bots) = &mut self.bots { bots.scattergun_push(group.victim, PLAYER_IDENTITY, now, force, horizontal, vertical).map_err(Error::Bot)?; }
         }
         if !result.admitted { return Ok(()); }
         if result.death.is_some() && group.custom == damage::CustomDamage::Headshot
