@@ -15,20 +15,32 @@ pub const CRIT_BUCKET_CAP: f32 = 1_000.0;
 pub const CRIT_BUCKET_BOTTOM: f32 = -250.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DamageType(u16);
+pub struct DamageType(u32);
 
 impl DamageType {
     pub const GENERIC: Self = Self(0);
-    pub const BULLET: Self = Self(1 << 0);
-    pub const BUCKSHOT: Self = Self(1 << 1);
-    pub const BLAST: Self = Self(1 << 2);
+    pub const BULLET: Self = Self(1 << 1);
+    pub const BUCKSHOT: Self = Self(1 << 29);
+    pub const BLAST: Self = Self(1 << 6);
     pub const BURN: Self = Self(1 << 3);
-    pub const IGNITE: Self = Self(1 << 4);
-    pub const MELEE: Self = Self(1 << 5);
-    pub const CRUSH: Self = Self(1 << 6);
-    pub const FALL: Self = Self(1 << 7);
-    pub const DROWN: Self = Self(1 << 8);
-    pub const PREVENT_FORCE: Self = Self(1 << 9);
+    pub const IGNITE: Self = Self(1 << 24);
+    pub const MELEE: Self = Self(1 << 27);
+    pub const CRUSH: Self = Self(1 << 0);
+    pub const FALL: Self = Self(1 << 5);
+    pub const DROWN: Self = Self(1 << 14);
+    pub const PREVENT_FORCE: Self = Self(1 << 11);
+    pub const SLASH: Self = Self(1 << 2);
+    pub const CLUB: Self = Self(1 << 7);
+    pub const NEVER_GIB: Self = Self(1 << 12);
+    pub const USE_DISTANCE: Self = Self(1 << 21);
+    pub const HALF_FALLOFF: Self = Self(1 << 18);
+    pub const NO_CLOSE_DISTANCE: Self = Self(1 << 17);
+    pub const USE_HITLOCATIONS: Self = Self(1 << 25);
+    pub const NO_CRIT_RATE: Self = Self(1 << 26);
+
+    pub const fn source_bits(self, crit: CritKind) -> u32 {
+        self.0 | if !matches!(crit, CritKind::None) { 1 << 20 } else { 0 }
+    }
 
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
@@ -422,6 +434,16 @@ pub enum CustomDamage {
     Other(u16),
 }
 
+impl CustomDamage {
+    pub const fn source_code(self) -> u16 {
+        match self {
+            Self::None => 0, Self::Headshot => 1, Self::Backstab => 2,
+            Self::Burning => 3, Self::Telefrag => 16, Self::Bleeding => 34,
+            Self::TriggerHurt => 40, Self::Other(value) => value,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DamageInput {
     pub attacker: u32,
@@ -641,9 +663,6 @@ pub fn apply_damage(
     }];
     let mut base = input.base_damage * modifiers.outgoing_vs_players;
     let mut crit = input.crit;
-    if crit != CritKind::Full && input.attacker_conditions.is_crit_boosted() {
-        crit = CritKind::Full;
-    }
     if crit == CritKind::None
         && !self_damage
         && ([
@@ -689,7 +708,8 @@ pub fn apply_damage(
             }
         }
     }
-    if crit == CritKind::Full && modifiers.crits_become_minicrits {
+    let ranged_as_full_crit = crit == CritKind::Full;
+    if ranged_as_full_crit && modifiers.crits_become_minicrits {
         crit = CritKind::Mini;
     }
     stages.push(DamageStage {
@@ -698,17 +718,26 @@ pub fn apply_damage(
         bonus: 0.0,
     });
 
-    base *= input.range_multiplier;
+    let unvaried_base = base;
+    let effective_range = if self_damage || ranged_as_full_crit { 1.0 }
+        else if crit == CritKind::Mini { input.range_multiplier.max(1.0) }
+        else { input.range_multiplier };
+    base *= effective_range;
     stages.push(DamageStage {
         kind: DamageStageKind::Range,
         base,
         bonus: 0.0,
     });
-    let mut bonus = match crit {
+    let critical_damage = if self_damage { 0.0 } else { match crit {
         CritKind::None => 0.0,
         CritKind::Mini => (MINICRIT_MULTIPLIER - 1.0) * base,
         CritKind::Full => (CRIT_MULTIPLIER - 1.0) * base,
-    };
+    }};
+    let variance_bonus = if self_damage || crit == CritKind::None
+        || ranged_as_full_crit && input.range_multiplier > 1.0 { 0.0 }
+        else { (unvaried_base * (input.range_multiplier - 1.0)).abs() };
+    let mut bonus = critical_damage + variance_bonus;
+    base -= variance_bonus;
     let pre_resistance_base_damage = base;
     let pre_resistance_bonus_damage = bonus;
     stages.push(DamageStage {
@@ -1206,6 +1235,47 @@ mod tests {
         assert_eq!(result.death.as_ref().unwrap().scorer, Some(1));
         assert_eq!(result.death.as_ref().unwrap().assister, Some(3));
         assert_eq!(result.death.as_ref().unwrap().corpse, CorpseKind::Gib);
+    }
+
+    #[test]
+    fn damage_time_boosts_do_not_retroactively_crit_and_self_hits_skip_range_and_crit_bonus() {
+        let mut hit = input();
+        hit.attacker_conditions = conditions(&[ConditionId::CRIT_BOOSTED]);
+        let mut health = HealthState::spawn(PlayerClass::Soldier, 0.0, 0.0).unwrap();
+        let result = apply_damage(true, &mut health, &mut ConditionState::default(), &hit, DamageModifiers::default()).unwrap();
+        assert_eq!(result.crit, CritKind::None);
+        hit.attacker = hit.victim;
+        hit.attacker_team = hit.victim_team;
+        hit.crit = CritKind::Full;
+        hit.range_multiplier = 0.5;
+        let mut health = HealthState::spawn(PlayerClass::Soldier, 0.0, 0.0).unwrap();
+        let result = apply_damage(true, &mut health, &mut ConditionState::default(), &hit, DamageModifiers::default()).unwrap();
+        assert_eq!(result.final_damage, hit.base_damage);
+        assert_eq!(result.bonus_damage, 0.0);
+    }
+
+    #[test]
+    fn minicrit_bonus_accounts_for_range_variance_and_full_crit_demotion_does_not_restore_ramp() {
+        for (crit, range, demote, expected, base, bonus) in [
+            (CritKind::Full, 0.5, false, 270.0, 45.0, 225.0),
+            (CritKind::Full, 1.25, false, 270.0, 90.0, 180.0),
+            (CritKind::Mini, 0.5, false, 121.5, 45.0, 76.5),
+            (CritKind::Mini, 1.25, false, 151.875, 90.0, 61.875),
+            (CritKind::Full, 1.25, true, 121.5, 90.0, 31.5),
+        ] {
+            let mut hit = input();
+            hit.base_damage = 90.0;
+            hit.crit = crit;
+            hit.range_multiplier = range;
+            let mut health = HealthState::spawn(PlayerClass::Heavy, 0.0, 0.0).unwrap();
+            let result = apply_damage(true, &mut health, &mut ConditionState::default(), &hit,
+                DamageModifiers { crits_become_minicrits: demote, ..Default::default() }).unwrap();
+            assert!((result.final_damage - expected).abs() < 0.0001);
+            assert!((result.base_damage - base).abs() < 0.0001);
+            assert!((result.bonus_damage - bonus).abs() < 0.0001);
+        }
+        assert_eq!(DamageType::SLASH.source_bits(CritKind::None), 4);
+        assert_eq!(DamageType::BLAST.source_bits(CritKind::Mini), 64 | (1 << 20));
     }
 
     #[test]

@@ -113,7 +113,7 @@ impl PlayerHistory {
         self.history.record(input)?;
         if health_damage <= 1500 && !input.damage_type.contains(DamageType::MELEE) {
             self.ranged_damage = self.ranged_damage.saturating_add(health_damage);
-            if critical == CritKind::Full && !attacker_is_crit_boosted {
+            if critical != CritKind::None && !attacker_is_crit_boosted {
                 self.random_ranged_critical_damage = self
                     .random_ranged_critical_damage
                     .saturating_add(health_damage);
