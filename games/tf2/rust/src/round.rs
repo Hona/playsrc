@@ -60,10 +60,15 @@ pub struct Timer {
     next_think: f32,
     outputs: u16,
     warnings: u16,
+    after_setup_seconds: i32,
 }
 
 impl Timer {
     fn new(configuration: TimerConfiguration) -> Self {
+        Self::at(configuration, 0.0)
+    }
+
+    fn at(configuration: TimerConfiguration, now: f32) -> Self {
         let setup = configuration.setup_seconds > 0;
         let remaining = if setup {
             configuration.setup_seconds
@@ -81,16 +86,17 @@ impl Timer {
             paused: true,
             disabled: false,
             finished: remaining <= 0.0,
-            now: 0.0,
-            end_time: remaining,
+            now,
+            end_time: now + remaining,
             paused_remaining: remaining,
-            next_think: 0.05,
+            next_think: now + 0.05,
             outputs: output_flags(remaining),
             warnings: output_flags(if remaining > 10.0 {
                 remaining + 2.0
             } else {
                 remaining
             }),
+            after_setup_seconds: configuration.initial_seconds,
         }
     }
 
@@ -164,11 +170,26 @@ impl Timer {
     }
 
     fn reset(&mut self) {
-        let now = self.now;
-        *self = Self::new(self.configuration);
-        self.now = now;
-        self.end_time = now + self.paused_remaining;
-        self.next_think = now + 0.05;
+        *self = Self::at(self.configuration, self.now);
+    }
+
+    fn round_spawn(&mut self, waiting_for_players: bool) {
+        self.after_setup_seconds =
+            if !self.configuration.reset_on_round_start && self.state == TimerState::Normal {
+                self.remaining as i32
+            } else {
+                self.configuration.initial_seconds
+            };
+        if self.configuration.setup_seconds > 0 {
+            self.state = TimerState::Setup;
+            self.set_time(self.configuration.setup_seconds);
+        } else {
+            self.state = TimerState::Normal;
+            self.set_time(self.after_setup_seconds);
+        }
+        if !self.configuration.start_paused && !waiting_for_players {
+            self.resume();
+        }
     }
 }
 
@@ -536,14 +557,16 @@ impl Rules {
                     return;
                 }
                 if input.eq_ignore_ascii_case(b"RoundSpawn") {
-                    for identity in [koth.blue_timer, koth.red_timer] {
-                        self.timer_mut(identity).expect("KOTH timer").reset();
+                    for configuration in koth.timers() {
+                        *self.timer_mut(configuration.identity).expect("KOTH timer") =
+                            Timer::at(configuration, now);
                     }
                     return;
                 }
             }
         }
         let running = matches!(self.state, State::Running | State::TeamWin);
+        let waiting = self.waiting_for_players();
         if input.eq_ignore_ascii_case(b"AddTime") && running {
             self.add_timer_seconds(entity, value);
             return;
@@ -551,7 +574,9 @@ impl Rules {
         let Some(timer) = self.timer_mut(entity) else {
             return;
         };
-        if input.eq_ignore_ascii_case(b"Pause") {
+        if input.eq_ignore_ascii_case(b"RoundSpawn") {
+            timer.round_spawn(waiting);
+        } else if input.eq_ignore_ascii_case(b"Pause") {
             timer.pause();
         } else if input.eq_ignore_ascii_case(b"Resume") {
             timer.resume();
@@ -580,7 +605,11 @@ impl Rules {
     pub fn recreate_map_entities(&mut self, authored: &Configuration) {
         self.configuration.round_wins = authored.round_wins.clone();
         for timer in &mut self.timers {
-            if let Some(configuration) = authored.timers.iter().find(|c| c.identity == timer.configuration.identity) {
+            if let Some(configuration) = authored
+                .timers
+                .iter()
+                .find(|c| c.identity == timer.configuration.identity)
+            {
                 timer.configuration = *configuration;
                 timer.now = self.now;
                 timer.reset();
@@ -665,7 +694,10 @@ impl Rules {
     }
 
     pub fn win(&mut self, team: PlayerTeam, reason: u8) -> Result<Vec<Event>, Error> {
-        if (!team.is_gameplay() && !(team == PlayerTeam::Unassigned && reason == WIN_REASON_STALEMATE)) || reason == 0 {
+        if (!team.is_gameplay()
+            && !(team == PlayerTeam::Unassigned && reason == WIN_REASON_STALEMATE))
+            || reason == 0
+        {
             return Err(Error::InvalidWinner);
         }
         if self.state == State::TeamWin {
@@ -702,7 +734,8 @@ impl Rules {
             self.transition_at = Some(self.now + self.configuration.stalemate_seconds);
             events
         } else {
-            self.win(PlayerTeam::Unassigned, WIN_REASON_STALEMATE).expect("draw winner")
+            self.win(PlayerTeam::Unassigned, WIN_REASON_STALEMATE)
+                .expect("draw winner")
         }
     }
 
@@ -776,7 +809,7 @@ impl Rules {
                 events.push(Event::WaitingEnded);
                 self.enter_preround(true, &mut events);
             }
-        } else if self.state == State::Running {
+        } else if matches!(self.state, State::Running | State::Preround) {
             self.advance_timer(interval, facts, &mut events)?;
         }
         if !self.waiting_for_players() {
@@ -838,7 +871,7 @@ impl Rules {
             if timer.remaining <= 0.0 && !timer.finished {
                 if timer.state == TimerState::Setup {
                     timer.state = TimerState::Normal;
-                    timer.set_time(timer.configuration.initial_seconds);
+                    timer.set_time(timer.after_setup_seconds);
                     events.push(Event::SetupFinished { timer: identity });
                     continue;
                 }
@@ -869,7 +902,10 @@ impl Rules {
                 }
             }
         }
-        if !finished_normal || self.configuration.koth.is_some() || !self.configuration.round_wins.is_empty() {
+        if !finished_normal
+            || self.configuration.koth.is_some()
+            || !self.configuration.round_wins.is_empty()
+        {
             return Ok(());
         }
         if let Some(team) = self.configuration.defending_team {
@@ -1208,6 +1244,54 @@ mod tests {
             rules.take_events().is_empty(),
             "AddTimerSeconds is inert during preround"
         );
+    }
+
+    #[test]
+    fn timer_roundspawn_preserves_existing_integer_time_but_map_recreation_restores_authored_state()
+    {
+        let configuration = Configuration {
+            timers: vec![TimerConfiguration {
+                setup_seconds: 0,
+                reset_on_round_start: false,
+                ..timer()
+            }],
+            ..Configuration::default()
+        };
+        let mut rules = Rules::active(configuration.clone()).unwrap();
+        rules.advance(10.25, 0.015, facts()).unwrap();
+        assert_eq!(rules.timer().unwrap().remaining, 319.75);
+        rules.apply_input(9, b"RoundSpawn", 0, 10.25);
+        assert_eq!(rules.timer().unwrap().remaining, 319.0);
+        rules.apply_input(9, b"ShowInHUD", 0, 10.25);
+        rules.recreate_map_entities(&configuration);
+        assert_eq!(rules.timer().unwrap().remaining, 330.0);
+        assert!(rules.timer().unwrap().configuration.show_in_hud);
+        assert!(rules.timer().unwrap().paused);
+        rules.apply_input(9, b"RoundSpawn", 0, 10.25);
+        assert!(!rules.timer().unwrap().paused);
+    }
+
+    #[test]
+    fn ordered_roundspawn_can_finish_short_setup_during_preround_without_changing_tick_rate() {
+        let mut rules = Rules::new(Configuration {
+            waiting_seconds: 0.0,
+            timers: vec![TimerConfiguration {
+                initial_seconds: 20,
+                setup_seconds: 3,
+                ..timer()
+            }],
+            ..Configuration::default()
+        })
+        .unwrap();
+        rules.restart(false);
+        rules.apply_input(9, b"RoundSpawn", 0, 0.0);
+        let events = rules.advance(3.015, 0.015, facts()).unwrap();
+        assert!(events.contains(&Event::SetupFinished { timer: 9 }));
+        assert_eq!(rules.state(), State::Preround);
+        assert_eq!(rules.timer().unwrap().remaining, 20.0);
+        rules.advance(5.015, 0.015, facts()).unwrap();
+        assert_eq!(rules.state(), State::Running);
+        assert!((rules.timer().unwrap().remaining - 18.0).abs() < 0.00001);
     }
 
     fn facts() -> Facts {
