@@ -2466,9 +2466,15 @@ class RendererOwner implements Renderer {
       this.#clearDynamic(this.#viewModels)
       this.#viewModelInstances.clear()
       this.#retainedModels.clear()
-      for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
+      const parkPanel = (retained: { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }) => {
+        if (staged.modelPipelineKeys.has(retained.model) && staged.modelTemplates.get(retained.model) === prior?.modelTemplates.get(retained.model)) {
+          retained.instance.removeFromParent()
+          this.#preparedModelInstances.retain(`${retained.meshes ? "panel" : "panel-bind"}:${retained.model}`, retained)
+        } else this.#disposeDynamicInstance(retained.instance)
+      }
+      for (const retained of this.#modelPanelInstances.values()) parkPanel(retained)
       this.#modelPanelInstances.clear()
-      this.#retainedModelPanels.clear()
+      for (const retained of this.#retainedModelPanels.drain()) parkPanel(retained)
       this.#preparedModelInstances.discardWhere(value => !staged.modelTemplates.has(value.model) || staged.modelTemplates.get(value.model) !== prior?.modelTemplates.get(value.model))
       this.#stagedDynamic = undefined
       this.#worldVisibilitySurfaces = undefined
