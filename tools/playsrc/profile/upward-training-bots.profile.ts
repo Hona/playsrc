@@ -47,7 +47,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
-  const replay = exerciseClasses ? await startGameplayReplayJournal(page, evidenceDirectory, evidenceLabel) : undefined
+  const replay = exerciseClasses ? await startGameplayReplayJournal(page, evidenceDirectory, evidenceLabel, process.env.PROFILE_CLASS_REPLACEMENT === "1" ? 2 : 1) : undefined
   retainIncomplete = () => replay?.stop(false) ?? Promise.resolve()
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })

@@ -12,7 +12,7 @@ export async function verifyRetainedUpward(reportPath: string, manifestPath: str
   if (sourceBytes.length > TRACE_LIMITS.probeBytes) throw new Error("Source report byte bound exceeded")
   const report = JSON.parse(sourceBytes.toString("utf8"))
   const { manifest, events, probes, analysis } = await loadCompositorEvidence(manifestPath)
-  if (!manifest.complete || !analysis.window || report.schema !== "playsrc-tf2-upward-training-bots-profile-v1" || report.target !== "pl_upward"
+  if (!manifest.complete || !analysis.window || report.schema !== "playsrc-tf2-upward-training-bots-profile-v2" || report.target !== "pl_upward"
     || !report.headed || report.label !== manifest.identity.label
     || `${report.compositorEvidence.sha256}.manifest.json` !== (manifest.identity.reanalysis?.parentManifest ?? path.basename(manifestPath))) throw new Error("Capture/report linkage is invalid")
   const elapsed = (analysis.window.endedMicroseconds - analysis.window.startedMicroseconds) / 1000

@@ -94,12 +94,13 @@ test("the owner journal waits for Ready and serializes boundary marks before fin
   const bytes = fixture(), calls: string[] = []
   let release: (() => void) | undefined
   try {
-    const journal = await startGameplayReplayJournal(page as any, directory, "ordered")
+    const journal = await startGameplayReplayJournal(page as any, directory, "ordered", 2)
     attach!({ url: () => "http://local/gameplay-worker.ts", async evaluate(_fn: unknown, args: any) {
+      if (args?.generation) { expect(args.generation).toBe(2); return }
       if (typeof args === "number") { calls.push("mark"); await new Promise<void>(resolve => { release = resolve }); return }
       if (!args) return
       calls.push(args.stop ? "stop" : "read")
-      return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 1 }, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
+      return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 2 }, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
     } })
     expect(calls).toEqual([])
     await journal.ready()
@@ -122,7 +123,7 @@ test("failed incremental reads can retain a final recovered prefix but never pas
   try {
     const journal = await startGameplayReplayJournal(page as any, directory, "failed")
     attach!({ url: () => "http://local/gameplay-worker.ts", async evaluate(_fn: unknown, args: any) {
-      if (!args) return
+      if (!args || args.generation) return
       if (!args.stop) throw new Error("transport failed")
       return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 1 }, offset: 0, length: bytes.length, complete: true, base64: bytes.toString("base64") }
     } })
