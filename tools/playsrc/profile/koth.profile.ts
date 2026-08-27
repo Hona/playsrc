@@ -38,9 +38,9 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     await expect(layer.locator("[data-vgui-name='GameModeLabel']")).toHaveText("King of the Hill")
     await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
     await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Viaduct")
-    await layer.locator("[data-vgui-name='DifficultyComboBox']").click()
+    await layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel'] [data-vgui-name='DifficultyComboBox']").click()
     await page.getByRole("option", { name: "Normal", exact: true }).click()
-    await layer.locator("[data-vgui-name='NumPlayersTextEntry']").fill("16")
+    await layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel'] [data-vgui-name='NumPlayersTextEntry']").fill("16")
     const path = testInfo.outputPath("headed-koth-authored-training.png")
     await page.screenshot({ path })
     await testInfo.attach("headed-koth-authored-training", { path, contentType: "image/png" })
@@ -227,4 +227,11 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await expect(page.locator(".hud-layer [data-vgui-name='WinReasonLabel']")).toContainText("control points")
   await expect(page.locator(".hud-layer [data-vgui-name='DetailsLabel']")).toContainText("Winning capture:")
   await pixels("headed-koth-blue-victory")
+  const audioStarts = (await main.getAttribute("data-audio-starts") ?? "").split("|")
+  for (const definition of ["Announcer.AM_CapEnabledRandom", "Announcer.Success", "Hologram.Start", "Hologram.Stop", "Game.Overtime", "Game.YourTeamWon"]) {
+    expect(audioStarts.some(value => value.startsWith(`${definition}:`)), definition).toBe(true)
+  }
+  const audioPath = testInfo.outputPath("koth-announcer-playback.json")
+  await writeFile(audioPath, JSON.stringify({ audioStarts }))
+  await testInfo.attach("koth-announcer-playback", { path: audioPath, contentType: "application/json" })
 })
