@@ -8,7 +8,6 @@ import { ReplyWriter, REPLY_BYTES, type SharedReply, type ReplyRange } from "./r
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import { decodeEquipmentState } from "./equipment/codec"
-import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__ } from "virtual:playsrc-generation"
 
