@@ -15,7 +15,6 @@ struct Panel {
     particles: Option<playsrc_particle::ParticleWorld>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
-    wearable_particles: wearable::ParticleStates,
 }
 
 fn panel() -> &'static std::sync::Mutex<Panel> {
