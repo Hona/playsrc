@@ -262,10 +262,10 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
         const previous = (this as any).__playsrcProfileReply?.bind(this)
-        ;(this as any).__playsrcProfileReply = (response: any) => { previous?.(response); this.#recordReply(response) }
+        ;(this as any).__playsrcProfileReply = (response: any) => { previous?.(response); this.recordReply(response) }
       }
 
-      #recordReply(response: any): void {
+      recordReply(response: any): void {
           const record = this.records.get(response?.id)
           if (!record) return
           record.finished = host.performance.now()
