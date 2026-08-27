@@ -1008,6 +1008,18 @@ mod tests {
     }
 
     #[test]
+    fn expanded_equipment_regions_keep_independent_role_admission() {
+        let inputs = (0..1_025).map(|index| resource(
+            &format!("models/equipment{index}/item.mdl"), &format!("equipment-{index}"), vec![index as u8])).collect();
+        let chunks = pack(inputs).unwrap();
+        assert_eq!(chunks.len(), 1_025);
+        for chunk in chunks {
+            assert_eq!(chunk.descriptor.roles.len(), 1);
+            assert_eq!(decode(&chunk.descriptor, &chunk.encoded).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
     fn verified_admission_compacts_in_place_without_changing_any_resource_byte() {
         let resources = (0..256)
             .map(|index| {
