@@ -1083,7 +1083,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn apply_equipment(&mut self) {
         self.active_equipment = self.equipment.clone();
         self.equipment_attributes = equipment::AttributeProviders::new(&self.active_equipment, self.class);
-        self.loadout = self.active_equipment.weapons(self.class).map(|weapon| (weapon, WeaponRuntime::full(weapon))).collect();
+        self.loadout.clear();
+        for weapon in self.active_equipment.weapons(self.class) {
+            let context = weapon::ProfileContext {
+                ammo: weapon_ammo_kind(weapon),
+                gun: weapon_ammo_kind(weapon).is_some(),
+                blast_impact: matches!(weapon, Weapon::RocketLauncher | Weapon::Original | Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
+                ..Default::default()
+            };
+            let profile = weapon::WeaponProfile::configured(weapon).with_attributes(context, |target, hook, input| match target {
+                weapon::AttributeTarget::Weapon => self.equipment_attributes.weapon(weapon, hook, input),
+                weapon::AttributeTarget::Player => self.equipment_attributes.player(hook, input),
+            });
+            self.loadout.insert(weapon, WeaponRuntime::full_with_profile(weapon, profile));
+        }
+        self.ammo = self.maximum_ammo();
         if self.weapon.is_none_or(|weapon| !self.loadout.contains_key(&weapon)) {
             self.weapon = self.active_equipment.weapons(self.class).next();
         }

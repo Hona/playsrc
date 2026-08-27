@@ -5,6 +5,7 @@ export type Tf2UiResourceDomain =
   | "scheme-base"
   | "hud"
   | "class-selection"
+  | "equipment"
   | "team-selection"
   | "practice"
   | "create-server"
@@ -68,7 +69,7 @@ export type Tf2UiResourceSource = Readonly<{
 
 export type Tf2UiPanelDocument = Readonly<{
   identity: string
-  domain: "main-menu" | "loading" | "hud" | "class-selection" | "team-selection" | "practice" | "create-server" | "options"
+  domain: "main-menu" | "loading" | "hud" | "class-selection" | "equipment" | "team-selection" | "practice" | "create-server" | "options"
   source: Tf2UiResourceSource
   roots: readonly Tf2UiResourceNode[]
 }>

@@ -40,32 +40,16 @@ impl SupportedItem {
     }
 }
 
-const fn weapon(definition_index: u32, weapon: Weapon) -> SupportedItem {
-    SupportedItem { definition_index, implementation: Implementation::Weapon(weapon), quality: 0, style: 0, attributes: &[] }
-}
-
-pub const SUPPORTED_ITEMS: &[SupportedItem] = &[
-    weapon(0, Weapon::Bat), weapon(1, Weapon::Bottle), weapon(2, Weapon::FireAxe),
-    weapon(3, Weapon::Kukri), weapon(4, Weapon::Knife), weapon(5, Weapon::Fists),
-    weapon(6, Weapon::Shovel), weapon(7, Weapon::Wrench), weapon(8, Weapon::Bonesaw),
-    weapon(9, Weapon::EngineerShotgun), weapon(10, Weapon::Shotgun),
-    weapon(11, Weapon::HeavyShotgun), weapon(12, Weapon::Shotgun),
-    weapon(13, Weapon::Scattergun), weapon(14, Weapon::SniperRifle),
-    weapon(15, Weapon::Minigun), weapon(16, Weapon::Smg), weapon(17, Weapon::SyringeGun),
-    weapon(18, Weapon::RocketLauncher), weapon(19, Weapon::GrenadeLauncher),
-    weapon(20, Weapon::StickybombLauncher), weapon(21, Weapon::Flamethrower),
-    weapon(22, Weapon::EngineerPistol), weapon(23, Weapon::Pistol),
-    weapon(24, Weapon::Revolver), weapon(25, Weapon::DestroyPda),
-    weapon(26, Weapon::Toolbox), weapon(27, Weapon::DisguiseKit),
-    weapon(28, Weapon::BuildPda), weapon(29, Weapon::MediGun),
-    weapon(30, Weapon::InvisibilityWatch), weapon(735, Weapon::Sapper),
-];
-
 #[derive(Clone, Copy, Debug)]
 pub struct ItemPresentation {
     pub definition_index: u32,
     pub name: &'static str,
     pub image: &'static str,
+    pub model_player: &'static str,
+    pub attach_to_hands: bool,
+    pub animation_replacements: &'static [(&'static str, &'static str)],
+    pub sound_overrides: &'static [(&'static str, &'static str)],
+    pub death_notice_icon: Option<&'static str>,
     pub class_slots: &'static [(PlayerClass, LoadoutPosition)],
 }
 
@@ -174,6 +158,21 @@ impl Equipment {
             for text in [metadata.name, metadata.image] {
                 out.extend_from_slice(&(text.len() as u32).to_le_bytes());
                 out.extend_from_slice(text.as_bytes());
+            }
+            out.push(u8::from(metadata.attach_to_hands));
+            let death_icon = metadata.death_notice_icon.unwrap_or("");
+            out.extend_from_slice(&(death_icon.len() as u32).to_le_bytes());
+            out.extend_from_slice(death_icon.as_bytes());
+            out.extend_from_slice(&(metadata.model_player.len() as u32).to_le_bytes());
+            out.extend_from_slice(metadata.model_player.as_bytes());
+            for pairs in [metadata.animation_replacements, metadata.sound_overrides] {
+                out.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+                for (key, value) in pairs {
+                    for text in [key, value] {
+                        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                        out.extend_from_slice(text.as_bytes());
+                    }
+                }
             }
         }
         for class in PlayerClass::ALL { encode_items(&mut out, &self.equipped_items(class)); }
