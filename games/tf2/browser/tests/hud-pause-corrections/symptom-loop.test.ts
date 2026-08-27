@@ -159,7 +159,7 @@ function resources(): Tf2VguiResources {
     descriptor: tf2UiResources,
     clientScheme,
     sourceScheme: clientScheme,
-    localization: Object.freeze({ identity: "tf2-test", revision: "1", language: "english", tokens: Object.freeze([]) }),
+    localization: Object.freeze({ identity: "tf2-test", revision: "1", language: "english", tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap(token => token.definitions[0] ? [{ name: token.name.replace(/^#/, ""), value: token.definitions[0].value }] : [])) }),
     animations: Object.freeze({ identity: "tf2-test", revision: "1", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
     activeConditions: Object.freeze(["WIN32", "OSX", "POSIX"]),
     resolutionSuffixes: Object.freeze([]),
@@ -205,6 +205,7 @@ function compact(
     tick,
     class: classIdentity,
     equippedItems: stockItems(classIdentity),
+    weaponCrosshairScale: 1, decapitations: 0, revengeCrits: 0,
     team,
     weapon,
     health: classIdentity === 3 ? 200 : 175,
@@ -292,6 +293,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const localized = Object.freeze({ ...configured, localization: Object.freeze({
       ...configured.localization,
       tokens: Object.freeze([
+        ...configured.localization.tokens,
         Object.freeze({ name: "TF_ScoreBoard_Player", value: "%s1 player" }),
         Object.freeze({ name: "TF_ScoreBoard_Players", value: "%s1 players" }),
         Object.freeze({ name: "ScoreBoard_Spectator", value: "%s1 spectator: %s2" }),
@@ -370,6 +372,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
         ...base.snapshot,
         class: 5,
         equippedItems: stockItems(5),
+        weaponCrosshairScale: 1, decapitations: 0, revengeCrits: 0,
         weapon,
         health: 150,
         maximumHealth: 150,
