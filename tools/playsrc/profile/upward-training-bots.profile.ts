@@ -960,7 +960,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds, geometry,
+    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry,
     schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
@@ -1152,7 +1152,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   assertVisibleGameplayTruth({ visible: measurement.visible, focused: measurement.focused, ticks: report.simulation.ticks, displayFrames: actualFrames, submissions: measurement.counters.submissions, beforeSha256: report.pixels.beforeSha256, afterSha256: report.pixels.afterSha256 })
   expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
-  expect(geometry.viewGeometry.samples.some((sample: any) => sample.modelDepth > 0)).toBe(true)
+  expect(geometry.geometry.samples.some((sample: any) => sample.modelDepth > 0)).toBe(true)
   await testInfo.attach("headed-upward-default-training-bots", { body: JSON.stringify(report), contentType: "application/json" })
   console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
     label, activeBots: report.activeBots, teams: report.teams,
