@@ -8455,6 +8455,46 @@ mod tests {
     }
 
     #[test]
+    fn all_twelve_hitscan_unlocks_equip_fire_and_resolve_their_authored_sound_slots() {
+        use schema::LoadoutPosition::{Primary, Secondary};
+        for (definition, class, slot, weapon, clip, pellets, delay) in [
+            (45, PlayerClass::Scout, Primary, Weapon::Scattergun, 2, 12, 0.3125),
+            (1103, PlayerClass::Scout, Primary, Weapon::Scattergun, 4, 10, 0.625),
+            (425, PlayerClass::Heavy, Secondary, Weapon::HeavyShotgun, 8, 10, 0.53125),
+            (1153, PlayerClass::Engineer, Primary, Weapon::EngineerShotgun, 6, 15, 0.625),
+            (415, PlayerClass::Soldier, Secondary, Weapon::Shotgun, 4, 10, 0.625),
+            (424, PlayerClass::Heavy, Primary, Weapon::Minigun, 0, 4, 0.12),
+            (312, PlayerClass::Heavy, Primary, Weapon::Minigun, 0, 4, 0.1),
+            (41, PlayerClass::Heavy, Primary, Weapon::Minigun, 0, 4, 0.1),
+            (61, PlayerClass::Spy, Secondary, Weapon::Revolver, 6, 1, 0.6),
+            (460, PlayerClass::Spy, Secondary, Weapon::Revolver, 6, 1, 0.6),
+            (220, PlayerClass::Scout, Primary, Weapon::HandgunScoutPrimary, 4, 4, 0.35),
+            (402, PlayerClass::Sniper, Primary, Weapon::SniperRifle, 0, 1, 1.5),
+        ] {
+            let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+            session.equip_item(class, slot, Some(definition)).unwrap();
+            session.advance(Command { select_class: Some(class), respawn: true, ..Command::default() }).unwrap();
+            session.advance(Command { select_weapon: Some(weapon), ..Command::default() }).unwrap();
+            assert_eq!(session.weapon_source(PLAYER_IDENTITY, weapon).unwrap().definition_index, definition);
+            assert_eq!(session.loadout[&weapon].clip, clip, "{definition}");
+            assert!((session.loadout[&weapon].profile().fire_delay - delay).abs() < 0.00001, "{definition}");
+            let mut fired = false;
+            let mut sound_names = Vec::new();
+            for _ in 0..160 {
+                let snapshot = session.advance(Command { fire: true, ..Command::default() }).unwrap();
+                sound_names.extend(session.audio_events.iter().filter(|event| event.action != AudioAction::Stop).map(|event| event.definition.identity()));
+                if snapshot.events.iter().any(|event| matches!(event, Event::HitscanFired { weapon: fired_weapon, pellets: count, .. } if *fired_weapon == weapon && *count == pellets)) { fired = true; break; }
+            }
+            assert!(fired, "{definition}");
+            let key = if session.loadout[&weapon].critical.result.unwrap().kind == damage::CritKind::Full { "sound_burst" }
+                else if weapon == Weapon::Minigun { "sound_double_shot" } else { "sound_single_shot" };
+            let expected = equipment::presentation(definition).unwrap().sound_overrides.iter().find(|(name, _)| *name == key).unwrap().1;
+            assert!(sound_names.contains(&expected), "{definition}: {sound_names:?} missing {expected}");
+            assert_eq!(session.loadout[&weapon].clip, clip.saturating_sub(1), "{definition}");
+        }
+    }
+
+    #[test]
     fn soldier_shotgun_fires_ten_independent_source_pellets_without_scattergun_ramp() {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
         session

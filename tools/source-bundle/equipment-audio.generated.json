@@ -1,8 +1,60 @@
 {
+  "Weapon_Ambassador.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/ambassador_shoot.wav"
+    ]
+  ],
+  "Weapon_Ambassador.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/ambassador_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_BackShot_Shotty.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf2_backshot_shotty.wav"
+    ]
+  ],
+  "Weapon_BackShot_Shotty.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf2_backshot_shotty_crit.wav"
+    ]
+  ],
+  "Weapon_Back_Scatter.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf2_back_scatter.wav"
+    ]
+  ],
+  "Weapon_Back_Scatter.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf2_back_scatter_crit.wav"
+    ]
+  ],
   "Weapon_Bat.MissCrit": [
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_Bazaar_Bargain.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf_sniper_bazaar_bargain_01.wav",
+      ")weapons/tf_sniper_bazaar_bargain_02.wav",
+      ")weapons/tf_sniper_bazaar_bargain_03.wav",
+      ")weapons/tf_sniper_bazaar_bargain_04.wav",
+      ")weapons/tf_sniper_bazaar_bargain_05.wav"
+    ]
+  ],
+  "Weapon_Bazaar_Bargain.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\tf_sniper_bazaar_bargain_crit.wav"
     ]
   ],
   "Weapon_BoneSaw.MissCrit": [
@@ -17,6 +69,35 @@
       ")weapons/cbar_miss1_crit.wav"
     ]
   ],
+  "Weapon_Enforcer.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf_spy_enforcer_revolver_01.wav",
+      ")weapons/tf_spy_enforcer_revolver_02.wav",
+      ")weapons/tf_spy_enforcer_revolver_03.wav",
+      ")weapons/tf_spy_enforcer_revolver_04.wav",
+      ")weapons/tf_spy_enforcer_revolver_05.wav",
+      ")weapons/tf_spy_enforcer_revolver_06.wav"
+    ]
+  ],
+  "Weapon_Enforcer.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tf_spy_enforcer_revolver_crit.wav"
+    ]
+  ],
+  "Weapon_FamilyBusiness.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/family_business_shoot.wav"
+    ]
+  ],
+  "Weapon_FamilyBusiness.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/family_business_shoot_crit.wav"
+    ]
+  ],
   "Weapon_FireAxe.MissCrit": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -29,16 +110,184 @@
       "weapons/fist_swing_crit.wav"
     ]
   ],
+  "Weapon_Gatling.ClipEmpty": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_empty.wav"
+    ]
+  ],
+  "Weapon_Gatling.Fire": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_shoot.wav"
+    ]
+  ],
+  "Weapon_Gatling.FireCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_Gatling.Reload": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/default_reload.wav"
+    ]
+  ],
+  "Weapon_Gatling.Spin": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_spin.wav"
+    ]
+  ],
+  "Weapon_Gatling.WindDown": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_wind_down.wav"
+    ]
+  ],
+  "Weapon_Gatling.WindUp": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/gatling_wind_up.wav"
+    ]
+  ],
+  "Weapon_Hands.Push": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/push.wav"
+    ]
+  ],
+  "Weapon_Hands.PushImpact": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/push_impact.wav"
+    ]
+  ],
   "Weapon_Machete.MissCrit": [
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/machete_swing_crit.wav"
     ]
   ],
+  "Weapon_Minifun.ClipEmpty": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_empty.wav"
+    ]
+  ],
+  "Weapon_Minifun.Fire": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_shoot.wav"
+    ]
+  ],
+  "Weapon_Minifun.FireCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_Minifun.Reload": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/default_reload.wav"
+    ]
+  ],
+  "Weapon_Minifun.Spin": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_spin.wav"
+    ]
+  ],
+  "Weapon_Minifun.WindDown": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_wind_down.wav"
+    ]
+  ],
+  "Weapon_Minifun.WindUp": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/minifun_wind_up.wav"
+    ]
+  ],
+  "Weapon_Reserve_Shooter.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\reserve_shooter_01.wav",
+      ")weapons\\reserve_shooter_02.wav",
+      ")weapons\\reserve_shooter_03.wav",
+      ")weapons\\reserve_shooter_04.wav"
+    ]
+  ],
+  "Weapon_Reserve_Shooter.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\reserve_shooter_01_crit.wav",
+      ")weapons\\reserve_shooter_02_crit.wav",
+      ")weapons\\reserve_shooter_03_crit.wav",
+      ")weapons\\reserve_shooter_04_crit.wav"
+    ]
+  ],
+  "Weapon_Scatter_Gun_Double.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/scatter_gun_double_shoot.wav"
+    ]
+  ],
+  "Weapon_Scatter_Gun_Double.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/scatter_gun_double_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_Short_Stop.Reload": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/short_stop_reload.wav"
+    ]
+  ],
+  "Weapon_Short_Stop.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/short_stop_shoot.wav"
+    ]
+  ],
+  "Weapon_Short_Stop.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/short_stop_shoot_crit.wav"
+    ]
+  ],
   "Weapon_Shovel.MissCrit": [
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/shovel_swing_crit.wav"
+    ]
+  ],
+  "Weapon_Tomislav.Fire": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tomislav_shoot.wav"
+    ]
+  ],
+  "Weapon_Tomislav.FireCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tomislav_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_Tomislav.WindDown": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/tomislav_wind_down.wav"
+    ]
+  ],
+  "Weapon_Tomislav.WindUp": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/tomislav_wind_up.wav"
     ]
   ],
   "Weapon_Wrench.MissCrit": [
