@@ -44,14 +44,16 @@ export function tf2ViteConfiguration(
   const generation = async () => {
     await ensureCoherentBuild?.()
     const configuration = process.env.PLAYSRC_BROWSER_CONFIG ? JSON.parse(process.env.PLAYSRC_BROWSER_CONFIG) : undefined
+    if (deployment && !configuration) throw new Error("Static builds require the selected package configuration before bundling")
     const applicationBuild = process.env.PLAYSRC_APPLICATION_BUILD
       ?? configuration?.applicationBuild
       ?? (deployment ? await applicationBuildIdentity() : undefined)
     if (!applicationBuild || !/^[0-9a-f]{64}$/.test(applicationBuild)) {
       throw new Error("TF2 application bundle build identity is unavailable")
     }
-    const wasmSha256 = createHash("sha256").update(readFileSync(new URL("../../../games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm", import.meta.url))).digest("hex")
-    if (configuration && configuration.wasm.sha256 !== wasmSha256) throw new Error("TF2 configured WASM differs from its browser bindings producer")
+    const wasmSha256 = deployment ? configuration.wasm.sha256
+      : createHash("sha256").update(readFileSync(new URL("../../../games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm", import.meta.url))).digest("hex")
+    if (!deployment && configuration && configuration.wasm.sha256 !== wasmSha256) throw new Error("TF2 configured WASM differs from its browser bindings producer")
     const targets = configuration?.targets ?? JSON.parse(readFileSync(new URL("./releases/current.json", import.meta.url), "utf8")).targets
     const resourceRoots = Object.fromEntries(targets.map((target: { target: string; objects: { resources: { sha256: string } } }) => [target.target, target.objects.resources.sha256]))
     return { applicationBuild, wasmSha256, resourceRoots }

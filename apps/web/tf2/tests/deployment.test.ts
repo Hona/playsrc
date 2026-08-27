@@ -7,6 +7,10 @@ import checkedRelease from "../releases/current.json"
 const object = (kind: "source-object" | "derived-object" | "source-root" | "catalog", hash: string, mediaType = "application/octet-stream", byteLength = "1") => ({ kind, mediaType, byteLength, sha256: hash.length === 64 ? hash : hash.repeat(64) })
 const release = {
   schema: TF2_RELEASE_SCHEMA,
+  wasmBindings: [
+    { name: "snippets/wasm-bindgen-rayon-abcd/src/workerHelpers.js", byteLength: "10", sha256: "a".repeat(64) },
+    { name: "tf2_wasm.js", byteLength: "20", sha256: "b".repeat(64) },
+  ],
   defaultTarget: "jump_beef",
   objects: { wasm: object("derived-object", "a"), catalog: object("catalog", "b", "application/vnd.playsrc.asset-catalog+json") },
   targets: [

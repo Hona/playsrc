@@ -1,5 +1,17 @@
 {
-  "schema": "playsrc-tf2-release-v2",
+  "schema": "playsrc-tf2-release-v3",
+  "wasmBindings": [
+    {
+      "name": "snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js",
+      "byteLength": "4451",
+      "sha256": "5e8f2ee20c6aef53d73fb0b0d2d9706d29d58213d916176ea8a1e92927170733"
+    },
+    {
+      "name": "tf2_wasm.js",
+      "byteLength": "9072",
+      "sha256": "23cfa20fcedc2c09e8bc78c9de87c14b91ea5858da9567eb3cd25f62ba77b618"
+    }
+  ],
   "defaultTarget": "jump_beef",
   "objects": {
     "wasm": {

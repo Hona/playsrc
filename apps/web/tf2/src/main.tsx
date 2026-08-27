@@ -33,15 +33,17 @@ function App() {
   const startup = useRef<HTMLDivElement>(null)
   const startupVideo = useRef<HTMLVideoElement>(null)
   const startupLoading = useRef<HTMLDivElement>(null)
+  const failureLabel = useRef<HTMLParagraphElement>(null)
   const runtime = useRef<Tf2Application>()
 
   useEffect(() => {
     if (!applicationRoot.current || !canvas.current || !vgui.current || !gameUi.current || !hud.current || !engineer.current || !classSelection.current || !teamSelection.current
-      || !options.current || !localMatch.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current) return
+      || !options.current || !localMatch.current || !loading.current || !startup.current || !startupVideo.current || !startupLoading.current || !failureLabel.current) return
     const publication = new ApplicationPublication({
       root: applicationRoot.current,
       canvas: canvas.current,
       loadingLabel: startupLoading.current,
+      failureLabel: failureLabel.current,
     })
     publication.publish(initial)
     const application = new Tf2Application(canvas.current, {
@@ -121,6 +123,11 @@ function App() {
       <div ref={options} class="vgui-layer options-layer" aria-label="TF2 Options" />
       <div ref={localMatch} class="vgui-layer local-match-layer" aria-label="TF2 local match" />
       <div ref={vgui} class="vgui-layer developer-layer" aria-label="TF2 developer interface" />
+      <section class="application-failure" role="alert" aria-label="Application failure">
+        <h1>Unable to start TF2</h1>
+        <p ref={failureLabel} />
+        <button type="button" onClick={() => location.reload()}>Reload</button>
+      </section>
     </main>
   )
 }

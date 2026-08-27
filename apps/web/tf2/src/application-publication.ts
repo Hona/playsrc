@@ -178,6 +178,7 @@ export type ApplicationPublicationTargets = Readonly<{
   root: PublicationAttributeTarget
   canvas: PublicationCanvas
   loadingLabel: PublicationLabel
+  failureLabel: PublicationLabel
 }>
 
 export class ApplicationPublication {
@@ -190,6 +191,10 @@ export class ApplicationPublication {
 
   publish(view: ApplicationView): void {
     const previous = this.#previous
+    if (!previous || previous.phase !== view.phase || previous.detail !== view.detail) {
+      const failure = view.phase === "Failed" ? view.detail : ""
+      if (this.#targets.failureLabel.textContent !== failure) this.#targets.failureLabel.textContent = failure
+    }
     for (const binding of attributes) {
       if (previous && Object.is(previous[binding.dependency], view[binding.dependency])) continue
       const next = binding.value(view)
