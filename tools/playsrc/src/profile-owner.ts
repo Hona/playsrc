@@ -25,24 +25,32 @@ const stop = async (): Promise<void> => {
   if (finished) return
   finished = true
   if (monitor) clearInterval(monitor)
-  await owner?.close()
+  // A leased service must not keep sockets/watchers alive when Vite teardown
+  // stalls. This exits only this owner itself; no PID/group discovery or signal.
+  const deadline = setTimeout(() => {
+    console.error("headed profile development owner exceeded its 2000 ms cleanup budget")
+    process.exit(1)
+  }, 2_000)
   try {
-    const value = JSON.parse(await readFile(metadataPath, "utf8")) as { token?: string }
-    if (value.token === token) await rm(metadataPath, { force: true })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-  }
-  try {
-    const value = JSON.parse(await readFile(leasePath, "utf8")) as OwnerLease
-    if (value.token === token) await rm(leasePath, { force: true })
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-  }
+    await owner?.close()
+    try {
+      const value = JSON.parse(await readFile(metadataPath, "utf8")) as { token?: string }
+      if (value.token === token) await rm(metadataPath, { force: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    try {
+      const value = JSON.parse(await readFile(leasePath, "utf8")) as OwnerLease
+      if (value.token === token) await rm(leasePath, { force: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+  } finally { clearTimeout(deadline) }
 }
 
 const fail = (error: unknown): void => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error))
-  void stop().finally(() => { process.exitCode = 1 })
+  void stop().finally(() => { process.exit(1) })
 }
 
 process.once("SIGINT", () => { void stop().catch(fail) })
