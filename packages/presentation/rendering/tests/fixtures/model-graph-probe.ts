@@ -7,7 +7,7 @@ import { RetainedModelCache } from "../../src/retained-model-cache"
 
 /** Diagnostic equivalence, not a gameplay/performance benchmark. Both paths
  * draw the same multi-object scene, including overlapping skinned geometry. */
-export async function createModelGraphProbe() {
+export async function createModelGraphProbe(materialVariants = false) {
   const width = 640, height = 480
   const renderer = new THREE.WebGPURenderer({ antialias: false })
   await renderer.init()
@@ -56,15 +56,16 @@ export async function createModelGraphProbe() {
     if (index === 1) mesh.scale.set(1, -.85, 1.1)
     bindModelLighting(mesh, lighting, eye)
     bindModelEnvironment(mesh, cubemaps[index % 2]!)
-    const surface = { halfLambert: true, environment: { texture: cubemaps[0]!, tint: [1, 1, 1] as const, scale: 1 }, phong: {
-      maskSource: 0, invertMask: false, albedoTint: false, exponent: 8, exponentFactor: 0,
-      tint: [1, .7, .4] as const, boost: .5, packedFresnel: [.1, .4, 1] as const,
-      rim: { exponent: 2, boost: .2, exponentTextureAlphaMask: false },
+    const variant = materialVariants ? index : 0
+    const surface = { halfLambert: true, environment: { texture: cubemaps[0]!, tint: [1, 1 - variant * .1, 1] as const, scale: 1 + variant }, phong: {
+      maskSource: 0, invertMask: false, albedoTint: false, exponent: 8 + variant * 32, exponentFactor: 0,
+      tint: [1, .7, .4 + variant * .2] as const, boost: .5 + variant * .15, packedFresnel: [.1, .4 + variant * .1, 1] as const,
+      rim: { exponent: 2 + variant, boost: .2 + variant * .1, exponentTextureAlphaMask: false },
     } }
-    const dedicated = sourceModelSurfaceNode(sourceEyeIrisNode(iris, eye, .4, true), lighting, surface, TSL.float(1))
+    const dedicated = sourceModelSurfaceNode(sourceEyeIrisNode(iris, eye, .4 + variant * .1, true), lighting, surface, TSL.float(1))
     original.colorNode = dedicated.color
-    shared.colorNode = graphs.get("eye-phong-environment", () => {
-      const value = sourceModelSurfaceNode(sourceEyeIrisNode(iris, graphs.eyes, .4, true), graphs.lighting, surface, TSL.float(1))
+    shared.colorNode = graphs.get(`eye-phong-environment:${variant}`, () => {
+      const value = sourceModelSurfaceNode(sourceEyeIrisNode(iris, graphs.eyes, .4 + variant * .1, true), graphs.lighting, surface, TSL.float(1))
       return perObjectModelEnvironment(value.color, value.environmentNode)
     })
     scene.add(mesh)
