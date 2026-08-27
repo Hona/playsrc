@@ -153,6 +153,8 @@ const CODE_LOCALIZATION_TOKENS: &[&str] = &[
     "#Winreason_OpponentsDead",
     "#Winreason_Stalemate",
     "#Winreason_AllPointsCaptured",
+    "#Winpanel_Stalemate",
+    "#Winpanel_TopPlayers",
     "#Team_Capture_NotNow",
     "#Team_Blocking_Capture",
     "#Team_Reverting_Capture",

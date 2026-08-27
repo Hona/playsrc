@@ -1139,6 +1139,11 @@ impl EntityWorld {
         self.state.current_tick
     }
 
+    /// Game round cleanup clears scheduled map I/O before recreating map entities.
+    pub fn clear_event_queue(&mut self) {
+        self.state.queue.clear();
+    }
+
     pub fn revision(&self) -> u64 {
         self.state.revision
     }

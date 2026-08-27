@@ -86,6 +86,23 @@ pub enum SoundDefinition {
     RoundEnds2,
     RoundEnds1,
     Overtime,
+    PointSuccess,
+    PointFailure,
+    PointCaptured,
+    PointContested,
+    PointContestedNeutral,
+    PointEnabled,
+    RoundBegins5,
+    RoundBegins4,
+    RoundBegins3,
+    RoundBegins2,
+    RoundBegins1,
+    Stalemate,
+    CaptureWarn,
+    HologramStart,
+    HologramStop,
+    HologramMove,
+    HologramInterrupted,
 }
 
 impl SoundDefinition {
@@ -177,11 +194,32 @@ impl SoundDefinition {
             Self::RoundEnds2 => "Announcer.RoundEnds2seconds",
             Self::RoundEnds1 => "Announcer.RoundEnds1seconds",
             Self::Overtime => "Game.Overtime",
+            Self::PointSuccess => "Announcer.Success",
+            Self::PointFailure => "Announcer.Failure",
+            Self::PointCaptured => "Hud.PointCaptured",
+            Self::PointContested => "Announcer.ControlPointContested",
+            Self::PointContestedNeutral => "Announcer.ControlPointContested_Neutral",
+            Self::PointEnabled => "Announcer.AM_CapEnabledRandom",
+            Self::RoundBegins5 => "Announcer.RoundBegins5Seconds",
+            Self::RoundBegins4 => "Announcer.RoundBegins4Seconds",
+            Self::RoundBegins3 => "Announcer.RoundBegins3Seconds",
+            Self::RoundBegins2 => "Announcer.RoundBegins2Seconds",
+            Self::RoundBegins1 => "Announcer.RoundBegins1Seconds",
+            Self::Stalemate => "Game.Stalemate",
+            Self::CaptureWarn => "ControlPoint.CaptureWarn",
+            Self::HologramStart => "Hologram.Start",
+            Self::HologramStop => "Hologram.Stop",
+            Self::HologramMove => "Hologram.Move",
+            Self::HologramInterrupted => "Hologram.Interrupted",
         }
     }
 
     pub(crate) const fn wave_count(self) -> u8 {
         match self {
+            Self::PointSuccess | Self::PointContestedNeutral | Self::CaptureWarn => 2,
+            Self::PointContested => 3,
+            Self::PointEnabled => 4,
+            Self::PointFailure | Self::PointCaptured | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2 | Self::RoundBegins1 | Self::Stalemate | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted => 1,
             Self::RocketExplosion
             | Self::StickyExplosion
             | Self::ShovelHitFlesh
@@ -341,6 +379,7 @@ pub struct SoundSelectionState {
     pub bonesaw_hit_flesh_available: u8,
     pub bonesaw_hit_world_available: u8,
     pub overtime_available: u8,
+    pub control_point_available: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -415,6 +454,7 @@ pub(crate) struct SoundSelection {
     bonesaw_hit_flesh: WaveCycle,
     bonesaw_hit_world: WaveCycle,
     overtime: WaveCycle,
+    control_point: [WaveCycle; 5],
 }
 
 impl SoundSelection {
@@ -445,6 +485,7 @@ impl SoundSelection {
             bonesaw_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bonesaw_hit_world: WaveCycle::new(WaveCycle::TWO),
             overtime: WaveCycle::new(WaveCycle::FOUR),
+            control_point: [WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::FOUR), WaveCycle::new(WaveCycle::TWO)],
         }
     }
 
@@ -475,6 +516,7 @@ impl SoundSelection {
             bonesaw_hit_flesh_available: self.bonesaw_hit_flesh.available,
             bonesaw_hit_world_available: self.bonesaw_hit_world.available,
             overtime_available: self.overtime.available,
+            control_point_available: u16::from(self.control_point[0].available) | (u16::from(self.control_point[1].available)<<2) | (u16::from(self.control_point[2].available)<<5) | (u16::from(self.control_point[3].available)<<7) | (u16::from(self.control_point[4].available)<<11),
         }
     }
 
@@ -503,6 +545,7 @@ impl SoundSelection {
             || state.bonesaw_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bonesaw_hit_world_available & !WaveCycle::TWO != 0
             || state.overtime_available & !WaveCycle::FOUR != 0
+            || state.control_point_available & !0x1fff != 0
         {
             return false;
         }
@@ -532,6 +575,9 @@ impl SoundSelection {
         self.bonesaw_hit_flesh.available = state.bonesaw_hit_flesh_available;
         self.bonesaw_hit_world.available = state.bonesaw_hit_world_available;
         self.overtime.available = state.overtime_available;
+        for (index, (shift, mask)) in [(0,3),(2,7),(5,3),(7,15),(11,3)].into_iter().enumerate() {
+            self.control_point[index].available = ((state.control_point_available >> shift) & mask) as u8;
+        }
         true
     }
 
@@ -576,6 +622,11 @@ impl SoundSelection {
             SoundDefinition::BonesawHitFlesh => &mut self.bonesaw_hit_flesh,
             SoundDefinition::BonesawHitWorld => &mut self.bonesaw_hit_world,
             SoundDefinition::Overtime => &mut self.overtime,
+            SoundDefinition::PointSuccess => &mut self.control_point[0],
+            SoundDefinition::PointContested => &mut self.control_point[1],
+            SoundDefinition::PointContestedNeutral => &mut self.control_point[2],
+            SoundDefinition::PointEnabled => &mut self.control_point[3],
+            SoundDefinition::CaptureWarn => &mut self.control_point[4],
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

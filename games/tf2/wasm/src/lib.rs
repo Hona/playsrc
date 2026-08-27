@@ -6763,8 +6763,8 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.flag_enemy_returned_available,
         state.sound_selection.flag_team_dropped_available,
         state.sound_selection.overtime_available,
-        0,
-        0,
+        state.sound_selection.control_point_available as u8,
+        (state.sound_selection.control_point_available >> 8) as u8,
     ]);
     (output.len() == 296).then_some(output)
 }
@@ -6857,6 +6857,23 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::RoundEnds2 => 83,
         playsrc_tf2::SoundDefinition::RoundEnds1 => 84,
         playsrc_tf2::SoundDefinition::Overtime => 85,
+        playsrc_tf2::SoundDefinition::PointSuccess => 86,
+        playsrc_tf2::SoundDefinition::PointFailure => 87,
+        playsrc_tf2::SoundDefinition::PointCaptured => 88,
+        playsrc_tf2::SoundDefinition::PointContested => 89,
+        playsrc_tf2::SoundDefinition::PointContestedNeutral => 90,
+        playsrc_tf2::SoundDefinition::PointEnabled => 91,
+        playsrc_tf2::SoundDefinition::RoundBegins5 => 92,
+        playsrc_tf2::SoundDefinition::RoundBegins4 => 93,
+        playsrc_tf2::SoundDefinition::RoundBegins3 => 94,
+        playsrc_tf2::SoundDefinition::RoundBegins2 => 95,
+        playsrc_tf2::SoundDefinition::RoundBegins1 => 96,
+        playsrc_tf2::SoundDefinition::Stalemate => 97,
+        playsrc_tf2::SoundDefinition::CaptureWarn => 98,
+        playsrc_tf2::SoundDefinition::HologramStart => 99,
+        playsrc_tf2::SoundDefinition::HologramStop => 100,
+        playsrc_tf2::SoundDefinition::HologramMove => 101,
+        playsrc_tf2::SoundDefinition::HologramInterrupted => 102,
     }
 }
 
@@ -10999,14 +11016,17 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     ];
     let has_class = |name: &[u8]| graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(name)));
     let flags = has_class(b"item_teamflag");
+    let control_points = has_class(b"team_control_point_master") && !has_class(b"team_train_watcher");
     let koth = has_class(b"tf_logic_koth");
     let timer_audio = koth || graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"team_round_timer")) && entity_scalar(entity, b"show_in_hud") == Some(b"1"));
     let mut voice_targets = Vec::new();
     if flags { voice_targets.extend_from_slice(flag_targets); }
     if timer_audio { voice_targets.extend_from_slice(countdown_targets); }
+    if control_points { voice_targets.extend(playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|definition| definition.identity())); }
     if !voice_targets.is_empty() { documents.push(("scripts/game_sounds_vo.txt", &voice_targets)); }
     let mut round_targets = if flags || timer_audio { item_and_round_targets.to_vec() } else { item_targets.to_vec() };
     if timer_audio { round_targets.push("Game.Overtime"); }
+    if control_points { round_targets.extend(playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|definition| definition.identity())); }
     documents.push(("scripts/game_sounds.txt", &round_targets));
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
@@ -11043,11 +11063,12 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
         }
     }
     // These stock sound patches use the authored RIFF cue as their loop start.
-    let patches = [
+    let mut patches = vec![
         "sound/weapons/flame_thrower_start.wav",
         "sound/weapons/flame_thrower_loop.wav",
         "sound/weapons/flame_thrower_end.wav",
     ];
+    if control_points { patches.extend(["sound/misc/hologram_move.wav", "sound/misc/hologram_malfunction.wav"]); }
     out.extend_from_slice(&(patches.len() as u32).to_le_bytes());
     for path in patches {
         let metadata = playsrc_wav::pcm_metadata(bundle.get(path).ok_or(())?).map_err(|_| ())?;
@@ -15681,6 +15702,7 @@ mod tests {
                 bonesaw_hit_flesh_available: 7,
                 bonesaw_hit_world_available: 3,
                 overtime_available: 15,
+                control_point_available: 0x1fff,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();

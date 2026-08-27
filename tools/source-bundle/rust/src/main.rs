@@ -3219,12 +3219,20 @@ fn main() -> Result<(), String> {
             )?;
         }
     }
+    let control_points = graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point_master")) && !graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_train_watcher"));
+    let mut round_scripts: Vec<(&str, Vec<&str>)> = Vec::new();
     if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"tf_logic_koth")
         || value.eq_ignore_ascii_case(b"team_round_timer") && entity.pairs.iter().rev().any(|pair| pair.key.eq_ignore_ascii_case(b"show_in_hud") && pair.value == b"1"))) {
         for (script, targets) in [
             ("scripts/game_sounds_vo.txt", ["Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds", "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds", "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds"].as_slice()),
             ("scripts/game_sounds.txt", ["Game.Overtime", "Game.YourTeamWon", "Game.YourTeamLost"].as_slice()),
-        ] {
+        ] { round_scripts.push((script, targets.to_vec())); }
+    }
+    if control_points {
+        round_scripts.push(("scripts/game_sounds_vo.txt", playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|d| d.identity()).collect()));
+        round_scripts.push(("scripts/game_sounds.txt", playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|d| d.identity()).collect()));
+    }
+    for (script, targets) in round_scripts {
             let bytes = resolver.required(script, "round-audio-script")?;
             let document = playsrc_keyvalues::parse_text(&bytes, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default())
                 .map_err(|error| format!("Round sound script {script}: {error:?}"))?
@@ -3243,7 +3251,6 @@ fn main() -> Result<(), String> {
                     }
                 }
             }
-        }
     }
     for dependency in &tf2_ui.dependencies {
         resolver.required_expected(

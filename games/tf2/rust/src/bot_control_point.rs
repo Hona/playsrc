@@ -11,6 +11,7 @@ pub(super) struct Action {
     defense_area: Option<u32>,
     idle_until: f32,
     allowed_to_roam: bool,
+    defending_started: bool,
     pub on_point: bool,
 }
 
@@ -130,6 +131,7 @@ pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation
     let threatened = point.last_contested_at > 0.0 && now-point.last_contested_at < 5.0;
     let time_left = frame.time_left[team_index(bot.team)];
     if point.owner != bot.team {
+        bot.point_action.defending_started = false;
         let near = bot.current_area.zip(navigation.centers[index]).is_some_and(|(a,b)| (navigation.incursion[&a][team_index(bot.team)]-navigation.incursion[&b][team_index(bot.team)]).abs() < 750.0);
         let pushing = (threatened && threat.is_none()) || touching || frame.in_overtime || time_left < 120.0 || near;
         if !pushing && threat.is_some() && now >= bot.point_action.hunt_until {
@@ -145,7 +147,8 @@ pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation
         }
         return Ok((ObjectiveKind::CapturePoint, if touching { bot.goal } else { point.position }));
     }
-    if !matches!(bot.objective, ObjectiveKind::DefendPoint | ObjectiveKind::BlockCapture | ObjectiveKind::Attack) {
+    if !bot.point_action.defending_started {
+        bot.point_action.defending_started = true;
         bot.point_action.allowed_to_roam = random.random_float(0.0,100.0) < [10.0,50.0,75.0,90.0][bot.difficulty as usize];
     }
     let blocks = match bot.difficulty { Difficulty::Easy => false, Difficulty::Normal => consistent(bot,now,10.0) > 0.5, _ => true };

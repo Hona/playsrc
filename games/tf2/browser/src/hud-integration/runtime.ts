@@ -646,7 +646,8 @@ class Integration implements Tf2HudIntegration {
     scoreboard: Tf2HudScoreboard | undefined,
   ): void {
     const winner = round?.winningTeam ?? objectives?.winner ?? null
-    if (winner === null) {
+    const draw = round?.state === 5 && round.winReason === 5
+    if (winner === null && !draw) {
       if (this.#winPanel !== undefined) {
         this.#objectiveValue("ctf-win:visible", "false", { kind: "set-panel-state", panel: this.#winPanel, visible: false })
       }
@@ -688,7 +689,7 @@ class Integration implements Tf2HudIntegration {
     this.#objectiveValue("ctf-win:visible", "true", { kind: "set-panel-state", panel, visible: true })
     const localized = (name: string): string => this.#localization.get(`#${name.replace(/^#/u, "").toLowerCase()}`) ?? name
     const team = winner === 2 ? "RED" : "BLU"
-    const winning = localized("#Winpanel_TeamWins")
+    const winning = draw ? localized("#Winpanel_Stalemate") : localized("#Winpanel_TeamWins")
       .replace("%s1", team)
       .replace("%s2", localized("#Winpanel_Team1"))
     const reasonToken = round?.winReason === 1 ? "#Winreason_AllPointsCaptured"
@@ -713,7 +714,7 @@ class Integration implements Tf2HudIntegration {
       ["AdvancingTeamLabel", ""],
       ["WinReasonLabel", reason],
       ["DetailsLabel", details],
-      ["TopPlayersLabel", localized(winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],
+      ["TopPlayersLabel", localized(draw ? "#Winpanel_TopPlayers" : winner === 2 ? "#Winpanel_RedMVPs" : "#Winpanel_BlueMVPs")],
     ] as const) {
       this.#objectiveValue(`ctf-win:${name}`, String(value), { kind: "set-dialog-variable", panel, name, value })
     }
@@ -733,7 +734,7 @@ class Integration implements Tf2HudIntegration {
         this.#objectiveValue(`ctf-win:${name}:visible`, "false", { kind: "set-panel-state", panel: avatar, visible: false })
       }
     }
-    const players = scoreboard?.players.filter((player) => player.team === winner && player.score > 0).slice(0, 3) ?? []
+    const players = scoreboard?.players.filter((player) => (draw || player.team === winner) && player.score > 0).slice(0, 3) ?? []
     const classTokens = ["", "Scout", "Sniper", "Soldier", "Demoman", "Medic", "HWGuy", "Pyro", "Spy", "Engineer"] as const
     const updatePlayer = (prefix: string, player: Tf2ScoreboardPlayer | undefined, score: number): void => {
       const identity = player?.class.kind === "available" ? player.class.value

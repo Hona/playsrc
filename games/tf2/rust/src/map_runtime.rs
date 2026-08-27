@@ -397,6 +397,8 @@ pub struct MapRuntime {
     objectives: Option<crate::ctf::World>,
     control_points: Option<crate::control_point::World>,
     control_point_facts: crate::control_point::Facts,
+    restart_definitions: Option<std::sync::Arc<Vec<playsrc_entity::Entity>>>,
+    restart_models: Option<std::sync::Arc<BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>>>,
     round_configuration: crate::round::Configuration,
     round_inputs: Vec<(u32, Vec<u8>, Variant)>,
     counts: MapCounts,
@@ -437,6 +439,10 @@ impl MapRuntime {
             registry_identity: 0x5446_325f_454e_5433,
             model_bounds,
             external_classes: vec![
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"info_player_teamspawn".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable", b"RoundSpawn", b"RoundActivate"].into_iter().map(<[u8]>::to_vec).collect(),
+                },
                 playsrc_entity::ExternalClassBinding {
                     classname: b"team_control_point".to_vec(),
                     inputs: [b"SetOwner".as_slice(), b"ShowModel", b"HideModel", b"RoundActivate", b"SetLocked", b"SetUnlockTime"]
@@ -878,6 +884,7 @@ impl MapRuntime {
                     && (attached(first, b"prop_physics")
                         || attached(first, b"prop_physics_override"))
         });
+        let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.clone())).collect()));
         Ok(Self {
             world,
             player,
@@ -894,6 +901,8 @@ impl MapRuntime {
             objectives,
             control_points,
             control_point_facts: crate::control_point::Facts::default(),
+            restart_definitions,
+            restart_models: None,
             round_configuration,
             round_inputs: Vec::new(),
             counts,
@@ -1204,6 +1213,7 @@ impl MapRuntime {
     }
 
     pub(crate) fn team_spawn(&self, team: crate::PlayerTeam) -> Option<[f32; 3]> {
+        if let Some(points) = &self.control_points { return points.spawns().iter().find(|s| s.team == team && !s.disabled).map(|s| s.position); }
         match team {
             crate::PlayerTeam::Red => self.team_spawns[0],
             crate::PlayerTeam::Blue => self.team_spawns[1],
@@ -1227,6 +1237,7 @@ impl MapRuntime {
         models: &BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>,
     ) -> Result<(), RuntimeFailure> {
         let mut definitions = BTreeMap::new();
+        if self.restart_definitions.is_some() { self.restart_models = Some(std::sync::Arc::new(models.clone())); }
         if let Some(points) = &mut self.control_points { points.install_models(models); }
         for handle in self.source_handles.values().copied() {
             let Some(entity) = self.world.entity(handle) else {
@@ -1317,8 +1328,70 @@ impl MapRuntime {
         self.control_points.as_mut()
     }
 
+    pub fn restart_control_point_map(&mut self, tick: u64) -> Result<MapPhase, RuntimeFailure> {
+        let Some(definitions) = self.restart_definitions.clone() else { return Ok(MapPhase::default()); };
+        let actors: std::collections::BTreeSet<_> = self.actor_handles.values().copied().chain([self.player]).collect();
+        let removals: Vec<_> = self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)
+            && self.world.entity(*handle).is_some_and(|entity| !preserved_on_round_restart(&entity.definition))).map(WorldCommand::Remove).collect();
+        self.world.clear_event_queue();
+        let removed = self.world.phase(tick, &removals)?;
+        let mut result = self.consume(removed)?;
+        self.world.clear_event_queue();
+        let spawns: Vec<_> = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().map(WorldCommand::Spawn).collect();
+        let spawned = self.world.phase(tick, &spawns)?;
+        self.source_handles.clear();
+        for handle in self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)) {
+            if let Some(entity) = self.world.entity(handle) { self.source_handles.insert(entity.source_index as u32, handle); }
+        }
+        self.movers.clear();
+        self.round_inputs.clear();
+        for volume in &mut self.volumes {
+            if volume.handle.is_some() { volume.handle = self.source_handles.get(&volume.source).copied(); }
+            volume.touching = false;
+            let enabled = definitions.iter().find(|e| e.index == volume.source as usize).is_none_or(|e| !boolean(e, b"StartDisabled", false));
+            match &mut volume.kind {
+                VolumeKind::Regenerate { enabled: state, .. } | VolumeKind::RespawnRoom { enabled: state, .. } => *state = enabled,
+                VolumeKind::Generic => {}
+            }
+        }
+        for pickup in &mut self.pickups {
+            if let Some(handle) = self.source_handles.get(&pickup.source) { pickup.handle = *handle; }
+            pickup.respawn_tick = None;
+            pickup.disabled = definitions.iter().find(|e| e.index == pickup.source as usize).is_some_and(|e| boolean(e, b"StartDisabled", false));
+        }
+        for exclusion in &mut self.building_exclusions {
+            exclusion.enabled = definitions.iter().find(|e| e.index == exclusion.source as usize).is_none_or(|e| !boolean(e, b"StartDisabled", false));
+        }
+        self.prop_animations.clear();
+        if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
+        result.append(self.consume(spawned)?);
+        Ok(result)
+    }
+
     pub fn set_control_point_facts(&mut self, facts: crate::control_point::Facts) {
         self.control_point_facts = facts;
+    }
+
+    pub fn activate_control_point_round(&mut self, tick: u64, facts: crate::control_point::Facts) -> Result<MapPhase, RuntimeFailure> {
+        self.control_point_facts = facts;
+        let sources: Vec<_> = self.source_handles.iter().map(|(source, handle)| (*source, *handle)).collect();
+        let mut result = MapPhase::default();
+        for input in [b"RoundSpawn".as_slice(), b"RoundActivate"] {
+            for (source, handle) in &sources {
+                let batch = self.world.phase(tick, &[WorldCommand::Input(InputRecord { target: EventTarget::Direct(*handle), input: input.to_vec(), value: Variant::Void, activator: None, caller: None, output_action: None, producer_sequence: self.next_producer_sequence })])?;
+                self.next_producer_sequence += 1;
+                result.append(self.consume(batch)?);
+                if input == b"RoundActivate" {
+                    if let Some(koth) = self.round_configuration.koth.filter(|koth| koth.identity == *source) {
+                        let mut events = Vec::new();
+                        if let Some(points) = &mut self.control_points { koth.round_activate(points, tick as f32 * self.tick_interval, facts, &mut events); }
+                        result.append(self.emit_control_point_outputs(tick, &events)?);
+                        result.control_point_events.extend(events);
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub fn emit_control_point_outputs(&mut self, tick: u64, events: &[crate::control_point::Event]) -> Result<MapPhase, RuntimeFailure> {
@@ -2222,6 +2295,27 @@ fn class(entity: &playsrc_entity::Entity, expected: &[u8]) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case(expected))
 }
 
+fn preserved_on_round_restart(entity: &playsrc_entity::Entity) -> bool {
+    // CTeamplayRoundBasedRules / CTFGameRules round-cleanup preserve lists.
+    const CLASSES: &[&[u8]] = &[
+        b"player", b"viewmodel", b"worldspawn", b"soundent", b"ai_network", b"ai_hint",
+        b"env_soundscape", b"env_soundscape_proxy", b"env_soundscape_triggerable", b"env_sprite",
+        b"env_sun", b"env_wind", b"env_fog_controller", b"func_wall", b"func_illusionary",
+        b"info_node", b"info_target", b"info_node_hint", b"point_commentary_node", b"point_viewcontrol",
+        b"func_precipitation", b"func_team_wall", b"shadow_control", b"sky_camera", b"scene_manager",
+        b"trigger_soundscape", b"commentary_auto", b"point_commentary_viewpoint", b"bot_roster", b"info_populator",
+        b"tf_gamerules", b"tf_team_manager", b"tf_player_manager", b"tf_team", b"tf_objective_resource",
+        b"keyframe_rope", b"move_rope", b"tf_viewmodel", b"tf_logic_training", b"tf_logic_training_mode",
+        b"tf_powerup_bottle", b"tf_mann_vs_machine_stats", b"tf_wearable", b"tf_wearable_demoshield",
+        b"tf_wearable_robot_arm", b"tf_wearable_vm", b"tf_logic_bonusround", b"vote_controller",
+        b"monster_resource", b"tf_logic_medieval", b"tf_logic_cp_timer", b"tf_logic_tower_defense",
+        b"tf_logic_mann_vs_machine", b"func_upgradestation", b"entity_rocket", b"entity_carrier",
+        b"entity_sign", b"entity_saucer", b"tf_halloween_gift_pickup", b"tf_logic_competitive",
+        b"tf_wearable_razorback", b"entity_soldier_statue",
+    ];
+    CLASSES.iter().any(|name| class(entity, name))
+}
+
 fn field<'a>(entity: &'a playsrc_entity::Entity, name: &[u8]) -> Option<&'a [u8]> {
     entity
         .pairs
@@ -2320,6 +2414,30 @@ fn scale(value: [f32; 3], factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use playsrc_movement::{Error as MoveError, Trace, Tracer};
+
+    #[test]
+    fn control_point_round_cleanup_recreates_doors_and_clears_old_io_without_replacing_players() {
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "team_control_point_master"}
+            {"classname" "team_control_point" "targetname" "point"}
+            {"classname" "info_target" "targetname" "preserved" "origin" "1 2 3"}
+            {"classname" "func_door" "targetname" "door" "model" "*1" "origin" "10 0 0" "movedir" "0 0 0" "speed" "100"}
+            {"classname" "logic_relay" "targetname" "old_relay" "OnTrigger" "door,Open,,0,-1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        let mut map = MapRuntime::compile(&graph, 0.015, 7, vec![ModelBounds { model: 1, mins: [-8.0;3], maxs: [8.0;3] }]).unwrap();
+        let door = map.source_handle(3).unwrap();
+        let preserved = map.source_handle(2).unwrap();
+        let player = map.player;
+        map.world.phase(1, &[WorldCommand::SetWorldTransform { entity: door, transform: Transform { origin: [74.0,0.0,0.0], angles: [0.0;3] } }]).unwrap();
+        map.world.phase(1, &[WorldCommand::QueueInput { input: InputRecord { target: EventTarget::Direct(map.source_handle(4).unwrap()), input: b"Trigger".to_vec(), value: Variant::Void, activator: Some(player), caller: Some(player), output_action: None, producer_sequence: 1 }, delay: 5.0 }]).unwrap();
+        map.restart_control_point_map(2).unwrap();
+        assert_ne!(map.source_handle(3), Some(door));
+        assert_eq!(map.source_handle(2), Some(preserved));
+        assert_eq!(map.player, player);
+        assert_eq!(map.world.entity(map.source_handle(3).unwrap()).unwrap().world_transform.origin, [10.0,0.0,0.0]);
+        let later = map.world.phase(600, &[]).unwrap();
+        assert!(!later.records.iter().any(|record| matches!(&record.transition, Transition::Output { output, .. } if output == b"OnTrigger")));
+    }
 
     #[derive(Clone)]
     struct AlwaysOverlap;

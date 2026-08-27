@@ -5,6 +5,10 @@ use playsrc_collision::Hull;
 use playsrc_entity::{Entity, Graph, Variant};
 
 use crate::{GameplayWorld, PlayerClass, PlayerTeam};
+use crate::{AudioAction, SoundDefinition};
+
+pub const VOICE_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointSuccess, SoundDefinition::PointFailure, SoundDefinition::PointContested, SoundDefinition::PointContestedNeutral, SoundDefinition::PointEnabled, SoundDefinition::RoundBegins5, SoundDefinition::RoundBegins4, SoundDefinition::RoundBegins3, SoundDefinition::RoundBegins2, SoundDefinition::RoundBegins1, SoundDefinition::CaptureWarn];
+pub const GENERAL_SOUNDS: &[SoundDefinition] = &[SoundDefinition::PointCaptured, SoundDefinition::Stalemate, SoundDefinition::HologramStart, SoundDefinition::HologramStop, SoundDefinition::HologramMove, SoundDefinition::HologramInterrupted];
 
 pub const AREA_THINK_SECONDS: f32 = 0.1;
 pub const MASTER_THINK_SECONDS: f32 = 0.2;
@@ -131,8 +135,15 @@ pub struct Point {
     pub warn_sound: String,
     pub capture_sounds: [String; 4],
     initial_locked: bool,
+    unlock_deadline: Option<f32>,
     model_skins: [usize; 4],
     model_bodies: [i32; 4],
+    no_cap_sounds: bool,
+    loop_sound: Option<SoundDefinition>,
+    countdown_flags: u8,
+    next_countdown: f32,
+    warned_on_final_cap: bool,
+    last_warning_at: f32,
     next_unlock_think: f32,
 }
 
@@ -210,7 +221,21 @@ pub struct Master {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Spawn {
+    pub identity: u32,
+    pub team: PlayerTeam,
+    pub point: Option<usize>,
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub disabled: bool,
+    initial_disabled: bool,
+    pub class_flags: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    Sound { point: usize, recipient: Option<PlayerTeam>, definition: SoundDefinition, action: AudioAction },
+    BlockStateChanged { point: usize, blocked: bool },
     MapOutput {
         entity: u32,
         output: &'static str,
@@ -295,6 +320,8 @@ pub struct World {
     next_master_think: f32,
     facts: Facts,
     local_actor: Option<Actor>,
+    spawns: Vec<Spawn>,
+    spawn_revision: u64,
 }
 
 impl World {
@@ -377,8 +404,15 @@ impl World {
                 warn_on_cap: integer(entity, b"point_warn_on_cap", 0),
                 warn_sound: text(entity, b"point_warn_sound"),
                 initial_locked: locked,
+                unlock_deadline: None,
                 model_skins: [0; 4],
                 model_bodies: [0; 4],
+                no_cap_sounds: integer(entity, b"spawnflags", 0) & 8 != 0,
+                loop_sound: None,
+                countdown_flags: 0x3f,
+                next_countdown: 0.1,
+                warned_on_final_cap: false,
+                last_warning_at: 0.0,
                 next_unlock_think: f32::INFINITY,
             });
         }
@@ -441,7 +475,12 @@ impl World {
             }
         });
         let disabled = integer(master, b"StartDisabled", 0) != 0;
-        Ok(Some(Self {
+        let spawns = graph.entities.iter().filter(|e| class(e, b"info_player_teamspawn")).map(|e| {
+            let disabled = integer(e, b"StartDisabled", 0) != 0;
+            Ok(Spawn { identity: e.index as u32, team: team(integer(e, b"TeamNum", 0)).ok_or(Error::InvalidEntity(e.index as u32))?,
+                point: points.iter().position(|p| p.name == text(e, b"controlpoint")), position: vector(e, b"origin")?, yaw: vector(e, b"angles")?[1], disabled, initial_disabled: disabled, class_flags: integer(e, b"spawnflags", 0) as u32 })
+        }).collect::<Result<Vec<_>, Error>>()?;
+        let mut world = Self {
             points,
             areas,
             configuration: Configuration::default(),
@@ -450,6 +489,8 @@ impl World {
             next_master_think: 0.1,
             facts: Facts::default(),
             local_actor: None,
+            spawns,
+            spawn_revision: 0,
             master: Master {
                 identity: master.index as u32,
                 disabled,
@@ -465,7 +506,9 @@ impl World {
                 ],
                 base_points,
             },
-        }))
+        };
+        world.recalculate_spawns();
+        Ok(Some(world))
     }
 
     pub fn points(&self) -> &[Point] {
@@ -506,6 +549,27 @@ impl World {
     }
     pub fn master(&self) -> &Master {
         &self.master
+    }
+
+    pub fn spawns(&self) -> &[Spawn] { &self.spawns }
+    pub fn spawn_revision(&self) -> u64 { self.spawn_revision }
+
+    fn recalculate_spawns(&mut self) {
+        self.spawn_revision += 1;
+        for team in TEAMS {
+            let Some(base) = self.master.base_points[slot(team)] else { continue; };
+            let end = if base == 0 { self.points.len() - 1 } else { 0 };
+            let mut farthest = base;
+            let mut current = base;
+            while current != end {
+                if self.points[current].owner != team { break; }
+                if self.spawns.iter().any(|s| s.team == team && s.point == Some(current)) { farthest = current; }
+                if base == 0 { current += 1; } else { current -= 1; }
+            }
+            for spawn in &mut self.spawns {
+                if spawn.team == team && spawn.point.is_some() { spawn.disabled = spawn.point != Some(farthest); }
+            }
+        }
     }
     pub fn configuration(&self) -> Configuration {
         self.configuration
@@ -605,9 +669,15 @@ impl World {
         self.master.disabled = self.master.initial_disabled;
         self.next_master_think = now + 0.1;
         for p in &mut self.points {
+            if let Some(definition) = p.loop_sound.take() { events.push(Event::Sound { point: p.index, recipient: None, definition, action: AudioAction::Stop }); }
+            p.countdown_flags = 0x3f;
+            p.next_countdown = now + 0.1;
+            p.warned_on_final_cap = false;
+            p.last_warning_at = 0.0;
             p.owner = p.default_owner;
             p.locked = p.initial_locked;
             p.unlock_at = None;
+            p.unlock_deadline = None;
             p.next_unlock_think = f32::INFINITY;
             p.last_contested_at = -1.0;
             output(events, p.identity, owner_output(p.owner), Variant::Void);
@@ -627,9 +697,18 @@ impl World {
             a.attempt = 0;
             a.next_think = now + AREA_THINK_SECONDS;
         }
+        for spawn in &mut self.spawns { spawn.disabled = spawn.initial_disabled; }
+        self.recalculate_spawns();
     }
 
-    pub fn apply_input(
+    pub fn apply_input(&mut self, entity: u32, input: &[u8], value: &Variant, now: f32, facts: Facts, events: &mut Vec<Event>) -> bool {
+        let start = events.len();
+        let accepted = self.apply_input_inner(entity, input, value, now, facts, events);
+        self.capture_sounds(start, events);
+        accepted
+    }
+
+    fn apply_input_inner(
         &mut self,
         entity: u32,
         input: &[u8],
@@ -639,6 +718,13 @@ impl World {
         events: &mut Vec<Event>,
     ) -> bool {
         self.facts = facts;
+        if let Some(spawn) = self.spawns.iter_mut().find(|s| s.identity == entity) {
+            self.spawn_revision += 1;
+            if input.eq_ignore_ascii_case(b"Enable") { spawn.disabled = false; }
+            else if input.eq_ignore_ascii_case(b"Disable") { spawn.disabled = true; }
+            else if !input.eq_ignore_ascii_case(b"RoundSpawn") && !input.eq_ignore_ascii_case(b"RoundActivate") { return false; }
+            return true;
+        }
         if let Some(i) = self.points.iter().position(|p| p.identity == entity) {
             if input.eq_ignore_ascii_case(b"SetOwner") {
                 if let Some(owner) = team(variant_integer(value)) {
@@ -657,6 +743,9 @@ impl World {
                         set_locked(&mut self.points[i], false, events);
                     } else {
                         self.points[i].unlock_at = Some(now + seconds as f32);
+                        self.points[i].unlock_deadline = Some(now + seconds as f32);
+                        self.points[i].countdown_flags &= 1;
+                        for second in 1..=5 { if seconds >= second { self.points[i].countdown_flags |= 1 << second; } }
                         self.points[i].next_unlock_think = now + 0.1;
                     }
                 }
@@ -765,11 +854,27 @@ impl World {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         self.facts = facts;
+        let sound_start = events.len();
         self.local_actor = actors.iter().copied().find(|a| a.identity == crate::PLAYER_IDENTITY);
         for point in &mut self.points {
+            if now >= point.next_countdown {
+                point.next_countdown = now + 0.1;
+                if facts.round_running && !facts.waiting_for_players {
+                    if let Some(deadline) = point.unlock_at.filter(|time| *time > 0.0) {
+                        let left = (deadline - now) as i32;
+                        let selected = if left <= 0 && point.countdown_flags & 1 != 0 { Some((0, SoundDefinition::PointEnabled)) }
+                            else if left > 0 && left <= 5 { [ (5, SoundDefinition::RoundBegins5), (4, SoundDefinition::RoundBegins4), (3, SoundDefinition::RoundBegins3), (2, SoundDefinition::RoundBegins2), (1, SoundDefinition::RoundBegins1) ].into_iter().find(|(second,_)| left <= *second && point.countdown_flags & (1 << second) != 0) } else { None };
+                        if let Some((second, definition)) = selected {
+                            point.countdown_flags &= !(1 << second);
+                            if second == 1 { point.countdown_flags |= 1; }
+                            events.push(Event::Sound { point: point.index, recipient: Some(PlayerTeam::Unassigned), definition, action: AudioAction::Play });
+                        }
+                    }
+                }
+            }
             if now >= point.next_unlock_think {
                 if point
-                    .unlock_at
+                    .unlock_deadline
                     .is_some_and(|deadline| deadline > 0.0 && deadline < now)
                     && facts.round_running
                 {
@@ -830,6 +935,7 @@ impl World {
                 self.check_win(events);
             }
         }
+        self.capture_sounds(sound_start, events);
         Ok(())
     }
 
@@ -952,6 +1058,7 @@ impl World {
         }
         area.last_reduction = now;
         if teams_in_zone > 1 {
+            if !area.blocked { events.push(Event::BlockStateChanged { point, blocked: true }); }
             area.blocked = true;
             if area.remaining / area.total_time(area.capturing_team, self.configuration) <= 0.5 {
                 if let Some(player) = TEAMS
@@ -977,13 +1084,21 @@ impl World {
             }
             return;
         }
+        if area.blocked { events.push(Event::BlockStateChanged { point, blocked: false }); }
         area.blocked = false;
         let total = area.total_time(area.capturing_team, self.configuration);
         if area.capturing_team == zone {
             area.remaining -= reduction;
+            let point = &mut self.points[point];
+            if point.warn_on_cap == 1 && !point.warned_on_final_cap && now > point.last_warning_at + 5.0 {
+                point.warned_on_final_cap = true;
+                point.last_warning_at = now;
+                events.push(Event::Sound { point: point.index, recipient: Some(if area.capturing_team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red }), definition: SoundDefinition::CaptureWarn, action: AudioAction::Play });
+            }
         } else if owner == PlayerTeam::Unassigned && zone != PlayerTeam::Unassigned {
             area.remaining += reduction;
         } else if may[slot(area.capturing_team)] {
+            self.points[point].warned_on_final_cap = false;
             let scale = if self.configuration.scales_with_players {
                 self.configuration.deteriorate_seconds
             } else {
@@ -1043,6 +1158,7 @@ impl World {
             team,
             cappers,
         });
+        self.check_win(events);
         num_cappers(&self.areas[index], 0, false, events);
     }
 
@@ -1074,7 +1190,37 @@ impl World {
             previous,
             owner,
         });
-        self.check_win(events);
+        self.recalculate_spawns();
+        if !real_capture { self.check_win(events); }
+    }
+
+    fn capture_sounds(&mut self, start: usize, events: &mut Vec<Event>) {
+        let transitions: Vec<_> = events[start..].iter().filter_map(|event| match event {
+            Event::CaptureStarted { point, team, .. } => Some((*point, 0, *team)),
+            Event::BlockStateChanged { point, blocked } => Some((*point, if *blocked { 1 } else { 2 }, PlayerTeam::Unassigned)),
+            Event::Captured { point, team, .. } => Some((*point, 3, *team)),
+            Event::CaptureBroken { point } => Some((*point, 4, PlayerTeam::Unassigned)),
+            _ => None,
+        }).collect();
+        for (index, transition, team) in transitions {
+            let point = &mut self.points[index];
+            if !point.no_cap_sounds {
+                if let Some(definition) = point.loop_sound.take() { events.push(Event::Sound { point: index, recipient: None, definition, action: AudioAction::Stop }); }
+                if transition < 3 {
+                    if transition != 1 { events.push(Event::Sound { point: index, recipient: None, definition: SoundDefinition::HologramStart, action: AudioAction::Play }); }
+                    let definition = if transition == 1 { SoundDefinition::HologramInterrupted } else { SoundDefinition::HologramMove };
+                    point.loop_sound = Some(definition);
+                    events.push(Event::Sound { point: index, recipient: None, definition, action: AudioAction::FadeIn(0.0) });
+                } else { events.push(Event::Sound { point: index, recipient: None, definition: SoundDefinition::HologramStop, action: AudioAction::Play }); }
+            }
+            if transition == 0 && point.warn_on_cap == 0 {
+                events.push(Event::Sound { point: index, recipient: Some(if team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red }), definition: if point.owner == PlayerTeam::Unassigned { SoundDefinition::PointContestedNeutral } else { SoundDefinition::PointContested }, action: AudioAction::Play });
+            }
+            if transition == 3 && (self.koth || (!self.master.score_per_capture && !self.points.iter().all(|p| p.owner == team))) {
+                if self.koth { events.push(Event::Sound { point: index, recipient: Some(PlayerTeam::Unassigned), definition: SoundDefinition::PointCaptured, action: AudioAction::Play }); }
+                for recipient in TEAMS { events.push(Event::Sound { point: index, recipient: Some(recipient), definition: if recipient == team { SoundDefinition::PointSuccess } else { SoundDefinition::PointFailure }, action: AudioAction::Play }); }
+            }
+        }
     }
 
     fn check_win(&mut self, events: &mut Vec<Event>) {
@@ -1180,6 +1326,7 @@ fn set_locked(point: &mut Point, locked: bool, events: &mut Vec<Event>) {
     point.locked = locked;
     point.unlock_at = None;
     if !locked {
+        point.unlock_deadline = None;
         point.next_unlock_think = f32::INFINITY;
         output(events, point.identity, "OnUnlocked", Variant::Void);
     }
@@ -1256,6 +1403,67 @@ fn variant_integer(value: &Variant) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoContact;
+    impl playsrc_movement::Tracer for NoContact {
+        fn trace(&self, _: [f32;3], _: [f32;3], _: Hull, _: u32) -> Result<playsrc_movement::Trace, playsrc_movement::Error> { unreachable!("capture-only clock test") }
+    }
+    impl GameplayWorld for NoContact {
+        fn overlaps_model_hull(&self, _: usize, _: [f32;3], _: [f32;3], _: Hull) -> Result<bool, playsrc_movement::Error> { Ok(false) }
+    }
+
+    #[test]
+    fn round_activate_clears_hud_unlock_time_without_cancelling_server_unlock_think() {
+        let mut w = world(true);
+        let id = w.points[0].identity;
+        let mut events = Vec::new();
+        w.apply_input(id, b"SetLocked", &Variant::Integer(1), 0.0, facts(), &mut events);
+        w.apply_input(id, b"SetUnlockTime", &Variant::Integer(10), 0.0, facts(), &mut events);
+        w.apply_input(id, b"RoundActivate", &Variant::Void, 0.0, facts(), &mut events);
+        assert_eq!(w.points[0].unlock_at, None);
+        assert_eq!(w.points[0].unlock_deadline, Some(10.0));
+        w.step(10.0, facts(), &[], &NoContact, &mut events).unwrap();
+        assert!(w.points[0].locked);
+        w.step(10.11, facts(), &[], &NoContact, &mut events).unwrap();
+        assert!(!w.points[0].locked);
+    }
+
+    #[test]
+    fn all_five_points_win_after_real_capture_event_and_frontier_loss_breaks_progress() {
+        let mut w = world(false);
+        let red = actor(1, PlayerTeam::Red, PlayerClass::Soldier);
+        think(&mut w, 2, 0.0, &[red], true);
+        think(&mut w, 2, 20.0, &[red], false);
+        think(&mut w, 1, 20.1, &[red], true);
+        think(&mut w, 1, 30.1, &[red], false);
+        let mid = w.points[2].identity;
+        w.apply_input(mid, b"SetOwner", &Variant::Integer(3), 30.1, facts(), &mut Vec::new());
+        let broken = think(&mut w, 1, 30.2, &[red], false);
+        assert!(broken.iter().any(|e| matches!(e, Event::CaptureBroken { point: 1 })));
+        w.apply_input(mid, b"SetOwner", &Variant::Integer(2), 30.2, facts(), &mut Vec::new());
+        think(&mut w, 1, 30.3, &[red], true);
+        think(&mut w, 1, 50.4, &[red], false);
+        think(&mut w, 0, 50.5, &[red], true);
+        let won = think(&mut w, 0, 70.6, &[red], false);
+        let captured = won.iter().position(|e| matches!(e, Event::Captured { point: 0, .. })).unwrap();
+        let winner = won.iter().position(|e| matches!(e, Event::RoundWon { team: PlayerTeam::Red, reason: 1, .. })).unwrap();
+        assert!(captured < winner);
+        w.reset(90.0, &mut Vec::new());
+        assert_eq!(w.points.iter().map(|p| p.owner).collect::<Vec<_>>(), [PlayerTeam::Blue,PlayerTeam::Blue,PlayerTeam::Unassigned,PlayerTeam::Red,PlayerTeam::Red]);
+    }
+
+    #[test]
+    fn countdown_sound_uses_truncated_client_seconds_before_strict_server_unlock() {
+        let mut w = world(true);
+        let id = w.points[0].identity;
+        let mut events = Vec::new();
+        w.apply_input(id, b"SetLocked", &Variant::Integer(1), 0.0, facts(), &mut events);
+        w.apply_input(id, b"SetUnlockTime", &Variant::Integer(6), 0.0, facts(), &mut events);
+        for tick in 1..=59 { w.step(tick as f32 * 0.1, facts(), &[], &NoContact, &mut events).unwrap(); }
+        assert!(w.points[0].locked);
+        let sounds: Vec<_> = events.iter().filter_map(|e| if let Event::Sound { definition, .. } = e { Some(*definition) } else { None }).collect();
+        assert_eq!(sounds, [SoundDefinition::RoundBegins5,SoundDefinition::RoundBegins4,SoundDefinition::RoundBegins3,SoundDefinition::RoundBegins2,SoundDefinition::RoundBegins1,SoundDefinition::PointEnabled]);
+    }
 
     fn world(koth: bool) -> World {
         let mut entities = String::from("{\"classname\" \"team_control_point_master\"}");
