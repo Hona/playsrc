@@ -7,6 +7,7 @@ mod value;
 mod world;
 pub mod particle_system;
 pub mod visual_resources;
+pub mod sprite;
 pub use value::{FieldType, ValueConversionError, source_integer};
 pub use world::*;
 

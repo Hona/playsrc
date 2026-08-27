@@ -1471,6 +1471,16 @@ unsafe fn compile_map(
         map.install_studio_models(&studio_models.iter().map(|(identity, model)|
             (identity.clone(), Arc::clone(model.source()))).collect())
             .map_err(|_| 5_u32)?;
+        let mut sprite_models=BTreeMap::new();
+        for entity in &runtime.entities.entities {
+            if !entity.classname.as_deref().is_some_and(playsrc_entity::sprite::is_sprite) { continue; }
+            let model=entity_scalar(entity,b"model").ok_or(9_u32)?;
+            let path=playsrc_entity::visual_resources::sprite_material(std::str::from_utf8(model).map_err(|_|9_u32)?).ok_or(9_u32)?;
+            let material=resolve_material_semantics(&path,&resources,material_environment(profile,false)).map_err(|_|9_u32)?;
+            let (_,_,metadata)=selected_texture(&material,&decoders).map_err(|_|9_u32)?;
+            sprite_models.insert(model.to_vec(),u32::from(metadata.frame_count));
+        }
+        map.install_sprite_models(sprite_models).map_err(|_|9_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity

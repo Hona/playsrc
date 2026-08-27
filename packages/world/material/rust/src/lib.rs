@@ -14,6 +14,7 @@ pub use refract::*;
 pub use surface_properties::*;
 pub use water::*;
 pub use world::*;
+pub mod legacy_sprite;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shader {
     LightmappedGeneric,
