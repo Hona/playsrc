@@ -4,10 +4,14 @@ import { summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { writeFile } from "node:fs/promises"
 import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
+import { tf2MapBsp } from "@playsrc/game-tf2-browser/maps"
 
 test("headed Viaduct local KOTH capture, contest, overtime, victory and restart with independent team clocks", async ({ page }, testInfo) => {
   const performanceOnly = process.env.PROFILE_KOTH_PERFORMANCE === "1"
   const skyVisualOnly = process.env.PROFILE_KOTH_SKY_VISUAL === "1"
+  let bspRequests = 0
+  const bspHash = tf2MapBsp("koth_viaduct").sha256
+  page.on("request", request => { if (request.url().includes(bspHash)) bspRequests++ })
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   const main = page.locator("main")
   const automation = new Tf2BrowserAutomation({
@@ -138,8 +142,16 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
       const previous = result.initialBots.find((value: any) => value.identity === bot.identity)
       return previous && (bot.shots > previous.shots || Math.hypot(...bot.position.map((value: number, index: number) => value - previous.position[index])) > 1)
     })).toBe(true)
+    const workers = await Promise.all(page.workers().map(worker => Promise.race([
+      worker.evaluate(() => ({ heapBytes: (performance as any).memory?.usedJSHeapSize ?? null, memory: (globalThis as any).__playsrcWorkerMemory ?? null })).catch(() => null),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 1000)),
+    ])))
+    const gameplayMemory = workers.find(worker => worker?.memory)?.memory
+    expect(gameplayMemory).toBeTruthy()
+    expect(gameplayMemory.linearBytes).toBeLessThan(2 * 1024 ** 3)
+    expect(gameplayMemory.copiedModelSourceBytes).toBe(0)
     await pixels(`headed-koth-${bots}-bots-world-and-hud`)
-    return { ...result, frames: summarizeFrameTimes(result.frames) }
+    return { ...result, workers, frames: summarizeFrameTimes(result.frames) }
   }
   if (performanceOnly) {
     await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
@@ -153,8 +165,10 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     const samples = [await sample(15)]
     await command("tf_bot_quota 23")
     samples.push(await sample(23))
+    expect(bspRequests).toBeLessThanOrEqual(1)
+    const loading = JSON.parse(await main.getAttribute("data-load-performance-probe") ?? "{}")
     const reportPath = testInfo.outputPath("koth-source-clock-samples.json")
-    await writeFile(reportPath, JSON.stringify({ schema: "playsrc-koth-headed-v1", samples }))
+    await writeFile(reportPath, JSON.stringify({ schema: "playsrc-koth-headed-v1", bspRequests, loading, samples }))
     await testInfo.attach("koth-source-clock-samples", { path: reportPath, contentType: "application/json" })
     return
   }

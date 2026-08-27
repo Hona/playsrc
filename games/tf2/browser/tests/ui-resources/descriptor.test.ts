@@ -15,6 +15,17 @@ import {
 const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 
 describe("configured TF2 UI resource descriptor", () => {
+  test("authored configured offline-practice maps have their exact drawable training screenshots", () => {
+    const dependencies = new Set(bundleManifest.dependencies.map(dependency => dependency.logicalPath))
+    for (const map of ["pl_upward", "koth_viaduct", "koth_lakeside_final", "koth_sawmill"]) {
+      const image = tf2UiResources.images.find(value => value.configuredValue === `training/screenshots/${map}`)
+      expect(image?.classification).toBe("content-vtf")
+      expect(image?.material?.logicalPath).toBe(`materials/vgui/training/screenshots/${map}.vmt`)
+      expect(image?.textures).toHaveLength(1)
+      expect(dependencies.has(image!.textures[0]!.source.logicalPath)).toBe(true)
+    }
+    expect(tf2UiResources.images.some(image => image.configuredValue === "training/screenshots/koth_harvest_final")).toBe(false)
+  })
   test("includes each pinned map photograph in the drawable UI image closure", () => {
     for (const [target, declaration] of Object.entries(TF2_MAPS)) {
       if (!declaration.loadingPhoto) continue
@@ -150,7 +161,7 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_Class_Name_Soldier")?.definitions[0]?.value).toBe("Soldier")
-    expect(tf2UiResources.images).toHaveLength(480)
+    expect(tf2UiResources.images).toHaveLength(483)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(83)

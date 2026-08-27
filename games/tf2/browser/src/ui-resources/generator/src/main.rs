@@ -1733,12 +1733,11 @@ fn main() -> Result<(), String> {
     let map_declarations: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_slice(
         &fs::read(repository.join("games/tf2/maps.json")).map_err(|error| error.to_string())?,
     ).map_err(|error| error.to_string())?;
-    for (identity, declaration) in map_declarations {
+    for (identity, declaration) in &map_declarations {
         if declaration.get("installed").is_some() {
             unique_image_values.insert(format!("maps/menu_photos_{identity}"));
         }
     }
-    unique_image_values.insert("training/screenshots/pl_upward".to_owned());
     unique_image_values.insert("illustrations/gamemode_cp".to_owned());
     unique_image_values.insert("illustrations/gamemode_koth".to_owned());
     unique_image_values.insert("illustrations/gamemode_payload".to_owned());
@@ -1809,6 +1808,15 @@ fn main() -> Result<(), String> {
                         Vec::new(),
                     )
                 };
+                if logical_path == "resource/offline_practice.res" {
+                    for maps in document.iter().flat_map(|root| &root.children).filter(|node| node.name.eq_ignore_ascii_case("maps")) {
+                        for map in &maps.children {
+                            if map_declarations.contains_key(&map.name) {
+                                unique_image_values.insert(format!("training/screenshots/{}", map.name));
+                            }
+                        }
+                    }
+                }
                 if domain == "localization" {
                     document =
                         selected_localization_document(document, &unique_localization_tokens);
