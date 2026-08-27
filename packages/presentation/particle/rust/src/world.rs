@@ -1202,6 +1202,7 @@ fn initialize_system_first_frame(
     let definition = registry
         .definition_at(system.definition_index)
         .expect("instantiated definition");
+    operate_before_emitters(system, definition)?;
     let initial = (integer_attribute(definition, &["initial_particles"], 0).max(0) as usize)
         .min(authored_remaining(system, definition));
     let capacity = caller_remaining(system, limits, *remaining_particles);
@@ -1376,6 +1377,7 @@ fn advance_system(
     let dt = (local_to - local_from).max(0.0);
     system.current_step = dt;
     system.local_time = local_to;
+    operate_before_emitters(system, definition)?;
     emit(
         system,
         definition,
@@ -1418,6 +1420,42 @@ fn advance_system(
             simulation_random,
             collision_cache,
         )?;
+    }
+    Ok(())
+}
+
+fn operate_before_emitters(system: &mut System, definition: &Definition) -> Result<(), Error> {
+    for operator in definition.functions(FunctionCategory::Operator) {
+        if !operator.identity.eq_ignore_ascii_case("Set Control Point Positions")
+            || operator_strength(operator, system.local_time) == 0.0 { continue; }
+        let reference = integer_parameter(operator, "Control Point to offset positions from", 0);
+        if reference < 0 || reference as usize >= system.controls.len() {
+            return Err(Error::new(ErrorCode::BoundExceeded, &definition.source, 0, "control point operator reference exceeds the collection's controls"));
+        }
+        let origin = control_at_time(system, reference, system.local_time);
+        let orientation = control_orientation(system, reference).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let world_space = bool_parameter(operator, "Set positions in world space", false);
+        for (ordinal, number_key, parent_key, location_key, location) in [
+            (1, "First Control Point Number", "First Control Point Parent", "First Control Point Location", [128.0, 0.0, 0.0]),
+            (2, "Second Control Point Number", "Second Control Point Parent", "Second Control Point Location", [0.0, 128.0, 0.0]),
+            (3, "Third Control Point Number", "Third Control Point Parent", "Third Control Point Location", [-128.0, 0.0, 0.0]),
+            (4, "Fourth Control Point Number", "Fourth Control Point Parent", "Fourth Control Point Location", [0.0, -128.0, 0.0]),
+        ] {
+            let index = integer_parameter(operator, number_key, ordinal);
+            let parent = integer_parameter(operator, parent_key, 0);
+            if index < 0 || index as usize >= system.controls.len() || parent < 0 || parent as usize >= system.controls.len() {
+                return Err(Error::new(ErrorCode::BoundExceeded, &definition.source, 0, "control point operator exceeds the collection's controls"));
+            }
+            let location = vector_parameter(operator, location_key, location);
+            let position = if world_space { location } else { add(origin, rotate(orientation, location)) };
+            let mut control = system.controls[index as usize].clone().unwrap_or(ControlPoint {
+                index: index as u8, position, previous_position: position, orientation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0; 3], radius: 0.0, density: 1.0, duration: 0.0, parent: None, object_identity: None,
+            });
+            control.position = position;
+            control.parent = (index != 0 || parent != 0).then_some(parent as u8);
+            set_control(system, control);
+        }
     }
     Ok(())
 }
@@ -1478,7 +1516,10 @@ fn emit(
             if *stopped || strength <= 0.0 {
                 continue;
             }
-            let rate = float_parameter(emitter, "emission_rate", 100.0).max(0.0) * strength;
+            let mut rate = float_parameter(emitter, "emission_rate", 100.0).max(0.0) * strength;
+            let scale = system.controls.iter().rposition(Option::is_some).unwrap_or(0) as f32
+                * float_parameter(emitter, "scale emission to used control points", 0.0);
+            if scale != 0.0 { rate *= scale; }
             let duration = float_parameter(emitter, "emission_duration", 0.0);
             let start = float_parameter(emitter, "emission_start_time", 0.0) + *time_offset;
             creation_start = from.max(start);

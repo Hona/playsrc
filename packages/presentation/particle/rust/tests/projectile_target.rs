@@ -573,6 +573,59 @@ fn named_particle_definitions_do_not_alias_through_authored_uuids() {
 }
 
 #[test]
+fn control_point_position_operators_run_before_initial_particle_emission() {
+    for world_space in [false, true] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("initial_particles", TestValue::Int(1)), ("initializers", TestValue::Refs(vec![2])),
+                ("operators", TestValue::Refs(vec![3])), ("renderers", TestValue::Refs(vec![4])),
+                ("material", TestValue::Text("smoke.vmt")),
+            ] },
+            element("position", 2, vec![("functionName", TestValue::Text("Position Within Sphere Random")), ("control_point_number", TestValue::Int(1))]),
+            element("controls", 3, vec![("functionName", TestValue::Text("Set Control Point Positions")),
+                ("First Control Point Location", TestValue::Vector([5.0, 6.0, 7.0])),
+                ("Set positions in world space", TestValue::Bool(world_space))]),
+            element("renderer", 4, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let mut point = control([10.0, 20.0, 30.0], [10.0, 20.0, 30.0]);
+        let turn = std::f32::consts::FRAC_1_SQRT_2;
+        point.orientation = [0.0, 0.0, turn, turn];
+        let (items, _) = world.advance(&[create_event(vec![point])], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        assert_eq!(items.len(), 1);
+        let expected = if world_space { [5.0, 6.0, 7.0] } else { [4.0, 25.0, 37.0] };
+        for axis in 0..3 { assert!((items[0].position[axis] - expected[axis]).abs() < 0.00001); }
+    }
+}
+
+#[test]
+fn continuous_emission_scales_by_highest_control_index_not_populated_count() {
+    for (highest, scale, expected) in [(0, 1.0, 4), (3, 1.0, 12), (3, 0.5, 6)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("emitters", TestValue::Refs(vec![2])), ("renderers", TestValue::Refs(vec![3])), ("material", TestValue::Text("smoke.vmt")),
+            ] },
+            element("emitter", 2, vec![("functionName", TestValue::Text("emit_continuously")),
+                ("emission_rate", TestValue::Float(4.0)), ("scale emission to used control points", TestValue::Float(scale))]),
+            element("renderer", 3, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let mut controls = vec![control([0.0; 3], [0.0; 3])];
+        if highest > 0 { let mut point = controls[0].clone(); point.index = highest; controls.push(point); }
+        let (items, _) = world.advance(&[create_event(controls)], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 1.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        assert_eq!(items.len(), expected);
+    }
+}
+
+#[test]
 fn parses_registry_and_rejects_malformed_documents_atomically() {
     let bytes = fixture(false);
     let registry = registry(&bytes);

@@ -667,6 +667,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Remap Distance to Control Point to Vector",
             "Rotation Basic",
             "Rotation Spin Roll",
+            "Set Control Point Positions",
         ],
         FunctionCategory::Initializer => &[
             "Alpha Random",
@@ -675,7 +676,6 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Lifetime From Control Point Life Time",
             "Lifetime From Sequence",
             "Lifetime Pre-Age Noise",
-            "Lifetime From Sequence",
             "Remap Noise to Scalar",
             "Lifetime Random",
             "Position Along Path Random",
@@ -753,6 +753,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "offset position",
             "accelerate position",
             "invert absolute value",
+            "set positions in world space",
         ]
         .contains(&name.as_str())
             || (name == "absolute value"
@@ -797,6 +798,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
         ]
         .contains(&name.as_str())
+            || (function.identity.eq_ignore_ascii_case("Set Control Point Positions")
+                && (name.ends_with("control point number") || name.ends_with("control point parent")
+                    || name == "control point to offset positions from"))
         {
             matches!(value, Value::Int(_))
         } else if [
@@ -817,6 +821,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "invert abs value",
         ]
         .contains(&name.as_str())
+            || (function.identity.eq_ignore_ascii_case("Set Control Point Positions") && name.ends_with("control point location"))
             || (name == "absolute value"
                 && !function.identity.eq_ignore_ascii_case("Lifetime Pre-Age Noise")
                 && !function.identity.eq_ignore_ascii_case("Remap Noise to Scalar"))
@@ -893,8 +898,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
     {
         float_parameter(function, "distance fade range", 0.0) != 0.0
     } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
-        float_parameter(function, "scale emission to used control points", 0.0) != 0.0
-            || bool_parameter(function, "use parent particles for emission scaling", false)
+        bool_parameter(function, "use parent particles for emission scaling", false)
     } else if function
         .identity
         .eq_ignore_ascii_case("emit_instantaneously")
@@ -1005,6 +1009,12 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "max length",
             "min length",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Set Control Point Positions") {
+        &["first control point number", "first control point parent", "first control point location",
+          "second control point number", "second control point parent", "second control point location",
+          "third control point number", "third control point parent", "third control point location",
+          "fourth control point number", "fourth control point parent", "fourth control point location",
+          "set positions in world space", "control point to offset positions from"]
     } else if function.identity.eq_ignore_ascii_case("Movement Basic") {
         &["gravity", "drag", "max constraint passes"]
     } else if function
