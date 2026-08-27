@@ -21,6 +21,21 @@ function worker() {
 }
 
 describe("injected Worker task profiling", () => {
+  test("joins atomic completion and structured-clone control counters without retaining a payload", () => {
+    const { host } = worker()
+    host.onmessage = (event: any) => {
+      host.__playsrcWorkerProfileReply({ requestId: event.data.id, kind: "visibility", transport: "atomic", bytes: 80, sharedBytes: 0,
+        started: 4, finished: 5, timings: { transactMilliseconds: 0.2 } })
+      host.postMessage({ kind: "reply-control", sequence: 2, response: { id: 8, kind: "failure", code: "TransitionFailed", detail: 203 } }, [])
+    }
+    installWorkerTaskProfiler(host)
+    host.onmessage({ data: { id: 7, kind: "visibility" } })
+    const task = host.__playsrcWorkerTasks.stop().tasks[0]
+    expect(task.responses).toMatchObject([{ requestId: 7, transport: "atomic", bytes: 80 }, { requestId: 8, kind: "failure", bytes: 0 }])
+    expect(task.responses.every((response: any) => response.output === undefined)).toBe(true)
+    expect(host.__playsrcWorkerProfileReply).toBeUndefined()
+  })
+
   test("counts only the borrowed lease span, never the whole shared heap as transferred traffic", () => {
     const { host, sent } = worker()
     host.onmessage = (event: any) => {

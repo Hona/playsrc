@@ -98,6 +98,19 @@ test("full ring rejects rather than overwriting a pending lease", () => {
   expect(() => f.writer.shared(f.reply(66), () => {})).toThrow("closed")
 })
 
+test("reuses every ring slot across successive notifications without leaking retired releases", async () => {
+  const f = fixture()
+  const run = f.reader.run()
+  for (let id = 1; id <= REPLY_CAPACITY * 3; id++) {
+    f.writer.shared(f.reply(id), () => f.released.push(id))
+    const response = await f.next()
+    expect(response.id).toBe(id)
+    f.writer.reclaim()
+  }
+  expect(f.released).toEqual(Array.from({ length: REPLY_CAPACITY * 3 }, (_, index) => index + 1))
+  f.reader.close(); await run
+})
+
 test("abort wakes both an empty waiter and a pending control without timers or polling", async () => {
   for (const control of [false, true]) {
     const f = fixture()
