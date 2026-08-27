@@ -42,7 +42,7 @@ pub use map_runtime::{
     ActorContact, CONTENTS_BLUE_TEAM, CONTENTS_RED_TEAM, CombatPlayerFacts, Effect as MapEffect,
     EntityEvent, EntityEventKind, EntityTransform, GameplayWorld, MapCounts, MapPhase,
     MapPickupSnapshot, MapRuntime, MoverRequest, MoverResult, MoverResultKind, PlayerContactFacts,
-    RegenerateContact, respawn_barrier_collides,
+    RegenerateContact, respawn_barrier_collides, regenerate_associated_model,
 };
 
 use std::collections::BTreeMap;

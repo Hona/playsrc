@@ -10919,8 +10919,11 @@ fn encode_model_occurrence_matrices(
         .into_iter()
         .filter_map(|(entity, model)| model.map(|model| (entity, model)))
         .collect::<Vec<_>>();
+    let regenerate_models = graph.entities.iter()
+        .filter_map(|entity| playsrc_tf2::regenerate_associated_model(graph, entity))
+        .map(|entity| entity.index).collect::<std::collections::BTreeSet<_>>();
     out.extend_from_slice(b"PMTX");
-    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&4u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(occurrences.len())
             .map_err(|_| ())?
@@ -10952,6 +10955,7 @@ fn encode_model_occurrence_matrices(
         };
         out.extend_from_slice(&integer(b"skin")?.to_le_bytes());
         out.extend_from_slice(&integer(b"SetBodyGroup")?.to_le_bytes());
+        out.extend_from_slice(&u32::from(regenerate_models.contains(&entity.index)).to_le_bytes());
         for value in entity_vector(entity, b"origin")?
             .into_iter()
             .chain(entity_vector(entity, b"angles")?)
