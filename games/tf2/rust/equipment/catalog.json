@@ -31,6 +31,7 @@
   {"definitionIndex":29,"weapon":"MediGun"},
   {"definitionIndex":30,"weapon":"InvisibilityWatch"},
   {"definitionIndex":735,"weapon":"Sapper"},
+  {"definitionIndex":378,"weapon":null,"quality":5,"style":0,"attributes":[{"definition":134,"value":13}]},
   {"definitionIndex":45,"weapon":"Scattergun","quality":6,"implemented":false},
   {"definitionIndex":1103,"weapon":"Scattergun","quality":6,"implemented":false},
   {"definitionIndex":425,"weapon":"HeavyShotgun","quality":6,"implemented":false},

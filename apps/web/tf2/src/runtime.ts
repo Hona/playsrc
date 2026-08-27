@@ -2102,6 +2102,7 @@ export class Tf2Application {
     this.#equipmentRenderTask = (async () => {
       const poses = await client.models(generation, encodeModelPoseBatch([{
         identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: true,
+        equippedItems: preview.equippedItems,
         modelPanel: true, modelPanelReset: reset, activity: classPreviewBaseActivity(preview.class),
         previousElapsedSeconds: previous, elapsedSeconds: elapsed, currentTimeSeconds: now, frameTimeSeconds: elapsed - previous,
         planarSpeed: 0, screenAspectRatio: preview.bounds.width / preview.bounds.height, worldFarPlane: 16384 * Math.sqrt(3),
@@ -2115,7 +2116,9 @@ export class Tf2Application {
         skin: skin < (artifacts.models.get(pose.model)?.skinCount ?? 0) ? skin : 0, pose, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes }))
       await renderer.renderModelPanels([{ identity: "EquipmentPlayer", model: player.model, skin, kind: "studio", fov: preview.fov,
         origin: preview.origin, angles: preview.angles, bounds: preview.bounds, background: "clear-transparent", presentationTimeSeconds: now,
-        pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes }])
+        pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes,
+        particles: poses.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, artifacts.particleMaterials).items : []),
+      }])
     })().catch(error => { if (this.#equipmentPreview === preview) this.#output(`Equipment preview: ${String(error)}`) })
       .finally(() => { this.#equipmentRenderTask = undefined })
   }
@@ -2179,6 +2182,7 @@ export class Tf2Application {
       }
       let pose: PosedModel | undefined
       let carried: PosedModel | undefined
+      let wearables: readonly PosedModel[] = []
       {
         if (!artifact) throw new Error(`TF2 class-selection model is unavailable: ${player.model}`)
         const selected = this.#classSelection!.state().selected
@@ -2189,6 +2193,7 @@ export class Tf2Application {
         if (!classSelection && !randomSequence) throw new Error("Authored random-class idle sequence is unavailable")
         const poses = await client.models(generation, encodeModelPoseBatch([{
           identity: 0x2001 + player.skin, model: player.model, classSelection, modelPanel: true, modelPanelReset,
+          equippedItems: selected === 12 ? [] : this.#equipmentProfile?.state()?.classes[selected - 1]?.items,
           activity: randomSequence?.label ?? classPreviewBaseActivity(selected as Tf2Class),
           previousElapsedSeconds: previous, elapsedSeconds: elapsed,
           currentTimeSeconds: now, frameTimeSeconds: elapsed - previous, planarSpeed: 0,
@@ -2199,6 +2204,7 @@ export class Tf2Application {
         if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return
         pose = poses.find((value) => value.role === "single")
         carried = poses.find((value) => value.role === "item")
+        wearables = poses.filter(value => value.role === "wearable")
         if (!pose) throw new Error("TF2 class-selection pose is unavailable")
         if (classSelection && !carried) throw new Error("TF2 class-selection carried item is unavailable")
         for (const event of pose.events) {
@@ -2218,9 +2224,10 @@ export class Tf2Application {
       background: "clear-transparent" as const,
       presentationTimeSeconds: now,
       ...(pose ? { pose, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes } : {}),
-      ...(carried && this.#classSelectionWeaponVisible ? { mergedModels: [{ model: carried.model,
-        skin: panel.skin < (this.#artifacts!.models.get(carried.model)?.skinCount ?? 0) ? panel.skin : 0, pose: carried,
-        modelLighting: carried.lighting ?? undefined, eyeStates: carried.eyes }] } : {}),
+      mergedModels: [...(carried && this.#classSelectionWeaponVisible ? [carried] : []), ...wearables].map(model => ({ model: model.model,
+        skin: panel.skin < (this.#artifacts!.models.get(model.model)?.skinCount ?? 0) ? panel.skin : 0, pose: model,
+        modelLighting: model.lighting ?? undefined, eyeStates: model.eyes })),
+      particles: wearables.flatMap(model => model.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(model.wearable.particleBytes, this.#artifacts!.particleMaterials).items : []),
     }))
       const result = await renderer.renderModelPanels(panels)
         if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return

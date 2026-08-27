@@ -156,8 +156,12 @@ impl Equipment {
                 quality: supported.quality, style: supported.style, slot: metadata.class_slots[0].1, attributes: supported.attributes.to_vec() };
             encode_items(&mut out, &[item]);
             out.push(match supported.implementation { Implementation::Weapon(weapon) => weapon as u8, Implementation::Wearable => 0 });
-            out.push(metadata.class_slots.len() as u8);
-            for (class, slot) in metadata.class_slots { out.extend_from_slice(&[*class as u8, *slot as u8]); }
+            let eligible: Vec<_> = metadata.class_slots.iter().flat_map(|(class, slot)| {
+                if misc_slot(*slot) { vec![(*class, LoadoutPosition::Head), (*class, LoadoutPosition::Misc), (*class, LoadoutPosition::Misc2)] }
+                else { vec![(*class, *slot)] }
+            }).collect();
+            out.push(eligible.len() as u8);
+            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8]); }
             for text in [metadata.name, metadata.image] {
                 out.extend_from_slice(&(text.len() as u32).to_le_bytes());
                 out.extend_from_slice(text.as_bytes());
@@ -200,8 +204,16 @@ impl Equipment {
             .find(|item| item.slot == slot as u8).map(|item| item.definition));
         if let Some(definition) = definition {
             supported_item(definition).ok_or(EquipmentError::UnsupportedItem)?;
-            if !presentation(definition).is_some_and(|item| item.class_slots.contains(&(class, slot))) {
+            if !presentation(definition).is_some_and(|item| item.class_slots.iter().any(|(eligible, position)|
+                *eligible == class && (*position == slot || (misc_slot(*position) && misc_slot(slot))))) {
                 return Err(EquipmentError::IneligibleSlot);
+            }
+        }
+        if let Some(definition) = definition && misc_slot(slot) {
+            for other in [LoadoutPosition::Head, LoadoutPosition::Misc, LoadoutPosition::Misc2] {
+                if other != slot && self.classes[class as usize - 1][other as usize] == Some(definition) {
+                    self.classes[class as usize - 1][other as usize] = None;
+                }
             }
         }
         let current = &mut self.classes[class as usize - 1][slot as usize];
@@ -250,9 +262,12 @@ impl Equipment {
             equipment.equip(class, slot, (definition != u32::MAX).then_some(definition))?;
         }
         equipment.revision = 0;
+        if equipment.persist() != bytes { return Err(EquipmentError::InvalidPersistence); }
         Ok(equipment)
     }
 }
+
+fn misc_slot(slot: LoadoutPosition) -> bool { matches!(slot, LoadoutPosition::Head | LoadoutPosition::Misc | LoadoutPosition::Misc2) }
 
 pub fn encode_items(out: &mut Vec<u8>, items: &[EquippedItem]) {
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
