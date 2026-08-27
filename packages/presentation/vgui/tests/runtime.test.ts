@@ -151,6 +151,13 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("scalable panels fill their bounds without the unrelated ImagePanel scale flag", () => {
+    const { runtime, root } = setup()
+    operation(runtime, { kind: "create-panel", parent: 1, control: "ScalableImagePanel", name: "Scalable", properties: [
+      { name: "image", value: "test/icon" }, { name: "wide", value: "64" }, { name: "tall", value: "32" },
+    ] })
+    expect(descendants(root).find(value => value.dataset.vguiName === "Scalable")!.style.backgroundSize).toBe("100% 100%")
+  })
   test("borrows a renderer surface at the panel paint position and restores its DOM/input owner", () => {
     const { runtime, root, document } = setup()
     const owner = document.createElement("div")
