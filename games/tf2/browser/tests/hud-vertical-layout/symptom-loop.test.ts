@@ -92,6 +92,15 @@ const documents = new Map<string, VguiResourceDocument>([
   })],
 ])
 
+for (const kind of ["demoman", "engineer", "sniper"]) {
+  const path = `resource/ui/huditemeffectmeter_${kind}.res`
+  documents.set(path, { logicalIdentity: path, revision: "structural-count-meter", root: object("Resource", [
+    panel("HudItemEffectMeter", { xpos: "0", ypos: "0", wide: "100", tall: "20" }),
+    object("ItemEffectMeterLabel", [scalar("ControlName", "Label"), scalar("fieldName", "ItemEffectMeterLabel"), scalar("wide", "100"), scalar("tall", "20")]),
+    object("ItemEffectMeterBG", [scalar("ControlName", "EditablePanel"), scalar("fieldName", "ItemEffectMeterBG"), scalar("wide", "100"), scalar("tall", "20")]),
+  ]) })
+}
+
 const customControls: readonly VguiControlRegistration[] = Object.freeze(["CTFHudElement", "CTFHealthPanel", "CTFClientScoreBoardDialog"].map((name) => Object.freeze({
   name,
   baseControl: "EditablePanel" as const,
@@ -129,7 +138,7 @@ const resources: Tf2VguiResources = Object.freeze({
   descriptor: tf2UiResources,
   clientScheme: scheme,
   sourceScheme: scheme,
-  localization: Object.freeze({ identity: "resource/tf_english.txt", revision: "hud-vertical-layout", language: "english", tokens: Object.freeze([]) }),
+  localization: Object.freeze({ identity: "resource/tf_english.txt", revision: "hud-vertical-layout", language: "english", tokens: Object.freeze(tf2UiResources.localization.tokens.flatMap(token => token.definitions[0] ? [{ name: token.name.replace(/^#/, ""), value: token.definitions[0].value }] : [])) }),
   animations: Object.freeze({ identity: "scripts/hudanimations-manifest.txt", revision: "hud-vertical-layout", scripts: Object.freeze([]), activeConditions: Object.freeze([]) }),
   activeConditions: Object.freeze(["WIN32"]),
   resolutionSuffixes: Object.freeze([]),
