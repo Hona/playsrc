@@ -14208,7 +14208,23 @@ fn compile_particles(
         "superrare_burning1",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
-    let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
+    compile_particle_materials(&registry, &roots, b, decoders)
+}
+
+fn compile_cosmetic_particles(b: &BTreeMap<String, &[u8]>, decoders: &TextureDecoders<'_>) -> Result<CompiledParticles, ()> {
+    let registry = playsrc_particle::Registry::from_pcf(&[playsrc_particle::PcfSource {
+        logical_path: "particles/item_fx.pcf", bytes: b.get("particles/item_fx.pcf").ok_or(())?,
+    }], playsrc_particle::RegistryLimits::default()).map_err(|_| ())?;
+    compile_particle_materials(&registry, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")], b, decoders)
+}
+
+fn compile_particle_materials(
+    registry: &playsrc_particle::Registry,
+    roots: &[playsrc_particle::DefinitionLookup<'_>],
+    b: &BTreeMap<String, &[u8]>,
+    decoders: &TextureDecoders<'_>,
+) -> Result<CompiledParticles, ()> {
+    let materials = registry.target_closure(roots).map_err(|_| ())?.materials;
     let compiled = materials
         .iter()
         .map(|identity| {
@@ -14281,7 +14297,7 @@ fn compile_particles(
         presentation.insert(identity, state);
     }
     Ok((
-        playsrc_particle::ParticleWorld::new(&registry, &sheets, playsrc_particle::WorldLimits::default())
+        playsrc_particle::ParticleWorld::new(registry, &sheets, playsrc_particle::WorldLimits::default())
             .map_err(|_| ())?,
         materials,
         sheets,

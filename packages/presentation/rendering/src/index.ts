@@ -1011,9 +1011,10 @@ export type ModelAdmissionRequest = Readonly<{
   authoredTextures: ReadonlyMap<string, AuthoredTextureInput>
   materialStates: ReadonlyMap<string, MaterialStateInput>
   modelFacing: NonNullable<MapLoadRequest["modelFacing"]>
+  particleTextures?: MapLoadRequest["particleTextures"]
 }>
 
-type ModelAssets = Pick<SceneResources, "modelTemplates" | "modelLightingTextures" | "modelPanelLightingGraphs" | "modelPanelMaterialAnimations" | "materialStates" | "disposables" | "textureResidency" | "waterFogUniforms" | "modelCubemap"> & { loadRequest: Pick<MapLoadRequest, "modelMaterials" | "modelFacing" | "authoredTextures"> }
+type ModelAssets = Pick<SceneResources, "modelTemplates" | "modelLightingTextures" | "modelPanelLightingGraphs" | "modelPanelMaterialAnimations" | "materialStates" | "disposables" | "textureResidency" | "waterFogUniforms" | "modelCubemap" | "particleTextures" | "particleBatchMaterials" | "particleDepth" | "particlePipelineMeshes"> & { loadRequest: Pick<MapLoadRequest, "modelMaterials" | "modelFacing" | "authoredTextures"> }
 
 type ModelTemplateContext = Readonly<{
   request: Pick<MapLoadRequest, "modelMaterials" | "modelFacing">
@@ -2205,6 +2206,10 @@ class RendererOwner implements Renderer {
       return value
     }
     const waterFog = active?.waterFogUniforms ?? createSourceWaterFogUniforms()
+    const particleTextures = active?.particleTextures ?? new Map<string, THREE.DataTexture>()
+    const particleBatchMaterials = active?.particleBatchMaterials ?? new Map<string, THREE.MeshBasicNodeMaterial>()
+    const particleDepth = active?.particleDepth ?? disposables.add(new SourceParticleDepth(this.#backend.backend))
+    const particlePipelineMeshes = active?.particlePipelineMeshes ?? new THREE.Group()
     const models = request.models.filter((model) => !active?.modelTemplates.has(model.logicalPath))
     try {
       for (const model of models) {
@@ -2215,18 +2220,21 @@ class RendererOwner implements Renderer {
           if (!Number.isSafeInteger(frame) || frame < 0 || frame >= input.frameCount) throw new RenderingError("MalformedInput", "model frame")
           return residency.select(`${input.sourceSha256}:${space}`, frame, consumer, () => textureFromAuthored(input, space, frame, this.textureQuality), input.frameCount)
         } }), modelLightingTextures: lightingTextures, modelPanelMaterialAnimations: animations, modelTemplates: templates, modelBaseSamples: new Map(), waterFogUniforms: waterFog })
+      this.#buildParticleMaterials(request.particleTextures ?? [], states, disposables, waterFog, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes)
       if (active) {
         for (const [key, template] of templates) active.modelTemplates.set(key, template)
         active.modelLookup = new Map([...active.modelLookup, ...models.map((model) => [model.logicalPath, model] as const)])
         active.loadRequest = { ...active.loadRequest, modelMaterials: materials, modelFacing: facing, authoredTextures: textures }
         active.materialStates = states; active.modelLightingTextures = lightingTextures; active.modelPanelMaterialAnimations = animations
       } else {
+        this.#clearParticleBatches()
         this.#modelPanelScene.clear()
         for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
         this.#modelPanelInstances.clear(); this.#retainedModelPanels.clear(); this.#preparedModelInstances.clear()
         disposables.activate()
         this.#panelAssets = { loadRequest: { modelMaterials: materials, modelFacing: facing, authoredTextures: textures }, modelTemplates: templates, modelLightingTextures: lightingTextures,
-          modelPanelLightingGraphs: new ModelLightingGraphs(), modelPanelMaterialAnimations: animations, materialStates: states, disposables, textureResidency: residency, waterFogUniforms: waterFog, modelCubemap: cubemap }
+          modelPanelLightingGraphs: new ModelLightingGraphs(), modelPanelMaterialAnimations: animations, materialStates: states, disposables, textureResidency: residency, waterFogUniforms: waterFog, modelCubemap: cubemap,
+          particleTextures, particleBatchMaterials, particleDepth, particlePipelineMeshes }
         if (previousPanel) await previousPanel.disposables.retire(this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
       }
     } catch (error) { if (!active) disposables.dispose(); throw error }
@@ -2574,10 +2582,9 @@ class RendererOwner implements Renderer {
 
   async prepareParticlePipelines(camera: Camera, fog?: FogInput): Promise<void> {
     this.#requireReady()
-    if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "particle pipeline preparation requires an idle active map")
-    const owner = this.#active, backend = this.#backend, ordinal = this.#loadOrdinal, deviceGeneration = this.#deviceGeneration
-    // Pipeline compilation initializes bindings, but a never-drawn particle
-    // texture must not become permanently GPU-resident merely through loading.
+    const owner = this.#active ?? this.#panelAssets
+    if (!owner || this.#renderBusy) throw new RenderingError("InvalidState", "particle pipeline preparation requires idle admitted assets")
+    const backend = this.#backend, ordinal = this.#loadOrdinal, deviceGeneration = this.#deviceGeneration
     const coldTextures = [...owner.particleTextures.values()].filter(texture => !backend.backend.has(texture))
     const previousFog = this.#scene.fog as THREE.Fog | null
     const started = performance.now()
@@ -2596,7 +2603,7 @@ class RendererOwner implements Renderer {
       })
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
-      if (owner !== this.#active || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) throw new RenderingError("InvalidState", "particle pipeline preparation generation was replaced")
+      if (owner !== (this.#active ?? this.#panelAssets) || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) throw new RenderingError("InvalidState", "particle pipeline preparation generation was replaced")
       if (profile) {
         profile.particlePreparation!.ended = performance.now()
         profile.counters.preparedParticleVariants = owner.particlePipelineMeshes.children.length
@@ -3679,48 +3686,7 @@ class RendererOwner implements Renderer {
         modelOccurrenceInstances.set(occurrence.entity,instance)
         mainModelOccurrences.add(instance)
       }
-      const particleDepthNode = particleDepth.sample()
-      for (const texture of request.particleTextures ?? []) {
-        const state = materialStates.get(texture.material.toLowerCase())
-        if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
-        requireMipInputs(texture.material, state)
-        const value = textureFromRgba(texture, THREE.SRGBColorSpace, state)
-        particleTextures.set(texture.material.toLowerCase(), value)
-        disposables.add(value)
-        const material = new THREE.MeshBasicNodeMaterial(materialOptions({
-          logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0,
-        }, state))
-        disposables.add(material)
-        applyParticleDepthState(material, state)
-        const current = TSL.texture(value, TSL.uv())
-        const next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
-        const blend = TSL.attribute("particleSheetBlend", "float")
-        const color = TSL.attribute("particleColor", "vec4")
-        const sampled = texture.spriteCard?.blendFrames === false ? current : current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
-        const sprite = texture.spriteCard ? spriteCardNodes(texture.spriteCard, sampled, color, particleDepthNode) : null
-        if (sprite) material.positionNode = sprite.position
-        if (sprite) material.forceSinglePass = true
-        material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
-        material.colorNode = sourceFragmentColor(
-          sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)),
-          state,
-          waterFogUniforms,
-        )
-        material.toneMapped = false
-        material.name = `particle:${texture.material.toLowerCase()}`
-        material.blending = THREE.CustomBlending
-        material.transparent = true
-        particleBatchMaterials.set(particlePipelineKey(particlePipelineVariant(texture.material, state)), material)
-        const geometry = this.#createParticleBatchGeometry(1)
-        disposables.add(geometry)
-        for (const side of particlePreparationSides(material)) {
-          const prepared = side === material.side ? material : material.clone()
-          if (prepared !== material) { prepared.side = side; disposables.add(prepared) }
-          const mesh = new THREE.Mesh(geometry, prepared)
-          mesh.frustumCulled = false
-          particlePipelineMeshes.add(mesh)
-        }
-      }
+      this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes)
     } catch (error) {
       const failed = {
         group,
@@ -4063,7 +4029,7 @@ class RendererOwner implements Renderer {
           presentation.projection.offsetX, presentation.projection.offsetY, presentation.viewport.width, presentation.viewport.height)
         this.#modelPanelCamera.updateProjectionMatrix()
         const particleCamera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: presentation.verticalFovDegrees, near: presentation.near, far: presentation.far }
-        this.#stageParticleBatches(panel.particles ?? [], particleCamera, value => value === "zero" ? THREE.ZeroFactor : value === "one" ? THREE.OneFactor : value === "source-alpha" ? THREE.SrcAlphaFactor : THREE.OneMinusSrcAlphaFactor)
+        this.#stageParticleBatches(panel.particles ?? [], particleCamera)
         this.#modelPanelScene.add(this.#particles)
         this.#backend.setViewport(x, y, width, height)
         this.#backend.setScissor(x, y, width, height)
@@ -5073,6 +5039,38 @@ class RendererOwner implements Renderer {
     for (const child of [...group.children]) this.#disposeDynamicInstance(child)
   }
 
+  #buildParticleMaterials(inputs: NonNullable<MapLoadRequest["particleTextures"]>, states: ReadonlyMap<string, MaterialStateInput>, disposables: OwnedResourceGeneration,
+    waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.DataTexture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group): void {
+    const depthNode = depth.sample()
+    for (const texture of inputs) {
+      const state = states.get(texture.material.toLowerCase())
+      if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
+      const key = particlePipelineKey(particlePipelineVariant(texture.material, state))
+      if (materials.has(key)) continue
+      requireMipInputs(texture.material, state)
+      const value = textureFromRgba(texture, THREE.SRGBColorSpace, state)
+      textures.set(texture.material.toLowerCase(), value); disposables.add(value)
+      const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0 }, state))
+      disposables.add(material); applyParticleDepthState(material, state)
+      const current = TSL.texture(value, TSL.uv()), next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
+      const blend = TSL.attribute("particleSheetBlend", "float"), color = TSL.attribute("particleColor", "vec4")
+      const sampled = texture.spriteCard?.blendFrames === false ? current : current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
+      const sprite = texture.spriteCard ? spriteCardNodes(texture.spriteCard, sampled, color, depthNode) : null
+      if (sprite) { material.positionNode = sprite.position; material.forceSinglePass = true }
+      material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
+      material.colorNode = sourceFragmentColor(sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state, waterFog)
+      material.toneMapped = false; material.name = `particle:${texture.material.toLowerCase()}`
+      material.blending = THREE.CustomBlending; material.transparent = true
+      materials.set(key, material)
+      const geometry = this.#createParticleBatchGeometry(1); disposables.add(geometry)
+      for (const side of particlePreparationSides(material)) {
+        const prepared = side === material.side ? material : material.clone()
+        if (prepared !== material) { prepared.side = side; disposables.add(prepared) }
+        const mesh = new THREE.Mesh(geometry, prepared); mesh.frustumCulled = false; pipelines.add(mesh)
+      }
+    }
+  }
+
   #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
     if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
@@ -5134,6 +5132,7 @@ class RendererOwner implements Renderer {
     items: readonly ParticleItem[],
     camera: Camera,
   ): void {
+    const assets = this.#active ?? this.#panelAssets
     const count = fillParticleBatchRanges(items, this.#particleBatchRanges)
     this.#particleBatchCount = count
     for (let index = 0; index < count; index += 1) {
@@ -5159,11 +5158,11 @@ class RendererOwner implements Renderer {
         }
         let capacity = 1
         while (capacity < required) capacity *= 2
-        const material = this.#active!.particleBatchMaterials.get(key)
+        const material = assets?.particleBatchMaterials.get(key)
         if (!material) throw new RenderingError("IdentityMismatch", `Particle output blend differs from authored material: ${first.material}`)
         const geometry = this.#createParticleBatchGeometry(capacity)
         const mesh = new THREE.Mesh(geometry, material)
-        if (material.userData.sourceParticleDepth) mesh.onBeforeRender = (renderer, _scene, camera) => this.#active!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
+        if (material.userData.sourceParticleDepth) mesh.onBeforeRender = (renderer, _scene, camera) => assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
         mesh.frustumCulled = false
         const profile = browserFrameProfiler()
         if (profile && !material.userData.firstParticleUse) mesh.onBeforeRender = () => {
