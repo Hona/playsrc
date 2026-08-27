@@ -77,6 +77,15 @@ pub enum SoundDefinition {
     MedigunHealing,
     MedigunDetach,
     MedigunCharged,
+    RoundEnds60,
+    RoundEnds30,
+    RoundEnds10,
+    RoundEnds5,
+    RoundEnds4,
+    RoundEnds3,
+    RoundEnds2,
+    RoundEnds1,
+    Overtime,
 }
 
 impl SoundDefinition {
@@ -159,6 +168,15 @@ impl SoundDefinition {
             Self::MedigunHealing => "WeaponMedigun.HealingHealer",
             Self::MedigunDetach => "WeaponMedigun.HealingDetachHealer",
             Self::MedigunCharged => "WeaponMedigun.Charged",
+            Self::RoundEnds60 => "Announcer.RoundEnds60seconds",
+            Self::RoundEnds30 => "Announcer.RoundEnds30seconds",
+            Self::RoundEnds10 => "Announcer.RoundEnds10seconds",
+            Self::RoundEnds5 => "Announcer.RoundEnds5seconds",
+            Self::RoundEnds4 => "Announcer.RoundEnds4seconds",
+            Self::RoundEnds3 => "Announcer.RoundEnds3seconds",
+            Self::RoundEnds2 => "Announcer.RoundEnds2seconds",
+            Self::RoundEnds1 => "Announcer.RoundEnds1seconds",
+            Self::Overtime => "Game.Overtime",
         }
     }
 
@@ -177,7 +195,7 @@ impl SoundDefinition {
             | Self::BottleHitWorld
             | Self::KnifeHitFlesh
             | Self::BonesawHitFlesh => 3,
-            Self::FlagEnemyStolen => 4,
+            Self::FlagEnemyStolen | Self::Overtime => 4,
             Self::BatHitWorld
             | Self::ShovelHitWorld
             | Self::FistMiss
@@ -239,7 +257,9 @@ impl SoundDefinition {
             | Self::SyringeReload
             | Self::MedigunHealing
             | Self::MedigunDetach
-            | Self::MedigunCharged => 1,
+            | Self::MedigunCharged
+            | Self::RoundEnds60 | Self::RoundEnds30 | Self::RoundEnds10 | Self::RoundEnds5
+            | Self::RoundEnds4 | Self::RoundEnds3 | Self::RoundEnds2 | Self::RoundEnds1 => 1,
         }
     }
 }
@@ -320,6 +340,7 @@ pub struct SoundSelectionState {
     pub knife_hit_flesh_available: u8,
     pub bonesaw_hit_flesh_available: u8,
     pub bonesaw_hit_world_available: u8,
+    pub overtime_available: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -393,6 +414,7 @@ pub(crate) struct SoundSelection {
     knife_hit_flesh: WaveCycle,
     bonesaw_hit_flesh: WaveCycle,
     bonesaw_hit_world: WaveCycle,
+    overtime: WaveCycle,
 }
 
 impl SoundSelection {
@@ -422,6 +444,7 @@ impl SoundSelection {
             knife_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bonesaw_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bonesaw_hit_world: WaveCycle::new(WaveCycle::TWO),
+            overtime: WaveCycle::new(WaveCycle::FOUR),
         }
     }
 
@@ -451,6 +474,7 @@ impl SoundSelection {
             knife_hit_flesh_available: self.knife_hit_flesh.available,
             bonesaw_hit_flesh_available: self.bonesaw_hit_flesh.available,
             bonesaw_hit_world_available: self.bonesaw_hit_world.available,
+            overtime_available: self.overtime.available,
         }
     }
 
@@ -478,6 +502,7 @@ impl SoundSelection {
             || state.knife_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bonesaw_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bonesaw_hit_world_available & !WaveCycle::TWO != 0
+            || state.overtime_available & !WaveCycle::FOUR != 0
         {
             return false;
         }
@@ -506,6 +531,7 @@ impl SoundSelection {
         self.knife_hit_flesh.available = state.knife_hit_flesh_available;
         self.bonesaw_hit_flesh.available = state.bonesaw_hit_flesh_available;
         self.bonesaw_hit_world.available = state.bonesaw_hit_world_available;
+        self.overtime.available = state.overtime_available;
         true
     }
 
@@ -549,6 +575,7 @@ impl SoundSelection {
             SoundDefinition::KnifeHitFlesh => &mut self.knife_hit_flesh,
             SoundDefinition::BonesawHitFlesh => &mut self.bonesaw_hit_flesh,
             SoundDefinition::BonesawHitWorld => &mut self.bonesaw_hit_world,
+            SoundDefinition::Overtime => &mut self.overtime,
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

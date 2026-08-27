@@ -8,7 +8,7 @@ export const TF2_OFFLINE_PRACTICE_STORAGE_KEY = "playsrc.tf2.OfflinePracticeConf
 export type Tf2LocalMatchMap = Readonly<{
   identity: string
   displayName: string
-  mode: "payload" | "capture-the-flag" | "custom"
+  mode: "payload" | "king-of-the-hill" | "capture-the-flag" | "custom"
   minimumPlayers: number
   maximumPlayers: number
 }>
@@ -70,12 +70,13 @@ export function createTf2OfflinePracticeCatalog(
   const declared = new Set(configuredMaps)
   const selected = maps.children.flatMap((node): Tf2LocalMatchMap[] => {
     if (node.value !== null || !declared.has(node.name)) return []
-    if (!node.name.startsWith("pl_")) return []
+    const mode = node.name.startsWith("pl_") ? "payload" : node.name.startsWith("koth_") ? "king-of-the-hill" : null
+    if (!mode) return []
     const displayName = scalar(node, "name")
     if (!displayName) throw new Error(`TF2 offline practice configured map name is invalid: ${node.name}`)
     const minimumPlayers = integer(node, "min_players", 1, 32)
     const maximumPlayers = integer(node, "max_players", minimumPlayers, 32)
-    return [Object.freeze({ identity: node.name, displayName, mode: "payload", minimumPlayers, maximumPlayers })]
+    return [Object.freeze({ identity: node.name, displayName, mode, minimumPlayers, maximumPlayers })]
   })
   return Object.freeze({
     defaults: Object.freeze({
@@ -121,7 +122,7 @@ export function tf2LocalMatchLaunch(
     || !TF2_BOT_QUOTA_MODES.includes(settings.quotaMode)) {
     throw new Error("TF2 local match bot settings are invalid")
   }
-  if (entry === "training" && map.mode !== "payload") {
+   if (entry === "training" && map.mode !== "payload" && map.mode !== "king-of-the-hill") {
     throw new Error("TF2 offline practice excludes maps absent from its configured mode catalog")
   }
   const count = Math.max(1, Math.min(31, settings.playerCount))

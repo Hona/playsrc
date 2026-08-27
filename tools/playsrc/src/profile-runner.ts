@@ -27,6 +27,7 @@ export function requireBrowserBudget(milliseconds: number, minimum = 30_000): vo
 
 const PROFILES = Object.freeze({
   deathnotice: { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "deathnotice" } },
+  koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
   "spy-cloak": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "spy-cloak" } },
   "trigger-door": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "trigger-door" } },
   "trigger-door-upward": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "trigger-door", PROFILE_DOOR_MAP: "pl_upward" } },

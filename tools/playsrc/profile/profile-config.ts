@@ -6,7 +6,7 @@ const MAX_PROFILE_MILLISECONDS = 175_000
 
 type ProfileConfiguration = Readonly<{
   match: string
-  target?: "jump_beef" | "pl_upward" | "ctf_2fort"
+  target?: "jump_beef" | "pl_upward" | "ctf_2fort" | "koth_viaduct"
   output?: string
   channel?: "msedge"
   preciseMemory?: boolean

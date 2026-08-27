@@ -54,11 +54,22 @@ pub struct Timer {
     pub paused: bool,
     pub disabled: bool,
     finished: bool,
+    now: f32,
+    end_time: f32,
+    paused_remaining: f32,
+    next_think: f32,
+    outputs: u16,
+    warnings: u16,
 }
 
 impl Timer {
     fn new(configuration: TimerConfiguration) -> Self {
         let setup = configuration.setup_seconds > 0;
+        let remaining = if setup {
+            configuration.setup_seconds
+        } else {
+            configuration.initial_seconds
+        } as f32;
         Self {
             configuration,
             state: if setup {
@@ -66,61 +77,121 @@ impl Timer {
             } else {
                 TimerState::Normal
             },
-            remaining: if setup {
-                configuration.setup_seconds as f32
-            } else {
-                configuration.initial_seconds as f32
-            },
+            remaining: remaining.max(0.0),
             paused: true,
             disabled: false,
-            finished: false,
+            finished: remaining <= 0.0,
+            now: 0.0,
+            end_time: remaining,
+            paused_remaining: remaining,
+            next_think: 0.05,
+            outputs: output_flags(remaining),
+            warnings: output_flags(if remaining > 10.0 {
+                remaining + 2.0
+            } else {
+                remaining
+            }),
         }
     }
 
     pub fn pause(&mut self) {
-        self.paused = true;
+        if !self.disabled && !self.paused {
+            self.paused_remaining = self.end_time - self.now;
+            self.paused = true;
+        }
     }
 
     pub fn resume(&mut self) {
-        if !self.disabled {
+        if !self.disabled && self.paused {
+            self.end_time = self.now + self.paused_remaining;
             self.paused = false;
         }
     }
 
-    pub fn set_time(&mut self, seconds: u32) {
-        self.remaining = seconds as f32;
-        self.finished = false;
+    pub fn set_time(&mut self, seconds: i32) {
+        if self.disabled {
+            return;
+        }
+        let seconds = if self.configuration.maximum_seconds > 0 {
+            seconds.min(self.configuration.maximum_seconds)
+        } else {
+            seconds
+        };
+        self.paused_remaining = seconds as f32;
+        self.end_time = self.now + seconds as f32;
+        self.refresh(self.now);
+        self.recalculate_outputs();
     }
 
     pub fn add_time(&mut self, seconds: i32) {
-        let maximum = if self.state == TimerState::Setup {
-            self.configuration.setup_seconds
+        if self.disabled {
+            return;
+        }
+        let maximum = self.configuration.maximum_seconds;
+        let seconds = if maximum > 0 && self.remaining + seconds as f32 > maximum as f32 {
+            (maximum as f32 - self.remaining) as i32
         } else {
-            self.configuration.maximum_seconds
+            seconds
         };
-        self.remaining = (self.remaining + seconds as f32)
-            .max(0.0)
-            .min(if maximum == 0 {
-                f32::MAX
-            } else {
-                maximum as f32
-            });
-        self.finished = false;
+        if self.paused {
+            self.paused_remaining += seconds as f32;
+        } else {
+            self.end_time += seconds as f32;
+        }
+        self.refresh(self.now);
+        self.recalculate_outputs();
+    }
+
+    fn refresh(&mut self, now: f32) {
+        self.now = now;
+        self.remaining = if self.paused {
+            self.paused_remaining
+        } else {
+            self.end_time - now
+        }
+        .max(0.0);
+    }
+
+    fn recalculate_outputs(&mut self) {
+        self.finished = self.remaining <= 0.0;
+        self.outputs = output_flags(self.remaining);
+        self.warnings = output_flags(if self.remaining > 10.0 {
+            self.remaining + 2.0
+        } else {
+            self.remaining
+        });
     }
 
     fn reset(&mut self) {
+        let now = self.now;
         *self = Self::new(self.configuration);
+        self.now = now;
+        self.end_time = now + self.paused_remaining;
+        self.next_think = now + 0.05;
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+const OUTPUT_SECONDS: [u16; 12] = [300, 240, 180, 120, 60, 30, 10, 5, 4, 3, 2, 1];
+
+fn output_flags(remaining: f32) -> u16 {
+    OUTPUT_SECONDS
+        .iter()
+        .enumerate()
+        .fold(0, |flags, (index, seconds)| {
+            flags | (u16::from(remaining >= f32::from(*seconds)) << index)
+        })
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Configuration {
     pub waiting_seconds: f32,
     pub preround_seconds: f32,
     pub bonus_seconds: f32,
     pub stalemate_enabled: bool,
     pub stalemate_seconds: f32,
-    pub timer: Option<TimerConfiguration>,
+    pub timers: Vec<TimerConfiguration>,
+    pub koth: Option<crate::koth::Configuration>,
+    pub round_wins: Vec<RoundWin>,
     pub defending_team: Option<PlayerTeam>,
 }
 
@@ -132,7 +203,9 @@ impl Default for Configuration {
             bonus_seconds: DEFAULT_BONUS_SECONDS,
             stalemate_enabled: false,
             stalemate_seconds: DEFAULT_STALEMATE_SECONDS,
-            timer: None,
+            timers: Vec::new(),
+            koth: None,
+            round_wins: Vec::new(),
             defending_team: None,
         }
     }
@@ -142,25 +215,33 @@ impl Configuration {
     pub fn from_graph(graph: &Graph) -> Result<Self, Error> {
         let mut result = Self::default();
         for entity in &graph.entities {
+            if class(entity, b"game_round_win") {
+                result.round_wins.push(RoundWin {
+                    identity: entity.index as u32,
+                    team: integer(entity, b"TeamNum", 0)?,
+                    reason: integer(
+                        entity,
+                        b"win_reason",
+                        i32::from(WIN_REASON_DEFEND_UNTIL_TIME_LIMIT),
+                    )? as u8,
+                });
+            }
             if !class(entity, b"team_round_timer") {
                 continue;
-            }
-            if result.timer.is_some() {
-                return Err(Error::MultipleTimers);
             }
             let identity = u32::try_from(entity.index).map_err(|_| Error::InvalidTimer)?;
             let initial_seconds = integer(entity, b"timer_length", 0)?;
             let setup_seconds = integer(entity, b"setup_length", 0)?;
             let maximum_seconds = integer(entity, b"max_length", 0)?;
-            result.timer = Some(TimerConfiguration {
+            result.timers.push(TimerConfiguration {
                 identity,
                 initial_seconds,
                 setup_seconds,
                 maximum_seconds,
                 show_in_hud: boolean(entity, b"show_in_hud", false)?,
-                auto_countdown: boolean(entity, b"auto_countdown", false)?,
-                start_paused: boolean(entity, b"start_paused", false)?,
-                reset_on_round_start: boolean(entity, b"reset_time", true)?,
+                auto_countdown: boolean(entity, b"auto_countdown", true)?,
+                start_paused: boolean(entity, b"start_paused", true)?,
+                reset_on_round_start: boolean(entity, b"reset_time", false)?,
             });
         }
         if graph
@@ -170,6 +251,10 @@ impl Configuration {
         {
             result.defending_team = Some(PlayerTeam::Red);
         }
+        result.koth = crate::koth::Configuration::from_graph(graph)?;
+        if let Some(koth) = result.koth {
+            result.timers.extend(koth.timers());
+        }
         Ok(result)
     }
 }
@@ -178,8 +263,14 @@ impl Configuration {
 pub enum Error {
     InvalidConfiguration,
     InvalidTimer,
-    MultipleTimers,
     InvalidWinner,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundWin {
+    identity: u32,
+    team: i32,
+    reason: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,6 +283,9 @@ pub enum Event {
     RoundActive,
     SetupFinished { timer: u32 },
     TimerFinished { timer: u32 },
+    TimerThreshold { timer: u32, seconds: u16 },
+    TimerWarning { timer: u32, seconds: u16 },
+    MapRoundWin { entity: u32 },
     OvertimeChanged { active: bool },
     RoundWon { team: PlayerTeam, reason: u8 },
     RoundRespawn,
@@ -211,6 +305,8 @@ pub struct Snapshot {
     pub blue_score: u16,
     pub rounds_played: u32,
     pub timer: Option<Timer>,
+    /// RED, BLU. Separate from the ordinary waiting/setup timer panel.
+    pub koth_timers: Option<[Timer; 2]>,
     pub events: Vec<Event>,
 }
 
@@ -234,7 +330,7 @@ impl Facts {
 pub struct Rules {
     configuration: Configuration,
     state: State,
-    timer: Option<Timer>,
+    timers: Vec<Timer>,
     now: f32,
     transition_at: Option<f32>,
     waiting_until: Option<f32>,
@@ -246,6 +342,9 @@ pub struct Rules {
     red_score: u16,
     blue_score: u16,
     rounds_played: u32,
+    cap_in_progress_until: f32,
+    pending_events: Vec<Event>,
+    respawn_waves: [Option<f32>; 2],
 }
 
 impl Rules {
@@ -265,9 +364,14 @@ impl Rules {
             return Err(Error::InvalidConfiguration);
         }
         Ok(Self {
+            timers: configuration
+                .timers
+                .iter()
+                .copied()
+                .map(Timer::new)
+                .collect(),
             configuration,
             state: State::Init,
-            timer: configuration.timer.map(Timer::new),
             now: 0.0,
             transition_at: None,
             waiting_until: None,
@@ -279,6 +383,9 @@ impl Rules {
             red_score: 0,
             blue_score: 0,
             rounds_played: 0,
+            cap_in_progress_until: 0.0,
+            pending_events: Vec::new(),
+            respawn_waves: [None; 2],
         })
     }
 
@@ -286,11 +393,10 @@ impl Rules {
         let mut rules = Self::new(configuration)?;
         rules.state = State::Running;
         rules.waiting_completed = true;
-        if let Some(timer) = &mut rules.timer
-            && timer.configuration.auto_countdown
-            && !timer.configuration.start_paused
-        {
-            timer.resume();
+        for timer in &mut rules.timers {
+            if !timer.configuration.start_paused {
+                timer.resume();
+            }
         }
         Ok(rules)
     }
@@ -300,11 +406,164 @@ impl Rules {
     }
 
     pub fn timer(&self) -> Option<&Timer> {
-        self.timer.as_ref()
+        self.timers
+            .iter()
+            .rev()
+            .find(|timer| timer.configuration.show_in_hud)
+            .or_else(|| self.timers.first())
     }
 
-    pub fn timer_mut(&mut self) -> Option<&mut Timer> {
-        self.timer.as_mut()
+    pub fn timer_mut(&mut self, identity: u32) -> Option<&mut Timer> {
+        self.timers
+            .iter_mut()
+            .find(|timer| timer.configuration.identity == identity)
+    }
+
+    pub fn koth_configuration(&self) -> Option<crate::koth::Configuration> {
+        self.configuration.koth
+    }
+
+    pub fn koth_timers(&self) -> Option<[Timer; 2]> {
+        let koth = self.configuration.koth?;
+        Some([koth.red_timer, koth.blue_timer].map(|identity| {
+            *self
+                .timers
+                .iter()
+                .find(|timer| timer.configuration.identity == identity)
+                .expect("KOTH timer")
+        }))
+    }
+
+    pub fn timer_may_expire(&self) -> bool {
+        self.cap_in_progress_until < self.now
+    }
+
+    /// Apply an input already resolved by the entity I/O world. No point state
+    /// is inferred here: maps explicitly select the active KOTH clock.
+    pub fn apply_input(&mut self, entity: u32, input: &[u8], value: i32, now: f32) {
+        self.now = now;
+        for timer in &mut self.timers {
+            timer.refresh(now);
+        }
+        if let Some(win) = self
+            .configuration
+            .round_wins
+            .iter_mut()
+            .find(|win| win.identity == entity)
+        {
+            if input.eq_ignore_ascii_case(b"SetTeam") {
+                win.team = value;
+            } else if input.eq_ignore_ascii_case(b"RoundWin") {
+                let (team, reason) = (win.team, win.reason);
+                if team == 2 || team == 3 {
+                    if let Ok(events) = self.win(
+                        if team == 2 {
+                            PlayerTeam::Red
+                        } else {
+                            PlayerTeam::Blue
+                        },
+                        reason,
+                    ) {
+                        self.pending_events.extend(events);
+                    }
+                } else if self.configuration.stalemate_enabled {
+                    let mut events = Vec::new();
+                    self.transition(State::Stalemate, &mut events);
+                    self.transition_at = Some(now + self.configuration.stalemate_seconds);
+                    self.pending_events.extend(events);
+                }
+                self.pending_events.push(Event::MapRoundWin { entity });
+            }
+            return;
+        }
+        let koth = self.configuration.koth;
+        if let Some(koth) = koth {
+            let active = if input.eq_ignore_ascii_case(b"SetRedKothClockActive") {
+                Some(koth.red_timer)
+            } else if input.eq_ignore_ascii_case(b"SetBlueKothClockActive") {
+                Some(koth.blue_timer)
+            } else {
+                None
+            };
+            if let Some(active) = active {
+                // Preserve the SDK's BLU-before-RED input ordering.
+                for identity in [koth.blue_timer, koth.red_timer] {
+                    let timer = self.timer_mut(identity).expect("KOTH timer");
+                    if identity == active {
+                        timer.resume();
+                    } else {
+                        timer.pause();
+                    }
+                }
+                return;
+            }
+            if entity == koth.identity {
+                let operation = if input.eq_ignore_ascii_case(b"SetRedTimer") {
+                    Some((koth.red_timer, false))
+                } else if input.eq_ignore_ascii_case(b"SetBlueTimer") {
+                    Some((koth.blue_timer, false))
+                } else if input.eq_ignore_ascii_case(b"AddRedTimer") {
+                    Some((koth.red_timer, true))
+                } else if input.eq_ignore_ascii_case(b"AddBlueTimer") {
+                    Some((koth.blue_timer, true))
+                } else {
+                    None
+                };
+                if let Some((identity, add)) = operation {
+                    if add && !matches!(self.state, State::Running | State::TeamWin) {
+                        return;
+                    }
+                    let timer = self.timer_mut(identity).expect("KOTH timer");
+                    if add {
+                        timer.add_time(value);
+                    } else {
+                        timer.set_time(value);
+                    }
+                    return;
+                }
+                if input.eq_ignore_ascii_case(b"RoundSpawn") {
+                    for identity in [koth.blue_timer, koth.red_timer] {
+                        self.timer_mut(identity).expect("KOTH timer").reset();
+                    }
+                    return;
+                }
+            }
+        }
+        let running = matches!(self.state, State::Running | State::TeamWin);
+        let Some(timer) = self.timer_mut(entity) else {
+            return;
+        };
+        if input.eq_ignore_ascii_case(b"Pause") {
+            timer.pause();
+        } else if input.eq_ignore_ascii_case(b"Resume") {
+            timer.resume();
+        } else if input.eq_ignore_ascii_case(b"SetTime") {
+            timer.set_time(value);
+        } else if input.eq_ignore_ascii_case(b"AddTime") && running {
+            timer.add_time(value);
+        } else if input.eq_ignore_ascii_case(b"ShowInHUD") {
+            timer.configuration.show_in_hud = value != 0;
+        } else if input.eq_ignore_ascii_case(b"Disable") {
+            timer.pause();
+            timer.disabled = true;
+        } else if input.eq_ignore_ascii_case(b"Enable") {
+            timer.disabled = false;
+            timer.resume();
+        }
+    }
+
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    pub fn set_respawn_wave(&mut self, team: PlayerTeam, seconds: f32) {
+        if seconds >= 0.0 && seconds.is_finite() && team.is_gameplay() {
+            self.respawn_waves[usize::from(team == PlayerTeam::Blue)] = Some(seconds);
+        }
+    }
+
+    pub fn respawn_waves(&self) -> [Option<f32>; 2] {
+        self.respawn_waves
     }
 
     pub fn waiting_for_players(&self) -> bool {
@@ -329,16 +588,17 @@ impl Rules {
             waiting_for_players: self.waiting_for_players(),
             waiting_remaining: self.waiting_until.map(|until| (until - self.now).max(0.0)),
             in_setup: self
-                .timer
-                .as_ref()
-                .is_some_and(|timer| timer.state == TimerState::Setup),
+                .timers
+                .iter()
+                .any(|timer| timer.state == TimerState::Setup),
             in_overtime: self.in_overtime,
             winning_team: self.winning_team,
             win_reason: self.win_reason,
             red_score: self.red_score,
             blue_score: self.blue_score,
             rounds_played: self.rounds_played,
-            timer: self.timer,
+            timer: self.timer().copied(),
+            koth_timers: self.koth_timers(),
             events,
         }
     }
@@ -358,7 +618,7 @@ impl Rules {
             self.blue_score = self.blue_score.saturating_add(1);
         }
         self.rounds_played = self.rounds_played.saturating_add(1);
-        if let Some(timer) = &mut self.timer {
+        for timer in &mut self.timers {
             timer.pause();
         }
         let mut events = vec![Event::RoundWon { team, reason }];
@@ -384,7 +644,13 @@ impl Rules {
             return Err(Error::InvalidConfiguration);
         }
         self.now = now;
-        let mut events = Vec::new();
+        for timer in &mut self.timers {
+            timer.refresh(now);
+        }
+        if facts.objective_contested {
+            self.cap_in_progress_until = now + 0.1;
+        }
+        let mut events = self.take_events();
         match self.state {
             State::Init => self.transition(State::Pregame, &mut events),
             State::Pregame if facts.have_players() => {
@@ -402,12 +668,12 @@ impl Rules {
             State::Preround if self.transition_at.is_some_and(|time| now > time) => {
                 self.transition(State::Running, &mut events);
                 events.push(Event::RoundActive);
-                if self.waiting_until.is_none()
-                    && let Some(timer) = &mut self.timer
-                    && timer.configuration.auto_countdown
-                    && !timer.configuration.start_paused
-                {
-                    timer.resume();
+                if self.waiting_until.is_none() {
+                    for timer in &mut self.timers {
+                        if !timer.configuration.start_paused {
+                            timer.resume();
+                        }
+                    }
                 }
             }
             State::Running | State::Stalemate if !facts.have_players() => {
@@ -434,48 +700,88 @@ impl Rules {
         } else if self.state == State::Running {
             self.advance_timer(interval, facts, &mut events)?;
         }
+        if self.configuration.koth.is_some() && !self.waiting_for_players() {
+            for timer in &mut self.timers {
+                if timer.disabled || timer.paused || !timer.configuration.auto_countdown {
+                    continue;
+                }
+                for (index, seconds) in OUTPUT_SECONDS.into_iter().enumerate().skip(4) {
+                    if timer.warnings & (1 << index) != 0
+                        && timer.remaining <= f32::from(seconds) + 1.0
+                    {
+                        timer.warnings &= !(1 << index);
+                        events.push(Event::TimerWarning {
+                            timer: timer.configuration.identity,
+                            seconds,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
         Ok(events)
     }
 
     fn advance_timer(
         &mut self,
-        interval: f32,
+        _interval: f32,
         facts: Facts,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
-        let Some(timer) = &mut self.timer else {
-            return Ok(());
-        };
-        if timer.paused || timer.disabled || timer.finished {
-            return Ok(());
-        }
-        timer.remaining = (timer.remaining - interval).max(0.0);
-        if timer.remaining > 0.0 {
-            if self.in_overtime {
+        let may_expire = self.timer_may_expire() && !facts.flag_away_from_home;
+        let mut finished_normal = false;
+        for timer in &mut self.timers {
+            if self.now < timer.next_think {
+                continue;
+            }
+            timer.next_think = self.now + 0.05;
+            if timer.paused || timer.disabled {
+                continue;
+            }
+            if (timer.remaining > 0.0 && timer.configuration.show_in_hud
+                || timer.state == TimerState::Setup)
+                && self.in_overtime
+            {
                 self.in_overtime = false;
                 events.push(Event::OvertimeChanged { active: false });
             }
-            return Ok(());
-        }
-        let identity = timer.configuration.identity;
-        if timer.state == TimerState::Setup {
-            timer.state = TimerState::Normal;
-            timer.remaining = timer.configuration.initial_seconds as f32;
-            events.push(Event::SetupFinished { timer: identity });
-            return Ok(());
-        }
-        if facts.objective_contested || facts.flag_away_from_home {
-            if !self.in_overtime {
-                self.in_overtime = true;
-                events.push(Event::OvertimeChanged { active: true });
+            let identity = timer.configuration.identity;
+            if timer.remaining <= 0.0 && !timer.finished {
+                if timer.state == TimerState::Setup {
+                    timer.state = TimerState::Normal;
+                    timer.set_time(timer.configuration.initial_seconds);
+                    events.push(Event::SetupFinished { timer: identity });
+                    continue;
+                }
+                if !may_expire {
+                    timer.end_time = self.now;
+                    if timer.configuration.show_in_hud && !self.in_overtime {
+                        self.in_overtime = true;
+                        events.push(Event::OvertimeChanged { active: true });
+                    }
+                    continue;
+                }
+                timer.finished = true;
+                events.push(Event::TimerFinished { timer: identity });
+                finished_normal = true;
+            } else {
+                for (index, seconds) in OUTPUT_SECONDS.into_iter().enumerate() {
+                    if timer.state == TimerState::Setup && seconds > 60 {
+                        continue;
+                    }
+                    if timer.outputs & (1 << index) != 0 && timer.remaining <= f32::from(seconds) {
+                        timer.outputs &= !(1 << index);
+                        events.push(Event::TimerThreshold {
+                            timer: identity,
+                            seconds,
+                        });
+                        break;
+                    }
+                }
             }
-            return Ok(());
         }
-        timer.finished = true;
-        events.push(Event::TimerFinished { timer: identity });
-        if self.in_overtime {
-            self.in_overtime = false;
-            events.push(Event::OvertimeChanged { active: false });
+        if !finished_normal || self.configuration.koth.is_some() {
+            return Ok(());
         }
         if let Some(team) = self.configuration.defending_team {
             events.extend(self.win(team, WIN_REASON_DEFEND_UNTIL_TIME_LIMIT)?);
@@ -508,10 +814,10 @@ impl Rules {
         self.winning_team = None;
         self.win_reason = 0;
         self.in_overtime = false;
-        if let Some(timer) = &mut self.timer
-            && (timer.configuration.reset_on_round_start || full_reset)
-        {
-            timer.reset();
+        for timer in &mut self.timers {
+            if timer.configuration.reset_on_round_start || full_reset {
+                timer.reset();
+            }
         }
         self.transition(State::Preround, events);
         self.transition_at = Some(self.now + self.configuration.preround_seconds);
@@ -530,7 +836,7 @@ impl Rules {
     }
 }
 
-fn class(entity: &Entity, expected: &[u8]) -> bool {
+pub(crate) fn class(entity: &Entity, expected: &[u8]) -> bool {
     entity
         .classname
         .as_ref()
@@ -546,7 +852,7 @@ fn value<'a>(entity: &'a Entity, name: &[u8]) -> Option<&'a [u8]> {
         .map(|pair| pair.value.as_slice())
 }
 
-fn integer(entity: &Entity, name: &[u8], default: i32) -> Result<i32, Error> {
+pub(crate) fn integer(entity: &Entity, name: &[u8], default: i32) -> Result<i32, Error> {
     value(entity, name).map_or(Ok(default), |bytes| {
         let text = std::str::from_utf8(bytes).map_err(|_| Error::InvalidTimer)?;
         let text = text.trim_start();
@@ -588,6 +894,152 @@ fn boolean(entity: &Entity, name: &[u8], default: bool) -> Result<bool, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn koth() -> Rules {
+        let graph =
+            playsrc_entity::parse(b"{\"classname\"\"tf_logic_koth\"}\0", Default::default())
+                .unwrap();
+        Rules::active(Configuration::from_graph(&graph).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn koth_independent_clocks_only_run_on_authored_activation_inputs() {
+        let mut rules = koth();
+        rules.advance(30.0, 0.015, facts()).unwrap();
+        assert_eq!(
+            rules.koth_timers().unwrap().map(|timer| timer.remaining),
+            [180.0, 180.0]
+        );
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 30.0);
+        rules.advance(45.0, 0.015, facts()).unwrap();
+        assert_eq!(
+            rules.koth_timers().unwrap().map(|timer| timer.remaining),
+            [165.0, 180.0]
+        );
+        rules.apply_input(99, b"SetBlueKothClockActive", 0, 45.0);
+        rules.advance(55.0, 0.015, facts()).unwrap();
+        assert_eq!(
+            rules.koth_timers().unwrap().map(|timer| timer.remaining),
+            [165.0, 170.0]
+        );
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 55.0);
+        rules.advance(60.0, 0.015, facts()).unwrap();
+        assert_eq!(
+            rules.koth_timers().unwrap().map(|timer| timer.remaining),
+            [160.0, 170.0]
+        );
+    }
+
+    #[test]
+    fn koth_overtime_uses_capture_buffer_and_timer_finish_never_awards_victory() {
+        let mut rules = koth();
+        rules.apply_input(0, b"SetRedTimer", 1, 0.0);
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 0.0);
+        let contested = Facts {
+            objective_contested: true,
+            ..facts()
+        };
+        assert!(
+            rules
+                .advance(1.0, 0.015, contested)
+                .unwrap()
+                .contains(&Event::OvertimeChanged { active: true })
+        );
+        assert!(!rules.timer_may_expire());
+        rules.advance(1.1, 0.015, facts()).unwrap();
+        assert!(!rules.timer_may_expire(), "inclusive 0.1s cap buffer");
+        let events = rules.advance(1.16, 0.015, facts()).unwrap();
+        assert!(rules.timer_may_expire());
+        assert!(events.contains(&Event::TimerFinished { timer: 2 }));
+        assert_eq!(
+            rules.state(),
+            State::Running,
+            "master owns victory, not the timer"
+        );
+        assert_eq!(rules.snapshot(vec![]).red_score, 0);
+    }
+
+    #[test]
+    fn koth_overtime_retake_stops_zero_clock_and_new_owner_clears_global_overtime() {
+        let mut rules = koth();
+        rules.apply_input(0, b"SetBlueTimer", 1, 0.0);
+        rules.apply_input(99, b"SetBlueKothClockActive", 0, 0.0);
+        rules
+            .advance(
+                1.0,
+                0.015,
+                Facts {
+                    objective_contested: true,
+                    ..facts()
+                },
+            )
+            .unwrap();
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 1.0);
+        let events = rules.advance(1.06, 0.015, facts()).unwrap();
+        assert!(events.contains(&Event::OvertimeChanged { active: false }));
+        let [red, blue] = rules.koth_timers().unwrap();
+        assert!(!red.paused);
+        assert!(blue.paused);
+        assert_eq!(blue.remaining, 0.0);
+    }
+
+    #[test]
+    fn koth_restart_restores_both_clocks_and_preserves_round_score() {
+        let mut rules = koth();
+        rules.apply_input(0, b"SetRedTimer", 4, 0.0);
+        rules.apply_input(0, b"AddBlueTimer", -50, 0.0);
+        assert_eq!(
+            rules.koth_timers().unwrap().map(|timer| timer.remaining),
+            [4.0, 130.0]
+        );
+        rules.win(PlayerTeam::Red, 1).unwrap();
+        rules.advance(15.015, 0.015, facts()).unwrap();
+        let timers = rules.koth_timers().unwrap();
+        assert_eq!(timers.map(|timer| timer.remaining), [180.0, 180.0]);
+        assert!(timers.iter().all(|timer| timer.paused));
+        assert_eq!(rules.snapshot(vec![]).red_score, 1);
+    }
+
+    #[test]
+    fn absolute_timer_deadline_does_not_accumulate_sixty_six_hz_subtraction_error() {
+        let mut rules = koth();
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 0.0);
+        for tick in 1..=12_000 {
+            rules.advance(tick as f32 * 0.015, 0.015, facts()).unwrap();
+        }
+        assert_eq!(rules.koth_timers().unwrap()[0].remaining, 0.0);
+        assert_eq!(rules.koth_timers().unwrap()[1].remaining, 180.0);
+    }
+
+    #[test]
+    fn timer_threshold_output_is_single_shot_and_add_time_rearms_it() {
+        let mut rules = koth();
+        rules.apply_input(0, b"SetRedTimer", 31, 0.0);
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 0.0);
+        let threshold = Event::TimerThreshold {
+            timer: 2,
+            seconds: 30,
+        };
+        assert!(
+            rules
+                .advance(1.0, 0.015, facts())
+                .unwrap()
+                .contains(&threshold)
+        );
+        assert!(
+            !rules
+                .advance(1.06, 0.015, facts())
+                .unwrap()
+                .contains(&threshold)
+        );
+        rules.apply_input(0, b"AddRedTimer", 10, 1.06);
+        assert!(
+            rules
+                .advance(11.06, 0.015, facts())
+                .unwrap()
+                .contains(&threshold)
+        );
+    }
 
     fn facts() -> Facts {
         Facts {
@@ -641,7 +1093,7 @@ mod tests {
     #[test]
     fn upward_setup_then_defender_victory_uses_authored_timer_lengths() {
         let mut rules = Rules::active(Configuration {
-            timer: Some(timer()),
+            timers: vec![timer()],
             defending_team: Some(PlayerTeam::Red),
             ..Configuration::default()
         })
@@ -668,11 +1120,11 @@ mod tests {
     #[test]
     fn contested_timer_enters_overtime_and_finishes_only_when_clear() {
         let mut rules = Rules::active(Configuration {
-            timer: Some(TimerConfiguration {
+            timers: vec![TimerConfiguration {
                 initial_seconds: 1,
                 setup_seconds: 0,
                 ..timer()
-            }),
+            }],
             defending_team: Some(PlayerTeam::Red),
             ..Configuration::default()
         })
@@ -688,8 +1140,7 @@ mod tests {
                 .contains(&Event::OvertimeChanged { active: true })
         );
         assert_eq!(rules.state(), State::Running);
-        let result = rules.advance(2.0, 1.0, facts()).unwrap();
-        assert!(result.contains(&Event::OvertimeChanged { active: false }));
+        rules.advance(2.0, 1.0, facts()).unwrap();
         assert_eq!(rules.state(), State::TeamWin);
     }
 
@@ -717,7 +1168,7 @@ mod tests {
         )
         .unwrap();
         let configuration = Configuration::from_graph(&graph).unwrap();
-        let timer = configuration.timer.unwrap();
+        let timer = configuration.timers[0];
         assert_eq!(timer.initial_seconds, -1);
         assert!(!timer.show_in_hud);
     }
@@ -727,9 +1178,10 @@ mod tests {
         let graph = playsrc_entity::parse(b"{\"classname\"\"team_round_timer\"\"timer_length\"\"330\"\"setup_length\"\"70\"\"max_length\"\"600\"\"show_in_hud\"\"1\"\"auto_countdown\"\"1\"\"start_paused\"\"0\"}\n{\"classname\"\"team_train_watcher\"}\0", playsrc_entity::Limits::default()).unwrap();
         let configuration = Configuration::from_graph(&graph).unwrap();
         assert_eq!(
-            configuration.timer.unwrap(),
+            configuration.timers[0],
             TimerConfiguration {
                 identity: 0,
+                reset_on_round_start: false,
                 ..timer()
             }
         );

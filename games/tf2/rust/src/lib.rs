@@ -13,6 +13,7 @@ pub mod damage;
 pub mod deathnotice;
 pub mod dynamic_prop;
 pub mod health;
+pub mod koth;
 mod map_runtime;
 pub mod medic;
 pub mod pickup;
@@ -1482,6 +1483,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(())
     }
 
+    pub fn fire_entity_input(&mut self, target: &[u8], input: &[u8], value: &[u8], delay: f32) -> Result<(), Error> {
+        let phase = self.map.fire_input(self.tick, target, input, value, delay)?;
+        merge_mover_requests(&mut self.mover_requests, &phase.mover_requests);
+        Ok(())
+    }
+
     pub fn bot_world(&self) -> Option<&bot::BotWorld> {
         self.bots.as_ref()
     }
@@ -1828,6 +1835,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
             }
         }
+        self.map.apply_round_inputs(&mut self.round, self.tick as f32 * self.movement_configuration.tick_interval);
         let mut round_events = self
             .round
             .advance(
@@ -1838,6 +1846,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .map_err(Error::Round)?;
         let round_phase = self.map.emit_round_outputs(self.tick, &round_events)?;
         map_phase.append(round_phase);
+        for event in &round_events {
+            let sound = match *event {
+                round::Event::TimerWarning { seconds, .. } => match seconds {
+                    60 => Some(SoundDefinition::RoundEnds60), 30 => Some(SoundDefinition::RoundEnds30),
+                    10 => Some(SoundDefinition::RoundEnds10), 5 => Some(SoundDefinition::RoundEnds5),
+                    4 => Some(SoundDefinition::RoundEnds4), 3 => Some(SoundDefinition::RoundEnds3),
+                    2 => Some(SoundDefinition::RoundEnds2), 1 => Some(SoundDefinition::RoundEnds1), _ => None,
+                },
+                round::Event::OvertimeChanged { active: true } => Some(SoundDefinition::Overtime),
+                _ => None,
+            };
+            if let Some(sound) = sound { self.emit_objective_sound(PLAYER_IDENTITY, sound, self.movement.position); }
+        }
         let round_winner = round_events.iter().find_map(|event| match event {
             round::Event::RoundWon { team, .. } => Some(*team),
             _ => None,
@@ -1857,8 +1878,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if reset_round {
             self.restrictions.team_win = None;
             let mut point_events = Vec::new();
+            let facts = self.control_point_facts();
             if let Some(points) = self.map.control_points_mut() {
                 points.reset(self.tick as f32 * self.movement_configuration.tick_interval, &mut point_events);
+                if let Some(koth) = self.round.koth_configuration() {
+                    koth.round_activate(points, self.tick as f32 * self.movement_configuration.tick_interval, facts, &mut point_events);
+                }
             }
             let phase = self.map.emit_control_point_outputs(self.tick, &point_events)?;
             map_phase.append(phase);
@@ -2038,7 +2063,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     points: self.map.control_points(),
                     in_setup: self.round.snapshot(Vec::new()).in_setup,
                     in_overtime: self.round.snapshot(Vec::new()).in_overtime,
-                    time_left: [self.round.timer().map_or(0.0, |timer| timer.remaining); 2],
+                    time_left: self.round.koth_timers().map_or_else(
+                        || [self.round.timer().map_or(0.0, |timer| timer.remaining); 2],
+                        |[red, blue]| [blue.remaining, red.remaining],
+                    ),
                 }),
             )
             .map_err(Error::Bot)?
@@ -2639,6 +2667,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 _ => {}
             }
         }
+        self.map.apply_round_inputs(&mut self.round, self.tick as f32 * self.movement_configuration.tick_interval);
+        let input_events = self.round.take_events();
+        for event in &input_events {
+            if let round::Event::RoundWon { team, .. } = event {
+                self.restrictions.team_win = Some(*team);
+                self.emit_objective_sound(PLAYER_IDENTITY, if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost }, self.movement.position);
+            }
+        }
+        map_phase.append(self.map.emit_round_outputs(self.tick, &input_events)?);
+        round_events.extend(input_events);
+        if let Some(bots) = &mut self.bots { bots.set_respawn_waves(self.round.respawn_waves()); }
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -2720,8 +2759,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             round_running: round.state == round::State::Running,
             waiting_for_players: round.waiting_for_players,
             in_overtime: round.in_overtime,
-            koth_timer_remaining: None,
-            timer_may_expire: !self.map.control_points().is_some_and(control_point::World::contested),
+            koth_timer_remaining: round.koth_timers.map(|timers| timers.map(|timer| timer.remaining)),
+            timer_may_expire: self.round.timer_may_expire(),
         }
     }
 
@@ -10066,6 +10105,7 @@ mod tests {
                 knife_hit_flesh_available: 0b111,
                 bonesaw_hit_flesh_available: 0b111,
                 bonesaw_hit_world_available: 0b11,
+                overtime_available: 0b1111,
             }
         );
 
@@ -10117,6 +10157,7 @@ mod tests {
                 knife_hit_flesh_available: 0b111,
                 bonesaw_hit_flesh_available: 0b111,
                 bonesaw_hit_world_available: 0b11,
+                overtime_available: 0b1111,
             }
         );
     }

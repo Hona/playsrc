@@ -82,11 +82,13 @@ export type Tf2RandomState = Readonly<{
   flagTeamDroppedAvailable: number
   bonesawHitFleshAvailable: number
   bonesawHitWorldAvailable: number
+  overtimeAvailable: number
 }>
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
   definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
+    | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -98,6 +100,7 @@ export type AudioEvent = Readonly<{
   ordinal: number
   identity: 1 | 2 | 3 | 4
   definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
+    | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
   sourceKind: 1 | 2
   sourceIdentity: number
   ownerIdentity: number | null
@@ -490,7 +493,7 @@ export type ControlPoints = Readonly<{
 
 export type RoundState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
 export type RoundEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15
   detail: number
   team: 0 | Tf2Team
   flags: number
@@ -518,6 +521,7 @@ export type RoundSnapshot = Readonly<{
   blueScore: number
   roundsPlayed: number
   timer: RoundTimer | null
+  kothTimers: readonly [RoundTimer, RoundTimer] | null
   events: readonly RoundEvent[]
 }>
 
@@ -1459,18 +1463,26 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
   const state = data[8], flags = data[9], winning = data[10], reason = data[11]
   const waiting = view.getFloat32(20, true), identity = view.getUint32(24, true), remaining = view.getFloat32(28, true)
   const count = view.getUint32(44, true)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 1
-    || state === undefined || state > 10 || flags === undefined || flags > 0x7f
+  const headerLength = flags !== undefined && (flags & 128) !== 0 ? 96 : 48
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PGRL" || view.getUint32(4, true) !== 2
+    || state === undefined || state > 10 || flags === undefined
     || (winning !== 0 && winning !== 2 && winning !== 3) || reason === undefined
     || !finite([waiting, remaining]) || waiting < -1 || remaining < -1 || count > 4096
-    || length !== 48 + count * 8 || ((flags & 1) !== 0) !== (waiting !== -1)
+    || length !== headerLength + count * 8 || ((flags & 1) !== 0) !== (waiting !== -1)
     || ((flags & 8) !== 0) !== (identity !== 0xffff_ffff) || ((flags & 8) === 0 && remaining !== -1)) {
     throw new Tf2CodecError("Round rules section is invalid")
   }
   const events: RoundEvent[] = []
+  const kothTimer = (at: number): RoundTimer => {
+    const remaining = view.getFloat32(at + 4, true), bits = view.getUint32(at + 20, true)
+    if (!Number.isFinite(remaining) || remaining < 0 || bits > 7) throw new Tf2CodecError("KOTH timer is invalid")
+    return Object.freeze({ identity: view.getUint32(at, true), remaining,
+      initialSeconds: view.getInt32(at + 8, true), setupSeconds: view.getInt32(at + 12, true), maximumSeconds: view.getInt32(at + 16, true),
+      paused: (bits & 1) !== 0, showInHud: (bits & 2) !== 0, disabled: (bits & 4) !== 0 })
+  }
   for (let index = 0; index < count; index += 1) {
-    const at = 48 + index * 8, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
-    if (kind === undefined || kind < 1 || kind > 12 || detail === undefined || bits === undefined
+    const at = headerLength + index * 8, kind = data[at], detail = data[at + 1], team = data[at + 2], bits = data[at + 3]
+    if (kind === undefined || kind < 1 || kind > 15 || detail === undefined || bits === undefined
       || (team !== 0 && team !== 2 && team !== 3)) throw new Tf2CodecError("Round rules event is invalid")
     events.push(Object.freeze({ kind: kind as RoundEvent["kind"], detail, team, flags: bits, identity: view.getUint32(at + 4, true) }))
   }
@@ -1480,6 +1492,7 @@ function decodeRound(buffer: ArrayBuffer, offset: number, length: number): Round
     inOvertime: (flags & 4) !== 0, winningTeam: winning === 0 ? null : winning,
     winReason: reason, redScore: view.getUint16(12, true), blueScore: view.getUint16(14, true),
     roundsPlayed: view.getUint32(16, true),
+    kothTimers: headerLength === 96 ? Object.freeze([kothTimer(48), kothTimer(72)] as const) : null,
     timer: (flags & 8) === 0 ? null : Object.freeze({
       identity, remaining, initialSeconds: view.getInt32(32, true), setupSeconds: view.getInt32(36, true),
       maximumSeconds: view.getInt32(40, true), paused: (flags & 16) !== 0,
@@ -1543,10 +1556,10 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     || (fistAndBonesawFlesh & ~31) !== 0 || (fistAndBonesawWorld & ~15) !== 0 || (fistHitFleshAvailable & ~7) !== 0
     || (flagEnemyStolenAvailable & ~15) !== 0 || (flagEnemyDroppedAvailable & ~3) !== 0
     || (flagEnemyCapturedAvailable & ~7) !== 0 || (flagEnemyReturnedAvailable & ~7) !== 0 || (flagTeamDroppedAvailable & ~3) !== 0
-    || data[at + 13] !== 0 || data[at + 14] !== 0 || data[at + 15] !== 0) {
+    || data[at + 13]! > 15 || data[at + 14] !== 0 || data[at + 15] !== 0) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
-  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5 })
+  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]! })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
@@ -2106,7 +2119,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 76 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
+      (soundDecision ? definition === undefined || definition < 1 || definition > 85 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8) ? resultKind === 1 : resultKind !== 1) ||
@@ -2134,7 +2147,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 ? 2 : 1
     if (
-      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 76 ||
+      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 85 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
@@ -2379,7 +2392,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     at += 76
   }
   requireBytes(48,"Round rules header")
-  const roundLength=48+view.getUint32(at+44,true)*8
+   const roundLength=((data[at+9]!&128)!==0?96:48)+view.getUint32(at+44,true)*8
   requireBytes(roundLength,"Round rules")
   const round=decodeRound(buffer,base+at,roundLength)
   at+=roundLength

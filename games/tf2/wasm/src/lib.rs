@@ -5379,6 +5379,23 @@ pub extern "C" fn playsrc_snapshot_length(handle: u32) -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn playsrc_entity_fire(handle: u32, pointer: *const u8, length: usize) -> u32 {
+    if pointer.is_null() || length < 8 || length > 3078 { return 0; }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let delay = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+    let fields: Vec<_> = bytes[4..].split(|byte| *byte == 0).collect();
+    let [target, input, value] = fields.as_slice() else { return 0; };
+    if target.is_empty() || input.is_empty() || !delay.is_finite() || fields.iter().any(|value| value.len() > 1024) { return 0; }
+    let Some((index, generation)) = decode(handle) else { return 0; };
+    let mut slots = slots().lock().expect("TF2 slots");
+    let Some(slot) = slots.get_mut(index).filter(|slot| slot.generation == generation) else { return 0; };
+    let Some(session) = slot.session.as_mut() else { return 0; };
+    let success = session.fire_entity_input(target, input, value, delay).is_ok();
+    if success { gameplay_replay::mutation(handle, 7, bytes); }
+    u32::from(success)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn playsrc_teleport_count(handle: u32) -> usize {
     with(handle, |slot| {
         slot.session
@@ -6200,7 +6217,7 @@ fn encode_round(
 ) -> Option<()> {
     use playsrc_tf2::round::Event;
     extend(out, b"PGRL", maximum)?;
-    u32_field(out, 1, maximum)?;
+    u32_field(out, 2, maximum)?;
     let timer = round.timer;
     let flags = u8::from(round.waiting_for_players)
         | (u8::from(round.in_setup) << 1)
@@ -6208,7 +6225,8 @@ fn encode_round(
         | (u8::from(timer.is_some()) << 3)
         | (u8::from(timer.is_some_and(|value| value.paused)) << 4)
         | (u8::from(timer.is_some_and(|value| value.configuration.show_in_hud)) << 5)
-        | (u8::from(timer.is_some_and(|value| value.disabled)) << 6);
+        | (u8::from(timer.is_some_and(|value| value.disabled)) << 6)
+        | (u8::from(round.koth_timers.is_some()) << 7);
     extend(
         out,
         &[
@@ -6237,6 +6255,16 @@ fn encode_round(
         u32_field(out, value as u32, maximum)?;
     }
     u32_field(out, u32::try_from(round.events.len()).ok()?, maximum)?;
+    if let Some(timers) = round.koth_timers {
+        for timer in timers {
+            u32_field(out, timer.configuration.identity, maximum)?;
+            f32_field(out, timer.remaining, maximum)?;
+            for seconds in [timer.configuration.initial_seconds, timer.configuration.setup_seconds, timer.configuration.maximum_seconds] {
+                u32_field(out, seconds as u32, maximum)?;
+            }
+            u32_field(out, u32::from(timer.paused) | (u32::from(timer.configuration.show_in_hud) << 1) | (u32::from(timer.disabled) << 2), maximum)?;
+        }
+    }
     for event in &round.events {
         let (kind, detail, team, flags, identity) = match *event {
             Event::StateChanged { previous, current } => (1, current as u8, 0, previous as u8, 0),
@@ -6251,6 +6279,9 @@ fn encode_round(
             Event::RoundWon { team, reason } => (10, reason, team_code(team), 0, 0),
             Event::RoundRespawn => (11, 0, 0, 0, 0),
             Event::ScoresReset => (12, 0, 0, 0, 0),
+            Event::TimerThreshold { timer, seconds } => (13, (seconds & 255) as u8, 0, (seconds >> 8) as u8, timer),
+            Event::TimerWarning { timer, seconds } => (14, seconds as u8, 0, 0, timer),
+            Event::MapRoundWin { entity } => (15, 0, 0, 0, entity),
         };
         extend(out, &[kind, detail, team, flags], maximum)?;
         u32_field(out, identity, maximum)?;
@@ -6718,7 +6749,7 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.flag_enemy_captured_available,
         state.sound_selection.flag_enemy_returned_available,
         state.sound_selection.flag_team_dropped_available,
-        0,
+        state.sound_selection.overtime_available,
         0,
         0,
     ]);
@@ -6804,6 +6835,15 @@ fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
         playsrc_tf2::SoundDefinition::BonesawHitFlesh => 74,
         playsrc_tf2::SoundDefinition::BonesawHitWorld => 75,
         playsrc_tf2::SoundDefinition::SyringeReload => 76,
+        playsrc_tf2::SoundDefinition::RoundEnds60 => 77,
+        playsrc_tf2::SoundDefinition::RoundEnds30 => 78,
+        playsrc_tf2::SoundDefinition::RoundEnds10 => 79,
+        playsrc_tf2::SoundDefinition::RoundEnds5 => 80,
+        playsrc_tf2::SoundDefinition::RoundEnds4 => 81,
+        playsrc_tf2::SoundDefinition::RoundEnds3 => 82,
+        playsrc_tf2::SoundDefinition::RoundEnds2 => 83,
+        playsrc_tf2::SoundDefinition::RoundEnds1 => 84,
+        playsrc_tf2::SoundDefinition::Overtime => 85,
     }
 }
 
@@ -10868,6 +10908,9 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "WeaponMedigun.HealingHealer",
         "WeaponMedigun.HealingDetachHealer",
         "WeaponMedigun.Charged",
+        "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
+        "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
+        "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds", "Game.Overtime",
         "Player.HitSoundDefaultDing",
         "Player.KillSoundDefaultDing",
     ];
@@ -15584,6 +15627,7 @@ mod tests {
                 knife_hit_flesh_available: 7,
                 bonesaw_hit_flesh_available: 7,
                 bonesaw_hit_world_available: 3,
+                overtime_available: 15,
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -15620,11 +15664,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x17\0\0\0");
-        assert_eq!(encoded.len(), 1052);
-        assert_eq!(&encoded[1048..], &[0; 4]);
-        assert_eq!(&encoded[944..952], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[980..988], b"PGRL\x01\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x18\0\0\0");
+        assert_eq!(encoded.len(), 1064);
+        assert_eq!(&encoded[1060..], &[0; 4]);
+        assert_eq!(&encoded[944..948], b"PCPN");
+        assert_eq!(&encoded[956..964], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[992..1000], b"PGRL\x02\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

@@ -398,6 +398,7 @@ pub struct MapRuntime {
     control_points: Option<crate::control_point::World>,
     control_point_facts: crate::control_point::Facts,
     round_configuration: crate::round::Configuration,
+    round_inputs: Vec<(u32, Vec<u8>, Variant)>,
     counts: MapCounts,
     payload_constraint_blocked: bool,
     tick_interval: f32,
@@ -519,6 +520,16 @@ impl MapRuntime {
                     .collect(),
                 },
                 playsrc_entity::ExternalClassBinding {
+                    classname: b"tf_logic_koth".to_vec(),
+                    inputs: [b"RoundSpawn".as_slice(), b"RoundActivate", b"SetRedTimer", b"SetBlueTimer", b"AddRedTimer", b"AddBlueTimer"]
+                        .into_iter().map(<[u8]>::to_vec).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"tf_gamerules".to_vec(),
+                    inputs: [b"SetRedKothClockActive".as_slice(), b"SetBlueKothClockActive", b"SetRedTeamRespawnWaveTime", b"SetBlueTeamRespawnWaveTime"]
+                        .into_iter().map(<[u8]>::to_vec).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
                     classname: b"game_round_win".to_vec(),
                     inputs: [b"RoundWin".as_slice(), b"SetTeam"]
                         .into_iter()
@@ -567,6 +578,16 @@ impl MapRuntime {
             ..EntityWorldConfig::default()
         };
         let (mut world, _) = EntityWorld::compile(graph, config)?;
+        if let Some(koth) = round_configuration.koth {
+            for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
+                let mut definition = playsrc_entity::parse(
+                    format!("{{\"classname\"\"team_round_timer\"\"targetname\"\"{name}\"}}\0").as_bytes(),
+                    playsrc_entity::Limits::default(),
+                ).expect("generated KOTH timer").entities.remove(0);
+                definition.index = identity as usize;
+                world.phase(0, &[WorldCommand::Spawn(definition)])?;
+            }
+        }
         let player_definition = playsrc_entity::parse(
             b"{\"classname\"\"player\"\"targetname\"\"!player\"}\0",
             playsrc_entity::Limits::default(),
@@ -874,6 +895,7 @@ impl MapRuntime {
             control_points,
             control_point_facts: crate::control_point::Facts::default(),
             round_configuration,
+            round_inputs: Vec::new(),
             counts,
             payload_constraint_blocked,
             tick_interval,
@@ -1260,7 +1282,22 @@ impl MapRuntime {
     }
 
     pub fn round_configuration(&self) -> crate::round::Configuration {
-        self.round_configuration
+        self.round_configuration.clone()
+    }
+
+    pub fn apply_round_inputs(&mut self, rules: &mut crate::round::Rules, now: f32) {
+        for (entity, input, value) in self.round_inputs.drain(..) {
+            let number = value.as_float().unwrap_or(0.0);
+            let integer = match &value {
+                Variant::Integer(value) => *value,
+                Variant::String(value) => playsrc_entity::source_integer(value),
+                Variant::Bool(value) => i32::from(*value),
+                _ => number as i32,
+            };
+            if input.eq_ignore_ascii_case(b"SetRedTeamRespawnWaveTime") { rules.set_respawn_wave(crate::PlayerTeam::Red, number); }
+            else if input.eq_ignore_ascii_case(b"SetBlueTeamRespawnWaveTime") { rules.set_respawn_wave(crate::PlayerTeam::Blue, number); }
+            else { rules.apply_input(entity, &input, integer, now); }
+        }
     }
 
     pub fn objectives(&self) -> Option<&crate::ctf::World> {
@@ -1345,6 +1382,13 @@ impl MapRuntime {
                     (timer, b"OnSetupFinished".as_slice())
                 }
                 crate::round::Event::TimerFinished { timer } => (timer, b"OnFinished".as_slice()),
+                crate::round::Event::MapRoundWin { entity } => (entity, b"OnRoundWin".as_slice()),
+                crate::round::Event::TimerThreshold { timer, seconds } => (timer, match seconds {
+                    300 => b"On5MinRemain".as_slice(), 240 => b"On4MinRemain", 180 => b"On3MinRemain",
+                    120 => b"On2MinRemain", 60 => b"On1MinRemain", 30 => b"On30SecRemain",
+                    10 => b"On10SecRemain", 5 => b"On5SecRemain", 4 => b"On4SecRemain",
+                    3 => b"On3SecRemain", 2 => b"On2SecRemain", 1 => b"On1SecRemain", _ => continue,
+                }),
                 _ => continue,
             };
             let handle = self
@@ -1389,6 +1433,14 @@ impl MapRuntime {
             })],
         )?;
         self.next_producer_sequence += 1;
+        self.consume(batch).map_err(MapError::from)
+    }
+
+    pub fn fire_input(&mut self, tick: u64, target: &[u8], input: &[u8], value: &[u8], delay: f32) -> Result<MapPhase, MapError> {
+        let record = InputRecord { target: EventTarget::Expression(target.to_vec()), input: input.to_vec(), value: Variant::String(value.to_vec()),
+            activator: Some(self.player), caller: Some(self.player), output_action: None, producer_sequence: self.next_producer_sequence };
+        self.next_producer_sequence += 1;
+        let batch = self.world.phase(tick, &[WorldCommand::QueueInput { input: record, delay }])?;
         self.consume(batch).map_err(MapError::from)
     }
 
@@ -1982,12 +2034,24 @@ impl MapRuntime {
                     } => {
                         let source = self.source(entity);
                         let mut point_events = Vec::new();
+                        if input.eq_ignore_ascii_case(b"RoundActivate")
+                            && let Some(koth) = self.round_configuration.koth
+                            && source == koth.identity
+                            && let Some(points) = &mut self.control_points
+                        {
+                            koth.round_activate(points, self.world.current_tick() as f32 * self.tick_interval, self.control_point_facts, &mut point_events);
+                        }
                         if let Some(points) = &mut self.control_points {
                             points.apply_input(source, &input, &value, self.world.current_tick() as f32 * self.tick_interval, self.control_point_facts, &mut point_events);
                         }
                         if !point_events.is_empty() {
                             output.append(self.emit_control_point_outputs(self.world.current_tick(), &point_events)?);
                             output.control_point_events.extend(point_events);
+                        }
+                        if self.world.entity(entity).is_some_and(|entity| {
+                            class(&entity.definition, b"team_round_timer") || class(&entity.definition, b"tf_logic_koth") || class(&entity.definition, b"tf_gamerules") || class(&entity.definition, b"game_round_win")
+                        }) {
+                            self.round_inputs.push((source, input.clone(), value.clone()));
                         }
                         if input.eq_ignore_ascii_case(b"SetAnimation") {
                             if let (Some(animation), Variant::String(name)) =

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   isVguiGenericResourcePropertySupported,
+  parseVguiAnimationScript,
   VGUI_GENERIC_CONTROL_NAMES,
   type VguiControlRegistration,
   type VguiImagePresentation,
@@ -611,7 +612,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const timer = Object.freeze({ identity: 9, remaining: 70, initialSeconds: 330, setupSeconds: 70, maximumSeconds: 600, paused: false, showInHud: true, disabled: false })
     const publish = (tick: bigint, overrides: Record<string, unknown> = {}) => {
       const base = compact(tick, 3, 2, 1, 4, 20)
-      const round = Object.freeze({ state: 4 as const, waitingForPlayers: false, waitingRemaining: null, inSetup: true, inOvertime: false, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0, timer, events: Object.freeze([]), ...overrides })
+      const round = Object.freeze({ state: 4 as const, waitingForPlayers: false, waitingRemaining: null, inSetup: true, inOvertime: false, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0, timer, kothTimers: null, events: Object.freeze([]), ...overrides })
       const snapshot = Object.freeze({ ...base.snapshot, round })
       return hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as any, context)
     }
@@ -642,6 +643,47 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toContain("defended")
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudMatchStatus", "WaitingForPlayersPanel", "WinPanel"])).toEqual([])
+    hud.destroy()
+  })
+
+  test("KOTH publishes independent authored clocks and retains overtime on a paused zero clock", () => {
+    const root = createRoot(new FakeDocument())
+    const parsed = parseVguiAnimationScript("scripts/koth-test.txt", "1", new TextEncoder().encode("event ActiveTimerHighlight { } event ActiveTimerDim { } event OvertimeLabelPulseRed { }"), { maximumSourceBytes: 1024, maximumTokenCodeUnits: 511, maximumSequences: 8, maximumCommands: 32 })
+    if (!parsed.ok) throw new Error(parsed.diagnostic.subject)
+    const source = resources()
+    const hud = initializeTf2HudIntegration({
+      root: root as unknown as HTMLElement, resources: { ...source, animations: { ...source.animations, scripts: [parsed.script] } },
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {},
+    })
+    const timer = { identity: 10, remaining: 180, initialSeconds: 180, setupSeconds: 0, maximumSeconds: 0, paused: true, showInHud: true, disabled: false }
+    const publish = (tick: bigint, red: typeof timer, blue: typeof timer, overtime = false, waiting = false) => {
+      const base = compact(tick, 3, 2, 1, 4, 20)
+      const round = Object.freeze({ state: 4 as const, waitingForPlayers: waiting, waitingRemaining: waiting ? 29 : null,
+        inSetup: false, inOvertime: overtime, winningTeam: null, winReason: 0, redScore: 0, blueScore: 0, roundsPlayed: 0,
+        timer: red, kothTimers: Object.freeze([red, blue] as const), events: Object.freeze([]) })
+      const snapshot = Object.freeze({ ...base.snapshot, round })
+      hud.publish(Object.freeze({ snapshot, eventBatches: Object.freeze([Object.freeze({ snapshot })]) }) as any, context)
+    }
+    const blue = { ...timer, identity: 11 }
+    publish(1n, timer, blue, false, true)
+    expect(visible(hud.snapshot().vgui.panels, ["HudKothTimeStatus"])).toEqual([])
+    publish(2n, { ...timer, remaining: 0, paused: false }, blue, true)
+    let panels = hud.snapshot().vgui.panels
+    expect(visible(panels, ["HudKothTimeStatus", "HudMatchStatus"])).toEqual(["HudKothTimeStatus"])
+    const redRoot = panels.find(panel => panel.name === "RedTimer")!.id
+    const blueRoot = panels.find(panel => panel.name === "BlueTimer")!.id
+    expect(panels.find(panel => panel.parent === redRoot && panel.name === "TimePanelValue")?.text).toBe("0:00")
+    expect(panels.find(panel => panel.parent === blueRoot && panel.name === "TimePanelValue")?.text).toBe("3:00")
+    expect(panels.find(panel => panel.parent === redRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(true)
+    expect(panels.find(panel => panel.parent === blueRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(false)
+    publish(3n, { ...timer, remaining: 0 }, { ...blue, paused: false, remaining: 179.9 })
+    panels = hud.snapshot().vgui.panels
+    expect(panels.find(panel => panel.parent === redRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(true)
+    publish(4n, timer, blue)
+    expect(hud.snapshot().vgui.panels.find(panel => panel.parent === redRoot && panel.name === "OvertimeLabel")?.effectivelyVisible).toBe(false)
+    hud.reset("map-replaced")
+    expect(visible(hud.snapshot().vgui.panels, ["HudKothTimeStatus"])).toEqual([])
     hud.destroy()
   })
 

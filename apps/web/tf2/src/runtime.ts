@@ -2591,7 +2591,7 @@ export class Tf2Application {
           disposition: "visible" as const,
           acceptsSuggestions: true,
         }),
-        ...["build","destroy","hurtbuilding","+attack","-attack","bot_teleport","bot_whack","bot_command"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
+        ...["build","destroy","hurtbuilding","+attack","-attack","bot_teleport","bot_whack","bot_command","ent_fire"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
         Object.freeze({
           kind: "command" as const,
           name: "dropitem",
@@ -3263,6 +3263,19 @@ export class Tf2Application {
       }
       this.selectClass(identity)
       this.#output(`Class selection queued: ${tokens[0]}`)
+      return
+    }
+    if (command === "ent_fire") {
+      if (!this.#client || !this.#snapshot || tokens.length < 1 || tokens.length > 4 || !Number.isFinite(Number(tokens[3] ?? 0))) {
+        this.#output("Usage: ent_fire <target> [action] [value] [delay]")
+        return
+      }
+      const generation = this.#generation
+      void this.#client.fireEntityInput(generation, tokens[0]!, tokens[1] ?? "Use", tokens[2] ?? "", Number(tokens[3] ?? 0)).then(() => {
+        if (generation === this.#generation) this.#output(`Entity input queued: ${tokens.join(" ")}`)
+      }, error => {
+        if (generation === this.#generation) this.#output(`ent_fire rejected: ${error instanceof Error ? error.message : String(error)}`)
+      })
       return
     }
     if (command === "setpos") {
@@ -4565,6 +4578,7 @@ export class Tf2Application {
       if(skyDisposition==="controller-absent")profile.controllerFreeSkyViews=Number(profile.controllerFreeSkyViews??0)+1
       profile.displacementVisibility={surfaces:[...visibility.surfaces],drawSurfaces:[...visibility.drawSurfaces],outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:visibility.leaves,areas:visibility.areas};profile.displacementCamera=camera
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
+      profile.round=prepared.snapshot.round
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}

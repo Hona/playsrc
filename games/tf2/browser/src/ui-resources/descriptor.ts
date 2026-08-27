@@ -224,6 +224,7 @@ function compareText(left: string, right: string): number {
 
 function controlOwner(name: string): Tf2UiOwner | null {
   if (["CArmoryPanel", "CBackpackPanel", "CClassLoadoutPanel", "CLoadoutPresetPanel", "CLoadoutParticleSlider", "ScalableImagePanel"].includes(name)) return "tf2"
+  if (name === "CTFHudTimeStatus") return "tf2"
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
