@@ -159,7 +159,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         if (active && record.kind === 2) tickTimes.push(Number(record.bytes.readBigUInt64LE(8)) / 1e6)
       }
     }
-    passes.push({ mode: reference ? "direct-sweep-reference" : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations,
+    passes.push({ mode: reference ? "lazy-direct-sweep-reference" : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations,
       tickMilliseconds: summarizeDistribution(tickTimes), observeMilliseconds: summarizeDistribution(observations.map(value => value.milliseconds)), observations,
       counters: observations.reduce((sum, value) => sum.map((count, index) => count + value.counters[index]!), [0, 0, 0, 0, 0, 0]),
       authoritativeTickGroups: groups, liveBytes: e.playsrc_memory_bytes(0) >>> 0, linearBytes: e.memory.buffer.byteLength })
