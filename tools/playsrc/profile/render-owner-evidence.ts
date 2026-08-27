@@ -19,6 +19,9 @@ export function summarizeRenderOwners(evidence: RenderOwnerEvidence) {
     owner.calls++; owner.inclusiveMilliseconds += call.ended - call.at
   }
   const events = new Map<string, { kind: string; pass: string | null; identity: number; dependency: number; updateType: string | null; calls: number; executed: number; trueReturns: number; falseReturns: number; errors: number }>()
+  const previousReferences = new Map<number, number | undefined>()
+  const scopes = new Set<string>()
+  const nodeScopes = new Map<string, { executions: number; firstReference: number; changedReference: number; sameReference: number; repeatedFramePassReference: number }>()
   for (const event of evidence.events) {
     const call = calls.get(event.call)
     if (!call || (!identities.has(event.identity) && !(event.identity === 0 && evidence.dropped > 0))) throw new Error("Invalid render-owner event join")
@@ -28,13 +31,26 @@ export function summarizeRenderOwners(evidence: RenderOwnerEvidence) {
       updateType: event.updateType, calls: 0, executed: 0, trueReturns: 0, falseReturns: 0, errors: 0 })
     item.calls++; item.executed += Number(event.executed === true)
     item.trueReturns += Number(event.outcome === "true"); item.falseReturns += Number(event.outcome === "false"); item.errors += Number(event.outcome === "throw")
+    if (event.kind === "node" && event.executed) {
+      const type = `${identities.get(event.identity)?.type ?? "unknown"}:${event.updateType}`
+      let scope = nodeScopes.get(type)
+      if (!scope) nodeScopes.set(type, scope = { executions: 0, firstReference: 0, changedReference: 0, sameReference: 0, repeatedFramePassReference: 0 })
+      scope.executions++
+      if (!previousReferences.has(event.identity)) scope.firstReference++
+      else if (previousReferences.get(event.identity) === event.reference) scope.sameReference++
+      else scope.changedReference++
+      previousReferences.set(event.identity, event.reference)
+      const key = `${event.identity}:${event.reference}:${call.frame}:${call.pass}`
+      scope.repeatedFramePassReference += Number(scopes.has(key))
+      scopes.add(key)
+    }
   }
   return { complete: evidence.dropped === 0 && evidence.unsupported === 0 && evidence.restored
       && evidence.frames.length === RENDER_OWNER_LIMITS.frames && evidence.frames.every(f => f.complete),
     frames: evidence.frames, dropped: evidence.dropped, unsupported: evidence.unsupported, restored: evidence.restored,
     bookkeepingMilliseconds: evidence.bookkeepingMilliseconds, hookCalls: evidence.hookCalls,
     identities: evidence.identities, owners: [...owners.values()].sort((a,b) => b.inclusiveMilliseconds-a.inclusiveMilliseconds),
-    events: [...events.values()],
+    events: [...events.values()], nodeScopes: Object.fromEntries(nodeScopes),
     limits: "Opt-in sampled frames only. Bookkeeping time is measured probe work, not total causal overhead: dispatch/timer/JIT/GC perturbation is not subtracted. Owner call times include nested probes and are not exclusive CPU. Binding/uniform true/false values are the original comparator results; node true/false values are update return values, NOT value-change evidence. Unchanged comparisons do not prove their dependency checks can be removed. Accessor-backed labels are unknown. Promise identity is preserved, not awaited or timed to settlement." }
 }
 

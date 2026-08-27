@@ -23,3 +23,21 @@ test("replay retains bounded identity joins, probe time and incomplete evidence"
   incomplete.calls[0]!.renderObject = 9999
   expect(() => summarizeRenderOwners(incomplete)).toThrow("Invalid render-owner call")
 })
+
+test("reference transitions distinguish new draw owners from repeated frame/pass work", () => {
+  const profile = { active: true, currentPass: { identity: "main" }, counters: { completedFrames: 60 } }
+  const a = {}, b = {}
+  let reference = a
+  const node = { type: "ReferenceNode", getUpdateType() { return "object" }, updateReference() { return reference }, update() {} }
+  const frame = { updateNode(n: typeof node) { n.getUpdateType(); n.updateReference(); n.update() } }
+  const nodes = { nodeFrame: frame, needsRefresh() {}, updateForRender() { frame.updateNode(node) }, updateGroup() {} }
+  const probe = new RenderOwnerProbe({ _nodes: nodes, _bindings: { updateForRender() {} } }, profile)
+  const object = { object: {}, material: {}, context: {}, camera: {} }
+  probe.begin(1, 1)
+  nodes.updateForRender(object); reference = b; nodes.updateForRender(object); nodes.updateForRender(object)
+  probe.complete(); profile.counters.completedFrames++
+  probe.begin(1, 1); nodes.updateForRender(object); probe.complete()
+  expect(summarizeRenderOwners(probe.evidence).nodeScopes["ReferenceNode:object"]).toEqual({
+    executions: 4, firstReference: 1, changedReference: 1, sameReference: 2, repeatedFramePassReference: 1,
+  })
+})
