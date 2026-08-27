@@ -2157,9 +2157,9 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
-    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 44 ? 4
-      : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 ? 3
-        : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 ? 2 : 1
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 44 || definition === 85 || definition === 91 ? 4
+      : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 || definition === 89 ? 3
+        : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 || definition === 86 || definition === 90 || definition === 98 ? 2 : 1
     if (
       (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 102 ||
       (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||

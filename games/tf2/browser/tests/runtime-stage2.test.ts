@@ -350,6 +350,24 @@ class CourseWorker implements WorkerLike {
 }
 
 describe("TF2 canonical gameplay command and snapshot contract", () => {
+  test("accepts every authored KOTH and capture announcer wave ordinal, rejecting the first out-of-range wave", () => {
+    for (const [definition, waveCount] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2]] as const) {
+      const source = rosterSnapshot(1n, 0, 0), at = 913
+      const bytes = new Uint8Array(source.length + 52), view = new DataView(bytes.buffer)
+      bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)
+      view.setUint32(132, 1, true)
+      view.setBigUint64(at, 1n, true)
+      bytes[at + 10] = 4; bytes[at + 11] = definition; bytes[at + 12] = 1
+      view.setUint32(at + 16, 1, true); view.setUint32(at + 20, 0xffff_ffff, true)
+      for (let wave = 0; wave < waveCount; wave++) {
+        bytes[at + 14] = wave
+        expect(decodeSnapshot(bytes).audioEvents[0]).toMatchObject({ definition, samples: { wave } })
+      }
+      bytes[at + 14] = waveCount
+      expect(() => decodeSnapshot(bytes)).toThrow("audio event record is invalid")
+    }
+  })
+
   test("Worker snapshot deltas and coalescing retain ordered sound patch starts, destruction and re-press", () => {
     const frame = (tick: bigint, events: readonly (readonly [number, number, number])[]) => {
       const base = rosterSnapshot(tick, 0, 0), at = 913
