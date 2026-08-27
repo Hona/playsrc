@@ -354,7 +354,7 @@ impl Pickup {
                 applied > 0 || !condition_events.is_empty()
             }
             PickupKind::Ammo(size) => {
-                grant_map_ammo(class, *size, ammo, &mut grants);
+                grant_map_ammo(class, class.data().maximum_ammo, *size, ammo, &mut grants);
                 !grants.is_empty()
             }
             PickupKind::DroppedAmmo(dropped) => {
@@ -529,11 +529,11 @@ pub fn retained_dropped_weapon_identities(pickups: &[Pickup]) -> Vec<u32> {
 
 pub(crate) fn grant_map_ammo(
     class: PlayerClass,
+    maximum: AmmoLedger,
     size: PickupSize,
     ammo: &mut AmmoLedger,
     grants: &mut Vec<PickupGrant>,
 ) {
-    let maximum = class.data().maximum_ammo;
     for kind in [AmmoType::Primary, AmmoType::Secondary, AmmoType::Metal] {
         grant_ammo(
             ammo,
@@ -603,6 +603,22 @@ fn grant_ammo(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_ammo_uses_the_resolved_player_cap_for_quantity_and_admission() {
+        let maximum = AmmoLedger { primary: 60, ..PlayerClass::Soldier.data().maximum_ammo };
+        let mut ammo = maximum;
+        ammo.primary = 21;
+        let mut grants = Vec::new();
+        grant_map_ammo(PlayerClass::Soldier, maximum, PickupSize::Small, &mut ammo, &mut grants);
+        assert_eq!(ammo.primary, 33);
+        assert_eq!(grants, vec![PickupGrant::Ammo { kind: AmmoType::Primary, amount: 12 }]);
+        grant_map_ammo(PlayerClass::Soldier, maximum, PickupSize::Full, &mut ammo, &mut grants);
+        assert_eq!(ammo.primary, 60);
+        grants.clear();
+        grant_map_ammo(PlayerClass::Soldier, maximum, PickupSize::Full, &mut ammo, &mut grants);
+        assert!(grants.is_empty());
+    }
     use crate::{
         condition::ConditionDuration,
         schema::{

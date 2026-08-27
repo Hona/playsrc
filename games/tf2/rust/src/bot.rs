@@ -1590,6 +1590,7 @@ impl BotWorld {
                 let mut grants = Vec::new();
                 crate::pickup::grant_map_ammo(
                     bot.class,
+                    bot.class.data().maximum_ammo,
                     definition.size,
                     &mut bot.ammo,
                     &mut grants,
