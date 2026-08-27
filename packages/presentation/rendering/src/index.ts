@@ -2307,7 +2307,8 @@ class RendererOwner implements Renderer {
     if (models.length > 64) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
     const ordinal = this.#loadOrdinal
     const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes: THREE.Mesh[] } }[] = []
-    const world = new THREE.Scene(), panelScene = new THREE.Scene()
+    const viewModels = new THREE.Group(), panels = new THREE.Group()
+    viewModels.layers.set(1)
     const keys = new Set<string>()
     const started = performance.now()
     this.#renderBusy = true
@@ -2344,12 +2345,13 @@ class RendererOwner implements Renderer {
           textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap,
           exposure: this.#modelPanelExposure, graphs: this.#active.modelPanelLightingGraphs,
         } : undefined)
-        ;(panel ? panelScene : world).add(instance)
+        if (!panel) instance.traverse(object => object.layers.set(1))
+        ;(panel ? panels : viewModels).add(instance)
       }
       // compileAsync waits for actual native pipeline readiness. It neither
       // submits a game frame nor advances simulation/animation/input clocks.
-      for (const scene of [world, panelScene]) {
-        if (scene.children.length) await this.#backend.compileAsync(scene, this.#camera)
+      for (const [group, targetScene, camera] of [[viewModels, this.#scene, this.#viewCamera], [panels, this.#modelPanelScene, this.#modelPanelCamera]] as const) {
+        if (group.children.length) await this.#backend.compileAsync(group, camera, targetScene)
         this.#checkAbort(undefined, ordinal)
       }
       for (const { key, retained } of staged) {

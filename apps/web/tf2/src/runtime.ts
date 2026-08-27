@@ -603,6 +603,7 @@ export class Tf2Application {
   #teamSelection?: Tf2TeamSelectionIntegration
   #teamSelectionModelPanels: readonly Tf2TeamSelectionModelPanel[] = Object.freeze([])
   #teamSelectionRenderTask?: Promise<void>
+  #preparingModelPipelines = false
   #teamSelectionRenderRevision = 0
   #pendingClassSelectionTeam?: 2 | 3
   readonly #teamSelectionPoses = new Map<string, PosedModel>()
@@ -1965,6 +1966,10 @@ export class Tf2Application {
       await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
       this.#requireOperation(operation)
       if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
+      this.#preparingModelPipelines = true
+      try {
+      await Promise.all([this.#displayTask, this.#teamSelectionRenderTask, this.#classSelectionRenderTask])
+      this.#requireOperation(operation)
       const classPreparation = classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
         warmupViewport.width / warmupViewport.height)
       const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
@@ -1981,6 +1986,7 @@ export class Tf2Application {
         } }
       }), warmupCamera)
       this.#requireOperation(operation)
+      } finally { this.#preparingModelPipelines = false }
       }
       finishLoadPhase("initialPublication")
       this.#recordAuthorityBlockers(this.#snapshot)
@@ -2184,6 +2190,7 @@ export class Tf2Application {
   }
 
   #renderClassSelection(): void {
+    if (this.#preparingModelPipelines) return
     if (!this.#renderer || !this.#client || !this.#artifacts || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask || this.#displayTask || this.#teamSelectionRenderTask) return
     const renderer = this.#renderer
     const client = this.#client
@@ -2343,6 +2350,7 @@ export class Tf2Application {
   }
 
   #renderTeamSelection(): void {
+    if (this.#preparingModelPipelines) return
     if (!this.#renderer || !this.#client || !this.#artifacts
       || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask || this.#displayTask || this.#classSelectionRenderTask) return
     const renderer = this.#renderer
@@ -4346,6 +4354,7 @@ export class Tf2Application {
   }
 
   #offerDisplay():void{
+    if (this.#preparingModelPipelines) return
     if (this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const frameProfiler = browserFrameProfiler()
     if (frameProfiler?.active) frameProfiler.counters.displayOffers! += 1
