@@ -19,6 +19,7 @@ pub mod koth;
 mod map_runtime;
 pub mod particle_resources;
 pub mod medic;
+pub mod melee;
 pub mod pickup;
 pub mod pyro;
 pub mod random;
@@ -499,6 +500,7 @@ pub enum Condition {
     Urine = 24,
     Bleeding = 25,
     MadMilk = 27,
+    MarkedForDeath = 30,
     CannotSwitchFromMelee = 41,
     DisguiseWearingOff = 47,
     ParachuteActive = 80,
@@ -868,6 +870,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     fire_on_empty: bool,
     secondary_was_held: bool,
     pending_melee_tick: Option<u64>,
+    melee: melee::State,
     flames: pyro::FlameManager,
     next_airblast_tick: u64,
     shotgun_pellets: Vec<pyro::ShotgunPellet>,
@@ -1059,6 +1062,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             fire_on_empty: false,
             secondary_was_held: false,
             pending_melee_tick: None,
+            melee: melee::State::default(),
             flames: pyro::FlameManager::default(),
             next_airblast_tick: 0,
             shotgun_pellets: Vec::with_capacity(pyro::SHOTGUN_PELLETS),
@@ -2242,6 +2246,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         command.movement.yaw_degrees += self.view_angle_offset[1];
         self.advance_sniper_scope(command);
         self.advance_spy(command);
+        self.advance_melee_conditions();
+        self.advance_bleeding(&mut events)?;
         let mut movement_policy = MovementPolicy {
             class: self.class,
             modifiers: self.movement_modifiers,
@@ -2258,6 +2264,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 movement_policy.maximum_speed = movement_policy.maximum_speed.min(80.0);
             }
         }
+        movement_policy.maximum_speed = self.equipped_player_attribute(PLAYER_IDENTITY, "mult_player_movespeed", movement_policy.maximum_speed);
+        if movement_policy.bunnyhop_speed_cap.is_some() { movement_policy.bunnyhop_speed_cap = Some(movement_policy.maximum_speed * 1.2); }
         if self.air_dashes != 0 {
             movement_policy.air_dash_impulse = None;
         }
@@ -2333,6 +2341,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if self.movement.ground.is_some() {
             self.air_dashes = 0;
             self.scattergun_jumped = false;
+            self.conditions.remove(Condition::BlastJumping);
         } else if airborne_before_movement
             && self.class == PlayerClass::Scout
             && movement_result
@@ -2386,7 +2395,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         let bot_attacks = if command.nextbot_stop {
-            Vec::new()
+            self.bots.as_mut().map_or_else(Vec::new, |bots| bots.due_melee_attacks(self.tick))
         } else if let Some(bots) = &mut self.bots {
             bots.advance(
                 &self.collision,
@@ -2421,6 +2430,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .bots
             .as_ref()
             .map_or_else(Vec::new, bot::BotWorld::snapshots);
+        let healing_multiplier = self.equipped_player_attribute(PLAYER_IDENTITY, "mult_health_fromhealers", 1.0);
         let building_effects = self.buildings.advance(
             &self.collision,
             self.tick,
@@ -2428,6 +2438,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.movement.position,
             self.health,
             self.maximum_health(),
+            healing_multiplier,
             &bot_snapshots,
             &mut self.ammo.metal,
         )?;
@@ -2635,7 +2646,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         | Weapon::Bottle
                         | Weapon::Bonesaw
                 ) {
-                    self.swing_melee(active_weapon);
+                    self.swing_melee(active_weapon)?;
                 } else if active_weapon == Weapon::Knife {
                     self.resolve_knife(
                         command.pitch_degrees,
@@ -2643,7 +2654,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         &mut events,
                     )?;
                 } else if active_weapon == Weapon::Fists {
-                    self.emit_weapon_sound(SoundDefinition::FistMiss, self.movement.position);
+                    self.swing_melee(active_weapon)?;
                 } else if !matches!(
                     active_weapon,
                     Weapon::BuildPda | Weapon::DestroyPda | Weapon::Toolbox
@@ -2669,7 +2680,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             {
                 self.loadout.get_mut(&active_weapon).unwrap().smack_due_tick = None;
                 let phase =
-                    self.smack_fists(command.pitch_degrees, command.movement.yaw_degrees)?;
+                    self.smack_fists(command.pitch_degrees, command.movement.yaw_degrees, &mut events)?;
                 map_phase.append(phase);
             }
             if self.pending_melee_tick.is_some_and(|due| self.tick > due) {
@@ -3057,6 +3068,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             let fired = self.activity_events.iter().rev().find(|event| matches!(event.activity, weapon::WeaponActivity::PrimaryAttack | weapon::WeaponActivity::SecondaryAttack)).map(|event| (event.weapon, self.movement.position));
             bots.record_point_combat(self.tick, fired);
         }
+        self.publish_melee_condition_audio();
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -3229,8 +3241,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     match candidate.definition.kind {
                         pickup::MapPickupKind::Health => {
                             let maximum = self.maximum_health();
-                            let requested =
-                                (maximum as f32 * candidate.definition.size.ratio()).ceil() as i32;
+                            let requested = self.equipped_player_attribute(PLAYER_IDENTITY, "mult_health_frompacks",
+                                (maximum as f32 * candidate.definition.size.ratio()).ceil()) as i32;
                             let before = self.health;
                             if self.health < maximum {
                                 self.health = self.health.saturating_add(requested).min(maximum);
@@ -3240,6 +3252,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                                     .into_iter()
                                     .fold(false, |cleansed, condition| {
                                         if self.conditions.contains(condition) {
+                                            if condition == Condition::Bleeding { self.melee.bleeds.remove(&PLAYER_IDENTITY); }
                                             self.conditions.remove(condition);
                                             true
                                         } else {
@@ -3339,6 +3352,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .as_mut()
                     .is_some_and(|world| world.regenerate(bot.identity, self.tick))
                 {
+                    self.melee.bleeds.remove(&bot.identity);
                     let _ = zone;
                 }
             }
@@ -3370,6 +3384,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     amount.is_some(),
                 )?);
                 if let Some(amount) = amount {
+                    if candidate.definition.kind == pickup::MapPickupKind::Health { self.melee.bleeds.remove(&bot.identity); }
                     let current = self
                         .bots
                         .as_ref()
@@ -3561,6 +3576,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
             self.class = class;
+            self.melee.reset_victim(PLAYER_IDENTITY);
             self.decapitations = 0;
             self.movement_stuns = hitscan::MovementStuns::default();
             self.scattergun_jumped = false;
@@ -3640,17 +3656,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 previous.charge_begin_tick = None;
                 previous.push_due_time = None;
                 previous.abort_reload();
-                if matches!(
-                    active_weapon,
-                    Weapon::Bat
-                        | Weapon::Shovel
-                        | Weapon::Kukri
-                        | Weapon::Wrench
-                        | Weapon::FireAxe
-                        | Weapon::Bottle
-                ) {
-                    self.pending_melee_tick = None;
-                }
+                previous.smack_due_tick = None;
+                self.pending_melee_tick = None;
+                if let Some(swing) = self.melee.swings.get_mut(&PLAYER_IDENTITY) { swing.pending = false; }
             }
             self.record_weapon_switch(weapon);
             if self.weapon == Some(Weapon::Toolbox) {
@@ -3887,9 +3895,22 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 trigger,
             });
         } else if amount > 0.0 {
-            let points = (amount + 0.5) as i32;
+            let mut health = health::HealthState::spawn(self.class, 0.0, 0.0).expect("configured class health");
+            health.current = self.health;
+            health.maximum = self.maximum_health();
+            let mut conditions = condition::ConditionState::from_active_words(self.conditions.words()).expect("valid player conditions");
+            let modifiers = self.equipped_victim_damage_modifiers(PLAYER_IDENTITY, damage::DamageModifiers::default());
+            let result = damage::apply_damage(self.lifecycle == PlayerLifecycle::Active, &mut health, &mut conditions, &damage::DamageInput {
+                attacker: 0, attacker_team: PlayerTeam::Unassigned, attacker_conditions: Default::default(), source: damage::DamageSourceKind::World,
+                weapon_position: None, victim: PLAYER_IDENTITY, victim_team: self.team_selection.local_team(), base_damage: amount,
+                range_multiplier: 1.0, damage_type: damage::DamageType::from_source_bits(damage_type), custom: damage::CustomDamage::TriggerHurt,
+                crit: if damage_type & (1 << 20) != 0 { damage::CritKind::Full } else { damage::CritKind::None },
+                friendly_fire: false, force_friendly_fire: false, bypass_invulnerability: true, force: [0.0; 3],
+            }, modifiers).expect("compiled trigger damage and item modifiers");
+            let points = result.health_damage;
             let before = self.health;
-            self.health = self.health.saturating_sub(points).max(0);
+            self.health = health.current.max(0);
+            self.conditions.words = conditions.words();
             events.push(Event::Damaged {
                 amount: points as f32,
                 health: self.health as f32,
@@ -3917,17 +3938,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             maximum
         };
         let remove_melee_lock = self.conditions.contains(Condition::EnergyBuff);
-        for condition in resupply_removed_conditions() {
-            if !matches!(
-                condition,
-                Condition::EnergyBuff | Condition::CannotSwitchFromMelee
-            ) {
-                self.conditions.remove(condition);
-            }
-        }
-        if remove_melee_lock {
-            self.conditions.remove(Condition::EnergyBuff);
-            self.conditions.remove(Condition::CannotSwitchFromMelee);
+        for condition in resupply_removed_conditions(remove_melee_lock) {
+            if condition == Condition::Bleeding { self.melee.bleeds.remove(&PLAYER_IDENTITY); }
+            self.conditions.remove(condition);
         }
         for weapon in self.loadout.values_mut() {
             weapon.regenerate(self.tick, self.movement_configuration.tick_interval);
@@ -4163,6 +4176,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.emit_entity_weapon_sound(definition, position, PLAYER_IDENTITY);
     }
 
+    pub fn emit_source_weapon_sound(&mut self, source: Option<weapon::WeaponSource>, weapon: Weapon,
+        slot: audio::WeaponSoundSlot, class_sound: SoundDefinition, position: [f32; 3]) -> bool {
+        let Some(source) = source.filter(|source| self.source_weapon_is_live(*source, weapon)) else { return false; };
+        self.emit_resolved_weapon_sound(class_sound.equipment_slot(source.definition_index, slot), position, source.owner);
+        true
+    }
+
     fn emit_entity_weapon_sound(
         &mut self,
         definition: SoundDefinition,
@@ -4171,16 +4191,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         self.emit_resolved_weapon_sound(definition, position, identity);
     }
-
-    pub fn emit_source_weapon_sound(&mut self, source: Option<weapon::WeaponSource>, weapon: Weapon,
-        slot: audio::WeaponSoundSlot, class_sound: SoundDefinition, position: [f32; 3]) -> bool {
-        let Some(source) = source.filter(|source| self.source_weapon_is_live(*source, weapon)) else { return false; };
-        self.emit_resolved_weapon_sound(class_sound.equipment_slot(source.definition_index, slot), position, source.owner);
-        true
-    }
-
     fn emit_resolved_weapon_sound(&mut self, definition: SoundDefinition, position: [f32; 3], identity: u32) {
-        let samples = self.sample_weapon_sound(definition);
+        let samples = if identity == PLAYER_IDENTITY { self.sample_weapon_sound(definition) } else {
+            self.sample_sound(RandomContext::Authority, definition, SoundQueryPhase::Inspect);
+            self.sample_sound(RandomContext::Authority, definition, SoundQueryPhase::Emit)
+        };
         self.push_audio_event(AudioEvent {
             action: AudioAction::Play,
             tick: self.tick,
@@ -4216,6 +4231,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             return Ok(());
         }
+        if attack.phase == bot::AttackPhase::MeleeSwing { return self.start_melee_swing(attack.attacker, attack.weapon); }
+        if attack.phase == bot::AttackPhase::MeleeSmack && attack.weapon != Weapon::Knife {
+            return self.resolve_melee_actor(attack.attacker, attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events);
+        }
         if matches!(
             attack.weapon,
             Weapon::RocketLauncher | Weapon::Original | Weapon::SyringeGun
@@ -4229,33 +4248,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 projectile_events,
             );
         }
-        if matches!(
-            attack.weapon,
-            Weapon::Bat
-                | Weapon::Shovel
-                | Weapon::Fists
-                | Weapon::Kukri
-                | Weapon::Wrench
-                | Weapon::Bottle
-                | Weapon::FireAxe
-                | Weapon::Knife
-                | Weapon::Bonesaw
-        ) {
-            let (amount, definition) = match attack.weapon {
-                Weapon::Bat => (ballistics::BAT_DAMAGE, SoundDefinition::BatHitFlesh),
-                Weapon::Shovel => (ballistics::SHOVEL_DAMAGE, SoundDefinition::ShovelHitFlesh),
-                Weapon::Fists => (65.0, SoundDefinition::FistHitFlesh),
-                Weapon::Kukri => (ballistics::KUKRI_DAMAGE, SoundDefinition::KukriHitFlesh),
-                Weapon::Wrench => (ballistics::WRENCH_DAMAGE, SoundDefinition::WrenchHitFlesh),
-                Weapon::Bottle => (ballistics::BOTTLE_DAMAGE, SoundDefinition::BottleHitFlesh),
-                Weapon::FireAxe => (pyro::FIRE_AXE_DAMAGE, SoundDefinition::FireAxeHitFlesh),
-                Weapon::Knife => (spy::KNIFE_DAMAGE, SoundDefinition::KnifeHitFlesh),
-                Weapon::Bonesaw => (
-                    medic::BONESAW_DAMAGE as f32,
-                    SoundDefinition::BonesawHitFlesh,
-                ),
-                _ => unreachable!("only melee weapons reach this branch"),
-            };
+        if attack.weapon == Weapon::Knife {
+            let (amount, definition) = (spy::KNIFE_DAMAGE, SoundDefinition::KnifeHitFlesh);
             let position = if attack.target == PLAYER_IDENTITY {
                 add(self.movement.position, self.movement.view_offset)
             } else if let Some(target) = self
@@ -5540,24 +5534,78 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .map(|(_, identity, position, normal)| (identity, position, normal))
     }
 
-    fn swing_melee(&mut self, weapon: Weapon) {
-        let (definition, smack_delay) = match weapon {
-            Weapon::Bat => (SoundDefinition::BatMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::Shovel => (SoundDefinition::ShovelMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::Kukri => (SoundDefinition::KukriMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::Bottle => (SoundDefinition::BottleMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::Wrench => (SoundDefinition::WrenchMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::FireAxe => (SoundDefinition::FireAxeMiss, ballistics::MELEE_SMACK_DELAY),
-            Weapon::Bonesaw => (SoundDefinition::BonesawMiss, medic::BONESAW_SMACK_DELAY),
+    fn swing_melee(&mut self, weapon: Weapon) -> Result<(), Error> {
+        self.start_melee_swing(PLAYER_IDENTITY, weapon)?;
+        let smack_delay = if weapon == Weapon::Bonesaw { medic::BONESAW_SMACK_DELAY } else { ballistics::MELEE_SMACK_DELAY };
+        let delay = (smack_delay / self.movement_configuration.tick_interval).floor() as u64;
+        if weapon == Weapon::Fists {
+            self.loadout.get_mut(&weapon).unwrap().smack_due_tick = Some(self.tick.saturating_add(delay));
+        } else { self.pending_melee_tick = Some(self.tick.saturating_add(delay)); }
+        Ok(())
+    }
+
+    fn start_melee_swing(&mut self, owner: u32, weapon: Weapon) -> Result<(), Error> {
+        let Some(actor) = self.melee_actor(owner) else { return Ok(()); };
+        let source = self.weapon_source(owner, weapon).ok_or(Error::MissingWeapon { owner, weapon })?;
+        let definition = match weapon {
+            Weapon::Bat => SoundDefinition::BatMiss,
+            Weapon::Shovel => SoundDefinition::ShovelMiss,
+            Weapon::Kukri => SoundDefinition::KukriMiss,
+            Weapon::Bottle => SoundDefinition::BottleMiss,
+            Weapon::Wrench => SoundDefinition::WrenchMiss,
+            Weapon::FireAxe => SoundDefinition::FireAxeMiss,
+            Weapon::Bonesaw => SoundDefinition::BonesawMiss,
+            Weapon::Fists => SoundDefinition::FistMiss,
+            Weapon::Knife => {
+                self.emit_source_weapon_sound(Some(source), weapon, audio::WeaponSoundSlot::MeleeMiss, SoundDefinition::KnifeMiss, actor.position);
+                return Ok(());
+            }
             _ => unreachable!("only melee weapons swing"),
         };
-        self.emit_weapon_sound(definition, self.movement.position);
-        let delay = if weapon == Weapon::Bonesaw {
-            weapon::delay_ticks(smack_delay, self.movement_configuration.tick_interval)
+        let runtime = if owner == PLAYER_IDENTITY { self.loadout.get(&weapon) } else { self.bots.as_ref().and_then(|bots| bots.weapon_runtime(owner, weapon)) }.ok_or(Error::MissingWeapon { owner, weapon })?;
+        let fire_delay = runtime.profile().fire_delay;
+        let words = if owner == PLAYER_IDENTITY { self.conditions.words() } else { self.bots.as_ref().unwrap().conditions(owner).unwrap().words() };
+        let guaranteed_critical = condition::ConditionState::from_active_words(words).map_err(|_| Error::Bot(bot::Error::Damage))?.is_crit_boosted();
+        let raw_damage = self.equipped_weapon_attribute(owner, weapon, "mult_dmg", if weapon == Weapon::Bat { 35.0 } else { 65.0 });
+        let crit = self.check_weapon_critical(owner, weapon, critical::Shot {
+            command_number: self.tick as u32,
+            launcher_identity: source.definition_index + 1,
+            kind: damage::WeaponCritKind::Melee,
+            raw_damage,
+            projectiles_per_shot: 1.0,
+            fire_delay,
+            can_fire_critical: true,
+            guaranteed_critical,
+            random_crits_enabled: true,
+        })?.kind;
+        if owner == PLAYER_IDENTITY && crit == damage::CritKind::Full {
+            if let Some(activity) = self.activity_events.last_mut().filter(|activity| activity.weapon == weapon && activity.tick == self.tick) {
+                activity.activity = weapon::WeaponActivity::MeleeCritical;
+            }
+        }
+        let mut potential_victims = self.melee.swings.get_mut(&owner).map_or_else(Vec::new, |swing| std::mem::take(&mut swing.potential_victims));
+        potential_victims.clear();
+        if self.equipped_weapon_attribute(owner, weapon, "hit_self_on_miss", 0.0) == 1.0 {
+            let range = self.equipped_weapon_attribute(owner, weapon, "melee_range_multiplier", ballistics::MELEE_RANGE) * 1.2;
+            if let Some(bots) = &self.bots {
+                potential_victims.extend(bots.combat_targets().filter(|target| {
+                    target.team.is_enemy(actor.team)
+                        && bots.melee_actor(target.identity).is_some_and(|target| length(sub(target.center, actor.eye)) < range)
+                }).map(|target| target.identity));
+            }
+            if owner != PLAYER_IDENTITY && let Some(target) = self.melee_actor(PLAYER_IDENTITY)
+                && target.team.is_enemy(actor.team) && length(sub(target.center, actor.eye)) < range { potential_victims.push(PLAYER_IDENTITY); }
+        }
+        self.melee.swings.insert(owner, melee::Swing { pending: true, weapon, source, crit, potential_victims });
+        let definition = if crit == damage::CritKind::Full {
+            SoundDefinition::melee_critical(source.definition_index).expect("configured melee critical sound")
+        } else { definition };
+        if crit == damage::CritKind::Full {
+            self.emit_resolved_weapon_sound(definition, actor.position, owner);
         } else {
-            (smack_delay / self.movement_configuration.tick_interval).floor() as u64
-        };
-        self.pending_melee_tick = Some(self.tick.saturating_add(delay));
+            self.emit_source_weapon_sound(Some(source), weapon, audio::WeaponSoundSlot::MeleeMiss, definition, actor.position);
+        }
+        Ok(())
     }
 
     fn resolve_melee(
@@ -5567,24 +5615,37 @@ impl<W: GameplayWorld + Clone> Session<W> {
         yaw: f32,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
+        self.resolve_melee_actor(PLAYER_IDENTITY, weapon, pitch, yaw, events)
+    }
+
+    fn resolve_melee_actor(&mut self, owner: u32, weapon: Weapon, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<(), Error> {
+        let Some(attacker) = self.melee_actor(owner) else { return Ok(()); };
+        let Some(swing) = self.melee.swings.get_mut(&owner) else { return Ok(()); };
+        if !swing.pending || swing.weapon != weapon { return Ok(()); }
+        swing.pending = false;
+        let source = swing.source;
+        let swing_crit = swing.crit;
+        let active = if owner == PLAYER_IDENTITY { self.weapon } else { self.bots.as_ref().and_then(|bots| bots.active_weapon(owner)) };
+        if active != Some(weapon) || !self.source_weapon_is_live(source, weapon) { return Ok(()); }
+        let potential_alive = self.melee.swings[&owner].potential_victims.iter().any(|identity| self.melee_actor(*identity).is_some());
         let (direction, _, _) = angle_vectors(pitch, yaw, 0.0);
-        let origin = add(self.movement.position, self.movement.view_offset);
-        if weapon == Weapon::Wrench
+        let origin = attacker.eye;
+        if owner == PLAYER_IDENTITY && weapon == Weapon::Wrench
             && let Some(target) = self.buildings.nearest_wrench_target(
                 origin,
                 direction,
-                self.team_selection.local_team(),
+                attacker.team,
             )
             && self.buildings.wrench(
                 target,
-                self.team_selection.local_team(),
+                attacker.team,
                 self.tick,
                 &mut self.ammo.metal,
             )
         {
             events.push(Event::MeleeImpact {
                 weapon,
-                owner: PLAYER_IDENTITY,
+                owner,
                 target: Some(target),
                 position: origin,
                 damage: 0.0,
@@ -5614,25 +5675,33 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )?;
             }
         }
-        let end = add(origin, scale(direction, ballistics::MELEE_RANGE));
+        let range = self.equipped_weapon_attribute(owner, weapon, "melee_range_multiplier", ballistics::MELEE_RANGE);
+        let radius = self.equipped_weapon_attribute(owner, weapon, "melee_bounds_multiplier", ballistics::MELEE_HULL_RADIUS);
+        let end = add(origin, scale(direction, range));
         let line_hull = Hull {
             mins: [0.0; 3],
             maxs: [0.0; 3],
         };
         let line = self.collision.trace(origin, end, line_hull, MASK_SOLID)?;
-        let line_player = self.trace_melee_players(origin, end, line_hull, line.fraction)?;
-        let (impact, player) = if line.fraction < 1.0 || line.start_solid || line_player.is_some() {
-            (line, line_player)
+        let line_player = self.trace_melee_players(owner, origin, end, line_hull, line.fraction)?;
+        let line_actor = self.melee_player_trace(owner, origin, end, line_hull, line.fraction);
+        let (impact, player, actor) = if line.fraction < 1.0 || line.start_solid || line_player.is_some() || line_actor.is_some() {
+            (line, line_player, line_actor)
         } else {
             let hull = Hull {
-                mins: [-ballistics::MELEE_HULL_RADIUS; 3],
-                maxs: [ballistics::MELEE_HULL_RADIUS; 3],
+                mins: [-radius; 3],
+                maxs: [radius; 3],
             };
-            let impact = self.collision.trace(origin, end, hull, MASK_SOLID)?;
-            let player = self.trace_melee_players(origin, end, hull, impact.fraction)?;
-            (impact, player)
+            let mut impact = self.collision.trace(origin, end, hull, MASK_SOLID)?;
+            let player = self.trace_melee_players(owner, origin, end, hull, impact.fraction)?;
+            let mut actor = self.melee_player_trace(owner, origin, end, hull, impact.fraction);
+            if impact.fraction < 1.0 && player.is_none() && actor.is_none()
+                && impact.hit.is_none_or(|identity| self.collision.is_world(identity) || u32::try_from(identity).is_ok_and(|identity| self.map.is_brush_model(identity))) {
+                (impact, actor) = self.melee_hull_intersection(owner, origin, impact)?;
+            }
+            (impact, player, actor)
         };
-        let actor = player
+        let actor = actor.or_else(|| player
             .as_ref()
             .and_then(|hit| {
                 let identity = u32::try_from(hit.entity).ok()?;
@@ -5640,15 +5709,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .as_ref()?
                     .contains(identity)
                     .then_some((identity, hit.fraction, hit.end))
-            })
-            .or_else(|| {
-                self.bots.as_ref()?.intersect_enemy(
-                    self.team_selection.local_team(),
-                    origin,
-                    end,
-                    PLAYER_IDENTITY,
-                )
-            })
+            }))
             .filter(|(_, fraction, _)| *fraction <= impact.fraction);
         if player.is_some() || actor.is_some() || impact.fraction < 1.0 || impact.start_solid {
             let position = actor.map_or_else(
@@ -5669,7 +5730,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         .and_then(|identity| u32::try_from(identity).ok())
                 });
 
-            let (definition, damage) = match (weapon, target.is_some()) {
+            let flesh = actor.is_some() || player.is_some();
+            let (definition, damage) = match (weapon, flesh) {
                 (Weapon::Bat, true) => (SoundDefinition::BatHitFlesh, ballistics::BAT_DAMAGE),
                 (Weapon::Bat, false) => (SoundDefinition::BatHitWorld, ballistics::BAT_DAMAGE),
                 (Weapon::Shovel, true) => {
@@ -5708,33 +5770,57 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     SoundDefinition::BonesawHitWorld,
                     medic::BONESAW_DAMAGE as f32,
                 ),
+                (Weapon::Fists, true) => (SoundDefinition::FistHitFlesh, 65.0),
+                (Weapon::Fists, false) => (SoundDefinition::FistHitWorld, 65.0),
                 _ => unreachable!("only melee weapons resolve swings"),
             };
-            self.emit_weapon_sound(definition, position);
+            let damage = self.melee_damage(owner, weapon, damage);
+            self.emit_source_weapon_sound(Some(source), weapon,
+                if flesh { audio::WeaponSoundSlot::MeleeHit } else { audio::WeaponSoundSlot::MeleeHitWorld }, definition, position);
             events.push(Event::MeleeImpact {
                 weapon,
-                owner: PLAYER_IDENTITY,
+                owner,
                 target,
                 position,
                 damage,
             });
             if let Some(victim) = actor.map(|(identity, _, _)| identity) {
-                self.apply_actor_damage(
+                let crit = if self.has_combat_condition(owner, condition::ConditionId::BLAST_JUMPING)
+                    && self.equipped_weapon_attribute(owner, weapon, "crit_while_airborne", 0.0) != 0.0 {
+                    damage::CritKind::Full
+                } else { swing_crit };
+                let result = self.apply_actor_damage(
                     bot::Damage {
-                        source_weapon: self.weapon_source(PLAYER_IDENTITY, weapon),
-                        damage_type: bot::weapon_damage_type(weapon).expect("melee damage type"),
-                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
-                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
-                        attacker: PLAYER_IDENTITY,
+                        source_weapon: Some(source),
+                        force: melee::impact_force(weapon, damage, direction),
+                        attacker: owner,
                         victim,
                         weapon,
                         amount: damage,
                         position,
+                        crit,
+                        range_multiplier: 1.0,
+                        custom: damage::CustomDamage::None,
+                        modifiers: damage::DamageModifiers::default(),
+                        damage_type: damage::DamageType::MELEE | damage::DamageType::CLUB | damage::DamageType::NEVER_GIB,
+                        killing_weapon: None,
                     },
-                    self.team_selection.local_team(),
+                    attacker.team,
                     events,
                 )?;
+                if let Some(result) = result { self.melee_hit_effects(owner, victim, weapon, &result)?; }
             }
+        } else if self.equipped_weapon_attribute(owner, weapon, "hit_self_on_miss", 0.0) == 1.0 && !potential_alive {
+            let amount = self.melee_damage(owner, weapon, if weapon == Weapon::Bat { 35.0 } else { 65.0 }) * 0.5;
+            let result = self.apply_actor_damage(bot::Damage {
+                source_weapon: Some(source),
+                attacker: owner, victim: owner, weapon, amount, position: attacker.position, force: melee::impact_force(weapon, amount, direction),
+                crit: swing_crit, range_multiplier: 1.0, custom: damage::CustomDamage::None,
+                modifiers: damage::DamageModifiers::default(),
+                damage_type: damage::DamageType::MELEE | damage::DamageType::CLUB | damage::DamageType::NEVER_GIB,
+                killing_weapon: None,
+            }, attacker.team, events)?;
+            if let Some(result) = result { self.melee_hit_effects(owner, owner, weapon, &result)?; }
         }
 
         Ok(())
@@ -5884,6 +5970,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn trace_melee_players(
         &self,
+        owner: u32,
         start: [f32; 3],
         end: [f32; 3],
         hull: Hull,
@@ -5891,7 +5978,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) -> Result<Option<playsrc_collision::StudioHitboxTrace>, Error> {
         let mut nearest: Option<playsrc_collision::StudioHitboxTrace> = None;
         for candidate in &self.posed_player_hitboxes {
-            if candidate.team == self.team_selection.local_team() {
+            if candidate.entity == owner || candidate.entity == PLAYER_IDENTITY || self.bots.as_ref().is_some_and(|bots| bots.contains(candidate.entity)) {
                 continue;
             }
             let hitbox = playsrc_collision::StudioHitbox {
@@ -5929,28 +6016,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(nearest)
     }
 
-    fn smack_fists(&mut self, pitch: f32, yaw: f32) -> Result<MapPhase, Error> {
-        let (forward, _, _) = angle_vectors(pitch, yaw, 0.0);
-        let source = add(self.movement.position, self.movement.view_offset);
-        let trace = self.collision.trace(
-            source,
-            add(source, scale(forward, 48.0)),
-            Hull {
-                mins: [-18.0; 3],
-                maxs: [18.0; 3],
-            },
-            MASK_SOLID,
-        )?;
-        if let Some(target) = trace.hit.and_then(|identity| u32::try_from(identity).ok())
-            && let Ok(phase) = self.map.damage(self.tick, target)
-        {
-            self.emit_weapon_sound(SoundDefinition::FistHitFlesh, self.movement.position);
-            return Ok(phase);
+    fn smack_fists(&mut self, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<MapPhase, Error> {
+        let start = events.len();
+        self.resolve_melee(Weapon::Fists, pitch, yaw, events)?;
+        let mut phase = MapPhase::default();
+        for event in &events[start..] {
+            if let Event::MeleeImpact { target: Some(target), .. } = event
+                && !self.bots.as_ref().is_some_and(|bots| bots.contains(*target))
+                && let Ok(damage) = self.map.damage(self.tick, *target) { phase.append(damage); }
         }
-        if trace.fraction < 1.0 {
-            self.emit_weapon_sound(SoundDefinition::FistHitWorld, self.movement.position);
-        }
-        Ok(MapPhase::default())
+        Ok(phase)
     }
 
     fn fire_projectile(
@@ -6922,6 +6997,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.stop_flame(false);
         self.equipment_attributes.set_active(None);
+        self.melee.reset_victim(PLAYER_IDENTITY);
+        for condition in [Condition::Bleeding, Condition::MarkedForDeath] { self.conditions.remove(condition); }
         self.lifecycle = PlayerLifecycle::Dying;
         self.death_tick = Some(self.tick);
         self.scoreboard.local_death();
@@ -6955,6 +7032,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.movement_stuns = hitscan::MovementStuns::default();
         self.scattergun_jumped = false;
         self.revenge_crits = 0;
+        self.melee.reset_victim(PLAYER_IDENTITY);
         self.critical_history.reset_for_spawn();
         self.fizzle_projectiles(projectile_events, false);
         self.damagers = deathnotice::DamagerHistory::default();
@@ -7083,19 +7161,17 @@ fn default_loadout(class: PlayerClass) -> BTreeMap<Weapon, WeaponRuntime> {
         .map(|weapon| (weapon, WeaponRuntime::full(weapon))).collect()
 }
 
-fn resupply_removed_conditions() -> [Condition; 10] {
+fn resupply_removed_conditions(energy_buff: bool) -> impl Iterator<Item = Condition> {
     [
         Condition::Burning,
         Condition::Urine,
         Condition::MadMilk,
         Condition::Gas,
         Condition::Bleeding,
-        Condition::EnergyBuff,
-        Condition::CannotSwitchFromMelee,
         Condition::Phase,
         Condition::ParachuteActive,
         Condition::Plague,
-    ]
+    ].into_iter().chain(energy_buff.then_some([Condition::EnergyBuff, Condition::CannotSwitchFromMelee]).into_iter().flatten())
 }
 
 fn projectile_event(
@@ -8618,7 +8694,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             session.audio_events()[0].definition,
-            SoundDefinition::BottleMiss
+            SoundDefinition::melee_critical(1).unwrap()
         );
         assert!(
             !started
@@ -8651,7 +8727,7 @@ mod tests {
     }
 
     #[test]
-    fn demoman_bottle_traces_enemy_line_then_hull_without_hitting_friendly_players() {
+    fn demoman_bottle_traces_line_then_hull_and_friendly_player_contacts() {
         for (lateral, enemy) in [(0.0, true), (20.0, true), (0.0, false)] {
             let world = RecordingWorld::default();
             let traces = world.traces.clone();
@@ -8726,8 +8802,8 @@ mod tests {
                     assert_eq!(swings[1].2.mins, [-18.0; 3]);
                 }
             } else {
-                assert!(impact.is_none());
-                assert!(session.audio_events().is_empty());
+                assert!(matches!(impact, Some(Event::MeleeImpact { target: Some(7), .. })));
+                assert_eq!(session.audio_events()[0].definition, SoundDefinition::BottleHitFlesh);
             }
         }
     }
@@ -10795,7 +10871,7 @@ mod tests {
         assert_eq!(
             session.random_state().sound_selection,
             SoundSelectionState {
-                configured_available: session.sound_selection.state().configured_available,
+                configured_available: SoundSelection::new().state().configured_available,
                 rocket_explosion_available: 0,
                 sticky_explosion_available: 0b111,
                 bat_hit_world_available: 0b11,
@@ -10849,7 +10925,7 @@ mod tests {
         assert_eq!(
             session.random_state().sound_selection,
             SoundSelectionState {
-                configured_available: session.sound_selection.state().configured_available,
+                configured_available: SoundSelection::new().state().configured_available,
                 rocket_explosion_available: 0b101,
                 sticky_explosion_available: 0b110,
                 bat_hit_world_available: 0b11,
@@ -11100,7 +11176,7 @@ mod tests {
             })
             .unwrap();
         session.health = 50;
-        for condition in resupply_removed_conditions() {
+        for condition in resupply_removed_conditions(true) {
             session.conditions.insert(condition);
         }
         touching.store(true, Ordering::Relaxed);
@@ -11109,7 +11185,7 @@ mod tests {
         assert_eq!(supplied.loadout[0].clip, 4);
         assert_eq!(supplied.loadout[0].reserve, 20);
         assert!(
-            resupply_removed_conditions()
+            resupply_removed_conditions(true)
                 .into_iter()
                 .all(|condition| !session.conditions.contains(condition))
         );

@@ -399,7 +399,8 @@ export type EvaluatedWorldMaterialInput = Readonly<{
   mapMaterial: number
   textures: readonly Readonly<{ role: number; frame: number | null; transform: Float32Array | null }>[]
 }>
-export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan;worldMaterials:readonly EvaluatedWorldMaterialInput[]}>
+export type ScreenOverlayFrame = Readonly<{ identity: string; normalFrame: number; normalTransform: Float32Array; refractTint: readonly [number, number, number] }>
+export type VisibilityFrame=Readonly<{worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;water:WaterFramePlan;worldMaterials:readonly EvaluatedWorldMaterialInput[];screenOverlay?:ScreenOverlayFrame|null}>
 
 export type Frame = Readonly<{
   /** Accepted Source client-render clock; absent for non-game fixture renders. */
@@ -942,6 +943,7 @@ type WaterMaterialResource = Readonly<{
   state: WaterMaterialInput
 }>
 type RefractMaterialResource = Readonly<{
+  setTint(tint: readonly [number, number, number]): void
   material: THREE.MeshBasicNodeMaterial
   normalFrames: AuthoredTextureFrames
   normalConsumer: string
@@ -4390,6 +4392,7 @@ class RendererOwner implements Renderer {
         }
         const overlay = frame.visibility?.water.visibleWater?.overlay
         if (overlay) this.#renderUnderwaterOverlay(overlay)
+        if (frame.visibility?.screenOverlay) this.#renderUnderwaterOverlay(frame.visibility.screenOverlay)
         if (this.#exposureSampler && this.#framePresentation?.active) this.#pass("frame-output", () => this.#framePresentation!.finish())
         this.#exposureSampler?.sample(
           Math.floor(this.#viewportWidth * this.#devicePixelRatio),
@@ -4444,7 +4447,7 @@ class RendererOwner implements Renderer {
     }
   }
 
-  #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]>): void {
+  #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]> & { refractTint?: readonly [number, number, number] }): void {
     const scene = this.#active
     const resource = scene?.refractMaterials.get(overlay.identity.toLowerCase())
     if (!scene || !resource || overlay.normalFrame < 0 || overlay.normalFrame >= resource.normalFrames.frameCount) {
@@ -4459,6 +4462,7 @@ class RendererOwner implements Renderer {
       matrix[12]!, matrix[13]!, matrix[15]!,
     )
     resource.normalNode.value = normal
+    resource.setTint(overlay.refractTint ?? resource.state.refractTint)
     const autoClear = this.#backend.autoClear
     try {
       this.#backend.autoClear = false

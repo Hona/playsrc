@@ -110,7 +110,7 @@ export type WaterViewPass = Readonly<{ kind: "reflection" | "refraction" | "main
 export type WaterViewPlan = Readonly<{ visibleWater:null|Readonly<{volume:number;visibleLeaf:number;eyeLeaf:number;eyeInVolume:boolean;surfaceZ:number;distanceToWater:number|null;material:string;translucent:boolean;evaluated:null|Readonly<{normalFrame:number;normalTransform:Float32Array;cheapStart:number;cheapEnd:number}>;overlay:null|Readonly<{identity:string;normalFrame:number;normalTransform:Float32Array}>}>;render:Readonly<{cheap:boolean;reflect:boolean;refract:boolean;reflectEntities:boolean;drawSurface:boolean;opaque:boolean}>;nearPlaneIntersects:boolean;passes:readonly WaterViewPass[] }>
 export type EvaluatedWorldTexture = Readonly<{ role: number; frame: number | null; transform: Float32Array | null }>
 export type EvaluatedWorldMaterial = Readonly<{ identity: string; mapMaterial: number; textures: readonly EvaluatedWorldTexture[] }>
-export type VisibilityResult = Readonly<{ worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;drawSurfaces:Uint32Array;water:WaterViewPlan;worldMaterials:readonly EvaluatedWorldMaterial[] }>
+export type VisibilityResult = Readonly<{ worldIdentity:string;cacheIdentity:string;outsideWorld:boolean;sky:0|1|2;eyeLeaf:number|null;leaves:readonly number[];areas:readonly number[];surfaces:Uint32Array;drawSurfaces:Uint32Array;water:WaterViewPlan;worldMaterials:readonly EvaluatedWorldMaterial[];screenOverlay:import("@playsrc/rendering").ScreenOverlayFrame|null }>
 export type CoverageSample=Readonly<{leaf:number;cluster:number;area:number;position:readonly[number,number,number]}>
 
 export class Tf2WorkerError extends Error {
@@ -860,7 +860,7 @@ export class Tf2WorkerClient {
 
   #decodeVisibility(output: ArrayBuffer): VisibilityResult {
     const bytes = new Uint8Array(output), view = new DataView(output), decoder=new TextDecoder("utf-8",{fatal:true})
-    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 7)
+    if (decoder.decode(bytes.subarray(0, 4)) !== "PVIS" || view.getUint32(4, true) !== 8)
       throw new Tf2WorkerError("WorkerFailed")
     let at=76
     const require=(length:number)=>{if(at+length>bytes.length)throw new Tf2WorkerError("WorkerFailed")},u8=()=>{require(1);return bytes[at++]!},u32=()=>{require(4);const value=view.getUint32(at,true);at+=4;return value},i32=()=>{require(4);const value=view.getInt32(at,true);at+=4;return value},f32=()=>{require(4);const value=view.getFloat32(at,true);at+=4;if(!Number.isFinite(value))throw new Tf2WorkerError("WorkerFailed");return value},text=()=>{const length=u32();require(length);const value=decoder.decode(bytes.subarray(at,at+length));at+=length;return value},vector=()=>Object.freeze([f32(),f32(),f32()]) as readonly[number,number,number]
@@ -905,6 +905,15 @@ export class Tf2WorkerClient {
       }
       worldMaterials.push(Object.freeze({ identity, mapMaterial, textures: Object.freeze(textures) }))
     }
+    const hasScreenOverlay = u8()
+    if (hasScreenOverlay > 1 || u8() || u8() || u8()) throw new Tf2WorkerError("WorkerFailed")
+    let screenOverlay: VisibilityResult["screenOverlay"] = null
+    if (hasScreenOverlay) {
+      const identity = text(), normalFrame = i32(), normalTransform = new Float32Array(16)
+      if (!identity || normalFrame < 0) throw new Tf2WorkerError("WorkerFailed")
+      for (let index = 0; index < normalTransform.length; index++) normalTransform[index] = f32()
+      screenOverlay = Object.freeze({ identity, normalFrame, normalTransform, refractTint: vector() })
+    }
     if(at!==bytes.length||(present===0&&visibleWater!==null))throw new Tf2WorkerError("WorkerFailed")
     const hex = (values: Uint8Array): string => {
       let output = ""
@@ -920,6 +929,7 @@ export class Tf2WorkerClient {
       leaves,areas,surfaces,drawSurfaces,
       water:Object.freeze({visibleWater,render:Object.freeze({cheap:cheap===1,reflect:reflect===1,refract:refract===1,reflectEntities:reflectEntities===1,drawSurface:drawSurface===1,opaque:opaque===1}),nearPlaneIntersects:nearPlaneIntersects===1,passes:Object.freeze(passes)}),
       worldMaterials: Object.freeze(worldMaterials),
+      screenOverlay,
     })
   }
 

@@ -1,4 +1,20 @@
 {
+  "BostonBasher.HitWorld": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\demo_sword_hit_world1.wav",
+      ")weapons\\demo_sword_hit_world2.wav"
+    ]
+  ],
+  "BostonBasher.Impact": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\eviction_notice_01.wav",
+      ")weapons\\eviction_notice_02.wav",
+      ")weapons\\eviction_notice_03.wav",
+      ")weapons\\eviction_notice_04.wav"
+    ]
+  ],
   "TFPlayer.CritHit": [
     "scripts/game_sounds_player.txt",
     [
@@ -87,6 +103,36 @@
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_BoxingGloves.HitFlesh": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/boxing_gloves_hit1.wav",
+      "weapons/boxing_gloves_hit2.wav",
+      "weapons/boxing_gloves_hit3.wav",
+      "weapons/boxing_gloves_hit4.wav"
+    ]
+  ],
+  "Weapon_BoxingGloves.HitWorld": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/fist_hit_world1.wav",
+      "weapons/fist_hit_world2.wav"
+    ]
+  ],
+  "Weapon_BoxingGloves.Miss": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/boxing_gloves_swing1.wav",
+      "weapons/boxing_gloves_swing2.wav",
+      "weapons/boxing_gloves_swing4.wav"
+    ]
+  ],
+  "Weapon_BoxingGloves.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/fist_swing_crit.wav"
     ]
   ],
   "Weapon_Enforcer.Single": [
@@ -184,10 +230,32 @@
       "weapons/push_impact.wav"
     ]
   ],
+  "Weapon_Machete.HitFlesh": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/cbar_hitbod1.wav",
+      ")weapons/cbar_hitbod2.wav",
+      ")weapons/cbar_hitbod3.wav"
+    ]
+  ],
   "Weapon_Machete.MissCrit": [
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/machete_swing_crit.wav"
+    ]
+  ],
+  "Weapon_Marked_for_Death.Indicator": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\samurai\\TF_marked_for_death_indicator.wav"
+    ]
+  ],
+  "Weapon_Marked_for_Death.Initial": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\samurai\\TF_marked_for_death_impact_01.wav",
+      ")weapons\\samurai\\TF_marked_for_death_impact_02.wav",
+      ")weapons\\samurai\\TF_marked_for_death_impact_03.wav"
     ]
   ],
   "Weapon_Minifun.ClipEmpty": [
