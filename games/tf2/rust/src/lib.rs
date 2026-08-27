@@ -1476,6 +1476,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             )
             .map_err(Error::Bot)?,
         );
+        if let Some(points) = self.map.control_points() {
+            self.bots.as_mut().unwrap().configure_control_points(points).map_err(Error::Bot)?;
+        }
         Ok(())
     }
 
@@ -2030,7 +2033,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 },
                 &supplies,
                 &mut self.authority_random,
-                self.map.objectives(),
+                Some(bot::Objectives {
+                    flags: self.map.objectives(),
+                    points: self.map.control_points(),
+                    in_setup: self.round.snapshot(Vec::new()).in_setup,
+                    in_overtime: self.round.snapshot(Vec::new()).in_overtime,
+                    time_left: [self.round.timer().map_or(0.0, |timer| timer.remaining); 2],
+                }),
             )
             .map_err(Error::Bot)?
         } else {

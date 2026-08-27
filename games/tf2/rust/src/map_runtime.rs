@@ -418,7 +418,8 @@ impl MapRuntime {
             .collect::<BTreeMap<_, _>>();
         let round_configuration =
             crate::round::Configuration::from_graph(graph).map_err(|_| invalid(0))?;
-        let control_points = crate::control_point::World::from_graph(graph).map_err(|_| invalid(0))?;
+        let mut control_points = crate::control_point::World::from_graph(graph).map_err(|_| invalid(0))?;
+        if let Some(points) = &mut control_points { points.set_model_bounds(&model_bounds); }
         let mut objectives =
             crate::ctf::World::compile(graph, crate::ctf::Configuration::default()).map_err(
                 |error| match error {
