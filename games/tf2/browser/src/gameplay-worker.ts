@@ -70,6 +70,8 @@ type WasmExports = Readonly<{
   playsrc_gameplay_replay_stop(handle: number): number
   playsrc_gameplay_replay_length(handle: number): number
   playsrc_gameplay_replay_copy(handle: number, offset: number, pointer: number, capacity: number): number
+  playsrc_gameplay_replay_attack_tick(handle: number): bigint
+  playsrc_gameplay_replay_attack_player(handle: number): number
 }>
 
 const scope = self as DedicatedWorkerGlobalScope
@@ -839,7 +841,10 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   }
   const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
-  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
+  const attackTick = replayHandle === value.handle ? value.exports.playsrc_gameplay_replay_attack_tick(replayHandle) : 0n
+  const attackPlayer = attackTick > 0n ? value.exports.playsrc_gameplay_replay_attack_player(replayHandle) : 0
+  const replayAttack = attackTick > 0n ? { hostTick: attackTick, playerClass: attackPlayer & 255, weapon: (attackPlayer >>> 8) & 255, lifecycle: (attackPlayer >>> 16) & 255 } : undefined
+  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, ...(replayAttack ? { replayAttack } : {}), timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
   const started=performance.now()

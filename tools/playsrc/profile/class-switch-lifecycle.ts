@@ -6,6 +6,9 @@ export type ClassSwitchLifecycleEvent = Readonly<{
   visible?: boolean
 }>
 
+// fireAt records a physical +attack press, not a claimed shot. The shared gate
+// separately requires the actual Rust tick admission; Source deployment and
+// weapon cooldowns may legitimately defer a PrimaryAttack activity.
 export function summarizeClassSwitchLifecycle(events: readonly ClassSwitchLifecycleEvent[]) {
   const admitted = new Set<number>()
   let openedAt: number | null = null
