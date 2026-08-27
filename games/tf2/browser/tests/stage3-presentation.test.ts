@@ -634,7 +634,7 @@ test("joins Source tracer cadence, both endpoint control points, blood LOD and a
   const muzzle = Object.freeze([2, 3, 4]) as readonly [number, number, number]
   const orientation = Object.freeze([0, 0, 0, 1]) as readonly [number, number, number, number]
   const snapshot = Object.freeze({
-    tick: 22n, team: 2, position: Object.freeze([0, 0, 0]), bots: Object.freeze([{ identity: 7, team: 3, position: Object.freeze([128, 0, 0]) }]),
+    tick: 22n, team: 2, position: Object.freeze([0, 0, 0]), bots: Object.freeze([{ identity: 7, team: 3, conditions: [0,0,0,0,0], position: Object.freeze([128, 0, 0]) }]),
     events: Object.freeze([
       Object.freeze({ kind: 12, detail: 4, subject: 10, auxiliary: 1, values: Object.freeze([0, 0, 64, 0]) }),
       Object.freeze({ kind: 13, detail: 4, subject: 7, auxiliary: 0x0001_0000, values: Object.freeze([128, 0, 64, 18]) }),
@@ -647,6 +647,7 @@ test("joins Source tracer cadence, both endpoint control points, blood LOD and a
     systems,
     attachmentTransforms: new Map([[4, new Map([["muzzle", { position: muzzle, orientation }]])]]),
     playerAttachmentTransforms:new Map([[7,new Map([["head",{position:Object.freeze([128,0,72]) as readonly[number,number,number],orientation}]])]]),
+    playerActors: new Map(snapshot.bots.map(bot=>[bot.identity,bot])),
   })
   expect(result.state.tracerCount).toBe(2)
   expect(result.particles.map(request => request.kind === "start" ? request.system : "")).toEqual([
@@ -657,4 +658,18 @@ test("joins Source tracer cadence, both endpoint control points, blood LOD and a
   const encoded = createParticleBatchEncoder().encode(22n, [0, 0, 0], result.particles)
   expect(encoded[32]).toBe(1)
   expect(encoded[34]).toBe(2)
+})
+
+test("full and mini critical feedback uses real death-event attachments and skips removed or disguised entities", () => {
+  const actor = { identity: 2, team: 3, lifecycle: 2, conditions: [0,0,0,0,0] } as unknown as Snapshot["bots"][number]
+  const head = { position: [20,30,74] as const, orientation: [0,0,0,1] as const }
+  for (const [kind, system] of [[1,"crit_text"],[2,"minicrit_text"]] as const) {
+    const snapshot = { tick: 1n, team: 2, bots: [actor], events: [{ kind: 17, auxiliary: 1, subject: 2, detail: 4, values: [30,0,kind,0] }] } as unknown as Snapshot
+    const catalog = { systems: new Set([system]), attachmentTransforms: new Map(), playerAttachmentTransforms: new Map([[2,new Map([["head",head]])]]), playerActors: new Map([[2,actor]]) }
+    const result = combatImpactParticles(snapshot, { tracerCount: 0 }, catalog)
+    expect(result.particles[0]).toMatchObject({ system, controlPoints: [{ position: head.position }] })
+    expect(combatImpactParticles(snapshot, { tracerCount: 0 }, { ...catalog, playerActors: new Map() }).particles).toEqual([])
+    expect(combatImpactParticles(snapshot, { tracerCount: 0 }, { ...catalog, playerActors: new Map([[2,{ ...actor, conditions: [1<<3,0,0,0,0] }]]) }).particles).toEqual([])
+    expect(() => combatImpactParticles(snapshot, { tracerCount: 0 }, { ...catalog, playerAttachmentTransforms: new Map() })).toThrow("2:head")
+  }
 })

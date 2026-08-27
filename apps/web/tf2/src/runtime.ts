@@ -2,6 +2,7 @@ import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObje
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
+import { combatPoseSelection } from "./combat-pose-selection"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
@@ -190,6 +191,7 @@ const PARTICLE_SYSTEMS = new Set([
   "blood_spray_red_01",
   "blood_spray_red_01_far",
   "crit_text",
+  "minicrit_text",
   ...["scattergun", "pistol", "shotgun"].flatMap((weapon) =>
     ["red", "blue"].flatMap((team) =>
       [`bullet_${weapon}_tracer01_${team}`, `bullet_${weapon}_tracer01_${team}_crit`])),
@@ -4205,11 +4207,6 @@ export class Tf2Application {
         :["Default.BulletImpact",3] as const
       incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*16384n+BigInt(ordinal)+8192n)&0xffff_ffffn),definition:selection[0],source:Object.freeze({kind:"world",identity:0,ownerIdentity:null,origin:position,radius:0,sourceClass:"world"}),samples:Object.freeze({volume:0,pitch:0,wave:this.#presentationRandom!.nextInteger(0,selection[1]-1),soundLevel:0})}))
     }
-    for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
-      const event=snapshot.events[ordinal]!
-      if(event.kind!==17||event.auxiliary!==1||event.values[2]!==1||event.subject===1)continue
-      incoming.push(Object.freeze({voiceIdentity:Number((snapshot.tick*8192n+BigInt(ordinal)+4096n)&0xffff_ffffn),definition:"TFPlayer.CritHit",source:Object.freeze({kind:"entity",identity:event.subject,ownerIdentity:event.subject,origin:snapshot.bots.find(bot=>bot.identity===event.subject)?.position??camera.position,radius:0,sourceClass:"player"}),samples:Object.freeze({volume:0,pitch:0,wave:this.#presentationRandom!.nextInteger(0,4),soundLevel:0})}))
-    }
     const preferences=this.#settings?.snapshot().settings.current
     if(preferences&&(preferences.tf_dingalingaling===true||preferences.tf_dingalingaling_lasthit===true)){
       for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
@@ -5179,10 +5176,8 @@ export class Tf2Application {
       const [visibility,skyVisibility]=await client.visibilityViews(generation,visibilityViews)
       if(!visibility)throw new Error("Main-world visibility transaction returned no result")
       if(!ownsGeneration())return
-      const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
-      const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
       const flagCarriers=new Set((snapshot.objectives?.flags??[]).flatMap(flag=>flag.carrier===null?[]:[flag.carrier]))
-      const visibleBots=livingBots.filter(bot=>bot.equippedItems.some(item=>item.definitionIndex===378)||needsCriticalAttachment||flagCarriers.has(bot.identity)||this.#renderer!.modelVisible(
+      const botSelection=combatPoseSelection(snapshot.bots, publication.eventBatches.flatMap(batch=>batch.snapshot.events), bot=>bot.equippedItems.some(item=>item.definitionIndex===378)||flagCarriers.has(bot.identity)||this.#renderer!.modelVisible(
         tf2ClassPresentation(bot.class).model,
         bot.team===2?0:1,
         bot.position,
@@ -5190,7 +5185,8 @@ export class Tf2Application {
         visibilityCamera,
         visibility.water.passes,
       ))
-      const botRequests=visibleBots.map(bot=>{
+      const posedBots=botSelection.posed
+      const botRequests=posedBots.map(bot=>{
         const model=tf2ClassPresentation(bot.class).model
         const artifact=this.#artifacts!.models.get(model)
         if(!artifact)throw new Error(`Authored TF2 bot player model unavailable: ${model}`)
@@ -5201,8 +5197,8 @@ export class Tf2Application {
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
         return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(bot.position,Object.freeze([0,bot.yawDegrees,0]))})
       }).map((request, index) => {
-        const bot = visibleBots[index]!
-        if (bot.class !== 8) return request
+        const bot = posedBots[index]!
+        if (bot.class !== 8 || bot.lifecycle !== 1) return request
         const itemModel = bot.weapon?.identity === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
           : bot.weapon?.identity === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
           : bot.weapon?.identity === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl" : undefined
@@ -5211,7 +5207,7 @@ export class Tf2Application {
         if (!artifact) throw new Error(`Authored Spy world weapon unavailable: ${itemModel}`)
         return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity), itemModel, worldItem: true, itemBodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)) })
       })
-      const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, actorIdentity: visibleBots[index]!.identity, equippedItems: visibleBots[index]!.equippedItems }))
+      const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, actorIdentity: posedBots[index]!.identity, equippedItems: posedBots[index]!.equippedItems }))
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
         if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
         const artifact=this.#artifacts!.models.get(flag.model)
@@ -5310,7 +5306,7 @@ export class Tf2Application {
       const buildingPoses=modelPoses.filter(pose=>snapshot.buildings.some(building=>building.identity===pose.identity))
       const blueprintPose=modelPoses.find(pose=>pose.identity===BUILDING_BLUEPRINT_IDENTITY)
       if(buildingPoses.length!==snapshot.buildings.length||Boolean(blueprintPose)!==Boolean(snapshot.placement))throw new Error("TF2 building pose output differs from authoritative object state")
-      if(botPoses.length!==visibleBots.length)throw new Error("TF2 bot player pose output differs from authoritative visible player state")
+      if(botPoses.length!==posedBots.length)throw new Error("TF2 bot player pose output differs from authoritative player state")
       if(viewmodel!==undefined&&((snapshot.weapon===11||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
       const weaponPoseProfile = (globalThis as any).__playsrcProfile
@@ -5353,14 +5349,15 @@ export class Tf2Application {
           medicBeam.push(Object.freeze({ kind: "set-control-point", identity: `${snapshot.tick}:medic:${patient.identity}:patient`, effectIdentity: `medic:1:${patient.identity}`, eventIdentity: `${snapshot.tick}:medic:${patient.identity}:patient`, tick: snapshot.tick, projectileIdentity: patient.identity, controlPoint: patientPoint }))
         }
       }
-      const playerAttachmentTransforms=needsCriticalAttachment?new Map(botPoses.map(pose=>{
+      const playerAttachmentTransforms=botSelection.criticalTargets.size?new Map(botPoses.map(pose=>{
         const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity)!
         return [bot.identity,new Map(pose.attachments.map(attachment=>[attachment.name.toLowerCase(),transformAttachment(attachment.matrix,bot.position,sourceViewOrientation(0,bot.yawDegrees))]))] as const
       })):undefined
+      const playerActors=botSelection.criticalTargets.size?new Map(snapshot.bots.map(bot=>[bot.identity,bot])):undefined
       const combatParticles=publication.eventBatches.flatMap(batch=>{
         const muzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9||snapshot.class===8
           ?hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms}):[]
-        const result=combatImpactParticles(batch.snapshot,{tracerCount:this.#combatTracerCount},{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms,playerAttachmentTransforms})
+        const result=combatImpactParticles(batch.snapshot,{tracerCount:this.#combatTracerCount},{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms,playerAttachmentTransforms,playerActors})
         this.#combatTracerCount=result.state.tracerCount
         return [...muzzles,...result.particles]
       })
@@ -5376,7 +5373,7 @@ export class Tf2Application {
         ...botParts.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : [])],particleDecodeMilliseconds=performance.now()-particleDecodeStart
       if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmetics = {
         tick: snapshot.tick.toString(), local: snapshot.equippedItems, camera: visibilityCamera,
-        actors: visibleBots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, items: bot.equippedItems })),
+        actors: posedBots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, items: bot.equippedItems })),
         models: botParts.filter(pose => pose.wearable).map(pose => ({ actor: pose.identity - BOT_MODEL_IDENTITY_BASE, model: pose.model, item: pose.wearable!.itemId, controlPoint: [...pose.wearable!.controlPoint] })),
         particles: particleItems.filter(item => item.effectIdentity >= 0x6000_0000 && item.effectIdentity < 0x7000_0000),
       }
@@ -5394,7 +5391,7 @@ export class Tf2Application {
             const occurrence = this.#artifacts!.modelOccurrences.find(value => value.entity === pose.identity)!
             return Object.freeze({ identity: pose.identity, model: pose.model, ...studioModelFrameState(snapshot.entityPresentation, pose.identity), scale: 1, body: occurrence.body, pose, modelLighting: pose.lighting!, eyeStates: pose.eyes })
           }),
-          ...botParts.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.wearable?0x20000+pose.wearable.itemId*0x10000:pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
+          ...botParts.filter(pose=>botSelection.drawn.has(pose.identity-BOT_MODEL_IDENTITY_BASE)).map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.wearable?0x20000+pose.wearable.itemId*0x10000:pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...controlPointPoses.map(pose=>{const point=snapshot.controlPoints!.points.find(point=>OBJECTIVE_MODEL_IDENTITY_BASE+point.identity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:point.position,angles:point.angles,scale:1,skin:point.skin,body:point.body,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),

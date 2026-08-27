@@ -305,6 +305,7 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
 fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, items: &[Registration]) -> Result<(), String> {
     let keys = ["empty", "single_shot", "single_shot_npc", "double_shot", "burst", "reload", "reload_npc", "melee_miss", "melee_hit", "melee_hit_world", "special1", "special2", "special3", "taunt", "deploy"];
     let mut names = BTreeSet::<String>::new();
+    names.extend(["TFPlayer.CritHit", "TFPlayer.CritHitMini"].into_iter().map(str::to_owned));
     let extra_names: BTreeSet<_> = items.iter().filter(|item| item.implemented).flat_map(|item| item.extra_sounds.iter().cloned()).collect();
     let mut criticals = Vec::new();
     for registration in items.iter().filter(|item| item.implemented) {

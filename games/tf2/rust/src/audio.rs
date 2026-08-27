@@ -122,6 +122,7 @@ pub struct SoundSamples {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioEventIdentity {
+    PlayerFeedback,
     WeaponSingle,
     ExplosionSpecial1,
     ItemPickup,

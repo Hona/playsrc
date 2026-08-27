@@ -714,7 +714,7 @@ pub enum Event {
         weapon: Weapon,
         amount: u32,
         health: i32,
-        critical: bool,
+        crit: damage::CritKind,
         custom: u8,
     },
     PlayerKilled {
@@ -4520,7 +4520,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
             return Ok(None);
         }
         let dealt = u32::try_from((before - after).max(0)).unwrap_or(0);
-        let critical = result.crit != damage::CritKind::None;
         if input.attacker != 0 && input.attacker != input.victim {
             self.record_weapon_damage(input.attacker, damage::DamageHistoryInput {
                 now: self.tick as f32 * self.movement_configuration.tick_interval,
@@ -4537,10 +4536,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
             weapon: input.weapon,
             amount: dealt,
             health: after,
-            critical,
+            crit: result.crit,
             custom,
         });
         if input.attacker == PLAYER_IDENTITY && input.attacker != input.victim {
+            let conditions = self.bots.as_ref().and_then(|bots| bots.conditions(input.victim));
+            if result.crit != damage::CritKind::None && !conditions.is_some_and(|conditions|
+                conditions.contains(condition::ConditionId::DISGUISED) || conditions.contains(condition::ConditionId::RUNE_RESIST)) {
+                let name = if result.crit == damage::CritKind::Full { "TFPlayer.CritHit" } else { "TFPlayer.CritHitMini" };
+                let definition = SoundDefinition::configured(name).expect("configured critical feedback sound");
+                let samples = self.sample_sound(RandomContext::PredictedPresentation, definition, SoundQueryPhase::Emit);
+                self.push_audio_event(AudioEvent { action: AudioAction::Play, tick: self.tick, ordinal: 0,
+                    identity: AudioEventIdentity::PlayerFeedback, definition, source_kind: AudioSourceKind::Entity,
+                    source_identity: PLAYER_IDENTITY, owner_identity: Some(PLAYER_IDENTITY), position: self.movement.position, samples });
+            }
             self.scoreboard.local_damage(dealt);
             if after == 0 {
                 self.scoreboard.local_kill();
@@ -4563,7 +4572,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 killing_weapon: killing_weapon.unwrap_or_else(|| self.killing_weapon_name(input.attacker, input.weapon)),
                 assister: assister.unwrap_or(0),
                 damage_bits: input.normalized_damage_type().source_bits(result.crit),
-                critical,
+                critical: result.crit != damage::CritKind::None,
                 custom,
             });
         }

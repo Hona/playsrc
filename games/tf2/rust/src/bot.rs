@@ -3362,6 +3362,31 @@ mod tests {
     }
 
     #[test]
+    fn critical_feedback_retains_full_and_mini_kinds_and_uses_only_client_sound_randomness() {
+        for (crit, name) in [(CritKind::None, None), (CritKind::Full, Some("TFPlayer.CritHit")), (CritKind::Mini, Some("TFPlayer.CritHitMini"))] {
+            let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+            session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+            session.advance(crate::Command { nextbot_stop: true, bot_request: Some(Request {
+                operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy), team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal,
+            }), ..Default::default() }).unwrap();
+            let victim = session.bots.as_ref().unwrap().snapshots()[0].identity;
+            let mut input = direct_damage(Weapon::Bat, victim, 10.0); input.crit = crit;
+            let authority = session.random_state().authority;
+            let mut events = Vec::new();
+            session.apply_actor_damage(input, PlayerTeam::Red, &mut events).unwrap();
+            assert_eq!(session.random_state().authority, authority);
+            assert!(events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { crit: actual, .. } if *actual == crit)));
+            let feedback: Vec<_> = session.audio_events().iter().filter(|event| event.definition.identity().starts_with("TFPlayer.CritHit")).collect();
+            assert_eq!(feedback.len(), usize::from(name.is_some()));
+            if let Some(name) = name {
+                assert_eq!(feedback[0].definition.identity(), name);
+                assert_eq!(feedback[0].source_identity, crate::PLAYER_IDENTITY);
+                assert_eq!(feedback[0].owner_identity, Some(crate::PLAYER_IDENTITY));
+            }
+        }
+    }
+
+    #[test]
     fn finite_conditions_advance_once_per_session_tick_when_ai_is_stopped() {
         let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
         session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
