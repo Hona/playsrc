@@ -10905,11 +10905,73 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
     Ok(())
 }
 
+fn map_prop_pipeline_animations(graph: &playsrc_entity::Graph) -> BTreeMap<usize, Vec<&[u8]>> {
+    let mut pipeline_animations = graph.entities.iter()
+        .filter_map(|entity| playsrc_tf2::regenerate_associated_model(graph, entity))
+        .map(|entity| (entity.index, vec![b"open".as_slice(), b"close".as_slice()])).collect::<BTreeMap<_, _>>();
+    // CEventQueue tries authored target names before classname fallback. An
+    // unresolved activator or wildcard is not a guessed preparation target;
+    // its selected animation still arrives through the runtime snapshot.
+    for source in &graph.entities {
+        for connection in &source.connections {
+            let playsrc_entity::Connection::Parsed { target, input, parameter, .. } = connection else { continue };
+            if !input.eq_ignore_ascii_case(b"SetAnimation") || parameter.is_empty() || target.contains(&b'*') { continue; }
+            let targets = if target.eq_ignore_ascii_case(b"!self") || target.eq_ignore_ascii_case(b"!caller") {
+                vec![source]
+            } else if target.starts_with(b"!") {
+                Vec::new()
+            } else {
+                let named = graph.entities.iter().filter(|entity| entity.targetname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(target))).collect::<Vec<_>>();
+                if named.is_empty() {
+                    graph.entities.iter().filter(|entity| entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(target))).collect()
+                } else { named }
+            };
+            for entity in targets {
+                if entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"prop_dynamic")) {
+                    pipeline_animations.entry(entity.index).or_default().push(parameter.as_slice());
+                }
+            }
+        }
+    }
+    pipeline_animations
+}
+
+#[cfg(test)]
+mod map_prop_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn dormant_authored_inputs_join_only_their_named_prop_and_resupply_association() {
+        let graph = playsrc_entity::parse(br#"
+          {"classname" "prop_dynamic" "targetname" "door"}
+          {"classname" "prop_dynamic" "targetname" "unused"}
+          {"classname" "prop_dynamic" "targetname" "locker"}
+          {"classname" "func_door" "OnOpen" "DOOR,SetAnimation,open,0,-1" "OnClose" "door,SetAnimation,close,0,-1"}
+          {"classname" "func_regenerate" "associatedmodel" "locker"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        let selected = map_prop_pipeline_animations(&graph);
+        assert_eq!(selected.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(selected[&0], vec![b"open".as_slice(), b"close".as_slice()]);
+        assert_eq!(selected[&2], vec![b"open".as_slice(), b"close".as_slice()]);
+    }
+
+    #[test]
+    fn named_non_props_prevent_classname_fallback_and_dynamic_activators_are_not_guessed() {
+        let graph = playsrc_entity::parse(br#"
+          {"classname" "info_target" "targetname" "prop_dynamic"}
+          {"classname" "prop_dynamic" "targetname" "door"}
+          {"classname" "logic_relay" "OnTrigger" "prop_dynamic,SetAnimation,open,0,-1" "OnUser1" "!activator,SetAnimation,close,0,-1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        assert!(map_prop_pipeline_animations(&graph).is_empty());
+    }
+}
+
 fn encode_model_occurrence_matrices(
     out: &mut Vec<u8>,
     graph: &playsrc_entity::Graph,
     lighting: &BTreeMap<usize, CompiledModelOccurrenceLighting>,
     cubemaps: &[playsrc_map::CubemapSample],
+    models: &[(String, Box<CompiledPresentationModel>)],
 ) -> Result<(), ()> {
     let occurrences = graph
         .entities
@@ -10919,11 +10981,9 @@ fn encode_model_occurrence_matrices(
         .into_iter()
         .filter_map(|(entity, model)| model.map(|model| (entity, model)))
         .collect::<Vec<_>>();
-    let regenerate_models = graph.entities.iter()
-        .filter_map(|entity| playsrc_tf2::regenerate_associated_model(graph, entity))
-        .map(|entity| entity.index).collect::<std::collections::BTreeSet<_>>();
+    let pipeline_animations = map_prop_pipeline_animations(graph);
     out.extend_from_slice(b"PMTX");
-    out.extend_from_slice(&4u32.to_le_bytes());
+    out.extend_from_slice(&5u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(occurrences.len())
             .map_err(|_| ())?
@@ -10955,7 +11015,11 @@ fn encode_model_occurrence_matrices(
         };
         out.extend_from_slice(&integer(b"skin")?.to_le_bytes());
         out.extend_from_slice(&integer(b"SetBodyGroup")?.to_le_bytes());
-        out.extend_from_slice(&u32::from(regenerate_models.contains(&entity.index)).to_le_bytes());
+        let animation = pipeline_animations.get(&entity.index)
+            .and_then(|names| names.iter().copied().find(|name| models.iter().any(|(model, artifact)| model.eq_ignore_ascii_case(&identity)
+                && artifact.model.sequences.iter().any(|sequence| sequence.label.eq_ignore_ascii_case(name)))))
+            .unwrap_or_default();
+        pbytes(out, animation)?;
         for value in entity_vector(entity, b"origin")?
             .into_iter()
             .chain(entity_vector(entity, b"angles")?)
@@ -11938,6 +12002,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         graph,
         &static_props.model_lighting,
         &environment.world.cubemaps,
+        &models,
     )?;
     encode_model_materials(&mut out, &prepared_model_materials)?;
     section_ends[6] = out.len();

@@ -95,7 +95,7 @@ export type AudioArtifact = Readonly<{
     entries: readonly SoundScriptNode[]
   }>[]
 }>
-export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; regenerate: boolean; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array; lighting: ModelLightingInput; eyes: readonly ModelEyeState[] }>
+export type ModelOccurrenceMatrix = Readonly<{ entity: number; model: string; skin:number; body:number; pipelineAnimation: string | null; origin:readonly[number,number,number]; angles:readonly[number,number,number]; matrix: Float32Array; lighting: ModelLightingInput; eyes: readonly ModelEyeState[] }>
 export type BrushModelArtifact=Readonly<{index:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]];origin:readonly[number,number,number];headNode:number;surfaceRange:readonly[number,number];vertexCount:number;triangleCount:number;materials:readonly number[];entities:readonly number[]}>
 export type ModelTextureBinding = Readonly<{
   kind: "material" | "model"
@@ -1025,10 +1025,9 @@ function parseAudio(r: Reader): AudioArtifact {
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
-  if (r.decode(r.take(4)) !== "PMTX" || r.u32() !== 4) throw new ArtifactError("PMTX identity")
+  if (r.decode(r.take(4)) !== "PMTX" || r.u32() !== 5) throw new ArtifactError("PMTX identity")
   const output = Array.from({ length: r.u32() }, () => {
-    const entity = r.u32(), model = r.text(),skin=r.i32(),body=r.i32(),regenerate=r.u32(),origin=tuple3(r),angles=tuple3(r), matrix = new Float32Array(12)
-    if (regenerate > 1) throw new ArtifactError("model occurrence regenerate association")
+    const entity = r.u32(), model = r.text(),skin=r.i32(),body=r.i32(),pipelineAnimation=r.text() || null,origin=tuple3(r),angles=tuple3(r), matrix = new Float32Array(12)
     for (let index = 0; index < matrix.length; index++) matrix[index] = r.f32()
     if(skin<0||body<0)throw new ArtifactError("model occurrence selection")
     const present = r.u8(), count = r.u8(), ambient = r.u8()
@@ -1054,7 +1053,7 @@ function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
       return Object.freeze({ primitive, mesh, eyeball, texture, worldOrigin, authoredUp,
         irisU: row(), irisV: row(), glintU: row(), glintV: row() })
     }))
-    return Object.freeze({ entity, model,skin,body,regenerate: regenerate === 1,origin,angles, matrix, lighting, eyes })
+    return Object.freeze({ entity, model,skin,body,pipelineAnimation,origin,angles, matrix, lighting, eyes })
   })
   return Object.freeze(output)
 }
