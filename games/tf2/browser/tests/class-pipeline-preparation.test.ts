@@ -20,8 +20,9 @@ function artifacts() {
 
 test("prepares exact declared class previews and resident viewmodels without commands or clock advancement", () => {
   const prepared = classPipelinePoseRequests(artifacts(), 1, camera, 16 / 9)
-  expect(prepared.filter(value => value.panel)).toHaveLength(9)
-  expect(prepared.filter(value => !value.panel)).toHaveLength(2)
+  expect(prepared.filter(value => value.pass === "panel")).toHaveLength(9)
+  expect(prepared.filter(value => value.pass === "view")).toHaveLength(2)
+  expect(prepared.filter(value => value.pass === "world")).toHaveLength(18)
   expect(new Set(prepared.map(value => value.request.identity)).size).toBe(prepared.length)
   expect(prepared.find(value => value.request.model.includes("bottle"))!.request.skin).toBe(0)
   expect(prepared.find(value => value.request.model.includes("medic_arms"))!.request.skin).toBe(1)
@@ -41,7 +42,7 @@ test("missing class facts and a larger-than-resident resource set fail before pr
   models.delete(tf2ClassPresentation(3).model)
   expect(() => classPipelinePoseRequests(values, 0, camera, 1)).toThrow("unavailable")
   const full = artifacts()
-  for (let i = 0; i < 64; i++) (full.models as Map<string, ModelArtifact>).set(`models/test${i}.mdl`, {
+  for (let i = 0; i < 96; i++) (full.models as Map<string, ModelArtifact>).set(`models/test${i}.mdl`, {
     profile: "viewmodel", skinCount: 1, bodygroupCounts: [], sequences: [{ label: "reference" }],
   } as ModelArtifact)
   expect(() => classPipelinePoseRequests(full, 0, camera, 1)).toThrow("bound")
