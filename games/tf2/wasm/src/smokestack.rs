@@ -255,7 +255,7 @@ impl Smokestacks {
                     material: parameters.material.clone(), position: particle.position, previous_position: particle.position,
                     radius: parameters.start_size + (parameters.end_size - parameters.start_size) * t,
                     roll_radians: particle.angle.to_radians(), yaw_radians: 0.0,
-                    color: color.map(|v| (v * scale).round_ties_even() as u8), opacity: alpha.round_ties_even() / 255.0,
+                    color: color.map(|v| (v * scale).round_ties_even() as i32 as u8), opacity: alpha.round_ties_even() / 255.0,
                     sequence: 0, secondary_sequence: 0, trail_length_scale: 0.0, sort_key: particle.sort_z,
                     age_seconds: particle.age, lifetime_seconds: 1.0 / inv_lifetime,
                     animation_rate: 0.0, secondary_animation_rate: 0.0, step_seconds: dt,
@@ -503,5 +503,18 @@ mod tests {
             entry(3, false, 0, 100.0, 3), entry(4, true, 0, 5.0, 4), entry(5, false, 0, 100.0, 5)];
         sort_render_entries(&mut entries);
         assert_eq!(entries.iter().rev().map(|entry| entry.entity.slot).collect::<Vec<_>>(), [4, 2, 1, 3, 5]);
+    }
+
+    #[test]
+    fn sphere_renderer_converts_rounded_signed_light_colors_to_bytes() {
+        let mut world = Smokestacks::new(1);
+        let mut state = state();
+        state.color = [0, 0, 0, 255];
+        state.parameters.spread_speed = 0.0;
+        state.parameters.ambient = Light { position: [1.0, 0.0, 4.5], color: [1.0, 0.0, 0.0], intensity: -1.0 };
+        advance(&mut world, &state, 0.0, 0.0, true);
+        state.emit = false;
+        let output = advance(&mut world, &state, 0.1, 0.1, true);
+        assert_eq!(output[0].color, [1, 0, 0]);
     }
 }

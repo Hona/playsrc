@@ -64,6 +64,7 @@ test("Lakeside authored smokestacks, TurnOff drain, reentry and replacement", as
     })
     await writeFile(testInfo.outputPath(`${name}.json`), json(result))
     expect.soft(result.ticks / result.seconds).toBeGreaterThan(63)
+    expect(result.frames.length, "legacy effects must not duplicate publication and RAF draws").toBeLessThanOrEqual(result.raf.length * 1.1)
     expect(result.bots).toHaveLength(15)
     expect(result.countersAfter.validationErrors).toBe(0)
     return result
