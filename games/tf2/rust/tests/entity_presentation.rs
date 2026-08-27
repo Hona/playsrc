@@ -115,7 +115,7 @@ fn session_publishes_one_atomic_entity_and_collision_revision_join() {
         .unwrap();
     assert_eq!(snapshot.collision_revision, 91);
     assert_eq!(snapshot.entities.source_identity, 0x1020_3040);
-    assert_eq!(snapshot.entities.registry_identity, 0x5446_325f_454e_5433);
+    assert_eq!(snapshot.entities.registry_identity, 0x5446_325f_454e_5434);
     assert_eq!(snapshot.entities.tick, 0);
     assert_eq!(snapshot.entities.revision, entity_revision);
     assert_eq!(snapshot.entities.models.len(), 1);

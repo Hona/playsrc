@@ -1472,6 +1472,18 @@ mod tests {
     }
 
     #[test]
+    fn presentation_interpolates_capture_and_freezes_when_contested() {
+        let mut w = world(true);
+        think(&mut w, 0, 0.0, &[actor(1, PlayerTeam::Red, PlayerClass::Scout)], true);
+        w.now = 0.05;
+        let progress = w.snapshot(Vec::new()).display_progress[0];
+        assert!((progress - 0.075 / 20.0).abs() < 0.000001);
+        w.areas[0].blocked = true;
+        assert_eq!(w.snapshot(Vec::new()).display_progress[0], 0.0);
+        assert_eq!(w.areas[0].remaining, 20.0);
+    }
+
+    #[test]
     fn capper_death_awards_a_defense_only_when_it_breaks_the_capture() {
         let mut w = world(false);
         let red = actor(1, PlayerTeam::Red, PlayerClass::Soldier);
