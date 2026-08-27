@@ -976,6 +976,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     compositorSilence: exactTraceWindow ? summarizeActivePresentationSilence(traceEvents, exactTraceWindow) : null,
     workerEvidence: workerArtifact,
     traveled: Number(measurement.traveled.toFixed(3)), cpu: summarizeCpuProfile(cpuProfile),
+    activeCpu: exactTraceWindow ? summarizeCpuProfile(cpuProfile, exactTraceWindow) : null,
     pixels: { nonBlack, beforeSha256: createHash("sha256").update(before).digest("hex"), afterSha256: createHash("sha256").update(after).digest("hex") },
   }
   profilePhases.enter("export")

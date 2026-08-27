@@ -17,12 +17,26 @@ test("attributes CPU samples to self and inclusive frames", () => {
     samples: [2, 2],
     timeDeltas: [1_000, 2_000],
   })
-  expect(summary.sampledMilliseconds).toBe(3)
+  expect(summary.estimatedSampledMilliseconds).toBe(2)
+  expect(summary.unattributedMilliseconds).toBe(2)
   expect(summary.topSelf[0]?.function).toBe("publishDom")
-  expect(summary.topInclusive.some((row) => row.function === "root" && row.milliseconds === 3)).toBe(true)
+  expect(summary.topInclusive.some((row) => row.function === "root" && row.estimatedMilliseconds === 2)).toBe(true)
   expect(summary.topModules[0]?.module).toBe("packages/presentation/vgui")
   expect(summary.topEdges.some((edge) => edge.callee.includes("publishDom"))).toBe(true)
   expect(summary.topStacks[0]?.frames.at(-1)).toContain("publishDom")
+})
+
+test("signed CDP deltas are timestamps, not nonnegative sample durations", () => {
+  const summary = summarizeCpuProfile({
+    startTime: 0, endTime: 1000,
+    nodes: [1, 2, 3].map(id => ({ id, callFrame: { functionName: `sample${id}`, url: "", lineNumber: 0, columnNumber: 0 }, ...(id === 1 ? { children: [2, 3] } : {}) })),
+    samples: [2, 3, 2, 3], timeDeltas: [100, 600, -400, 600],
+  })
+  expect(summary.estimatedSampledMilliseconds).toBe(0.8)
+  expect(summary.wallMilliseconds).toBe(1)
+  expect(summary.signedElapsedMilliseconds).toBe(0.9)
+  expect(summary.unattributedMilliseconds).toBe(0.2)
+  expect(summary.topSelf.find(row => row.function === "sample2")).toMatchObject({ samples: 2, estimatedMilliseconds: 0.6 })
 })
 
 test("summarizes complete CDP events and metric deltas", () => {

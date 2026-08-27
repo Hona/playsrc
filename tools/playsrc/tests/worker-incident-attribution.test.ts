@@ -7,6 +7,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { gzipSync } from "node:zlib"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
+import { replayCpuProfiles } from "../profile/replay-cpu-profile"
 
 const capture: WorkerCpuCapture = {
   target: { targetId: "worker", type: "worker", url: "gameplay-worker.ts" }, samplingIntervalMicroseconds: 1000,
@@ -60,6 +61,13 @@ describe("Worker CPU and monotonic task joins", () => {
       const replay = await replayWorkerIncidents(file)
       expect(replay.compositorComplete).toBe(true)
       expect(replay.analyses[0]!.slowTasks[0]!.browserTransactions[0]?.publication).toMatchObject({ requestId: 9, publications: [{ selectedTicks: 6, eventBatches: 6 }] })
+      const cpuFile = path.join(directory, "main.cpuprofile")
+      await writeFile(cpuFile, JSON.stringify(capture.profile))
+      const cpu = await replayCpuProfiles(file, cpuFile)
+      expect(cpu.workers[0]!.cpu).toMatchObject({ estimatedSampledMilliseconds: 105, unattributedMilliseconds: 45 })
+      expect(cpu.main?.activeCpu).toMatchObject({ sampleCount: 3, estimatedSampledMilliseconds: 105, wallMilliseconds: 135, unattributedMilliseconds: 30 })
+      expect(cpu.main?.sha256).toMatch(/^[0-9a-f]{64}$/u)
+      expect(cpu.main?.identity).toContain("not linked")
       await writeFile(path.join(directory, artifact.file), "corrupted")
       await expect(replayWorkerIncidents(file)).rejects.toThrow("byte bound or identity mismatch")
     } finally { await rm(directory, { recursive: true, force: true }) }
@@ -88,5 +96,13 @@ describe("Worker CPU and monotonic task joins", () => {
     expect(result.captureComplete).toBe(false)
     expect(result.droppedTasks).toBe(4)
     expect(result.slowTasks).toHaveLength(0)
+  })
+  test("active Worker estimates clip intervals and retain zero-duration boundary points with signed deltas", () => {
+    const outOfOrder = { ...capture, profile: { ...capture.profile, samples: [1, 1, 1, 1], timeDeltas: [25_000, 55_000, -30_000, 80_000] } }
+    const result = attributeWorkerIncidents(events, [outOfOrder], { startedMicroseconds: 1_040_000, endedMicroseconds: 1_080_000 })[0]!
+    expect(result.activeCpu).toMatchObject({ sampleCount: 1, estimatedSampledMilliseconds: 40, unattributedMilliseconds: 0, negativeDeltaCount: 1 })
+    expect(result.slowTasks[0]!.activeStacks[0]).toMatchObject({ samples: 1, estimatedMilliseconds: 40 })
+    expect(result.slowTasks[0]!.stacks[0]!.samples).toBe(4)
+    expect(() => attributeWorkerIncidents(events, [{ ...outOfOrder, profile: { ...outOfOrder.profile, timeDeltas: [NaN, 0, 0, 0] } }], window)).toThrow("Invalid CPU profile")
   })
 })

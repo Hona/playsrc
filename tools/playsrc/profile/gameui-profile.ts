@@ -1,3 +1,5 @@
+import { reconstructCpuProfile, selectCpuWindow, type CpuWindow } from "./cpu-profile-time"
+
 export type Distribution = Readonly<{
   count: number
   total: number
@@ -79,41 +81,37 @@ function cpuRows(values: ReadonlyMap<string, { microseconds: number; samples: nu
     line: value.node.callFrame.lineNumber + 1,
     column: value.node.callFrame.columnNumber + 1,
     samples: value.samples,
-    milliseconds: rounded(value.microseconds / 1_000),
+    estimatedMilliseconds: rounded(value.microseconds / 1_000),
     percent: rounded(totalMicroseconds === 0 ? 0 : value.microseconds * 100 / totalMicroseconds),
     key,
-  })).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 50))
+  })).sort((left, right) => right.estimatedMilliseconds - left.estimatedMilliseconds).slice(0, 50))
 }
 
-export function summarizeCpuProfile(profile: CpuProfile) {
-  const nodes = new Map(profile.nodes.map((node) => [node.id, node]))
-  const parents = new Map<number, number>()
-  for (const node of profile.nodes) for (const child of node.children ?? []) parents.set(child, node.id)
+export function summarizeCpuProfile(profile: CpuProfile, window?: CpuWindow) {
+  const timeline = reconstructCpuProfile(profile)
+  const { nodes, parents } = timeline
+  const selected = selectCpuWindow(timeline, window)
   const self = new Map<string, { microseconds: number; samples: number; node: CpuNode }>()
   const inclusive = new Map<string, { microseconds: number; samples: number; node: CpuNode }>()
   const modules = new Map<string, { microseconds: number; samples: number }>()
   const edges = new Map<string, { caller: CpuNode; callee: CpuNode; microseconds: number; samples: number }>()
   const stacks = new Map<string, { frames: readonly string[]; microseconds: number; samples: number }>()
-  const samples = profile.samples ?? []
-  const deltas = profile.timeDeltas ?? []
-  let sampledMicroseconds = 0
-  const add = (target: typeof self, node: CpuNode, microseconds: number) => {
+  const sampledMicroseconds = selected.estimatedMicroseconds
+  const add = (target: typeof self, node: CpuNode, microseconds: number, samples: number) => {
     const key = nodeKey(node)
     const current = target.get(key) ?? { microseconds: 0, samples: 0, node }
     current.microseconds += microseconds
-    current.samples += 1
+    current.samples += samples
     target.set(key, current)
   }
-  for (let index = 0; index < samples.length; index += 1) {
-    const microseconds = Math.max(0, deltas[index] ?? 0)
-    const sampled = nodes.get(samples[index]!)
-    if (!sampled || microseconds === 0) continue
-    sampledMicroseconds += microseconds
-    add(self, sampled, microseconds)
+  for (const sample of selected.samples) {
+    const microseconds = sample.estimatedMicroseconds
+    const sampled = nodes.get(sample.nodeId)!
+    add(self, sampled, microseconds, sample.samples)
     const module = moduleIdentity(location(sampled))
     const moduleValue = modules.get(module) ?? { microseconds: 0, samples: 0 }
     moduleValue.microseconds += microseconds
-    moduleValue.samples += 1
+    moduleValue.samples += sample.samples
     modules.set(module, moduleValue)
     const admitted = new Set<string>()
     const chain: CpuNode[] = []
@@ -122,7 +120,7 @@ export function summarizeCpuProfile(profile: CpuProfile) {
       chain.push(current)
       const key = nodeKey(current)
       if (!admitted.has(key)) {
-        add(inclusive, current, microseconds)
+        add(inclusive, current, microseconds, sample.samples)
         admitted.add(key)
       }
       current = nodes.get(parents.get(current.id) ?? -1)
@@ -132,7 +130,7 @@ export function summarizeCpuProfile(profile: CpuProfile) {
       const caller = chain[edge]!, callee = chain[edge + 1]!, key = `${nodeKey(caller)}\u0001${nodeKey(callee)}`
       const value = edges.get(key) ?? { caller, callee, microseconds: 0, samples: 0 }
       value.microseconds += microseconds
-      value.samples += 1
+      value.samples += sample.samples
       edges.set(key, value)
     }
     const frames = chain.filter((node) => node.callFrame.functionName !== "(root)").slice(-12)
@@ -140,34 +138,48 @@ export function summarizeCpuProfile(profile: CpuProfile) {
     const stackKey = frames.join("\n")
     const stack = stacks.get(stackKey) ?? { frames: Object.freeze(frames), microseconds: 0, samples: 0 }
     stack.microseconds += microseconds
-    stack.samples += 1
+    stack.samples += sample.samples
     stacks.set(stackKey, stack)
   }
   return Object.freeze({
-    wallMilliseconds: rounded((profile.endTime - profile.startTime) / 1_000),
-    sampledMilliseconds: rounded(sampledMicroseconds / 1_000),
-    sampleCount: samples.length,
+    schema: "playsrc-cpu-sampling-estimate-v2",
+    attribution: "chronological sample-to-next-sample estimates; not exclusive CPU wall; no tail extrapolation",
+    window: { startedMicroseconds: selected.startedMicroseconds, endedMicroseconds: selected.endedMicroseconds, endInclusive: window === undefined },
+    profileWallMilliseconds: rounded((profile.endTime - profile.startTime) / 1_000),
+    wallMilliseconds: rounded(selected.wallMicroseconds / 1_000),
+    estimatedSampledMilliseconds: rounded(sampledMicroseconds / 1_000),
+    unattributedMilliseconds: rounded(selected.unattributedMicroseconds / 1_000),
+    leadingUnattributedMilliseconds: rounded(selected.leadingUnattributedMicroseconds / 1_000),
+    trailingUnattributedMilliseconds: rounded(selected.trailingUnattributedMicroseconds / 1_000),
+    unsampledProfileMilliseconds: rounded(selected.unsampledProfileMicroseconds / 1_000),
+    outsideProfileMilliseconds: rounded(selected.outsideProfileMicroseconds / 1_000),
+    signedElapsedMilliseconds: rounded(timeline.signedElapsedMicroseconds / 1_000),
+    negativeDeltaCount: timeline.negativeDeltaCount,
+    equalTimestampCount: timeline.equalTimestampCount,
+    maximumReorderMicroseconds: timeline.maximumReorderMicroseconds,
+    sampleCount: selected.sampleCount,
+    profileSampleCount: timeline.rawSamples.length,
     topSelf: cpuRows(self, sampledMicroseconds),
     topInclusive: cpuRows(inclusive, sampledMicroseconds),
     topModules: Object.freeze([...modules].map(([module, value]) => Object.freeze({
       module,
       samples: value.samples,
-      milliseconds: rounded(value.microseconds / 1_000),
+      estimatedMilliseconds: rounded(value.microseconds / 1_000),
       percent: rounded(sampledMicroseconds === 0 ? 0 : value.microseconds * 100 / sampledMicroseconds),
-    })).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 50)),
+    })).sort((left, right) => right.estimatedMilliseconds - left.estimatedMilliseconds).slice(0, 50)),
     topEdges: Object.freeze([...edges.values()].map((value) => Object.freeze({
       caller: `${value.caller.callFrame.functionName || "(anonymous)"}@${location(value.caller)}:${value.caller.callFrame.lineNumber + 1}`,
       callee: `${value.callee.callFrame.functionName || "(anonymous)"}@${location(value.callee)}:${value.callee.callFrame.lineNumber + 1}`,
       samples: value.samples,
-      milliseconds: rounded(value.microseconds / 1_000),
+      estimatedMilliseconds: rounded(value.microseconds / 1_000),
       percent: rounded(sampledMicroseconds === 0 ? 0 : value.microseconds * 100 / sampledMicroseconds),
-    })).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 100)),
+    })).sort((left, right) => right.estimatedMilliseconds - left.estimatedMilliseconds).slice(0, 100)),
     topStacks: Object.freeze([...stacks.values()].map((value) => Object.freeze({
       frames: value.frames,
       samples: value.samples,
-      milliseconds: rounded(value.microseconds / 1_000),
+      estimatedMilliseconds: rounded(value.microseconds / 1_000),
       percent: rounded(sampledMicroseconds === 0 ? 0 : value.microseconds * 100 / sampledMicroseconds),
-    })).sort((left, right) => right.milliseconds - left.milliseconds).slice(0, 100)),
+    })).sort((left, right) => right.estimatedMilliseconds - left.estimatedMilliseconds).slice(0, 100)),
   })
 }
 
