@@ -4,8 +4,27 @@ import { tf2ClassPresentation } from "../src/class"
 import { encodeModelPoseBatch } from "../src/presentation"
 import type { PresentationArtifacts, ModelArtifact } from "../src/artifacts"
 import type { Tf2Class } from "../src/codec"
+import { equipmentPipelinePoseRequests } from "../src/equipment/pipelines"
 
 const camera = { position: [10, 20, 30] as const, yawDegrees: 40, pitchDegrees: 5, far: 32768 }
+
+test("incremental equipment prepares each admitted skin once without requiring unrelated classes", () => {
+  const models = new Map<string, ModelArtifact>([["models/player/soldier.mdl", {
+    profile: "world", skinCount: 4, bodygroupCounts: [2], sequences: [{ label: "ref" }],
+  } as ModelArtifact]])
+  const geometry = ["models/player/soldier.mdl", "models/player/soldier.mdl#skin=1"].map(logicalPath => ({ logicalPath, materials: [], primitives: [] }))
+  const requests = equipmentPipelinePoseRequests({ models, geometry }, 1.6)
+  expect(requests.map(request => request.skin)).toEqual([0, 1])
+  expect(new Set(requests.map(request => request.identity)).size).toBe(2)
+  for (const request of requests) {
+    expect(request.preparation).toBe(true)
+    expect(request.modelPanel).toBe(true)
+    expect(request.frameTimeSeconds).toBe(0)
+    expect(request.bodygroups).toEqual([0])
+    expect(request.lighting).toBeDefined()
+  }
+  expect(encodeModelPoseBatch(requests).byteLength).toBeGreaterThan(0)
+})
 function artifacts() {
   const models = new Map<string, ModelArtifact>()
   const add = (model: string, profile: "world" | "viewmodel", skins = 2) => models.set(model, {

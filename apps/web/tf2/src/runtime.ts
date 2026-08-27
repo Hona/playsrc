@@ -6,7 +6,7 @@ import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
-import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
+import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, equipmentPipelinePoseRequests, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -1827,6 +1827,7 @@ export class Tf2Application {
       this.#requireOperation(operation)
       await this.#client!.activate(this.#generation)
       await this.#releaseEquipmentAdmissions(this.#generation)
+      await this.#admitRestoredEquipment()
       finishLoadPhase("activation")
       this.#paused = document.hidden
       this.#resetTeamSelection()
@@ -2096,8 +2097,14 @@ export class Tf2Application {
           const loadout = this.#equipmentProfile!.state()!.classes[identity - 1]!
           const replacement = definition ?? loadout.baseItems.find(item => item.slot === slot)?.definitionIndex
           const definitions = [...new Set([...loadout.items.filter(item => item.slot !== slot).map(item => item.definitionIndex), ...(replacement === undefined ? [] : [replacement])])]
-          await this.#admitEquipment(definitions, this.#loaded ? this.#generation : 0)
-          return this.#equipmentProfile!.equip(identity, slot, definition)
+          try {
+            await this.#admitEquipment(definitions, this.#loaded ? this.#generation : 0)
+            return await this.#equipmentProfile!.equip(identity, slot, definition)
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") return this.#equipmentProfile!.state()!
+            this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Equipment admission failed") })
+            return this.#equipmentProfile!.state()!
+          }
         },
         onClose: () => { this.#neutral() },
         onPreview: preview => {
@@ -2132,6 +2139,14 @@ export class Tf2Application {
       this.#equipmentAdmissions.delete(generation)
       if (generation === 0) this.#equipmentPanelArtifacts = undefined
     }
+  }
+
+  async #admitRestoredEquipment(): Promise<void> {
+    const state = this.#equipmentProfile!.state()!
+    const definitions = new Set(state.classes.flatMap(loadout => loadout.items.map(item => item.definitionIndex)))
+    const missing = state.inventory.filter(item => definitions.has(item.item.definitionIndex)
+      && item.modelPlayer !== "" && !this.#artifacts!.models.has(item.modelPlayer)).map(item => item.item.definitionIndex)
+    if (missing.length) await this.#admitEquipment(missing, this.#generation)
   }
 
   async #admitEquipment(definitions: readonly number[], generation: number): Promise<void> {
@@ -2179,6 +2194,22 @@ export class Tf2Application {
         }
         retained = true
         const camera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: 30, near: 1, far: 16384 * Math.sqrt(3) }
+        const viewport = this.#viewport()
+        const requests = equipmentPipelinePoseRequests(artifacts, viewport.width / viewport.height)
+        const passes = generation === 0 ? ["panel"] as const : ["panel", "view", "world"] as const
+        for (let offset = 0; offset < requests.length; offset += 32) {
+          const batch = requests.slice(offset, offset + 32)
+          const poses = await this.#client!.models(generation, encodeModelPoseBatch(batch))
+          if (epoch !== this.#equipmentAdmissionEpoch) throw new DOMException("Equipment admission was replaced", "AbortError")
+          const byIdentity = new Map(batch.map(request => [request.identity, request]))
+          await this.#renderer.prepareModelPipelines(poses.flatMap(pose => {
+            const request = byIdentity.get(pose.identity)
+            if (!request?.lighting || !pose.lighting) throw new Error(`Equipment pipeline pose unavailable: ${pose.model}`)
+            const item = { identity: pose.identity, model: pose.model, skin: request.skin,
+              position: request.lighting.origin, angles: request.lighting.angles, scale: 1, pose, modelLighting: pose.lighting, eyeStates: pose.eyes }
+            return passes.map(pass => ({ pass, item }))
+          }), camera, generation === 0 ? undefined : this.#mainFog(this.#artifacts!))
+        }
         if (artifacts.particleTextures.length) await this.#renderer.prepareParticlePipelines(camera)
       } finally {
         this.#equipmentPreparing = false
@@ -3658,7 +3689,8 @@ export class Tf2Application {
     this.#preparedPresentation=undefined
     this.#requiredParticleDisplayFrames.reset()
     this.#nextSimulationSampleSeconds=0
-    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
+    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask, this.#equipmentRenderTask])
+    await this.#equipmentAdmissionTask?.catch(error => { if (error?.name !== "AbortError") throw error })
     if (operation) this.#requireOperation(operation)
     const generation = candidate?.dependencies.generation ?? this.#reserveGeneration()
     const profile = this.#renderLevel === 2 ? 1 : 0
@@ -3676,7 +3708,7 @@ export class Tf2Application {
     const coverageSamples=await this.#client.coverage(generation)
     if (operation) this.#requireOperation(operation)
     finishReplacePhase("stage")
-    const artifacts = await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
+    let artifacts = await parsePresentationArtifacts(staged.presentation, candidate?.entries ?? this.#dependencyEntries)
     this.#profileMapResidency("presentation-parsed", candidate?.dependencies, staged)
     finishReplacePhase("presentationParse")
     this.#resetMapBlockers()
@@ -3800,6 +3832,8 @@ export class Tf2Application {
     this.#loaded = staged
     this.#coverageSamples=coverageSamples
     this.#artifacts = artifacts
+    await this.#admitRestoredEquipment()
+    artifacts = this.#artifacts!
     this.#lockerAnimations.clear()
     this.#reloadHistory=[]
     this.#fireTickHistory=[]
