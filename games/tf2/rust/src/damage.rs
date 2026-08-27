@@ -452,6 +452,7 @@ pub struct DamageModifiers {
     pub melee_taken: f32,
     pub general_taken: f32,
     pub active_taken: f32,
+    pub spunup_taken: f32,
     pub pierces_resists: bool,
     pub minicrits_become_crits: bool,
     pub crits_become_minicrits: bool,
@@ -468,6 +469,7 @@ impl Default for DamageModifiers {
             melee_taken: 1.0,
             general_taken: 1.0,
             active_taken: 1.0,
+            spunup_taken: 1.0,
             pierces_resists: false,
             minicrits_become_crits: false,
             crits_become_minicrits: false,
@@ -486,6 +488,7 @@ impl DamageModifiers {
             self.melee_taken,
             self.general_taken,
             self.active_taken,
+            self.spunup_taken,
         ]
         .into_iter()
         .all(|value| value.is_finite() && value >= 0.0)
@@ -759,6 +762,9 @@ pub fn apply_damage(
         }
         if input.damage_type.contains(DamageType::MELEE) {
             base *= modifiers.melee_taken;
+        }
+        if (before as f32 - (pre_resistance_base_damage + pre_resistance_bonus_damage)) / health.maximum as f32 <= 0.5 {
+            base *= modifiers.spunup_taken;
         }
     }
     stages.push(DamageStage {
@@ -1102,6 +1108,21 @@ mod tests {
             .denial,
             Some(DamageDenial::FriendlyFire)
         );
+    }
+
+    #[test]
+    fn spunup_resistance_tests_post_hit_health_but_only_scales_base_damage() {
+        for (before, pierces, expected) in [(241, false, 90), (240, false, 84), (100, false, 84), (100, true, 90)] {
+            let mut health = HealthState::spawn(PlayerClass::Heavy, 0.0, 0.0).unwrap();
+            health.current = before;
+            let mut info = input();
+            info.base_damage = 30.0;
+            info.crit = CritKind::Full;
+            let result = apply_damage(true, &mut health, &mut ConditionState::default(), &info,
+                DamageModifiers { spunup_taken: 0.8, pierces_resists: pierces, ..Default::default() }).unwrap();
+            assert_eq!(result.health_damage, expected);
+            assert_eq!(result.bonus_damage, 60.0);
+        }
     }
 
     #[test]

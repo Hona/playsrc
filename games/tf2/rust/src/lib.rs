@@ -814,6 +814,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     active_equipment: equipment::Equipment,
     equipment_attributes: equipment::AttributeProviders,
     equipment_respawn_requested: bool,
+    pub(crate) decapitations: i32,
     bot_equipment: BTreeMap<u32, equipment::Equipment>,
     ammo: class::AmmoLedger,
     movement: MovementState,
@@ -989,6 +990,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             active_equipment: equipment::Equipment::default(),
             equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
             equipment_respawn_requested: false,
+            decapitations: 0,
             bot_equipment: BTreeMap::new(),
             ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
@@ -1091,6 +1093,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn equipment(&self) -> &equipment::Equipment { &self.equipment }
+    pub fn decapitations(&self) -> i32 { self.decapitations }
 
     pub fn equip_bot_cosmetic(&mut self, identity: u32, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
         let class = self.bots.as_ref().and_then(|bots| bots.snapshots().into_iter().find(|bot| bot.identity == identity)).map(|bot| bot.class)
@@ -1190,6 +1193,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.equipment_attributes = equipment::AttributeProviders::new(&self.active_equipment, self.class);
         for weapon in self.active_equipment.weapons(self.class) {
             let context = weapon::ProfileContext {
+                decapitations: self.decapitations,
                 ammo: weapon_ammo_kind(weapon),
                 gun: weapon_ammo_kind(weapon).is_some(),
                 blast_impact: matches!(weapon, Weapon::RocketLauncher | Weapon::Original | Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
@@ -3399,6 +3403,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && (self.jump.is_none() || matches!(class, PlayerClass::Soldier | PlayerClass::Demoman))
         {
             self.class = class;
+            self.decapitations = 0;
             self.critical_history.reset_for_spawn();
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
             self.buildings.reset();
@@ -6749,6 +6754,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     ) {
         // WeaponReset destroys sound patches without emitting a winddown.
         self.stop_flame(true);
+        self.decapitations = 0;
         self.critical_history.reset_for_spawn();
         self.fizzle_projectiles(projectile_events);
         self.damagers = deathnotice::DamagerHistory::default();
@@ -10548,6 +10554,20 @@ mod tests {
         ));
         assert_eq!(session.class, PlayerClass::Soldier);
         assert_eq!(session.movement_snapshot_bytes(), before);
+    }
+
+    #[test]
+    fn shared_decapitations_reset_on_spawn_and_class_change_not_resupply() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session.decapitations = 6;
+        session.regenerate(1, None, &mut Vec::new());
+        assert_eq!(session.decapitations(), 6);
+        session.advance(Command { select_class: Some(PlayerClass::Sniper), ..Command::default() }).unwrap();
+        assert_eq!(session.decapitations(), 0);
+        session.decapitations = 8;
+        session.health = 0;
+        session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+        assert_eq!(session.decapitations(), 0);
     }
 
     #[test]
