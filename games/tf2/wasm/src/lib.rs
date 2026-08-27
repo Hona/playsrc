@@ -5154,6 +5154,7 @@ fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
         playsrc_tf2::Error::TeamSelection(_) => 12,
         playsrc_tf2::Error::Objectives(_) => 13,
         playsrc_tf2::Error::Round(_) => 14,
+        playsrc_tf2::Error::ControlPoints(_) => 15,
     }
 }
 

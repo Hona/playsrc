@@ -719,6 +719,7 @@ pub struct Snapshot {
     pub entity_transforms: Vec<EntityTransform>,
     pub entity_events: Vec<EntityEvent>,
     pub objectives: Option<ctf::Snapshot>,
+    pub control_points: Option<control_point::Snapshot>,
     pub round: round::Snapshot,
     pub jump: Option<jump::TickOutput>,
     pub events: Vec<Event>,
@@ -868,6 +869,7 @@ pub enum Error {
     Bot(bot::Error),
     TeamSelection(team_selection::TeamSelectionError),
     Objectives(ctf::Error),
+    ControlPoints(control_point::Error),
     Round(round::Error),
 }
 
@@ -1582,6 +1584,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
         admission_metrics::begin_tick(self.tick);
+        self.map.set_control_point_facts(self.control_point_facts());
         match self.movement.water_level {
             0 => self.in_water = false,
             1 | 2 => self.in_water = true,
@@ -1806,7 +1809,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     && self.health > 0
                     && roster.local_team == PlayerTeam::Blue,
             ),
-            objective_contested: false,
+            objective_contested: self.map.control_points().is_some_and(control_point::World::contested),
             flag_away_from_home: self.map.objectives().is_some_and(|objectives| {
                 objectives
                     .flags()
@@ -1850,6 +1853,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .any(|event| matches!(event, round::Event::RoundRespawn));
         if reset_round {
             self.restrictions.team_win = None;
+            let mut point_events = Vec::new();
+            if let Some(points) = self.map.control_points_mut() {
+                points.reset(self.tick as f32 * self.movement_configuration.tick_interval, &mut point_events);
+            }
+            let phase = self.map.emit_control_point_outputs(self.tick, &point_events)?;
+            map_phase.append(phase);
+            map_phase.control_point_events.extend(point_events);
             let scores = self.round.snapshot(Vec::new());
             if let Some(objectives) = self.map.objectives_mut() {
                 objectives.reset_round(scores.red_score, scores.blue_score);
@@ -2142,6 +2152,30 @@ impl<W: GameplayWorld + Clone> Session<W> {
             objective_events.extend(current);
         }
         self.apply_pickup_contacts(movement_policy, &mut events, &mut map_phase)?;
+        if self.map.control_points().is_some() {
+            let facts = self.control_point_facts();
+            self.map.set_control_point_facts(facts);
+            let mut actor = control_point::Actor::active(PLAYER_IDENTITY, self.team_selection.local_team(), self.class, self.movement.position, self.movement.active_hull(movement_policy));
+            actor.alive = self.lifecycle == PlayerLifecycle::Active && self.health > 0;
+            actor.invulnerable = [5_u8, 8, 51, 52, 57].into_iter().any(|c| self.condition_word_contains(c));
+            actor.stealthed = [4_u8, 9, 64].into_iter().any(|c| self.condition_word_contains(c));
+            actor.megaheal = self.condition_word_contains(28);
+            actor.phased = self.condition_word_contains(14);
+            actor.enemy_disguise = self.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != actor.team);
+            let mut actors = vec![actor];
+            if let Some(bots) = &self.bots {
+                actors.extend(bots.snapshots().into_iter().map(|bot| {
+                    let mut actor = control_point::Actor::active(bot.identity, bot.team, bot.class, bot.position, MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve().standing_hull);
+                    actor.alive = bot.lifecycle == PlayerLifecycle::Active && bot.health > 0;
+                    actor
+                }));
+            }
+            let mut point_events = Vec::new();
+            self.map.control_points_mut().unwrap().step(self.tick as f32 * self.movement_configuration.tick_interval, facts, &actors, &self.collision, &mut point_events).map_err(Error::ControlPoints)?;
+            let phase = self.map.emit_control_point_outputs(self.tick, &point_events)?;
+            map_phase.append(phase);
+            map_phase.control_point_events.extend(point_events);
+        }
         if self.weapon != Some(Weapon::Flamethrower)
             || self.lifecycle != PlayerLifecycle::Active
             || self.health <= 0
@@ -2584,6 +2618,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.emit_objective_sound(identity, definition, position);
             }
         }
+        for event in &map_phase.control_point_events {
+            match event {
+                control_point::Event::Captured { cappers, .. } if cappers.contains(&PLAYER_IDENTITY) => self.scoreboard.local_capture(),
+                control_point::Event::RoundWon { team, reason, .. } => {
+                    round_events.extend(self.round.win(*team, *reason).map_err(Error::Round)?);
+                    self.restrictions.team_win = Some(*team);
+                    let definition = if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost };
+                    self.emit_objective_sound(PLAYER_IDENTITY, definition, self.movement.position);
+                }
+                _ => {}
+            }
+        }
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -2631,6 +2677,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map
                 .objectives()
                 .map(|objectives| objectives.snapshot(objective_events)),
+            control_points: self.map.control_points().map(|points| points.snapshot(map_phase.control_point_events)),
             round,
             jump: jump_output,
             events,
@@ -2655,6 +2702,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn condition_word_contains(&self, condition: u8) -> bool {
         let index = usize::from(condition);
         self.conditions.words[index / 32] & (1_u32 << (index % 32)) != 0
+    }
+
+    fn control_point_facts(&self) -> control_point::Facts {
+        let round = self.round.snapshot(Vec::new());
+        control_point::Facts {
+            points_may_be_captured: matches!(round.state, round::State::Running | round::State::Stalemate) && !round.waiting_for_players,
+            round_running: round.state == round::State::Running,
+            waiting_for_players: round.waiting_for_players,
+            in_overtime: round.in_overtime,
+            koth_timer_remaining: None,
+            timer_may_expire: !self.map.control_points().is_some_and(control_point::World::contested),
+        }
     }
 
     fn drop_objective(&mut self, thrown: bool) -> Result<Vec<ctf::Event>, Error> {

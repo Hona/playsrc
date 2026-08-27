@@ -246,6 +246,7 @@ pub struct TriggerContact {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapPhase {
     pub events: Vec<EntityEvent>,
+    pub control_point_events: Vec<crate::control_point::Event>,
     pub effects: Vec<Effect>,
     pub contacts: Vec<TriggerContact>,
     pub regenerate_contacts: Vec<RegenerateContact>,
@@ -298,6 +299,7 @@ pub struct BeginTickInput {
 impl MapPhase {
     pub fn append(&mut self, mut other: Self) {
         self.events.append(&mut other.events);
+        self.control_point_events.append(&mut other.control_point_events);
         self.effects.append(&mut other.effects);
         self.contacts.append(&mut other.contacts);
         self.regenerate_contacts
@@ -393,6 +395,8 @@ pub struct MapRuntime {
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
+    control_points: Option<crate::control_point::World>,
+    control_point_facts: crate::control_point::Facts,
     round_configuration: crate::round::Configuration,
     counts: MapCounts,
     payload_constraint_blocked: bool,
@@ -414,6 +418,7 @@ impl MapRuntime {
             .collect::<BTreeMap<_, _>>();
         let round_configuration =
             crate::round::Configuration::from_graph(graph).map_err(|_| invalid(0))?;
+        let control_points = crate::control_point::World::from_graph(graph).map_err(|_| invalid(0))?;
         let mut objectives =
             crate::ctf::World::compile(graph, crate::ctf::Configuration::default()).map_err(
                 |error| match error {
@@ -430,6 +435,21 @@ impl MapRuntime {
             registry_identity: 0x5446_325f_454e_5433,
             model_bounds,
             external_classes: vec![
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"team_control_point".to_vec(),
+                    inputs: [b"SetOwner".as_slice(), b"ShowModel", b"HideModel", b"RoundActivate", b"SetLocked", b"SetUnlockTime"]
+                        .into_iter().map(<[u8]>::to_vec).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"team_control_point_master".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable", b"SetWinner", b"SetWinnerAndForceCaps", b"RoundSpawn", b"RoundActivate", b"SetCapLayout", b"SetCapLayoutCustomPositionX", b"SetCapLayoutCustomPositionY"]
+                        .into_iter().map(<[u8]>::to_vec).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
+                    classname: b"trigger_capture_area".to_vec(),
+                    inputs: [b"Enable".as_slice(), b"Disable", b"Toggle", b"RoundSpawn", b"SetTeamCanCap", b"SetControlPoint", b"CaptureCurrentCP"]
+                        .into_iter().map(<[u8]>::to_vec).collect(),
+                },
                 playsrc_entity::ExternalClassBinding {
                     classname: b"func_regenerate".to_vec(),
                     inputs: [b"Enable".as_slice(), b"Disable", b"Toggle"]
@@ -850,6 +870,8 @@ impl MapRuntime {
             prop_animations: BTreeMap::new(),
             game_filters,
             objectives,
+            control_points,
+            control_point_facts: crate::control_point::Facts::default(),
             round_configuration,
             counts,
             payload_constraint_blocked,
@@ -1246,6 +1268,30 @@ impl MapRuntime {
 
     pub fn objectives_mut(&mut self) -> Option<&mut crate::ctf::World> {
         self.objectives.as_mut()
+    }
+
+    pub fn control_points(&self) -> Option<&crate::control_point::World> {
+        self.control_points.as_ref()
+    }
+
+    pub fn control_points_mut(&mut self) -> Option<&mut crate::control_point::World> {
+        self.control_points.as_mut()
+    }
+
+    pub fn set_control_point_facts(&mut self, facts: crate::control_point::Facts) {
+        self.control_point_facts = facts;
+    }
+
+    pub fn emit_control_point_outputs(&mut self, tick: u64, events: &[crate::control_point::Event]) -> Result<MapPhase, RuntimeFailure> {
+        let mut commands = Vec::new();
+        for event in events {
+            let crate::control_point::Event::MapOutput { entity, output, value } = event else { continue; };
+            let handle = self.source_handle(*entity).ok_or_else(|| invalid(*entity as usize))?;
+            commands.push(WorldCommand::EmitOutput { entity: handle, output: output.as_bytes().to_vec(), value: value.clone(), activator: Some(handle), caller: Some(handle), delay: 0.0 });
+        }
+        if commands.is_empty() { return Ok(MapPhase::default()); }
+        let batch = self.world.phase(tick, &commands)?;
+        self.consume(batch)
     }
 
     pub fn emit_objective_outputs(
@@ -1934,6 +1980,14 @@ impl MapRuntime {
                         ..
                     } => {
                         let source = self.source(entity);
+                        let mut point_events = Vec::new();
+                        if let Some(points) = &mut self.control_points {
+                            points.apply_input(source, &input, &value, self.world.current_tick() as f32 * self.tick_interval, self.control_point_facts, &mut point_events);
+                        }
+                        if !point_events.is_empty() {
+                            output.append(self.emit_control_point_outputs(self.world.current_tick(), &point_events)?);
+                            output.control_point_events.extend(point_events);
+                        }
                         if input.eq_ignore_ascii_case(b"SetAnimation") {
                             if let (Some(animation), Variant::String(name)) =
                                 (self.prop_animations.get_mut(&entity), &value)
