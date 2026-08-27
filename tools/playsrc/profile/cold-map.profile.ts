@@ -25,9 +25,11 @@ test("profiles BSP-prefetched cold map loading", async ({ page }, testInfo) => {
     class ProfiledWorker extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event) => {
-          if (event.data?.kind === "loaded" && event.data?.timings) records.push({ kind: "load", timings: event.data.timings })
-        })
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          if (response?.kind === "loaded" && response?.timings) records.push({ kind: "load", timings: response.timings })
+        }
       }
     }
     Object.defineProperty(window, "Worker", { configurable: true, value: ProfiledWorker })

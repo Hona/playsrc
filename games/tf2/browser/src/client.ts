@@ -6,6 +6,7 @@ import { decodeModelPoseOutput, type PosedModel } from "./presentation"
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type VisibilityView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
 import type { Tf2EquipmentState } from "./equipment/types"
+import { ReplyReader, type ReplyControl } from "./reply-transport"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
@@ -30,11 +31,12 @@ type QueuedModels = {
 
 export type WorkerLike = Readonly<{
   postMessage(message: WorkerRequest, transfer?: Transferable[]): void
-  addEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
+  addEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse | ReplyControl>) => void): void
   addEventListener(type: "error", listener: (event: ErrorEvent) => void): void
-  removeEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
+  removeEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse | ReplyControl>) => void): void
   removeEventListener(type: "error", listener: (event: ErrorEvent) => void): void
   terminate(): void
+  __playsrcProfileReply?(response: WorkerResponse): void
 }>
 
 export type ResourceConfiguration = Readonly<{
@@ -155,12 +157,15 @@ export class Tf2WorkerClient {
   readonly #modelReads = new Set<Promise<readonly PosedModel[]>>()
   readonly #snapshotStreams = new Map<number, SimulationSnapshotStream>()
   #initialization?: Readonly<{ wasmSha256: string; threads: number; ready: Promise<void> }>
+  #replies?: ReplyReader
 
   get staleMessages(): number { return this.#staleMessages }
 
   abort(): void {
     if (this.#closed) return
     this.#closed = true
+    this.#replies?.close()
+    this.#replies = undefined
     this.#worker.removeEventListener("message", this.#message)
     this.#worker.removeEventListener("error", this.#error)
     this.#worker.terminate()
@@ -176,12 +181,30 @@ export class Tf2WorkerClient {
     worker.addEventListener("error", this.#error)
   }
 
-  readonly #message = (event: MessageEvent<WorkerResponse>): void => {
+  readonly #message = (event: MessageEvent<WorkerResponse | ReplyControl>): void => {
     const response = event.data
+    try {
+      if (response?.kind === "reply-control") {
+        if (!this.#replies) throw new Error("Reply mailbox not initialized")
+        this.#replies.accept(response)
+      } else {
+        if (this.#replies) throw new Error("Unordered reply outside mailbox")
+        this.#receive(response)
+      }
+    } catch { this.#error() }
+  }
+
+  readonly #receive = (response: WorkerResponse): void => {
+    this.#worker.__playsrcProfileReply?.(response)
     const pending = response && this.#pending.get(response.id)
     if (!pending) {
       this.#staleMessages += 1
       return
+    }
+    if (response.kind === "initialized" && response.applicationBuild === this.#applicationBuild
+      && response.presentationSchema === TF2_PRESENTATION_SCHEMA && response.wasmSha256 === this.#initialization?.wasmSha256) {
+      this.#replies = new ReplyReader(response.replies, this.#receive)
+      void this.#replies.run().catch(() => this.#error())
     }
     this.#pending.delete(response.id)
     if(response.kind==="failure")pending.reject(new Tf2WorkerError(response.code,response.reason?`${response.detail}:${response.reason}`:response.detail))
@@ -190,6 +213,8 @@ export class Tf2WorkerClient {
 
   readonly #error = (): void => {
     this.#closed = true
+    this.#replies?.close()
+    this.#replies = undefined
     this.#failAll(new Tf2WorkerError("WorkerFailed"))
     this.#worker.removeEventListener("message", this.#message)
     this.#worker.removeEventListener("error", this.#error)
@@ -899,6 +924,8 @@ export class Tf2WorkerClient {
       if (response.kind !== "shutdown") throw new Tf2WorkerError("WorkerFailed")
     } finally {
       this.#closed = true
+      this.#replies?.close()
+      this.#replies = undefined
       this.#worker.removeEventListener("message", this.#message)
       this.#worker.removeEventListener("error", this.#error)
       this.#worker.terminate()

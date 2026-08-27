@@ -113,7 +113,8 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       };
       const __playsrcPostMessage = globalThis.postMessage.bind(globalThis);
       globalThis.postMessage = function (message, transfer) {
-        if (message && typeof message === "object") message.__playsrcWasmLinearBytes = globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null;
+        const response = message?.kind === "reply-control" ? message.response : message;
+        if (response && typeof response === "object") response.__playsrcWasmLinearBytes = globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null;
         return __playsrcPostMessage(message, transfer);
       };
       ${source}` })
@@ -175,7 +176,10 @@ test("profiles exact headed cold initialization for all three configured TF2 map
       readonly records = new Map<number, BrowserProfile["workers"][number]>()
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          const event = { data: response }
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = performance.now()
@@ -193,7 +197,7 @@ test("profiles exact headed cold initialization for all three configured TF2 map
               record.presentationSha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("")
             })
           }
-        })
+        }
       }
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
         if (!Number.isSafeInteger(message?.id) || typeof message.kind !== "string") {

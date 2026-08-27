@@ -261,18 +261,21 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
 
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
-          const record = this.records.get(event.data?.id)
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => { previous?.(response); this.#recordReply(response) }
+      }
+
+      #recordReply(response: any): void {
+          const record = this.records.get(response?.id)
           if (!record) return
           record.finished = host.performance.now()
-          const shared = typeof SharedArrayBuffer === "function" && event.data?.output instanceof SharedArrayBuffer
-          record.receivedBytes = shared ? 0 : event.data?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
-            ?? event.data?.output?.byteLength ?? event.data?.payload?.byteLength ?? 0
-          record.sharedBytes = shared ? event.data.byteLength ?? 0 : 0
-          if (event.data?.timings) record.timings = event.data.timings
-          this.records.delete(event.data.id)
+          const shared = typeof SharedArrayBuffer === "function" && response?.output instanceof SharedArrayBuffer
+          record.receivedBytes = shared ? 0 : response?.outputs?.reduce((total: number, output: ArrayBuffer) => total + output.byteLength, 0)
+            ?? response?.output?.byteLength ?? response?.payload?.byteLength ?? 0
+          record.sharedBytes = shared ? response.byteLength ?? 0 : 0
+          if (response?.timings) record.timings = response.timings
+          this.records.delete(response.id)
           state.counters.workerPending = Math.max(0, state.counters.workerPending - 1)
-        })
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {

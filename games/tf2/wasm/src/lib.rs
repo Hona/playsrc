@@ -2,6 +2,7 @@ mod gameplay_protocol;
 mod admission_metrics;
 mod gameplay_replay;
 mod memory;
+mod reply_output;
 mod wearable;
 pub mod static_prop_artifact;
 
@@ -15641,6 +15642,7 @@ mod tests {
         });
         drop(guard);
         let old = encode(0, 1);
+        reply_output::tests::assert_reply_ownership(old);
         assert_eq!(playsrc_model_output_length(old), 8);
         let capacity = playsrc_model_output_capacity(old);
         let model = playsrc_model_output_take(old);

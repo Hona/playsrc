@@ -94,6 +94,7 @@ export type InitialView = Readonly<{
 }>
 
 export type WorkerTransactionTimings = Readonly<{
+  mainCopyMilliseconds?: number
   queueMilliseconds?: number
   inputCopyMilliseconds: number
   transactMilliseconds: number
@@ -102,7 +103,7 @@ export type WorkerTransactionTimings = Readonly<{
 }>
 
 export type WorkerResponse =
-  | Readonly<{ id: number; kind: "initialized"; applicationBuild: string; presentationSchema: number; wasmSha256: string }>
+  | Readonly<{ id: number; kind: "initialized"; applicationBuild: string; presentationSchema: number; wasmSha256: string; replies: import("./reply-transport").ReplyMemory }>
   | Readonly<{ id: number; kind: "resources"; bytes: ArrayBuffer | SharedArrayBuffer; byteOffset: number; byteLength: number }>
   | Readonly<{ id: number; kind: "resources-finalized"; generation: number; byteLength: number; sha256: string; sections: number }>
   | Readonly<{ id: number; kind: "resources-retained"; generation: number }>

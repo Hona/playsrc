@@ -174,7 +174,7 @@ describe("opt-in structured browser frame profiler", () => {
     state.active = true
     const worker = new browser.Worker("gameplay.js")
     worker.postMessage({ id: 7, kind: "models", batch: new Uint8Array(12) })
-    worker.listener!({ data: { id: 7, kind: "models", output: new ArrayBuffer(96) } })
+    ;(worker as any).__playsrcProfileReply({ id: 7, kind: "models", output: new ArrayBuffer(96) })
     expect(state.worker[0]).toMatchObject({ kind: "models", bytes: 12, receivedBytes: 96, finished: 20 })
     expect(state.counters.workerPending).toBe(0)
   })
@@ -195,8 +195,8 @@ describe("opt-in structured browser frame profiler", () => {
       { kind: "visibility", bytes: 112, pending: 1, sharedDispatch: true, views: 2 },
     ])
     expect(state.counters.workerMaximumPending).toBe(2)
-    worker.listener!({ data: { id: 8, output: new ArrayBuffer(48) } })
-    worker.listener!({ data: { id: 9, outputs: [new ArrayBuffer(32), new ArrayBuffer(16)], timings: { queueMilliseconds: 7 } } })
+    ;(worker as any).__playsrcProfileReply({ id: 8, output: new ArrayBuffer(48) })
+    ;(worker as any).__playsrcProfileReply({ id: 9, outputs: [new ArrayBuffer(32), new ArrayBuffer(16)], timings: { queueMilliseconds: 7 } })
     expect(state.worker[1]).toMatchObject({ receivedBytes: 48, timings: { queueMilliseconds: 7 } })
     expect(state.counters.workerPending).toBe(0)
   })
@@ -225,7 +225,7 @@ describe("opt-in structured browser frame profiler", () => {
     state.active = true
     const worker = new browser.Worker("gameplay.js")
     worker.postMessage({ id: 9, kind: "models", batch: new Uint8Array(12) })
-    worker.listener!({ data: { id: 9, kind: "models", output: new SharedArrayBuffer(256), byteOffset: 32, byteLength: 96 } })
+    ;(worker as any).__playsrcProfileReply({ id: 9, kind: "models", output: new SharedArrayBuffer(256), byteOffset: 32, byteLength: 96 })
     expect(state.worker).toHaveLength(1)
     expect(state.worker[0]).toMatchObject({ receivedBytes: 0, sharedBytes: 96 })
     expect(state.counters.workerPending).toBe(0)

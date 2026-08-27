@@ -207,7 +207,10 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
 
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          const event = { data: response }
           const id = event.data?.id
           if (Number.isSafeInteger(id)) {
             const record = this.records.get(id)
@@ -216,7 +219,7 @@ test("profile startup and input latency", async ({ page,browser },testInfo) => {
               if (event.data?.timings) record.workerTimings = event.data.timings
             }
           }
-        })
+        }
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
