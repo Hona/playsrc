@@ -7,6 +7,7 @@ import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automati
 
 test("headed Viaduct local KOTH capture, contest, overtime, victory and restart with independent team clocks", async ({ page }, testInfo) => {
   const performanceOnly = process.env.PROFILE_KOTH_PERFORMANCE === "1"
+  const skyVisualOnly = process.env.PROFILE_KOTH_SKY_VISUAL === "1"
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   const main = page.locator("main")
   const automation = new Tf2BrowserAutomation({
@@ -47,6 +48,29 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await closeConsole()
   await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if (skyVisualOnly) {
+    await command("tf_bot_quota 0")
+    await command("setpos -1710 0 230")
+    await closeConsole()
+    await page.waitForTimeout(5000)
+    await page.evaluate(() => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = 1 })
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.geometryEvidence?.revision === 1)
+    const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.geometryEvidence)
+    const imagePath = testInfo.outputPath("headed-viaduct-authored-sky.png")
+    const bytes = await page.screenshot({ path: imagePath })
+    const image = decodeScreenshot(bytes)
+    const colors = new Set<number>()
+    for (let y = 40; y < 125; y++) for (let x = 970; x < 1240; x++) {
+      const offset = (y * image.width + x) * image.channels
+      colors.add((image.pixels[offset]! << 16) | (image.pixels[offset + 1]! << 8) | image.pixels[offset + 2]!)
+    }
+    await testInfo.attach("headed-viaduct-authored-sky", { path: imagePath, contentType: "image/png" })
+    const evidencePath = testInfo.outputPath("viaduct-sky-pixels-and-depth.json")
+    await writeFile(evidencePath, JSON.stringify({ colors: colors.size, bounds: [970, 40, 1240, 125], geometry }))
+    await testInfo.attach("viaduct-sky-pixels-and-depth", { path: evidencePath, contentType: "application/json" })
+    expect(colors.size).toBeGreaterThan(16)
+    return
+  }
   await command("tf_bot_quota 15")
   await command("setpos -1800 0 230")
   await closeConsole()

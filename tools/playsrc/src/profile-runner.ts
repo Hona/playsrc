@@ -4,7 +4,8 @@ import { closeSync, openSync } from "node:fs"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
-import { headedProfileTarget, type HeadedProfileTarget } from "../profile/profile-target"
+import { headedProfileTarget } from "../profile/profile-target"
+import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
@@ -66,7 +67,7 @@ const PROFILES = Object.freeze({
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
   "application-upgrade": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "application-upgrade" } },
   "startup-browser": { config: "playwright.startup-profile.config.ts", target: "jump_beef" },
-} satisfies Record<string, { config: string; target: HeadedProfileTarget; environment?: Record<string, string>; arguments?: readonly string[] }>)
+} satisfies Record<string, { config: string; target: Tf2TargetName; environment?: Record<string, string>; arguments?: readonly string[] }>)
 
 export type HeadedProfile = keyof typeof PROFILES
 

@@ -278,6 +278,20 @@ pub struct Bounds {
     pub view_max: Vector3,
 }
 
+impl Bounds {
+    pub fn render_bounds(&self) -> [Vector3; 2] {
+        if self.view_min.0.into_iter().chain(self.view_max.0).any(|value| f32::from_bits(value.0) != 0.0) {
+            [self.view_min, self.view_max]
+        } else {
+            [self.hull_min, self.hull_max]
+        }
+    }
+}
+
+pub fn read_model_render_bounds(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> Result<[Vector3; 2], Error> {
+    Ok(parse_mdl(identity, profile, bytes, limits)?.document.bounds.render_bounds())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bone {
     pub index: usize,
@@ -3989,7 +4003,11 @@ fn c_string(bytes: &[u8], offset: usize, limits: Limits, identity: &str) -> Resu
 }
 
 fn fixed_string(bytes: &[u8], limits: Limits, identity: &str) -> Result<Vec<u8>, Error> {
-    c_string(bytes, 0, limits, identity)
+    let length = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    if length > limits.max_string_bytes {
+        return Err(failure(Classification::Malformed, ErrorCode::InvalidString, identity, Some(0..bytes.len())));
+    }
+    Ok(bytes[..length].to_vec())
 }
 
 fn owned_bytes(document: &Document) -> usize {
@@ -4198,6 +4216,14 @@ fn failure(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fixed_width_names_need_not_have_a_terminator_beyond_their_field() {
+        let field = [b'x'; 64];
+        assert_eq!(super::fixed_string(&field, super::Limits::default(), "fixture").unwrap(), field);
+        assert_eq!(super::fixed_string(b"name\0padding", super::Limits::default(), "fixture").unwrap(), b"name");
+        assert!(super::c_string(&field, 0, super::Limits::default(), "fixture").is_err());
+    }
+
     use super::*;
 
     fn mdl(version: i32, body_part: bool) -> Vec<u8> {

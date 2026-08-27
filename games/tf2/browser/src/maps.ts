@@ -4,10 +4,21 @@ export const TF2_MAPS = Object.freeze(maps)
 export type Tf2TargetName = keyof typeof maps
 export type Tf2MapMode = "custom" | "payload" | "capture-the-flag" | "control-point" | "king-of-the-hill"
 
+export function tf2MapTypeToken(target: string): string {
+  const source = Object.hasOwn(maps, target) ? maps[target as Tf2TargetName] : undefined
+  switch (source?.mode) {
+    case "payload": return "#Gametype_Escort"
+    case "capture-the-flag": return "#Gametype_CTF"
+    case "control-point": return "#Gametype_CP"
+    case "king-of-the-hill": return "#Gametype_Koth"
+    default: return ""
+  }
+}
+
 const names = Object.keys(maps) as Tf2TargetName[]
 
-// Integration targets are explicit local development inputs, not released capabilities.
-export const TF2_TARGET_NAMES = Object.freeze(names.filter((name) => maps[name].admission === "released"))
+// Integration targets are explicit local inputs. A release separately names its published subset.
+export const TF2_TARGET_NAMES = Object.freeze(names.filter((name) => maps[name].admission === "playable"))
 export const TF2_DEVELOPMENT_TARGET_NAMES = Object.freeze([
   ...TF2_TARGET_NAMES,
   ...names.filter((name) => maps[name].admission === "integration"),

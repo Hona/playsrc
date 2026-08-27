@@ -1,8 +1,9 @@
 {
   "jump_beef": {
+    "displayName": "JUMP BEEF",
     "pakProvider": "jump-beef-pak",
     "loadingPhoto": null,
-    "admission": "released",
+    "admission": "playable",
     "mode": "custom",
     "navigation": null,
     "logicalPath": "maps/jump_beef.bsp",
@@ -16,9 +17,10 @@
     }
   },
   "pl_upward": {
+    "displayName": "Upward",
     "pakProvider": "pl_upward-pak",
     "loadingPhoto": null,
-    "admission": "released",
+    "admission": "playable",
     "mode": "payload",
     "navigation": "local",
     "logicalPath": "maps/pl_upward.bsp",
@@ -29,7 +31,26 @@
       "sha256": "15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709"
     }
   },
+  "ctf_2fort": {
+    "displayName": "2Fort",
+    "pakProvider": "ctf_2fort-pak",
+    "loadingPhoto": {
+      "material": { "byteLength": 126, "sha256": "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4" },
+      "texture": { "byteLength": 349784, "sha256": "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad" }
+    },
+    "admission": "playable",
+    "mode": "capture-the-flag",
+    "navigation": "local",
+    "logicalPath": "maps/ctf_2fort.bsp",
+    "installed": {
+      "contentBuild": "24245096",
+      "provider": "game-09-tf",
+      "byteLength": 22751863,
+      "sha256": "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7"
+    }
+  },
   "cp_badlands": {
+    "displayName": "Badlands",
     "pakProvider": "cp_badlands-pak",
     "loadingPhoto": {
       "material": { "byteLength": 128, "sha256": "6a45f1211c845f31142ba982d309fcd83998b28b009a9bf31a22632125edeb50" },
@@ -47,6 +68,7 @@
     }
   },
   "cp_granary": {
+    "displayName": "Granary",
     "pakProvider": "cp_granary-pak",
     "loadingPhoto": {
       "material": { "byteLength": 127, "sha256": "0cd68c8b8eae2b352744ecc878f75a2a337e89e6b5010b5a0a1e0a0aa59fe157" },
@@ -64,6 +86,7 @@
     }
   },
   "cp_well": {
+    "displayName": "Well",
     "pakProvider": "cp_well-pak",
     "loadingPhoto": {
       "material": { "byteLength": 124, "sha256": "82c576a9b577fc9fce810403c20410afbc1c038c6b3ed0725efd816c29754f4d" },
@@ -81,6 +104,7 @@
     }
   },
   "cp_freight_final1": {
+    "displayName": "FREIGHT",
     "pakProvider": "cp_freight_final1-pak",
     "loadingPhoto": {
       "material": { "byteLength": 134, "sha256": "34c6ccd4a2c177e24b3e3f82aff8184d763b1ca3d0b5a3b58a49ad41dd6ecde3" },
@@ -98,6 +122,7 @@
     }
   },
   "cp_gullywash_final1": {
+    "displayName": "GULLYWASH",
     "pakProvider": "cp_gullywash_final1-pak",
     "loadingPhoto": {
       "material": { "byteLength": 134, "sha256": "0b52ccb300a921eefa1608fac294233a576eaa64241508423a86ff1d2f6d54dc" },
@@ -115,6 +140,7 @@
     }
   },
   "cp_process_final": {
+    "displayName": "PROCESS",
     "pakProvider": "cp_process_final-pak",
     "loadingPhoto": {
       "material": { "byteLength": 133, "sha256": "b8da3bfe98c6ead74f4ea0ad000de3c551e17e56dd5fe20287f8a2f31a35fb1b" },
@@ -132,6 +158,7 @@
     }
   },
   "koth_viaduct": {
+    "displayName": "Viaduct",
     "pakProvider": "koth_viaduct-pak",
     "loadingPhoto": {
       "material": { "byteLength": 129, "sha256": "2f8dddeef0cff874e22ed4b58909fc5bf44b67fa0da9d55f1cd4956d22751ba4" },
@@ -149,6 +176,7 @@
     }
   },
   "koth_sawmill": {
+    "displayName": "SAWMILL",
     "pakProvider": "koth_sawmill-pak",
     "loadingPhoto": {
       "material": { "byteLength": 129, "sha256": "9dedf7d5b5de1ecd8d53910901ae825f5e57390ed15902e4716fffceb2903469" },
@@ -166,6 +194,7 @@
     }
   },
   "koth_harvest_final": {
+    "displayName": "HARVEST",
     "pakProvider": "koth_harvest_final-pak",
     "loadingPhoto": {
       "material": { "byteLength": 135, "sha256": "f590775acccb6115d8835fed2f1561079cb9791b00bbd3ff8849619271d10cfc" },
@@ -183,6 +212,7 @@
     }
   },
   "koth_lakeside_final": {
+    "displayName": "LAKESIDE",
     "pakProvider": "koth_lakeside_final-pak",
     "loadingPhoto": {
       "material": { "byteLength": 136, "sha256": "8ad219c413a80b63d25e4dae202d4b41fd5a0929ad1188c9dd2d96b37783d7b6" },
@@ -197,23 +227,6 @@
       "provider": "game-09-tf",
       "byteLength": 41123424,
       "sha256": "1d9a761337c213122ce98e9e1f79bfc3cb7ec550851c8f0237c4db76f50d7fe7"
-    }
-  },
-  "ctf_2fort": {
-    "pakProvider": "ctf_2fort-pak",
-    "loadingPhoto": {
-      "material": { "byteLength": 126, "sha256": "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4" },
-      "texture": { "byteLength": 349784, "sha256": "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad" }
-    },
-    "admission": "released",
-    "mode": "capture-the-flag",
-    "navigation": "local",
-    "logicalPath": "maps/ctf_2fort.bsp",
-    "installed": {
-      "contentBuild": "24245096",
-      "provider": "game-09-tf",
-      "byteLength": 22751863,
-      "sha256": "cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7"
     }
   }
 }

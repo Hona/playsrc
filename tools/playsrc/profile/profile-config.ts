@@ -1,13 +1,13 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test"
-import type { HeadedProfileTarget } from "./profile-target"
+import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
 const MAX_PROFILE_MILLISECONDS = 175_000
 
 type ProfileConfiguration = Readonly<{
   match: string
-  target?: HeadedProfileTarget
+  target?: Tf2TargetName
   output?: string
   channel?: "msedge"
   preciseMemory?: boolean

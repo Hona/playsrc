@@ -37,10 +37,16 @@ describe("TF2 production release", () => {
     expect(configuration.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
   })
 
+  test("keeps an explicitly published subset independent of later local admissions", () => {
+    const subset = parseTf2Release({ ...release, targets: release.targets.slice(0, 1) })
+    expect(createDeployedBrowserConfiguration(subset, "f".repeat(64)).targets.map((target) => target.target)).toEqual(["jump_beef"])
+    expect(() => parseTf2Release({ ...release, defaultTarget: "ctf_2fort", targets: release.targets.slice(0, 1) })).toThrow()
+  })
+
   test("rejects old shape, missing, duplicate, swapped, malformed and changed descriptors", () => {
     const malformed = [
       { schema: "playsrc-tf2-release-v1", target: "jump_beef", contentBuild: TF2_CONTENT_BUILD.contentBuild, objects: {} },
-      { ...release, targets: release.targets.slice(0, 1) },
+      { ...release, targets: [] },
       { ...release, targets: [release.targets[0], release.targets[0]] },
       { ...release, targets: [release.targets[1], release.targets[0], release.targets[2]] },
       { ...release, targets: release.targets.map((target) => ({ ...target, objects: { ...target.objects, resources: release.targets[0].objects.resources } })) },

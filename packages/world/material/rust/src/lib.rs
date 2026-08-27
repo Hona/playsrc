@@ -239,6 +239,22 @@ pub struct Material {
     pub proxy_program: ProxyProgram,
     pub selection_environment: SelectionEnvironment,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyParameters {
+    pub texture_transform: [f32; 16],
+    pub color: [f32; 3],
+}
+
+pub fn sky_parameters(material: &Material) -> Result<SkyParameters, Error> {
+    if !matches!(material.shader, Shader::SkyLdr | Shader::SkyHdr) {
+        return Err(error(ErrorCode::RootKind, None));
+    }
+    let selected = material.selected_textures.first().ok_or_else(|| error(ErrorCode::MissingProfileTexture, None))?;
+    let texture_transform = material.texture_uses.iter().find(|use_| use_.role == *selected)
+        .and_then(|use_| use_.transform.as_ref()).map_or_else(identity_matrix, |transform| transform.matrix);
+    Ok(SkyParameters { texture_transform, color: color_or(&material.first_parameters, b"$color", [1.0; 3])? })
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionDecision {
     pub source_key: Vec<u8>,
@@ -1623,6 +1639,22 @@ mod tests {
     use super::*;
     use playsrc_keyvalues::ConditionEnvironment;
     use playsrc_vmt::{Composition, Limits, compose};
+    #[test]
+    fn sky_parameters_keep_authored_uv_scale_and_color_in_both_profiles() {
+        let Composition::Complete(document) = compose(
+            br#"sky { "$basetexture" "fixture/sky" "$hdrbasetexture" "fixture/sky" "$basetexturetransform" "center 0 0 scale 1 2 rotate 0 translate 0 0" "$color" "[.25 .5 .75]" }"#,
+            "materials/fixture.vmt", &[], &ConditionEnvironment::default(), Limits::default(),
+        ).unwrap() else { panic!() };
+        for hdr_mode in [HdrMode::None, HdrMode::Integer] {
+            let material = resolve_for_environment(&document, SelectionEnvironment { hdr_mode, ..SelectionEnvironment::default() }).unwrap();
+            let parameters = sky_parameters(&material).unwrap();
+            assert_eq!(parameters.color, [0.25, 0.5, 0.75]);
+            assert_eq!(parameters.texture_transform[0], 1.0);
+            assert_eq!(parameters.texture_transform[5], 2.0);
+            assert_eq!(parameters.texture_transform[3], 0.0);
+            assert_eq!(parameters.texture_transform[7], 0.0);
+        }
+    }
     #[test]
     fn texture_separators_resolve_within_the_materials_root() {
         let request = texture(

@@ -2470,7 +2470,7 @@ fn compile_marks(input: MarkCompileInput<'_>) -> Result<MarkEnvironment, Environ
             .get(&material_index)
             .map(|material| material.decal)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(material_index)))?;
-        let fragments = project_overlay(map, visibility, overlay)?;
+        let fragments = project_overlay(&map.surfaces, visibility, overlay)?;
         let target_faces = unique_fragment_faces(&fragments);
         let fade = (overlay.kind == MarkKind::Overlay && !fade_bytes.is_empty()).then(|| {
             let offset = overlay.index * 8;
@@ -2913,7 +2913,7 @@ pub fn project_combat_decal(
 }
 
 fn project_overlay(
-    map: &CanonicalMap,
+    surfaces: &[Surface],
     visibility: &VisibilityWorld,
     overlay: &OverlaySource,
 ) -> Result<Vec<MarkFragment>, EnvironmentError> {
@@ -2936,11 +2936,15 @@ fn project_overlay(
         .collect::<Vec<_>>();
     let mut fragments = Vec::new();
     for face in &overlay.faces {
-        let surface = map
-            .surfaces
+        let surface = surfaces
             .get(*face)
             .filter(|surface| surface.face == *face)
             .ok_or_else(|| failure(EnvironmentErrorCode::InvalidReference, Some(overlay.index)))?;
+        // Compiled overlay batches belong to world/displacement surface lists.
+        // Brush-model draws do not emit their compiled overlay fragments.
+        if surface.model != 0 {
+            continue;
+        }
         let normal = stored_surface_normal(surface)?;
         let denominator = dot(normal, overlay.normal);
         if denominator.abs() < 1.0e-5 {
@@ -4364,6 +4368,20 @@ mod tests {
             [0.0, 0.0, 1.0, 0.0],
         );
         assert!(clip_overlay_face(&small, &projected, [0.0, 0.0, 1.0]).is_empty());
+    }
+
+    #[test]
+    fn compiled_overlays_do_not_require_a_receiver_for_brush_model_faces() {
+        let mut surface = mark_surface(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], [0.0, 0.0, 1.0, 0.0]);
+        surface.model = 1;
+        surface.face = 0;
+        let overlay = OverlaySource {
+            kind: MarkKind::Overlay, index: 0, id: 0, texture_info: 0,
+            faces: vec![surface.face], render_order: 0, uv: [[0.0, 1.0]; 2],
+            points: [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+            origin: [0.0; 3], basis_u: [1.0, 0.0, 0.0], basis_v: [0.0, 1.0, 0.0], normal: [0.0, 0.0, 1.0],
+        };
+        assert!(project_overlay(&[surface], &water_test_visibility(), &overlay).unwrap().is_empty());
     }
 
     #[test]

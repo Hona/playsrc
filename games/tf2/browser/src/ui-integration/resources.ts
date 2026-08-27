@@ -1,3 +1,4 @@
+import { TF2_MAPS } from "../maps"
 import {
   mountVguiFontSet,
   isVguiGenericResourcePropertySupported,
@@ -82,6 +83,7 @@ export type Tf2GameUiBackgroundDescriptor = Readonly<{
 
 export type Tf2VguiResourceRequest = Readonly<{
   dependencies: ReadonlyMap<string, Uint8Array>
+  mapTargets: readonly string[]
   viewportHeight: number
   platform: VguiDesktopPlatform
   createObjectUrl?: (bytes: Uint8Array, mediaType: string) => string
@@ -724,6 +726,11 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   if (!request || !Number.isSafeInteger(request.viewportHeight) || request.viewportHeight <= 0 || request.viewportHeight > 32_767) {
     throw new Error("TF2 VGUI viewport is invalid")
   }
+  if (!Array.isArray(request.mapTargets) || !request.mapTargets.length
+    || request.mapTargets.some((target) => !Object.hasOwn(TF2_MAPS, target))) {
+    throw new Error("TF2 VGUI map admission is invalid")
+  }
+  const mapTargets = new Set(request.mapTargets)
   const descriptor = tf2UiResources
   const diagnostics: Tf2UiIntegrationDiagnostic[] = []
   const urls: string[] = []
@@ -787,6 +794,8 @@ export async function initializeTf2VguiResources(request: Tf2VguiResourceRequest
   }
   const images: VguiImagePresentation[] = []
   for (const image of descriptor.images) {
+    const mapPhoto = image.configuredValue.toLowerCase().match(/^maps\/menu_photos_([a-z0-9_]+)$/u)
+    if (mapPhoto && !mapTargets.has(mapPhoto[1]!)) continue
     if (image.classification !== "content-vtf") {
       diagnostics.push(Object.freeze({ code: "UnsupportedImageMaterial", subject: image.configuredValue }))
       continue

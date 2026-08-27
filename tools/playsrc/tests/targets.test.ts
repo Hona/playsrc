@@ -12,7 +12,7 @@ describe("map target registry", () => {
 
   test("resolves only the exact declared jump_beef identity", () => {
     expect(resolveMapTarget("jump_beef")).toMatchObject({
-      admission: "released",
+      admission: "playable",
       mode: "custom",
       navigation: null,
       logicalPath: "maps/jump_beef.bsp",
@@ -29,7 +29,7 @@ describe("map target registry", () => {
 
   test("resolves the exact configured pl_upward installed-build identity", () => {
     expect(resolveMapTarget("pl_upward")).toMatchObject({
-      admission: "released",
+      admission: "playable",
       mode: "payload",
       navigation: "local",
       logicalPath: "maps/pl_upward.bsp",
@@ -44,7 +44,7 @@ describe("map target registry", () => {
 
   test("resolves the exact configured ctf_2fort installed-build identity", () => {
     expect(resolveMapTarget("ctf_2fort")).toMatchObject({
-      admission: "released",
+      admission: "playable",
       mode: "capture-the-flag",
       navigation: "local",
       logicalPath: "maps/ctf_2fort.bsp",

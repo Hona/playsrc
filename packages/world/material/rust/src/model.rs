@@ -141,6 +141,7 @@ pub struct UnlitGenericState {
     pub base: Option<TextureRequest>,
     pub detail: Option<TextureRequest>,
     pub environment: Option<TextureRequest>,
+    pub color_modulation: [f32; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -669,9 +670,9 @@ pub(crate) fn resolve_model_state(
     environment: SelectionEnvironment,
 ) -> Result<(Option<ModelMaterialState>, Vec<ModelTextureRequest>), Error> {
     if shader.eq_ignore_ascii_case(b"UnlitGeneric") {
-        Ok((Some(unlit(textures)), Vec::new()))
+        Ok((Some(unlit(textures, unlit_color_modulation(parameters, environment)?)), Vec::new()))
     } else if shader.eq_ignore_ascii_case(b"Modulate") || shader.eq_ignore_ascii_case(b"Modulate_DX9") {
-        let mut state = unlit(textures);
+        let mut state = unlit(textures, [1.0; 3]);
         state.shader = ModelShader::Modulate;
         state.state = ModelShaderState::Modulate;
         Ok((Some(state), Vec::new()))
@@ -708,13 +709,30 @@ pub(crate) fn resolve_model_state(
     }
 }
 
-fn unlit(textures: &[TextureRequest]) -> ModelMaterialState {
+fn unlit_color_modulation(parameters: &BTreeMap<Vec<u8>, Vec<u8>>, environment: SelectionEnvironment) -> Result<[f32; 3], Error> {
+    let mut color = color_or(parameters, b"$color", [1.0; 3])?;
+    for name in [b"$color2".as_slice(), b"$srgbtint"] {
+        if name == b"$srgbtint" && !environment.srgb_correct_blending { continue; }
+        if parameters.get(name).is_some_and(|value| matches!(value.iter().copied().find(|byte| !byte.is_ascii_whitespace()), Some(b'[' | b'{'))) {
+            let factor = color_or(parameters, name, [1.0; 3])?;
+            color = std::array::from_fn(|channel| color[channel] * factor[channel]);
+        }
+    }
+    let hdr_scale = if environment.hdr_mode == crate::HdrMode::None { 1.0 } else { float_or(parameters, b"$hdrcolorscale", 1.0)? };
+    Ok(color.map(|value| {
+        let linear = if value > 1.0 { value } else if value < 0.0 { 0.0 } else if value >= 0.95 { 1.0 } else { ((value * 255.0).round_ties_even() / 255.0).powf(2.2) };
+        linear * hdr_scale
+    }))
+}
+
+fn unlit(textures: &[TextureRequest], color_modulation: [f32; 3]) -> ModelMaterialState {
     ModelMaterialState {
         shader: ModelShader::UnlitGeneric,
         state: ModelShaderState::UnlitGeneric(Box::new(UnlitGenericState {
             base: core_texture(textures, TextureRole::Base).cloned(),
             detail: core_texture(textures, TextureRole::Detail).cloned(),
             environment: core_texture(textures, TextureRole::Environment).cloned(),
+            color_modulation,
         })),
         vertex_requirements: ModelVertexRequirements {
             position: true,
@@ -1112,6 +1130,18 @@ fn model_texture(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unlit_color2_vectors_modulate_in_source_linear_shader_space() {
+        let environment = crate::SelectionEnvironment::default();
+        let mut parameters = std::collections::BTreeMap::from([(b"$color2".to_vec(), b"[0 0 0]".to_vec())]);
+        assert_eq!(super::unlit_color_modulation(&parameters, environment).unwrap(), [0.0; 3]);
+        parameters.insert(b"$color2".to_vec(), b"[.5 .5 .5]".to_vec());
+        let result = super::unlit_color_modulation(&parameters, environment).unwrap();
+        for channel in result { assert!((channel - 0.21951972).abs() < 0.0000001); }
+        parameters.insert(b"$color2".to_vec(), b"0".to_vec());
+        assert_eq!(super::unlit_color_modulation(&parameters, environment).unwrap(), [1.0; 3]);
+    }
+
     use super::*;
 
     #[test]
