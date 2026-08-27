@@ -17,29 +17,30 @@ export class SourceParticleDepth {
   #call = -1
   #projection = [0, 0]
   #evidenceRequested = false
-  #evidence: { before: GPUTexture; depth: GPUTexture; width: number; height: number; format: string } | null = null
+  #evidence: { before: GPUTexture; depth: GPUTexture; width: number; height: number; format: string; colorSpace: string } | null = null
 
   requestEvidence(): void { this.#evidenceRequested = true }
 
-  async readEvidence(): Promise<{ before: Uint8Array; depth: Uint8Array; width: number; height: number; format: string } | null> {
+  async readEvidence(): Promise<{ before: Uint8Array; depth: Uint8Array; width: number; height: number; format: string; colorSpace: string } | null> {
     const evidence = this.#evidence
     if (!evidence) return null
     this.#evidence = null
     const device = this.#backend.device as GPUDevice
-    const bytesPerRow = Math.ceil(evidence.width * 4 / 256) * 256
     const read = async (texture: GPUTexture) => {
+      const stride = texture.format === "rgba16float" ? 8 : 4
+      const bytesPerRow = Math.ceil(evidence.width * stride / 256) * 256
       const buffer = device.createBuffer({ size: bytesPerRow * evidence.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
       try {
         const encoder = device.createCommandEncoder({ label: "Particle depth evidence readback" })
         encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [evidence.width, evidence.height]); device.queue.submit([encoder.finish()])
         await buffer.mapAsync(GPUMapMode.READ)
-        const mapped = new Uint8Array(buffer.getMappedRange()), bytes = new Uint8Array(evidence.width * evidence.height * 4)
-        for (let y = 0; y < evidence.height; y++) bytes.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + evidence.width * 4), y * evidence.width * 4)
+        const mapped = new Uint8Array(buffer.getMappedRange()), bytes = new Uint8Array(evidence.width * evidence.height * stride)
+        for (let y = 0; y < evidence.height; y++) bytes.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + evidence.width * stride), y * evidence.width * stride)
         buffer.unmap(); return bytes
       } finally { buffer.destroy(); texture.destroy() }
     }
     const [before, depth] = await Promise.all([read(evidence.before), read(evidence.depth)])
-    return { before, depth, width: evidence.width, height: evidence.height, format: evidence.format }
+    return { before, depth, width: evidence.width, height: evidence.height, format: evidence.format, colorSpace: evidence.colorSpace }
   }
 
   constructor(backend: any) {
@@ -144,14 +145,16 @@ export class SourceParticleDepth {
     state.currentPass.end()
     if (this.#evidenceRequested) {
       const color: GPUTexture = context.renderTarget ? backend.get(context.textures[0]).texture : backend.context.getCurrentTexture()
-      if (!["rgba8unorm", "bgra8unorm"].includes(color.format)) throw new Error("Particle evidence requires the configured 8-bit output")
+      if (!["rgba8unorm", "bgra8unorm", "rgba16float"].includes(color.format)) throw new Error("Particle evidence output format is unavailable")
       this.#evidence?.before.destroy(); this.#evidence?.depth.destroy()
       const size = [destination.width, destination.height]
       this.#evidence = { before: device.createTexture({ size, format: color.format, usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC }),
-        depth: device.createTexture({ size, format: "rgba8unorm", usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC }), width: destination.width, height: destination.height, format: color.format }
+        depth: device.createTexture({ size, format: "rgba8unorm", usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC }), width: destination.width, height: destination.height, format: color.format,
+        colorSpace: context.renderTarget ? context.textures[0].colorSpace : backend.renderer.outputColorSpace }
       state.encoder.copyTextureToTexture({ texture: color }, { texture: this.#evidence.before }, size)
     }
     const pass = state.encoder.beginRenderPass({ label: "Source particle destination-alpha resolve", colorAttachments: [{ view: destination.createView(), loadOp: "clear", storeOp: "store", clearValue: [0,0,0,1] }] })
+    if (context.scissor) { const { x, y, width, height } = context.scissorValue; pass.setScissorRect(x, y, width, height) }
     pass.setPipeline(pipeline); pass.setBindGroup(0, group); pass.draw(3); pass.end()
     if (this.#evidenceRequested && this.#evidence) {
       state.encoder.copyTextureToTexture({ texture: destination }, { texture: this.#evidence.depth }, [destination.width, destination.height])
@@ -160,6 +163,10 @@ export class SourceParticleDepth {
     for (const color of state.descriptor.colorAttachments) color.loadOp = "load"
     if (context.depth) state.descriptor.depthStencilAttachment.depthLoadOp = "load"
     if (context.stencil) state.descriptor.depthStencilAttachment.stencilLoadOp = "load"
+    // Retain the original beginning timestamp; the final resumed end includes
+    // opaque drawing, depth resolution and every transparent draw, not just the tail.
+    const timestamps = state.descriptor.timestampWrites
+    if (timestamps) state.descriptor.timestampWrites = { querySet: timestamps.querySet, endOfPassWriteIndex: timestamps.endOfPassWriteIndex }
     state.currentPass = state.encoder.beginRenderPass(state.descriptor)
     state.currentSets = { attributes: {}, bindingGroups: [], pipeline: null, index: null }
     if (context.viewport) backend.updateViewport(context)

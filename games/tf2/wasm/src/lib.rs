@@ -1964,6 +1964,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
     let Some(collision_world) = slot.collision.clone() else {
         return 0;
     };
+    slot.wearable_particles.retain_gameplay(slot.latest_game_snapshot.as_ref(), request.to_seconds);
     let Some(world) = slot.particles.as_mut() else {
         return 0;
     };
@@ -2043,6 +2044,8 @@ struct ModelPoseRequest {
     model_panel_reset: bool,
     flex_controllers: Option<BTreeMap<String, f32>>,
     actor_identity: u32,
+    preparation: bool,
+    hud_model: bool,
     cloak: Option<playsrc_tf2::spy::CloakRenderState>,
     world_item: bool,
     sample_tick: u64,
@@ -2248,7 +2251,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 10 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 11 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2271,20 +2274,20 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         {
             return Err(());
         }
-        let cloak = (actor_identity != 0).then_some(playsrc_tf2::spy::CloakRenderState {
-            local_factor,
-            world_factor,
-            raw_factor,
-            player_tint,
-        });
         let sample_tick = reader.u64()?;
         let kind = reader.u8()?;
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
-        let model_panel_reset = reader.u8()?;
+        let flags = reader.u8()?;
+        let model_panel_reset = flags & 1;
+        let has_cloak = flags & 2 != 0;
+        let preparation = flags & 4 != 0;
+        let hud_model = flags & 8 != 0;
+        if flags > 15 || (has_cloak && actor_identity == 0) || (hud_model && (!matches!(kind, 3 | 4 | 6) || actor_identity == 0)) || (!has_cloak && [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|value| value != 0.0)) { return Err(()); }
+        let cloak = has_cloak.then_some(playsrc_tf2::spy::CloakRenderState { local_factor, world_factor, raw_factor, player_tint });
         if kind > 7
-            || (kind == 7 && (actor_identity == 0 || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
-            || (matches!(kind, 3 | 4 | 6) && actor_identity != 0)
+            || (kind == 7 && (actor_identity == 0 || has_cloak || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
+            || (matches!(kind, 3 | 4 | 6) && actor_identity != 0 && !hud_model)
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
@@ -2428,6 +2431,8 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             flex_controllers: None,
             actor_identity: if kind == 7 { 0 } else { actor_identity },
             cloak: if kind == 7 { None } else { cloak },
+            preparation,
+            hud_model,
             world_item: matches!(kind, 5 | 6),
             sample_tick,
             attachments_only: attachments_only == 1,
@@ -3171,7 +3176,7 @@ fn encode_model_pose_part(
         out.extend_from_slice(&wearable::effect(equipped)?.to_le_bytes());
         let transform = wearable::control_point(model, pose, request.model_panel)?;
         for value in transform.0 { out.extend_from_slice(&value.0.to_le_bytes()); }
-        let particles = world.wearable_particles.sample(world.particle_inputs.as_ref().ok_or(())?, request, equipped, model, pose)?;
+        let particles = if request.preparation { Vec::new() } else { world.wearable_particles.sample(world.particle_inputs.as_ref().ok_or(())?, request, equipped, model, pose)? };
         pbytes(out, &particles)?;
     }
     pbytes(out, model.identity.as_bytes())?;

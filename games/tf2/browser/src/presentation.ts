@@ -397,6 +397,9 @@ export type ModelPoseRequest = Readonly<{
   modelPanel?: boolean
   modelPanelReset?: boolean
   cloak?: ActorCloakState
+  actorIdentity?: number
+  preparation?: boolean
+  hudModel?: boolean
   model: string
   itemModel?: string
   worldItem?: boolean
@@ -475,7 +478,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-    view.setUint32(4, 10, true)
+    view.setUint32(4, 11, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -483,6 +486,9 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   }
   for (const { request, model, item, activity } of encodedRequests) {
     if ((request.classSelection !== undefined && typeof request.classSelection !== "boolean")
+      || (request.preparation !== undefined && typeof request.preparation !== "boolean")
+      || (request.hudModel !== undefined && typeof request.hudModel !== "boolean")
+      || (request.hudModel && (!request.modelPanel || !request.actorIdentity))
       || (request.worldItem !== undefined && typeof request.worldItem !== "boolean")
       || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
       || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
@@ -499,8 +505,10 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     view.setUint32(at, request.identity, true); at += 4
     const cloak = request.cloak
     if (cloak && (!Number.isSafeInteger(cloak.identity) || cloak.identity < 1 || cloak.identity > 0xffff_ffff)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
-    if (request.controlPoint !== undefined && (!Number.isSafeInteger(request.controlPoint) || request.controlPoint <= 0 || request.controlPoint > 0xffff_ffff || cloak || request.itemModel || request.classSelection || request.modelPanel)) throw new ProjectilePresentationError("MalformedFact", "control point pose identity")
-    view.setUint32(at, request.controlPoint ?? cloak?.identity ?? 0, true); at += 4
+    if (request.controlPoint !== undefined && (!Number.isSafeInteger(request.controlPoint) || request.controlPoint <= 0 || request.controlPoint > 0xffff_ffff || request.actorIdentity !== undefined || cloak || request.itemModel || request.classSelection || request.modelPanel)) throw new ProjectilePresentationError("MalformedFact", "control point pose identity")
+    const actorIdentity = request.actorIdentity ?? cloak?.identity ?? 0
+    if (!Number.isSafeInteger(actorIdentity) || actorIdentity < 0 || actorIdentity > UINT32_MAX || (cloak && cloak.identity !== actorIdentity)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
+    view.setUint32(at, request.controlPoint ?? actorIdentity, true); at += 4
     for (const value of cloak ? [cloak.localFactor, cloak.worldFactor, cloak.rawFactor, ...cloak.playerTint] : [0, 0, 0, 0, 0, 0]) {
       if (!Number.isFinite(value) || value < 0 || value > 1) throw new ProjectilePresentationError("MalformedFact", "model actor cloak")
       view.setFloat32(at, value, true); at += 4
@@ -518,7 +526,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     bytes[at] = request.controlPoint !== undefined ? 7 : request.classSelection ? 3 : request.modelPanel ? request.worldItem ? 6 : 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
-    bytes[at + 3] = Number(request.modelPanelReset ?? false)
+    bytes[at + 3] = Number(request.modelPanelReset ?? false) | (Number(cloak !== undefined) << 1) | (Number(request.preparation ?? false) << 2) | (Number(request.hudModel ?? false) << 3)
     at += 4
     const firePosition=request.fireView?.eyePosition,fireOrientation=request.fireView?.viewOrientation
     view.setFloat32(at,firePosition?.[0]??0,true)

@@ -2,6 +2,7 @@ import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation } from "./class"
 import type { Tf2Class } from "./codec"
 import type { ModelPoseRequest } from "./presentation"
+import type { Tf2SupportedItem } from "./equipment/types"
 
 export function classPreviewBaseActivity(identity: Tf2Class): string {
   return identity === 5 ? "ACT_MP_STAND_SECONDARY" : identity === 8 || identity === 9 ? "ACT_MP_STAND_MELEE" : "ACT_MP_STAND_PRIMARY"
@@ -12,9 +13,10 @@ export function classPreviewBaseActivity(identity: Tf2Class): string {
  * The worker supplies authored palette/eye data; no skeleton is inferred in JS. */
 export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin: number, camera: {
   position: readonly [number, number, number]; yawDegrees: number; pitchDegrees: number; far: number
-}, aspect: number): readonly Readonly<{ request: ModelPoseRequest; pass: "panel" | "view" | "world" }>[] {
+}, aspect: number, inventory: readonly Tf2SupportedItem[]): readonly Readonly<{ request: ModelPoseRequest; pass: "panel" | "view" | "world" }>[] {
   const output: { request: ModelPoseRequest; pass: "panel" | "view" | "world" }[] = []
   const common = {
+    preparation: true,
     previousElapsedSeconds: 0, elapsedSeconds: 0, currentTimeSeconds: 0, frameTimeSeconds: 0, planarSpeed: 0,
     screenAspectRatio: aspect, worldFarPlane: camera.far, lod: 0,
     lighting: { origin: camera.position, angles: [0, 0, 0] as const,
@@ -25,14 +27,17 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
     const artifact = artifacts.models.get(model)
     if (!artifact) throw new Error(`Class pipeline model unavailable: ${model}`)
     const activity = classPreviewBaseActivity(identity as Tf2Class)
+    const equippedItems = inventory.filter(item => item.weapon === null && item.classSlots.some(slot => slot.class === identity)).map(item => item.item)
     if (!artifact.sequences.some(sequence => sequence.activity === activity)) throw new Error(`Class pipeline standing pose unavailable: ${model}:${activity}`)
     output.push({ pass: "panel", request: {
       ...common, identity: 0xfffc0000 + output.length, model, skin, classSelection: true,
+      equippedItems,
       activity,
       bodygroups: artifact.bodygroupCounts.map(() => 0),
     } })
     for (const worldSkin of [0, 1]) output.push({ pass: "world", request: {
       ...common, identity: 0xfffc0000 + output.length, model, skin: worldSkin,
+      equippedItems,
       activity, bodygroups: artifact.bodygroupCounts.map(() => 0),
     } })
   }
@@ -46,6 +51,6 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
     } })
   }
   // Nine class queries each include their exact authored carried item.
-  if (output.length + 9 > 96) throw new Error("Class pipeline resource bound exceeded")
+  if (output.length + 9 + output.reduce((sum, entry) => sum + (entry.request.equippedItems?.length ?? 0), 0) > 96) throw new Error("Class pipeline resource bound exceeded")
   return Object.freeze(output.map(value => Object.freeze(value)))
 }

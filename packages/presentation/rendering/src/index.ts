@@ -1597,6 +1597,7 @@ class RendererOwner implements Renderer {
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
+  readonly #panelParticlePools = new Map<string, { group: THREE.Group; meshes: { key: string; capacity: number; mesh: THREE.Mesh }[]; ranges: MutableParticleBatchRange[] }>()
   readonly #particleBatchRanges: MutableParticleBatchRange[] = []
   readonly #particleAttributeUpdates = createParticleAttributeUpdates()
   readonly #cameraDirection = new THREE.Vector3()
@@ -4029,8 +4030,10 @@ class RendererOwner implements Renderer {
           presentation.projection.offsetX, presentation.projection.offsetY, presentation.viewport.width, presentation.viewport.height)
         this.#modelPanelCamera.updateProjectionMatrix()
         const particleCamera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: presentation.verticalFovDegrees, near: presentation.near, far: presentation.far }
-        this.#stageParticleBatches(panel.particles ?? [], particleCamera)
-        this.#modelPanelScene.add(this.#particles)
+        let particlePool = this.#panelParticlePools.get(panel.identity)
+        if (!particlePool) { particlePool = { group: new THREE.Group(), meshes: [], ranges: [] }; this.#panelParticlePools.set(panel.identity, particlePool) }
+        this.#stageParticleBatches(panel.particles ?? [], particleCamera, particlePool)
+        this.#modelPanelScene.add(particlePool.group)
         this.#backend.setViewport(x, y, width, height)
         this.#backend.setScissor(x, y, width, height)
         this.#backend.setScissorTest(true)
@@ -4048,7 +4051,6 @@ class RendererOwner implements Renderer {
       return Object.freeze({ panels: Object.freeze(result.map((item) => Object.freeze(item))), milliseconds: performance.now() - started })
     } finally {
       this.#modelPanelScene.clear()
-      this.#waterClipping.add(this.#particles)
       assets.waterFogUniforms.enabled.value = previousWaterFog
       this.#backend.setClearColor(previousClearColor, previousClearAlpha)
       this.#backend.setScissorTest(false)
@@ -5126,34 +5128,38 @@ class RendererOwner implements Renderer {
   #clearParticleBatches():void{
     for(const retained of this.#particleBatchMeshes){this.#particles.remove(retained.mesh);retained.mesh.geometry.dispose()}
     this.#particleBatchMeshes=[];this.#particleBatchCount=0
+    for (const pool of this.#panelParticlePools.values()) { pool.group.clear(); for (const entry of pool.meshes) entry.mesh.geometry.dispose() }
+    this.#panelParticlePools.clear()
   }
 
   #stageParticleBatches(
     items: readonly ParticleItem[],
     camera: Camera,
+    pool?: { group: THREE.Group; meshes: { key: string; capacity: number; mesh: THREE.Mesh }[]; ranges: MutableParticleBatchRange[] },
   ): void {
     const assets = this.#active ?? this.#panelAssets
-    const count = fillParticleBatchRanges(items, this.#particleBatchRanges)
-    this.#particleBatchCount = count
+    const meshes = pool?.meshes ?? this.#particleBatchMeshes, ranges = pool?.ranges ?? this.#particleBatchRanges, group = pool?.group ?? this.#particles
+    const count = fillParticleBatchRanges(items, ranges)
+    if (!pool) this.#particleBatchCount = count
     for (let index = 0; index < count; index += 1) {
-      const batch = this.#particleBatchRanges[index]!
+      const batch = ranges[index]!
       const first = items[batch.start]!
       const key = particlePipelineKey(first)
       const required = batch.end - batch.start
-      let retained = this.#particleBatchMeshes[index]
+      let retained = meshes[index]
       if (retained && (retained.key !== key || retained.capacity < required)) {
-        const reusable = this.#particleBatchMeshes.findIndex((candidate, candidateIndex) =>
+        const reusable = meshes.findIndex((candidate, candidateIndex) =>
           candidateIndex > index && candidate.key === key && candidate.capacity >= required,
         )
         if (reusable >= 0) {
-          this.#particleBatchMeshes[index] = this.#particleBatchMeshes[reusable]!
-          this.#particleBatchMeshes[reusable] = retained
-          retained = this.#particleBatchMeshes[index]
+          meshes[index] = meshes[reusable]!
+          meshes[reusable] = retained
+          retained = meshes[index]
         }
       }
       if (!retained || retained.key !== key || retained.capacity < required) {
         if (retained) {
-          this.#particles.remove(retained.mesh)
+          group.remove(retained.mesh)
           retained.mesh.geometry.dispose()
         }
         let capacity = 1
@@ -5162,27 +5168,27 @@ class RendererOwner implements Renderer {
         if (!material) throw new RenderingError("IdentityMismatch", `Particle output blend differs from authored material: ${first.material}`)
         const geometry = this.#createParticleBatchGeometry(capacity)
         const mesh = new THREE.Mesh(geometry, material)
-        if (material.userData.sourceParticleDepth) mesh.onBeforeRender = (renderer, _scene, camera) => assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
         mesh.frustumCulled = false
         const profile = browserFrameProfiler()
-        if (profile && !material.userData.firstParticleUse) mesh.onBeforeRender = () => {
-          mesh.onBeforeRender = () => {}
-          if (material.userData.firstParticleUse) return
-          material.userData.firstParticleUse = true
-          ;(profile.firstParticleUses ??= []).push({ at: performance.now(), id: material.id, identity: material.name, pass: profile.currentPass?.identity ?? null })
+        mesh.onBeforeRender = (renderer, _scene, camera) => {
+          if (material.userData.sourceParticleDepth) assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
+          if (profile && !material.userData.firstParticleUse) {
+            material.userData.firstParticleUse = true
+            ;(profile.firstParticleUses ??= []).push({ at: performance.now(), id: material.id, identity: material.name, pass: profile.currentPass?.identity ?? null })
+          }
         }
-        this.#particles.add(mesh)
+        group.add(mesh)
         retained = { key, capacity, mesh }
-        this.#particleBatchMeshes[index] = retained
+        meshes[index] = retained
       }
       this.#updateParticleBatchGeometry(retained.mesh.geometry, items, batch.start, batch.end, camera)
       retained.mesh.renderOrder = batch.start
       retained.mesh.visible = true
     }
-    for (let index = count; index < this.#particleBatchMeshes.length; index += 1) {
-      this.#particleBatchMeshes[index]!.mesh.visible = false
+    for (let index = count; index < meshes.length; index += 1) {
+      meshes[index]!.mesh.visible = false
     }
-    if (this.#uploadEvidence) this.#uploadEvidence.retainedParticleBatches = this.#particleBatchMeshes.length
+    if (this.#uploadEvidence) this.#uploadEvidence.retainedParticleBatches = this.#particleBatchMeshes.length + [...this.#panelParticlePools.values()].reduce((sum, pool) => sum + pool.meshes.length, 0)
   }
 
   #applyPose(
