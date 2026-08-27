@@ -8198,10 +8198,10 @@ fn resolve_profile_materials(
     {
         return Err(());
     }
-    ["rt", "lf", "bk", "ft", "up", "dn"]
+    playsrc_map::CubeFace::ALL
         .into_iter()
-        .map(|suffix| {
-            let identity = format!("materials/skybox/{sky}{suffix}.vmt").to_ascii_lowercase();
+        .map(|face| {
+            let identity = face.material_path(sky).to_ascii_lowercase();
             let material =
                 resolve_material_semantics(&identity, bundle, material_environment(profile, false))
                     .map_err(|_| ())?;
@@ -12724,20 +12724,8 @@ fn compile_environment_artifact(
     )
     .map_err(|_| ())?;
     let mut dependencies = Vec::new();
-    for (face, face_suffix) in [
-        (playsrc_map::CubeFace::Right, "rt"),
-        (playsrc_map::CubeFace::Left, "lf"),
-        (playsrc_map::CubeFace::Back, "bk"),
-        (playsrc_map::CubeFace::Front, "ft"),
-        (playsrc_map::CubeFace::Up, "up"),
-        (playsrc_map::CubeFace::Down, "dn"),
-    ] {
-        let suffix = if profile == playsrc_map::LightingProfile::Hdr {
-            "_hdr"
-        } else {
-            ""
-        };
-        let path = format!("materials/skybox/{sky}{suffix}{face_suffix}.vmt");
+    for face in playsrc_map::CubeFace::ALL {
+        let path = face.material_path(sky);
         let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
         let encoding = selected_sky_encoding(&m.selected_textures).ok_or(())?;

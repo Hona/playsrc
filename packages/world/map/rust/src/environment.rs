@@ -80,7 +80,7 @@ pub enum CubeFace {
 }
 
 impl CubeFace {
-    const ALL: [Self; 6] = [
+    pub const ALL: [Self; 6] = [
         Self::Right,
         Self::Left,
         Self::Back,
@@ -98,6 +98,10 @@ impl CubeFace {
             Self::Up => "up",
             Self::Down => "dn",
         }
+    }
+
+    pub fn material_path(self, sky_name: &str) -> String {
+        format!("materials/skybox/{sky_name}{}.vmt", self.suffix())
     }
 }
 
@@ -1346,7 +1350,7 @@ fn compile_sky(
     let mut requests = Vec::with_capacity(6);
     let mut faces = Vec::with_capacity(6);
     for face in CubeFace::ALL {
-        let path = format!("materials/skybox/{sky}{}.vmt", face.suffix());
+        let path = face.material_path(sky);
         let request = DependencyRequest {
             role: DependencyRole::SkyMaterial(face),
             profile: map.lighting_profile,
@@ -3450,6 +3454,14 @@ fn dependency_failure(code: EnvironmentErrorCode, request: &DependencyRequest) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sky_material_names_use_the_authored_name_for_every_face() {
+        assert_eq!(
+            super::CubeFace::ALL.map(|face| face.material_path("sky_badlands_01")),
+            ["rt", "lf", "bk", "ft", "up", "dn"].map(|suffix| format!("materials/skybox/sky_badlands_01{suffix}.vmt"))
+        );
+    }
+
     use super::*;
 
     fn cubemap(index: usize, origin: [i32; 3]) -> CubemapSample {

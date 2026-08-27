@@ -2452,10 +2452,10 @@ fn main() -> Result<(), String> {
             },
         ),
     ] {
-        for suffix in ["rt", "lf", "bk", "ft", "up", "dn"] {
+        for face in playsrc_map::CubeFace::ALL {
             collect_material(
                 &mut resolver,
-                &format!("materials/skybox/{sky}{suffix}.vmt"),
+                &face.material_path(sky),
                 true,
                 environment,
                 true,
