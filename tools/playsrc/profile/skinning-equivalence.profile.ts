@@ -20,28 +20,6 @@ test("exact headed RED/BLU authored skeletal color, depth and normal transport e
     if (["warning", "error"].includes(message.type()) && /webgpu|GPUValidation|device.*lost|context.*lost|THREE\./i.test(message.text())) errors.push(message.text())
   })
   await page.addInitScript(installBrowserFrameProfiler)
-  await page.addInitScript(() => {
-    const host = globalThis as any
-    host.__skinningTargets = []
-    const create = host.GPUDevice.prototype.createTexture
-    host.GPUDevice.prototype.createTexture = function (descriptor: any) {
-      const texture = create.call(this, descriptor)
-      const width = descriptor.size.width ?? descriptor.size[0]
-      const height = descriptor.size.height ?? descriptor.size[1]
-      if (width === 960 && height === 640 && descriptor.format === "rgba8unorm") {
-        texture.label = `${texture.label || "frame-texture"}-${host.__skinningTargets.length}`
-        const record = { label: texture.label, created: new Error().stack, createdPhase: document.querySelector<HTMLElement>("main")?.dataset.phase, destroyed: "", destroyedPhase: "" }
-        host.__skinningTargets.push(record)
-        const destroy = texture.destroy
-        texture.destroy = function () {
-          record.destroyed = new Error().stack ?? ""
-          record.destroyedPhase = document.querySelector<HTMLElement>("main")?.dataset.phase ?? ""
-          return destroy.call(this)
-        }
-      }
-      return texture
-    }
-  })
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   await page.goto("/")
   const root = page.locator("main")
@@ -119,7 +97,6 @@ test("exact headed RED/BLU authored skeletal color, depth and normal transport e
       await expect(root).toHaveAttribute("data-class-selection-team", String(teamId))
       if (team === "blue") await expect(root).toHaveAttribute("data-class-selection-visible", "true")
       for (const [identity, name] of classes) {
-        if (effects && ![5, 6, 7, 8, 9].includes(identity)) continue
         if (await root.getAttribute("data-class-selection-visible") !== "true") await page.keyboard.press("Comma")
         await expect(root).toHaveAttribute("data-class-selection-visible", "true")
         await page.keyboard.press(`Digit${[0, 1, 8, 2, 4, 7, 5, 3, 9, 6][identity]}`)
@@ -168,7 +145,9 @@ test("exact headed RED/BLU authored skeletal color, depth and normal transport e
           await page.keyboard.press("Digit3")
           await expect.poll(async () => Number((await root.getAttribute("data-hud-probe"))?.split(":")[2])).toBe(name === "heavyweapons" ? 11 : 42)
           await hideConsole()
+          await expect(root).toHaveAttribute("data-viewmodel-activity", /IDLE/, { timeout: 5_000 })
           await capture(`${label}-melee-tool`, "viewmodel")
+          await screenshot(`${label}-melee-tool`)
         }
         if (effects && name === "pyro") {
           await pointer()
@@ -288,6 +267,7 @@ test("exact headed RED/BLU authored skeletal color, depth and normal transport e
     await chooseTf2Team(page, "red")
     await expect.poll(async () => Number((await root.getAttribute("data-hud-probe"))?.split(":")[1])).toBe(3)
     await capture("replacement-soldier", "viewmodel")
+    expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
     expect(errors).toEqual([])
   } finally {
     const terminal = await page.evaluate(() => ({
@@ -295,11 +275,11 @@ test("exact headed RED/BLU authored skeletal color, depth and normal transport e
       hud: document.querySelector<HTMLElement>("main")?.dataset.hudProbe,
       bots: (globalThis as any).__playsrcProfile.bots,
       console: document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText,
-      targets: (globalThis as any).__skinningTargets,
+      gpuLosses: (globalThis as any).__playsrcFrameProfiler.losses,
     })).catch(() => null)
     console.log(`[skinning-terminal] ${JSON.stringify(terminal)}`)
     try { await page.evaluate(() => (globalThis as any).__skinningEvidence.dispose()) }
     catch (error) { errors.push(String(error)) }
-    await writeFile(path.join(directory, lifecycleOnly ? "lifecycle.json" : effects ? "effects.json" : "classes.json"), JSON.stringify({ scope: lifecycleOnly ? "lifecycle-only" : effects ? "effects-red-blu" : "all-nine-red-blu", tolerance: "exact GPU scalar equality; identical shaders, target and pose, native full-palette transport reference; positive linear view depth and encoded view normals", records, errors, terminal, waterPlan }, null, 2))
+    await writeFile(path.join(directory, lifecycleOnly ? "lifecycle.json" : effects ? "effects.json" : "classes.json"), JSON.stringify({ scope: lifecycleOnly ? "lifecycle-only" : effects ? "all-nine-and-effects-red-blu" : "all-nine-red-blu", tolerance: "exact GPU scalar equality; identical shaders, target and pose, native full-palette transport reference; positive linear view depth and encoded view normals", records, errors, terminal, waterPlan }, null, 2))
   }
 })
