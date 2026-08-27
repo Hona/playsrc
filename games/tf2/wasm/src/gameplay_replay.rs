@@ -328,6 +328,7 @@ mod tests {
     }
     #[test]
     fn incomplete_and_overflow_journals_keep_their_prefix_but_cannot_pass() {
+        let _metrics = memory::TEST_METRICS.lock().expect("test metrics");
         let handle = 0xffff_ffff;
         let setup = |bytes| {
             *journal().lock().unwrap() = Some(Journal {

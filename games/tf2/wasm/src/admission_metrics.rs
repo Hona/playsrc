@@ -117,6 +117,57 @@ pub unsafe extern "C" fn playsrc_admission_metrics_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn measurement_scope_excludes_competing_stop_but_counts_worker_allocations() {
+        use std::alloc::{GlobalAlloc, Layout};
+        use std::sync::{TryLockError, mpsc};
+
+        std::thread::scope(|threads| {
+            let metrics = memory::TEST_METRICS.lock().expect("test metrics");
+            begin();
+            let initial_totals = memory::allocation_totals();
+            let baseline = memory::live_bytes();
+            let (attempted, attempt) = mpsc::channel();
+            threads.spawn(move || {
+                // Force a competing scope to arrive while measurement is active,
+                // without timing sleeps or serializing unrelated native tests.
+                attempted
+                    .send(matches!(
+                        memory::TEST_METRICS.try_lock(),
+                        Err(TryLockError::WouldBlock)
+                    ))
+                    .unwrap();
+                let _metrics = memory::TEST_METRICS.lock().expect("test metrics");
+                stop();
+            });
+            assert!(attempt.recv().unwrap());
+
+            let allocate = move || {
+                let layout = Layout::from_size_align(256, 8).unwrap();
+                let pointer = unsafe { memory::MeasuredAllocator.alloc_zeroed(layout) };
+                assert!(!pointer.is_null());
+                assert_eq!(memory::live_bytes(), baseline + 256);
+                unsafe { memory::MeasuredAllocator.dealloc(pointer, layout) };
+            };
+            // Workers belong to the owning measurement, not separate test scopes.
+            threads.spawn(allocate).join().unwrap();
+            let measured = (initial_totals.0 + 1, initial_totals.1 + 256);
+            assert_eq!(memory::allocation_totals(), measured);
+            assert_eq!(memory::live_bytes(), baseline);
+            assert!(memory::high_water_bytes() >= baseline + 256);
+
+            // Tracking disable is global too; it must not disable live accounting.
+            threads.spawn(stop).join().unwrap();
+            threads.spawn(allocate).join().unwrap();
+            assert_eq!(memory::allocation_totals(), measured);
+            assert_eq!(memory::live_bytes(), baseline);
+            dispose();
+            drop(metrics);
+        });
+    }
+
     #[test]
     fn records_exact_timestamps_actor_ticks_counters_and_overflow_without_growth() {
         let mut records = Recorder::new();
