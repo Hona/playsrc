@@ -5,6 +5,7 @@ import { summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { spawnSync } from "node:child_process"
 import { tf2MapBsp, tf2MapMode } from "@playsrc/game-tf2-browser/maps"
 import { loadLocalConfig } from "../src/config"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
@@ -64,6 +65,12 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.geometryEvidence)
     const imagePath = testInfo.outputPath(`${target}-${label}.png`)
     await page.screenshot({ path: imagePath })
+    if (process.platform === "darwin" && label === "spawn") {
+      const desktopPath = testInfo.outputPath(`${target}-spawn-desktop.png`)
+      const desktop = spawnSync("/usr/sbin/screencapture", ["-x", desktopPath])
+      if (desktop.status !== 0) throw new Error("Native visible desktop capture failed")
+      await testInfo.attach("native-desktop", { path: desktopPath, contentType: "image/png" })
+    }
     const image = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({ path: testInfo.outputPath(`${target}-${label}-world.png`) }))
     const depth = geometry.geometry.samples.filter((sample: any) => sample.family !== null && Number.isFinite(sample.depth) && sample.depth > 0).map((sample: any) => {
       const x = Math.max(0, Math.min(image.width - 1, Math.round((sample.x + 1) * image.width / 2)))
@@ -79,6 +86,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await testInfo.attach(`${label}-depth`, { path: dataPath, contentType: "application/json" })
   }
   await page.goto("/")
+  await page.bringToFront()
   await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
   await command(`map ${target}`)
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
@@ -158,11 +166,16 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await command("tf_bot_quota 15"); await closeConsole()
   await expect(main).toHaveAttribute("data-bot-count", "15")
   await capture("spawn")
-  const before = await main.getAttribute("data-camera-position")
+  const before = await page.evaluate(() => (globalThis as any).__playsrcProfile.player)
   await page.locator("canvas.world-canvas").click({ force: true })
+  await expect(main).toHaveAttribute("data-pointer-locked", "true")
   await page.keyboard.down("w"); await page.waitForTimeout(1000); await page.keyboard.up("w")
-  expect(await main.getAttribute("data-camera-position")).not.toBe(before)
-  await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers, undefined, { timeout: 40_000 })
+  const after = await page.evaluate(() => (globalThis as any).__playsrcProfile.player)
+  const yaw = before.camera.yawDegrees * Math.PI / 180
+  const forwardDistance = (after.position[0] - before.position[0]) * Math.cos(yaw) + (after.position[1] - before.position[1]) * Math.sin(yaw)
+  expect(forwardDistance, "authored forward input moves along the selected spawn facing").toBeGreaterThan(16)
+  await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers
+    && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
   const points = await page.evaluate(() => (globalThis as any).__playsrcProfile.controlPoints.points.map((point: any) => ({ identity: point.identity, position: point.position, owner: point.owner })))
   expect(points).toHaveLength(tf2MapMode(target) === "king-of-the-hill" ? 1 : 5)
   if (tf2MapMode(target) === "king-of-the-hill") await command("ent_fire team_control_point SetUnlockTime 1")
@@ -182,7 +195,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
     })
     profiler.active = false
     return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points,
-      completedFrames: profiler.completedFrames, counters: profiler.counters, simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure }
+      completedFrames: profiler.completedFrames, counters: profiler.counters, nodeBuilds: profiler.nodeBuilds,
+      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure }
   })
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
   await writeFile(resultPath, json({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
@@ -190,8 +204,42 @@ test("configured map native traversal, objective roster, visible geometry and ca
   expect(sample.bots).toHaveLength(15)
   expect(sample.bots.every((bot: any) => bot.area !== null)).toBe(true)
   expect(sample.bots.some((bot: any) => sample.before.some((prior: any) => prior.identity === bot.identity && Math.hypot(...bot.position.map((value: number, axis: number) => value - prior.position[axis])) > 32))).toBe(true)
-  expect(sample.ticks / sample.seconds).toBeGreaterThan(63)
+  // Retain the failure, but still exercise capture/lifecycle gates so a cold-view
+  // pipeline hitch cannot hide an independent gameplay admission failure.
+  expect.soft(sample.ticks / sample.seconds).toBeGreaterThan(63)
   await capture("objective")
+  // Exercise a real bot capture, not a point-owner input or a local-player cap.
+  // This happens after the unchanged cadence window; the seeded bots still run
+  // their own objective AI and must enter the actual authored capture brush.
+  const botCapture = await page.evaluate(() => {
+    const profile = (globalThis as any).__playsrcProfile
+    const point = profile.controlPoints.points.find((point: any) => !point.locked
+      && ((point.owner !== 2 && point.mayCapture[0]) || (point.owner !== 3 && point.mayCapture[1])))
+    if (!point) throw new Error("No capturable authored point remains for bot acceptance")
+    const team = point.owner !== 2 && point.mayCapture[0] ? 2 : 3
+    const roster = JSON.parse(document.querySelector<HTMLElement>("main")!.dataset.scoreboardProbe!).players
+    return { point, team, camera: profile.player.camera,
+      bots: profile.bots.filter((bot: any) => bot.team === team && bot.health > 0).slice(0, 3)
+        .map((bot: any) => ({ identity: bot.identity, captures: bot.captures, position: bot.position,
+          name: roster.find((player: any) => player.identity === bot.identity).name })) }
+  })
+  expect(botCapture.bots.length).toBeGreaterThan(0)
+  const home = (spawnChecks[0] as any).player.position
+  await command(`setpos ${home.join(" ")}`)
+  for (const bot of botCapture.bots) await command(`bot_teleport ${JSON.stringify(bot.name)} ${botCapture.point.position[0]} ${botCapture.point.position[1]} ${botCapture.point.position[2] + 8} 0 90 0`)
+  await closeConsole()
+  await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, botCapture.camera)
+  const botPath = testInfo.outputPath(`${target}-bot-capture-state.json`)
+  await writeFile(botPath, json(botCapture))
+  await page.waitForFunction(({ point, team, bots }) => {
+    const profile = (globalThis as any).__playsrcProfile
+    return profile.controlPoints.points.find((candidate: any) => candidate.identity === point.identity)?.owner === team
+      && bots.some((before: any) => profile.bots.some((bot: any) => bot.identity === before.identity && bot.captures > before.captures))
+  }, botCapture, { timeout: 20_000 })
+  const captured = await page.evaluate(() => ({ points: (globalThis as any).__playsrcProfile.controlPoints, bots: (globalThis as any).__playsrcProfile.bots }))
+  await writeFile(botPath, json({ ...botCapture, captured }))
+  await capture("bot-capture")
+  await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
   for (const [index, point] of points.entries()) {
     await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
     await closeConsole(); await page.waitForTimeout(300)
