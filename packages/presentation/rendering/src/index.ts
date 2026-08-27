@@ -1481,6 +1481,7 @@ class RendererOwner implements Renderer {
   #modelPanelExposure = TSL.uniform(1, "float")
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
+  readonly #retainedModelPanels = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(32, retained => this.#disposeDynamicInstance(retained.instance))
   #viewModelInstances = new Map<number, RetainedViewModel>()
   // Detached occurrences share a bounded, generation-owned residency budget.
   // Never substitute one actor's mutable materials or skeleton for another's.
@@ -2260,6 +2261,7 @@ class RendererOwner implements Renderer {
       this.#retainedModels.clear()
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
+      this.#retainedModelPanels.clear()
       this.#stagedDynamic = undefined
       this.#worldVisibilitySurfaces = undefined
       this.#worldVisibilityIdentity = undefined
@@ -3604,12 +3606,13 @@ class RendererOwner implements Renderer {
         const instanceIdentity = panel.identity
         let retained = this.#modelPanelInstances.get(instanceIdentity)
         if (retained && retained.model !== identity) {
-          this.#disposeDynamicInstance(retained.instance)
+          retained.instance.parent?.remove(retained.instance)
+          this.#retainedModelPanels.retain(`${instanceIdentity}:${retained.model}`, retained)
           this.#modelPanelInstances.delete(instanceIdentity)
           retained = undefined
         }
         if (!retained) {
-          retained = { model: identity, instance: template.clone(true) }
+          retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}`) ?? { model: identity, instance: template.clone(true) }
           this.#modelPanelInstances.set(instanceIdentity, retained)
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
@@ -3660,12 +3663,13 @@ class RendererOwner implements Renderer {
           const instanceKey = `${panel.identity}:merge:${index}`
           let merged = this.#modelPanelInstances.get(instanceKey)
           if (merged && merged.model !== key) {
-            this.#disposeDynamicInstance(merged.instance)
+            merged.instance.parent?.remove(merged.instance)
+            this.#retainedModelPanels.retain(`${instanceKey}:${merged.model}`, merged)
             this.#modelPanelInstances.delete(instanceKey)
             merged = undefined
           }
           if (!merged) {
-            merged = { model: key, instance: childTemplate.clone(true) }
+            merged = this.#retainedModelPanels.take(`${instanceKey}:${key}`) ?? { model: key, instance: childTemplate.clone(true) }
             this.#modelPanelInstances.set(instanceKey, merged)
           }
           merged.meshes = this.#applyPose(merged.instance, child.pose, merged.meshes !== undefined, merged.meshes)
@@ -5434,6 +5438,7 @@ class RendererOwner implements Renderer {
     this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
+    this.#retainedModelPanels.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined
@@ -5545,6 +5550,7 @@ class RendererOwner implements Renderer {
     this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
+    this.#retainedModelPanels.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined
