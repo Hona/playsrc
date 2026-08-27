@@ -9,7 +9,7 @@ function evidence() {
       { started, stopped: started + 1, ended: started + 1, disconnected: started + 1, duration: flameDuration, loop: true },
       { started: started + 1, stopped: null as number | null, ended: started + 1 + tailDuration - 0.0025, disconnected: started + 1 + tailDuration, duration: tailDuration, loop: false },
     ]),
-    edges: [1, 3].map(audio => ({ type: "mouseup", locked: true, trusted: true, audio })),
+    edges: [1, 3].map(audio => ({ type: "mouseup", locked: true, trusted: true as boolean, audio })),
     state: { audioStarts: "Weapon_Shotgun.Single" },
   } satisfies PyroAudioEvidence
 }

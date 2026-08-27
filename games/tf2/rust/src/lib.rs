@@ -1523,7 +1523,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             objective_events.extend(self.drop_objective(false)?);
         }
         if let Some(team) = self.pending_team_change.take() {
-            self.stop_flame();
+            self.stop_flame(false);
             self.fizzle_projectiles(&mut projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
                 tick: self.tick,
@@ -2024,7 +2024,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             || self.lifecycle != PlayerLifecycle::Active
             || self.health <= 0
         {
-            self.stop_flame();
+            self.stop_flame(false);
         }
         if discontinuity {
             self.contact_reconcile_requests
@@ -2855,7 +2855,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
                 .is_ok()
         {
-            self.stop_flame();
+            self.stop_flame(false);
             self.buildings.reset();
             self.fizzle_projectiles(projectile_events);
             self.lifecycle_events.push(LifecycleEvent {
@@ -3891,14 +3891,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
             })
     }
 
-    fn stop_flame(&mut self) {
+    fn stop_flame(&mut self, abrupt: bool) {
         if !self.flame_firing {
             return;
         }
         self.flame_firing = false;
         self.flame_burst_until = 0.0;
         // StopFlame emits the authored winddown, then destroys both sound patches.
-        self.emit_weapon_sound(SoundDefinition::FlameEnd, self.movement.position);
+        if !abrupt {
+            self.emit_weapon_sound(SoundDefinition::FlameEnd, self.movement.position);
+        }
         for definition in [SoundDefinition::FlameLoop, SoundDefinition::FlameFire] {
             self.push_audio_event(AudioEvent {
                 action: AudioAction::Stop,
@@ -3936,7 +3938,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             || self.loadout[&Weapon::Flamethrower].reserve == 0
             || self.movement.water_level == 3
         {
-            self.stop_flame();
+            self.stop_flame(false);
         }
         if command.detonate
             && self.movement.water_level != 3
@@ -3963,7 +3965,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     clip: 0,
                     reserve: state.reserve,
                 });
-                self.stop_flame();
+                self.stop_flame(false);
                 self.emit_weapon_sound(SoundDefinition::FlameAirblast, self.movement.position);
                 let (forward, _, _) =
                     angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0);
@@ -4114,7 +4116,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         }
                     }
                 } else {
-                    self.stop_flame();
+                    self.stop_flame(false);
                 }
             }
         }
@@ -6149,7 +6151,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
-        self.stop_flame();
+        self.stop_flame(false);
         self.lifecycle = PlayerLifecycle::Dying;
         self.scoreboard.local_death();
         if self.jump.is_none() {
@@ -6179,7 +6181,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events: &mut Vec<Event>,
         movement_policy: GenericMovementPolicy,
     ) {
-        self.stop_flame();
+        // WeaponReset destroys sound patches without emitting a winddown.
+        self.stop_flame(true);
         self.fizzle_projectiles(projectile_events);
         self.health = self.maximum_health();
         self.ammo = self.class.data().maximum_ammo;
@@ -8240,6 +8243,25 @@ mod tests {
             2
         );
         let mut empty = base.clone();
+        let mut reset = base.clone();
+        reset
+            .advance(Command {
+                respawn: true,
+                ..Command::default()
+            })
+            .unwrap();
+        assert!(!reset.flame_firing);
+        assert_eq!(
+            reset
+                .audio_events
+                .iter()
+                .map(|event| (event.definition, event.action))
+                .collect::<Vec<_>>(),
+            vec![
+                (SoundDefinition::FlameLoop, AudioAction::Stop),
+                (SoundDefinition::FlameFire, AudioAction::Stop),
+            ]
+        );
         empty
             .loadout
             .get_mut(&Weapon::Flamethrower)
