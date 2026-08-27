@@ -151,6 +151,56 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("property-only image edits invalidate paint while restored batch values retain it", () => {
+    const { runtime, root } = setup()
+    operation(runtime, { kind: "replace-scheme", scheme: { ...scheme, revision: "animated", images: [{ ...scheme.images[0]!, frames: 2,
+      variants: [0, 1].map(frame => ({ frame, rotation: 0 as const, tint: [255, 255, 255, 255] as const, browserUrl: `data:image/png;base64,frame${frame}` })),
+    }] } })
+    const id = operation(runtime, { kind: "create-panel", parent: 1, control: "ImagePanel", name: "Frames", properties: [
+      { name: "image", value: "test/icon" },
+    ] }).panel!
+    const image = descendants(root).find(value => value.dataset.vguiPanel === String(id))!
+    expect(image.style.backgroundImage).toContain("frame0")
+    operation(runtime, { kind: "mutate-control", panel: id, mutation: { imageFrame: 1 } })
+    expect(image.style.backgroundImage).toContain("frame1")
+    const writes = image.style.writes
+    runtime.deferPresentation(() => {
+      operation(runtime, { kind: "mutate-control", panel: id, mutation: { imageFrame: 0 } })
+      operation(runtime, { kind: "mutate-control", panel: id, mutation: { imageFrame: 1 } })
+    })
+    expect(image.style.writes).toBe(writes)
+    const signatures = runtime as unknown as { presentationSignatures: Map<unknown, unknown>; paintSignatures: Map<unknown, unknown> }
+    operation(runtime, { kind: "delete-panel", panel: id, deferred: false })
+    expect(signatures.presentationSignatures.has(id)).toBeFalse()
+    expect(signatures.paintSignatures.has(id)).toBeFalse()
+    runtime.destroy()
+    expect(signatures.presentationSignatures.size).toBe(0)
+    expect(signatures.paintSignatures.size).toBe(0)
+  })
+
+  test("reuses installed property signatures and reads layout keys without materializing property tuples", () => {
+    const { runtime, root } = setup()
+    const id = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "Layout", properties: [
+      { name: "WiDe", value: "80" }, { name: "tall", value: "20" },
+      { name: "ProportionalToParent", value: "1" }, { name: "xpos", value: "c0" },
+      { name: "ypos", value: "r10" }, { name: "labelText", value: "Before" },
+    ] }).panel!
+    const properties = (runtime as unknown as { panels: Map<number, { properties: Map<string, string> }> }).panels.get(id)!.properties
+    let iterations = 0
+    const iterate = properties[Symbol.iterator].bind(properties)
+    const entries = properties.entries.bind(properties)
+    properties[Symbol.iterator] = () => { iterations++; return iterate() }
+    properties.entries = () => { iterations++; return entries() }
+    operation(runtime, { kind: "set-viewport", viewport: { width: 800, height: 600, devicePixelRatio: 2 } })
+    operation(runtime, { kind: "mutate-control", panel: id, mutation: { text: "After" } })
+    operation(runtime, { kind: "frame", timeSeconds: 1 })
+    const element = descendants(root).find(value => value.dataset.vguiPanel === String(id))!
+    expect(element.textContent).toBe("After")
+    expect(runtime.snapshot().panels.find(value => value.id === id)!.bounds).toEqual({ x: 400, y: 590, width: 80, height: 20 })
+    expect(iterations).toBe(0)
+    runtime.destroy()
+  })
+
   test("sectioned-list scrollbar publication keeps the clicked binding row at its painted position", () => {
     const { runtime, root } = setup()
     const list = operation(runtime, { kind: "create-panel", parent: 1, control: "SectionedListPanel", name: "Bindings" }).panel!

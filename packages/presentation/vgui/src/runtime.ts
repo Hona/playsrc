@@ -47,6 +47,7 @@ import {
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
 import { asciiFold, resourcePropertyReader } from "./resource-properties"
+import { PanelProperties } from "./panel-properties"
 import { isDirectVguiImageMaterial, VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
 import { registerVguiWindowWorkspace, type VguiWindowWorkspaceRegistration } from "./window-workspace"
 
@@ -169,7 +170,7 @@ type PanelState = {
   children: VguiPanelId[]
   tieOrder: number
   resourceOwner: string | null
-  properties: Map<string, string>
+  properties: PanelProperties
   bounds: { x: number; y: number; width: number; height: number }
   absoluteBounds: { x: number; y: number; width: number; height: number }
   clip: { x: number; y: number; width: number; height: number }
@@ -690,8 +691,8 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly imageRasterizer: VguiImageRasterizer
   private readonly rasterGenerations = new Map<string, number>()
   private readonly rasterSignatures = new Map<string, string>()
-  private readonly presentationSignatures = new Map<VguiPanelId, string>()
-  private readonly paintSignatures = new Map<VguiPanelId, string>()
+  private readonly presentationSignatures = new Map<VguiPanelId, Readonly<{ state: string; properties: string }>>()
+  private readonly paintSignatures = new Map<VguiPanelId, Readonly<{ state: string; properties: string }>>()
   private readonly pendingPaint = new Set<VguiPanelId>()
   private readonly popups: VguiPanelId[] = []
   private readonly pendingPressedKeys = new Set<string>()
@@ -1517,7 +1518,7 @@ class SourceVguiRuntime implements VguiRuntime {
       children: [],
       tieOrder: this.nextOrder++,
       resourceOwner,
-      properties: new Map(),
+      properties: new PanelProperties(),
       bounds: { x: 0, y: 0, width: defaultWidth, height: defaultHeight },
       absoluteBounds: { x: 0, y: 0, width: defaultWidth, height: defaultHeight },
       clip: { x: 0, y: 0, width: defaultWidth, height: defaultHeight },
@@ -1722,7 +1723,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private computeDimension(value: string, panel: PanelState | null, horizontal: boolean, computingOther = false, resourceSemantics = false): number {
     if (!panel) return this.proportional(parseFloatValue(value, "dimension"), null)
     const parent = panel.parent === null ? null : this.requirePanel(panel.parent)
-    const proportionalToParent = [...panel.properties].find(([name]) => sameName(name, "proportionalToParent"))?.[1] === "1"
+    const proportionalToParent = panel.properties.first("proportionalToParent") === "1"
     const useParent = resourceSemantics
       ? proportionalToParent
       : panel.proportional && parent !== null
@@ -1767,7 +1768,7 @@ class SourceVguiRuntime implements VguiRuntime {
     value = value.trim()
     if (!panel) return this.proportional(parseFloatValue(value, "position"), null)
     const parent = panel.parent === null ? null : this.requirePanel(panel.parent)
-    const proportionalToParent = [...panel.properties].find(([name]) => sameName(name, "proportionalToParent"))?.[1] === "1"
+    const proportionalToParent = panel.properties.first("proportionalToParent") === "1"
     const useParent = resourceSemantics
       ? proportionalToParent
       : panel.proportional && parent !== null
@@ -1818,7 +1819,7 @@ class SourceVguiRuntime implements VguiRuntime {
       width: Math.max(panel.minimumWidth, bounds.width),
       height: Math.max(panel.minimumHeight, bounds.height),
     }
-    const property = (name: string): string | null => [...panel.properties].find(([key]) => sameName(key, name))?.[1] ?? null
+    const property = (name: string): string | null => panel.properties.first(name)
     this.applyAutoResizeSettings(panel, property)
     if (changedSize) this.resizeChildren(panel)
     this.solveGeometry()
@@ -2100,7 +2101,7 @@ class SourceVguiRuntime implements VguiRuntime {
       name,
       proportional: false,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
-      properties: new Map(properties.map((property) => [property.name, property.value])),
+      properties: new PanelProperties(properties.map((property) => [property.name, property.value])),
     } as PanelState
     for (const dimension of ["wide", "tall"] as const) {
       const value = first(dimension)
@@ -2540,14 +2541,16 @@ class SourceVguiRuntime implements VguiRuntime {
     // composite controls rebuild layered backgrounds in presentControlGeometry.
     const paintSignature = RETAINED_PAINT_CONTROLS.has(asciiFold(sourceControl)) ? JSON.stringify([
       this.viewport.width, this.viewport.height, this.viewport.devicePixelRatio,
-      panel.control, panel.sourceControl, [...panel.properties], panel.proportional,
+      panel.control, panel.sourceControl, panel.proportional,
       panel.bounds.width, panel.bounds.height, panel.enabled, panel.armed, panel.depressed, panel.selected,
       panel.font, panel.border, panel.image, panel.drawColor, panel.fillColor, panel.imageFill,
       panel.foregroundColor, [...panel.animationValues], this.keyFocus === panel.id,
       Boolean(panel.text || panel.bodyText || panel.items.length),
       panel.chromeElements.size ? panel.text : null,
     ]) : null
-    if (paintSignature !== null && this.paintSignatures.get(panel.id) === paintSignature) return
+    const propertiesSignature = paintSignature === null ? null : panel.properties.signature()
+    const priorPaint = this.paintSignatures.get(panel.id)
+    if (paintSignature !== null && priorPaint?.state === paintSignature && priorPaint.properties === propertiesSignature) return
     panel.element.style.backgroundImage = "none"
     panel.element.style.backgroundSize = "auto"
     panel.element.style.backgroundPosition = "0% 0%"
@@ -2665,7 +2668,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     if (presentationBorder) this.presentBorder(panel, presentationBorder)
     if (panel.image) this.presentImage(panel, this.images.get(asciiFold(panel.image))!)
-    if (paintSignature !== null) this.paintSignatures.set(panel.id, paintSignature)
+    if (paintSignature !== null) this.paintSignatures.set(panel.id, { state: paintSignature, properties: propertiesSignature! })
   }
 
   private presentationBorder(panel: PanelState): VguiBorder | null {
@@ -4897,7 +4900,7 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private reapplyStoredGeometry(panel: PanelState): void {
-    const property = (name: string): string | null => [...panel.properties.entries()].find(([key]) => sameName(key, name))?.[1] ?? null
+    const property = (name: string): string | null => panel.properties.first(name)
     const wide = property("wide")
     const tall = property("tall")
     if (wide !== null) panel.bounds.width = Math.max(panel.minimumWidth, this.computeDimension(wide, panel, true, false, true))
@@ -5045,7 +5048,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private presentationSignature(panel: PanelState): string {
     return JSON.stringify([
       this.scheme.identity, this.scheme.revision, this.viewport.width, this.viewport.height, this.viewport.devicePixelRatio, this.reducedMotion,
-      panel.control, panel.sourceControl, panel.name, panel.parent, panel.children, panel.resourceOwner, [...panel.properties],
+      panel.control, panel.sourceControl, panel.name, panel.parent, panel.children, panel.resourceOwner,
       panel.bounds, panel.absoluteBounds, panel.clip, panel.inset, panel.minimumWidth, panel.minimumHeight, panel.z, panel.popup, panel.topmostPopup,
       panel.visible, panel.effectivelyVisible, panel.enabled, panel.mouseInput, panel.keyboardInput, panel.proportional, panel.tabPosition, panel.subTabPosition,
       panel.text, panel.bodyText, panel.accessibleName, panel.accessibleDescription, panel.tooltip, panel.command, panel.url, panel.border, panel.font, panel.image,
@@ -5101,9 +5104,13 @@ class SourceVguiRuntime implements VguiRuntime {
         const parent = panel.popup || panel.parent === null ? this.host : this.requirePanel(panel.parent).element
         if (panel.element.parentElement !== parent) parent.append(panel.element)
         const signature = this.presentationSignature(panel)
-        const changed = this.presentationSignatures.get(panel.id) !== signature
+        // Keep the immutable property serialization separate: paint and DOM
+        // publication share its bytes, rather than embedding two string copies.
+        const properties = panel.properties.signature()
+        const prior = this.presentationSignatures.get(panel.id)
+        const changed = prior?.state !== signature || prior.properties !== properties
         if (changed) {
-          this.presentationSignatures.set(panel.id, signature)
+          this.presentationSignatures.set(panel.id, { state: signature, properties })
           const style = (property: string, value: string): void => {
             const declaration = panel.element.style as unknown as Record<string, string>
             if (declaration[property] !== value) declaration[property] = value
@@ -5902,6 +5909,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.rasterGenerations.clear()
     this.rasterSignatures.clear()
     this.pendingPaint.clear()
+    this.presentationSignatures.clear()
     this.paintSignatures.clear()
     for (const record of this.listeners.splice(0).reverse()) record.target.removeEventListener(record.type, record.listener, record.options)
     if (this.capture !== null) {
