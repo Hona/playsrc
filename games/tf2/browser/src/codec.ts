@@ -2167,7 +2167,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
       !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||
       wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
-    ) throw new Tf2CodecError("audio event record is invalid")
+    ) throw new Tf2CodecError(`audio event record is invalid: ${JSON.stringify({ tick: tick.toString(), ordinal, expectedOrdinal, identity, definition, sourceKind, hasOwner, sourceIdentity, rawOwner, position, volume, pitch, soundLevel, action, fadeSeconds, wave, waveCount })}`)
     nextOrdinal.set(tick, expectedOrdinal + 1)
     audioEvents.push(Object.freeze({
       tick, ordinal, identity, definition, sourceKind, sourceIdentity,
