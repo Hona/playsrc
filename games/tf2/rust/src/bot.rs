@@ -9,6 +9,8 @@ use playsrc_nav::{Area, Direction, Mesh, PathScratch};
 
 #[path = "bot_control_point.rs"]
 mod control_point;
+#[path = "bot_path.rs"]
+mod path;
 
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
@@ -506,6 +508,7 @@ struct Bot {
     current_area: Option<u32>,
     path: Vec<u32>,
     path_index: usize,
+    crossing: Option<path::Crossing>,
     goal: [f32; 3],
     point_action: control_point::Action,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
@@ -1109,6 +1112,7 @@ impl BotWorld {
                     current_area,
                     path: Vec::new(),
                     path_index: 0,
+                    crossing: None,
                     goal,
                     point_action: control_point::Action::default(),
                     loadout,
@@ -1370,6 +1374,7 @@ impl BotWorld {
                         )
                         .unwrap_or_default();
                     bot.path_index = 0;
+                    bot.crossing = None;
                     bot.current_area = Some(start);
                 }
                 let (minimum, maximum) = match bot.objective {
@@ -1390,14 +1395,18 @@ impl BotWorld {
                 let next = mesh
                     .area(bot.path[bot.path_index + 1])
                     .ok_or(Error::InvalidEntity)?;
-                if next.contains_xy(bot.movement.position)
+                let reached = if let Some(crossing) = bot.crossing.as_ref().filter(|crossing| crossing.to == next.identity && crossing.drop_position.is_some()) {
+                    crossing.landed(bot.movement.position)
+                } else { next.contains_xy(bot.movement.position)
                     && (bot.movement.position[2]
                         - next.height(bot.movement.position[0], bot.movement.position[1]))
                     .abs()
-                        <= MAX_JUMP_HEIGHT
+                        <= MAX_JUMP_HEIGHT };
+                if reached
                 {
                     bot.path_index += 1;
                     bot.current_area = Some(next.identity);
+                    bot.crossing = None;
                 } else {
                     break;
                 }
@@ -1417,12 +1426,15 @@ impl BotWorld {
                     .ok_or(Error::InvalidEntity)?;
                 let portal =
                     mesh.closest_point_in_portal(from, next, direction, bot.movement.position);
+                if bot.crossing.as_ref().is_none_or(|crossing| crossing.from != from.identity || crossing.to != next.identity) {
+                    bot.crossing = Some(path::Crossing::compute(world, from, next, direction, portal, bot.movement.position, bot.class).map_err(Error::Movement)?);
+                }
                 let center = next.center();
-                [
+                bot.crossing.as_ref().and_then(|crossing| crossing.drop_position).unwrap_or([
                     portal[0] + (center[0] - portal[0]).clamp(-STEP_HEIGHT, STEP_HEIGHT),
                     portal[1] + (center[1] - portal[1]).clamp(-STEP_HEIGHT, STEP_HEIGHT),
                     next.height(portal[0], portal[1]),
-                ]
+                ])
             } else {
                 bot.goal
             };
@@ -1758,6 +1770,7 @@ impl BotWorld {
         bot.current_area = self.mesh.nearest_area(position).map(|area| area.identity);
         bot.path.clear();
         bot.path_index = 0;
+        bot.crossing = None;
         bot.next_repath_tick = 0;
         Ok(())
     }
@@ -2601,6 +2614,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.current_area = mesh.nearest_area(spawn.position).map(|area| area.identity);
     bot.path.clear();
     bot.path_index = 0;
+    bot.crossing = None;
     bot.active_weapon = crate::default_weapon(bot.class);
     bot.pending_melee = None;
     bot.respawn_tick = None;
@@ -2935,6 +2949,33 @@ fn vector(entity: &Entity, key: &[u8]) -> Option<[f32; 3]> {
 mod tests {
     use super::*;
     use playsrc_movement::{Error as MoveError, Trace, Tracer};
+
+    #[test]
+    fn drop_crossings_trace_the_full_hull_beyond_the_ledge_and_wait_for_landing() {
+        struct Ledge(std::cell::RefCell<Vec<f32>>);
+        impl Tracer for Ledge {
+            fn trace(&self, start:[f32;3], end:[f32;3], hull:Hull, mask:u32)->Result<Trace,MoveError> {
+                if hull.mins[2] == STEP_HEIGHT {
+                    self.0.borrow_mut().push(start[0]);
+                    if start[0] + hull.mins[0] < 100.0 {
+                        return Ok(Trace { fraction:0.0,start_solid:true,all_solid:false,end:start,normal:None,hit:Some(0),contents:1 });
+                    }
+                }
+                Floor.trace(start,end,hull,mask)
+            }
+        }
+        impl GameplayWorld for Ledge { fn overlaps_model_hull(&self, _:usize, _:[f32;3], _:[f32;3], _:Hull)->Result<bool,MoveError>{Ok(false)} }
+        let mesh=fixture_mesh();
+        let mut from=mesh.areas[0].clone(); let mut to=mesh.areas[1].clone();
+        from.northwest=[0.0,0.0,200.0]; from.southeast=[100.0,100.0,200.0]; from.northeast_z=200.0; from.southwest_z=200.0;
+        to.northwest=[100.0,0.0,0.0]; to.southeast=[200.0,100.0,0.0]; to.northeast_z=0.0; to.southwest_z=0.0;
+        let world=Ledge(Default::default());
+        let crossing=path::Crossing::compute(&world,&from,&to,Direction::East,[100.0,50.0,200.0],[50.0,50.0,200.0],PlayerClass::Scout).unwrap();
+        assert_eq!(*world.0.borrow(),[100.0,110.0,120.0,130.0]);
+        assert_eq!(crossing.drop_position,Some([130.0,50.0,200.0]));
+        assert!(!crossing.landed([130.0,50.0,18.0]));
+        assert!(crossing.landed([130.0,50.0,17.9]));
+    }
 
     #[derive(Clone)]
     struct Floor;
