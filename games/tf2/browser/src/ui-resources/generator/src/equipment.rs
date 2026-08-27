@@ -3,6 +3,13 @@ use playsrc_content::Content;
 use crate::schema::{self, ItemSchema, SchemaInput, SchemaNode, SchemaValue};
 use serde::Deserialize;
 
+macro_rules! native_audio_rows {
+    ($($name:ident = $code:literal, $identity:literal, $waves:literal;)*) => {
+        const NATIVE_AUDIO: &[(u8, &str, u8)] = &[$(($code, $identity, $waves),)*];
+    };
+}
+crate::audio_native::native_sounds!(native_audio_rows);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Registration {
@@ -360,7 +367,9 @@ fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, ite
     }
     rust.push_str("];\n");
     fs::write(repository.join("games/tf2/rust/src/equipment-audio.generated.rs"), rust).map_err(|e| e.to_string())?;
-    fs::write(repository.join("games/tf2/browser/src/equipment/audio.generated.ts"), format!("// Generated from configured equipment sounds.\nexport const configuredEquipmentSounds: readonly string[] = {};\nexport const configuredEquipmentSoundWaves: readonly number[] = {};\n", serde_json::to_string(&names).unwrap(), serde_json::to_string(&names.iter().map(|name| found[name].1.len()).collect::<Vec<_>>()).unwrap())).map_err(|e| e.to_string())?;
+    let native: BTreeMap<_, _> = NATIVE_AUDIO.iter().map(|&(code, name, _)| (code, name)).collect();
+    let native_waves: BTreeMap<_, _> = NATIVE_AUDIO.iter().map(|&(code, _, waves)| (code, waves)).collect();
+    fs::write(repository.join("games/tf2/browser/src/equipment/audio.generated.ts"), format!("// Generated from native identities and configured equipment sounds.\nexport const nativeEquipmentSounds: Readonly<Record<number, string>> = {};\nexport const nativeEquipmentSoundWaves: Readonly<Record<number, number>> = {};\nexport const configuredEquipmentSounds: readonly string[] = {};\nexport const configuredEquipmentSoundWaves: readonly number[] = {};\n", serde_json::to_string(&native).unwrap(), serde_json::to_string(&native_waves).unwrap(), serde_json::to_string(&names).unwrap(), serde_json::to_string(&names.iter().map(|name| found[name].1.len()).collect::<Vec<_>>()).unwrap())).map_err(|e| e.to_string())?;
     fs::write(repository.join("tools/source-bundle/equipment-audio.generated.json"), serde_json::to_vec_pretty(&found).unwrap()).map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -1,361 +1,57 @@
 macro_rules! native_sound_definitions {
-    ($($name:ident),* $(,)?) => {
+    ($($name:ident = $code:literal, $identity:literal, $waves:literal;)*) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub enum SoundDefinition { Configured(u8), $($name,)* }
-        impl SoundDefinition { pub const NATIVE: &'static [Self] = &[$(Self::$name,)*]; }
+        impl SoundDefinition {
+            pub const NATIVE: &'static [Self] = &[$(Self::$name,)*];
+            pub const fn code(self) -> u8 { match self { Self::Configured(index) => 160 + index, $(Self::$name => $code,)* } }
+            pub const fn identity(self) -> &'static str { match self { Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].0, $(Self::$name => $identity,)* } }
+            pub const fn wave_count(self) -> u8 { match self { Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].2, $(Self::$name => $waves,)* } }
+        }
     };
 }
 
-native_sound_definitions! {
-    RocketSingle,
-    OriginalSingle,
-    StickySingle,
-    RocketExplosion,
-    OriginalExplosion,
-    StickyExplosion,
-    ScattergunSingle,
-    PistolSingle,
-    BatMiss,
-    BatHitFlesh,
-    BatHitWorld,
-    ScattergunReload,
-    PistolReload,
-
-    ShotgunSingle,
-    ShotgunReload,
-    ShovelMiss,
-    ShovelHitFlesh,
-    ShovelHitWorld,
-    MinigunWindUp,
-    MinigunWindDown,
-    MinigunSpin,
-    MinigunFire,
-    FistMiss,
-    FistHitWorld,
-    FistHitFlesh,
-    SniperSingle,
-    SmgSingle,
-    KukriMiss,
-    KukriHitFlesh,
-    KukriHitWorld,
-    SmgReload,
-    ShotgunEmpty,
-    PistolEmpty,
-    WrenchMiss,
-    WrenchHitFlesh,
-    WrenchHitWorld,
-    FlameFire,
-    FlameLoop,
-    FlameEnd,
-    FlameAirblast,
-    FireAxeMiss,
-    FireAxeHitFlesh,
-    FireAxeHitWorld,
-    FlagEnemyStolen,
-    FlagEnemyDropped,
-    FlagEnemyCaptured,
-    FlagEnemyReturned,
-    FlagTeamStolen,
-    FlagTeamDropped,
-    FlagTeamCaptured,
-    FlagTeamReturned,
-    FlagSpawn,
-    TeamWon,
-    TeamLost,
-    BottleMiss,
-    BottleHitFlesh,
-    BottleHitWorld,
-    HealthKitTouch,
-    AmmoPackTouch,
-    RegenerateTouch,
-    ItemMaterialize,
-    RevolverSingle,
-    RevolverReload,
-    KnifeMiss,
-    KnifeHitFlesh,
-    KnifeHitWorld,
-    SpyCloak,
-    SpyUncloak,
-    SyringeSingle,
-    BonesawMiss,
-    BonesawHitFlesh,
-    BonesawHitWorld,
-    SyringeReload,
-    MedigunHealing,
-    MedigunDetach,
-    MedigunCharged,
-    RoundEnds60,
-    RoundEnds30,
-    RoundEnds10,
-    RoundEnds5,
-    RoundEnds4,
-    RoundEnds3,
-    RoundEnds2,
-    RoundEnds1,
-    Overtime,
-    PointSuccess,
-    PointFailure,
-    PointCaptured,
-    PointContested,
-    PointContestedNeutral,
-    PointEnabled,
-    RoundBegins5,
-    RoundBegins4,
-    RoundBegins3,
-    RoundBegins2,
-    RoundBegins1,
-    Stalemate,
-    CaptureWarn,
-    HologramStart,
-    HologramStop,
-    HologramMove,
-    HologramInterrupted,
-    RoundBegins60,
-    RoundBegins30,
-    RoundBegins10,
-    RoundStartSiren,
-    TimeAdded,
-    EndRoundScored,
-}
-
-pub const FLAG_SOUNDS: &[SoundDefinition] = &[
-    SoundDefinition::FlagEnemyStolen,
-    SoundDefinition::FlagEnemyDropped,
-    SoundDefinition::FlagEnemyCaptured,
-    SoundDefinition::FlagEnemyReturned,
-    SoundDefinition::FlagTeamStolen,
-    SoundDefinition::FlagTeamDropped,
-    SoundDefinition::FlagTeamCaptured,
-    SoundDefinition::FlagTeamReturned,
-    SoundDefinition::FlagSpawn,
-];
-
-pub const SOUND_PRECACHE_ABSENCES_PATH: &str = "playsrc/audio-precache-absences.txt";
-pub const SOUND_PRECACHE_ABSENCES_HEADER: &str = "playsrc-audio-precache-absences-v1\n";
-
-impl SoundDefinition {
-    pub const fn map_scoped(self) -> bool {
-        matches!(self, Self::FlagEnemyStolen | Self::FlagEnemyDropped | Self::FlagEnemyCaptured | Self::FlagEnemyReturned
-            | Self::FlagTeamStolen | Self::FlagTeamDropped | Self::FlagTeamCaptured | Self::FlagTeamReturned | Self::FlagSpawn
-            | Self::TeamWon | Self::TeamLost | Self::RoundEnds60 | Self::RoundEnds30 | Self::RoundEnds10
-            | Self::RoundEnds5 | Self::RoundEnds4 | Self::RoundEnds3 | Self::RoundEnds2 | Self::RoundEnds1 | Self::Overtime
-            | Self::PointSuccess | Self::PointFailure | Self::PointCaptured | Self::PointContested | Self::PointContestedNeutral
-            | Self::PointEnabled | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2
-            | Self::RoundBegins1 | Self::Stalemate | Self::CaptureWarn | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted)
-    }
-    pub const fn identity(self) -> &'static str {
-        match self {
-            Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].0,
-            Self::RocketSingle => "Weapon_RPG.Single",
-            Self::OriginalSingle => "Weapon_QuakeRPG.Single",
-            Self::StickySingle => "Weapon_StickyBombLauncher.Single",
-            Self::RocketExplosion => "BaseExplosionEffect.Sound",
-            Self::OriginalExplosion => "Weapon_QuakeRPG.Explode",
-            Self::StickyExplosion => "Weapon_Grenade_Pipebomb.Explode",
-            Self::ScattergunSingle => "Weapon_Scatter_Gun.Single",
-            Self::PistolSingle => "Weapon_Pistol.Single",
-            Self::BatMiss => "Weapon_Bat.Miss",
-            Self::BatHitFlesh => "Weapon_Bat.HitFlesh",
-            Self::BatHitWorld => "Weapon_Bat.HitWorld",
-            Self::ScattergunReload => "Weapon_Scatter_Gun.WorldReload",
-            Self::PistolReload => "Weapon_Pistol.WorldReload",
-
-            Self::ShotgunSingle => "Weapon_Shotgun.Single",
-            Self::ShotgunReload => "Weapon_Shotgun.WorldReload",
-            Self::ShovelMiss => "Weapon_Shovel.Miss",
-            Self::ShovelHitFlesh => "Weapon_Shovel.HitFlesh",
-            Self::ShovelHitWorld => "Weapon_Shovel.HitWorld",
-            Self::MinigunWindUp => "Weapon_Minigun.WindUp",
-            Self::MinigunWindDown => "Weapon_Minigun.WindDown",
-            Self::MinigunSpin => "Weapon_Minigun.Spin",
-            Self::MinigunFire => "Weapon_Minigun.Fire",
-            Self::FistMiss => "Weapon_Fist.Miss",
-            Self::FistHitWorld => "Weapon_Fist.HitWorld",
-            Self::FistHitFlesh => "Weapon_Fist.HitFlesh",
-            Self::ShotgunEmpty => "Weapon_Shotgun.Empty",
-            Self::PistolEmpty => "Weapon_Pistol.ClipEmpty",
-            Self::WrenchMiss => "Weapon_Wrench.Miss",
-            Self::WrenchHitFlesh => "Weapon_Wrench.HitFlesh",
-            Self::WrenchHitWorld => "Weapon_Wrench.HitWorld",
-            Self::SniperSingle => "Weapon_SniperRifle.Single",
-            Self::SmgSingle => "Weapon_SMG.Single",
-            Self::KukriMiss => "Weapon_Machete.Miss",
-            Self::KukriHitFlesh => "Weapon_Machete.HitFlesh",
-            Self::KukriHitWorld => "Weapon_Machete.HitWorld",
-            Self::SmgReload => "Weapon_SMG.WorldReload",
-            Self::FlameFire => "Weapon_FlameThrower.Fire",
-            Self::FlameLoop => "Weapon_FlameThrower.FireLoop",
-            Self::FlameEnd => "Weapon_FlameThrower.WindDown",
-            Self::FlameAirblast => "Weapon_FlameThrower.AirBurstAttack",
-            Self::FireAxeMiss => "Weapon_FireAxe.Miss",
-            Self::FireAxeHitFlesh => "Weapon_FireAxe.HitFlesh",
-            Self::FireAxeHitWorld => "Weapon_FireAxe.HitWorld",
-            Self::FlagEnemyStolen => "CaptureFlag.EnemyStolen",
-            Self::FlagEnemyDropped => "CaptureFlag.EnemyDropped",
-            Self::FlagEnemyCaptured => "CaptureFlag.EnemyCaptured",
-            Self::FlagEnemyReturned => "CaptureFlag.EnemyReturned",
-            Self::FlagTeamStolen => "CaptureFlag.TeamStolen",
-            Self::FlagTeamDropped => "CaptureFlag.TeamDropped",
-            Self::FlagTeamCaptured => "CaptureFlag.TeamCaptured",
-            Self::FlagTeamReturned => "CaptureFlag.TeamReturned",
-            Self::FlagSpawn => "CaptureFlag.FlagSpawn",
-            Self::TeamWon => "Game.YourTeamWon",
-            Self::TeamLost => "Game.YourTeamLost",
-            Self::BottleMiss => "Weapon_Bottle.Miss",
-            Self::BottleHitFlesh => "Weapon_Bottle.HitFlesh",
-            Self::BottleHitWorld => "Weapon_Bottle.HitWorld",
-            Self::HealthKitTouch => "HealthKit.Touch",
-            Self::AmmoPackTouch => "AmmoPack.Touch",
-            Self::RegenerateTouch => "Regenerate.Touch",
-            Self::ItemMaterialize => "Item.Materialize",
-            Self::RevolverSingle => "Weapon_Revolver.Single",
-            Self::RevolverReload => "Weapon_Revolver.WorldReload",
-            Self::KnifeMiss => "Weapon_Knife.Miss",
-            Self::KnifeHitFlesh => "Weapon_Knife.HitFlesh",
-            Self::KnifeHitWorld => "Weapon_Knife.HitWorld",
-            Self::SpyCloak => "Player.Spy_Cloak",
-            Self::SpyUncloak => "Player.Spy_UnCloak",
-            Self::SyringeSingle => "Weapon_SyringeGun.Single",
-            Self::BonesawMiss => "Weapon_BoneSaw.Miss",
-            Self::BonesawHitFlesh => "Weapon_BoneSaw.HitFlesh",
-            Self::BonesawHitWorld => "Weapon_BoneSaw.HitWorld",
-            Self::SyringeReload => "Weapon_SyringeGun.WorldReload",
-            Self::MedigunHealing => "WeaponMedigun.HealingHealer",
-            Self::MedigunDetach => "WeaponMedigun.HealingDetachHealer",
-            Self::MedigunCharged => "WeaponMedigun.Charged",
-            Self::RoundEnds60 => "Announcer.RoundEnds60seconds",
-            Self::RoundEnds30 => "Announcer.RoundEnds30seconds",
-            Self::RoundEnds10 => "Announcer.RoundEnds10seconds",
-            Self::RoundEnds5 => "Announcer.RoundEnds5seconds",
-            Self::RoundEnds4 => "Announcer.RoundEnds4seconds",
-            Self::RoundEnds3 => "Announcer.RoundEnds3seconds",
-            Self::RoundEnds2 => "Announcer.RoundEnds2seconds",
-            Self::RoundEnds1 => "Announcer.RoundEnds1seconds",
-            Self::Overtime => "Game.Overtime",
-            Self::PointSuccess => "Announcer.Success",
-            Self::PointFailure => "Announcer.Failure",
-            Self::PointCaptured => "Hud.PointCaptured",
-            Self::PointContested => "Announcer.ControlPointContested",
-            Self::PointContestedNeutral => "Announcer.ControlPointContested_Neutral",
-            Self::PointEnabled => "Announcer.AM_CapEnabledRandom",
-            Self::RoundBegins5 => "Announcer.RoundBegins5Seconds",
-            Self::RoundBegins4 => "Announcer.RoundBegins4Seconds",
-            Self::RoundBegins3 => "Announcer.RoundBegins3Seconds",
-            Self::RoundBegins2 => "Announcer.RoundBegins2Seconds",
-            Self::RoundBegins1 => "Announcer.RoundBegins1Seconds",
-            Self::Stalemate => "Game.Stalemate",
-            Self::CaptureWarn => "ControlPoint.CaptureWarn",
-            Self::HologramStart => "Hologram.Start",
-            Self::HologramStop => "Hologram.Stop",
-            Self::HologramMove => "Hologram.Move",
-            Self::HologramInterrupted => "Hologram.Interrupted",
-            Self::RoundBegins60 => "Announcer.RoundBegins60Seconds",
-            Self::RoundBegins30 => "Announcer.RoundBegins30Seconds",
-            Self::RoundBegins10 => "Announcer.RoundBegins10Seconds",
-            Self::RoundStartSiren => "Ambient.Siren",
-            Self::TimeAdded => "Announcer.TimeAdded",
-            Self::EndRoundScored => "Hud.EndRoundScored",
-        }
-    }
-
-    pub const fn wave_count(self) -> u8 {
-        match self {
-            Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::EndRoundScored => 1,
-            Self::PointSuccess | Self::PointContestedNeutral | Self::CaptureWarn => 2,
-            Self::PointContested => 3,
-            Self::PointEnabled => 4,
-            Self::PointFailure | Self::PointCaptured | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2 | Self::RoundBegins1 | Self::Stalemate | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted => 1,
-            Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].2,
-            Self::RocketExplosion
-            | Self::StickyExplosion
-            | Self::ShovelHitFlesh
-            | Self::FistHitFlesh
-            | Self::KukriHitFlesh
-            | Self::WrenchHitFlesh
-            | Self::FireAxeHitFlesh
-            | Self::FlagEnemyCaptured
-            | Self::FlagEnemyReturned
-            | Self::BottleHitFlesh
-            | Self::BottleHitWorld
-            | Self::KnifeHitFlesh
-            | Self::BonesawHitFlesh => 3,
-            Self::FlagEnemyStolen | Self::Overtime => 4,
-            Self::BatHitWorld
-            | Self::ShovelHitWorld
-            | Self::FistMiss
-            | Self::FistHitWorld
-            | Self::KukriHitWorld
-            | Self::FireAxeHitWorld
-            | Self::FlagEnemyDropped
-            | Self::FlagTeamDropped
-            | Self::BonesawHitWorld => 2,
-            Self::RocketSingle
-            | Self::OriginalSingle
-            | Self::StickySingle
-            | Self::OriginalExplosion
-            | Self::ScattergunSingle
-            | Self::PistolSingle
-            | Self::BatMiss
-            | Self::BatHitFlesh
-            | Self::ScattergunReload
-            | Self::PistolReload
-            | Self::ShotgunSingle
-            | Self::ShotgunReload
-            | Self::ShovelMiss
-            | Self::MinigunWindUp
-            | Self::MinigunWindDown
-            | Self::MinigunSpin
-            | Self::MinigunFire
-            | Self::SniperSingle
-            | Self::SmgSingle
-            | Self::KukriMiss
-            | Self::SmgReload
-            | Self::ShotgunEmpty
-            | Self::PistolEmpty
-            | Self::WrenchMiss
-            | Self::WrenchHitWorld
-            | Self::FlameFire
-            | Self::FlameLoop
-            | Self::FlameEnd
-            | Self::FlameAirblast
-            | Self::FireAxeMiss
-            | Self::FlagTeamStolen
-            | Self::FlagTeamCaptured
-            | Self::FlagTeamReturned
-            | Self::FlagSpawn
-            | Self::TeamWon
-            | Self::TeamLost
-            | Self::BottleMiss
-            | Self::HealthKitTouch
-            | Self::AmmoPackTouch
-            | Self::RegenerateTouch
-            | Self::ItemMaterialize
-            | Self::RevolverSingle
-            | Self::RevolverReload
-            | Self::KnifeMiss
-            | Self::KnifeHitWorld
-            | Self::SpyCloak
-            | Self::SpyUncloak
-            | Self::SyringeSingle
-            | Self::BonesawMiss
-            | Self::SyringeReload
-            | Self::MedigunHealing
-            | Self::MedigunDetach
-            | Self::MedigunCharged
-            | Self::RoundEnds60 | Self::RoundEnds30 | Self::RoundEnds10 | Self::RoundEnds5
-            | Self::RoundEnds4 | Self::RoundEnds3 | Self::RoundEnds2 | Self::RoundEnds1 => 1,
-        }
-    }
-}
+#[path = "audio_native.rs"]
+mod native;
+native::native_sounds!(native_sound_definitions);
 
 include!("equipment-audio.generated.rs");
 
+pub const FLAG_SOUNDS: &[SoundDefinition] = &[
+    SoundDefinition::FlagEnemyStolen, SoundDefinition::FlagEnemyDropped,
+    SoundDefinition::FlagEnemyCaptured, SoundDefinition::FlagEnemyReturned,
+    SoundDefinition::FlagTeamStolen, SoundDefinition::FlagTeamDropped,
+    SoundDefinition::FlagTeamCaptured, SoundDefinition::FlagTeamReturned, SoundDefinition::FlagSpawn,
+];
+pub const SOUND_PRECACHE_ABSENCES_PATH: &str = "playsrc/audio-precache-absences.txt";
+pub const SOUND_PRECACHE_ABSENCES_HEADER: &str = "playsrc-audio-precache-absences-v1\n";
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    #[test]
+    fn native_codes_are_unique_and_preserve_medic_tail_order() {
+        let mut codes = std::collections::BTreeSet::new();
+        for definition in SoundDefinition::NATIVE {
+            assert!(codes.insert(definition.code()));
+            assert!((1..=8).contains(&definition.wave_count()));
+        }
+        assert_eq!(SoundDefinition::MedigunHealing.code(), 71);
+        assert_eq!(SoundDefinition::MedigunCharged.code(), 73);
+        assert_eq!(SoundDefinition::BonesawHitFlesh.code(), 74);
+        assert_eq!(SoundDefinition::SyringeReload.code(), 76);
+        assert_eq!(SoundDefinition::MinigunCritical.code(), 115);
+        assert_eq!(SoundDefinition::HologramInterrupted.code(), 102);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WeaponSoundSlot { Single, Burst, Reload, Special1, Special2, Special3, MeleeMiss, MeleeHit, MeleeHitWorld, Empty, Deploy }
+pub enum WeaponSoundSlot { Single, Double, Burst, Reload, Special1, Special2, Special3, MeleeMiss, MeleeHit, MeleeHitWorld, Empty, Deploy }
 
 impl WeaponSoundSlot {
     pub const fn key(self) -> &'static str { match self {
         Self::Single => "sound_single_shot", Self::Burst => "sound_burst", Self::Reload => "sound_reload",
+        Self::Double => "sound_double_shot",
         Self::Special1 => "sound_special1", Self::Special2 => "sound_special2", Self::Special3 => "sound_special3",
         Self::MeleeMiss => "sound_melee_miss", Self::MeleeHit => "sound_melee_hit", Self::MeleeHitWorld => "sound_melee_hit_world",
         Self::Empty => "sound_empty", Self::Deploy => "sound_deploy",
@@ -363,6 +59,17 @@ impl WeaponSoundSlot {
 }
 
 impl SoundDefinition {
+    /// Announcers and objective patches retain the map's existing precache gate.
+    pub const fn map_scoped(self) -> bool {
+        matches!(self, Self::FlagEnemyStolen | Self::FlagEnemyDropped | Self::FlagEnemyCaptured | Self::FlagEnemyReturned
+            | Self::FlagTeamStolen | Self::FlagTeamDropped | Self::FlagTeamCaptured | Self::FlagTeamReturned | Self::FlagSpawn
+            | Self::TeamWon | Self::TeamLost | Self::RoundEnds60 | Self::RoundEnds30 | Self::RoundEnds10
+            | Self::RoundEnds5 | Self::RoundEnds4 | Self::RoundEnds3 | Self::RoundEnds2 | Self::RoundEnds1 | Self::Overtime
+            | Self::PointSuccess | Self::PointFailure | Self::PointCaptured | Self::PointContested | Self::PointContestedNeutral
+            | Self::PointEnabled | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2
+            | Self::RoundBegins1 | Self::Stalemate | Self::CaptureWarn | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted
+            | Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::EndRoundScored)
+    }
     pub fn configured(name: &str) -> Option<Self> {
         Self::NATIVE.iter().find(|definition| definition.identity() == name).copied()
             .or_else(|| CONFIGURED_SOUNDS.iter().position(|(candidate, _, _)| *candidate == name).map(|index| Self::Configured(index as u8)))
@@ -373,7 +80,10 @@ impl SoundDefinition {
             Self::BatMiss | Self::ShovelMiss | Self::KukriMiss | Self::FireAxeMiss | Self::WrenchMiss | Self::BottleMiss | Self::BonesawMiss | Self::KnifeMiss | Self::FistMiss => "sound_melee_miss",
             Self::BatHitFlesh | Self::ShovelHitFlesh | Self::KukriHitFlesh | Self::FireAxeHitFlesh | Self::WrenchHitFlesh | Self::BottleHitFlesh | Self::BonesawHitFlesh | Self::KnifeHitFlesh | Self::FistHitFlesh => "sound_melee_hit",
             Self::BatHitWorld | Self::ShovelHitWorld | Self::KukriHitWorld | Self::FireAxeHitWorld | Self::WrenchHitWorld | Self::BottleHitWorld | Self::BonesawHitWorld | Self::KnifeHitWorld | Self::FistHitWorld => "sound_melee_hit_world",
-            Self::RocketSingle | Self::OriginalSingle | Self::StickySingle | Self::ScattergunSingle | Self::PistolSingle | Self::ShotgunSingle | Self::SniperSingle | Self::SmgSingle | Self::RevolverSingle | Self::SyringeSingle | Self::MinigunFire => "sound_single_shot",
+            Self::RocketSingle | Self::OriginalSingle | Self::StickySingle | Self::ScattergunSingle | Self::PistolSingle | Self::ShotgunSingle | Self::SniperSingle | Self::SmgSingle | Self::RevolverSingle | Self::SyringeSingle => "sound_single_shot",
+            Self::MinigunFire => "sound_double_shot",
+            Self::ScattergunCritical | Self::ShotgunCritical | Self::PistolCritical | Self::SmgCritical | Self::SniperCritical | Self::RevolverCritical | Self::MinigunCritical => "sound_burst",
+            Self::MinigunEmpty => "sound_empty",
             Self::ScattergunReload | Self::PistolReload | Self::ShotgunReload | Self::SmgReload | Self::RevolverReload | Self::SyringeReload => "sound_reload",
             Self::MinigunWindUp => "sound_special1",
             Self::MinigunWindDown => "sound_special2",
@@ -429,6 +139,7 @@ pub enum AudioSourceKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AudioAction {
     Play,
+    PlayAtPitch(f32),
     FadeIn(f32),
     FadeOut(f32),
     Stop,

@@ -6,7 +6,7 @@ import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
 import type { Tf2EquippedItem } from "./equipment/types"
 import type { Snapshot, ActorCloakState, EntityPresentation } from "./codec"
-import { configuredEquipmentSounds } from "./equipment/audio.generated"
+import { configuredEquipmentSounds, nativeEquipmentSounds } from "./equipment/audio.generated"
 
 /** Static skin inputs do not create a prop animation. Keep their template bounds;
  * only animated props replace those bounds with the authored sequence bounds. */
@@ -64,14 +64,7 @@ export type Tf2AudioRequest = Readonly<{
   tick?: bigint
   voiceIdentity: number
 
-  definition: "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak" | "Weapon_SyringeGun.Single" | "Weapon_BoneSaw.Miss" | "WeaponMedigun.HealingHealer" | "WeaponMedigun.HealingDetachHealer" | "WeaponMedigun.Charged" | "Weapon_BoneSaw.HitFlesh" | "Weapon_BoneSaw.HitWorld" | "Weapon_SyringeGun.WorldReload" | "Weapon_RPG.Single" | "Weapon_QuakeRPG.Single" | "Weapon_StickyBombLauncher.Single" | "BaseExplosionEffect.Sound" | "Weapon_QuakeRPG.Explode" | "Weapon_Grenade_Pipebomb.Explode" | "Weapon_Scatter_Gun.Single" | "Weapon_Pistol.Single" | "Weapon_Bat.Miss" | "Weapon_Bat.HitFlesh" | "Weapon_Bat.HitWorld" | "Weapon_Scatter_Gun.WorldReload" | "Weapon_Pistol.WorldReload" | "Weapon_Shotgun.Single" | "Weapon_Shotgun.WorldReload" | "Weapon_Shovel.Miss" | "Weapon_Shovel.HitFlesh" | "Weapon_Shovel.HitWorld" | "Weapon_Minigun.WindUp" | "Weapon_Minigun.WindDown" | "Weapon_Minigun.Spin" | "Weapon_Minigun.Fire" | "Weapon_Fist.Miss" | "Weapon_Fist.HitWorld" | "Weapon_Fist.HitFlesh" | "Weapon_SniperRifle.Single" | "Weapon_SMG.Single" | "Weapon_Machete.Miss" | "Weapon_Machete.HitFlesh" | "Weapon_Machete.HitWorld" | "Weapon_SMG.WorldReload" | "Weapon_Shotgun.Empty" | "Weapon_Pistol.ClipEmpty" | "Weapon_Wrench.Miss" | "Weapon_Wrench.HitFlesh" | "Weapon_Wrench.HitWorld" | "Weapon_FlameThrower.Fire" | "Weapon_FlameThrower.FireLoop" | "Weapon_FlameThrower.WindDown" | "Weapon_FlameThrower.AirBurstAttack" | "Weapon_FireAxe.Miss" | "Weapon_FireAxe.HitFlesh" | "Weapon_FireAxe.HitWorld" | "CaptureFlag.EnemyStolen" | "CaptureFlag.EnemyDropped" | "CaptureFlag.EnemyCaptured" | "CaptureFlag.EnemyReturned" | "CaptureFlag.TeamStolen" | "CaptureFlag.TeamDropped" | "CaptureFlag.TeamCaptured" | "CaptureFlag.TeamReturned" | "CaptureFlag.FlagSpawn" | "Game.YourTeamWon" | "Game.YourTeamLost" | "Weapon_Bottle.Miss" | "Weapon_Bottle.HitFlesh" | "Weapon_Bottle.HitWorld" | "HealthKit.Touch" | "AmmoPack.Touch" | "Regenerate.Touch" | "Item.Materialize" | "Weapon_Revolver.Single" | "Weapon_Revolver.WorldReload" | "Weapon_Knife.Miss" | "Weapon_Knife.HitFlesh" | "Weapon_Knife.HitWorld" | "Player.Spy_Cloak" | "Player.Spy_UnCloak" | "Player.HitSoundDefaultDing" | "Player.KillSoundDefaultDing" | "TFPlayer.CritHit" | "Default.BulletImpact" | "Concrete.BulletImpact" | "Wood.BulletImpact" | "SolidMetal.BulletImpact" | "Dirt.BulletImpact" | "Sand.BulletImpact" | "Glass.BulletImpact" | "Flesh.BulletImpact"
-    | "Announcer.RoundEnds60seconds" | "Announcer.RoundEnds30seconds" | "Announcer.RoundEnds10seconds"
-    | "Announcer.RoundEnds5seconds" | "Announcer.RoundEnds4seconds" | "Announcer.RoundEnds3seconds"
-    | "Announcer.RoundEnds2seconds" | "Announcer.RoundEnds1seconds" | "Game.Overtime"
-    | "Announcer.Success" | "Announcer.Failure" | "Hud.PointCaptured" | "Announcer.ControlPointContested" | "Announcer.ControlPointContested_Neutral" | "Announcer.AM_CapEnabledRandom"
-    | "Announcer.RoundBegins5Seconds" | "Announcer.RoundBegins4Seconds" | "Announcer.RoundBegins3Seconds" | "Announcer.RoundBegins2Seconds" | "Announcer.RoundBegins1Seconds" | "Game.Stalemate" | "ControlPoint.CaptureWarn"
-    | "Hologram.Start" | "Hologram.Stop" | "Hologram.Move" | "Hologram.Interrupted"
-    | "Announcer.RoundBegins60Seconds" | "Announcer.RoundBegins30Seconds" | "Announcer.RoundBegins10Seconds" | "Ambient.Siren" | "Announcer.TimeAdded" | "Hud.EndRoundScored"
+  definition: string
   source: Readonly<{
     kind: "entity" | "world" | "local-listener"
     identity: number
@@ -85,98 +78,12 @@ export type Tf2AudioRequest = Readonly<{
 }>
 
 export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
-  const definitions: readonly Tf2AudioRequest["definition"][] = [
-    "Weapon_RPG.Single",
-    "Weapon_QuakeRPG.Single",
-    "Weapon_StickyBombLauncher.Single",
-    "BaseExplosionEffect.Sound",
-    "Weapon_QuakeRPG.Explode",
-    "Weapon_Grenade_Pipebomb.Explode",
-    "Weapon_Scatter_Gun.Single",
-    "Weapon_Pistol.Single",
-    "Weapon_Bat.Miss",
-    "Weapon_Bat.HitFlesh",
-    "Weapon_Bat.HitWorld",
-    "Weapon_Scatter_Gun.WorldReload",
-    "Weapon_Pistol.WorldReload",
-   "Weapon_Shotgun.Single",
-    "Weapon_Shotgun.WorldReload",
-    "Weapon_Shovel.Miss",
-    "Weapon_Shovel.HitFlesh",
-    "Weapon_Shovel.HitWorld",
-  "Weapon_Minigun.WindUp",
-    "Weapon_Minigun.WindDown",
-    "Weapon_Minigun.Spin",
-    "Weapon_Minigun.Fire",
-    "Weapon_Fist.Miss",
-    "Weapon_Fist.HitWorld",
-    "Weapon_Fist.HitFlesh",
-    "Weapon_SniperRifle.Single",
-    "Weapon_SMG.Single",
-    "Weapon_Machete.Miss",
-    "Weapon_Machete.HitFlesh",
-    "Weapon_Machete.HitWorld",
-    "Weapon_SMG.WorldReload",
-    "Weapon_Shotgun.Empty",
-    "Weapon_Pistol.ClipEmpty",
-    "Weapon_Wrench.Miss",
-    "Weapon_Wrench.HitFlesh",
-    "Weapon_Wrench.HitWorld",
-    "Weapon_FlameThrower.Fire",
-    "Weapon_FlameThrower.FireLoop",
-    "Weapon_FlameThrower.WindDown",
-    "Weapon_FlameThrower.AirBurstAttack",
-    "Weapon_FireAxe.Miss",
-    "Weapon_FireAxe.HitFlesh",
-    "Weapon_FireAxe.HitWorld",
-    "CaptureFlag.EnemyStolen",
-    "CaptureFlag.EnemyDropped",
-    "CaptureFlag.EnemyCaptured",
-    "CaptureFlag.EnemyReturned",
-    "CaptureFlag.TeamStolen",
-    "CaptureFlag.TeamDropped",
-    "CaptureFlag.TeamCaptured",
-    "CaptureFlag.TeamReturned",
-    "CaptureFlag.FlagSpawn",
-    "Game.YourTeamWon",
-    "Game.YourTeamLost",
-    "Weapon_Bottle.Miss",
-    "Weapon_Bottle.HitFlesh",
-    "Weapon_Bottle.HitWorld",
-    "HealthKit.Touch",
-    "AmmoPack.Touch",
-    "Regenerate.Touch",
-    "Item.Materialize",
-    "Weapon_Revolver.Single",
-    "Weapon_Revolver.WorldReload",
-    "Weapon_Knife.Miss",
-    "Weapon_Knife.HitFlesh",
-    "Weapon_Knife.HitWorld",
-    "Player.Spy_Cloak",
-    "Player.Spy_UnCloak",
-    "Weapon_SyringeGun.Single",
-    "Weapon_BoneSaw.Miss",
-    "WeaponMedigun.HealingHealer",
-    "WeaponMedigun.HealingDetachHealer",
-    "WeaponMedigun.Charged",
-    "Weapon_BoneSaw.HitFlesh",
-    "Weapon_BoneSaw.HitWorld",
-    "Weapon_SyringeGun.WorldReload",
-    "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
-    "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
-    "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds", "Game.Overtime",
-    "Announcer.Success", "Announcer.Failure", "Hud.PointCaptured", "Announcer.ControlPointContested", "Announcer.ControlPointContested_Neutral", "Announcer.AM_CapEnabledRandom",
-    "Announcer.RoundBegins5Seconds", "Announcer.RoundBegins4Seconds", "Announcer.RoundBegins3Seconds", "Announcer.RoundBegins2Seconds", "Announcer.RoundBegins1Seconds", "Game.Stalemate", "ControlPoint.CaptureWarn",
-    "Hologram.Start", "Hologram.Stop", "Hologram.Move", "Hologram.Interrupted",
-    "Announcer.RoundBegins60Seconds", "Announcer.RoundBegins30Seconds", "Announcer.RoundBegins10Seconds", "Ambient.Siren", "Announcer.TimeAdded", "Hud.EndRoundScored",
-  ]
-
   return Object.freeze(snapshot.audioEvents.map((event) => Object.freeze({
     action: event.action,
     fadeSeconds: event.fadeSeconds,
     tick: event.tick,
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
-    definition: event.definition >= 160 ? configuredEquipmentSounds[event.definition - 160]! : definitions[event.definition - 1]!,
+    definition: event.definition >= 160 ? configuredEquipmentSounds[event.definition - 160]! : nativeEquipmentSounds[event.definition]!,
     source: Object.freeze({
       kind: event.sourceKind === 3 ? "local-listener" as const : event.sourceKind === 1 || event.sourceKind === 4 ? "entity" as const : "world" as const,
       identity: event.sourceIdentity,
@@ -186,6 +93,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
       sourceClass: event.sourceKind === 4 ? "team_control_point" : event.sourceKind === 3 ? "player" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
     }),
     samples: event.samples,
+    ...(event.pitchOverride === undefined ? {} : { overrides: Object.freeze({ pitch: event.pitchOverride }) }),
   })))
 }
 

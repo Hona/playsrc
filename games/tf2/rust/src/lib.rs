@@ -26,6 +26,7 @@ pub mod round;
 pub mod schema;
 pub mod equipment;
 pub mod hitscan;
+mod minigun_audio;
 pub mod scoreboard;
 pub mod spy;
 pub mod state;
@@ -840,6 +841,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     equipment_respawn_requested: bool,
     pub(crate) decapitations: i32,
     movement_stuns: hitscan::MovementStuns,
+    minigun_audio: minigun_audio::State,
     scattergun_jumped: bool,
     bot_equipment: BTreeMap<u32, equipment::Equipment>,
     ammo: class::AmmoLedger,
@@ -1022,6 +1024,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             equipment_respawn_requested: false,
             decapitations: 0,
             movement_stuns: hitscan::MovementStuns::default(),
+            minigun_audio: minigun_audio::State::default(),
             scattergun_jumped: false,
             bot_equipment: BTreeMap::new(),
             ammo: PlayerClass::Soldier.data().maximum_ammo,
@@ -2570,6 +2573,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             self.stop_flame(false);
         }
+        if self.weapon != Some(Weapon::Minigun) || self.lifecycle != PlayerLifecycle::Active || self.health <= 0 { self.stop_minigun_audio(); }
         if discontinuity {
             self.contact_reconcile_requests
                 .push(ContactReconcileRequest {
@@ -2622,18 +2626,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 } else {
                     self.conditions.insert(Condition::Aiming);
                 }
-                if state != previous_minigun_state {
-                    let definition = match state {
-                        weapon::MinigunState::Idle => Some(SoundDefinition::MinigunWindDown),
-                        weapon::MinigunState::Starting => Some(SoundDefinition::MinigunWindUp),
-                        weapon::MinigunState::Firing => Some(SoundDefinition::MinigunFire),
-                        weapon::MinigunState::Spinning => Some(SoundDefinition::MinigunSpin),
-                        weapon::MinigunState::DryFire => None,
-                    };
-                    if let Some(definition) = definition {
-                        self.emit_weapon_sound(definition, self.movement.position);
-                    }
-                }
             }
             if let PrimaryResult::Fired { charge_seconds } = primary {
                 self.fire_on_empty = false;
@@ -2677,6 +2669,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         &mut projectile_events,
                     )?;
                 }
+            }
+            if active_weapon == Weapon::Minigun { self.update_minigun_audio(previous_minigun_state); }
+            if active_weapon == Weapon::HandgunScoutPrimary && self.activity_events.iter().any(|event| event.weapon == active_weapon && event.activity == weapon::WeaponActivity::SecondaryAttack) {
+                self.emit_named_weapon_sound(SoundDefinition::HandsPush, true);
             }
             if active_weapon == Weapon::Fists
                 && self.loadout[&active_weapon]
@@ -2767,7 +2763,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         Some(SoundDefinition::ScattergunReload)
                     }
                     (
-                        Weapon::Pistol | Weapon::EngineerPistol,
+                        Weapon::Pistol | Weapon::EngineerPistol | Weapon::HandgunScoutPrimary,
                         weapon::WeaponActivity::ReloadLoop,
                     ) => Some(SoundDefinition::PistolReload),
                     (
@@ -2787,7 +2783,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     _ => None,
                 });
             if let Some(definition) = reload_sound {
-                self.emit_weapon_sound(definition, self.movement.position);
+                self.emit_source_weapon_sound(self.weapon_source(PLAYER_IDENTITY, active_weapon), active_weapon, audio::WeaponSoundSlot::Reload, definition, self.movement.position);
             }
             if active_weapon == Weapon::MediGun {
                 self.advance_medigun(command)?;
@@ -4217,6 +4213,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         });
     }
 
+    fn emit_named_weapon_sound(&mut self, definition: SoundDefinition, predicted: bool) {
+        let mut samples = self.sample_sound(RandomContext::Authority, definition, SoundQueryPhase::Emit);
+        if predicted { samples = self.sample_sound(RandomContext::PredictedPresentation, definition, SoundQueryPhase::Emit); }
+        self.push_audio_event(AudioEvent { action: AudioAction::Play, tick: self.tick, ordinal: 0,
+            identity: AudioEventIdentity::WeaponSingle, definition, source_kind: AudioSourceKind::Entity,
+            source_identity: PLAYER_IDENTITY, owner_identity: Some(PLAYER_IDENTITY), position: self.movement.position, samples });
+    }
+
     fn execute_bot_attack(
         &mut self,
         attack: bot::Attack,
@@ -4968,6 +4972,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.apply_actor_weapon_push(victim, target.center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, None)?;
         }
         events.push(Event::MeleeImpact { weapon, owner: PLAYER_IDENTITY, target: Some(victim), position: add(origin, scale(sub(end, origin), fraction)), damage: 1.0 });
+        self.emit_named_weapon_sound(SoundDefinition::HandsPushImpact, false);
         Ok(true)
     }
 
@@ -5002,21 +5007,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
             rules.profile.damage *= damage; rules.profile.spread *= spread;
         }
         let profile = rules.profile;
-        let definition = match weapon {
-            Weapon::Scattergun => Some(SoundDefinition::ScattergunSingle),
-            Weapon::Pistol | Weapon::EngineerPistol | Weapon::HandgunScoutPrimary => Some(SoundDefinition::PistolSingle),
-
-            Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
-                Some(SoundDefinition::ShotgunSingle)
-            }
-            Weapon::SniperRifle => Some(SoundDefinition::SniperSingle),
-            Weapon::Smg => Some(SoundDefinition::SmgSingle),
-            Weapon::Revolver => Some(SoundDefinition::RevolverSingle),
+        let sounds = match weapon {
+            Weapon::Scattergun => Some((SoundDefinition::ScattergunSingle, SoundDefinition::ScattergunCritical)),
+            Weapon::Pistol | Weapon::EngineerPistol | Weapon::HandgunScoutPrimary => Some((SoundDefinition::PistolSingle, SoundDefinition::PistolCritical)),
+            Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => Some((SoundDefinition::ShotgunSingle, SoundDefinition::ShotgunCritical)),
+            Weapon::SniperRifle => Some((SoundDefinition::SniperSingle, SoundDefinition::SniperCritical)),
+            Weapon::Smg => Some((SoundDefinition::SmgSingle, SoundDefinition::SmgCritical)),
+            Weapon::Revolver => Some((SoundDefinition::RevolverSingle, SoundDefinition::RevolverCritical)),
             Weapon::Minigun => None,
-
             _ => unreachable!("only configured firearms use hitscan profiles"),
         };
-        if let Some(definition) = definition { self.emit_weapon_sound(definition, self.movement.position); }
+        if let Some((single, burst)) = sounds {
+            let (slot, definition) = if shot_crit == damage::CritKind::Full { (audio::WeaponSoundSlot::Burst, burst) } else { (audio::WeaponSoundSlot::Single, single) };
+            self.emit_source_weapon_sound(source_weapon, weapon, slot, definition, self.movement.position);
+        }
         if weapon == Weapon::Revolver {
             self.remove_spy_disguise();
         }
@@ -8425,6 +8429,29 @@ mod tests {
         session.apply_actor_weapon_push(PLAYER_IDENTITY, [-100.0, 0.0, 51.0], 40.0, None).unwrap();
         assert_eq!(session.movement.velocity, [120.0, 0.0, 0.0]);
         assert_eq!(damage::player_damage_force([48.0, 48.0, 82.0], 200.0, 6.0), 1000.0);
+    }
+
+    #[test]
+    fn minigun_sound_patch_queries_only_client_rng_and_destroys_the_previous_patch() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        session.advance(Command { select_class: Some(PlayerClass::Heavy), ..Command::default() }).unwrap();
+        session.audio_events.clear(); session.random_draws.clear();
+        session.loadout.get_mut(&Weapon::Minigun).unwrap().minigun_state = weapon::MinigunState::Starting;
+        session.update_minigun_audio(weapon::MinigunState::Idle);
+        assert_eq!(session.audio_events.len(), 1);
+        assert_eq!(session.audio_events[0].action, AudioAction::PlayAtPitch(100.0));
+        assert_eq!(session.audio_events[0].definition, SoundDefinition::MinigunWindUp);
+        assert_eq!(session.random_draws.len(), 3);
+        assert!(session.random_draws.iter().all(|draw| draw.context == RandomContext::PredictedPresentation));
+        session.update_minigun_audio(weapon::MinigunState::Starting);
+        assert_eq!(session.audio_events.len(), 1);
+        session.loadout.get_mut(&Weapon::Minigun).unwrap().minigun_state = weapon::MinigunState::Spinning;
+        session.update_minigun_audio(weapon::MinigunState::Starting);
+        assert_eq!(session.audio_events[1].action, AudioAction::Stop);
+        assert_eq!(session.audio_events[1].definition, SoundDefinition::MinigunWindUp);
+        assert_eq!(session.audio_events[2].definition, SoundDefinition::MinigunSpin);
+        session.stop_minigun_audio(); session.stop_minigun_audio();
+        assert_eq!(session.audio_events.len(), 4);
     }
 
     #[test]

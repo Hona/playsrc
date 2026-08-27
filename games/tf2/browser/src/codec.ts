@@ -88,29 +88,28 @@ export type Tf2RandomState = Readonly<{
   overtimeAvailable: number
   controlPointAvailable: number
 }>
-import { configuredEquipmentSoundWaves } from "./equipment/audio.generated"
+import { configuredEquipmentSoundWaves, nativeEquipmentSounds, nativeEquipmentSoundWaves } from "./equipment/audio.generated"
 
 function isSoundDefinition(value: number | undefined): value is number {
-  return value !== undefined && (value >= 1 && value <= 102 || value >= 160 && value < 160 + configuredEquipmentSoundWaves.length)
+  return value !== undefined && (Object.hasOwn(nativeEquipmentSounds, value) || value >= 160 && value < 160 + configuredEquipmentSoundWaves.length)
 }
 
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 14 | 64 | 65
-  definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
-    | number
+  definition: number
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
 }>
 export type AudioEvent = Readonly<{
+  pitchOverride?: number
   action: "play" | "stop" | "fade-in" | "fade-out"
   fadeSeconds: number
   tick: bigint
   ordinal: number
   identity: 1 | 2 | 3 | 4
-  definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
-    | number
+  definition: number
   sourceKind: 1 | 2 | 3 | 4
   sourceIdentity: number
   ownerIdentity: number | null
@@ -2176,21 +2175,20 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
-    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition !== undefined && definition >= 160 ? configuredEquipmentSoundWaves[definition - 160] ?? 0 : definition === 44 || definition === 85 || definition === 91 ? 4
-      : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 || definition === 89 ? 3
-        : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 || definition === 86 || definition === 90 || definition === 98 ? 2 : 1
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === undefined ? 0 : definition >= 160 ? configuredEquipmentSoundWaves[definition - 160] ?? 0 : nativeEquipmentSoundWaves[definition] ?? 0
     if (
       (identity === undefined || identity < 1 || identity > 4) || !isSoundDefinition(definition) ||
-      (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
+      (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 4 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
       !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||
-      wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
-    ) throw new Tf2CodecError(`audio event record is invalid: ${JSON.stringify({ tick: tick.toString(), ordinal, expectedOrdinal, identity, definition, sourceKind, hasOwner, sourceIdentity, rawOwner, position, volume, pitch, soundLevel, action, fadeSeconds, wave, waveCount })}`)
+      wave === undefined || wave >= waveCount || !Number.isFinite(fadeSeconds) || (action === 4 ? fadeSeconds < 1 || fadeSeconds > 255 : action < 2 ? fadeSeconds !== 0 : fadeSeconds <= 0)
+    ) throw new Tf2CodecError("audio event record is invalid")
     nextOrdinal.set(tick, expectedOrdinal + 1)
     audioEvents.push(Object.freeze({
       tick, ordinal, identity, definition, sourceKind, sourceIdentity,
-      action: (["play", "stop", "fade-in", "fade-out"] as const)[action]!, fadeSeconds,
+      action: (["play", "stop", "fade-in", "fade-out", "play"] as const)[action]!, fadeSeconds: action === 4 ? 0 : fadeSeconds,
+      ...(action === 4 ? { pitchOverride: fadeSeconds } : {}),
       ownerIdentity: hasOwner === 1 ? rawOwner : null,
       position,
       samples: Object.freeze({ volume, pitch, wave, soundLevel }),
