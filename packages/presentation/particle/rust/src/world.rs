@@ -603,6 +603,7 @@ struct Effect {
 struct System {
     definition_uuid: [u8; 16],
     definition_index: usize,
+    group_id: i32,
     sequence_spans: Option<Arc<BTreeMap<i32, f32>>>,
     path_identity: u64,
     start_seconds: f32,
@@ -668,7 +669,7 @@ enum EmitterContext {
 #[derive(Clone, Debug, PartialEq)]
 enum OperatorContext {
     None,
-    PositionLock { previous_position: [f32; 3] },
+    PositionLock { previous_position: [f32; 3], previous_orientation: [f32; 4] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1288,6 +1289,7 @@ fn instantiate(
             {
                 OperatorContext::PositionLock {
                     previous_position: [0.0; 3],
+                    previous_orientation: [0.0, 0.0, 0.0, 1.0],
                 }
             } else {
                 OperatorContext::None
@@ -1321,6 +1323,7 @@ fn instantiate(
     Ok(System {
         definition_uuid: definition.uuid,
         definition_index: definition.registry_index,
+        group_id: integer_attribute(definition, &["group id"], 0),
         sequence_spans: state.sequence_spans.get(&definition.material).cloned(),
         path_identity,
         start_seconds: start,
@@ -2275,6 +2278,56 @@ fn initialize_particle(
     Ok(particle)
 }
 
+fn operate_position_lock(system: &mut System, operator: &Function, index: usize, time: f32, dt: f32, strength: f32, random: &mut SimdRandom) {
+    let control = integer_parameter(operator, "control_point_number", 0).clamp(0, 63);
+    let current = control_at(system, control);
+    let orientation = control_orientation(system, control).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let OperatorContext::PositionLock { previous_position, previous_orientation } = &mut system.operator_contexts[index] else { unreachable!("position-lock context") };
+    let first = *previous_position == [0.0; 3];
+    let previous = if first { current } else { *previous_position };
+    let prior_orientation = if first { orientation } else { *previous_orientation };
+    *previous_position = current;
+    *previous_orientation = orientation;
+    let delta = mul(sub(current, previous), strength);
+    let rotation_lock = bool_parameter(operator, "lock rotation", false);
+    let inverse = [-prior_orientation[0], -prior_orientation[1], -prior_orientation[2], prior_orientation[3]];
+    let transformed = |position| add(current, rotate(orientation, rotate(inverse, sub(position, previous))));
+    let start_min = float_parameter(operator, "start_fadeout_min", 1.0);
+    let start_range = float_parameter(operator, "start_fadeout_max", 1.0) - start_min;
+    let end_min = float_parameter(operator, "end_fadeout_min", 1.0);
+    let end_range = float_parameter(operator, "end_fadeout_max", 1.0) - end_min;
+    let start_exponent = (float_parameter(operator, "start_fadeout_exponent", 1.0) * 4.0) as i32;
+    let end_exponent = (float_parameter(operator, "end_fadeout_exponent", 1.0) * 4.0) as i32;
+    let always = start_min >= 1.0;
+    for group in system.particles.chunks_mut(4) {
+        let starts = if always { [0.0; 4] } else { random.sample4() };
+        let ends = if always { [0.0; 4] } else { random.sample4() };
+        for (lane, particle) in group.iter_mut().enumerate() {
+            let age = time - particle.creation_seconds;
+            let lock = if always { 1.0 } else {
+                let life = (age / particle.lifetime_seconds).clamp(0.0, 1.0);
+                let start = start_min + fixed_quarter_power(starts[lane], start_exponent) * start_range;
+                let end = end_min + fixed_quarter_power(ends[lane], end_exponent) * end_range;
+                // The interval is signed. Authored negative end times retain
+                // the lock; replacing a reversed interval with a step loses it.
+                1.0 - ((life - start) / (end - start)).clamp(0.0, 1.0)
+            };
+            if lock > 0.0 {
+                let bias = age.min(dt) / dt;
+                if rotation_lock {
+                    let weight = if always { strength * bias } else { lock * bias };
+                    particle.position = add(particle.position, mul(sub(transformed(particle.position), particle.position), weight));
+                    particle.previous_position = add(particle.previous_position, mul(sub(transformed(particle.previous_position), particle.previous_position), weight));
+                } else {
+                    let movement = mul(mul(delta, bias), lock);
+                    particle.position = add(particle.position, movement);
+                    particle.previous_position = add(particle.previous_position, movement);
+                }
+            }
+        }
+    }
+}
+
 fn operate(
     system: &mut System,
     definition: &Definition,
@@ -2292,33 +2345,30 @@ fn operate(
             operate_movement(system, definition, operator, time, dt, simulation_random);
             continue;
         }
-        let position_lock = if operator
-            .identity
-            .eq_ignore_ascii_case("Movement Lock to Control Point")
-        {
-            let control_index = integer_parameter(operator, "control_point_number", 0);
-            let current = control_at(system, control_index);
-            let snapshot_previous = system
-                .controls
-                .get(control_index.max(0) as usize)
-                .and_then(Option::as_ref)
-                .map_or(current, |control| control.previous_position);
-            let previous = match &mut system.operator_contexts[function_index] {
-                OperatorContext::PositionLock { previous_position } => {
-                    let value = if *previous_position == [0.0; 3] {
-                        current
-                    } else {
-                        *previous_position
-                    };
-                    *previous_position = current;
-                    value
+        if operator.identity.eq_ignore_ascii_case("Set child control points from particle positions") {
+            let first = integer_parameter(operator, "First control point to set", 0).clamp(0, 63) as usize;
+            let source = integer_parameter(operator, "first particle to copy", 0).max(0) as usize;
+            let count = system.particles.len().saturating_sub(source).min(integer_parameter(operator, "# of control points to set", 1).max(0) as usize).min(64 - first);
+            let group = integer_parameter(operator, "Group ID to affect", 0);
+            for child in &mut system.children {
+                if child.group_id != group { continue; }
+                for offset in 0..count {
+                    let index = (first + offset) as u8;
+                    let position = system.particles[source + offset].position;
+                    let mut control = child.controls[index as usize].clone().unwrap_or(ControlPoint {
+                        index, position, previous_position: position, orientation: [0.0, 0.0, 0.0, 1.0], velocity: [0.0; 3], radius: 0.0,
+                        density: 0.0, duration: 0.0, parent: None, object_identity: None,
+                    });
+                    control.position = position;
+                    set_control(child, control);
                 }
-                OperatorContext::None => current,
-            };
-            Some((current, previous, snapshot_previous))
-        } else {
-            None
-        };
+            }
+            continue;
+        }
+        if operator.identity.eq_ignore_ascii_case("Movement Lock to Control Point") {
+            operate_position_lock(system, operator, function_index, time, dt, strength, simulation_random);
+            continue;
+        }
         let random_offset = (function_index as i32).wrapping_mul(17);
         let controls = &system.controls;
         for particle in &mut system.particles {
@@ -2354,6 +2404,13 @@ fn operate(
                         mix(particle.initial_alpha, particle.initial_alpha * end, value);
                 }
                 particle.alpha = particle.alpha.clamp(0.0, 1.0);
+            } else if operator.identity.eq_ignore_ascii_case("Alpha Fade In Random") {
+                let random = source_random_at(random_seed, particle.identity as i32 + random_offset);
+                let exponent = (float_parameter(operator, "fade in time exponent", 1.0) * 4.0) as i32;
+                let minimum = float_parameter(operator, "fade in time min", 0.25);
+                let duration = minimum + (float_parameter(operator, "fade in time max", 0.25) - minimum) * fixed_quarter_power(random, exponent);
+                let elapsed = if bool_parameter(operator, "proportional 0/1", true) { life } else { age };
+                if let Some(alpha) = fade_in_alpha(particle.initial_alpha, elapsed, duration, float_parameter(operator, "fade in curve exponent", 0.0)) { particle.alpha = alpha; }
             } else if operator
                 .identity
                 .eq_ignore_ascii_case("Alpha Fade Out Random")
@@ -2461,43 +2518,6 @@ fn operate(
                 };
                 let delta = (rate * dt * fade).max(minimum * dt);
                 particle.roll = wrap_angle(particle.roll + delta);
-            } else if operator
-                .identity
-                .eq_ignore_ascii_case("Movement Lock to Control Point")
-            {
-                let (current_control, previous_control, snapshot_previous) =
-                    position_lock.expect("position lock context");
-                let particle_previous_control = if particle.creation_seconds >= time - dt {
-                    interpolate_control_position(
-                        snapshot_previous,
-                        current_control,
-                        time,
-                        dt,
-                        particle.creation_seconds,
-                    )
-                } else {
-                    previous_control
-                };
-                let delta = sub(current_control, particle_previous_control);
-                let start = source_random_exp(
-                    random_seed,
-                    particle.identity as i32 + random_offset + 9,
-                    float_parameter(operator, "start_fadeout_min", 1.0),
-                    float_parameter(operator, "start_fadeout_max", 1.0),
-                    float_parameter(operator, "start_fadeout_exponent", 1.0),
-                );
-                let end = source_random_exp(
-                    random_seed,
-                    particle.identity as i32 + random_offset + 10,
-                    float_parameter(operator, "end_fadeout_min", 1.0),
-                    float_parameter(operator, "end_fadeout_max", 1.0),
-                    float_parameter(operator, "end_fadeout_exponent", 1.0),
-                );
-                let lock = 1.0 - spline(remap(life, start, end));
-                let creation_bias = if dt > 0.0 { age.min(dt) / dt } else { 1.0 };
-                let movement = mul(delta, strength * lock * creation_bias);
-                particle.position = add(particle.position, movement);
-                particle.previous_position = add(particle.previous_position, movement);
             } else if operator.identity.eq_ignore_ascii_case("Movement Follow CP") {
                 let minimum = integer_parameter(operator, "starting control point", 0);
                 let maximum = integer_parameter(operator, "maximum end control point", 0);
@@ -3801,6 +3821,48 @@ fn source_random_exp(
         maximum,
         source_random_at(seed, sample_identity).powf(exponent),
     )
+}
+
+// Source SDK mathlib quarter-exponent multiplication order.
+fn fixed_quarter_power(value: f32, exponent: i32) -> f32 {
+    let mut bits = exponent.unsigned_abs();
+    let mut result = 1.0;
+    if bits & 3 != 0 {
+        let root = value.sqrt();
+        if bits & 1 != 0 { result = root.sqrt(); }
+        if bits & 2 != 0 { result *= root; }
+    }
+    bits >>= 2;
+    let mut power = value;
+    loop {
+        if bits & 1 != 0 { result *= power; }
+        bits >>= 1;
+        if bits == 0 { break; }
+        power *= power;
+    }
+    if exponent < 0 { 1.0 / if result == 0.0 { f32::EPSILON } else { result } } else { result }
+}
+
+fn fade_in_alpha(initial: f32, elapsed: f32, duration: f32, curve: f32) -> Option<f32> {
+    if elapsed >= duration { return None; }
+    let fraction = elapsed / duration;
+    let weight = if curve == 0.0 { spline(fraction.clamp(0.0, 1.0)) }
+        else { fixed_quarter_power(fraction.min(1.0), (curve * 4.0).round_ties_even() as i32) };
+    Some(initial * weight)
+}
+
+#[cfg(test)]
+mod fade_in_tests {
+    use super::*;
+    #[test]
+    fn curve_zero_splines_nonzero_uses_nearest_quarter_exponent_and_stops_writing_at_end() {
+        assert_eq!(fade_in_alpha(0.8, 0.25, 1.0, 0.0), Some(0.125));
+        assert_eq!(fade_in_alpha(0.8, 0.25, 1.0, 1.0), Some(0.2));
+        assert_eq!(fade_in_alpha(0.8, 0.25, 1.0, 0.125), Some(0.8));
+        assert_eq!(fade_in_alpha(0.8, 0.25, 1.0, 0.375), Some(0.4));
+        assert_eq!(fade_in_alpha(0.8, 1.0, 1.0, 0.0), None);
+        assert_eq!(fade_in_alpha(0.8, 0.0, 0.0, 0.0), None);
+    }
 }
 
 fn next_random(system: &mut System) -> f32 {

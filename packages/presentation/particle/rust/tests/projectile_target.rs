@@ -778,6 +778,91 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
 }
 
 #[test]
+fn parent_particles_set_only_the_selected_child_group_before_child_emission() {
+    for group in [7, 8] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1, 2]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/parent.vmt")), ("initial_particles", TestValue::Int(1)),
+                ("renderers", TestValue::Refs(vec![4])), ("operators", TestValue::Refs(vec![5])),
+                ("initializers", TestValue::Refs(vec![6])), ("children", TestValue::Refs(vec![3])),
+            ] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "child", uuid: [2; 16], attributes: vec![
+                ("material", TestValue::Text("effects/child.vmt")), ("group id", TestValue::Int(group)),
+                ("renderers", TestValue::Refs(vec![4])), ("initializers", TestValue::Refs(vec![8])), ("emitters", TestValue::Refs(vec![7])),
+            ] },
+            TestElement { kind: "DmeParticleChild", name: "child", uuid: [3; 16], attributes: vec![("child", TestValue::Ref(2)), ("delay", TestValue::Float(0.25))] },
+            element("render_animated_sprites", 4, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+            element("Set child control points from particle positions", 5, vec![
+                ("functionName", TestValue::Text("Set child control points from particle positions")),
+                ("Group ID to affect", TestValue::Int(7)), ("First control point to set", TestValue::Int(0)),
+                ("# of control points to set", TestValue::Int(64)), ("first particle to copy", TestValue::Int(0)),
+                ("Set cp orientation for particles", TestValue::Bool(false)), ("Set cp density for particles", TestValue::Bool(false)),
+                ("Set cp velocity for particles", TestValue::Bool(false)), ("Set cp radius for particles", TestValue::Bool(false)),
+            ]),
+            element("Position Within Box Random", 6, vec![
+                ("functionName", TestValue::Text("Position Within Box Random")),
+                ("min", TestValue::Vector([5.0, 0.0, 0.0])), ("max", TestValue::Vector([5.0, 0.0, 0.0])),
+            ]),
+            element("emit_instantaneously", 7, vec![("functionName", TestValue::Text("emit_instantaneously")), ("num_to_emit", TestValue::Int(1)), ("emission_start_time", TestValue::Float(0.25))]),
+            element("Position Within Box Random", 8, vec![
+                ("functionName", TestValue::Text("Position Within Box Random")),
+                ("min", TestValue::Vector([0.0; 3])), ("max", TestValue::Vector([0.0; 3])),
+            ]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let output = world.advance(&[create_event(vec![control([10.0, 20.0, 30.0], [10.0, 20.0, 30.0])])],
+            AdvanceRequest { from_seconds: 0.0, to_seconds: 0.75, maximum_step_seconds: 0.25, camera_position: [0.0; 3] }, &mut NoHit).unwrap();
+        let child = output.0.iter().find(|item| item.material == "effects/child.vmt").unwrap();
+        assert_eq!(child.position, [if group == 7 { 15.0 } else { 10.0 }, 20.0, 30.0]);
+    }
+}
+
+#[test]
+fn movement_lock_preserves_signed_fade_intervals_linear_strength_and_rigid_rotation() {
+    // The first post-change substep is .35: normalized age .35/2=.175.
+    for (start, end, rotation, offset, expected) in [
+        (0.0, -1.0, false, 0.0, [110.0,0.0,0.0]),
+        (0.0, 1.0, false, 0.0, [92.5,0.0,0.0]),
+        (1.0, 1.0, false, 0.0, [110.0,0.0,0.0]),
+        (0.0, 0.0, false, 0.0, [10.0,0.0,0.0]),
+        (0.0, -1.0, true, 5.0, [110.0,5.0,0.0]),
+        (1.0, 1.0, true, 5.0, [110.0,5.0,0.0]),
+    ] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/fixture.vmt")), ("initial_particles", TestValue::Int(1)),
+                ("renderers", TestValue::Refs(vec![2])), ("initializers", TestValue::Refs(vec![3,4])), ("operators", TestValue::Refs(vec![5])),
+            ] },
+            element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+            element("Position Within Box Random", 3, vec![("functionName", TestValue::Text("Position Within Box Random")), ("min", TestValue::Vector([offset,0.0,0.0])), ("max", TestValue::Vector([offset,0.0,0.0]))]),
+            element("Lifetime Random", 4, vec![("functionName", TestValue::Text("Lifetime Random")), ("lifetime_min", TestValue::Float(2.0)), ("lifetime_max", TestValue::Float(2.0))]),
+            element("Movement Lock to Control Point", 5, vec![
+                ("functionName", TestValue::Text("Movement Lock to Control Point")),
+                ("start_fadeout_min", TestValue::Float(start)), ("start_fadeout_max", TestValue::Float(start)),
+                ("end_fadeout_min", TestValue::Float(end)), ("end_fadeout_max", TestValue::Float(end)),
+                ("lock rotation", TestValue::Bool(rotation)),
+            ]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        world.advance(&[create_event(vec![control([10.0,0.0,0.0], [10.0,0.0,0.0])])],
+            AdvanceRequest { from_seconds: 0.0, to_seconds: 0.25, maximum_step_seconds: 0.25, camera_position: [0.0;3] }, &mut NoHit).unwrap();
+        let mut next = control([110.0,0.0,0.0], [10.0,0.0,0.0]);
+        if rotation { next.orientation = [0.0,0.0,std::f32::consts::FRAC_1_SQRT_2,std::f32::consts::FRAC_1_SQRT_2]; }
+        let output = world.advance(&[Event { identity: 2, timestamp_seconds: 0.25, source_order: 0,
+            command: EventCommand::SetControlPoint { effect_identity: 7, control_point: next } }],
+            AdvanceRequest { from_seconds: 0.25, to_seconds: 0.5, maximum_step_seconds: 0.25, camera_position: [0.0;3] }, &mut NoHit).unwrap();
+        for axis in 0..3 {
+            assert!((output.0[0].position[axis] - expected[axis]).abs() < 0.00001);
+            assert!((output.0[0].previous_position[axis] - expected[axis]).abs() < 0.00001);
+        }
+    }
+}
+
+#[test]
 fn sphere_local_velocity_uses_source_forward_right_up_basis() {
     let bytes = fixture_with_renderer_and_local_velocity(
         false,
