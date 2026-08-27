@@ -16,7 +16,7 @@ function snapshot(): ArrayBuffer {
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 24, true)
+  view.setUint32(4, 25, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -112,7 +112,7 @@ function snapshot(): ArrayBuffer {
   at += 52
   data.set([0x50, 0x4d, 0x54, 0x4b], at)
   view.setUint32(at + 4, 1, true)
-  at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,2,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)
+  at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,3,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)
   at += 60
   view.setUint32(at, 0, true)
   at += 4
@@ -209,11 +209,14 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
   })
   for (const [index, bytes] of states.entries()) {
     const state = decodeSnapshot(bytes).entityPresentation
-    expect(state.studioModels).toEqual([{ sourceIndex: 784, worldPosition: [886, 1440, [320, 360, 444, 400, 400, 420, 320][index]], worldAngles: [0, 90, 0], draw: true }])
+    expect(state.studioModels).toEqual([{ sourceIndex: 784, worldPosition: [886, 1440, [320, 360, 444, 400, 400, 420, 320][index]], worldAngles: [0, 90, 0], draw: true, skin: 0 }])
     expect(state.collisionRevision).toBe(7n)
     expect(state.studioAnimations).toEqual([])
   }
   const malformed = states[0]!.slice()
+  const skin = states[0]!.slice()
+  new DataView(skin.buffer).setUint32(insert + 28, 5, true)
+  expect(decodeSnapshot(skin).entityPresentation.studioModels[0]).toMatchObject({ draw: true, skin: 2 })
   new DataView(malformed.buffer).setFloat32(insert + 4, NaN, true)
   expect(() => decodeSnapshot(malformed)).toThrow("Studio presentation record is invalid")
   const stream = new SimulationSnapshotStream()

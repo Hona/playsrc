@@ -71,6 +71,7 @@ export const TF2_HUD_DYNAMIC_IMAGES = Object.freeze([
 ])
 
 export const TF2_CONTROL_POINT_IMAGES = Object.freeze([
+  "../sprites/obj_icons/icon_obj_white", "../sprites/obj_icons/capture_highlight",
   ...["neutral", "red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_${team}`, `../sprites/obj_icons/icon_obj_${team}_locked`]),
   ...["red", "blu"].flatMap(team => [`../sprites/obj_icons/icon_obj_cap_${team}`, `../sprites/obj_icons/icon_obj_cap_${team}_up`]),
   "progress_bar", "progress_bar_red", "progress_bar_blu",

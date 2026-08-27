@@ -249,6 +249,7 @@ pub enum ObjectiveKind {
 pub enum Route {
     Default,
     Fastest,
+    Safest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -265,6 +266,7 @@ pub struct PathContext {
     pub bot_identity: u32,
     pub now: f32,
     pub route: Route,
+    pub combat_intensity: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,6 +296,7 @@ pub struct Snapshot {
     pub assists: u32,
     pub deaths: u32,
     pub captures: u32,
+    pub defenses: u32,
     pub damage: u32,
     pub killstreak: u32,
     pub carrying_flag: bool,
@@ -313,6 +316,7 @@ pub struct Human {
 
 #[derive(Clone, Copy)]
 pub struct Objectives<'a> {
+    pub rules: &'a crate::round::Rules,
     pub flags: Option<&'a crate::ctf::World>,
     pub points: Option<&'a crate::control_point::World>,
     pub in_setup: bool,
@@ -509,6 +513,7 @@ struct Bot {
     last_fire_tick: Option<u64>,
     pending_melee: Option<(u64, u32, Weapon)>,
     respawn_tick: Option<u64>,
+    death_tick: Option<u64>,
     carrying_flag: Option<PlayerTeam>,
     shots: u32,
     hits: u32,
@@ -516,6 +521,7 @@ struct Bot {
     assists: u32,
     deaths: u32,
     captures: u32,
+    defenses: u32,
     damage_dealt: u32,
     killstreak: u32,
 }
@@ -529,13 +535,15 @@ pub struct BotWorld {
     next_identity: u32,
     next_name: Option<usize>,
     tick_interval: f32,
-    respawn_waves: [f32; 2],
     configuration: Option<Configuration>,
     next_quota_think: f32,
     path_scratch: PathScratch,
     point_navigation: control_point::Navigation,
     point_spawn_revision: Option<u64>,
     last_spawn: [Option<u32>; 2],
+    round_winner: Option<PlayerTeam>,
+    navigation_recompute_at: Option<f32>,
+    had_bots: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -565,9 +573,20 @@ impl BotWorld {
         }
     }
 
-    pub fn control_point_round_spawn(&mut self, points: &crate::control_point::World) {
+    pub fn control_point_round_spawn(&mut self, points: &crate::control_point::World, now: f32) {
         self.last_spawn = [None; 2];
         self.synchronize_control_point_spawns(points);
+        self.point_navigation.reset_combat();
+        self.navigation_recompute_at = Some(now + 2.0);
+    }
+
+    pub fn control_point_events(&mut self, points: &crate::control_point::World, events: &[crate::control_point::Event], now: f32) {
+        for event in events {
+            if matches!(event, crate::control_point::Event::LockChanged { locked: false, .. }) || matches!(event, crate::control_point::Event::Captured { point, cappers, .. } if !cappers.is_empty() && !points.points()[*point].print_name.is_empty()) {
+                self.navigation_recompute_at = Some(now + 2.0);
+                for bot in self.bots.values_mut() { bot.next_repath_tick = 0; }
+            }
+        }
     }
 
     pub fn new<W: GameplayWorld>(
@@ -652,11 +671,13 @@ impl BotWorld {
             point_navigation,
             point_spawn_revision: None,
             last_spawn: [None; 2],
+            round_winner: None,
+            navigation_recompute_at: None,
+            had_bots: false,
             bots: BTreeMap::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             next_name: None,
             tick_interval,
-            respawn_waves: initial_respawn_waves(graph),
             configuration: None,
             next_quota_think: 0.0,
             path_scratch: PathScratch::default(),
@@ -817,6 +838,7 @@ impl BotWorld {
         tick: u64,
         random: &mut crate::UniformRandomStream,
     ) -> Result<(), Error> {
+        self.round_winner = None;
         for bot in self.bots.values_mut() {
             let candidates = &self.spawns[team_index(bot.team)];
             if candidates.is_empty() {
@@ -856,18 +878,7 @@ impl BotWorld {
     }
 
     pub fn control_point_actors(&self) -> impl Iterator<Item = crate::control_point::Actor> + '_ {
-        self.bots.values().map(|bot| {
-            let policy = MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve();
-            let mut actor = crate::control_point::Actor::active(bot.identity, bot.team, bot.class, bot.movement.position, bot.movement.active_hull(policy));
-            actor.alive = bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0;
-            actor.invulnerable = bot.conditions.is_invulnerable();
-            actor.stealthed = [ConditionId::STEALTHED, ConditionId::STEALTHED_USER, ConditionId::STEALTHED_USER_FADING].into_iter().any(|c| bot.conditions.contains(c));
-            actor.megaheal = bot.conditions.contains(ConditionId::MEGAHEAL);
-            actor.phased = bot.conditions.contains(ConditionId::PHASE);
-            actor.control_stunned = bot.conditions.is_control_stunned();
-            actor.enemy_disguise = bot.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != bot.team);
-            actor
-        })
+        self.bots.values().map(control_point_actor)
     }
 
     pub(crate) fn contact_actors(
@@ -1033,10 +1044,6 @@ impl BotWorld {
                 )
                 .map_err(|_| Error::Limit)? as usize };
             let spawn = candidates[choice];
-            let class = request
-                .class
-                .or_else(|| preset_spawn_class(&self.bots, team, human_team, human_class))
-                .ok_or(Error::InvalidEntity)?;
             let policy = MovementPolicy {
                 class,
                 modifiers: MovementModifiers::default(),
@@ -1109,6 +1116,7 @@ impl BotWorld {
                     last_fire_tick: None,
                     pending_melee: None,
                     respawn_tick: None,
+                    death_tick: None,
                     carrying_flag: None,
                     shots: 0,
                     hits: 0,
@@ -1116,6 +1124,7 @@ impl BotWorld {
                     assists: 0,
                     deaths: 0,
                     captures: 0,
+                    defenses: 0,
                     damage_dealt: 0,
                     killstreak: 0,
                 },
@@ -1135,9 +1144,18 @@ impl BotWorld {
         objectives: Option<Objectives<'_>>,
     ) -> Result<Vec<Attack>, Error> {
         if self.bots.is_empty() {
+            self.had_bots = false;
             return Ok(Vec::new());
         }
         let now = tick as f32 * self.tick_interval;
+        if let Some(points) = objectives.and_then(|frame| frame.points) {
+            if !self.had_bots { self.navigation_recompute_at = Some(now + 2.0); }
+            if self.navigation_recompute_at.is_some_and(|deadline| now >= deadline) {
+                self.point_navigation.recompute(&self.mesh, points, &self.spawns)?;
+                self.navigation_recompute_at = None;
+            }
+        }
+        self.had_bots = true;
         for bot in self.bots.values_mut() {
             if let Some(burn) = bot.afterburn.as_mut() {
                 if let Some(damage) = burn.advance(now)
@@ -1155,6 +1173,7 @@ impl BotWorld {
                 }
                 if bot.health.current == 0 {
                     bot.lifecycle = PlayerLifecycle::Dying;
+                    bot.death_tick.get_or_insert(tick);
                 }
             }
         }
@@ -1168,7 +1187,7 @@ impl BotWorld {
         let spawns = &self.spawns;
         for bot in self.bots.values_mut() {
             if bot.lifecycle != PlayerLifecycle::Active {
-                if bot.respawn_tick.is_some_and(|due| tick >= due) {
+                if objectives.is_some_and(|frame| bot.death_tick.is_some_and(|death| frame.rules.player_can_respawn(bot.team, death as f32 * self.tick_interval))) {
                     let candidates = &spawns[team_index(bot.team)];
                     let choice = if matches!(scenario, Scenario::ControlPoints { .. }) {
                         next_control_point_spawn(candidates, &mut self.last_spawn[team_index(bot.team)], bot.class).ok_or(Error::MissingSpawn(bot.team))?
@@ -1285,7 +1304,7 @@ impl BotWorld {
             let (objective_kind, goal) = if let Some(supply) = selected_supply {
                 supply
             } else if let Some(frame) = objectives.filter(|o| o.points.is_some()) {
-                control_point::goal(bot, frame, &self.point_navigation, mesh, now, tick, threat, random)?
+                control_point::goal(bot, frame, &self.point_navigation, mesh, self.tick_interval, now, tick, threat, random)?
             } else if let Some(flag) = authoritative {
                 if flag.carrier == Some(bot.identity) {
                     (
@@ -1331,10 +1350,11 @@ impl BotWorld {
                                     direction,
                                     length,
                                     PathContext {
+                                        combat_intensity: self.point_navigation.combat_intensity(destination.identity, now),
                                         team: bot.team,
                                         bot_identity: bot.identity,
                                         now: tick as f32 * self.tick_interval,
-                                        route: if matches!(
+                                        route: if frame_has_points(objectives) { bot.point_action.route.unwrap_or(Route::Default) } else if matches!(
                                             bot.objective,
                                             ObjectiveKind::DeliverFlag
                                                 | ObjectiveKind::GetHealth
@@ -1416,11 +1436,12 @@ impl BotWorld {
                 bot.yaw_degrees = delta[1].atan2(delta[0]).to_degrees();
                 bot.pitch_degrees = 0.0;
             }
-            let policy = MovementPolicy {
+            let mut policy = MovementPolicy {
                 class: bot.class,
                 modifiers: MovementModifiers::default(),
             }
             .resolve();
+            if let Some(winner) = self.round_winner.filter(|team| team.is_gameplay()) { policy.maximum_speed *= if winner == bot.team { 1.1 } else { 0.9 }; }
             let should_move = planar > 5.0 && !(matches!(scenario, Scenario::ControlPoints { .. }) && objectives.is_some_and(|o| o.in_setup));
             let move_yaw = if planar > 0.0 {
                 delta[1].atan2(delta[0])
@@ -1490,7 +1511,7 @@ impl BotWorld {
             let Some(active_weapon) = bot.active_weapon else {
                 continue;
             };
-            let in_range = bot.spy.is_none_or(|spy| spy.can_attack(now))
+            let in_range = self.round_winner.is_none_or(|winner| winner == bot.team) && bot.spy.is_none_or(|spy| spy.can_attack(now))
                 && threat.is_some_and(|target| {
                     let range = distance(bot.movement.position, target.position);
                     range < max_attack_range(active_weapon)
@@ -1764,7 +1785,8 @@ impl BotWorld {
         input: Damage,
         attacker_team: PlayerTeam,
         tick: u64,
-        team_population: usize,
+        attacker_conditions: ConditionState,
+        crit: CritKind,
     ) -> Result<Option<i32>, Error> {
         let Some(victim) = self.bots.get_mut(&input.victim) else {
             return Ok(None);
@@ -1779,7 +1801,7 @@ impl BotWorld {
             &DamageInput {
                 attacker: input.attacker,
                 attacker_team,
-                attacker_conditions: ConditionState::default(),
+                attacker_conditions,
                 source: DamageSourceKind::Player,
                 weapon_position: None,
                 victim: input.victim,
@@ -1788,7 +1810,7 @@ impl BotWorld {
                 range_multiplier: 1.0,
                 damage_type,
                 custom: CustomDamage::None,
-                crit: CritKind::None,
+                crit,
                 friendly_fire: false,
                 force_friendly_fire: false,
                 bypass_invulnerability: false,
@@ -1816,12 +1838,8 @@ impl BotWorld {
             victim.lifecycle = PlayerLifecycle::Dying;
             victim.deaths = victim.deaths.saturating_add(1);
             victim.killstreak = 0;
-            victim.respawn_tick = Some(next_respawn_wave(
-                tick,
-                self.tick_interval,
-                self.respawn_waves[team_index(victim.team)],
-                team_population,
-            ));
+            victim.death_tick = Some(tick);
+            victim.respawn_tick = None;
             victim.target = None;
             victim.pending_melee = None;
             victim.carrying_flag = None;
@@ -1861,13 +1879,37 @@ impl BotWorld {
         Some(candidates.get(index)?.position)
     }
 
-    pub fn respawn_tick(&self, team: PlayerTeam, tick: u64) -> u64 {
-        next_respawn_wave(
-            tick,
-            self.tick_interval,
-            self.respawn_waves[team_index(team)],
-            self.team_population(team, team),
-        )
+    pub fn record_point_combat(&mut self, tick: u64, human: Option<(Weapon, [f32; 3])>) {
+        if !matches!(self.scenario, Scenario::ControlPoints { .. }) { return; }
+        let now = tick as f32 * self.tick_interval;
+        if let Some((weapon, position)) = human { self.point_navigation.record_combat(&self.mesh, crate::PLAYER_IDENTITY, weapon, position, now); }
+        for bot in self.bots.values() {
+            if bot.last_fire_tick == Some(tick) { if let Some(weapon) = bot.active_weapon { self.point_navigation.record_combat(&self.mesh, bot.identity, weapon, bot.movement.position, now); } }
+        }
+    }
+
+    pub fn player_conditions(&self, identity: u32) -> Option<&ConditionState> { self.bots.get(&identity).map(|bot| &bot.conditions) }
+    pub fn set_round_winner(&mut self, winner: PlayerTeam, duration: f32) {
+        self.round_winner = Some(winner);
+        for bot in self.bots.values_mut() {
+            if winner.is_gameplay() && bot.team == winner && bot.lifecycle == PlayerLifecycle::Active {
+                bot.conditions.add(ConditionId::CRIT_BOOSTED_BONUS_TIME, crate::condition::ConditionDuration::Finite(duration), None, true, false).expect("bonus duration");
+            }
+        }
+    }
+    pub fn record_point_capture(&mut self, cappers: &[u32]) {
+        for identity in cappers { if let Some(bot) = self.bots.get_mut(identity) { bot.captures = bot.captures.saturating_add(1); } }
+    }
+    pub fn record_point_defense(&mut self, identity: u32) {
+        if let Some(bot) = self.bots.get_mut(&identity) { bot.defenses = bot.defenses.saturating_add(1); }
+    }
+
+    pub fn synchronize_respawn_times(&mut self, rules: &crate::round::Rules) {
+        for bot in self.bots.values_mut() {
+            if let Some(death) = bot.death_tick {
+                bot.respawn_tick = rules.player_respawn_time(bot.team, death as f32 * self.tick_interval).map(|time| (time / self.tick_interval).ceil().max(0.0) as u64);
+            }
+        }
     }
 
     pub fn team_population(&self, team: PlayerTeam, human_team: PlayerTeam) -> usize {
@@ -1940,6 +1982,7 @@ impl BotWorld {
                 assists: bot.assists,
                 deaths: bot.deaths,
                 captures: bot.captures,
+                defenses: bot.defenses,
                 damage: bot.damage_dealt,
                 killstreak: bot.killstreak,
                 carrying_flag: bot.carrying_flag.is_some(),
@@ -2113,11 +2156,6 @@ impl BotWorld {
         }
     }
 
-    pub(crate) fn set_respawn_waves(&mut self, waves: [Option<f32>; 2]) {
-        for (index, value) in waves.into_iter().enumerate() {
-            if let Some(seconds) = value { self.respawn_waves[index] = seconds; }
-        }
-    }
 }
 
 fn sync_bot_ammo(bot: &mut Bot) {
@@ -2214,6 +2252,7 @@ fn select_supply(
                                     bot_identity: bot.identity,
                                     now: 0.0,
                                     route: Route::Fastest,
+                                    combat_intensity: 0.0,
                                 },
                             )
                         },
@@ -2494,57 +2533,6 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
     })
 }
 
-fn initial_respawn_waves(graph: &Graph) -> [f32; 2] {
-    let mut waves = [RESPAWN_WAVE_SECONDS; 2];
-    for entity in &graph.entities {
-        if !classname(entity, b"logic_auto") {
-            continue;
-        }
-        for connection in &entity.connections {
-            if let playsrc_entity::Connection::Parsed {
-                output,
-                input,
-                parameter,
-                delay_bits,
-                ..
-            } = connection
-                && output.eq_ignore_ascii_case(b"OnMultiNewMap")
-                && f32::from_bits(*delay_bits) == 0.0
-            {
-                let index = if input.eq_ignore_ascii_case(b"SetRedTeamRespawnWaveTime") {
-                    Some(0)
-                } else if input.eq_ignore_ascii_case(b"SetBlueTeamRespawnWaveTime") {
-                    Some(1)
-                } else {
-                    None
-                };
-                if let Some(index) = index
-                    && let Ok(text) = std::str::from_utf8(parameter)
-                    && let Ok(value) = text.parse::<f32>()
-                    && value.is_finite()
-                    && value >= 0.0
-                {
-                    waves[index] = value;
-                }
-            }
-        }
-    }
-    waves
-}
-fn next_respawn_wave(death_tick: u64, interval: f32, configured: f32, population: usize) -> u64 {
-    let earliest = death_tick + ticks(DEATH_ANIMATION_SECONDS + configured, interval);
-    let scalar = (0.25 + ((population as f32 - 1.0) / 7.0).clamp(0.0, 1.0) * 0.75).clamp(0.25, 1.0);
-    let duration = if configured > 5.0 {
-        (configured * scalar).max(5.0)
-    } else {
-        configured
-    };
-    if duration <= 0.0 {
-        return earliest;
-    }
-    let wave = ticks(duration, interval);
-    earliest.div_ceil(wave) * wave
-}
 fn next_control_point_spawn(candidates: &[Spawn], last: &mut Option<u32>, class: PlayerClass) -> Option<usize> {
     let start = last.and_then(|id| candidates.iter().position(|spawn| spawn.identity > id)).unwrap_or(0);
     for restrict_class in [true, false] {
@@ -2557,6 +2545,21 @@ fn next_control_point_spawn(candidates: &[Spawn], last: &mut Option<u32>, class:
         }
     }
     None
+}
+
+fn frame_has_points(frame: Option<Objectives<'_>>) -> bool { frame.is_some_and(|frame| frame.points.is_some()) }
+
+fn control_point_actor(bot: &Bot) -> crate::control_point::Actor {
+    let policy = MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve();
+    let mut actor = crate::control_point::Actor::active(bot.identity, bot.team, bot.class, bot.movement.position, bot.movement.active_hull(policy));
+    actor.alive = bot.lifecycle == PlayerLifecycle::Active && bot.health.current > 0;
+    actor.invulnerable = bot.conditions.is_invulnerable();
+    actor.stealthed = [ConditionId::STEALTHED, ConditionId::STEALTHED_USER, ConditionId::STEALTHED_USER_FADING].into_iter().any(|c| bot.conditions.contains(c));
+    actor.megaheal = bot.conditions.contains(ConditionId::MEGAHEAL);
+    actor.phased = bot.conditions.contains(ConditionId::PHASE);
+    actor.control_stunned = bot.conditions.is_control_stunned();
+    actor.enemy_disguise = bot.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != bot.team);
+    actor
 }
 
 fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f32) {
@@ -2601,6 +2604,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.active_weapon = crate::default_weapon(bot.class);
     bot.pending_melee = None;
     bot.respawn_tick = None;
+    bot.death_tick = None;
     for weapon in bot.loadout.values_mut() {
         weapon.reset_for_spawn();
     }
@@ -2731,6 +2735,10 @@ pub fn path_cost(
     } else {
         1.0
     };
+    if context.route == Route::Safest {
+        if context.combat_intensity > 0.01 { cost *= 4.0 * context.combat_intensity; }
+        if (context.team == PlayerTeam::Red && flags & 0x80 != 0) || (context.team == PlayerTeam::Blue && flags & 0x100 != 0) { cost *= 5.0; }
+    }
     Some(cost * preference)
 }
 
@@ -3064,7 +3072,7 @@ mod tests {
         let mut defended = false;
         let mut maximum_travel = 0.0_f32;
         for tick in 0..1000 {
-            bots.advance(&Floor, tick, human_far(), &[], &mut random, Some(Objectives { flags: None, points: Some(&points), in_setup: false, in_overtime: false, time_left: [100.0;2] })).unwrap();
+            bots.advance(&Floor, tick, human_far(), &[], &mut random, Some(Objectives { rules: &crate::round::Rules::active(Default::default()).unwrap(), flags: None, points: Some(&points), in_setup: false, in_overtime: false, time_left: [100.0;2] })).unwrap();
             let bot = &bots.snapshots()[0];
             maximum_travel = maximum_travel.max(distance(initial,bot.position));
             defended |= bot.objective == ObjectiveKind::DefendPoint;
@@ -3153,7 +3161,7 @@ mod tests {
                 },
                 &[],
                 &mut random,
-                Some(Objectives { flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
+                Some(Objectives { rules: &crate::round::Rules::active(Default::default()).unwrap(), flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
             )
             .unwrap();
         assert_eq!(world.snapshots()[0].objective, ObjectiveKind::DeliverFlag);
@@ -3430,7 +3438,8 @@ mod tests {
             },
             PlayerTeam::Blue,
             100,
-            1,
+            ConditionState::default(),
+            CritKind::None,
         );
         assert_eq!(result, Ok(None));
         assert_eq!(session.bot_world().unwrap().snapshots()[0].health, before);
@@ -3478,7 +3487,7 @@ mod tests {
                     position: [175.0, 50.0, 1.0],
                 }],
                 &mut random,
-                Some(Objectives { flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
+                Some(Objectives { rules: &crate::round::Rules::active(Default::default()).unwrap(), flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
             )
             .unwrap();
         assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);
@@ -4325,6 +4334,7 @@ mod tests {
                     bot_identity: 2,
                     now: 0.0,
                     route: Route::Default,
+                    combat_intensity: 0.0,
                 }
             ),
             None
@@ -4341,6 +4351,7 @@ mod tests {
                     bot_identity: 2,
                     now: 0.0,
                     route: Route::Default,
+                    combat_intensity: 0.0,
                 }
             ),
             None
@@ -4357,6 +4368,7 @@ mod tests {
                     bot_identity: 2,
                     now: 0.0,
                     route: Route::Default,
+                    combat_intensity: 0.0,
                 }
             )
             .is_some()
@@ -4377,6 +4389,7 @@ mod tests {
                     bot_identity: 2,
                     now: 0.0,
                     route: Route::Default,
+                    combat_intensity: 0.0,
                 }
             ),
             None
@@ -4396,6 +4409,7 @@ mod tests {
                     bot_identity: 2,
                     now: 0.0,
                     route: Route::Default,
+                    combat_intensity: 0.0,
                 }
             ),
             None
@@ -4417,6 +4431,7 @@ mod tests {
                 bot_identity: 2,
                 now: 30.0,
                 route: Route::Fastest,
+                combat_intensity: 0.0,
             },
         )
         .unwrap();
@@ -4430,6 +4445,7 @@ mod tests {
                 bot_identity: 2,
                 now: 30.0,
                 route: Route::Default,
+                combat_intensity: 0.0,
             },
         )
         .unwrap();
@@ -4720,7 +4736,8 @@ mod tests {
                 },
                 PlayerTeam::Red,
                 50,
-                1,
+                ConditionState::default(),
+                CritKind::None,
             )
             .unwrap();
         assert_eq!(points, Some(130));
@@ -4742,15 +4759,17 @@ mod tests {
                 .kills,
             1
         );
-        let due = dead.respawn_tick.unwrap();
-        assert_eq!(due, next_respawn_wave(50, 0.015, 10.0, 1));
-        world
-            .advance(&Floor, due - 1, human_far(), &[], &mut random, None)
-            .unwrap();
-        assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
-        world
-            .advance(&Floor, due, human_far(), &[], &mut random, None)
-            .unwrap();
+        let mut rules = crate::round::Rules::active(Default::default()).unwrap();
+        let facts = crate::round::Facts { red_players: 2, blue_players: 1, red_alive: 2, blue_alive: 0, ..Default::default() };
+        rules.advance(50.0 * 0.015, 0.015, facts).unwrap();
+        for tick in 51..2000 {
+            rules.advance(tick as f32 * 0.015, 0.015, facts).unwrap();
+            let eligible = rules.player_can_respawn(dead.team, 50.0 * 0.015);
+            world.advance(&Floor, tick, human_far(), &[], &mut random, Some(Objectives { rules: &rules, flags: None, points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] })).unwrap();
+            world.synchronize_respawn_times(&rules);
+            assert_eq!(world.snapshots()[0].lifecycle == PlayerLifecycle::Active, eligible);
+            if eligible { break; }
+        }
         let alive = world.snapshots()[0].clone();
         assert_eq!(
             (alive.lifecycle, alive.health, alive.deaths),
@@ -4766,12 +4785,14 @@ mod tests {
     #[test]
     fn upward_logic_auto_applies_authored_team_specific_respawn_waves() {
         let graph = playsrc_entity::parse(
-            b"{\"classname\"\"logic_auto\"\"OnMultiNewMap\"\"gamerules,SetRedTeamRespawnWaveTime,9,0,-1\"\"OnMultiNewMap\"\"gamerules,SetBlueTeamRespawnWaveTime,4,0,-1\"}\0",
+            b"{\"classname\"\"tf_gamerules\"\"targetname\"\"gamerules\"}{\"classname\"\"logic_auto\"\"OnMultiNewMap\"\"gamerules,SetRedTeamRespawnWaveTime,9,0,-1\"\"OnMultiNewMap\"\"gamerules,SetBlueTeamRespawnWaveTime,4,0,-1\"}\0",
             playsrc_entity::Limits::default(),
         ).unwrap();
-        assert_eq!(initial_respawn_waves(&graph), [9.0, 4.0]);
-        assert_eq!(next_respawn_wave(0, 0.01, 4.0, 1), 1200);
-        assert_eq!(next_respawn_wave(0, 0.01, 9.0, 1), 2000);
+        let mut map = crate::MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap();
+        let mut rules = crate::round::Rules::active(Default::default()).unwrap();
+        map.begin_tick(&Floor, crate::map_runtime::BeginTickInput { tick: 14, tick_interval: 0.015, activate_entity: None, player_position: [0.0;3], player_hull: PLAYER_HULL, grounded: true }).unwrap();
+        map.apply_round_inputs(&mut rules, 0.21);
+        assert_eq!(rules.respawn_waves(), [Some(9.0), Some(4.0)]);
     }
 
     #[test]
@@ -4852,7 +4873,8 @@ mod tests {
                 },
                 PlayerTeam::Red,
                 21,
-                1,
+                ConditionState::default(),
+                CritKind::None,
             )
             .unwrap();
         let events = objectives.advance(&Floor, 0.315, &facts(&world)).unwrap();

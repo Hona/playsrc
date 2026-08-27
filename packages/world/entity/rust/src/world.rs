@@ -416,6 +416,7 @@ pub struct BreakableState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DynamicPropState {
+    pub skin: i32,
     pub visible: bool,
     pub collision_enabled: bool,
     pub default_animation: Vec<u8>,
@@ -1041,6 +1042,7 @@ pub struct BrushModelDrawState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StudioModelDrawState {
     pub source_index: usize,
+    pub skin: i32,
     pub world_transform: Transform,
     pub draw: bool,
 }
@@ -1144,6 +1146,10 @@ impl EntityWorld {
         self.state.queue.clear();
     }
 
+    pub fn set_map_load_kind(&mut self, kind: MapLoadKind) {
+        Arc::make_mut(&mut self.config).load_kind = kind;
+    }
+
     pub fn revision(&self) -> u64 {
         self.state.revision
     }
@@ -1223,11 +1229,10 @@ impl EntityWorld {
             let Some(entity) = self.entity(*handle) else {
                 continue;
             };
-            if !matches!(entity.behavior, BehaviorState::DynamicProp(_)) {
-                continue;
-            }
+            let BehaviorState::DynamicProp(state) = &entity.behavior else { continue; };
             models.push(StudioModelDrawState {
                 source_index: entity.source_index,
+                skin: state.skin,
                 world_transform: entity.world_transform,
                 draw: entity.render.mode != RENDER_MODE_NONE
                     && entity.render.effects & EF_NODRAW == 0,
@@ -2343,6 +2348,7 @@ impl EntityWorld {
         {
             return Ok((
                 BehaviorState::DynamicProp(DynamicPropState {
+                    skin: field_i32(definition, b"skin", 0)?,
                     visible: field_i32(definition, b"StartDisabled", 0)? == 0,
                     collision_enabled: flags & 256 == 0,
                     default_animation: field(definition, b"DefaultAnim")
@@ -4750,6 +4756,7 @@ impl EntityWorld {
                 }
                 BehaviorState::DynamicProp(mut state) => {
                     match input.as_slice() {
+                        b"skin" => match variant_i32(&record.value) { Some(value) => state.skin = value, None => accepted = false },
                         b"setanimation" => {
                             let animation = self.variant_string(&record.value).unwrap_or_default();
                             if animation.is_empty() {
@@ -9583,6 +9590,7 @@ fn encode_behavior(
         }
         BehaviorState::DynamicProp(state) => {
             output.u8(14)?;
+            output.i32(state.skin)?;
             output.bool(state.visible)?;
             output.bool(state.collision_enabled)?;
             output.bytes(&state.default_animation)?;

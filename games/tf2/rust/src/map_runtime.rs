@@ -399,6 +399,7 @@ pub struct MapRuntime {
     control_point_facts: crate::control_point::Facts,
     restart_definitions: Option<std::sync::Arc<Vec<playsrc_entity::Entity>>>,
     restart_models: Option<std::sync::Arc<BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>>>,
+    model_skin_counts: std::sync::Arc<BTreeMap<usize, usize>>,
     round_configuration: crate::round::Configuration,
     round_inputs: Vec<(u32, Vec<u8>, Variant)>,
     counts: MapCounts,
@@ -419,10 +420,10 @@ impl MapRuntime {
             .iter()
             .map(|bounds| (bounds.model, (bounds.mins, bounds.maxs)))
             .collect::<BTreeMap<_, _>>();
-        let round_configuration =
+        let mut round_configuration =
             crate::round::Configuration::from_graph(graph).map_err(|_| invalid(0))?;
         let mut control_points = crate::control_point::World::from_graph(graph).map_err(|_| invalid(0))?;
-        if let Some(points) = &mut control_points { points.set_model_bounds(&model_bounds); }
+        if let Some(points) = &mut control_points { points.set_model_bounds(&model_bounds); round_configuration.score_per_round = !points.master().score_per_capture; }
         let mut objectives =
             crate::ctf::World::compile(graph, crate::ctf::Configuration::default()).map_err(
                 |error| match error {
@@ -435,8 +436,9 @@ impl MapRuntime {
         }
         let config = EntityWorldConfig {
             tick_interval,
+            load_kind: playsrc_entity::MapLoadKind::MultiplayerNewMap,
             source_identity,
-            registry_identity: 0x5446_325f_454e_5433,
+            registry_identity: 0x5446_325f_454e_5434,
             model_bounds,
             external_classes: vec![
                 playsrc_entity::ExternalClassBinding {
@@ -903,6 +905,7 @@ impl MapRuntime {
             control_point_facts: crate::control_point::Facts::default(),
             restart_definitions,
             restart_models: None,
+            model_skin_counts: std::sync::Arc::default(),
             round_configuration,
             round_inputs: Vec::new(),
             counts,
@@ -1229,7 +1232,11 @@ impl MapRuntime {
         &self,
         expected_revision: u64,
     ) -> Result<Vec<playsrc_entity::StudioModelDrawState>, RuntimeFailure> {
-        self.world.studio_model_presentation(expected_revision)
+        let mut models = self.world.studio_model_presentation(expected_revision)?;
+        for model in &mut models {
+            if let Some(count) = self.model_skin_counts.get(&model.source_index) { model.skin = playsrc_studio_model::source_skin_family(model.skin, *count) as i32; }
+        }
+        Ok(models)
     }
 
     pub fn install_studio_models(
@@ -1237,6 +1244,7 @@ impl MapRuntime {
         models: &BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>,
     ) -> Result<(), RuntimeFailure> {
         let mut definitions = BTreeMap::new();
+        let mut skin_counts = BTreeMap::new();
         if self.restart_definitions.is_some() { self.restart_models = Some(std::sync::Arc::new(models.clone())); }
         if let Some(points) = &mut self.control_points { points.install_models(models); }
         for handle in self.source_handles.values().copied() {
@@ -1252,6 +1260,7 @@ impl MapRuntime {
             let Some(model) = models.get(&String::from_utf8_lossy(path).to_lowercase()) else {
                 continue;
             };
+            skin_counts.insert(entity.source_index, model.skins.len());
             let definition = if let Some(definition) = definitions.get(&model.identity) {
                 std::sync::Arc::clone(definition)
             } else {
@@ -1265,6 +1274,7 @@ impl MapRuntime {
             self.prop_animations
                 .insert(handle, crate::dynamic_prop::Animation::new(definition));
         }
+        self.model_skin_counts = std::sync::Arc::new(skin_counts);
         Ok(())
     }
 
@@ -1334,6 +1344,7 @@ impl MapRuntime {
         let removals: Vec<_> = self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)
             && self.world.entity(*handle).is_some_and(|entity| !preserved_on_round_restart(&entity.definition))).map(WorldCommand::Remove).collect();
         self.world.clear_event_queue();
+        self.world.set_map_load_kind(playsrc_entity::MapLoadKind::MultiplayerNewRound);
         let removed = self.world.phase(tick, &removals)?;
         let mut result = self.consume(removed)?;
         self.world.clear_event_queue();
@@ -3175,7 +3186,7 @@ mod tests {
         let revision = map.entity_revision();
         let initial = map.brush_model_presentation(revision).unwrap();
         assert_eq!(initial.source_identity, 0x1234);
-        assert_eq!(initial.registry_identity, 0x5446_325f_454e_5433);
+        assert_eq!(initial.registry_identity, 0x5446_325f_454e_5434);
         assert_eq!(initial.tick, 0);
         assert_eq!(initial.revision, revision);
         assert_eq!(

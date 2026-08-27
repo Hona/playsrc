@@ -104,7 +104,7 @@ export type AudioEvent = Readonly<{
   definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
     | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
     | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
-  sourceKind: 1 | 2
+  sourceKind: 1 | 2 | 3 | 4
   sourceIdentity: number
   ownerIdentity: number | null
   position: readonly [number, number, number]
@@ -373,7 +373,7 @@ export type EntityTransform = Readonly<{
   angles: readonly [number, number, number]
 }>
 export type BrushModelDrawState = Readonly<{ sourceIndex:number; model:number; worldPosition:readonly[number,number,number]; worldAngles:readonly[number,number,number]; renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:null|Readonly<{kind:1|2|3;position:1|2|3|4|5;progress:number;requestId:bigint|null;opening:boolean|null}> }>
-export type StudioModelDrawState = Readonly<{sourceIndex:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];draw:boolean}>
+export type StudioModelDrawState = Readonly<{sourceIndex:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];draw:boolean;skin:number}>
 export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[];studioModels:readonly StudioModelDrawState[];studioAnimations:readonly Readonly<{sourceIndex:number;sequence:string;elapsedSeconds:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]]}>[]}>
 
 export type EntityEvent = Readonly<{
@@ -1249,7 +1249,7 @@ function decodeMovementTick(bytes: ArrayBuffer, offset: number, length: number):
 }
 function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: number, ranges?: SnapshotRanges, snapshotOffset = 0): EntityPresentation {
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (length < 56 || new TextDecoder().decode(data.subarray(0, 4)) !== "PEBP" || view.getUint32(4, true) !== 2)
+  if (length < 56 || new TextDecoder().decode(data.subarray(0, 4)) !== "PEBP" || view.getUint32(4, true) !== 3)
     throw new Tf2CodecError("Entity presentation identity is invalid")
   const count = view.getUint32(48, true)
   const studioOffset = 52 + count * 128
@@ -1285,8 +1285,8 @@ function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: nu
     const at = studioOffset + 4 + i * 32
     const decode = (): StudioModelDrawState => {
       const sourceIndex = view.getUint32(at, true), worldPosition = vector(view, at + 4), worldAngles = vector(view, at + 16), draw = view.getUint32(at + 28, true)
-      if (draw > 1 || !finite([...worldPosition, ...worldAngles])) throw new Tf2CodecError("Studio presentation record is invalid")
-      return Object.freeze({ sourceIndex, worldPosition, worldAngles, draw: draw === 1 })
+      if ((draw >>> 1) > 65535 || !finite([...worldPosition, ...worldAngles])) throw new Tf2CodecError("Studio presentation record is invalid")
+      return Object.freeze({ sourceIndex, worldPosition, worldAngles, draw: (draw & 1) !== 0, skin: draw >>> 1 })
     }
     const model = ranges ? ranges.read("studio", i, snapshotOffset + at, 32, decode) : decode()
     if (model.sourceIndex <= prior) throw new Tf2CodecError("Studio presentation source order is invalid")
@@ -1595,7 +1595,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 24)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 25)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2162,7 +2162,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 || definition === 86 || definition === 90 || definition === 98 ? 2 : 1
     if (
       (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 102 ||
-      (sourceKind !== 1 && sourceKind !== 2) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
+      (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
       !finite([...position, volume, pitch, soundLevel]) || [volume, pitch, soundLevel].some((value) => value < 0 || value >= 1) ||

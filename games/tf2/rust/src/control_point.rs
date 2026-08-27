@@ -135,6 +135,7 @@ pub struct Point {
     pub warn_sound: String,
     pub capture_sounds: [String; 4],
     initial_locked: bool,
+    initial_model_visible: bool,
     unlock_deadline: Option<f32>,
     model_skins: [usize; 4],
     model_bodies: [i32; 4],
@@ -202,7 +203,8 @@ impl Area {
         if !self.capturing_team.is_gameplay() {
             return 0.0;
         }
-        1.0 - self.remaining / self.total_time(self.capturing_team, configuration)
+        let total = self.total_time(self.capturing_team, configuration);
+        if total <= 0.0 { 0.0 } else { 1.0 - self.remaining / total }
     }
 }
 
@@ -218,6 +220,8 @@ pub struct Master {
     pub custom_position: [f32; 2],
     pub base_points: [Option<usize>; 4],
     initial_disabled: bool,
+    initial_layout: String,
+    initial_position: [f32; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +238,7 @@ pub struct Spawn {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    TeamScore { team: PlayerTeam },
     Sound { point: usize, recipient: Option<PlayerTeam>, definition: SoundDefinition, action: AudioAction },
     BlockStateChanged { point: usize, blocked: bool },
     MapOutput {
@@ -292,6 +297,7 @@ pub enum Event {
 pub struct Snapshot {
     pub points: Vec<Point>,
     pub may_capture: Vec<[bool; 2]>,
+    pub display_progress: Vec<f32>,
     pub local_point: Option<usize>,
     pub local_capture_text: &'static str,
     pub areas: Vec<Area>,
@@ -322,6 +328,7 @@ pub struct World {
     local_actor: Option<Actor>,
     spawns: Vec<Spawn>,
     spawn_revision: u64,
+    now: f32,
 }
 
 impl World {
@@ -404,6 +411,7 @@ impl World {
                 warn_on_cap: integer(entity, b"point_warn_on_cap", 0),
                 warn_sound: text(entity, b"point_warn_sound"),
                 initial_locked: locked,
+                initial_model_visible: integer(entity, b"spawnflags", 0) & 2 == 0,
                 unlock_deadline: None,
                 model_skins: [0; 4],
                 model_bodies: [0; 4],
@@ -491,6 +499,7 @@ impl World {
             local_actor: None,
             spawns,
             spawn_revision: 0,
+            now: 0.0,
             master: Master {
                 identity: master.index as u32,
                 disabled,
@@ -500,6 +509,8 @@ impl World {
                 score_per_capture: integer(master, b"score_style", 0) != 0,
                 partial_capture_points_rate: number(master, b"partial_cap_points_rate", 0.0),
                 cap_layout: text(master, b"caplayout"),
+                initial_layout: text(master, b"caplayout"),
+                initial_position: [number(master, b"custom_position_x", -1.0), number(master, b"custom_position_y", -1.0)],
                 custom_position: [
                     number(master, b"custom_position_x", -1.0),
                     number(master, b"custom_position_y", -1.0),
@@ -580,12 +591,31 @@ impl World {
             points: self.points.clone(),
             local_point: local_area.map(|a| a.point),
             local_capture_text: local_area.map_or("", |a| self.capture_text(a)),
+            display_progress: self.points.iter().map(|p| self.presentation_progress(p.index)).collect(),
             may_capture: self.points.iter().map(|p| [self.team_may_capture(PlayerTeam::Red, p.index, self.facts.waiting_for_players), self.team_may_capture(PlayerTeam::Blue, p.index, self.facts.waiting_for_players)]).collect(),
             areas: self.areas.clone(),
             master: self.master.clone(),
             configuration: self.configuration,
             events,
         }
+    }
+
+    fn presentation_progress(&self, point: usize) -> f32 {
+        let Some(area) = self.areas.iter().rev().find(|a| a.point == point && a.capturing_team.is_gameplay()) else { return 0.0; };
+        let total = area.total_time(area.capturing_team, self.configuration);
+        if total <= 0.0 { return 0.0; }
+        let mut remaining = area.remaining;
+        let delta = (self.now - area.last_reduction).max(0.0);
+        if !area.blocked {
+            let mut change = delta;
+            if self.configuration.scales_with_players { for count in 1..area.num_players[slot(area.team_in_zone)] { change += delta / (count + 1) as f32; } }
+            if area.team_in_zone == area.capturing_team { remaining -= change; }
+            else if self.points[point].owner == PlayerTeam::Unassigned && area.team_in_zone.is_gameplay() { remaining += change; }
+            else if self.team_may_capture(area.capturing_team, point, self.facts.waiting_for_players) {
+                remaining += total / if self.configuration.scales_with_players { self.configuration.deteriorate_seconds } else { total } * delta * if self.facts.in_overtime { 6.0 } else { 1.0 };
+            } else { remaining = 0.0; }
+        }
+        ((total - remaining) / total).min(1.0)
     }
 
     fn capture_text(&self, area: &Area) -> &'static str {
@@ -663,10 +693,27 @@ impl World {
         self.areas.iter().any(|a| a.capturing_team.is_gameplay())
     }
 
+    pub fn actor_can_capture(&self, actor: Actor, point: usize) -> bool {
+        actor.alive && actor.may_capture() && self.team_may_capture(actor.team, point, self.facts.waiting_for_players)
+    }
+
+    pub fn check_death_causes_block(&self, victim: u32, victim_team: PlayerTeam, killer: u32, killer_team: PlayerTeam, events: &mut Vec<Event>) {
+        let Some(area) = self.areas.iter().find(|a| a.touching.contains(&victim)) else { return; };
+        if killer == 0 || victim_team == killer_team || area.capturing_team != victim_team || !victim_team.is_gameplay() { return; }
+        events.push(Event::CapperKilled { player: killer, victim });
+        let remaining = area.blocked_touching[slot(victim_team)] - 1;
+        if remaining <= 0 || (!self.configuration.scales_with_players && remaining < area.teams[slot(victim_team)].required) {
+            events.push(Event::Blocked { point: area.point, player: killer, victim: Some(victim) });
+        }
+    }
+
     pub fn reset(&mut self, now: f32, events: &mut Vec<Event>) {
+        self.now = now;
         self.local_actor = None;
         self.won = false;
         self.master.disabled = self.master.initial_disabled;
+        self.master.cap_layout = self.master.initial_layout.clone();
+        self.master.custom_position = self.master.initial_position;
         self.next_master_think = now + 0.1;
         for p in &mut self.points {
             if let Some(definition) = p.loop_sound.take() { events.push(Event::Sound { point: p.index, recipient: None, definition, action: AudioAction::Stop }); }
@@ -675,6 +722,7 @@ impl World {
             p.warned_on_final_cap = false;
             p.last_warning_at = 0.0;
             p.owner = p.default_owner;
+            p.model_visible = p.initial_model_visible;
             p.locked = p.initial_locked;
             p.unlock_at = None;
             p.unlock_deadline = None;
@@ -718,6 +766,7 @@ impl World {
         events: &mut Vec<Event>,
     ) -> bool {
         self.facts = facts;
+        self.now = now;
         if let Some(spawn) = self.spawns.iter_mut().find(|s| s.identity == entity) {
             self.spawn_revision += 1;
             if input.eq_ignore_ascii_case(b"Enable") { spawn.disabled = false; }
@@ -729,6 +778,7 @@ impl World {
             if input.eq_ignore_ascii_case(b"SetOwner") {
                 if let Some(owner) = team(variant_integer(value)) {
                     if facts.points_may_be_captured && self.points[i].owner != owner {
+                        if self.master.score_per_capture && owner.is_gameplay() { events.push(Event::TeamScore { team: owner }); }
                         self.change_owner(i, owner, false, events);
                     }
                 }
@@ -837,6 +887,10 @@ impl World {
             if let Variant::String(s) = value {
                 self.master.cap_layout = String::from_utf8_lossy(s).into_owned();
             }
+        } else if input.eq_ignore_ascii_case(b"SetCapLayoutCustomPositionX") {
+            self.master.custom_position[0] = value.as_float().unwrap_or(0.0);
+        } else if input.eq_ignore_ascii_case(b"SetCapLayoutCustomPositionY") {
+            self.master.custom_position[1] = value.as_float().unwrap_or(0.0);
         } else if input.eq_ignore_ascii_case(b"RoundSpawn") {
             self.next_master_think = now + 0.1;
         } else if !input.eq_ignore_ascii_case(b"RoundActivate") {
@@ -854,6 +908,7 @@ impl World {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         self.facts = facts;
+        self.now = now;
         let sound_start = events.len();
         self.local_actor = actors.iter().copied().find(|a| a.identity == crate::PLAYER_IDENTITY);
         for point in &mut self.points {
@@ -861,7 +916,7 @@ impl World {
                 point.next_countdown = now + 0.1;
                 if facts.round_running && !facts.waiting_for_players {
                     if let Some(deadline) = point.unlock_at.filter(|time| *time > 0.0) {
-                        let left = (deadline - now) as i32;
+                        let left = (deadline.trunc() - now) as i32;
                         let selected = if left <= 0 && point.countdown_flags & 1 != 0 { Some((0, SoundDefinition::PointEnabled)) }
                             else if left > 0 && left <= 5 { [ (5, SoundDefinition::RoundBegins5), (4, SoundDefinition::RoundBegins4), (3, SoundDefinition::RoundBegins3), (2, SoundDefinition::RoundBegins2), (1, SoundDefinition::RoundBegins1) ].into_iter().find(|(second,_)| left <= *second && point.countdown_flags & (1 << second) != 0) } else { None };
                         if let Some((second, definition)) = selected {
@@ -890,6 +945,7 @@ impl World {
             let mut contacts = Vec::new();
             if !self.areas[i].disabled {
                 for actor in actors {
+                    if !actor.alive || !actor.team.is_gameplay() { continue; }
                     if collision
                         .overlaps_model_hull(
                             self.areas[i].model,
@@ -1152,6 +1208,7 @@ impl World {
         }
         area.capturing_team = PlayerTeam::Unassigned;
         area.remaining = 0.0;
+        if self.master.score_per_capture { events.push(Event::TeamScore { team }); }
         self.change_owner(point, team, true, events);
         events.push(Event::Captured {
             point,
@@ -1276,7 +1333,7 @@ fn cappers(area: &Area, team: PlayerTeam, actors: &[Actor]) -> Vec<u32> {
         .map(|a| a.identity)
         .collect();
     ids.sort_unstable();
-    ids.truncate(7);
+    ids.truncate(8);
     ids
 }
 
@@ -1353,17 +1410,17 @@ fn class(e: &Entity, name: &[u8]) -> bool {
 }
 fn text(e: &Entity, key: &[u8]) -> String {
     e.pairs
-        .iter()
+        .iter().rev()
         .find(|p| p.key.eq_ignore_ascii_case(key))
         .map_or_else(String::new, |p| {
             String::from_utf8_lossy(&p.value).into_owned()
         })
 }
 fn integer(e: &Entity, key: &[u8], default: i32) -> i32 {
-    text(e, key).parse().unwrap_or(default)
+    e.pairs.iter().rev().find(|p| p.key.eq_ignore_ascii_case(key)).map_or(default, |p| playsrc_keyvalues::NumericValue::Bytes(&p.value).get_int())
 }
 fn number(e: &Entity, key: &[u8], default: f32) -> f32 {
-    text(e, key).parse().unwrap_or(default)
+    e.pairs.iter().rev().find(|p| p.key.eq_ignore_ascii_case(key)).map_or(default, |p| playsrc_keyvalues::NumericValue::Bytes(&p.value).get_float())
 }
 fn vector(e: &Entity, key: &[u8]) -> Result<[f32; 3], Error> {
     let s = text(e, key);
@@ -1395,7 +1452,9 @@ fn team(value: i32) -> Option<PlayerTeam> {
 fn variant_integer(value: &Variant) -> i32 {
     match value {
         Variant::Integer(v) => *v,
-        Variant::String(v) => String::from_utf8_lossy(v).parse().unwrap_or(0),
+        Variant::String(v) => playsrc_keyvalues::NumericValue::Bytes(v).get_int(),
+        Variant::Float(bits) => f32::from_bits(*bits) as i32,
+        Variant::Bool(value) => i32::from(*value),
         _ => 0,
     }
 }
@@ -1410,6 +1469,40 @@ mod tests {
     }
     impl GameplayWorld for NoContact {
         fn overlaps_model_hull(&self, _: usize, _: [f32;3], _: [f32;3], _: Hull) -> Result<bool, playsrc_movement::Error> { Ok(false) }
+    }
+
+    #[test]
+    fn capper_death_awards_a_defense_only_when_it_breaks_the_capture() {
+        let mut w = world(false);
+        let red = actor(1, PlayerTeam::Red, PlayerClass::Soldier);
+        think(&mut w, 2, 0.0, &[red], true);
+        let mut events = Vec::new();
+        w.check_death_causes_block(1, PlayerTeam::Red, 2, PlayerTeam::Blue, &mut events);
+        assert_eq!(events, [Event::CapperKilled { player: 2, victim: 1 }, Event::Blocked { point: 2, player: 2, victim: Some(1) }]);
+        events.clear();
+        w.check_death_causes_block(1, PlayerTeam::Red, 1, PlayerTeam::Red, &mut events);
+        assert!(events.is_empty());
+        think(&mut w, 2, 0.1, &[red, actor(3, PlayerTeam::Red, PlayerClass::Scout)], false);
+        w.check_death_causes_block(1, PlayerTeam::Red, 2, PlayerTeam::Blue, &mut events);
+        assert_eq!(events, [Event::CapperKilled { player: 2, victim: 1 }]);
+    }
+
+    #[test]
+    fn per_capture_score_precedes_owner_change_and_reset_restores_authored_presentation() {
+        let mut w = world(false);
+        w.master.score_per_capture = true;
+        w.master.cap_layout = "changed".to_owned();
+        w.master.custom_position = [0.3, 0.4];
+        w.points[2].model_visible = false;
+        let id = w.points[2].identity;
+        let mut events = Vec::new();
+        w.apply_input(id, b"SetOwner", &Variant::String(b"2red".to_vec()), 1.0, facts(), &mut events);
+        assert!(matches!(events.first(), Some(Event::TeamScore { team: PlayerTeam::Red })));
+        assert_eq!(w.points[2].owner, PlayerTeam::Red);
+        w.reset(2.0, &mut events);
+        assert!(w.points[2].model_visible);
+        assert_eq!(w.master.cap_layout, "");
+        assert_eq!(w.master.custom_position, [-1.0; 2]);
     }
 
     #[test]

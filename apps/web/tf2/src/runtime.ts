@@ -4451,6 +4451,7 @@ export class Tf2Application {
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
       profile.round=prepared.snapshot.round
       profile.controlPoints=prepared.snapshot.controlPoints
+      profile.controlPoints=prepared.snapshot.controlPoints
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}
@@ -4936,8 +4937,21 @@ export class Tf2Application {
           elapsedSeconds: animation.elapsedSeconds, previousElapsedSeconds: Math.max(0, animation.elapsedSeconds - publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS),
           currentTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS, frameTimeSeconds: publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS,
           planarSpeed: 0, screenAspectRatio: Math.max(1, viewport.width) / Math.max(1, viewport.height), worldFarPlane: camera.far,
-          skin: occurrence.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition, state.worldAngles) })]
+          skin: state.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition, state.worldAngles) })]
       })
+      const animatedSources = new Set(studioRequests.map(request => request.identity))
+      for (const state of snapshot.entityPresentation.studioModels) {
+        if (!state.draw || animatedSources.has(state.sourceIndex) || this.#lockerAnimations.has(state.sourceIndex)) continue
+        const occurrence = this.#artifacts!.modelOccurrences.find(value => value.entity === state.sourceIndex)
+        if (!occurrence || occurrence.skin === state.skin) continue
+        const model = this.#artifacts!.models.get(occurrence.model), sequence = model?.sequences[0]
+        if (!model || !sequence) throw new Error(`Authored model skin transition lacks its sequence: ${state.sourceIndex}`)
+        studioRequests.push(Object.freeze({ identity: state.sourceIndex, model: occurrence.model, activity: sequence.label,
+          elapsedSeconds: 0, previousElapsedSeconds: 0, currentTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS,
+          frameTimeSeconds: publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS, planarSpeed: 0,
+          screenAspectRatio: Math.max(1,viewport.width)/Math.max(1,viewport.height), worldFarPlane: camera.far,
+          skin: state.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition,state.worldAngles) }))
+      }
       const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...botRequests,...objectiveRequests,...controlPointRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       if(admissionProfile)recordBotAdmission(admissionProfile,"model-request",snapshot.tick,{actors:botRequests.map(request=>({actor:request.identity-BOT_MODEL_IDENTITY_BASE,model:request.model,skin:request.skin,activity:request.activity,itemModel:"itemModel" in request?request.itemModel:null}))})
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))

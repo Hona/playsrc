@@ -6,6 +6,7 @@ pub struct Counters {
     pub assists: u32,
     pub deaths: u32,
     pub captures: u32,
+    pub defenses: u32,
     pub damage: u32,
 }
 
@@ -56,6 +57,8 @@ impl State {
         self.local.captures = self.local.captures.saturating_add(1);
     }
 
+    pub fn local_defense(&mut self) { self.local.defenses = self.local.defenses.saturating_add(1); }
+
     pub fn snapshot(
         &self,
         team: PlayerTeam,
@@ -78,6 +81,7 @@ impl State {
                     .kills
                     .saturating_add(self.local.assists / 2)
                     .saturating_add(self.local.captures.saturating_mul(2))
+                    .saturating_add(self.local.defenses)
                     .saturating_add(self.local.damage / 600),
             )
             .unwrap_or(i32::MAX),
@@ -91,13 +95,14 @@ impl State {
                 class: bot.class,
                 alive: bot.lifecycle == PlayerLifecycle::Active,
                 fake: true,
-                score: i32::try_from(bot.kills.saturating_add(bot.assists / 2).saturating_add(bot.captures.saturating_mul(2)))
+                score: i32::try_from(bot.kills.saturating_add(bot.assists / 2).saturating_add(bot.captures.saturating_mul(2)).saturating_add(bot.defenses))
                     .unwrap_or(i32::MAX),
                 counters: Counters {
                     kills: bot.kills,
                     assists: bot.assists,
                     deaths: bot.deaths,
                     captures: bot.captures,
+                    defenses: bot.defenses,
                     damage: bot.damage,
                 },
             }
@@ -161,6 +166,7 @@ mod tests {
                 kills: 1,
                 deaths: 1,
                 captures: 0,
+                defenses: 0,
                 damage: 125
             }
         );

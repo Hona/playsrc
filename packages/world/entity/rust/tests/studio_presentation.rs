@@ -3,6 +3,21 @@ use playsrc_entity::{
 };
 
 #[test]
+fn authored_skin_inputs_publish_and_restore_the_same_studio_occurrence() {
+    let graph = playsrc_entity::parse(br#"{"classname" "prop_dynamic" "targetname" "base" "model" "models/props_gameplay/cap_point_base.mdl" "skin" "1"}"#, playsrc_entity::Limits::default()).unwrap();
+    let (mut world, _) = EntityWorld::compile(&graph, EntityWorldConfig::default()).unwrap();
+    let initial = world.snapshot().unwrap();
+    let entity = world.resolve(b"base", None, None, None)[0];
+    assert_eq!(world.studio_model_presentation(world.revision()).unwrap()[0].skin, 1);
+    world.phase(1, &[WorldCommand::Input(playsrc_entity::InputRecord { target: playsrc_entity::EventTarget::Direct(entity), input: b"Skin".to_vec(), value: playsrc_entity::Variant::Integer(2), activator: None, caller: None, output_action: None, producer_sequence: 1 })]).unwrap();
+    let state = &world.studio_model_presentation(world.revision()).unwrap()[0];
+    assert!(state.draw);
+    assert_eq!(state.skin, 2);
+    world.restore(&initial).unwrap();
+    assert_eq!(world.studio_model_presentation(world.revision()).unwrap()[0].skin, 1);
+}
+
+#[test]
 fn invisible_pusher_world_transform_is_published_for_each_authored_visible_child() {
     let graph = playsrc_entity::parse(br#"
 {"classname" "func_door" "targetname" "door" "model" "*1" "origin" "128 262 784" "rendermode" "10" "movedir" "-90 0 0"}

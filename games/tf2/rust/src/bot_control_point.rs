@@ -10,22 +10,52 @@ pub(super) struct Action {
     hunt_until: f32,
     defense_area: Option<u32>,
     idle_until: f32,
+    idle_duration: f32,
     allowed_to_roam: bool,
     defending_started: bool,
     pub on_point: bool,
+    pub route: Option<Route>,
+    seek_area: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Navigation {
+    data: Arc<NavigationData>,
+    combat: Arc<BTreeMap<u32, (f32, f32)>>,
+    combat_throttle: Arc<BTreeMap<u32, f32>>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct NavigationData {
     areas: Vec<Vec<u32>>,
     centers: Vec<Option<u32>>,
     incursion: BTreeMap<u32, [f32;2]>,
     defenses: Vec<[Vec<u32>;2]>,
+    thresholds: [Vec<u32>; 2],
+}
+
+impl std::ops::Deref for Navigation {
+    type Target = NavigationData;
+    fn deref(&self) -> &Self::Target { &self.data }
 }
 
 impl Navigation {
     pub fn compile(mesh: &Mesh, points: &crate::control_point::World, spawns: &[Vec<Spawn>;2]) -> Result<Self, Error> {
-        let mut result = Self { areas: vec![Vec::new();points.points().len()], centers: vec![None;points.points().len()], ..Self::default() };
+        let mut result = NavigationData { areas: vec![Vec::new();points.points().len()], centers: vec![None;points.points().len()], ..NavigationData::default() };
+        let exit_ids: std::collections::BTreeSet<_> = mesh.areas.iter().filter(|area| area.game_attributes & (TF_NAV_SPAWN_ROOM_RED | TF_NAV_SPAWN_ROOM_BLUE) != 0 && area.connections.iter().flatten().any(|id| mesh.area(*id).is_some_and(|next| next.game_attributes & (TF_NAV_SPAWN_ROOM_RED | TF_NAV_SPAWN_ROOM_BLUE) == 0))).map(|area| area.identity).collect();
+        for (t, flags) in [TF_NAV_SPAWN_ROOM_RED, TF_NAV_SPAWN_ROOM_BLUE].into_iter().enumerate() {
+            let count = mesh.areas.iter().filter(|area| area.game_attributes & flags != 0 && exit_ids.contains(&area.identity)).count();
+            // The SDK's threshold collector indexes TheNavAreas by exit ordinal.
+            for area in mesh.areas.iter().take(count) {
+                let mut largest = None;
+                let mut size = 0.0;
+                for id in area.connections.iter().flatten() {
+                    let next = mesh.area(*id).unwrap();
+                    if next.game_attributes & (TF_NAV_SPAWN_ROOM_RED | TF_NAV_SPAWN_ROOM_BLUE) == 0 && !exit_ids.contains(id) && area_size(next) > size { largest = Some(*id); size = area_size(next); }
+                }
+                if let Some(area) = largest { result.thresholds[t].push(area); }
+            }
+        }
         for capture in points.areas() {
             let (mut lo, mut hi) = capture.bounds.ok_or(Error::InvalidEntity)?;
             for axis in 0..3 { lo[axis] += capture.origin[axis]; hi[axis] += capture.origin[axis]; }
@@ -94,7 +124,43 @@ impl Navigation {
             }
             result.defenses.push(teams);
         }
-        Ok(result)
+        Ok(Self { data: Arc::new(result), ..Self::default() })
+    }
+
+    pub fn recompute(&mut self, mesh: &Mesh, points: &crate::control_point::World, spawns: &[Vec<Spawn>;2]) -> Result<(), Error> {
+        let next = Self::compile(mesh, points, spawns)?;
+        self.data = next.data;
+        Ok(())
+    }
+
+    pub fn reset_combat(&mut self) { self.combat = Arc::default(); self.combat_throttle = Arc::default(); }
+
+    pub fn combat_intensity(&self, area: u32, now: f32) -> f32 {
+        self.combat.get(&area).map_or(0.0, |(value, at)| (value - (now - at) * 0.022).max(0.0))
+    }
+
+    pub fn record_combat(&mut self, mesh: &Mesh, actor: u32, weapon: Weapon, position: [f32;3], now: f32) {
+        if matches!(weapon, Weapon::MediGun | Weapon::Wrench | Weapon::BuildPda | Weapon::DestroyPda | Weapon::Toolbox | Weapon::DisguiseKit | Weapon::InvisibilityWatch | Weapon::Sapper) || self.combat_throttle.get(&actor).is_some_and(|last| now < *last + 1.0) { return; }
+        Arc::make_mut(&mut self.combat_throttle).insert(actor, now);
+        let Some(start) = mesh.nearest_area(position) else { return; };
+        let mut queue = VecDeque::from([(start.identity, 0.0)]);
+        let mut distances = BTreeMap::from([(start.identity, 0.0)]);
+        while let Some((id, travelled)) = queue.pop_front() {
+            let area = mesh.area(id).unwrap();
+            for direction in Direction::ALL {
+                for adjacent in &area.connections[direction as usize] {
+                    let next = mesh.area(*adjacent).unwrap();
+                    let travel = travelled + distance(area.center(), next.center());
+                    if travel <= 1000.0 && area.connection_height_change(next, direction).abs() <= STEP_HEIGHT && distances.get(adjacent).is_none_or(|old| travel < *old) {
+                        distances.insert(*adjacent, travel); queue.push_back((*adjacent, travel));
+                    }
+                }
+            }
+        }
+        for id in distances.keys() {
+            let state = Arc::make_mut(&mut self.combat).entry(*id).or_insert((0.0, now));
+            state.0 = (state.0 + 0.05).min(1.0); state.1 = now;
+        }
     }
 }
 
@@ -104,8 +170,9 @@ fn potentially_visible(mesh: &Mesh, area: &Area, to: u32) -> bool {
     area.inherited_visibility.and_then(|id| mesh.area(id)).is_some_and(|parent| parent.visible_areas.iter().any(|a| a.identity == to && a.attributes != 0))
 }
 
-pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation, mesh: &Mesh, now: f32, tick: u64, threat: Option<Actor>, random: &mut UniformRandomStream) -> Result<(ObjectiveKind,[f32;3]),Error> {
+pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation, mesh: &Mesh, interval: f32, now: f32, tick: u64, threat: Option<Actor>, random: &mut UniformRandomStream) -> Result<(ObjectiveKind,[f32;3]),Error> {
     let points = frame.points.unwrap();
+    bot.point_action.route = Some(Route::Default);
     if bot.point_action.point.is_none() || now >= bot.point_action.evaluate_at {
         bot.point_action.evaluate_at = now + random.random_float(1.0,2.0);
         let capture: Vec<_> = points.bot_capture_points(bot.team).map(|p| p.index).collect();
@@ -123,28 +190,31 @@ pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation
         bot.point_action.point = selected;
     }
     let Some(index) = bot.point_action.point else {
-        return Ok((ObjectiveKind::Attack, threat.map_or(bot.goal, |a| a.position)));
+        return seek(bot, points, navigation, mesh, threat, random);
     };
     let point = &points.points()[index];
-    let touching = points.areas().iter().any(|a| a.point == index && a.touching.contains(&bot.identity));
+    let touching = point.owner != bot.team && points.actor_can_capture(control_point_actor(bot), index) && points.areas().iter().any(|a| a.point == index && a.touching.contains(&bot.identity));
     bot.point_action.on_point = touching;
     let threatened = point.last_contested_at > 0.0 && now-point.last_contested_at < 5.0;
     let time_left = frame.time_left[team_index(bot.team)];
     if point.owner != bot.team {
         bot.point_action.defending_started = false;
         let near = bot.current_area.zip(navigation.centers[index]).is_some_and(|(a,b)| (navigation.incursion[&a][team_index(bot.team)]-navigation.incursion[&b][team_index(bot.team)]).abs() < 750.0);
-        let pushing = (threatened && threat.is_none()) || touching || frame.in_overtime || time_left < 120.0 || near;
+        let in_combat = bot.last_fire_tick.is_some_and(|last| now - last as f32 * interval < 2.0);
+        let pushing = (threatened && !in_combat) || touching || frame.in_overtime || time_left < 120.0 || near;
+        if pushing { bot.point_action.hunt_until = 0.0; bot.point_action.seek_area = None; }
         if !pushing && threat.is_some() && now >= bot.point_action.hunt_until {
             bot.point_action.hunt_until = now + random.random_float(15.0,30.0);
         }
         if now < bot.point_action.hunt_until && !pushing {
-            return Ok((ObjectiveKind::Attack, threat.map_or(bot.goal, |a| a.position)));
+            return seek(bot, points, navigation, mesh, threat, random);
         }
         if touching && tick >= bot.next_repath_tick && !navigation.areas[index].is_empty() {
             let areas = &navigation.areas[index];
             let which = random.random_int(0,areas.len() as i32-1).map_err(|_| Error::Limit)? as usize;
             return Ok((ObjectiveKind::CapturePoint, random_point(mesh.area(areas[which]).unwrap(),random)));
         }
+        bot.point_action.route = Some(if touching { Route::Default } else { Route::Safest });
         return Ok((ObjectiveKind::CapturePoint, if touching { bot.goal } else { point.position }));
     }
     if !bot.point_action.defending_started {
@@ -166,16 +236,36 @@ pub(super) fn goal(bot: &mut Bot, frame: Objectives<'_>, navigation: &Navigation
         return Ok((ObjectiveKind::BlockCapture,bot.goal));
     }
     if point.locked || (bot.point_action.allowed_to_roam && time_left > 300.0) || (bot.class == PlayerClass::Pyro && threat.is_some()) {
-        return Ok((ObjectiveKind::Attack,threat.map_or(point.position, |a| a.position)));
+        return seek(bot, points, navigation, mesh, threat, random);
     }
     if bot.point_action.defense_area.is_none() || now >= bot.point_action.idle_until {
         let areas = &navigation.defenses[index][team_index(bot.team)];
         if !areas.is_empty() {
-            bot.point_action.idle_until = now+random.random_float(10.0,20.0);
+            bot.point_action.idle_duration = random.random_float(10.0,20.0);
+            bot.point_action.idle_until = now + bot.point_action.idle_duration;
             bot.point_action.defense_area = Some(areas[random.random_int(0,areas.len() as i32-1).map_err(|_| Error::Limit)? as usize]);
         }
     }
+    if bot.current_area != bot.point_action.defense_area || threat.is_some() || frame.in_setup { bot.point_action.idle_until = now + bot.point_action.idle_duration; }
     Ok((ObjectiveKind::DefendPoint,bot.point_action.defense_area.and_then(|a| mesh.area(a)).map_or(point.position, Area::center)))
+}
+
+fn seek(bot: &mut Bot, points: &crate::control_point::World, navigation: &Navigation, mesh: &Mesh, threat: Option<Actor>, random: &mut UniformRandomStream) -> Result<(ObjectiveKind,[f32;3]),Error> {
+    if let Some(threat) = threat.filter(|threat| distance(threat.position, bot.movement.position) < 1000.0) {
+        return Ok((ObjectiveKind::Attack, threat.position));
+    }
+    bot.point_action.route = Some(Route::Safest);
+    let reached = bot.point_action.seek_area.and_then(|id| mesh.area(id)).is_some_and(|area| area.contains_xy(bot.movement.position) && (bot.movement.position[2] - area.height(bot.movement.position[0],bot.movement.position[1])).abs() <= STEP_HEIGHT);
+    if bot.point_action.seek_area.is_none() || reached || bot.path.is_empty() {
+        let mut goals = navigation.thresholds[1 - team_index(bot.team)].clone();
+        if let Some(point) = bot.point_action.point.filter(|index| !points.points()[*index].locked) {
+            let areas = &navigation.areas[point];
+            if !areas.is_empty() { goals.push(areas[random.random_int(0, areas.len() as i32 - 1).map_err(|_| Error::Limit)? as usize]); }
+        }
+        bot.point_action.seek_area = if goals.is_empty() { None } else { Some(goals[random.random_int(0, goals.len() as i32 - 1).map_err(|_| Error::Limit)? as usize]) };
+        bot.next_repath_tick = 0;
+    }
+    Ok((ObjectiveKind::Attack, bot.point_action.seek_area.and_then(|id| mesh.area(id)).map_or(bot.movement.position, Area::center)))
 }
 
 fn consistent(bot: &Bot, now: f32, period: f32) -> f32 {
