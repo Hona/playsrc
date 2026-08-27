@@ -1191,4 +1191,22 @@ test("profile authored headed Upward offline-practice default roster and actual 
     workerRequired: capturePlan.workerCpu === "required",
     sourceUnchanged: sourceFingerprintAfter === sourceFingerprint, workerCaptures: workerCapture.captures,
     compositor: process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1", smooth: process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1" })
+  if (process.env.PROFILE_CLASS_UI_AUDIT === "1") {
+    await combatCommand("joinclass engineer")
+    await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("9")
+    const menus = []
+    for (const [key, menu] of [["Digit4", "build"], ["Digit5", "destroy"]] as const) {
+      await page.keyboard.press(key)
+      await expect(root).toHaveAttribute("data-engineer-menu", menu)
+      const file = path.join(directory, `${label}-engineer-${menu}.png`)
+      await page.screenshot({ path: file })
+      const native = path.join(directory, `${label}-engineer-${menu}.desktop.png`)
+      if (process.platform === "darwin" && spawnSync("screencapture", ["-x", native], { timeout: 5000 }).status !== 0) throw new Error("Engineer desktop capture failed")
+      menus.push({ menu, file, native, controls: await page.locator(".engineer-layer").evaluate(element => ({
+        panels: element.querySelectorAll("[data-vgui-panel]").length, rasters: element.querySelectorAll("canvas[data-vgui-raster]").length,
+        visibleText: (element as HTMLElement).innerText,
+      })) })
+    }
+    await writeFile(path.join(directory, `${label}-engineer-ui.json`), JSON.stringify({ menus, performanceSample: false }))
+  }
 })
