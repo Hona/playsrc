@@ -231,7 +231,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
     };
     let bot_control = match bytes[56] {
         0 if bytes[57..84].iter().all(|value| *value == 0) => None,
-        operation @ (1 | 2) if bytes[57..60].iter().all(|value| *value == 0) => {
+        operation @ (1 | 2 | 3 | 4) if bytes[57..60].iter().all(|value| *value == 0) => {
             let identity = u32::from_le_bytes(bytes[60..64].try_into().ok()?);
             if identity <= 1 {
                 return None;
@@ -254,7 +254,14 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
                     yaw_degrees,
                 })
             } else if bytes[64..84].iter().all(|value| *value == 0) {
-                Some(playsrc_tf2::bot::Control::Whack { identity })
+                Some(if operation == 2 {
+                    playsrc_tf2::bot::Control::Whack { identity }
+                } else {
+                    playsrc_tf2::bot::Control::StealthCondition {
+                        identity,
+                        enabled: operation == 3,
+                    }
+                })
             } else {
                 return None;
             }

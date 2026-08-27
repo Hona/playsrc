@@ -546,6 +546,7 @@ export class Tf2Application {
   #viewmodelClass?: Snapshot["class"]
   #watchActivity?: "ACT_VM_DRAW" | "ACT_VM_IDLE" | "ACT_VM_HOLSTER"
   #watchActivityTick = 0n
+  #watchOwner?: { generation: number; team: number; respawnTick: bigint }
   #attachments = new Map<number, ReadonlySet<string>>()
   #attachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
@@ -2554,7 +2555,7 @@ export class Tf2Application {
           disposition: "visible" as const,
           acceptsSuggestions: true,
         }),
-        ...["build","destroy","hurtbuilding","+attack","-attack","bot_teleport","bot_whack"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
+        ...["build","destroy","hurtbuilding","+attack","-attack","bot_teleport","bot_whack","bot_command"].map(name=>Object.freeze({kind:"command" as const,name,disposition:"visible" as const,acceptsSuggestions:false})),
         Object.freeze({
           kind: "command" as const,
           name: "dropitem",
@@ -3157,6 +3158,15 @@ export class Tf2Application {
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`Queued bot removal: ${token}`)
+      return
+    }
+    if (command === "bot_command") {
+      const bot = this.#snapshot?.scoreboard.players.find(player => player.fake && player.name === tokens[0])
+      if (!bot || bot.class !== 8 || tokens.length !== 3 || !["addcond", "removecond"].includes(tokens[1]!) || tokens[2] !== "4" || this.#botControl) {
+        this.#output("Usage: bot_command <bot name> addcond|removecond 4")
+        return
+      }
+      this.#botControl = Object.freeze({ action: "stealth-condition", identity: bot.identity, enabled: tokens[1] === "addcond" })
       return
     }
     if (command === "bot_teleport" || command === "bot_whack") {
@@ -4453,6 +4463,18 @@ export class Tf2Application {
       if (profile) profile.hudModelPanel = { ...hudModel, panels: result.panels }
     }
     const rendererProfile=renderer.completeFrameProfile()
+    if (profile?.cloakSampleActive) profile.cloakSampleCopies = Number(profile.cloakSampleCopies ?? 0) + rendered.timings.cloakFramebufferCopies
+    const cloakCaptureCondition = profile?.cloakCaptureCondition as { identity: number; factor: number } | undefined
+    if (profile && typeof profile.cloakCaptureRevision === "number" && profile.cloakCaptureRevision !== (profile.cloakCapture as { revision?: number } | undefined)?.revision
+      && (!cloakCaptureCondition || models?.some(model => model.identity === cloakCaptureCondition.identity && model.pose?.cloak?.worldFactor === cloakCaptureCondition.factor))) {
+      profile.cloakCapture = { revision: profile.cloakCaptureRevision, tick: prepared.snapshot.tick.toString(), spy: prepared.snapshot.spy,
+        camera, generation, lightingProfile: renderer.configuration.lightingProfile, copies: rendered.timings.cloakFramebufferCopies,
+        players: prepared.snapshot.scoreboard.players,
+        bots: prepared.snapshot.bots.map(bot => ({ identity: bot.identity, team: bot.team, class: bot.class, position: bot.position, yawDegrees: bot.yawDegrees, health: bot.health, lifecycle: bot.lifecycle })),
+        models: models?.map(model => ({ identity: model.identity, model: model.model, cloak: model.pose?.cloak, viewModel: model.viewModel })),
+        viewGeometry: renderer.captureViewModelEvidence(camera), worldGeometry: renderer.captureWorldModelEvidence(camera),
+        pixels: this.#canvas.toDataURL("image/png") }
+    }
     const renderMilliseconds=performance.now()-renderStart,totalMilliseconds=performance.now()-phaseStart
     if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
     this.#canvasDiagnostics.publish(this.#canvas, rendered)
@@ -4800,9 +4822,14 @@ export class Tf2Application {
       const viewmodel=mapViewmodel(snapshot)
       const currentFire=publication.eventBatches.at(-1)?.snapshot.projectileEvents.find((event)=>event.type==="fire"&&event.ownerIdentity===1)
       if(currentFire&&(!currentFire.launcherPose||!viewmodel))throw new Error(`TF2 fire-tick launcher pose unavailable: ${currentFire.tick}:${currentFire.projectile}`)
-      const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,sampleTick:currentFire?.tick??snapshot.tick,lighting:viewModelLighting,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
+      const currentViewmodelRequest=viewmodel===undefined?undefined:Object.freeze({...viewmodel.request,cloak:snapshot.actorCloaks.find(actor=>actor.identity===1),sampleTick:currentFire?.tick??snapshot.tick,lighting:viewModelLighting,...(currentFire?{fireView:currentFire.launcherPose!}:{})})
       let watchRequest: ModelPoseRequest | undefined
-      if (snapshot.class !== 8) {
+      const respawnTick = snapshot.lifecycleEvents.reduce((tick, event) => event.kind === 2 && event.tick > tick ? event.tick : tick, this.#watchOwner?.generation === generation ? this.#watchOwner.respawnTick : 0n)
+      if (this.#watchOwner?.generation !== generation || this.#watchOwner.team !== snapshot.team || this.#watchOwner.respawnTick !== respawnTick) {
+        this.#watchActivity = undefined
+        this.#watchOwner = { generation, team: snapshot.team, respawnTick }
+      }
+      if (snapshot.class !== 8 || snapshot.lifecycle !== 1) {
         this.#watchActivity = undefined
       } else {
         const cloaked = (snapshot.conditions[0] & (1 << 4)) !== 0
@@ -4830,6 +4857,7 @@ export class Tf2Application {
             const activityElapsed = Number(snapshot.tick - this.#watchActivityTick) * SIMULATION_SAMPLE_INTERVAL_SECONDS
             watchRequest = Object.freeze({
               identity: 0x7fff_ff00 + snapshot.class * 4 + 2,
+              cloak: snapshot.actorCloaks.find(actor => actor.identity === 1),
               sampleTick: snapshot.tick,
               model: watchModel,
               activity: this.#watchActivity,
@@ -4893,6 +4921,16 @@ export class Tf2Application {
         if(!artifact.sequences.some(sequence=>sequence.activity===activity))throw new Error(`Authored TF2 bot player activity unavailable: ${model}:${activity}`)
         const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS
         return Object.freeze({identity:BOT_MODEL_IDENTITY_BASE+bot.identity,model,activity,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:Math.hypot(bot.velocity[0],bot.velocity[1]),screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:bot.team===2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(bot.position,Object.freeze([0,bot.yawDegrees,0]))})
+      }).map((request, index) => {
+        const bot = visibleBots[index]!
+        if (bot.class !== 8) return request
+        const itemModel = bot.weapon?.identity === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
+          : bot.weapon?.identity === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
+          : bot.weapon?.identity === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl" : undefined
+        if (!itemModel) throw new Error(`Authored Spy world weapon selection unavailable: ${bot.weapon?.identity}`)
+        const artifact = this.#artifacts!.models.get(itemModel)
+        if (!artifact) throw new Error(`Authored Spy world weapon unavailable: ${itemModel}`)
+        return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity), itemModel, worldItem: true, itemBodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)) })
       })
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
         if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
@@ -4938,7 +4976,8 @@ export class Tf2Application {
       const studioPoses = modelPoses.filter(pose => studioRequests.some(request => request.identity === pose.identity))
       const watchPose = watchRequest && modelPoses.find(pose => pose.identity === watchRequest!.identity)
       if (watchRequest && (!watchPose || watchPose.role !== "hand" || !watchPose.viewmodel)) throw new Error("Authored Spy offhand watch pose differs")
-      const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
+      const botParts=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
+      const botPoses=botParts.filter(pose=>pose.role!=="item")
       const objectivePoses=modelPoses.filter(pose=>pose.identity>=OBJECTIVE_MODEL_IDENTITY_BASE&&pose.identity<OBJECTIVE_MODEL_IDENTITY_BASE+0x10000)
       if(objectivePoses.length!==objectiveRequests.length)throw new Error("TF2 intelligence pose output differs from authoritative objective state")
       const buildingPoses=modelPoses.filter(pose=>snapshot.buildings.some(building=>building.identity===pose.identity))
@@ -5018,7 +5057,7 @@ export class Tf2Application {
             const renderBounds = snapshot.entityPresentation.studioAnimations.find(animation => animation.sourceIndex === pose.identity)!.bounds
             return Object.freeze({ identity: pose.identity, model: pose.model, position: state.worldPosition, angles: state.worldAngles, scale: 1, skin: occurrence.skin, pose, renderBounds, modelLighting: pose.lighting!, eyeStates: pose.eyes })
           }),
-          ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
+          ...botParts.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...(blueprintPose&&snapshot.placement?[Object.freeze({identity:blueprintPose.identity,model:blueprintPose.model,position:snapshot.placement.position,angles:Object.freeze([0,snapshot.placement.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:snapshot.team===2||(this.#artifacts!.models.get(blueprintPose.model)?.skinCount??0)<2?0:1,pose:blueprintPose,modelLighting:blueprintPose.lighting!,eyeStates:blueprintPose.eyes})]:[]),

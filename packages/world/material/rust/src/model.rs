@@ -976,7 +976,7 @@ fn cloak(parameters: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<CloakState, Error> {
         enabled: boolean(parameters, b"$cloakpassenabled"),
         factor: float_or(parameters, b"$cloakfactor", 0.0)?,
         color_tint: color_or(parameters, b"$cloakcolortint", [1.0; 3])?,
-        refract_amount: float_or(parameters, b"$refractamount", 2.0)?,
+        refract_amount: float_or(parameters, b"$refractamount", 0.1)?,
     })
 }
 

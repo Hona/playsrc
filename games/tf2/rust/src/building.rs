@@ -1029,6 +1029,7 @@ mod tests {
         world.buildings[0].snapshot.health = 150.0;
         world.buildings[0].snapshot.shells = 150;
         let enemy = bot::Snapshot {
+            spy: None,
             identity: 2,
             name: "Enemy Soldier".to_owned(),
             class: PlayerClass::Soldier,

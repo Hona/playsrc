@@ -4,7 +4,7 @@ import type { Camera, Effect, ModelEyeState, ModelLightingInput, ModelLocalLight
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
-import type { Snapshot } from "./codec"
+import type { Snapshot, ActorCloakState } from "./codec"
 
 const UINT32_MAX = 0xffff_ffff
 const NORMAL_TOLERANCE = 1e-4
@@ -379,8 +379,10 @@ export type ModelPoseRequest = Readonly<{
   classSelection?: boolean
   modelPanel?: boolean
   modelPanelReset?: boolean
+  cloak?: ActorCloakState
   model: string
   itemModel?: string
+  worldItem?: boolean
   handsOnlyViewmodel?: boolean
   activity: string
   sampleTick?: bigint
@@ -413,6 +415,7 @@ export type PosedPrimitive = Readonly<{
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
 export type PosedModel = Readonly<{
   identity: number
+  cloak: Readonly<{ localFactor: number; worldFactor: number; rawFactor: number; playerTint: Vector3; local: boolean; player: boolean }> | null
   sampleTick: bigint
   attachmentsOnly: boolean
   attachmentsWorld: boolean
@@ -444,14 +447,14 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = poseText(request.model)
     const item = poseText(request.itemModel ?? "")
     const activity = poseText(request.activity)
-    length += 160 + model.length + item.length + activity.length +
+    length += 188 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     return { request, model, item, activity }
   })
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 8, true)
+  view.setUint32(4, 9, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -459,9 +462,10 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   }
   for (const { request, model, item, activity } of encodedRequests) {
     if ((request.classSelection !== undefined && typeof request.classSelection !== "boolean")
+      || (request.worldItem !== undefined && typeof request.worldItem !== "boolean")
       || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
       || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
-      || ((request.classSelection || request.modelPanel) && (request.itemModel !== undefined || request.handsOnlyViewmodel || request.phase !== undefined))
+      || ((request.classSelection || request.modelPanel) && (request.itemModel !== undefined || request.handsOnlyViewmodel || request.phase !== undefined || request.cloak !== undefined))
       || (request.modelPanelReset && !request.classSelection && !request.modelPanel)) {
       throw new ProjectilePresentationError("MalformedFact", "model panel pose request")
     }
@@ -472,6 +476,13 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose request")
     }
     view.setUint32(at, request.identity, true); at += 4
+    const cloak = request.cloak
+    if (cloak && (!Number.isSafeInteger(cloak.identity) || cloak.identity < 1 || cloak.identity > 0xffff_ffff)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
+    view.setUint32(at, cloak?.identity ?? 0, true); at += 4
+    for (const value of cloak ? [cloak.localFactor, cloak.worldFactor, cloak.rawFactor, ...cloak.playerTint] : [0, 0, 0, 0, 0, 0]) {
+      if (!Number.isFinite(value) || value < 0 || value > 1) throw new ProjectilePresentationError("MalformedFact", "model actor cloak")
+      view.setFloat32(at, value, true); at += 4
+    }
     const sampleTick = request.sampleTick ?? 0n
     if (typeof sampleTick !== "bigint" || sampleTick < 0n || sampleTick > 0xffff_ffff_ffff_ffffn ||
       typeof (request.attachmentsOnly ?? false) !== "boolean" ||
@@ -482,7 +493,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose sample")
     }
     view.setBigUint64(at, sampleTick, true); at += 8
-    bytes[at] = request.classSelection ? 3 : request.modelPanel ? 4 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
+    bytes[at] = request.classSelection ? 3 : request.modelPanel ? 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     bytes[at + 3] = Number(request.modelPanelReset ?? false)
@@ -507,11 +518,12 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     at+=20
     view.setUint32(at, request.skin, true); at += 4
     view.setUint32(at, request.lod, true); at += 4
-    bytes[at] = request.itemModel === undefined && !request.handsOnlyViewmodel ? 0xff : (request.phase ?? 0xff)
+    bytes[at] = request.worldItem || (request.itemModel === undefined && !request.handsOnlyViewmodel) ? 0xff : (request.phase ?? 0xff)
     bytes[at + 1] = Number(request.reflectedViewmodel ?? false)
     bytes[at + 2] = Number(request.ownerAlive ?? true)
     bytes[at + 3] = 0
-    if (((request.itemModel !== undefined || request.handsOnlyViewmodel) && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
+    if (((request.itemModel !== undefined && !request.worldItem || request.handsOnlyViewmodel) && (request.phase === undefined || request.phase < 0 || request.phase > 5)) ||
+      (request.worldItem && (request.itemModel === undefined || request.phase !== undefined || request.handsOnlyViewmodel || request.fireView !== undefined)) ||
       (request.itemModel === undefined && !request.handsOnlyViewmodel && request.phase !== undefined) ||
       (request.handsOnlyViewmodel && (request.itemModel !== undefined || request.itemBodygroups !== undefined)) ||
       typeof (request.reflectedViewmodel ?? false) !== "boolean" ||
@@ -550,7 +562,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (view.getUint32(0, false) !== 0x504d504f || view.getUint32(4, true) !== 9) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (view.getUint32(0, false) !== 0x504d504f || view.getUint32(4, true) !== 10) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -560,6 +572,11 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   const output: PosedModel[] = []
   for (let count = view.getUint32(8, true); count > 0; count--) {
     const identity = u32()
+    const hasCloak = u8(), localCloak = u8(), playerCloak = u8()
+    if (hasCloak > 1 || localCloak > 1 || playerCloak > 1 || u8() || (!hasCloak && (localCloak || playerCloak))) throw new ProjectilePresentationError("MalformedFact", "model cloak flags")
+    const localFactor = f32(), worldFactor = f32(), rawFactor = f32(), playerTint = vector([f32(), f32(), f32()])
+    if ([localFactor, worldFactor, rawFactor, ...playerTint].some(value => value < 0 || value > 1 || (!hasCloak && value !== 0))) throw new ProjectilePresentationError("MalformedFact", "model cloak state")
+    const cloak = hasCloak ? Object.freeze({ localFactor, worldFactor, rawFactor, playerTint, local: localCloak === 1, player: playerCloak === 1 }) : null
     ensure(8)
     const sampleTick = view.getBigUint64(at, true); at += 8
     const roleCode = u8(), attachmentMode = u8(), attachmentsWorld = u8()
@@ -668,7 +685,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       return Object.freeze({ primitive, indices, positions, normals })
     }))
     if (attachmentMode === 1 && (primitives.length !== 0 || eyes.length !== 0 || flex.length !== 0)) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
+    output.push(Object.freeze({ identity, cloak, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
