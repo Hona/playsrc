@@ -1521,7 +1521,7 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
-            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; }
+            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); }
 
             if let Some((due, target, weapon)) = bot.pending_melee
                 && tick > due
@@ -1698,6 +1698,25 @@ impl BotWorld {
                     .total_cmp(&right.1)
                     .then_with(|| left.0.cmp(&right.0))
             })
+    }
+
+    pub fn intersect_players_hull(&self, start: [f32; 3], end: [f32; 3], hull: Hull) -> Option<(u32, f32, PlayerTeam)> {
+        self.bots.values().filter(|bot| bot.lifecycle == PlayerLifecycle::Active).filter_map(|bot| {
+            let target = bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve());
+            let mins = crate::sub(crate::add(bot.movement.position, target.mins), hull.maxs);
+            let maxs = crate::sub(crate::add(bot.movement.position, target.maxs), hull.mins);
+            segment_bounds(start, end, mins, maxs).map(|fraction| (bot.identity, fraction, bot.team))
+        }).min_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.0.cmp(&right.0)))
+    }
+
+    pub fn generic_push(&mut self, identity: u32, attacker: u32, impulse: [f32; 3], horizontal_scale: f32, vertical_scale: f32) -> Result<bool, Error> {
+        if self.hitscan_target(identity).is_none_or(|target| target.push_immune) || self.bots[&identity].conditions.contains(ConditionId::RUNE_KNOCKOUT) { return Ok(false); }
+        let bot = self.bots.get_mut(&identity).unwrap();
+        let mut force = crate::scale(impulse, horizontal_scale);
+        if bot.movement.ground.is_some() { force[2] = force[2].max(268.328_16); }
+        force[2] *= vertical_scale;
+        bot.conditions.add(ConditionId::KNOCKED_INTO_AIR, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false).map_err(|_| Error::InvalidEntity)?;
+        Ok(self.apply_impulse(identity, force))
     }
 
     pub(crate) fn grant_pickup(
@@ -2721,6 +2740,10 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
 pub fn segment_player(start: [f32; 3], end: [f32; 3], position: [f32; 3]) -> Option<f32> {
     let mins = crate::add(position, PLAYER_HULL.mins);
     let maxs = crate::add(position, PLAYER_HULL.maxs);
+    segment_bounds(start, end, mins, maxs)
+}
+
+fn segment_bounds(start: [f32; 3], end: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<f32> {
     let mut enter = 0.0_f32;
     let mut leave = 1.0_f32;
     for axis in 0..3 {

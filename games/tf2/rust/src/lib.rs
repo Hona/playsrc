@@ -2573,6 +2573,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             let now = self.tick as f32 * self.movement_configuration.tick_interval;
             let attack_allowed = self.spy.is_none_or(|state| state.can_attack(now)) && self.restrictions.team_win.is_none_or(|winner| winner == self.team_selection.local_team());
+            if active_weapon == Weapon::HandgunScoutPrimary && self.loadout[&active_weapon].push_due_time.is_some_and(|due| now > due) {
+                self.loadout.get_mut(&active_weapon).unwrap().push_due_time = None;
+                self.push_shortstop(command.pitch_degrees, command.movement.yaw_degrees, &mut events)?;
+            }
             let released_primary = !command.fire && self.fire_was_held;
             let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
             let primary = if active_weapon == Weapon::Flamethrower {
@@ -2591,6 +2595,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self.movement_configuration.tick_interval,
                     command.fire && attack_allowed,
                     command.detonate
+                        && attack_allowed
                         && self.spy.is_none()
                         && active_weapon != Weapon::StickybombLauncher,
                     released_primary,
@@ -3629,6 +3634,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 && let Some(previous) = self.loadout.get_mut(&active_weapon)
             {
                 previous.charge_begin_tick = None;
+                previous.push_due_time = None;
                 previous.abort_reload();
                 if matches!(
                     active_weapon,
@@ -4891,6 +4897,34 @@ impl<W: GameplayWorld + Clone> Session<W> {
             position,
             samples,
         });
+    }
+
+    fn push_shortstop(&mut self, pitch: f32, yaw: f32, events: &mut Vec<Event>) -> Result<bool, Error> {
+        let origin = add(self.movement.position, self.movement.view_offset);
+        let forward = angle_vectors(pitch, yaw, 0.0).0;
+        let end = add(origin, scale(forward, 50.0));
+        let hull = Hull { mins: [-16.0; 3], maxs: [16.0; 3] };
+        let world = self.collision.trace(origin, end, hull, MASK_SOLID)?;
+        let Some((victim, fraction, team)) = self.bots.as_ref().and_then(|bots| bots.intersect_players_hull(origin, end, hull)) else { return Ok(false); };
+        if fraction >= 1.0 || fraction > world.fraction || !self.team_selection.local_team().is_enemy(team) { return Ok(false); }
+        let target = self.bots.as_ref().unwrap().hitscan_target(victim).unwrap();
+        let delta = sub(target.position, self.movement.position);
+        if dot(delta, delta) > 128.0 * 128.0 { return Ok(false); }
+        let sight = self.collision.trace(origin, target.center, Hull { mins: [0.0; 3], maxs: [0.0; 3] }, MASK_SOLID)?;
+        if sight.fraction < 1.0 { return Ok(false); }
+        let horizontal = self.equipped_player_attribute(victim, "airblast_vulnerability_multiplier", 1.0);
+        let vertical = self.equipped_player_attribute(victim, "airblast_vertical_vulnerability_multiplier", 1.0);
+        self.bots.as_mut().unwrap().generic_push(victim, PLAYER_IDENTITY, scale(normalized(delta), 400.0), horizontal, vertical).map_err(Error::Bot)?;
+        let weapon = Weapon::HandgunScoutPrimary;
+        self.apply_actor_damage(bot::Damage {
+            attacker: PLAYER_IDENTITY, victim, weapon, amount: 1.0,
+            position: add(self.movement.position, scale(forward, 50.0)), force: scale(forward, 24_000.0),
+            damage_type: damage::DamageType::MELEE | damage::DamageType::NEVER_GIB | damage::DamageType::CLUB,
+            crit: damage::CritKind::None, range_multiplier: 1.0, custom: damage::CustomDamage::None,
+            modifiers: damage::DamageModifiers::default(), killing_weapon: None, source_weapon: self.weapon_source(PLAYER_IDENTITY, weapon),
+        }, self.team_selection.local_team(), events)?;
+        events.push(Event::MeleeImpact { weapon, owner: PLAYER_IDENTITY, target: Some(victim), position: add(origin, scale(sub(end, origin), fraction)), damage: 1.0 });
+        Ok(true)
     }
 
     fn fire_hitscan(

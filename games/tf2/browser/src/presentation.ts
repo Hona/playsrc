@@ -306,8 +306,8 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts, catal
       const selectionChanged = prior !== snapshot.weapon || priorClass !== snapshot.class || priorDefinition !== equipped.item.definitionIndex
       const exact = snapshot.activities.filter((event) => event.weapon === snapshot.weapon).at(-1)
       if (exact !== undefined) {
-        activity = ["", "ACT_VM_DRAW", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH", "ACT_VM_IDLE", "ACT_VM_SECONDARYATTACK", "ACT_VM_SWINGHARD", "ACT_VM_HITCENTER", "ACT_VM_HITLEFT", "ACT_VM_HITRIGHT"][exact.activity]!
-        phase = ([0, 0, 1, 2, 3, 4, 5, 1, 1, 1, 1, 1] as const)[exact.activity]!
+        activity = ["", "ACT_VM_DRAW", "ACT_VM_PRIMARYATTACK", "ACT_RELOAD_START", "ACT_VM_RELOAD", "ACT_RELOAD_FINISH", "ACT_VM_IDLE", "ACT_VM_SECONDARYATTACK", "ACT_VM_SWINGHARD", "ACT_VM_HITCENTER", "ACT_VM_HITLEFT", "ACT_VM_HITRIGHT", "ACT_MP_ATTACK_STAND_PREFIRE", "ACT_MP_ATTACK_STAND_POSTFIRE"][exact.activity]!
+        phase = ([0, 0, 1, 2, 3, 4, 5, 1, 1, 1, 1, 1, 1, 1] as const)[exact.activity]!
         actionTick = exact.tick
       } else if (selectionChanged) { activity = "ACT_VM_DRAW"; phase = 0; actionTick = snapshot.tick }
       prior = snapshot.weapon
