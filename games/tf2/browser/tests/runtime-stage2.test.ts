@@ -157,10 +157,10 @@ test("mini-round completion is authoritative and does not change the round state
 
 test("persistent authored view corrections survive snapshot decode and reject nonfinite angles", () => {
   const bytes = snapshot(), view = new DataView(bytes)
-  view.setFloat32(bytes.byteLength - 12, -5, true)
-  view.setFloat32(bytes.byteLength - 8, -150, true)
+  view.setFloat32(bytes.byteLength - 24, -5, true)
+  view.setFloat32(bytes.byteLength - 20, -150, true)
   expect(decodeSnapshot(bytes).viewAngleOffset).toEqual([-5, -150, 0])
-  view.setFloat32(bytes.byteLength - 4, Number.NaN, true)
+  view.setFloat32(bytes.byteLength - 16, Number.NaN, true)
   expect(() => decodeSnapshot(bytes)).toThrow("view angle correction is invalid")
 })
 
