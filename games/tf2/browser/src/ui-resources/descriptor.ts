@@ -227,6 +227,8 @@ function controlOwner(name: string): Tf2UiOwner | null {
   if (VGUI_CONTROLS.has(name)) return "vgui"
   if (SETTINGS_CONTROLS.has(name)) return "settings"
   if (GAMEUI_CONTROLS.has(name)) return "gameui"
+  if (name === "CircularProgressBar") return "vgui"
+  if (name === "CControlPointCountdown") return "tf2"
   if (/^(?:C(?:AutoFittingLabel|AvatarImagePanel|BasicTraining_ClassDetailsPanel|BasicTraining_ClassSelectionPanel|BuildingHealthBar|BuildingStatusAlertTray|CompetitiveAccessInfoPanel|CurrencyStatusPanel|CyclingAdContainerPanel|DashboardPartyMember|EmbeddedItemModelPanel|EngyDestroyMenuItem|EventPlayListEntry|ExButton|ExImageButton|ExLabel|ExplanationPopup|IconPanel|ImagePanel|ItemModelPanel|MainMenuNotificationsControl|ModePanel|ModeSelectionPanel|ModelPanel|OfflinePractice_MapSelectionPanel|OfflinePractice_ModeSelectionPanel|PlayListEntry|PvPRankPanel|SteamFriendsListPanel|TeamMenu|TFArrowPanel|TFBadgePanel|TFClientScoreBoardDialog|TFHudMannVsMachineScoreboard|TFClassImage|TFClassTipsItemPanel|TFClassTipsPanel|TFFlagStatus|TFFooter|TFImagePanel|TFLogoPanel|TFParticlePanel|TFPlayerModelPanel|TFProgressBar|TFTeamButton|TFTeamStatus|TrainingDialog)|PanelListPanel)$/u.test(name)) return "tf2"
   return null
 }
