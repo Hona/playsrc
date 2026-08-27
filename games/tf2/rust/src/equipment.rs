@@ -72,9 +72,14 @@ pub struct DescriptionLine {
 #[repr(u8)]
 pub enum AmmoDisplay { Hidden = 0, Total = 1, ClipAndReserve = 2 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CountMeter { None = 0, Kills = 1, RevengeActive = 2, Heads = 3, Revenge = 4 }
+
 #[derive(Clone, Copy, Debug)]
 pub struct WeaponHud {
     pub allows_auto_switch_to: bool,
+    pub count_meter: CountMeter,
     pub script: &'static str,
     pub ammo: AmmoDisplay,
     pub bucket: u8,
@@ -239,7 +244,7 @@ impl Equipment {
     }
 
     pub fn encode_state(&self) -> Vec<u8> {
-        let mut out = b"TFEI\x05\0\0\0".to_vec();
+        let mut out = b"TFEI\x06\0\0\0".to_vec();
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(SUPPORTED_ITEMS.len() as u32).to_le_bytes());
         for supported in SUPPORTED_ITEMS {
@@ -257,7 +262,7 @@ impl Equipment {
                 out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8), supported.selection_slot(class, slot).unwrap_or(u8::MAX)]);
                 let hud = metadata.class_hud.iter().find(|(eligible, _)| *eligible == class).map(|(_, hud)| hud);
                 out.extend_from_slice(&hud.map_or([0; 4], |hud| [hud.ammo as u8, hud.bucket, hud.position,
-                    u8::from(hud.draws_crosshair) | (u8::from(hud.suppress_crosshair) << 1)]));
+                    u8::from(hud.draws_crosshair) | (u8::from(hud.suppress_crosshair) << 1) | ((hud.count_meter as u8) << 2)]));
                 let script = hud.map_or("", |hud| hud.script);
                 out.extend_from_slice(&(script.len() as u32).to_le_bytes()); out.extend_from_slice(script.as_bytes());
             }
@@ -519,5 +524,7 @@ mod tests {
         assert!(matches!(hud(15, PlayerClass::Heavy).ammo, AmmoDisplay::Total));
         assert!(matches!(hud(25, PlayerClass::Engineer).ammo, AmmoDisplay::Hidden));
         assert!(hud(25, PlayerClass::Engineer).suppress_crosshair);
+        assert_eq!(hud(14, PlayerClass::Sniper).count_meter, CountMeter::None);
+        assert_eq!(hud(402, PlayerClass::Sniper).count_meter, CountMeter::Heads);
     }
 }

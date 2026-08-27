@@ -29,6 +29,7 @@ export type Tf2SupportedItem = Readonly<{
 }>
 
 export type Tf2WeaponHud = Readonly<{
+  countMeter: "kills" | "revenge-active" | "heads" | "revenge" | null
   script: string
   ammoDisplay: "hidden" | "total" | "clip-and-reserve"
   bucket: number

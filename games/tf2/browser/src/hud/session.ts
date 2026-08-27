@@ -13,6 +13,7 @@ import type {
 } from "./contract"
 import type { CaptureObjectives, ControlPoints, RoundSnapshot, Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
 import type { Tf2EquippedItem, Tf2SupportedItem } from "../equipment/types"
+import { equipmentCatalogIndex } from "../equipment/lookup"
 import { tf2ClassPresentation } from "../class"
 import { Tf2HudBindingError } from "./contract"
 import { tf2HudAvailable, tf2HudUnavailable } from "./bindings"
@@ -51,6 +52,8 @@ type CompactGameplayEvent = Readonly<{
 }>
 
 type SessionSnapshot = Readonly<{
+  decapitations: number
+  revengeCrits: number
   equippedItems: readonly Tf2EquippedItem[]
   tick: bigint
   class: Tf2Class
@@ -103,10 +106,8 @@ function reload(value: CompactWeaponState["reload"]): Tf2ReloadPhase {
   return (["ready", "start", "insert", "finish"] as const)[value]
 }
 
-const inventories = new WeakMap<readonly Tf2SupportedItem[], ReadonlyMap<number, Tf2SupportedItem>>()
 function weapon(value: CompactWeaponState, snapshot: SessionSnapshot, inventory: readonly Tf2SupportedItem[]): Tf2HudWeapon {
-  let definitions = inventories.get(inventory)
-  if (!definitions) { definitions = new Map(inventory.map(item => [item.item.definitionIndex, item])); inventories.set(inventory, definitions) }
+  const definitions = equipmentCatalogIndex(inventory)
   const matches = snapshot.equippedItems.flatMap(item => {
     const definition = definitions!.get(item.definitionIndex)
     const eligibility = definition?.classSlots.find(slot => slot.class === snapshot.class && slot.slot === item.slot && slot.weapon === value.weapon)

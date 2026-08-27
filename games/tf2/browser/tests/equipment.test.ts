@@ -7,7 +7,7 @@ function packet(): Uint8Array {
   const u32 = (value: number) => bytes.push(value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24)
   const text = (value: string) => { const encoded = new TextEncoder().encode(value); u32(encoded.length); bytes.push(...encoded) }
   const item = () => { u32(1); u32(14); u32(13); bytes.push(0, 0, 0, 0) }
-  bytes.push(...new TextEncoder().encode("TFEI")); u32(5); u32(0); u32(1)
+  bytes.push(...new TextEncoder().encode("TFEI")); u32(6); u32(0); u32(1)
   item(); bytes.push(4, 1, 1, 0, 4, 0, 2, 0, 0, 1); text("scripts/tf_weapon_scattergun.ctx"); text("#TF_Weapon_Scattergun"); text("Scattergun"); text("backpack/weapons/w_scattergun")
   u32(1); text("Level 1 Scattergun"); text("ItemAttribLevel")
   text(""); u32(0)
@@ -25,7 +25,7 @@ test("equipment projection preserves canonical definition identity independently
   expect(state.inventory[0]!.displayName).toBe("Scattergun")
   expect(state.inventory[0]!.description).toEqual([{ text: "Level 1 Scattergun", color: "ItemAttribLevel" }])
   expect(state.inventory[0]!.classSlots).toEqual([{ class: 1, slot: 0, weapon: 4, selectionSlot: 0,
-    hud: { script: "scripts/tf_weapon_scattergun.ctx", ammoDisplay: "clip-and-reserve", bucket: 0, position: 0, drawsCrosshair: true, suppressCrosshair: false } }])
+    hud: { script: "scripts/tf_weapon_scattergun.ctx", ammoDisplay: "clip-and-reserve", bucket: 0, position: 0, drawsCrosshair: true, suppressCrosshair: false, countMeter: null } }])
   expect(state.classes.length).toBe(9)
   expect(Object.isFrozen(state.inventory)).toBe(true)
   const shared = new Uint8Array(new SharedArrayBuffer(packet().length)); shared.set(packet())
