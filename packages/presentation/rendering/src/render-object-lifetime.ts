@@ -10,11 +10,13 @@ export function installRenderObjectLifetime(manager: RenderObjectManager) {
   const original = manager.createRenderObject
   const descriptor = Object.getOwnPropertyDescriptor(manager, "createRenderObject")
   let objects = new WeakMap<object, Set<RenderObject>>()
+  let count = 0
   manager.createRenderObject = function (...args) {
     const renderObject = original.apply(this, args)
     let owned = objects.get(renderObject.object)
     if (!owned) objects.set(renderObject.object, owned = new Set())
     owned.add(renderObject)
+    count++
     const setGeometry = renderObject.setGeometry
     renderObject.setGeometry = function (geometry) {
       const previous = this.geometry
@@ -25,11 +27,13 @@ export function installRenderObjectLifetime(manager: RenderObjectManager) {
     const dispose = renderObject.onDispose
     renderObject.onDispose = () => {
       if (!owned.delete(renderObject)) return
+      count--
       dispose.call(renderObject)
     }
     return renderObject
   }
   return {
+    get size() { return count },
     release(root: Root) {
       root.traverse(object => {
         const owned = objects.get(object)

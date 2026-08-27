@@ -2122,6 +2122,22 @@ class RendererOwner implements Renderer {
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
       this.#renderObjectLifetime = installRenderObjectLifetime((backend as any)._objects)
       this.#restoreGeometryAttributeLifetime = installGeometryAttributeLifetime((backend as any)._geometries)
+      const diagnostics = (globalThis as any).__playsrcProfile
+      if (diagnostics) diagnostics.rendererOwnership = () => ({
+        scene: this.#sceneGeneration,
+        resources: this.#active?.disposables.snapshot().resources ?? 0,
+        templates: this.#active?.modelTemplates.size ?? 0,
+        modelSamples: this.#active?.modelBaseSamples.size ?? 0,
+        worldGraphs: this.#active?.modelLightingGraphs.size ?? 0,
+        panelGraphs: this.#active?.modelPanelLightingGraphs.size ?? 0,
+        prepared: this.#preparedModelInstances.size,
+        parkedPanels: this.#retainedModelPanels.size,
+        parkedModels: this.#retainedModels.size,
+        activePanels: this.#modelPanelInstances.size,
+        draws: this.#renderObjectLifetime?.size ?? 0,
+        nodeStates: (this.#backend as any)?._nodes?.nodeBuilderCache?.size ?? 0,
+        ...Object.fromEntries(Object.entries((this.#backend as any)?.info?.memory ?? {}).filter(([, value]) => typeof value === "number")),
+      })
       this.#restoreBufferNames = installWebGpuBufferNames(backend.backend as unknown as BufferNamingBackend)
       if (profiler) {
         this.#instrumentation = new RendererFrameInstrumentation(
