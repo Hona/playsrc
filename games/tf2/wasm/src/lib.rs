@@ -6559,7 +6559,11 @@ fn encode_snapshot(
         }
     }
     playsrc_tf2::equipment::encode_items(&mut out, &snapshot.equipped_items);
-    for bot in &snapshot.bots { playsrc_tf2::equipment::encode_items(&mut out, &bot.equipped_items); }
+    for bot in &snapshot.bots {
+        playsrc_tf2::equipment::encode_items(&mut out, &bot.equipped_items);
+        for word in bot.conditions { out.extend_from_slice(&word.to_le_bytes()); }
+        out.extend_from_slice(&(bot.class.standing_eye_height() + 20.0).to_le_bytes());
+    }
     for value in snapshot.view_angle_offset { f32_field(&mut out, value, MAX)?; }
     Some(out)
 }
@@ -7078,7 +7082,7 @@ fn encode_entity_presentation(
 
 fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
     let mut output = b"PRNG".to_vec();
-    output.extend_from_slice(&1_u32.to_le_bytes());
+    output.extend_from_slice(&2_u32.to_le_bytes());
     for stream in [state.authority, state.predicted_presentation] {
         output.extend_from_slice(&stream.current.to_le_bytes());
         output.extend_from_slice(&stream.shuffled.to_le_bytes());
@@ -7114,11 +7118,13 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.control_point_available as u8,
         (state.sound_selection.control_point_available >> 8) as u8,
     ]);
-    (output.len() == 296).then_some(output)
+    output.extend_from_slice(&state.sound_selection.configured_available);
+    (output.len() == 360).then_some(output)
 }
 
 fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
     match value {
+        playsrc_tf2::SoundDefinition::Configured(index) => 160 + index,
         playsrc_tf2::SoundDefinition::RocketSingle => 1,
         playsrc_tf2::SoundDefinition::OriginalSingle => 2,
         playsrc_tf2::SoundDefinition::StickySingle => 3,
@@ -11379,6 +11385,26 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     if timer_audio { round_targets.push("Game.Overtime"); }
     if control_points { round_targets.extend(playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|definition| definition.identity())); }
     documents.push(("scripts/game_sounds.txt", &round_targets));
+    for (_, path, _) in playsrc_tf2::audio::CONFIGURED_SOUNDS {
+        if !documents.iter().any(|(current, _)| current == path) { documents.push((path, &[])); }
+    }
+    let wanted: std::collections::BTreeSet<&str> = documents.iter().flat_map(|(_, targets)| targets.iter().copied())
+        .chain(playsrc_tf2::SoundDefinition::NATIVE.iter().filter(|definition| !definition.map_scoped()).map(|definition| definition.identity()))
+        .chain(playsrc_tf2::audio::CONFIGURED_SOUNDS.iter().map(|(name, _, _)| *name)).collect();
+    for (path, source) in bundle {
+        if !path.starts_with("scripts/game_sounds") || !path.ends_with(".txt") || path.ends_with("_manifest.txt") || documents.iter().any(|(current, _)| *current == path) { continue; }
+        let document = playsrc_keyvalues::parse_text(source, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default()).map_err(|_| ())?;
+        if document.roots.iter().any(|node| wanted.iter().any(|name| node.key.bytes.eq_ignore_ascii_case(name.as_bytes()))) {
+            documents.push((path.as_str(), &[]));
+        }
+    }
+    let manifest = playsrc_keyvalues::parse_text(bundle.get("scripts/game_sounds_manifest.txt").ok_or(())?, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default()).map_err(|_| ())?
+        .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
+    let Some(playsrc_keyvalues::Value::Object(files)) = manifest.roots.first().map(|node| &node.value) else { return Err(()); };
+    let order: Vec<_> = files.iter().filter_map(|node| match &node.value {
+        playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"precache_file") || node.key.bytes.eq_ignore_ascii_case(b"preload_file") => std::str::from_utf8(&value.token.bytes).ok(), _ => None,
+    }).collect();
+    documents.sort_by_key(|(path, _)| order.iter().position(|file| file.eq_ignore_ascii_case(path)).unwrap_or(usize::MAX));
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
     out.extend_from_slice(&4u32.to_le_bytes());
@@ -11389,7 +11415,8 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
             .map_err(|_| ())?
             .to_le_bytes(),
     );
-    for (logical_path, targets) in documents {
+    let mut emitted = std::collections::BTreeSet::new();
+    for (logical_path, _) in documents {
         let source = *bundle.get(logical_path).ok_or(())?;
         let document = playsrc_keyvalues::parse_text(
             source,
@@ -11401,6 +11428,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
             (b"$WIN32".to_vec(), true),
             (b"$X360".to_vec(), false),
         ]));
+        let targets: Vec<_> = wanted.iter().copied().filter(|name| document.roots.iter().any(|node| node.key.bytes.eq_ignore_ascii_case(name.as_bytes())) && emitted.insert(name.to_ascii_lowercase())).collect();
         pbytes(out, logical_path.as_bytes())?;
         out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(source)));
         out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
@@ -11413,6 +11441,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
             encode_sound_node(out, node)?;
         }
     }
+    if wanted.iter().any(|name| !emitted.contains(&name.to_ascii_lowercase())) { return Err(()); }
     // These stock sound patches use the authored RIFF cue as their loop start.
     let mut patches = vec![
         "sound/weapons/flame_thrower_start.wav",
@@ -16183,6 +16212,7 @@ mod tests {
             authority,
             predicted_presentation: authority,
             sound_selection: playsrc_tf2::SoundSelectionState {
+                configured_available: [0; 64],
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
                 bat_hit_world_available: 3,
@@ -16246,11 +16276,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x1a\0\0\0");
-        assert_eq!(encoded.len(), 1076);
-        assert_eq!(&encoded[1060..], &[0; 16]);
-        assert_eq!(&encoded[944..948], b"PCPN");
-        assert_eq!(&encoded[956..964], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[992..1000], b"PGRL\x04\0\0\0");
+        assert_eq!(encoded.len(), 1140);
+        assert_eq!(&encoded[1124..], &[0; 16]);
+        assert_eq!(&encoded[1008..1012], b"PCPN");
+        assert_eq!(&encoded[1020..1028], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[1056..1064], b"PGRL\x04\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -16261,7 +16291,7 @@ mod tests {
         assert_eq!(&encoded[324..328], &[12, 0, 0, 0]);
         assert_eq!(&encoded[408..412], &[6, 1, 3, 0]);
         assert_eq!(&encoded[544..552], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[552..560], b"PRNG\x01\0\0\0");
+        assert_eq!(&encoded[552..560], b"PRNG\x02\0\0\0");
 
         let constrained = encode_snapshot(
             &snapshot,
@@ -16289,7 +16319,7 @@ mod tests {
             &constrained[544..556],
             &[1, 1, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0]
         );
-        assert_eq!(&constrained[556..564], b"PRNG\x01\0\0\0");
+        assert_eq!(&constrained[556..564], b"PRNG\x02\0\0\0");
         assert_eq!(constrained.len(), encoded.len() + 4);
     }
 

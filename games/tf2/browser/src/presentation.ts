@@ -6,6 +6,7 @@ import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
 import type { Tf2EquippedItem } from "./equipment/types"
 import type { Snapshot, ActorCloakState, EntityPresentation } from "./codec"
+import { configuredEquipmentSounds } from "./equipment/audio.generated"
 
 /** Static skin inputs do not create a prop animation. Keep their template bounds;
  * only animated props replace those bounds with the authored sequence bounds. */
@@ -175,7 +176,7 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     fadeSeconds: event.fadeSeconds,
     tick: event.tick,
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
-    definition: definitions[event.definition - 1]!,
+    definition: event.definition >= 160 ? configuredEquipmentSounds[event.definition - 160]! : definitions[event.definition - 1]!,
     source: Object.freeze({
       kind: event.sourceKind === 3 ? "local-listener" as const : event.sourceKind === 1 || event.sourceKind === 4 ? "entity" as const : "world" as const,
       identity: event.sourceIdentity,

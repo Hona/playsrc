@@ -58,6 +58,7 @@ export type RandomStreamState = Readonly<{
   table: readonly number[]
 }>
 export type Tf2RandomState = Readonly<{
+  configuredAvailable: readonly number[]
   authority: RandomStreamState
   predictedPresentation: RandomStreamState
   rocketExplosionAvailable: number
@@ -87,12 +88,17 @@ export type Tf2RandomState = Readonly<{
   overtimeAvailable: number
   controlPointAvailable: number
 }>
+import { configuredEquipmentSoundWaves } from "./equipment/audio.generated"
+
+function isSoundDefinition(value: number | undefined): value is number {
+  return value !== undefined && (value >= 1 && value <= 102 || value >= 160 && value < 160 + configuredEquipmentSoundWaves.length)
+}
+
 export type RandomDraw = Readonly<{
   context: 1 | 2
   decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 14 | 64 | 65
   definition: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
-    | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
-    | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
+    | number
   phase: 0 | 1 | 2
   raw: number
   result: Readonly<{ kind: "float-bits"; bits: number } | { kind: "integer"; value: number } | { kind: "rejected-integer" }>
@@ -104,8 +110,7 @@ export type AudioEvent = Readonly<{
   ordinal: number
   identity: 1 | 2 | 3 | 4
   definition: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76
-    | 77 | 78 | 79 | 80 | 81 | 82 | 83 | 84 | 85
-    | 86 | 87 | 88 | 89 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98 | 99 | 100 | 101 | 102
+    | number
   sourceKind: 1 | 2 | 3 | 4
   sourceIdentity: number
   ownerIdentity: number | null
@@ -581,6 +586,8 @@ export type JumpSnapshot = Readonly<{
 }>
 
 export type BotSnapshot = Readonly<{
+  conditions: readonly number[]
+  overheadHeight: number
   equippedItems: readonly Tf2EquippedItem[]
   identity: number
   class: Tf2Class
@@ -1549,9 +1556,9 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
 }
 
 function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): Tf2RandomState {
-  if (length !== 296) throw new Tf2CodecError("TF2 random state length is invalid")
+  if (length !== 360) throw new Tf2CodecError("TF2 random state length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 1) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 2) {
     throw new Tf2CodecError("TF2 random state identity is invalid")
   }
   let at = 8
@@ -1580,7 +1587,9 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     || data[at + 13]! > 15 || view.getUint16(at + 14, true) > 0x1fff) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
-  return Object.freeze({ authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
+  const configuredAvailable = Object.freeze(Array.from(data.subarray(296, 360)))
+  if (configuredAvailable.some((mask, index) => mask & ~((1 << (configuredEquipmentSoundWaves[index] ?? 0)) - 1))) throw new Tf2CodecError("configured sound selection mask is invalid")
+  return Object.freeze({ configuredAvailable, authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
@@ -2140,7 +2149,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
       (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 && decision !== 14 && decision !== 64 && decision !== 65 ||
-      (soundDecision ? definition === undefined || definition < 1 || definition > 108 || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14 && decision !== 65) ||
+      (soundDecision ? !isSoundDefinition(definition) || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14 && decision !== 65) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
       ((decision === 3 || decision === 7 || decision === 8 || decision === 14) ? resultKind === 1 : resultKind !== 1) ||
@@ -2164,11 +2173,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const sourceIdentity = view.getUint32(item + 16, true), rawOwner = view.getUint32(item + 20, true), position = vector(view, item + 24)
     const volume = view.getFloat32(item + 36, true), pitch = view.getFloat32(item + 40, true), soundLevel = view.getFloat32(item + 44, true)
     const action = data[item + 15]!, fadeSeconds = view.getFloat32(item + 48, true)
-    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition === 44 || definition === 85 || definition === 91 ? 4
+    const expectedOrdinal = nextOrdinal.get(tick) ?? 0, waveCount = definition !== undefined && definition >= 160 ? configuredEquipmentSoundWaves[definition - 160] ?? 0 : definition === 44 || definition === 85 || definition === 91 ? 4
       : definition === 4 || definition === 6 || definition === 17 || definition === 25 || definition === 29 || definition === 35 || definition === 42 || definition === 46 || definition === 47 || definition === 56 || definition === 57 || definition === 65 || definition === 74 || definition === 89 ? 3
         : definition === 11 || definition === 18 || definition === 23 || definition === 24 || definition === 30 || definition === 43 || definition === 45 || definition === 49 || definition === 75 || definition === 86 || definition === 90 || definition === 98 ? 2 : 1
     if (
-      (identity === undefined || identity < 1 || identity > 4) || definition === undefined || definition < 1 || definition > 108 ||
+      (identity === undefined || identity < 1 || identity > 4) || !isSoundDefinition(definition) ||
       (sourceKind !== 1 && sourceKind !== 2 && sourceKind !== 3 && sourceKind !== 4) || (hasOwner !== 0 && hasOwner !== 1) || action > 3 ||
       ordinal !== expectedOrdinal || !canonicalIdentity(sourceIdentity) ||
       (hasOwner === 0 ? rawOwner !== 0xffff_ffff : !canonicalIdentity(rawOwner)) ||
@@ -2476,9 +2485,19 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     return result.items
   }
   const equippedItems = readEquipment("equipment")
-  const equippedBots = bots.map(bot => {
+  const equippedBots = bots.map((bot, index) => {
     const equippedItems = readEquipment(`bot-equipment/${bot.identity}`)
-    return equippedItems.length === 0 ? bot : Object.freeze({ ...bot, equippedItems })
+    if (at + 24 > bytes.byteLength) throw new Tf2CodecError("bot condition record is truncated")
+    const decode = () => {
+      const conditions = Object.freeze(Array.from({ length: 5 }, (_, word) => view.getUint32(at + word * 4, true)))
+      const overheadHeight = view.getFloat32(at + 20, true)
+      if (conditions[4]! >>> 3 || !Number.isFinite(overheadHeight) || overheadHeight <= 0) throw new Tf2CodecError("bot condition record is invalid")
+      return Object.freeze({ conditions, overheadHeight })
+    }
+    const condition = ranges ? ranges.read("bot-conditions", index, at, 24, decode) : decode()
+    at += 24
+    const compose = () => Object.freeze({ ...bot, equippedItems, ...condition })
+    return ranges ? ranges.compose(`bot-projection/${bot.identity}`, [bot, equippedItems, condition], compose) : compose()
   })
   requireBytes(12, "view angle correction")
   const viewAngleOffset = vector(view, at)

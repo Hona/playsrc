@@ -273,6 +273,7 @@ pub struct PathContext {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub conditions: [u32; 5],
     pub equipped_items: Vec<crate::equipment::EquippedItem>,
     pub identity: u32,
     pub spy: Option<crate::spy::SpyState>,
@@ -1916,6 +1917,17 @@ impl BotWorld {
         Some(&self.bots.get(&identity)?.conditions)
     }
 
+    pub fn active_weapon(&self, identity: u32) -> Option<Weapon> {
+        self.bots.get(&identity).and_then(|bot| bot.active_weapon)
+    }
+
+    pub fn advance_conditions(&mut self) {
+        for bot in self.bots.values_mut() {
+            if bot.lifecycle != PlayerLifecycle::Active { bot.conditions.remove_all(); continue; }
+            bot.conditions.advance(self.tick_interval, bot.health.healers.len()).expect("valid bot condition tick");
+        }
+    }
+
     pub(crate) fn critical_weapon(&self, identity: u32, weapon: Weapon) -> Option<crate::critical::WeaponState> {
         Some(self.bots.get(&identity)?.loadout.get(&weapon)?.critical)
     }
@@ -2066,6 +2078,7 @@ impl BotWorld {
         self.bots
             .values()
             .map(|bot| Snapshot {
+                conditions: bot.conditions.words(),
                 equipped_items: Vec::new(),
                 identity: bot.identity,
                 spy: bot.spy,
@@ -3206,6 +3219,23 @@ mod tests {
             damage_type: weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::None,
             modifiers: DamageModifiers::default(), killing_weapon: None }
+    }
+
+    #[test]
+    fn finite_conditions_advance_once_per_session_tick_when_ai_is_stopped() {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        session.advance(crate::Command { nextbot_stop: true, bot_request: Some(Request {
+            operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal,
+        }), ..Default::default() }).unwrap();
+        let target = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().conditions.add(
+            ConditionId::MARKED_FOR_DEATH, crate::condition::ConditionDuration::Finite(0.04), None, true, false).unwrap();
+        for expected in [true, true, false] {
+            let frame = session.advance(crate::Command { nextbot_stop: true, ..Default::default() }).unwrap();
+            assert_eq!(frame.bots[0].conditions[0] & (1 << 30) != 0, expected);
+        }
     }
 
     #[test]

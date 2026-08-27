@@ -11,6 +11,7 @@ pub mod control_point;
 pub mod critical;
 pub mod ctf;
 pub mod damage;
+mod combat_attributes;
 pub mod deathnotice;
 pub mod dynamic_prop;
 pub mod health;
@@ -2246,6 +2247,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         .resolve();
 
+        if let Some(bots) = &mut self.bots { bots.advance_conditions(); }
         if self.conditions.contains(Condition::Aiming) {
             if self.class == PlayerClass::Heavy {
                 let aiming_speed = self.equipment_attributes.player("mult_player_aiming_movespeed", 110.0);
@@ -4173,6 +4175,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
         position: [f32; 3],
         identity: u32,
     ) {
+        self.emit_resolved_weapon_sound(definition, position, identity);
+    }
+
+    pub fn emit_source_weapon_sound(&mut self, source: Option<weapon::WeaponSource>, weapon: Weapon,
+        slot: audio::WeaponSoundSlot, class_sound: SoundDefinition, position: [f32; 3]) -> bool {
+        let Some(source) = source.filter(|source| self.source_weapon_is_live(*source, weapon)) else { return false; };
+        self.emit_resolved_weapon_sound(class_sound.equipment_slot(source.definition_index, slot), position, source.owner);
+        true
+    }
+
+    fn emit_resolved_weapon_sound(&mut self, definition: SoundDefinition, position: [f32; 3], identity: u32) {
         let samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
             action: AudioAction::Play,
@@ -4425,6 +4438,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         mut attacker_team: PlayerTeam,
         events: &mut Vec<Event>,
     ) -> Result<Option<damage::DamageResult>, Error> {
+        input.modifiers = self.equipped_damage_modifiers(input.source_weapon, input.victim, input.weapon, input.modifiers);
         let custom = u8::try_from(input.custom.source_code()).map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?;
         let killing_weapon = input.killing_weapon;
         if input.attacker != PLAYER_IDENTITY && !self.bots.as_ref().is_some_and(|bots| bots.contains(input.attacker)) {
@@ -7393,6 +7407,33 @@ mod tests {
         assert_ne!(replacement.generation, first.generation);
         assert!(!session.source_weapon_is_live(first, Weapon::RocketLauncher));
         assert!(session.source_weapon_is_live(replacement, Weapon::RocketLauncher));
+    }
+
+    #[test]
+    fn source_weapon_sound_rejects_stale_handles_without_consuming_randomness() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let source = session.weapon_source(PLAYER_IDENTITY, Weapon::RocketLauncher);
+        let emit = |session: &mut Session<Floor>, source| session.emit_source_weapon_sound(source, Weapon::RocketLauncher,
+            audio::WeaponSoundSlot::Single, SoundDefinition::RocketSingle, [1.0, 2.0, 3.0]);
+        assert!(emit(&mut session, source));
+        assert_eq!(session.audio_events.last().unwrap().definition, SoundDefinition::RocketSingle);
+        assert_eq!(session.audio_events.last().unwrap().position, [1.0, 2.0, 3.0]);
+        session.advance(Command { select_class: Some(PlayerClass::Pyro), ..Default::default() }).unwrap();
+        let before = session.random_state();
+        let count = session.audio_events.len();
+        assert!(!emit(&mut session, source));
+        assert!(!emit(&mut session, None));
+        assert_eq!(session.random_state(), before);
+        assert_eq!(session.audio_events.len(), count);
+    }
+
+    #[test]
+    fn shared_equipment_damage_boundary_preserves_explicit_modifiers_once() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        let source = session.weapon_source(PLAYER_IDENTITY, Weapon::RocketLauncher);
+        let modifiers = damage::DamageModifiers { general_taken: 0.5, active_taken: 0.8, outgoing_vs_players: 1.3, ..Default::default() };
+        assert_eq!(session.equipped_damage_modifiers(source, PLAYER_IDENTITY, Weapon::RocketLauncher, modifiers), modifiers);
+        assert_eq!(session.equipped_damage_push_multiplier(PLAYER_IDENTITY), 1.0);
     }
 
     #[test]
@@ -10631,6 +10672,7 @@ mod tests {
         assert_eq!(
             session.random_state().sound_selection,
             SoundSelectionState {
+                configured_available: session.sound_selection.state().configured_available,
                 rocket_explosion_available: 0,
                 sticky_explosion_available: 0b111,
                 bat_hit_world_available: 0b11,
@@ -10684,6 +10726,7 @@ mod tests {
         assert_eq!(
             session.random_state().sound_selection,
             SoundSelectionState {
+                configured_available: session.sound_selection.state().configured_available,
                 rocket_explosion_available: 0b101,
                 sticky_explosion_available: 0b110,
                 bat_hit_world_available: 0b11,

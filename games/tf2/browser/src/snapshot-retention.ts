@@ -6,6 +6,7 @@ export class SnapshotRanges {
   readonly #view: DataView
   readonly #ranges = new Map<string, Range[]>()
   readonly #arrays = new Map<string, readonly unknown[]>()
+  readonly #compositions = new Map<string, Readonly<{ inputs: readonly unknown[]; value: unknown }>>()
   #previous: SnapshotRanges | undefined
   decoded = 0
   reused = 0
@@ -54,6 +55,13 @@ export class SnapshotRanges {
   }
 
   finish(): void { this.#previous = undefined }
+
+  compose<T>(key: string, inputs: readonly unknown[], create: () => T): T {
+    const prior = this.#previous?.#compositions.get(key)
+    const value = prior?.inputs.length === inputs.length && inputs.every((input, index) => input === prior.inputs[index]) ? prior.value as T : create()
+    this.#compositions.set(key, { inputs, value })
+    return value
+  }
 
   array<T>(key: string, values: readonly T[]): readonly T[] {
     const prior = this.#previous?.#arrays.get(key)

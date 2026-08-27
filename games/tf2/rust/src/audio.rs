@@ -1,5 +1,12 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SoundDefinition {
+macro_rules! native_sound_definitions {
+    ($($name:ident),* $(,)?) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum SoundDefinition { Configured(u8), $($name,)* }
+        impl SoundDefinition { pub const NATIVE: &'static [Self] = &[$(Self::$name,)*]; }
+    };
+}
+
+native_sound_definitions! {
     RocketSingle,
     OriginalSingle,
     StickySingle,
@@ -127,8 +134,18 @@ pub const SOUND_PRECACHE_ABSENCES_PATH: &str = "playsrc/audio-precache-absences.
 pub const SOUND_PRECACHE_ABSENCES_HEADER: &str = "playsrc-audio-precache-absences-v1\n";
 
 impl SoundDefinition {
+    pub const fn map_scoped(self) -> bool {
+        matches!(self, Self::FlagEnemyStolen | Self::FlagEnemyDropped | Self::FlagEnemyCaptured | Self::FlagEnemyReturned
+            | Self::FlagTeamStolen | Self::FlagTeamDropped | Self::FlagTeamCaptured | Self::FlagTeamReturned | Self::FlagSpawn
+            | Self::TeamWon | Self::TeamLost | Self::RoundEnds60 | Self::RoundEnds30 | Self::RoundEnds10
+            | Self::RoundEnds5 | Self::RoundEnds4 | Self::RoundEnds3 | Self::RoundEnds2 | Self::RoundEnds1 | Self::Overtime
+            | Self::PointSuccess | Self::PointFailure | Self::PointCaptured | Self::PointContested | Self::PointContestedNeutral
+            | Self::PointEnabled | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2
+            | Self::RoundBegins1 | Self::Stalemate | Self::CaptureWarn | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted)
+    }
     pub const fn identity(self) -> &'static str {
         match self {
+            Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].0,
             Self::RocketSingle => "Weapon_RPG.Single",
             Self::OriginalSingle => "Weapon_QuakeRPG.Single",
             Self::StickySingle => "Weapon_StickyBombLauncher.Single",
@@ -241,13 +258,14 @@ impl SoundDefinition {
         }
     }
 
-    pub(crate) const fn wave_count(self) -> u8 {
+    pub const fn wave_count(self) -> u8 {
         match self {
             Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::EndRoundScored => 1,
             Self::PointSuccess | Self::PointContestedNeutral | Self::CaptureWarn => 2,
             Self::PointContested => 3,
             Self::PointEnabled => 4,
             Self::PointFailure | Self::PointCaptured | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2 | Self::RoundBegins1 | Self::Stalemate | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted => 1,
+            Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].2,
             Self::RocketExplosion
             | Self::StickyExplosion
             | Self::ShovelHitFlesh
@@ -330,6 +348,54 @@ impl SoundDefinition {
     }
 }
 
+include!("equipment-audio.generated.rs");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeaponSoundSlot { Single, Burst, Reload, Special1, Special2, Special3, MeleeMiss, MeleeHit, MeleeHitWorld, Empty, Deploy }
+
+impl WeaponSoundSlot {
+    pub const fn key(self) -> &'static str { match self {
+        Self::Single => "sound_single_shot", Self::Burst => "sound_burst", Self::Reload => "sound_reload",
+        Self::Special1 => "sound_special1", Self::Special2 => "sound_special2", Self::Special3 => "sound_special3",
+        Self::MeleeMiss => "sound_melee_miss", Self::MeleeHit => "sound_melee_hit", Self::MeleeHitWorld => "sound_melee_hit_world",
+        Self::Empty => "sound_empty", Self::Deploy => "sound_deploy",
+    } }
+}
+
+impl SoundDefinition {
+    pub fn configured(name: &str) -> Option<Self> {
+        Self::NATIVE.iter().find(|definition| definition.identity() == name).copied()
+            .or_else(|| CONFIGURED_SOUNDS.iter().position(|(candidate, _, _)| *candidate == name).map(|index| Self::Configured(index as u8)))
+    }
+
+    pub fn equipment_override(self, definition: u32) -> Self {
+        let key = match self {
+            Self::BatMiss | Self::ShovelMiss | Self::KukriMiss | Self::FireAxeMiss | Self::WrenchMiss | Self::BottleMiss | Self::BonesawMiss | Self::KnifeMiss | Self::FistMiss => "sound_melee_miss",
+            Self::BatHitFlesh | Self::ShovelHitFlesh | Self::KukriHitFlesh | Self::FireAxeHitFlesh | Self::WrenchHitFlesh | Self::BottleHitFlesh | Self::BonesawHitFlesh | Self::KnifeHitFlesh | Self::FistHitFlesh => "sound_melee_hit",
+            Self::BatHitWorld | Self::ShovelHitWorld | Self::KukriHitWorld | Self::FireAxeHitWorld | Self::WrenchHitWorld | Self::BottleHitWorld | Self::BonesawHitWorld | Self::KnifeHitWorld | Self::FistHitWorld => "sound_melee_hit_world",
+            Self::RocketSingle | Self::OriginalSingle | Self::StickySingle | Self::ScattergunSingle | Self::PistolSingle | Self::ShotgunSingle | Self::SniperSingle | Self::SmgSingle | Self::RevolverSingle | Self::SyringeSingle | Self::MinigunFire => "sound_single_shot",
+            Self::ScattergunReload | Self::PistolReload | Self::ShotgunReload | Self::SmgReload | Self::RevolverReload | Self::SyringeReload => "sound_reload",
+            Self::MinigunWindUp => "sound_special1",
+            Self::MinigunWindDown => "sound_special2",
+            Self::MinigunSpin => "sound_special3",
+            _ => return self,
+        };
+        self.item_sound(definition, key)
+    }
+
+    pub fn equipment_slot(self, definition: u32, slot: WeaponSoundSlot) -> Self { self.item_sound(definition, slot.key()) }
+
+    fn item_sound(self, definition: u32, key: &str) -> Self {
+        let Some(name) = crate::equipment::presentation(definition).and_then(|item| item.sound_overrides.iter().find(|(candidate, _)| *candidate == key)).map(|(_, name)| *name) else { return self; };
+        if name == self.identity() { return self; }
+        Self::configured(name).expect("generated sound closure")
+    }
+
+    pub fn melee_critical(definition: u32) -> Option<Self> {
+        MELEE_CRITICAL_SOUNDS.iter().find(|(item, _)| *item == definition).map(|(_, index)| Self::Configured(*index))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SoundQueryPhase {
     Inspect,
@@ -384,6 +450,7 @@ pub struct AudioEvent {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SoundSelectionState {
+    pub configured_available: [u8; 64],
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
     pub bat_hit_world_available: u8,
@@ -459,6 +526,7 @@ impl WaveCycle {
 
 #[derive(Clone, Copy)]
 pub(crate) struct SoundSelection {
+    configured: [WaveCycle; 64],
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
     bat_hit_world: WaveCycle,
@@ -488,8 +556,9 @@ pub(crate) struct SoundSelection {
 }
 
 impl SoundSelection {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
+            configured: std::array::from_fn(|index| WaveCycle::new(CONFIGURED_SOUNDS.get(index).map_or(0, |(_, _, count)| ((1_u16 << count) - 1) as u8))),
             rocket_explosion: WaveCycle::new(WaveCycle::THREE),
             sticky_explosion: WaveCycle::new(WaveCycle::THREE),
             bat_hit_world: WaveCycle::new(WaveCycle::TWO),
@@ -521,6 +590,7 @@ impl SoundSelection {
 
     pub(crate) fn state(self) -> SoundSelectionState {
         SoundSelectionState {
+            configured_available: self.configured.map(|cycle| cycle.available),
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
             bat_hit_world_available: self.bat_hit_world.available,
@@ -551,6 +621,7 @@ impl SoundSelection {
     }
 
     pub(crate) fn restore(&mut self, state: SoundSelectionState) -> bool {
+        if self.configured.iter().zip(state.configured_available).any(|(cycle, value)| value & !cycle.all != 0) { return false; }
         if state.rocket_explosion_available & !WaveCycle::THREE != 0
             || state.sticky_explosion_available & !WaveCycle::THREE != 0
             || state.bat_hit_world_available & !WaveCycle::TWO != 0
@@ -608,6 +679,7 @@ impl SoundSelection {
         for (index, (shift, mask)) in [(0,3),(2,7),(5,3),(7,15),(11,3)].into_iter().enumerate() {
             self.control_point[index].available = ((state.control_point_available >> shift) & mask) as u8;
         }
+        for (cycle, value) in self.configured.iter_mut().zip(state.configured_available) { cycle.available = value; }
         true
     }
 
@@ -626,6 +698,7 @@ impl SoundSelection {
 
     fn cycle(&mut self, definition: SoundDefinition) -> &mut WaveCycle {
         match definition {
+            SoundDefinition::Configured(index) => &mut self.configured[index as usize],
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
             SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
