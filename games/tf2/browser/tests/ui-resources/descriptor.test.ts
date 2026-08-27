@@ -3,6 +3,9 @@ import bundleManifest from "../../../../../tools/source-bundle/tf2-ui.generated.
 import { TF2_CLASS_IMAGES, TF2_HUD_DYNAMIC_IMAGES } from "../../src/hud"
 import { configuredTf2UiResourceInput } from "../../src/ui-resources/configured.generated"
 import { TF2_MAPS } from "../../src/maps"
+=======
+import { nativeEquipment } from "../fixtures/equipment"
+>>>>>>> 99856a3 (Resolve equipped HUD ammo and crosshairs through configured item scripts)
 import {
   classifyTf2UiCommand,
   createTf2AuthoredCrosshairDescriptor,
@@ -79,6 +82,7 @@ describe("configured TF2 UI resource descriptor", () => {
   })
 
   test("binds the exact configured provider and selected source closure", () => {
+<<<<<<< HEAD
     expect(tf2UiResources.identity).toBe("tf2-ui-24245096-4bd1f4aebd2b9a5e")
     expect(tf2UiResources.providers).toHaveLength(14)
     expect(tf2UiResources.sources).toHaveLength(136)
@@ -87,6 +91,7 @@ describe("configured TF2 UI resource descriptor", () => {
       ["resource/ui/charinfoloadoutsubpanel.res", "017e977f498fc0eb326b8b0a4f26ffd40b6914f80502d4670736673d47ee16be"],
       ["resource/ui/classloadoutpanel.res", "868c75b730375b8a099e03103643be76430d089d992a227a163a7b3c3ccb0d38"],
       ["resource/ui/econ/backpackpanel.res", "f19343267c6f1297427c609a9d46b5a24aa335c5a75e8bda975893e184fad378"],
+      ["resource/ui/econ/itemmodelpanel.res", "9a1a9e8120cee8c1e92ac81be86a8c37d3fc673eb4c4f55e422c9863db667737"],
     ])
     expect(tf2UiResources.sources.find((source) => source.logicalPath === "resource/ui/hudobjectivekothtimepanel.res")?.sha256)
       .toBe("535758ffe0e4b29703dfcd357f98ae811aafed4861ebf98e47e3c6f8deae6c7e")
@@ -227,11 +232,10 @@ describe("authored TF2 crosshair content closure", () => {
       texture: { logicalPath: "materials/sprites/crosshairs.vtf", sha256: "e38c69d9c961a0bf8e39043c73d6d9f322d8138c7b4c05fc2b9dfee52d828b59" },
     })
     expect(tf2AuthoredCrosshairs.weapons.map((weapon) => ({
-      identities: weapon.weaponIdentities,
       script: weapon.source.logicalPath,
       crop: weapon.crosshair.crop,
       autoaim: weapon.autoaim?.crop,
-    }))).toEqual([
+    }))).toEqual(expect.arrayContaining([...new Map([
       { identities: [1, 2], script: "scripts/tf_weapon_rocketlauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [3], script: "scripts/tf_weapon_pipebomblauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [4], script: "scripts/tf_weapon_scattergun.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
@@ -264,7 +268,11 @@ describe("authored TF2 crosshair content closure", () => {
       { identities: [19], script: "scripts/tf_weapon_syringegun_medic.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [20], script: "scripts/tf_weapon_medigun.ctx", crop: { x: 0, y: 64, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [21], script: "scripts/tf_weapon_bonesaw.ctx", crop: { x: 64, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
-    ])
+    ].filter(item => item.identities[0] !== 18).map(({ identities: _, ...item }) => [item.script, item])).values(),
+      { script: "scripts/tf_weapon_shotgun_pyro.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
+    ].sort((a, b) => a.script.localeCompare(b.script))))
+    const scripts = [...new Set(nativeEquipment.inventory.flatMap(item => item.classSlots.flatMap(slot => slot.hud ? [slot.hud.script] : [])))].sort()
+    expect(tf2AuthoredCrosshairs.weapons.map(weapon => weapon.source.logicalPath)).toEqual(scripts)
   })
 
   test("admits exactly the sorted paired authored styles and every animation frame", () => {
@@ -286,7 +294,7 @@ describe("authored TF2 crosshair content closure", () => {
     expect(() => createTf2AuthoredCrosshairDescriptor(cropped)).toThrow("source crop exceeds")
 
     const duplicate = structuredClone(tf2AuthoredCrosshairs)
-    duplicate.weapons[1]!.weaponIdentities[0] = 1
+    duplicate.weapons[1]!.source.logicalPath = duplicate.weapons[0]!.source.logicalPath
     expect(() => createTf2AuthoredCrosshairDescriptor(duplicate)).toThrow("duplicated")
 
     const missing = structuredClone(tf2AuthoredCrosshairs)

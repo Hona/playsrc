@@ -19,6 +19,10 @@ const child = Bun.spawn(["cargo", `+${toolchains.rust.toolchain}`, "run", "--qui
 const output = await new Response(child.stdout).text()
 if (await child.exited !== 0) throw new Error("TF2 UI resource generation failed")
 if (!/^generated [1-9]\d* bytes sha256 [0-9a-f]{64}\n$/u.test(output)) throw new Error("TF2 UI resource generator report is malformed")
+const fixture = Bun.spawn(["cargo", `+${toolchains.rust.toolchain}`, "run", "--quiet", "-p", "playsrc-tf2", "--example", "equipment-fixture"], { cwd: root, stdout: "pipe", stderr: "inherit" })
+const fixtureBytes = await new Response(fixture.stdout).text()
+if (await fixture.exited !== 0) throw new Error("TF2 native equipment fixture generation failed")
+await Bun.write(path.join(root, "games/tf2/browser/tests/fixtures/equipment-state.json"), fixtureBytes)
 
 const bundle = Bun.spawn(["bun", "tools/source-bundle/scripts/generate-tf2-ui-manifest.ts"], {
   cwd: root,

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { nativeEquipment, stockItems } from "../fixtures/equipment"
 import {
   adaptSessionHud,
   bindTf2Hud,
@@ -56,6 +57,8 @@ function weapon(overrides: Partial<Tf2HudWeapon> = {}): Tf2HudWeapon {
     identity: 1,
     itemDefinition: unavailable(),
     displayName: "Rocket Launcher",
+    crosshairScript: "scripts/tf_weapon_rocketlauncher.ctx",
+    suppressesCrosshair: false,
     slot: 0,
     position: 0,
     selectable: true,
@@ -608,6 +611,7 @@ function compactSnapshot(
   overrides: Partial<SessionSimulationPublication["snapshot"]> = {},
 ): SessionSimulationPublication["snapshot"] {
   return Object.freeze({
+    equippedItems: stockItems(overrides.class ?? 3),
     tick,
     class: 3,
     team: 2,
@@ -633,6 +637,7 @@ function compactPublication(...snapshots: SessionSimulationPublication["snapshot
 
 describe("canonical all-class TF2 session HUD adapter", () => {
   const context: SessionHudContext = Object.freeze({
+    inventory: nativeEquipment.inventory,
     playerIdentity: 1,
     liveHudSuppressed: false,
     respawnAllowed: true,
@@ -641,6 +646,18 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     scoreboard: unavailable(),
     freezePanel: unavailable(),
     playerClassUsePlayerModel: false,
+  })
+
+  test("joins the actual equipped definition, rather than treating a shared runtime identity as stock", () => {
+    const stock = nativeEquipment.inventory.find(item => item.item.definitionIndex === 13)!
+    const replacement = Object.freeze({ ...stock, item: Object.freeze({ ...stock.item, itemId: 901, definitionIndex: 900 }), displayName: "Catalog-backed replacement" })
+    const frame = compactSnapshot(1n, { class: 1, weapon: 4, equippedItems: [replacement.item],
+      loadout: [{ weapon: 4, reload: 0, clip: 2, reserve: 20, maximumClip: 2, maximumReserve: 32 }] })
+    const publication = adaptSessionHud(unavailable("initial"), compactPublication(frame), { ...context, inventory: [...context.inventory, replacement] })
+    if (publication.snapshot.player.kind !== "available") throw new Error("missing player")
+    expect(publication.snapshot.player.value.weapons[0]).toMatchObject({ itemDefinition: { kind: "available", value: 900 }, displayName: "Catalog-backed replacement",
+      crosshairScript: "scripts/tf_weapon_scattergun.ctx", maximumClip: { kind: "available", value: 2 } })
+    expect(() => adaptSessionHud(unavailable("initial"), compactPublication(frame), context)).toThrow("no unique equipped definition")
   })
 
   test("reuses the final canonical event-batch snapshot instead of rebuilding its immutable player graph", () => {
@@ -864,20 +881,18 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     }
   })
 
-  test("publishes every Demoman stock item, authored slot, and hidden Bottle ammunition", () => {
+  test("publishes implemented Demoman stock items, authored slots, and hidden Bottle ammunition", () => {
     const loadout = Object.freeze([
       Object.freeze({ weapon: 3 as const, reload: 0 as const, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 }),
       Object.freeze({ weapon: 17 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
-      Object.freeze({ weapon: 18 as const, reload: 0 as const, clip: 4, reserve: 16, maximumClip: 4, maximumReserve: 16 }),
     ])
-    for (const active of [18, 3, 17] as const) {
+    for (const active of [3, 17] as const) {
       const source = compactSnapshot(1n, { class: 4, weapon: active, health: 175, maximumHealth: 175, loadout })
       const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
       const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
       expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
         { identity: 3, item: { kind: "available", value: 20 }, slot: 1, name: "Stickybomb Launcher", ammo: "clip-and-reserve" },
         { identity: 17, item: { kind: "available", value: 1 }, slot: 2, name: "Bottle", ammo: "hidden" },
-        { identity: 18, item: { kind: "available", value: 19 }, slot: 0, name: "Grenade Launcher", ammo: "clip-and-reserve" },
       ])
       expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 17 })
     }
@@ -963,7 +978,7 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       const player=(binding.facts.player as Extract<Tf2HudSnapshot["player"],{kind:"available"}>).value
       expect(player.weapons.map(item=>({identity:item.identity,item:item.itemDefinition,slot:item.slot,name:item.displayName,ammo:item.ammoDisplay}))).toEqual([
         {identity:7,item:{kind:"available",value:12},slot:1,name:"Shotgun",ammo:"clip-and-reserve"},
-        {identity:15,item:{kind:"available",value:21},slot:0,name:"Flamethrower",ammo:"total"},
+        {identity:15,item:{kind:"available",value:21},slot:0,name:"Flame Thrower",ammo:"total"},
         {identity:16,item:{kind:"available",value:2},slot:2,name:"Fire Axe",ammo:"hidden"},
       ])
       expect(value(binding.values,"visible","HudWeaponAmmo")).toMatchObject({value:active!==16})

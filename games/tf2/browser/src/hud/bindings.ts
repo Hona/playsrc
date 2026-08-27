@@ -166,6 +166,8 @@ function copyWeapon(value: Tf2HudWeapon): Tf2HudWeapon {
     maximumReserve,
     reload: copyReload(value.reload),
     drawsCrosshair: value.drawsCrosshair === true,
+    crosshairScript: text(value.crosshairScript, "weapon crosshair script"),
+    suppressesCrosshair: value.suppressesCrosshair === true,
   })
 }
 
@@ -693,6 +695,7 @@ function panelValues(snapshot: Tf2HudSnapshot): readonly Tf2HudPanelValue[] {
     && !crosshair.tfSuppressed
     && !crosshair.countdownHidden
     && (player?.lifecycle === "active" || observerEligible)
+    && activeWeapon?.suppressesCrosshair !== true
     && (crosshair.weaponAllows && activeWeapon?.drawsCrosshair !== false || tf2CustomCrosshairFile(crosshair.texture) !== null)
   setVisible("HudCrosshair", crosshairVisible)
   setImage("HudCrosshair", crosshair ? tf2HudAvailable(crosshair.texture) : unavailableString())

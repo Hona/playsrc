@@ -37,6 +37,8 @@ export type Tf2HudHealth = Readonly<{
 }>
 
 export type Tf2HudWeapon = Readonly<{
+  crosshairScript: string
+  suppressesCrosshair: boolean
   identity: number
   itemDefinition: Tf2HudAvailability<number>
   displayName: string
