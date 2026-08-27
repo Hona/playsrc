@@ -429,6 +429,12 @@ pub enum MinigunState {
     DryFire = 4,
 }
 
+pub fn minigun_aiming_transition(previous: MinigunState, current: MinigunState) -> Option<bool> {
+    if current == MinigunState::Starting && previous == MinigunState::Idle { Some(true) }
+    else if current == MinigunState::Idle && previous != MinigunState::Idle { Some(false) }
+    else { None }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponRuntime {
     pub hitscan: crate::hitscan::State,
