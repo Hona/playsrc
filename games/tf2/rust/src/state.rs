@@ -1283,6 +1283,10 @@ impl CoreState {
             )?,
             general_taken: self.query_player_attribute(input.victim, "mult_dmgtaken", 1.0)?,
             active_taken: self.query_active_attribute(input.victim, "mult_dmgtaken_active", 1.0)?,
+            spunup_taken: if self.players[&input.victim].class == Some(PlayerClass::Heavy)
+                && self.players[&input.victim].conditions.contains(ConditionId::AIMING) {
+                self.query_player_attribute(input.victim, "spunup_damage_resistance", 1.0)?
+            } else { 1.0 },
             pierces_resists,
             minicrits_become_crits,
             crits_become_minicrits,

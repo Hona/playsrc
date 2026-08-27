@@ -38,6 +38,16 @@ impl SupportedItem {
     pub const fn item_id(self) -> u32 {
         self.definition_index + 1
     }
+
+    pub fn weapon_for_class(self, class: PlayerClass) -> Option<Weapon> {
+        let Implementation::Weapon(weapon) = self.implementation else { return None; };
+        Some(match (weapon, class) {
+            (Weapon::Shotgun, PlayerClass::Engineer) => Weapon::EngineerShotgun,
+            (Weapon::Shotgun, PlayerClass::Heavy) => Weapon::HeavyShotgun,
+            (Weapon::Bottle, PlayerClass::Soldier) => Weapon::Shovel,
+            _ => weapon,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,9 +87,9 @@ impl AttributeProviders {
         for item in equipment.equipped_items(class) {
             let supported = supported_item(item.definition_index).unwrap();
             let identity = item.item_id + 1;
-            let kind = match supported.implementation {
-                Implementation::Weapon(weapon) => { weapons.insert(weapon, identity); ProviderKind::Weapon },
-                Implementation::Wearable => ProviderKind::Generic,
+            let kind = match supported.weapon_for_class(class) {
+                Some(weapon) => { weapons.insert(weapon, identity); ProviderKind::Weapon },
+                None => ProviderKind::Generic,
             };
             let mut entity = AttributeEntity::new(identity, kind);
             entity.attributes = schema().definition(item.definition_index).unwrap().static_attributes.clone();
@@ -219,7 +229,7 @@ impl Equipment {
 
     pub fn weapon_definition(&self, class: PlayerClass, weapon: Weapon) -> Option<u32> {
         self.classes[class as usize - 1].iter().copied().flatten().find(|definition| {
-            supported_item(*definition).is_some_and(|item| item.implementation == Implementation::Weapon(weapon))
+            supported_item(*definition).is_some_and(|item| item.weapon_for_class(class) == Some(weapon))
         })
     }
 
@@ -256,11 +266,8 @@ impl Equipment {
     }
 
     pub fn weapons(&self, class: PlayerClass) -> impl Iterator<Item = Weapon> + '_ {
-        self.classes[class as usize - 1].iter().filter_map(|definition| {
-            match supported_item((*definition)?)?.implementation {
-                Implementation::Weapon(weapon) => Some(weapon),
-                Implementation::Wearable => None,
-            }
+        self.classes[class as usize - 1].iter().filter_map(move |definition| {
+            supported_item((*definition)?)?.weapon_for_class(class)
         })
     }
 
@@ -321,6 +328,16 @@ mod tests {
             assert_eq!(providers.graph.entity(1).unwrap().providers.contains(&identity), active == Some(Weapon::FireAxe));
             assert_eq!(providers.graph.entity(identity).unwrap().owner, Some(1));
         }
+    }
+
+    #[test]
+    fn generic_weapon_classes_translate_before_runtime_and_provider_keying() {
+        let shotgun = *supported_item(10).unwrap();
+        assert_eq!(shotgun.weapon_for_class(PlayerClass::Soldier), Some(Weapon::Shotgun));
+        assert_eq!(shotgun.weapon_for_class(PlayerClass::Pyro), Some(Weapon::Shotgun));
+        assert_eq!(shotgun.weapon_for_class(PlayerClass::Heavy), Some(Weapon::HeavyShotgun));
+        assert_eq!(shotgun.weapon_for_class(PlayerClass::Engineer), Some(Weapon::EngineerShotgun));
+        assert_eq!(supported_item(1).unwrap().weapon_for_class(PlayerClass::Soldier), Some(Weapon::Shovel));
     }
 
     #[test]
