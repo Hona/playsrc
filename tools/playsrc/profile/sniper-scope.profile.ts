@@ -165,8 +165,9 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   const canvas = Buffer.from((await page.locator(".world-canvas").evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL())).split(",")[1]!, "base64")
   await writeFile(testInfo.outputPath("scoped-canvas.png"), canvas)
   pointerX += 200
+  const previousMouseRevision = Number(await page.locator(".world-canvas").getAttribute("data-display-mouse-revision"))
   await page.mouse.move(pointerX, pointerY)
-  await expect.poll(async () => page.locator(".world-canvas").getAttribute("data-display-mouse-revision")).not.toBe(null)
+  await page.waitForFunction(revision => Number(document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayMouseRevision) > revision, previousMouseRevision)
   const moved = decodeScreenshot(await screenshot({ path: testInfo.outputPath("scoped-moved-composited.png") }))
   const image = decodeScreenshot(composited)
   opaqueExterior(image)
@@ -224,7 +225,9 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
       const sceneDepth = geometry.geometry.samples.filter((sample: any) => sample.depth !== null && sample.depth > 0)
       expect(sceneDepth.length, "scope zoom must retain real scene geometry and depth").toBeGreaterThan(0)
       pointerX += 150
+      const previousMouseRevision = Number(await page.locator(".world-canvas").getAttribute("data-display-mouse-revision"))
       await page.mouse.move(pointerX, pointerY)
+      await page.waitForFunction(revision => Number(document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayMouseRevision) > revision, previousMouseRevision)
       const after = decodeScreenshot(await screenshot())
       const change = centerChange(before, after)
       expect(change, `${width}x${height} DPR ${dpr} retains moving world contrast`).toBeGreaterThan(.05)
@@ -340,7 +343,9 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     const before = decodeScreenshot(await screenshot({ path: testInfo.outputPath(`${map}-scoped.png`) }))
     opaqueExterior(before)
     pointerX += 150
+    const previousMouseRevision = Number(await page.locator(".world-canvas").getAttribute("data-display-mouse-revision"))
     await page.mouse.move(pointerX, pointerY)
+    await page.waitForFunction(revision => Number(document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayMouseRevision) > revision, previousMouseRevision)
     const after = decodeScreenshot(await screenshot({ path: testInfo.outputPath(`${map}-scoped-moved.png`) }))
     expect(centerChange(before, after), `${map} scope retains moving world contrast after replacement`).toBeGreaterThan(.05)
     await page.mouse.down({ button: "right" }); await expect(scope).not.toBeVisible(); await page.mouse.up({ button: "right" })
@@ -348,4 +353,52 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   expect(errors).toEqual([])
   expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
   await writeFile(testInfo.outputPath("native-capture-rejections.json"), JSON.stringify(captureRejections, null, 2))
+})
+
+// A focused admission loop keeps map-generation verification bounded even when
+// the machine's headed queue leaves too little time for the full viewport matrix.
+test("Sniper scope map generations retain visible pixels", async ({ page }, testInfo) => {
+  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
+  const root = page.locator("main"), canvas = page.locator(".world-canvas")
+  await page.goto("/")
+  await expect(root).toHaveAttribute("data-phase", "MainMenu")
+  const entry = page.locator("[aria-label='Console command']")
+  const command = async (text: string) => {
+    if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+    await entry.fill(text); await entry.press("Enter")
+  }
+  for (const [index, map] of ["ctf_2fort", "pl_upward", "jump_beef"].entries()) {
+    const previous = Number(await root.getAttribute("data-generation"))
+    await command(`map ${map}`)
+    if (index > 0) await expect.poll(async () => Number(await root.getAttribute("data-generation")), { timeout: 60_000 }).toBeGreaterThan(previous)
+    await settleTf2Gameplay(page, "red")
+    await command("joinclass sniper")
+    await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("12")
+    await page.keyboard.press("Backquote")
+    await page.bringToFront()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await root.getAttribute("data-pointer-locked") !== "true") await canvas.click()
+      try { await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: 750 }); break }
+      catch {
+        const detail = await root.getAttribute("data-detail")
+        if (attempt === 2 || !/Too many pointer lock requests|Pointer lock cannot be acquired immediately after the user has exited the lock/.test(detail ?? "")) throw new Error(`Native map scope capture failed: ${detail}`)
+        await page.waitForTimeout(2100)
+      }
+    }
+    const scope = page.locator("[data-tf2-scope='authored']")
+    await expect(scope).not.toBeVisible()
+    await page.mouse.down({ button: "right" }); await expect(scope).toBeVisible(); await page.mouse.up({ button: "right" })
+    await page.evaluate(revision => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = revision }, index)
+    await page.waitForFunction(revision => (globalThis as any).__playsrcProfile.geometryEvidence?.revision === revision, index)
+    expect(await page.evaluate(() => (globalThis as any).__playsrcProfile.geometryEvidence.target)).toBe(map)
+    const before = decodeScreenshot(await page.screenshot({ path: testInfo.outputPath(`${map}-scope.png`) }))
+    const bytes = Buffer.from((await canvas.evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL())).split(",")[1]!, "base64")
+    await writeFile(testInfo.outputPath(`${map}-canvas.png`), bytes)
+    opaqueExterior(decodeScreenshot(bytes))
+    const revision = Number(await canvas.getAttribute("data-display-mouse-revision"))
+    await page.mouse.move(900 + index * 200, 360)
+    await page.waitForFunction(revision => Number(document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayMouseRevision) > revision, revision)
+    expect(centerChange(before, decodeScreenshot(await page.screenshot({ path: testInfo.outputPath(`${map}-scope-moved.png`) })))).toBeGreaterThan(.05)
+    await page.mouse.down({ button: "right" }); await expect(scope).not.toBeVisible(); await page.mouse.up({ button: "right" })
+  }
 })
