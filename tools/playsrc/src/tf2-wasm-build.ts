@@ -1,4 +1,5 @@
 import path from "node:path"
+import os from "node:os"
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import toolchains from "../toolchains.json"
@@ -15,16 +16,21 @@ export class Tf2WasmBuildError extends Error {
   }
 }
 
-const THREADED_RUSTFLAGS = [
-  "-C target-feature=+atomics,+bulk-memory",
-  "-C link-arg=--shared-memory",
-  "-C link-arg=--max-memory=4294967296",
-  "-C link-arg=--import-memory",
-  "-C link-arg=--export=__wasm_init_tls",
-  "-C link-arg=--export=__tls_size",
-  "-C link-arg=--export=__tls_align",
-  "-C link-arg=--export=__tls_base",
-].join(" ")
+export function threadedWasmRustFlags(root: string, cargoHome: string, sysroot: string): string[] {
+  return [
+    "-Ctarget-feature=+atomics,+bulk-memory",
+    "-Clink-arg=--shared-memory",
+    "-Clink-arg=--max-memory=4294967296",
+    "-Clink-arg=--import-memory",
+    "-Clink-arg=--export=__wasm_init_tls",
+    "-Clink-arg=--export=__tls_size",
+    "-Clink-arg=--export=__tls_align",
+    "-Clink-arg=--export=__tls_base",
+    `--remap-path-prefix=${root}=/playsrc`,
+    `--remap-path-prefix=${cargoHome}=/cargo`,
+    `--remap-path-prefix=${sysroot}=/rust`,
+  ]
+}
 
 type WasmBuildManifest = Readonly<{
   schema: "playsrc-threaded-wasm-build-v2"
@@ -117,6 +123,18 @@ export async function buildThreadedTf2Wasm(
   wasmBindgen: string,
   environment: Record<string, string | undefined>,
 ): Promise<string> {
+  const buildEnvironment = { ...process.env, ...environment }
+  const executable = Bun.which(cargo, { PATH: buildEnvironment.PATH })
+  if (!executable) throw new Tf2WasmBuildError("The pinned Cargo executable is unavailable")
+  const rustc = path.join(path.dirname(executable), process.platform === "win32" ? "rustc.exe" : "rustc")
+  const compiler = Bun.spawn([rustc, `+${toolchains.rust.threadedToolchain}`, "--print", "sysroot"], {
+    cwd: repositoryRoot, env: buildEnvironment, stdout: "pipe", stderr: "inherit",
+  })
+  const sysroot = (await new Response(compiler.stdout).text()).trim()
+  if (await compiler.exited !== 0 || !path.isAbsolute(sysroot)) throw new Tf2WasmBuildError("The pinned Rust sysroot is unavailable")
+  const cargoHome = path.resolve(buildEnvironment.CARGO_HOME ?? path.join(os.homedir(), ".cargo"))
+  // Source-location constants are runtime data too; keep host paths out of the artifact.
+  const flags = threadedWasmRustFlags(repositoryRoot, cargoHome, sysroot)
   const child = Bun.spawn([
     cargo,
     `+${toolchains.rust.threadedToolchain}`,
@@ -132,7 +150,7 @@ export async function buildThreadedTf2Wasm(
     "build-std=panic_abort,std",
   ], {
     cwd: repositoryRoot,
-    env: { ...process.env, ...environment, RUSTFLAGS: THREADED_RUSTFLAGS, CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS },
+    env: { ...buildEnvironment, RUSTFLAGS: undefined, CARGO_ENCODED_RUSTFLAGS: flags.join("\x1f"), CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS },
     stdout: "inherit",
     stderr: "inherit",
   })
