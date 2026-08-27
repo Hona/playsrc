@@ -502,6 +502,16 @@ pub struct ConditionSet {
 }
 
 impl ConditionSet {
+    fn runtime_state(&self) -> condition::ConditionState {
+        let mut state = condition::ConditionState::default();
+        for value in 0..condition::CONDITION_COUNT as u8 {
+            if self.words[value as usize / 32] & (1 << (value as usize % 32)) != 0 {
+                state.add(condition::ConditionId::new(value).unwrap(), condition::ConditionDuration::Permanent, None, true, false).expect("active condition");
+            }
+        }
+        state.set_active_stun_flags(self.active_stun_flags);
+        state
+    }
     pub fn set_active_stun_flags(&mut self, flags: Option<u16>) { self.active_stun_flags = flags; }
     pub fn is_control_stunned(&self) -> bool { self.words[0] & (1 << 15) != 0 && self.active_stun_flags.is_some_and(|flags| flags & 2 != 0) }
     pub fn contains(self, condition: Condition) -> bool {
@@ -853,6 +863,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     damagers: deathnotice::DamagerHistory,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
     respawn_tick: Option<u64>,
+    death_tick: Option<u64>,
     buildings: building::World,
     medigun: medic::MedigunState,
 }
@@ -1028,6 +1039,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             damagers: deathnotice::DamagerHistory::default(),
             posed_player_hitboxes: Vec::new(),
             respawn_tick: None,
+            death_tick: None,
             buildings: building::World::new(movement_configuration.tick_interval),
             medigun: medic::MedigunState::default(),
         }
@@ -1868,7 +1880,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             _ => None,
         });
         if let Some(team) = round_winner {
-            self.restrictions.team_win = Some(team);
+            self.enter_bonus_round(team);
             let definition = if team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if team == self.team_selection.local_team() {
                 SoundDefinition::TeamWon
             } else {
@@ -1898,7 +1910,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             map_phase.control_point_events.extend(point_events);
             if self.map.control_points().is_some() {
                 map_phase.append(self.map.activate_control_point_round(self.tick, facts)?);
-                if let Some(bots) = &mut self.bots { bots.control_point_round_spawn(self.map.control_points().unwrap()); }
+                if let Some(bots) = &mut self.bots { bots.control_point_round_spawn(self.map.control_points().unwrap(), self.tick as f32 * self.movement_configuration.tick_interval); }
             }
             let scores = self.round.snapshot(Vec::new());
             if let Some(objectives) = self.map.objectives_mut() {
@@ -1945,6 +1957,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if self.air_dashes != 0 {
             movement_policy.air_dash_impulse = None;
+        }
+        if let Some(winner) = self.restrictions.team_win.filter(|team| team.is_gameplay()) {
+            movement_policy.maximum_speed *= if winner == self.team_selection.local_team() { 1.1 } else { 0.9 };
         }
         let hull = self.movement.active_hull(movement_policy);
         let begin_phase = self.map.begin_tick(
@@ -2079,6 +2094,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 &supplies,
                 &mut self.authority_random,
                 Some(bot::Objectives {
+                    rules: &self.round,
                     flags: self.map.objectives(),
                     points: self.map.control_points(),
                     in_setup: self.round.snapshot(Vec::new()).in_setup,
@@ -2217,6 +2233,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             actor.megaheal = self.condition_word_contains(28);
             actor.phased = self.condition_word_contains(14);
             actor.enemy_disguise = self.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != actor.team);
+            let base_capture_value = actor.capture_value(self.map.control_points().unwrap().configuration().scales_with_players);
+            actor.capture_value_bonus = self.equipped_player_attribute(PLAYER_IDENTITY, "add_player_capturevalue", base_capture_value as f32) as i32 - base_capture_value;
             let mut actors = vec![actor];
             if let Some(bots) = &self.bots {
                 actors.extend(bots.control_point_actors());
@@ -2249,11 +2267,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && let Some(active_weapon) = self.weapon
         {
             let now = self.tick as f32 * self.movement_configuration.tick_interval;
-            let attack_allowed = self.spy.is_none_or(|state| state.can_attack(now));
+            let attack_allowed = self.spy.is_none_or(|state| state.can_attack(now)) && self.restrictions.team_win.is_none_or(|winner| winner == self.team_selection.local_team());
             let released_primary = !command.fire && self.fire_was_held;
             let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
             let primary = if active_weapon == Weapon::Flamethrower {
-                self.advance_flamethrower(command, &mut ammo_events, &mut events)?;
+                self.advance_flamethrower(Command { fire: command.fire && attack_allowed, detonate: command.detonate && attack_allowed, ..command }, &mut ammo_events, &mut events)?;
                 PrimaryResult::None
             } else {
                 let state = self
@@ -2496,13 +2514,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.die(&mut projectile_events);
         }
         let mut respawned = false;
-        let eligible = self.respawn_tick.is_some_and(|due| self.tick >= due);
-        if (command.respawn
+        let eligible = self.lifecycle == PlayerLifecycle::Dying && self.bots.is_some() && self.death_tick.is_some_and(|death| self.round.player_can_respawn(self.team_selection.local_team(), death as f32 * self.movement_configuration.tick_interval));
+        if self.restrictions.team_win.is_none() && ((command.respawn
             && (self.lifecycle == PlayerLifecycle::Active
                 || eligible
                 || self.jump.is_some()
                 || self.bots.is_none()))
-            || eligible
+            || eligible)
         {
             self.respawn(&mut projectile_events, &mut events, movement_policy);
             respawned = true;
@@ -2600,7 +2618,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 }
                 if let ctf::Event::RoundWon { team, reason, .. } = event {
                     round_events.extend(self.round.win(*team, *reason).map_err(Error::Round)?);
-                    self.restrictions.team_win = Some(*team);
+                    self.enter_bonus_round(*team);
                     let scores = self.round.snapshot(Vec::new());
                     if let Some(objectives) = self.map.objectives_mut() {
                         objectives.set_round_scores(scores.red_score, scores.blue_score);
@@ -2669,27 +2687,39 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.emit_objective_sound(identity, definition, position);
             }
         }
+        if let Some(points) = self.map.control_points() {
+            let team = |identity| if identity == PLAYER_IDENTITY { self.team_selection.local_team() } else { self.bots.as_ref().and_then(|bots| bots.team(identity)).unwrap_or(PlayerTeam::Unassigned) };
+            for event in &events {
+                if let Event::PlayerKilled { attacker, victim, .. } = event { points.check_death_causes_block(*victim, team(*victim), *attacker, team(*attacker), &mut map_phase.control_point_events); }
+            }
+        }
         for event in &map_phase.control_point_events {
             match event {
+                control_point::Event::TeamScore { team } => self.round.add_team_score(*team),
                 control_point::Event::Sound { point, recipient, definition, action } => {
                     if recipient.is_none_or(|team| team == PlayerTeam::Unassigned || team == self.team_selection.local_team()) {
                         let point = &self.map.control_points().unwrap().points()[*point];
                         let (identity, position) = (point.identity, point.position);
                         let samples = if *action == AudioAction::Stop { SoundSamples { volume: 0.0, pitch: 0.0, wave: 0, sound_level: 0.0 } }
                             else { self.sample_sound(if recipient.is_some() { RandomContext::PredictedPresentation } else { RandomContext::Authority }, *definition, SoundQueryPhase::Emit) };
-                        self.push_audio_event(AudioEvent { action: *action, tick: self.tick, ordinal: 0, identity: AudioEventIdentity::WeaponSingle, definition: *definition, source_kind: if recipient.is_some() { AudioSourceKind::World } else { AudioSourceKind::Entity }, source_identity: identity, owner_identity: None, position, samples });
+                        self.push_audio_event(AudioEvent { action: *action, tick: self.tick, ordinal: 0, identity: AudioEventIdentity::WeaponSingle, definition: *definition, source_kind: if recipient.is_some() { AudioSourceKind::LocalListener } else { AudioSourceKind::ControlPoint }, source_identity: identity, owner_identity: None, position, samples });
                     }
                 }
                 control_point::Event::RespawnWaveAdjustment { team, seconds } => self.round.add_respawn_wave(*team, *seconds as f32),
                 control_point::Event::Captured { point, cappers, .. } => {
                     if !cappers.is_empty() && self.map.control_points().is_some_and(|world| !world.points()[*point].print_name.is_empty()) {
                         self.round.record_capture(cappers);
+                        if cappers.contains(&PLAYER_IDENTITY) { self.scoreboard.local_capture(); }
+                        if let Some(bots) = &mut self.bots { bots.record_point_capture(cappers); }
                     }
-                    if cappers.contains(&PLAYER_IDENTITY) { self.scoreboard.local_capture(); }
                 },
+                control_point::Event::Blocked { point, player, .. } if self.map.control_points().is_some_and(|world| !world.points()[*point].print_name.is_empty()) => {
+                    if *player == PLAYER_IDENTITY { self.scoreboard.local_defense(); }
+                    else if let Some(bots) = &mut self.bots { bots.record_point_defense(*player); }
+                }
                 control_point::Event::RoundWon { team, reason, .. } => {
                     round_events.extend(if *team == PlayerTeam::Unassigned { self.round.set_stalemate() } else { self.round.win(*team, *reason).map_err(Error::Round)? });
-                    self.restrictions.team_win = Some(*team);
+                    self.enter_bonus_round(*team);
                     let definition = if *team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost };
                     self.emit_objective_sound(PLAYER_IDENTITY, definition, self.movement.position);
                 }
@@ -2700,13 +2730,22 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let input_events = self.round.take_events();
         for event in &input_events {
             if let round::Event::RoundWon { team, .. } = event {
-                self.restrictions.team_win = Some(*team);
-                self.emit_objective_sound(PLAYER_IDENTITY, if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost }, self.movement.position);
+                self.enter_bonus_round(*team);
+                self.emit_objective_sound(PLAYER_IDENTITY, if *team == PlayerTeam::Unassigned { SoundDefinition::Stalemate } else if *team == self.team_selection.local_team() { SoundDefinition::TeamWon } else { SoundDefinition::TeamLost }, self.movement.position);
             }
         }
         map_phase.append(self.map.emit_round_outputs(self.tick, &input_events)?);
         round_events.extend(input_events);
-        if let Some(bots) = &mut self.bots { bots.set_respawn_waves(self.round.respawn_waves()); }
+        if let Some(bots) = &mut self.bots { bots.synchronize_respawn_times(&self.round); }
+        if let (Some(bots), Some(points)) = (&mut self.bots, self.map.control_points()) { bots.control_point_events(points, &map_phase.control_point_events, self.tick as f32 * self.movement_configuration.tick_interval); }
+        if self.bots.is_some() {
+            if self.lifecycle != PlayerLifecycle::Dying { self.death_tick = None; }
+            self.respawn_tick = self.death_tick.and_then(|death| self.round.player_respawn_time(self.team_selection.local_team(), death as f32 * self.movement_configuration.tick_interval)).map(|time| (time / self.movement_configuration.tick_interval).ceil().max(0.0) as u64);
+        }
+        if let Some(bots) = &mut self.bots {
+            let fired = self.activity_events.iter().rev().find(|event| matches!(event.activity, weapon::WeaponActivity::PrimaryAttack | weapon::WeaponActivity::SecondaryAttack)).map(|event| (event.weapon, self.movement.position));
+            bots.record_point_combat(self.tick, fired);
+        }
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -2779,6 +2818,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn condition_word_contains(&self, condition: u8) -> bool {
         let index = usize::from(condition);
         self.conditions.words[index / 32] & (1_u32 << (index % 32)) != 0
+    }
+
+    fn enter_bonus_round(&mut self, winner: PlayerTeam) {
+        if self.restrictions.team_win == Some(winner) { return; }
+        self.restrictions.team_win = Some(winner);
+        if winner.is_gameplay() && winner == self.team_selection.local_team() && self.lifecycle == PlayerLifecycle::Active && self.health > 0 {
+            self.conditions.words[1] |= 1 << (38 - 32);
+        }
+        if let Some(bots) = &mut self.bots { bots.set_round_winner(winner, self.round.bonus_round_seconds() + 1.0); }
     }
 
     fn control_point_facts(&self) -> control_point::Facts {
@@ -4056,6 +4104,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .unwrap_or(0)
         };
         let (critical, custom) = custom_kill.map_or((critical, custom), |custom| (custom == 2, custom));
+        let attacker_conditions = if input.attacker == PLAYER_IDENTITY { self.conditions.runtime_state() }
+            else { self.bots.as_ref().and_then(|bots| bots.player_conditions(input.attacker)).cloned().unwrap_or_default() };
+        let normalized = bot::Damage { amount: if critical { input.amount / damage::CRIT_MULTIPLIER } else { input.amount }, ..input };
+        let requested_crit = if critical { damage::CritKind::Full } else { damage::CritKind::None };
+        let critical = critical || attacker_conditions.is_crit_boosted();
         let after;
         if input.victim == PLAYER_IDENTITY {
             if self.lifecycle != PlayerLifecycle::Active
@@ -4100,12 +4153,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 &damage::DamageInput {
                     attacker: input.attacker,
                     attacker_team,
-                    attacker_conditions: condition::ConditionState::default(),
+                    attacker_conditions,
                     source: damage::DamageSourceKind::Player,
                     weapon_position: None,
                     victim: PLAYER_IDENTITY,
                     victim_team: self.team_selection.local_team(),
-                    base_damage: input.amount,
+                    base_damage: normalized.amount,
                     range_multiplier: 1.0,
                     damage_type,
                     custom: if custom == 2 {
@@ -4115,7 +4168,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     } else {
                         damage::CustomDamage::None
                     },
-                    crit: damage::CritKind::None,
+                    crit: requested_crit,
                     friendly_fire: false,
                     force_friendly_fire: false,
                     bypass_invulnerability: false,
@@ -4156,10 +4209,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 );
             }
         } else if let Some(bots) = &mut self.bots {
-            let victim_team = bots.team(input.victim).unwrap_or(attacker_team);
-            let population = bots.team_population(victim_team, self.team_selection.local_team());
             if bots
-                .damage(input, attacker_team, self.tick, population)
+                .damage(normalized, attacker_team, self.tick, attacker_conditions, requested_crit)
                 .map_err(Error::Bot)?
                 .is_none()
             {
@@ -4557,7 +4608,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             ordinal: 0,
             identity: AudioEventIdentity::WeaponSingle,
             definition,
-            source_kind: AudioSourceKind::World,
+            source_kind: AudioSourceKind::LocalListener,
             source_identity: identity,
             owner_identity: None,
             position,
@@ -6515,12 +6566,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.stop_flame(false);
         self.lifecycle = PlayerLifecycle::Dying;
+        self.death_tick = Some(self.tick);
         self.scoreboard.local_death();
         if self.jump.is_none() {
-            self.respawn_tick = self
-                .bots
-                .as_ref()
-                .map(|bots| bots.respawn_tick(self.team_selection.local_team(), self.tick));
+            self.respawn_tick = self.bots.as_ref().and_then(|_| self.round.player_respawn_time(self.team_selection.local_team(), self.tick as f32 * self.movement_configuration.tick_interval)).map(|time| (time / self.movement_configuration.tick_interval).ceil().max(0.0) as u64);
         }
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
@@ -6556,6 +6605,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         self.lifecycle = PlayerLifecycle::Active;
         self.respawn_tick = None;
+        self.death_tick = None;
         self.lifecycle_events.push(LifecycleEvent {
             tick: self.tick,
             kind: LifecycleEventKind::Respawned,

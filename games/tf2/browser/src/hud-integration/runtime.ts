@@ -1126,7 +1126,7 @@ class Integration implements Tf2HudIntegration {
     if (publication.snapshot.controlPoints && !this.#controlPoints) {
       this.#controlPoints = new ControlPointHud(this.#runtime, this.#resources, (panel, resource) => applyPanelResource(this.#runtime, panel, this.#resources.document(resource), { activeConditions: this.#resources.activeConditions, resolutionSuffixes: this.#resources.resolutionSuffixes }))
     }
-    this.#controlPoints?.publish(publication.snapshot.controlPoints, round, this.#viewport, Number(publication.snapshot.tick) * 0.015, context.liveHudSuppressed)
+    this.#controlPoints?.publish(publication.snapshot.controlPoints, round, publication.snapshot.team, this.#viewport, Number(publication.snapshot.tick) * 0.015, context.liveHudSuppressed)
     if (objectives) {
       this.#publishObjectives(objectives, context.playerIdentity, publication.snapshot.team, publication.snapshot.tick)
     } else if (this.#objective) {

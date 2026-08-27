@@ -328,6 +328,8 @@ pub enum AudioEventIdentity {
 pub enum AudioSourceKind {
     Entity,
     World,
+    LocalListener,
+    ControlPoint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

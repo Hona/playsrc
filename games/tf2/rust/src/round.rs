@@ -206,6 +206,7 @@ fn output_flags(remaining: f32) -> u16 {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Configuration {
+    pub score_per_round: bool,
     pub waiting_seconds: f32,
     pub preround_seconds: f32,
     pub bonus_seconds: f32,
@@ -220,6 +221,7 @@ pub struct Configuration {
 impl Default for Configuration {
     fn default() -> Self {
         Self {
+            score_per_round: true,
             waiting_seconds: DEFAULT_WAITING_SECONDS,
             preround_seconds: DEFAULT_PREROUND_SECONDS,
             bonus_seconds: DEFAULT_BONUS_SECONDS,
@@ -371,6 +373,9 @@ pub struct Rules {
     most_recent_cappers: Vec<u32>,
     respawn_waves: [Option<f32>; 2],
     original_respawn_waves: [Option<f32>; 2],
+    next_respawn_wave: [f32; 2],
+    respawn_wave_due: [bool; 2],
+    populations: [usize; 2],
 }
 
 impl Rules {
@@ -414,6 +419,9 @@ impl Rules {
             most_recent_cappers: Vec::new(),
             respawn_waves: [None; 2],
             original_respawn_waves: [None; 2],
+            next_respawn_wave: [0.0; 2],
+            respawn_wave_due: [false; 2],
+            populations: [0; 2],
         })
     }
 
@@ -656,6 +664,43 @@ impl Rules {
         self.respawn_waves
     }
 
+    fn wave_length(&self, index: usize, scaled: bool) -> f32 {
+        if self.state != State::Running { return 0.0; }
+        let length = self.respawn_waves[index].unwrap_or(crate::bot::RESPAWN_WAVE_SECONDS);
+        if scaled && length > 5.0 {
+            let scalar = 0.25 + ((self.populations[index] as f32 - 1.0) / 7.0).clamp(0.0, 1.0) * 0.75;
+            (length * scalar).max(5.0)
+        } else { length }
+    }
+
+    pub fn player_can_respawn(&self, team: PlayerTeam, death_time: f32) -> bool {
+        if !team.is_gameplay() || !matches!(self.state, State::Pregame | State::Preround | State::Running) { return false; }
+        let index = usize::from(team == PlayerTeam::Blue);
+        self.respawn_wave_due[index] && self.now > death_time + crate::bot::DEATH_ANIMATION_SECONDS + self.wave_length(index, false)
+    }
+
+    pub fn player_respawn_time(&self, team: PlayerTeam, death_time: f32) -> Option<f32> {
+        if !team.is_gameplay() || !death_time.is_finite() || death_time > self.now || !matches!(self.state, State::Pregame | State::Preround | State::Running) { return None; }
+        let index = usize::from(team == PlayerTeam::Blue);
+        let minimum = death_time + crate::bot::DEATH_ANIMATION_SECONDS + self.wave_length(index, false);
+        let length = self.wave_length(index, true);
+        let mut next = self.next_respawn_wave[index];
+        if length > 0.0 { while next < minimum { next += length; } }
+        Some(next)
+    }
+
+    fn check_respawn_waves(&mut self, facts: Facts) {
+        self.populations = [facts.red_players, facts.blue_players];
+        self.respawn_wave_due = [false; 2];
+        if !matches!(self.state, State::Pregame | State::Preround | State::Running) { return; }
+        for index in 0..2 {
+            if self.next_respawn_wave[index] != 0.0 && self.next_respawn_wave[index] > self.now { continue; }
+            self.respawn_wave_due[index] = true;
+            let length = self.wave_length(index, true);
+            self.next_respawn_wave[index] = if length > 0.0 { self.now + length } else { 0.0 };
+        }
+    }
+
     pub fn waiting_for_players(&self) -> bool {
         self.waiting_until.is_some()
     }
@@ -663,6 +708,8 @@ impl Rules {
     pub fn winning_team(&self) -> Option<PlayerTeam> {
         self.winning_team
     }
+
+    pub fn bonus_round_seconds(&self) -> f32 { self.configuration.bonus_seconds.max(5.0).trunc() }
 
     pub fn configure_waiting(&mut self, seconds: f32) -> Result<(), Error> {
         if !seconds.is_finite() || seconds < 0.0 {
@@ -705,9 +752,9 @@ impl Rules {
         }
         self.winning_team = Some(team);
         self.win_reason = reason;
-        if team == PlayerTeam::Red {
+        if self.configuration.score_per_round && team == PlayerTeam::Red {
             self.red_score = self.red_score.saturating_add(1);
-        } else if team == PlayerTeam::Blue {
+        } else if self.configuration.score_per_round && team == PlayerTeam::Blue {
             self.blue_score = self.blue_score.saturating_add(1);
         }
         self.rounds_played = self.rounds_played.saturating_add(1);
@@ -739,6 +786,10 @@ impl Rules {
         }
     }
 
+    pub fn add_team_score(&mut self, team: PlayerTeam) {
+        match team { PlayerTeam::Red => self.red_score = self.red_score.saturating_add(1), PlayerTeam::Blue => self.blue_score = self.blue_score.saturating_add(1), _ => {} }
+    }
+
     pub fn restart(&mut self, reset_scores: bool) -> Vec<Event> {
         let mut events = Vec::new();
         if reset_scores {
@@ -756,6 +807,7 @@ impl Rules {
             return Err(Error::InvalidConfiguration);
         }
         self.now = now;
+        self.check_respawn_waves(facts);
         for timer in &mut self.timers {
             timer.refresh(now);
         }
@@ -1021,6 +1073,28 @@ fn boolean(entity: &Entity, name: &[u8], default: bool) -> Result<bool, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_adjustments_change_future_waves_without_reanchoring_the_pending_wave() {
+        let mut rules = Rules::active(Configuration::default()).unwrap();
+        let facts = Facts { red_players: 8, blue_players: 8, red_alive: 8, blue_alive: 8, ..Facts::default() };
+        rules.advance(0.0, 0.015, facts).unwrap();
+        rules.advance(1.0, 0.015, facts).unwrap();
+        assert_eq!(rules.player_respawn_time(PlayerTeam::Red, 1.0), Some(20.0));
+        rules.advance(5.0, 0.015, facts).unwrap();
+        rules.add_respawn_wave(PlayerTeam::Red, -4.0);
+        assert_eq!(rules.next_respawn_wave[0], 10.0);
+        assert_eq!(rules.player_respawn_time(PlayerTeam::Red, 1.0), Some(16.0));
+        rules.advance(10.0, 0.015, facts).unwrap();
+        assert!(!rules.player_can_respawn(PlayerTeam::Red, 1.0));
+        rules.advance(16.0, 0.015, facts).unwrap();
+        assert!(rules.player_can_respawn(PlayerTeam::Red, 1.0));
+        assert!(!rules.player_can_respawn(PlayerTeam::Red, 3.6));
+        assert_eq!(rules.player_respawn_time(PlayerTeam::Red, 3.6), Some(22.0));
+        rules.win(PlayerTeam::Blue, WIN_REASON_FLAG_CAPTURE_LIMIT).unwrap();
+        assert!(!rules.player_can_respawn(PlayerTeam::Red, 1.0));
+        assert_eq!(rules.player_respawn_time(PlayerTeam::Red, 1.0), None);
+    }
 
     #[test]
     fn point_capture_wave_adjustments_use_default_then_restore_original_on_restart() {

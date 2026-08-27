@@ -60,7 +60,7 @@ export type Tf2AudioRequest = Readonly<{
     | "Announcer.RoundBegins5Seconds" | "Announcer.RoundBegins4Seconds" | "Announcer.RoundBegins3Seconds" | "Announcer.RoundBegins2Seconds" | "Announcer.RoundBegins1Seconds" | "Game.Stalemate" | "ControlPoint.CaptureWarn"
     | "Hologram.Start" | "Hologram.Stop" | "Hologram.Move" | "Hologram.Interrupted"
   source: Readonly<{
-    kind: "entity" | "world"
+    kind: "entity" | "world" | "local-listener"
     identity: number
     ownerIdentity: number | null
     origin: readonly [number, number, number]
@@ -164,12 +164,12 @@ export function tf2Audio(snapshot: Snapshot): readonly Tf2AudioRequest[] {
     voiceIdentity: stable32(`${event.tick}:${event.ordinal}:${event.definition}:${event.sourceIdentity}`),
     definition: definitions[event.definition - 1]!,
     source: Object.freeze({
-      kind: event.sourceKind === 1 ? "entity" as const : "world" as const,
+      kind: event.sourceKind === 3 ? "local-listener" as const : event.sourceKind === 1 || event.sourceKind === 4 ? "entity" as const : "world" as const,
       identity: event.sourceIdentity,
       ownerIdentity: event.ownerIdentity,
       origin: Object.freeze([...event.position]) as Vector3,
       radius: 0,
-      sourceClass: event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
+      sourceClass: event.sourceKind === 4 ? "team_control_point" : event.sourceKind === 3 ? "player" : event.sourceKind === 1 ? "tf_weapon" : "tf_projectile",
     }),
     samples: event.samples,
   })))

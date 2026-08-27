@@ -1158,7 +1158,7 @@ function modelOccurrenceMatrices(
     if (
       !target ||
       matrices.has(occurrence.entity) ||
-      occurrence.model !== map.models[target.model]?.logicalPath ||
+      occurrence.model !== map.models[target.model]?.logicalPath.split("#")[0] ||
       occurrence.matrix.length !== 12 ||
       ![...occurrence.matrix].every(Number.isFinite)
     ) {

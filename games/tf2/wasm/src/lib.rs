@@ -5496,7 +5496,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 24, MAX)?;
+    u32_field(&mut out, 25, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6319,7 +6319,7 @@ fn encode_control_points(out: &mut Vec<u8>, points: Option<&playsrc_tf2::control
                 | (u8::from(world.may_capture[point.index][1] && area.is_some_and(|a| a.teams[3].can_cap))<<5);
             u32_field(out,point.identity,maximum)?;
             extend(out,&[team_code(point.owner),area.map_or(0,|a| team_code(a.capturing_team)),area.map_or(0,|a| team_code(a.team_in_zone)),flags],maximum)?;
-            for value in [area.map_or(0.0,|a| a.remaining),area.map_or(0.0,|a| a.progress(world.configuration)),point.unlock_at.unwrap_or(-1.0),
+            for value in [area.map_or(0.0,|a| a.remaining),world.display_progress[point.index],point.unlock_at.unwrap_or(-1.0),
                 area.map_or(0.0,|a| a.total_time(PlayerTeam::Red,world.configuration)),area.map_or(0.0,|a| a.total_time(PlayerTeam::Blue,world.configuration))] { f32_field(out,value,maximum)?; }
             for team in [2,3] { i32_field(out,area.map_or(0,|a| a.num_players[team]),maximum)?; }
             for team in [2,3] { i32_field(out,area.map_or(1,|a| a.teams[team].required),maximum)?; }
@@ -6589,7 +6589,7 @@ fn encode_entity_presentation(
     const MAX: usize = 8 * 1024 * 1024;
     let e = &snapshot.entities;
     let mut out = b"PEBP".to_vec();
-    u32_field(&mut out, 2, MAX)?;
+    u32_field(&mut out, 3, MAX)?;
     for value in [
         e.source_identity,
         e.registry_identity,
@@ -6711,7 +6711,7 @@ fn encode_entity_presentation(
                 .chain(model.world_transform.angles),
             MAX,
         )?;
-        u32_field(&mut out, u32::from(model.draw), MAX)?;
+        u32_field(&mut out, u32::from(model.draw) | ((model.skin.max(0) as u32) << 1), MAX)?;
     }
     u32_field(
         &mut out,
@@ -6964,6 +6964,8 @@ fn encode_audio_event(
             match event.source_kind {
                 playsrc_tf2::AudioSourceKind::Entity => 1,
                 playsrc_tf2::AudioSourceKind::World => 2,
+                playsrc_tf2::AudioSourceKind::LocalListener => 3,
+                playsrc_tf2::AudioSourceKind::ControlPoint => 4,
             },
             u8::from(event.owner_identity.is_some()),
             event.samples.wave,
@@ -8712,6 +8714,24 @@ fn resolve_models(
     let mut models = Vec::new();
     let mut indexes = BTreeMap::new();
     let mut material_cache = BTreeMap::<String, playsrc_map::RuntimeMaterial>::new();
+    let mut output_skins = BTreeMap::<Vec<u8>, Vec<i32>>::new();
+    for connection in graph.entities.iter().flat_map(|entity| &entity.connections) {
+        if let playsrc_entity::Connection::Parsed { target, input, parameter, .. } = connection {
+            if input.eq_ignore_ascii_case(b"Skin") { output_skins.entry(target.to_ascii_lowercase()).or_default().push(playsrc_keyvalues::NumericValue::Bytes(parameter).get_int()); }
+        }
+    }
+    let mut entity_skins = BTreeMap::<String, std::collections::BTreeSet<usize>>::new();
+    for entity in &graph.entities {
+        if let Some(identity) = authored_entity_model(entity)? {
+            let count = studio_models.get(&identity).ok_or(())?.skins.len();
+            let family = entity_skins.entry(identity).or_default();
+            let skin = entity_scalar(entity, b"skin").map_or(0, |value| playsrc_keyvalues::NumericValue::Bytes(value).get_int());
+            family.insert(playsrc_studio_model::source_skin_family(skin, count));
+            if let Some(skins) = entity.targetname.as_ref().and_then(|name| output_skins.get(&name.to_ascii_lowercase())) {
+                family.extend(skins.iter().map(|skin| playsrc_studio_model::source_skin_family(*skin, count)));
+            }
+        }
+    }
     for (identity, model) in studio_models {
         let mut materials = Vec::new();
         for material in &model.materials {
@@ -8739,7 +8759,6 @@ fn resolve_models(
         if model.skins.is_empty() || model.sequences.is_empty() {
             return Err(());
         }
-        indexes.insert(identity.clone(), models.len());
         let bodygroups = model.body_parts.iter().map(|_| 0).collect::<Vec<_>>();
         let pose_parameters = model
             .pose_parameters
@@ -8760,6 +8779,7 @@ fn resolve_models(
         if model.skins.len() > 1 {
             selected_skins.insert(1);
         }
+        if let Some(families) = entity_skins.get(identity) { selected_skins.extend(families); }
         if graph.entities.iter().any(|entity| entity.classname.as_deref() == Some(b"team_control_point")
             && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(entity,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
             selected_skins.insert(playsrc_studio_model::source_skin_family(2, model.skins.len()));
@@ -8876,8 +8896,10 @@ fn resolve_models(
                     triangles: primitive.triangles.clone(),
                 });
             }
+            let logical_path = format!("{identity}{}{}", if *body == 0 { String::new() } else { format!("#body={body}") }, if skin_index == 0 { String::new() } else { format!("#skin={skin_index}") });
+            indexes.insert(logical_path.clone(), models.len());
             models.push(playsrc_map::RuntimeModel {
-                logical_path: format!("{identity}{}{}", if *body == 0 { String::new() } else { format!("#body={body}") }, if skin_index == 0 { String::new() } else { format!("#skin={skin_index}") }),
+                logical_path,
                 materials: materials.clone(),
                 primitives,
             });
@@ -8889,9 +8911,12 @@ fn resolve_models(
         let Some(identity) = authored_entity_model(entity)? else {
             continue;
         };
+        let skin = entity_scalar(entity, b"skin").map_or(0, |value| playsrc_keyvalues::NumericValue::Bytes(value).get_int());
+        let skin = playsrc_studio_model::source_skin_family(skin, studio_models.get(&identity).ok_or(())?.skins.len());
+        let model_key = if skin == 0 { identity } else { format!("{identity}#skin={skin}") };
         occurrences.push(playsrc_map::RuntimeModelOccurrence {
             entity: entity.index,
-            model: *indexes.get(&identity).ok_or(())?,
+            model: *indexes.get(&model_key).ok_or(())?,
             position: entity_vector(entity, b"origin")?,
             angles: entity_vector(entity, b"angles")?,
         });
@@ -15771,7 +15796,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x18\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x19\0\0\0");
         assert_eq!(encoded.len(), 1064);
         assert_eq!(&encoded[1060..], &[0; 4]);
         assert_eq!(&encoded[944..948], b"PCPN");
