@@ -26,6 +26,7 @@ import { startGameplayReplayJournal } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
 import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
+import { admitMacWindow, macWindowReader } from "./macos-visible-windows"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
@@ -39,6 +40,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
+  const readMacWindows = await macWindowReader(sourceCacheDir)
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
@@ -311,6 +313,36 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   await loadPractice("cold")
   if (capturePlan.warmReload) await loadPractice("warm")
+  const replacement: Array<Record<string, unknown>> = []
+  if (process.env.PROFILE_CLASS_REPLACEMENT === "1") {
+    const prior = await root.getAttribute("data-generation")
+    await page.keyboard.press("Backquote")
+    const command = page.locator("[aria-label='Console command']")
+    await command.fill(`map ${target}`)
+    await command.press("Enter")
+    await expect(root).not.toHaveAttribute("data-generation", prior!, { timeout: 60_000 })
+    await expect(root).toHaveAttribute("data-phase", "Ready")
+    replacement.push(await page.evaluate(() => ({ ...document.querySelector<HTMLElement>("main")!.dataset })))
+    if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    if (await root.getAttribute("data-team-selection-visible") === "true") await chooseTf2Team(page, "red")
+    if (await root.getAttribute("data-class-selection-visible") === "true") await page.keyboard.press("Digit3")
+    await page.keyboard.press("Backquote")
+    await command.fill(`tf_bot_quota ${loads.at(-1)!.playerCount - 1}`)
+    await command.press("Enter")
+    await page.keyboard.press("Backquote")
+    await expect(root).toHaveAttribute("data-bot-count", String(loads.at(-1)!.playerCount - 1))
+    const original = page.viewportSize()!
+    for (const size of [{ width: 1024, height: 700 }, original]) {
+      await page.setViewportSize(size)
+      await page.waitForFunction(({ width, height }) => {
+        const canvas = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
+        return innerWidth === width && innerHeight === height && canvas.width === width * devicePixelRatio && canvas.height === height * devicePixelRatio
+      }, size)
+      const frame = Number(await page.locator("canvas.world-canvas").getAttribute("data-display-frame"))
+      await expect.poll(async () => Number(await page.locator("canvas.world-canvas").getAttribute("data-display-frame"))).toBeGreaterThan(frame + 1)
+      replacement.push(await page.evaluate(() => ({ width: innerWidth, height: innerHeight, ...document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!.dataset })))
+    }
+  }
   if (capturePlan.stockOnly) {
     const stock = await acceptStockLoadouts(page, directory, label)
     const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
@@ -351,6 +383,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
+  const nativeAdmission: Array<Record<string, unknown>> = []
+  const checkNativeWindow = async () => {
+    if (!readMacWindows) return
+    const snapshot = await readMacWindows()
+    const admission = admitMacWindow(snapshot, processBefore!.processInfo.find(value => value.type === "browser")!.id)
+    nativeAdmission.push({ at: Date.now(), ...admission })
+  }
+  await checkNativeWindow()
+  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+  expect(nativeAdmission.flatMap(value => value.occluders as unknown[] ?? [])).toEqual([])
   const memoryBefore = await captureProcessMemory(processBefore?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const browserVersion = await browserCdp.send("Browser.getVersion")
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
@@ -599,7 +641,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       renderOwners: instrumentation.renderOwners ?? [],
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       simulationPublications: instrumentation.simulation, simulationPublicationsDropped: instrumentation.simulationDropped,
-      classSwitches, lifecycle,
+      classSwitches, lifecycle, nodeBuilds: instrumentation.nodeBuilds,
       dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0,
         panels, rasterImages: document.querySelectorAll("img[data-vgui-raster]").length, rasterCanvases: document.querySelectorAll("canvas[data-vgui-raster]").length,
         accessibility: { hudLabels: hudRoot?.querySelectorAll("[aria-label]").length ?? 0, gameView: surface.getAttribute("aria-label") },
@@ -785,8 +827,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await combatCommand(`joinclass ${identity}`)
     }
   })() : Promise.resolve()
-  const sample = await Promise.all([measurementPromise, exercise(), interaction, combatActions])
+  let sampling = true
+  const nativeMonitor = (async () => {
+    while (sampling && readMacWindows) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      if (!sampling) break
+      try { await checkNativeWindow() } catch (error) { nativeAdmission.push({ at: Date.now(), error: String(error) }); break }
+      if (nativeAdmission.length >= 32) break
+    }
+  })()
+  const sample = await Promise.all([measurementPromise.finally(() => { sampling = false }), exercise(), interaction, combatActions])
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
+  sampling = false
+  await nativeMonitor
+  await checkNativeWindow()
   profilePhases.enter("trace-drain")
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
@@ -815,7 +869,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   profilePhases.enter("trace-analysis-retention")
   const evidence = await retainNativeEvidence(
     { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
-    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact })
+    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact, nativeAdmission, replacement })
   const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
@@ -832,6 +886,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (allocation.errors.length || !allocation.heapBefore || !allocation.heapAfter) throw new Error(`Allocation capture failed; diagnostics retained: ${allocation.errors.join("; ")}`)
   const heapBefore = allocation.heapBefore.value, heapAfter = allocation.heapAfter.value
   const cpuProfile = mainCapture.profile
+  await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 1 })
+  await page.waitForFunction(() => (globalThis as any).__playsrcProfile.worldLighting?.revision === 1)
+  const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.worldLighting)
   const measurement = measured
   const traceEvents: ChromiumTraceEvent[] = evidence.events
   const exactTraceWindow = evidence.manifest.analysis.window
@@ -899,6 +956,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
+    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds, geometry,
     schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
@@ -1089,6 +1147,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(losses).toEqual([])
   }
   assertVisibleGameplayTruth({ visible: measurement.visible, focused: measurement.focused, ticks: report.simulation.ticks, displayFrames: actualFrames, submissions: measurement.counters.submissions, beforeSha256: report.pixels.beforeSha256, afterSha256: report.pixels.afterSha256 })
+  expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
+  expect(geometry.viewGeometry.samples.some((sample: any) => sample.modelDepth > 0)).toBe(true)
   await testInfo.attach("headed-upward-default-training-bots", { body: JSON.stringify(report), contentType: "application/json" })
   console.log(`PLAYSRC_UPWARD_TRAINING_BOTS ${JSON.stringify({
     label, activeBots: report.activeBots, teams: report.teams,
