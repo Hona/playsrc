@@ -284,5 +284,76 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
     }
     output.push_str("}\n}\n");
     fs::write(repository.join("games/tf2/rust/src/equipment.generated.rs"), output).map_err(|e| e.to_string())?;
+    generate_audio(content, repository, &schema, &supported_items)?;
     Ok(generated)
+}
+
+fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, items: &[Registration]) -> Result<(), String> {
+    let keys = ["empty", "single_shot", "single_shot_npc", "double_shot", "burst", "reload", "reload_npc", "melee_miss", "melee_hit", "melee_hit_world", "special1", "special2", "special3", "taunt", "deploy"];
+    let mut names = BTreeSet::<String>::new();
+    let extra_names: BTreeSet<_> = items.iter().filter(|item| item.implemented).flat_map(|item| item.extra_sounds.iter().cloned()).collect();
+    let mut criticals = Vec::new();
+    for registration in items.iter().filter(|item| item.implemented) {
+        names.extend(registration.extra_sounds.iter().cloned());
+        let item = schema.definition(registration.definition_index).unwrap();
+        for node in object(&item.source, "visuals") {
+            if node.key.strip_prefix("sound_").is_some_and(|key| keys.contains(&key)) {
+                if let SchemaValue::Scalar(name) = &node.value { names.insert(name.clone()); }
+            }
+        }
+        if matches!(registration.weapon.as_deref(), Some("Bat" | "Shovel" | "Kukri" | "Wrench" | "FireAxe" | "Bottle" | "Bonesaw" | "Fists")) {
+            let class = scalar(&item.source, "item_class").ok_or("missing weapon class")?;
+            let path = format!("scripts/{class}.ctx");
+            let (_, bytes) = super::dependency(content, &path)?;
+            let mut bytes = bytes.ok_or_else(|| format!("missing {path}"))?;
+            let blocks = bytes.len() / 8 * 8;
+            icefast::Ice::new(0, b"E2NcUkG2").decrypt(&mut bytes[..blocks]);
+            while bytes.last() == Some(&0) { bytes.pop(); }
+            let (_, _, _, _, nodes) = super::parse_summary("weapon-sounds", &path, &bytes)?;
+            let source: Vec<_> = nodes.first().ok_or("missing weapon root")?.children.iter().map(convert).collect();
+            let name = scalar(object(&source, "SoundData"), "burst").ok_or_else(|| format!("missing critical swing {path}"))?;
+            let override_name = scalar(object(&item.source, "visuals"), "sound_burst").unwrap_or(name);
+            names.insert(override_name.into());
+            criticals.push((registration.definition_index, override_name.to_owned()));
+        }
+    }
+    if names.len() > 64 { return Err("configured weapon sound registry exceeds wire range".into()); }
+    let (_, manifest) = super::dependency(content, "scripts/game_sounds_manifest.txt")?;
+    let (_, _, _, _, nodes) = super::parse_summary("sound-manifest", "scripts/game_sounds_manifest.txt", &manifest.ok_or("missing sound manifest")?)?;
+    let files: Vec<_> = nodes.first().ok_or("missing sound manifest root")?.children.iter()
+        .filter(|node| node.name.eq_ignore_ascii_case("precache_file") || node.name.eq_ignore_ascii_case("preload_file"))
+        .filter_map(|node| node.value.clone()).collect();
+    let mut found = BTreeMap::new();
+    for path in files {
+        let (_, bytes) = super::dependency(content, &path)?;
+        let Some(bytes) = bytes else { continue; };
+        let (_, _, _, _, nodes) = super::parse_summary("weapon-audio", &path, &bytes)?;
+        for node in nodes {
+            if !names.contains(&node.name) { continue; }
+            let source: Vec<_> = node.children.iter().map(convert).collect();
+            let waves: Vec<String> = if let Some(wave) = scalar(&source, "wave") { vec![wave.into()] }
+                else { object(&source, "rndwave").iter().filter_map(|node| match &node.value {
+                    SchemaValue::Scalar(value) if node.key == "wave" => Some(value.clone()), _ => None,
+                }).collect() };
+            if waves.is_empty() || waves.len() > 8 { return Err(format!("unsupported wave count {}", node.name)); }
+            found.entry(node.name).or_insert((path.clone(), waves));
+        }
+    }
+    let missing: Vec<_> = names.iter().filter(|name| !found.contains_key(*name)).cloned().collect();
+    if missing.iter().any(|name| !extra_names.contains(name)) { return Err(format!("unresolved item sound {missing:?}")); }
+    names.retain(|name| found.contains_key(name));
+    let mut rust = format!("// Generated from the configured item schema and sound manifest.\npub const MISSING_CONFIGURED_SOUNDS: &[&str] = &{:?};\npub const CONFIGURED_SOUNDS: &[(&str, &str, u8)] = &[\n", missing);
+    for name in &names {
+        let (path, waves) = found.get(name).ok_or_else(|| format!("unresolved equipped sound {name}"))?;
+        writeln!(rust, "({name:?}, {path:?}, {}),", waves.len()).unwrap();
+    }
+    rust.push_str("];\npub const MELEE_CRITICAL_SOUNDS: &[(u32, u8)] = &[\n");
+    for (item, name) in criticals {
+        writeln!(rust, "({item}, {}),", names.iter().position(|candidate| candidate == &name).unwrap()).unwrap();
+    }
+    rust.push_str("];\n");
+    fs::write(repository.join("games/tf2/rust/src/equipment-audio.generated.rs"), rust).map_err(|e| e.to_string())?;
+    fs::write(repository.join("games/tf2/browser/src/equipment/audio.generated.ts"), format!("// Generated from configured equipment sounds.\nexport const configuredEquipmentSounds: readonly string[] = {};\nexport const configuredEquipmentSoundWaves: readonly number[] = {};\n", serde_json::to_string(&names).unwrap(), serde_json::to_string(&names.iter().map(|name| found[name].1.len()).collect::<Vec<_>>()).unwrap())).map_err(|e| e.to_string())?;
+    fs::write(repository.join("tools/source-bundle/equipment-audio.generated.json"), serde_json::to_vec_pretty(&found).unwrap()).map_err(|e| e.to_string())?;
+    Ok(())
 }

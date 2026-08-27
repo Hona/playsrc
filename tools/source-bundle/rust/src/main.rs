@@ -1879,6 +1879,47 @@ fn collect_equipment_resources(resolver: &mut Resolver<'_>) -> Result<(), String
         }
     }
     resolver.consumer_role = None;
+    let mut sounds: BTreeMap<String, (String, Vec<String>)> = serde_json::from_str(include_str!("../../equipment-audio.generated.json")).map_err(|e| e.to_string())?;
+    let native: BTreeMap<_, _> = playsrc_tf2::SoundDefinition::NATIVE.iter().filter(|definition| !definition.map_scoped()).map(|definition|
+        (definition.identity().to_ascii_lowercase(), (definition.identity(), definition.wave_count()))).collect();
+    let mut unresolved: BTreeSet<_> = native.keys().cloned().collect();
+    let manifest = resolver.required("scripts/game_sounds_manifest.txt", "native-audio-manifest")?;
+    let manifest = playsrc_keyvalues::parse_text(&manifest, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default()).map_err(|e| e.to_string())?
+        .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
+    let Some(playsrc_keyvalues::Value::Object(files)) = manifest.roots.first().map(|node| &node.value) else { return Err("invalid native sound manifest".into()); };
+    for file in files {
+        if !file.key.bytes.eq_ignore_ascii_case(b"precache_file") && !file.key.bytes.eq_ignore_ascii_case(b"preload_file") { continue; }
+        let playsrc_keyvalues::Value::Scalar(path) = &file.value else { continue; };
+        let path = std::str::from_utf8(&path.token.bytes).map_err(|e| e.to_string())?.to_ascii_lowercase();
+        let Resolution::Found(source) = resolver.content.resolve_resource(&path).map_err(|e| e.to_string())? else { continue; };
+        let document = playsrc_keyvalues::parse_text(&source.bytes, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default()).map_err(|e| e.to_string())?
+            .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
+        for node in &document.roots {
+            let name = String::from_utf8_lossy(&node.key.bytes).to_ascii_lowercase();
+            let Some(&(identity, count)) = native.get(&name) else { continue; };
+            if !unresolved.contains(&name) { continue; }
+            let playsrc_keyvalues::Value::Object(fields) = &node.value else { return Err(format!("invalid native sound {identity}")); };
+            let wave = |node: &playsrc_keyvalues::Node| match &node.value {
+                playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => Some(String::from_utf8_lossy(&value.token.bytes).into_owned()), _ => None,
+            };
+            let mut waves: Vec<_> = fields.iter().filter_map(wave).collect();
+            if waves.is_empty() {
+                if let Some(playsrc_keyvalues::Value::Object(children)) = fields.iter().find(|node| node.key.bytes.eq_ignore_ascii_case(b"rndwave")).map(|node| &node.value) { waves.extend(children.iter().filter_map(wave)); }
+            }
+            if waves.len() != usize::from(count) { return Err(format!("native sound wave count differs: {identity}: expected {count}, configured {}", waves.len())); }
+            unresolved.remove(&name);
+            sounds.insert(identity.to_owned(), (path.clone(), waves));
+        }
+    }
+    if !unresolved.is_empty() { return Err(format!("unresolved native sound definitions: {unresolved:?}")); }
+    for (identity, (script, waves)) in sounds {
+        resolver.required(&script, "equipment-weapon-audio")?;
+        for wave in waves {
+            let wave = wave.trim_start_matches(|c: char| matches!(c, '*' | '#' | '@' | '>' | '<' | '^' | ')' | '}' | '$' | '!' | '?'));
+            // Retain authored missing-wave facts; never replace them with another sound.
+            resolver.optional(&format!("sound/{}", wave.replace('\\', "/")), format!("equipment-weapon-audio:{identity}:{script}"))?;
+        }
+    }
     Ok(())
 }
 

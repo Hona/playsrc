@@ -1,0 +1,50 @@
+{
+  "Weapon_Bat.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_BoneSaw.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_Bottle.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_FireAxe.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/cbar_miss1_crit.wav"
+    ]
+  ],
+  "Weapon_Fist.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons/fist_swing_crit.wav"
+    ]
+  ],
+  "Weapon_Machete.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/machete_swing_crit.wav"
+    ]
+  ],
+  "Weapon_Shovel.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/shovel_swing_crit.wav"
+    ]
+  ],
+  "Weapon_Wrench.MissCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/wrench_swing_crit.wav"
+    ]
+  ]
+}

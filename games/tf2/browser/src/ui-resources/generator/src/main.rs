@@ -1233,8 +1233,8 @@ fn collect(nodes: &[Node], result: &mut Occurrences) {
 type ParseSummary = (usize, String, Occurrences, Vec<String>, Vec<NodeRecord>);
 
 fn parse_summary(
-    domain: &'static str,
-    logical_path: &'static str,
+    domain: &str,
+    logical_path: &str,
     bytes: &[u8],
 ) -> Result<ParseSummary, String> {
     if domain == "animation-script"
