@@ -178,6 +178,7 @@ export function installNodeBuilderInstrumentation(
     const build = builder.build
     if (typeof build !== "function") throw new Error("WebGPU node-builder build contract is unavailable")
     builder.build = function (...args: any[]) {
+      if (!profile.active) return build.apply(this, args)
       const started = performance.now()
       try { return build.apply(this, args) }
       finally {

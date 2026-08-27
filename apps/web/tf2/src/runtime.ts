@@ -4531,7 +4531,7 @@ export class Tf2Application {
     if(frameProfiler?.active&&rendererProfile){
       frameProfiler.counters.completedFrames!+=1
       frameProfiler.completedFrames.push({
-        at:performance.now(),displayFrame:this.#displayFrame,tick:Number(prepared.snapshot.tick),
+        at:performance.now(),displayFrame:this.#displayFrame,tick:Number(prepared.snapshot.tick),playerClass:prepared.snapshot.class,weapon:prepared.snapshot.weapon,
         preparedRevision:prepared.revision,viewRevision,mouseRevision,snapRevision,
         position:camera.position,yaw:camera.yawDegrees,pitch:camera.pitchDegrees,
         drawSurfaces:visibility.drawSurfaces.length,leaves:visibility.leaves.length,
