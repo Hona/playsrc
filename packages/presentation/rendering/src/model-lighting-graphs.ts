@@ -43,6 +43,15 @@ export function bindModelLighting(mesh: THREE.Mesh, lighting: SourceModelLightin
   if (eye) Object.defineProperty(mesh.userData, "sourceEye", { value: eye, configurable: true })
 }
 
+/** Replacing the bind-pose mesh with its skinned mesh does not create another
+ * occurrence. Preserve its non-enumerable bindings without making them cloneable. */
+export function transferModelBindings(source: THREE.Mesh, target: THREE.Mesh): void {
+  for (const name of ["sourceLighting", "sourceEye", "sourceEnvironment"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(source.userData, name)
+    if (descriptor) Object.defineProperty(target.userData, name, descriptor)
+  }
+}
+
 /** Texture identity is a draw binding, but texture interpretation is shader
  * structure. Keep the latter in the cache key, never the occurrence/cubemap id. */
 export function modelEnvironmentShape(texture: THREE.CubeTexture | undefined): string {

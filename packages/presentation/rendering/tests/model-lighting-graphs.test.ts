@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment } from "../src/model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "../src/model-lighting-graphs"
 import { createSourceModelLightingUniforms, createSourceModelEyeUniforms, sourceModelSurfaceNode } from "../src/source-model-lighting"
 
 test("one graph reads independent lighting and eye values in alternating object order", () => {
@@ -47,6 +47,19 @@ test("graph structure is retained across actor replacement, but isolated across 
   const first = new THREE.MeshBasicNodeMaterial(), second = first.clone()
   first.colorNode = a; second.colorNode = a
   expect(first.customProgramCacheKey()).toBe(second.customProgramCacheKey())
+})
+
+test("posing an already lit occurrence transfers bindings only to its replacement mesh", () => {
+  const original = new THREE.Mesh(), skinned = new THREE.SkinnedMesh()
+  const lighting = createSourceModelLightingUniforms(), eye = createSourceModelEyeUniforms(), environment = new THREE.CubeTexture()
+  bindModelLighting(original, lighting, eye); bindModelEnvironment(original, environment)
+  skinned.userData = { ...original.userData }
+  transferModelBindings(original, skinned)
+  expect(skinned.userData.sourceLighting).toBe(lighting)
+  expect(skinned.userData.sourceEye).toBe(eye)
+  expect(skinned.userData.sourceEnvironment).toBe(environment)
+  expect(Object.keys(skinned.userData)).toEqual([])
+  expect(original.clone().userData).toEqual({})
 })
 
 test("local cubemap changes are per-object bindings, not new graph identities", () => {
