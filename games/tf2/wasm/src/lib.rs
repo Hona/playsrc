@@ -1,4 +1,5 @@
 mod gameplay_protocol;
+mod admission_metrics;
 mod gameplay_replay;
 mod memory;
 pub mod static_prop_artifact;
@@ -5060,6 +5061,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     slot.latest_game_snapshot = Some(snapshot);
     slot.collision_revision = collision_revision;
     slot.snapshot = Arc::from(encoded);
+    playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::SNAPSHOT_ENCODED, 0);
     slot.error = 0;
     collision_transaction.committed = true;
     1

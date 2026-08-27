@@ -2,6 +2,7 @@ pub mod attribute;
 pub mod audio;
 pub mod ballistics;
 pub mod bot;
+pub mod admission_metrics;
 pub mod building;
 pub mod class;
 pub mod combat;
@@ -1502,6 +1503,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         rocket_results: &[RocketTraceResult],
         expected_sticky_random: Option<StickyLaunchRandom>,
     ) -> Result<Snapshot, Error> {
+        admission_metrics::begin_tick(self.tick);
         match self.movement.water_level {
             0 => self.in_water = false,
             1 | 2 => self.in_water = true,
@@ -1717,6 +1719,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.team_selection
                 .replace_roster(roster)
                 .map_err(Error::TeamSelection)?;
+            admission_metrics::emit(admission_metrics::ROSTER, 0);
         }
         let roster = self.team_selection.snapshot();
         let mut round_facts = round::Facts {
