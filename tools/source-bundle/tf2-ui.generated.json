@@ -7453,6 +7453,54 @@
       ]
     },
     {
+      "logicalPath": "materials/vgui/training/screenshots/koth_lakeside_final.vmt",
+      "sha256": "f4dcbfcce1aac3befb8320d8c082e8c4da76a37eea5f0b29b25228e59c3e5b05",
+      "byteLength": 157,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/koth_lakeside_final.vtf",
+      "sha256": "d2e70487fea79dd5b5b157ab86530c79786fab045ed4173a2fb1abbdc5442afa",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/koth_sawmill.vmt",
+      "sha256": "e682339094cade51c4dbccd33e750cea979ad3114c150a68be9f7853c600be42",
+      "byteLength": 150,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/koth_sawmill.vtf",
+      "sha256": "f749c53520ea23abb91f3849e5ee66c96d161ca717c61e99aff86aa2206ebed5",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/koth_viaduct.vmt",
+      "sha256": "28f904ec3e0b0e801161856de25b294f49a2e65275d20f39753c741a59849f48",
+      "byteLength": 150,
+      "kinds": [
+        "material"
+      ]
+    },
+    {
+      "logicalPath": "materials/vgui/training/screenshots/koth_viaduct.vtf",
+      "sha256": "e1a04062b3491c2c806dd8c6c2d1d401e8b3c5500b94585389fc4544034fd47a",
+      "byteLength": 1398360,
+      "kinds": [
+        "texture"
+      ]
+    },
+    {
       "logicalPath": "materials/vgui/training/screenshots/pl_upward.vmt",
       "sha256": "82b86f5973ad0537d9398d3e4a83a4084912d2b55b220efc7c1df7edae5bc975",
       "byteLength": 147,
@@ -16583,6 +16631,54 @@
     },
     {
       "identity": "image-0474",
+      "configuredValue": "training/screenshots/koth_lakeside_final",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/screenshots/koth_lakeside_final.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/screenshots/koth_lakeside_final.vtf",
+          "sha256": "d2e70487fea79dd5b5b157ab86530c79786fab045ed4173a2fb1abbdc5442afa",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0475",
+      "configuredValue": "training/screenshots/koth_sawmill",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/screenshots/koth_sawmill.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/screenshots/koth_sawmill.vtf",
+          "sha256": "f749c53520ea23abb91f3849e5ee66c96d161ca717c61e99aff86aa2206ebed5",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0476",
+      "configuredValue": "training/screenshots/koth_viaduct",
+      "classification": "content-vtf",
+      "material": "materials/vgui/training/screenshots/koth_viaduct.vmt",
+      "textures": [
+        {
+          "logicalPath": "materials/vgui/training/screenshots/koth_viaduct.vtf",
+          "sha256": "e1a04062b3491c2c806dd8c6c2d1d401e8b3c5500b94585389fc4544034fd47a",
+          "width": 1024,
+          "height": 1024,
+          "frames": 1,
+          "rawFlags": 8192
+        }
+      ]
+    },
+    {
+      "identity": "image-0477",
       "configuredValue": "training/screenshots/pl_upward",
       "classification": "content-vtf",
       "material": "materials/vgui/training/screenshots/pl_upward.vmt",
@@ -16598,14 +16694,14 @@
       ]
     },
     {
-      "identity": "image-0475",
+      "identity": "image-0478",
       "configuredValue": "vgui/hud/icon_commentary",
       "classification": "missing-material",
       "material": null,
       "textures": []
     },
     {
-      "identity": "image-0476",
+      "identity": "image-0479",
       "configuredValue": "viewmode_loaner",
       "classification": "content-vtf",
       "material": "materials/vgui/viewmode_loaner.vmt",
@@ -16621,7 +16717,7 @@
       ]
     },
     {
-      "identity": "image-0477",
+      "identity": "image-0480",
       "configuredValue": "vgui/hud/8x800corner1",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner1.vmt",
@@ -16637,7 +16733,7 @@
       ]
     },
     {
-      "identity": "image-0478",
+      "identity": "image-0481",
       "configuredValue": "vgui/hud/8x800corner2",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner2.vmt",
@@ -16653,7 +16749,7 @@
       ]
     },
     {
-      "identity": "image-0479",
+      "identity": "image-0482",
       "configuredValue": "vgui/hud/8x800corner3",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner3.vmt",
@@ -16669,7 +16765,7 @@
       ]
     },
     {
-      "identity": "image-0480",
+      "identity": "image-0483",
       "configuredValue": "vgui/hud/8x800corner4",
       "classification": "content-vtf",
       "material": "materials/vgui/hud/8x800corner4.vmt",
