@@ -867,7 +867,7 @@ export interface Renderer {
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
-  prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world" }>[], camera: Camera, fog?: FogInput): Promise<void>
+  prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   modelVisible(model: string, skin: number, position: readonly [number, number, number], angles: readonly [number, number, number], camera: Camera, views: readonly WaterFramePass[]): boolean
@@ -1484,7 +1484,7 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   readonly #retainedModelPanels = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(32, retained => this.#disposeDynamicInstance(retained.instance))
-  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes: THREE.Mesh[] }>(96, retained => this.#disposeDynamicInstance(retained.instance))
+  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(96, retained => this.#disposeDynamicInstance(retained.instance))
   #viewModelInstances = new Map<number, RetainedViewModel>()
   // Detached occurrences share a bounded, generation-owned residency budget.
   // Never substitute one actor's mutable materials or skeleton for another's.
@@ -2302,12 +2302,21 @@ class RendererOwner implements Renderer {
     await this.#prepareReachablePipelines(this.#active, undefined, this.#loadOrdinal, leaves)
   }
 
-  async prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world" }>[], camera: Camera, fog?: FogInput): Promise<void> {
+  async prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void> {
     this.#requireReady()
     if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "model pipeline preparation requires an idle active map")
-    if (models.length > 96) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
+    if (models.length + models.filter(model => model.unposedPanel).length > 96) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
     const ordinal = this.#loadOrdinal
-    const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes: THREE.Mesh[] } }[] = []
+    const owner = this.#active, backend = this.#backend, deviceGeneration = this.#deviceGeneration
+    const checkOwner = () => {
+      this.#checkAbort(undefined, ordinal)
+      this.#requireReady()
+      if (owner !== this.#active || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) {
+        throw new RenderingError("InvalidState", "model pipeline preparation generation was replaced")
+      }
+    }
+    const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] } }[] = []
+    const restoreVisibility: (() => void)[] = []
     const viewModels = new THREE.Group(), panels = new THREE.Group(), world = new THREE.Group()
     viewModels.layers.set(1)
     const previousFog = this.#scene.fog as THREE.Fog | null
@@ -2321,12 +2330,21 @@ class RendererOwner implements Renderer {
     }
     try {
       this.#setCamera(camera)
-      for (const { item, pass } of models) {
+      for (const { item, pass, unposedPanel } of models) {
         const model = modelKey(item.model, item.skin ?? 0), key = `${pass}:${model}`
         if (keys.has(key)) continue
         keys.add(key)
         const template = this.#active.modelTemplates.get(model)
         if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
+        if (unposedPanel) {
+          if (pass !== "panel") throw new RenderingError("MalformedInput", "unposed model preparation requires a panel")
+          const bind = template.clone(true), bindKey = `panel-bind:${model}`
+          restoreVisibility.push(prepareReachablePipelineVisibility(bind).restore)
+          staged.push({ key: bindKey, retained: { model, instance: bind } })
+          keys.add(bindKey)
+          preparationProfile?.modelPreparation?.models.push({ model: item.model, skin: item.skin ?? 0, pass: "panel-bind" })
+          panels.add(bind)
+        }
         const instance = template.clone(true)
         const authoredViewState: { transparent: boolean; depthWrite: boolean }[][] = []
         if (pass === "view") instance.traverse(object => {
@@ -2353,15 +2371,15 @@ class RendererOwner implements Renderer {
       }
       // compileAsync waits for actual native pipeline readiness. It neither
       // submits a game frame nor advances simulation/animation/input clocks.
-      await withBoundedPipelineCompilation((this.#backend as any)._pipelines, async () => {
+      await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
         for (const [group, targetScene, camera] of [[viewModels, this.#scene, this.#viewCamera], [panels, this.#modelPanelScene, this.#modelPanelCamera]] as const) {
-          if (group.children.length) await this.#backend.compileAsync(group, camera, targetScene)
-          this.#checkAbort(undefined, ordinal)
+          if (group.children.length) await backend.compileAsync(group, camera, targetScene)
+          checkOwner()
         }
         this.#setSceneFog(this.#fog(fog))
-        if (world.children.length) await this.#backend.compileAsync(world, this.#camera, this.#scene)
+        if (world.children.length) await backend.compileAsync(world, this.#camera, this.#scene)
       })
-      this.#checkAbort(undefined, ordinal)
+      checkOwner()
       for (const { key, retained } of staged) {
         retained.instance.removeFromParent()
         this.#preparedModelInstances.retain(key, retained)
@@ -2374,6 +2392,7 @@ class RendererOwner implements Renderer {
         profile.modelPreparation!.ended = performance.now()
       }
     } finally {
+      for (const restore of restoreVisibility) restore()
       this.#setSceneFog(previousFog)
       for (const { retained } of staged) this.#disposeDynamicInstance(retained.instance)
       this.#renderBusy = false
@@ -3705,7 +3724,8 @@ class RendererOwner implements Renderer {
         }
         if (!retained) {
           retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}:${!!panel.pose}`)
-            ?? (panel.pose && panel.modelLighting ? this.#preparedModelInstances.take(`panel:${identity}`) : undefined)
+            ?? (!panel.pose ? this.#preparedModelInstances.take(`panel-bind:${identity}`)
+              : panel.modelLighting ? this.#preparedModelInstances.take(`panel:${identity}`) : undefined)
             ?? { model: identity, instance: template.clone(true) }
           this.#modelPanelInstances.set(instanceIdentity, retained)
         }
