@@ -15097,7 +15097,7 @@ mod tests {
             playsrc_material::static_state(&material, playsrc_material::TextureAlphaFacts { base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit }).unwrap_or_else(|error| panic!("state {identity}: {error:?}"));
             decode_particle_sheet(metadata).unwrap_or_else(|_| panic!("sheet {identity}"));
         }
-        let (mut world, _, materials, presentation) = compile_particles(&resources, &decoders).unwrap();
+        let (mut world, _, materials, presentation) = compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS).unwrap();
         let fire = "particle/flamethrowerfire/flamethrowerfire102.vmt";
         let state = presentation[fire].sprite_card.as_ref().unwrap();
         assert_eq!(state.add_self.value, 0.5);
