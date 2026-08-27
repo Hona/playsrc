@@ -151,6 +151,28 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("sectioned-list scrollbar publication keeps the clicked binding row at its painted position", () => {
+    const { runtime, root } = setup()
+    const list = operation(runtime, { kind: "create-panel", parent: 1, control: "SectionedListPanel", name: "Bindings" }).panel!
+    operation(runtime, { kind: "set-bounds", panel: list, bounds: { x: 10, y: 10, width: 300, height: 100 } })
+    operation(runtime, { kind: "mutate-control", panel: list, mutation: {
+      sections: [{ id: 1, name: "Bindings", alwaysVisible: true, minimumHeight: 0, columns: [{ name: "Key", text: "Key", flags: 0, width: 280 }] }],
+      sectionedItems: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, section: 1, cells: { Key: `Binding ${index + 1}` }, enabled: true })),
+    } })
+    operation(runtime, { kind: "set-bounds", panel: list, bounds: { x: 10, y: 10, width: 300, height: 100 } })
+    const scroll = runtime.findChildByName(list, "SectionedScrollBar")!
+    const row = () => descendants(root).find(element => element.dataset.vguiItem === "7")!
+    expect(row().style.top).toBe("145px")
+    operation(runtime, { kind: "mutate-control", panel: scroll, mutation: { value: 120 } })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(runtime.snapshot().panels.find(panel => panel.id === scroll)!.state.value).toBe(120)
+    expect(row().style.top).toBe("25px")
+    const bounds = row().getBoundingClientRect()
+    operation(runtime, { kind: "pointer-press", button: "left", x: bounds.left + 10, y: bounds.top + 10, pointerId: 1, clicks: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(row().getAttribute("aria-selected")).toBe("true")
+    runtime.destroy()
+  })
   test("reuses constructor property families without sharing authored values or runtime registrations", () => {
     const acceptedProperties = ["customValue"]
     const registration = { name: "AuthoredButton", baseControl: "CheckButton" as const, element: "button", role: null,

@@ -3208,6 +3208,12 @@ class SourceVguiRuntime implements VguiRuntime {
     else clamped = Math.max(panel.maximum, Math.min(panel.minimum, value))
     const changed = panel.value !== clamped
     panel.value = clamped
+    if (changed && sameName(sourceControl, "ScrollBar") && panel.parent !== null) {
+      const parent = this.requirePanel(panel.parent)
+      // Section rows are painted by the parent, but hit testing reads this
+      // scrollbar immediately. Retire that parent's retained rows on scroll.
+      if (sameName(parent.sourceControl, "SectionedListPanel")) this.presentationSignatures.delete(parent.id)
+    }
     if (changed && signal) this.postAction(panel, sameName(sourceControl, "Slider") ? "SliderMoved" : "ScrollBarSliderMoved", { position: clamped })
   }
 
