@@ -75,6 +75,7 @@ import {
   createProjectilePresentationMapper,
   createViewmodelPresenter,
   classPipelinePoseRequests,
+  mapPropPipelinePoseRequests,
   classPreviewBaseActivity,
   encodeModelPoseBatch,
   projectileFrame,
@@ -1969,9 +1970,12 @@ export class Tf2Application {
       })
       await this.#renderer.prepareVisiblePipelines(warmupCamera,warmupVisibility.leaves)
       this.#requireOperation(operation)
+      await this.#renderer.prepareParticlePipelines(warmupCamera, this.#mainFog(this.#artifacts))
+      this.#requireOperation(operation)
       if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
-      const classPreparation = classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
-        warmupViewport.width / warmupViewport.height)
+      const classPreparation = [...classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
+        warmupViewport.width / warmupViewport.height), ...mapPropPipelinePoseRequests(this.#artifacts, this.#snapshot, warmupCamera,
+        warmupViewport.width / warmupViewport.height)]
       const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
       const classPoses = await this.#client!.models(this.#generation, encodeModelPoseBatch(classPreparation.map(value => value.request)))
       this.#requireOperation(operation)
@@ -1981,7 +1985,7 @@ export class Tf2Application {
         if (!preparation || !artifact || !pose.lighting) throw new Error(`Class pipeline pose unavailable: ${pose.model}`)
         return { pass: preparation.pass, unposedPanel: preparation.pass === "panel" && pose.role === "single", item: {
           identity: pose.identity, model: pose.model, skin: preparation.request.skin < artifact.skinCount ? preparation.request.skin : 0,
-          position: warmupCamera.position, angles: [0, 0, 0] as const, scale: 1,
+          position: preparation.request.lighting!.origin, angles: preparation.request.lighting!.angles, scale: 1,
           pose, modelLighting: pose.lighting, eyeStates: pose.eyes,
         } }
       }), warmupCamera, this.#mainFog(this.#artifacts))
