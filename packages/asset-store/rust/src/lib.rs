@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CHUNK_ENTRIES: usize = 2_048;
+pub const MAX_CHUNK_ROLES: usize = 2_048;
 pub const MAX_GRAPH_ENTRIES: usize = 8_192;
 pub const MAX_GRAPH_CHUNKS: usize = 1_024;
 pub const MAX_LOGICAL_PATH_BYTES: usize = 4_096;
@@ -245,6 +246,7 @@ pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
     let mut identities = BTreeSet::new();
     let mut groups = BTreeMap::<(Vec<String>, String, u8, String), Vec<Resource>>::new();
     for resource in resources {
+        if resource.roles.len() > MAX_CHUNK_ROLES { return Err(GraphError::BoundExceeded); }
         if !valid_resource_identity(&resource) {
             return Err(GraphError::MalformedIdentity);
         }
@@ -812,6 +814,17 @@ mod tests {
             roles: BTreeSet::from([role.to_owned()]),
             bytes,
         }
+    }
+
+    #[test]
+    fn shared_item_roles_have_the_same_bounded_contract_as_graph_consumers() {
+        let mut item = resource("models/player/soldier.mdl", "gameplay", vec![1; 32]);
+        item.roles = (0..MAX_CHUNK_ROLES).map(|index| format!("equipment-{index:04}")).collect();
+        let packed = pack(vec![item.clone()]).unwrap();
+        assert_eq!(packed.len(), 1);
+        assert_eq!(packed[0].descriptor.roles.len(), MAX_CHUNK_ROLES);
+        item.roles.insert("gameplay".into());
+        assert_eq!(pack(vec![item]).unwrap_err(), GraphError::BoundExceeded);
     }
 
     #[test]

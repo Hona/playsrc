@@ -5,6 +5,7 @@ const DECIMAL = /^(0|[1-9]\d*)$/
 const ROLE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
 const MAX_CHUNK_BYTES = 32 * 1024 * 1024
 const MAX_CHUNK_ENTRIES = 2_048
+export const MAX_CHUNK_ROLES = 2_048
 const MAX_GRAPH_ENTRIES = 8_192
 const MAX_GRAPH_CHUNKS = 1_024
 
@@ -92,7 +93,7 @@ export function parseResourceGraph(value: unknown): ResourceGraph {
       || identities.has(candidate.encodedSha256 as string)
       || !Array.isArray(candidate.roles)
       || candidate.roles.length < 1
-      || candidate.roles.length > 4
+      || candidate.roles.length > MAX_CHUNK_ROLES
       || candidate.roles.some((role) => typeof role !== "string" || !ROLE.test(role))
       || candidate.roles.some((role, index) => index > 0 && candidate.roles[index - 1] >= role)
       || !Array.isArray(candidate.entries)

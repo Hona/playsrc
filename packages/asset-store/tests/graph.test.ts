@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, parseResourceSet, partitionResourceChunkDescriptors, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
+import { MAX_CHUNK_ROLES, chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, parseResourceSet, partitionResourceChunkDescriptors, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
 
 const hash = (value: string) => value.repeat(64)
 const chunk = Object.freeze({
@@ -20,6 +20,13 @@ const graph = Object.freeze({
 })
 
 describe("resource graph", () => {
+  test("admits shared per-item closure roles with an explicit producer-consumer bound", () => {
+    const roles = Array.from({ length: MAX_CHUNK_ROLES }, (_, index) => `equipment-${String(index).padStart(4, "0")}`)
+    const parsed = parseResourceGraph({ ...graph, chunks: [{ ...chunk, roles }] })
+    expect(chunksForRole(parsed, "equipment-0031")).toHaveLength(1)
+    expect(parsed.chunks[0]!.roles).toHaveLength(MAX_CHUNK_ROLES)
+    expect(() => parseResourceGraph({ ...graph, chunks: [{ ...chunk, roles: [...roles, "gameplay"] }] })).toThrow("resource chunk descriptor is malformed")
+  })
   test("parses exact chunks and builds one bounded Rust batch", () => {
     const parsed = parseResourceGraph(graph)
     expect(chunksForRole(parsed, "menu")).toEqual([chunk])
