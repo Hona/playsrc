@@ -581,6 +581,7 @@ impl CollisionQuery for CollisionBatch {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParticleWorld {
     registry: Arc<Registry>,
+    sequence_spans: Arc<BTreeMap<String, Arc<BTreeMap<i32, f32>>>>,
     limits: WorldLimits,
     time: f32,
     effects: Vec<Effect>,
@@ -599,6 +600,7 @@ struct Effect {
 #[derive(Clone, Debug, PartialEq)]
 struct System {
     definition_uuid: [u8; 16],
+    sequence_spans: Option<Arc<BTreeMap<i32, f32>>>,
     path_identity: u64,
     start_seconds: f32,
     delay_seconds: f32,
@@ -728,10 +730,15 @@ impl SimdRandom {
 }
 
 impl ParticleWorld {
-    pub fn new(registry: &Registry, limits: WorldLimits) -> Result<Self, Error> {
+    pub fn new(registry: &Registry, materials: &BTreeMap<String, ParticleMaterial>, limits: WorldLimits) -> Result<Self, Error> {
         validate_limits(limits)?;
         Ok(Self {
             registry: Arc::new(registry.clone()),
+            sequence_spans: Arc::new(materials.iter().map(|(name, material)| {
+                (name.clone(), Arc::new(material.sheet.sequences.iter().map(|(index, sequence)| {
+                    (*index, sequence.duration_seconds)
+                }).collect()))
+            }).collect()),
             limits,
             time: 0.0,
             effects: Vec::new(),
@@ -744,6 +751,12 @@ impl ParticleWorld {
         self.time
     }
 
+    pub fn independent(&self) -> Self {
+        Self { registry: Arc::clone(&self.registry), sequence_spans: Arc::clone(&self.sequence_spans),
+            limits: self.limits, time: 0.0, effects: Vec::new(), event_identities: Arc::new(BTreeSet::new()),
+            simulation_random: SimdRandom::new(12_345_678) }
+    }
+
     pub fn effect_count(&self) -> usize {
         self.effects.len()
     }
@@ -754,7 +767,7 @@ impl ParticleWorld {
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
     ) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
-        self.advance_complete(events, request, collision, |items, bounds| {
+        self.advance_complete(events, &[], request, collision, |items, bounds| {
             Ok((items, bounds))
         })
     }
@@ -762,13 +775,14 @@ impl ParticleWorld {
     pub fn transact_render_output(
         &mut self,
         events: &[Event],
+        attached_controls: &[(u32, ControlPoint)],
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
         materials: &BTreeMap<String, ParticleMaterial>,
         material_identities: &[String],
         maximum_output_bytes: usize,
     ) -> Result<Vec<u8>, Error> {
-        self.advance_complete(events, request, collision, |items, bounds| {
+        self.advance_complete(events, attached_controls, request, collision, |items, bounds| {
             let resolved = resolve_render_output(items, materials)?;
             encode_render_output(&resolved, bounds, material_identities, maximum_output_bytes)
         })
@@ -777,12 +791,17 @@ impl ParticleWorld {
     fn advance_complete<T>(
         &mut self,
         events: &[Event],
+        attached_controls: &[(u32, ControlPoint)],
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
         complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         validate_advance(self.time, events, request, self.limits)?;
         let mut candidate = self.clone();
+        for (identity, control) in attached_controls {
+            validate_control_point(control, self.limits)?;
+            set_control(&mut effect_mut(&mut candidate.effects, *identity)?.root, control.clone());
+        }
         let mut substeps = 0;
         let mut queries = 0;
         let mut cursor = request.from_seconds;
@@ -1086,6 +1105,7 @@ impl ParticleWorld {
         let controls = Arc::new(controls);
         let mut instantiate_state = InstantiateState {
             controls: &controls,
+            sequence_spans: &self.sequence_spans,
             system_count: &mut system_count,
             limits: self.limits,
         };
@@ -1185,6 +1205,7 @@ fn initialize_system_first_frame(
 
 struct InstantiateState<'a> {
     controls: &'a Arc<Vec<Option<ControlPoint>>>,
+    sequence_spans: &'a BTreeMap<String, Arc<BTreeMap<i32, f32>>>,
     system_count: &'a mut usize,
     limits: WorldLimits,
 }
@@ -1278,6 +1299,7 @@ fn instantiate(
     }
     Ok(System {
         definition_uuid: definition.uuid,
+        sequence_spans: state.sequence_spans.get(&definition.material).cloned(),
         path_identity,
         start_seconds: start,
         delay_seconds: delay,
@@ -1539,6 +1561,7 @@ fn initialize_particle(
             || initializer
                 .identity
                 .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
+            || initializer.identity.eq_ignore_ascii_case("Lifetime From Sequence")
         {
             continue;
         }
@@ -1843,6 +1866,17 @@ fn initialize_particle(
     }
     for initializer in definition.functions(FunctionCategory::Initializer) {
         if initializer
+            .identity
+            .eq_ignore_ascii_case("Lifetime From Sequence")
+        {
+            let rate = float_parameter(initializer, "Frames Per Second", 30.0);
+            if rate != 0.0 && let Some(spans) = &system.sequence_spans {
+                let span = spans.get(&particle.sequence)
+                    .or_else(|| spans.first_key_value().map(|(_, span)| span))
+                    .copied().unwrap_or(0.0);
+                particle.lifetime_seconds = if span == 0.0 { 1.0 } else { span / rate };
+            }
+        } else if initializer
             .identity
             .eq_ignore_ascii_case("Position Modify Offset Random")
         {

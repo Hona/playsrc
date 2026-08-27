@@ -2,6 +2,7 @@ mod gameplay_protocol;
 mod admission_metrics;
 mod gameplay_replay;
 mod memory;
+mod wearable;
 pub mod static_prop_artifact;
 
 #[cfg(target_arch = "wasm32")]
@@ -577,6 +578,7 @@ struct Slot {
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     class_scenes: BTreeMap<u32, ClassPreview>,
+    wearable_particles: wearable::ParticleStates,
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     visibility_candidates: Option<playsrc_visibility::CandidateSet>,
@@ -1525,6 +1527,7 @@ unsafe fn compile_map(
             model_material_opacity,
             viewmodel_bob: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
+            wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
             visibility_candidates: playsrc_visibility::CandidateSet::compile(&visibility, 0, &[])
                 .ok(),
@@ -1570,6 +1573,7 @@ unsafe fn compile_map(
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
+            wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
             visibility: None,
             visibility_candidates: None,
@@ -1924,7 +1928,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
-    let Ok((events, request)) = decode_particle_transaction(bytes) else {
+    let Ok((mut events, request)) = decode_particle_transaction(bytes) else {
         *SIMULATION_ERROR_DETAIL
             .get_or_init(|| Mutex::new(String::new()))
             .lock()
@@ -1974,8 +1978,14 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         lighting,
         lighting_cache: BTreeMap::new(),
     };
+    if !slot.wearable_particles.pending.is_empty() {
+        events.extend(slot.wearable_particles.pending.iter().cloned());
+        events.sort_by(|left, right| left.timestamp_seconds.total_cmp(&right.timestamp_seconds));
+        for (order, event) in events.iter_mut().enumerate() { event.source_order = order as u32; }
+    }
     let output = match world.transact_render_output(
         &events,
+        &slot.wearable_particles.controls.iter().map(|(id, cp)| (*id, cp.clone())).collect::<Vec<_>>(),
         request,
         &mut collision,
         &slot.particle_sheets,
@@ -1992,6 +2002,8 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         }
     };
     slot.particle_output = output;
+    slot.wearable_particles.pending.clear();
+    slot.wearable_particles.controls.clear();
     1
 }
 #[unsafe(no_mangle)]
@@ -2054,6 +2066,7 @@ struct ModelPoseRequest {
     packed_body: Option<i32>,
     bodygroups: Vec<usize>,
     item_bodygroups: Vec<usize>,
+    equipped_items: Vec<playsrc_tf2::equipment::EquippedItem>,
     lighting: Option<ModelPoseLightingRequest>,
 }
 
@@ -2073,6 +2086,8 @@ struct ModelPoseWorld<'a> {
     snapshot: &'a playsrc_collision::Snapshot,
     gameplay: Option<&'a playsrc_tf2::Snapshot>,
     cubemaps: &'a [playsrc_map::CubemapSample],
+    particle_inputs: Option<wearable::ParticleInputs<'a>>,
+    wearable_particles: &'a mut wearable::ParticleStates,
 }
 
 #[unsafe(no_mangle)]
@@ -2116,6 +2131,8 @@ pub unsafe extern "C" fn playsrc_model_transact(
     let Some(environment) = slot.environment.as_ref() else {
         return 0;
     };
+    let mut wearable_particles = slot.wearable_particles.clone();
+    wearable_particles.retain(&requests);
     let mut world = ModelPoseWorld {
         metadata: &slot.model_lighting_metadata,
         lighting,
@@ -2124,6 +2141,8 @@ pub unsafe extern "C" fn playsrc_model_transact(
         snapshot: &snapshot,
         gameplay: slot.latest_game_snapshot.as_ref(),
         cubemaps: &environment.world.cubemaps,
+        particle_inputs: slot.particles.as_ref().map(|template| wearable::ParticleInputs { template, materials: &slot.particle_sheets, identities: &slot.particle_materials }),
+        wearable_particles: &mut wearable_particles,
     };
     let Ok(output) = encode_model_poses(
         &slot.studio_models,
@@ -2137,6 +2156,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         return 0;
     };
     slot.model_output = output;
+    slot.wearable_particles = wearable_particles;
     1
 }
 
@@ -2220,7 +2240,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 9 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 10 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2349,6 +2369,20 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let item_bodygroups = (0..item_bodygroup_count)
             .map(|_| reader.u32().map(|value| value as usize))
             .collect::<Result<Vec<_>, _>>()?;
+        let equipped_count = reader.u32()?;
+        if equipped_count > 19 { return Err(()); }
+        let mut equipped_items = Vec::with_capacity(equipped_count as usize);
+        for _ in 0..equipped_count {
+            let item_id = reader.u32()?;
+            let definition_index = reader.u32()?;
+            let quality = reader.u8()?;
+            let style = reader.u8()?;
+            let slot = playsrc_tf2::schema::LoadoutPosition::try_from(reader.u8()?).map_err(|_| ())?;
+            let attribute_count = reader.u8()?;
+            if item_id == 0 || quality > 15 || attribute_count > 64 || equipped_items.iter().any(|item: &playsrc_tf2::equipment::EquippedItem| item.item_id == item_id) { return Err(()); }
+            let attributes = (0..attribute_count).map(|_| Ok(playsrc_tf2::equipment::ItemAttribute { definition: reader.u32()?, value: reader.f32()? })).collect::<Result<Vec<_>, ()>>()?;
+            equipped_items.push(playsrc_tf2::equipment::EquippedItem { item_id, definition_index, quality, style, slot, attributes });
+        }
         let has_lighting = reader.u8()?;
         if has_lighting > 1 || reader.take(3)? != [0; 3] {
             return Err(());
@@ -2408,6 +2442,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             packed_body,
             bodygroups,
             item_bodygroups,
+            equipped_items,
             lighting,
         });
     }
@@ -2555,7 +2590,7 @@ fn encode_model_poses(
 ) -> Result<Vec<u8>, ()> {
     out.clear();
     out.extend_from_slice(b"PMPO");
-    out.extend_from_slice(&10u32.to_le_bytes());
+    out.extend_from_slice(&11u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
@@ -2588,7 +2623,7 @@ fn encode_model_poses(
             let area = points.areas.iter().rev().find(|a| a.point == point.index);
             Some((point,area,points.configuration))
         } else { None };
-        let bodygroups = if let Some(body) = request.packed_body {
+        let mut bodygroups = if let Some(body) = request.packed_body {
             model
                 .body_parts
                 .iter()
@@ -2603,6 +2638,16 @@ fn encode_model_poses(
         } else {
             request.bodygroups.clone()
         };
+        let wearables = request.equipped_items.iter().filter_map(|item| match wearable::model(item, &request.model) {
+            Ok(Some(model)) => Some(Ok((item, model))), Ok(None) => None, Err(()) => Some(Err(())),
+        }).collect::<Result<Vec<_>, ()>>()?;
+        if !wearables.is_empty() {
+            if request.phase.is_some() { return Err(()); }
+            if let Some(index) = model.body_parts.iter().position(|part| part.name.eq_ignore_ascii_case(b"hat")) {
+                if bodygroups.len() != model.body_parts.len() { return Err(()); }
+                bodygroups[index] = 1;
+            }
+        }
         let sequence =
             playsrc_studio_model::sequences_for_activity_name(model, request.activity.as_bytes())
                 .first()
@@ -2768,6 +2813,7 @@ fn encode_model_poses(
                     &mut out,
                     request,
                     role,
+                    None,
                     part_model,
                     sequence,
                     timing,
@@ -2919,6 +2965,7 @@ fn encode_model_poses(
                 &mut out,
                 request,
                 u8::from(legacy_view.is_some()),
+                None,
                 model,
                 sequence,
                 timing,
@@ -2965,6 +3012,7 @@ fn encode_model_poses(
                     &mut out,
                     request,
                     2,
+                    None,
                     item,
                     0,
                     item_timing,
@@ -2977,6 +3025,20 @@ fn encode_model_poses(
                     None,
                     world,
                 )?;
+                output_count = output_count.checked_add(1).ok_or(())?;
+            }
+            for (equipped, model_path) in &wearables {
+                let item = models.get(*model_path).ok_or(())?;
+                let parameters = vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()];
+                let sampled = playsrc_studio_model::sample_pose(item, &playsrc_studio_model::AnimationState {
+                    base_sequence: 0, cycle: playsrc_studio_model::Float32(0), pose_parameters: parameters.clone(), layers: Vec::new(),
+                }).map_err(|_| ())?;
+                let merged = playsrc_studio_model::merge_model_pose(model, pose, item, &sampled).map_err(|_| ())?;
+                let primitives = playsrc_studio_model::select_primitives(item, &vec![0; item.body_parts.len()],
+                    playsrc_studio_model::source_skin_family(request.skin as i32, item.skins.len()), request.lod).map_err(|_| ())?;
+                let timing = playsrc_studio_model::sequence_timing(item, 0, &parameters).map_err(|_| ())?;
+                encode_model_pose_part(&mut out, request, 3, Some(equipped), item, 0, timing, 0.0, 0.0,
+                    &[], &merged, &primitives, primitives.len(), None, world)?;
                 output_count = output_count.checked_add(1).ok_or(())?;
             }
         }
@@ -3051,6 +3113,7 @@ fn encode_model_pose_part(
     out: &mut Vec<u8>,
     request: &ModelPoseRequest,
     role: u8,
+    equipped: Option<&playsrc_tf2::equipment::EquippedItem>,
     model: &playsrc_studio_model::PresentationModel,
     sequence: usize,
     timing: playsrc_studio_model::SequenceTiming,
@@ -3087,6 +3150,15 @@ fn encode_model_pose_part(
         u8::from(request.fire_view.is_some()),
         0,
     ]);
+    if let Some(equipped) = equipped {
+        if role != 3 { return Err(()); }
+        out.extend_from_slice(&equipped.item_id.to_le_bytes());
+        out.extend_from_slice(&wearable::effect(equipped)?.to_le_bytes());
+        let transform = wearable::control_point(model, pose, request.model_panel)?;
+        for value in transform.0 { out.extend_from_slice(&value.0.to_le_bytes()); }
+        let particles = world.wearable_particles.sample(world.particle_inputs.as_ref().ok_or(())?, request, equipped, model, pose)?;
+        pbytes(out, &particles)?;
+    }
     pbytes(out, model.identity.as_bytes())?;
     pbytes(out, request.activity.as_bytes())?;
     out.extend_from_slice(&u32::try_from(sequence).map_err(|_| ())?.to_le_bytes());
@@ -4796,6 +4868,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.coverage = Vec::new();
     slot.particles = None;
     slot.particle_materials = Vec::new();
+    slot.wearable_particles = wearable::ParticleStates::default();
     slot.particle_sheets = BTreeMap::new();
     slot.particle_output = Vec::new();
     slot.studio_models = BTreeMap::new();
@@ -10960,7 +11033,7 @@ fn encode_particle_textures(
     materials: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<(), ()> {
     out.extend_from_slice(b"PPTM");
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
@@ -10975,6 +11048,14 @@ fn encode_particle_textures(
         out.extend_from_slice(&texture.height.to_le_bytes());
         out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(texture.rgba.as_slice())));
         pbytes(out, &texture.rgba)?;
+        out.extend_from_slice(&u32::from(material.sprite_card.is_some()).to_le_bytes());
+        if let Some(state) = &material.sprite_card {
+            out.extend_from_slice(&u32::from(state.depth_blend.as_ref().is_some_and(|v| v.value)).to_le_bytes());
+            out.extend_from_slice(&u32::from(state.blend_frames.value).to_le_bytes());
+            for value in [state.add_self.value, state.overbright_factor.value, state.depth_blend_scale.value,
+                state.minimum_size.value, state.start_fade_size.value, state.end_fade_size.value, state.maximum_size.value,
+                state.maximum_distance.value, state.far_fade_interval.value] { out.extend_from_slice(&value.to_le_bytes()); }
+        }
     }
     Ok(())
 }
@@ -11533,6 +11614,9 @@ fn load_cached_presentation(
         "models/player/demo.mdl".to_owned(),
         "models/player/medic.mdl".to_owned(),
         "models/player/heavy.mdl".to_owned(),
+        "models/player/items/soldier/soldier_officer.mdl".to_owned(),
+        "models/player/items/medic/medic_officer.mdl".to_owned(),
+        "models/player/items/heavy/heavy_officer.mdl".to_owned(),
         "models/player/pyro.mdl".to_owned(),
         "models/player/spy.mdl".to_owned(),
         "models/player/engineer.mdl".to_owned(),
@@ -11832,6 +11916,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         "models/player/demo.mdl".to_owned(),
         "models/player/medic.mdl".to_owned(),
         "models/player/heavy.mdl".to_owned(),
+        "models/player/items/soldier/soldier_officer.mdl".to_owned(),
+        "models/player/items/medic/medic_officer.mdl".to_owned(),
+        "models/player/items/heavy/heavy_officer.mdl".to_owned(),
         "models/player/pyro.mdl".to_owned(),
         "models/player/spy.mdl".to_owned(),
         "models/player/engineer.mdl".to_owned(),
@@ -14040,6 +14127,7 @@ type CompiledParticles = (
 
 struct CompiledParticlePresentation {
     source_path: String,
+    sprite_card: Option<playsrc_material::ParticleMaterialState>,
     state: playsrc_material::StaticState,
     metadata: playsrc_vtf::Metadata,
     texture: DecodedTexture,
@@ -14062,6 +14150,7 @@ fn compile_particles(
         "particles/bullet_tracers.pcf",
         "particles/impact_fx.pcf",
         "particles/crit.pcf",
+        "particles/item_fx.pcf",
     ];
     let sources = paths
         .iter()
@@ -14127,6 +14216,7 @@ fn compile_particles(
         "medicgun_beam_blue",
         "medicgun_beam_red_invun",
         "medicgun_beam_blue_invun",
+        "superrare_burning1",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let materials = registry.target_closure(&roots).map_err(|_| ())?.materials;
@@ -14137,7 +14227,7 @@ fn compile_particles(
             let material = resolve_material_semantics(
                 &material_path,
                 b,
-                playsrc_material::SelectionEnvironment::default(),
+                playsrc_material::SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..Default::default() },
             )?;
             let (selected, _bytes, metadata) = selected_texture(&material, decoders)?;
             let texture_path = selected
@@ -14186,6 +14276,7 @@ fn compile_particles(
                     },
                     CompiledParticlePresentation {
                         source_path: material_path,
+                        sprite_card: material.particle.clone(),
                         state,
                         metadata: metadata.clone(),
                         texture,
@@ -14201,7 +14292,7 @@ fn compile_particles(
         presentation.insert(identity, state);
     }
     Ok((
-        playsrc_particle::ParticleWorld::new(&registry, playsrc_particle::WorldLimits::default())
+        playsrc_particle::ParticleWorld::new(&registry, &sheets, playsrc_particle::WorldLimits::default())
             .map_err(|_| ())?,
         materials,
         sheets,
@@ -14976,6 +15067,69 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the configured TF2 graph with Team Captain and item_fx"]
+    fn configured_burning_flames_models_lifetimes_and_independent_effects() {
+        use playsrc_particle::{AdvanceRequest, ControlPoint, Event, EventCommand};
+        let graph = std::env::var("PLAYSRC_COSMETIC_GRAPH").expect("configured graph path");
+        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
+        let resources = bundle(&bytes).unwrap();
+        let decoders = TextureDecoders::new(&resources);
+        let registry = playsrc_particle::Registry::from_pcf(&[playsrc_particle::PcfSource { logical_path: "particles/item_fx.pcf", bytes: resources["particles/item_fx.pcf"] }], Default::default()).unwrap();
+        for identity in registry.target_closure(&[playsrc_particle::DefinitionLookup::Name("superrare_burning1")]).unwrap().materials {
+            let path = dependency_path(identity.as_bytes()).unwrap();
+            let material = resolve_material_semantics(&path, &resources, playsrc_material::SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..Default::default() }).unwrap_or_else(|_| panic!("resolve {identity}"));
+            let (selected, _, metadata) = selected_texture(&material, &decoders).unwrap_or_else(|_| panic!("select {identity}"));
+            rgba_texture(&selected.logical_path.as_ref().unwrap().to_ascii_lowercase(), &decoders).unwrap_or_else(|_| panic!("texture {identity}"));
+            playsrc_material::static_state(&material, playsrc_material::TextureAlphaFacts { base: metadata.alpha_flags.one_bit || metadata.alpha_flags.eight_bit }).unwrap_or_else(|error| panic!("state {identity}: {error:?}"));
+            decode_particle_sheet(metadata).unwrap_or_else(|_| panic!("sheet {identity}"));
+        }
+        let (mut world, _, materials, presentation) = compile_particles(&resources, &decoders).unwrap();
+        let fire = "particle/flamethrowerfire/flamethrowerfire102.vmt";
+        let state = presentation[fire].sprite_card.as_ref().unwrap();
+        assert_eq!(state.add_self.value, 0.5);
+        assert_eq!(state.overbright_factor.value, 5.0);
+        assert!(state.depth_blend.as_ref().unwrap().value);
+        assert_eq!(state.depth_blend_scale.value, 100.0);
+        assert_eq!(materials[fire].sheet.sequences.values().map(|s| s.duration_seconds).collect::<Vec<_>>(), [19.0,21.0,18.0,19.0,19.0]);
+        let hashes = resources.iter().map(|(path, bytes)| (path.clone(), <[u8;32]>::from(Sha256::digest(bytes)))).collect();
+        for class in ["soldier", "medic", "heavy"] {
+            let path = format!("models/player/items/{class}/{class}_officer.mdl");
+            let hat = playsrc_tf2::presentation::build_model(&path, &resources, &hashes, false, playsrc_studio_model::PresentationProfile::World).unwrap();
+            let parent = playsrc_tf2::presentation::build_model(&format!("models/player/{class}.mdl"), &resources, &hashes, false, playsrc_studio_model::PresentationProfile::World).unwrap();
+            let sample = |m: &playsrc_studio_model::PresentationModel| playsrc_studio_model::sample_pose(m, &playsrc_studio_model::AnimationState { base_sequence: 0, cycle: playsrc_studio_model::Float32(0), pose_parameters: vec![playsrc_studio_model::Float32(0); m.pose_parameters.len()], layers: Vec::new() }).unwrap();
+            let parent_pose = sample(&parent.model);
+            let merged = playsrc_studio_model::merge_model_pose(&parent.model, &parent_pose, &hat.model, &sample(&hat.model)).unwrap();
+            assert!(!merged.skinning_matrices.is_empty());
+            let root = wearable::control_point(&hat.model, &merged, false).unwrap();
+            assert!(root.0.iter().all(|v| f32::from_bits(v.0).is_finite()));
+            let head = hat.model.bones.iter().position(|b| b.name == b"bip_head").unwrap();
+            let parent_head = parent.model.bones.iter().position(|b| b.name == b"bip_head").unwrap();
+            assert_eq!(merged.model_matrices[head], parent_pose.model_matrices[parent_head]);
+        }
+        struct NoQueries;
+        impl playsrc_particle::CollisionQuery for NoQueries {
+            fn trace_batch(&mut self, _: &[playsrc_particle::TraceRequest]) -> Result<Vec<playsrc_particle::CollisionResult>, playsrc_particle::Error> { panic!("unexpected collision query") }
+        }
+        let create = |identity: u32, x| Event { identity: identity as u64, timestamp_seconds: 0.0, source_order: identity,
+            command: EventCommand::Create { effect_identity: identity, definition: "superrare_burning1".into(), seed: identity as u64, owner_identity: Some(identity),
+                control_points: vec![ControlPoint { index: 0, position: [x,0.0,72.0], previous_position: [x,0.0,72.0], orientation: [0.0,0.0,0.0,1.0], velocity: [0.0;3], radius: 0.0, density: 0.0, duration: 0.0, parent: None, object_identity: Some(identity) }] } };
+        let mut peak = 0;
+        for tick in 0..240 {
+            let events = if tick == 0 { vec![create(7, 0.0), create(8, 1000.0)] } else if tick == 120 { vec![Event { identity: 9, timestamp_seconds: tick as f32 * 0.015, source_order: 0, command: EventCommand::Destroy { effect_identity: 7 } }] } else { vec![] };
+            let (items, _) = world.advance(&events, AdvanceRequest { from_seconds: tick as f32*0.015, to_seconds: (tick+1) as f32*0.015, maximum_step_seconds: 0.05, camera_position: [0.0;3] }, &mut NoQueries).unwrap();
+            peak = peak.max(items.len());
+            assert!(items.len() <= 40);
+            if tick > 121 { assert!(items.iter().all(|p| p.effect_identity == 8)); }
+            for item in items {
+                if item.material == fire { assert_eq!(item.lifetime_seconds, materials[fire].sheet.sequences[&item.sequence].duration_seconds/30.0); }
+                if item.effect_identity == 8 { assert!(item.position[0] > 900.0); }
+            }
+        }
+        assert!(peak >= 30, "both authored systems must emit on both actors");
+        assert_eq!(world.effect_count(), 1);
+    }
+
+    #[test]
     fn texture_decoders_inspect_each_immutable_source_once_even_across_parallel_consumers() {
         let mut source = vec![0_u8; 67];
         source[..4].copy_from_slice(b"VTF\0");
@@ -15426,6 +15580,7 @@ mod tests {
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
+            wearable_particles: wearable::ParticleStates::default(),
             model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
             visibility: None,
             visibility_candidates: None,
@@ -15509,6 +15664,7 @@ mod tests {
             model_material_opacity: BTreeMap::new(),
             viewmodel_bob: BTreeMap::new(),
             class_scenes: BTreeMap::new(),
+            wearable_particles: wearable::ParticleStates::default(),
             model_output: Vec::new(),
             visibility: None,
             visibility_candidates: None,

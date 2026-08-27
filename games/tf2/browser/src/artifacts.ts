@@ -83,7 +83,7 @@ export type StaticMaterialState = Readonly<{
     reference: number
   }>
 }>
-export type ParticleTextureArtifact = SupplementalTexture & Readonly<{ materialPath: string }>
+export type ParticleTextureArtifact = SupplementalTexture & Readonly<{ materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
   patches: ReadonlyMap<string, Readonly<{ sampleRate: number; frames: number; loopStartSeconds: number | null }>>
@@ -982,7 +982,7 @@ function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState
 }
 
 function parseParticleTextures(r: Reader): readonly ParticleTextureArtifact[] {
-  magic(r, "PPTM")
+  if (r.decode(r.take(4)) !== "PPTM" || r.u32() !== 2) throw new ArtifactError("PPTM identity")
   const output: ParticleTextureArtifact[] = []
   const identities = new Set<string>()
   for (let count = r.u32(); count > 0; count--) {
@@ -990,7 +990,16 @@ function parseParticleTextures(r: Reader): readonly ParticleTextureArtifact[] {
       sha256 = hex(r.take(32)), rgba = r.blob(256 * 1024 * 1024)
     if (identities.has(material.toLowerCase()) || width * height * 4 !== rgba.length) throw new ArtifactError("particle texture")
     identities.add(material.toLowerCase())
-    output.push(Object.freeze({ material, materialPath, logicalPath, width, height, sha256, rgba }))
+    const present = r.u32()
+    if (present > 1) throw new ArtifactError("SpriteCard presence")
+    let spriteCard: ParticleTextureArtifact["spriteCard"] = null
+    if (present) {
+      const depthBlend = r.u32(), blendFrames = r.u32()
+      if (depthBlend > 1 || blendFrames > 1) throw new ArtifactError("SpriteCard flags")
+      spriteCard = Object.freeze({ depthBlend: depthBlend === 1, blendFrames: blendFrames === 1,
+        addSelf: r.f32(), overbright: r.f32(), depthBlendScale: r.f32(), minimumSize: r.f32(), startFadeSize: r.f32(), endFadeSize: r.f32(), maximumSize: r.f32(), maximumDistance: r.f32(), farFadeInterval: r.f32() })
+    }
+    output.push(Object.freeze({ material, materialPath, logicalPath, width, height, sha256, rgba, spriteCard }))
   }
   return Object.freeze(output)
 }

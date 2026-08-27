@@ -2608,6 +2608,9 @@ fn main() -> Result<(), String> {
         "models/player/demo.mdl",
         "models/player/medic.mdl",
         "models/player/heavy.mdl",
+        "models/player/items/soldier/soldier_officer.mdl",
+        "models/player/items/medic/medic_officer.mdl",
+        "models/player/items/heavy/heavy_officer.mdl",
         "models/player/pyro.mdl",
         "models/player/spy.mdl",
         "models/player/engineer.mdl",
@@ -2860,6 +2863,7 @@ fn main() -> Result<(), String> {
         "particles/bullet_tracers.pcf",
         "particles/impact_fx.pcf",
         "particles/crit.pcf",
+        "particles/item_fx.pcf",
     ];
     let particle_bytes = particle_paths
         .iter()
@@ -2934,6 +2938,7 @@ fn main() -> Result<(), String> {
         "medicgun_beam_blue",
         "medicgun_beam_red_invun",
         "medicgun_beam_blue_invun",
+        "superrare_burning1",
     ]
     .map(playsrc_particle::DefinitionLookup::Name);
     let closure = registry

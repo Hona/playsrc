@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v9 contract", () => {
+test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v10 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,7 +132,7 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(9)
+  expect(view.getUint32(4, true)).toBe(10)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getUint32(16, true)).toBe(0)
   expect(view.getBigUint64(44, true)).toBe(0n)
@@ -143,6 +143,18 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   expect(encoded.getUint32(16, true)).toBe(42)
   expect(encoded.getFloat32(24, true)).toBe(Math.fround(0.95))
   expect(() => encodeModelPoseBatch([{ ...request, cloak: { ...cloak, identity: -1 } }])).toThrow("model actor identity")
+  const item = { itemId: 379, definitionIndex: 378, quality: 5, style: 0, slot: 8, attributes: [{ definition: 134, value: 13 }] }
+  const equipped = encodeModelPoseBatch([{ ...request, equippedItems: [item] }])
+  expect(equipped.byteLength - bytes.byteLength).toBe(20)
+  const itemOffset = equipped.byteLength - 52 - 20
+  const itemView = new DataView(equipped.buffer)
+  expect(itemView.getUint32(itemOffset - 4, true)).toBe(1)
+  expect(itemView.getUint32(itemOffset, true)).toBe(379)
+  expect(itemView.getUint32(itemOffset + 4, true)).toBe(378)
+  expect([...equipped.subarray(itemOffset + 8, itemOffset + 12)]).toEqual([5, 0, 8, 1])
+  expect(itemView.getUint32(itemOffset + 12, true)).toBe(134)
+  expect(itemView.getFloat32(itemOffset + 16, true)).toBe(13)
+  expect(() => encodeModelPoseBatch([{ ...request, equippedItems: [item, item] }])).toThrow("equipped model items")
 })
 
 test("keeps exact UTF-8 pose bytes across bounded cache eviction and repeated full-roster batches", () => {
@@ -253,7 +265,7 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(10)
+  u32(11)
   u32(1)
   u32(9)
   output.push(1, 0, 1, 0)

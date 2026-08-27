@@ -5,6 +5,7 @@ import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
 import type { Snapshot, ActorCloakState } from "./codec"
+import type { Tf2EquippedItem } from "./equipment/types"
 
 const UINT32_MAX = 0xffff_ffff
 const NORMAL_TOLERANCE = 1e-4
@@ -415,6 +416,7 @@ export type ModelPoseRequest = Readonly<{
   lod: number
   bodygroups: readonly number[]
   itemBodygroups?: readonly number[]
+  equippedItems?: readonly Tf2EquippedItem[]
   lighting?: Readonly<{
     origin: Vector3
     angles: Vector3
@@ -435,7 +437,8 @@ export type PosedModel = Readonly<{
   sampleTick: bigint
   attachmentsOnly: boolean
   attachmentsWorld: boolean
-  role: "single" | "hand" | "item"
+  role: "single" | "hand" | "item" | "wearable"
+  wearable: Readonly<{ itemId: number; effect: number; controlPoint: Float32Array; particleBytes: Uint8Array }> | null
   model: string
   activity: string
   sequence: number
@@ -463,14 +466,15 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = poseText(request.model)
     const item = poseText(request.itemModel ?? "")
     const activity = poseText(request.activity)
-    length += 188 + model.length + item.length + activity.length +
+    length += 192 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
+    for (const item of request.equippedItems ?? []) length += 12 + item.attributes.length * 8
     return { request, model, item, activity }
   })
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 9, true)
+    view.setUint32(4, 10, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -552,6 +556,18 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     for (const value of request.bodygroups) { view.setUint32(at, value, true); at += 4 }
     view.setUint32(at, request.itemBodygroups?.length ?? 0, true); at += 4
     for (const value of request.itemBodygroups ?? []) { view.setUint32(at, value, true); at += 4 }
+    const equipped = request.equippedItems ?? []
+    if (equipped.length > 19 || new Set(equipped.map(item => item.itemId)).size !== equipped.length) throw new ProjectilePresentationError("MalformedFact", "equipped model items")
+    view.setUint32(at, equipped.length, true); at += 4
+    for (const item of equipped) {
+      if (![item.itemId, item.definitionIndex, item.quality, item.style, item.slot].every(Number.isSafeInteger) || item.itemId < 1 || item.itemId > UINT32_MAX || item.definitionIndex < 0 || item.definitionIndex > UINT32_MAX || item.quality < 0 || item.quality > 15 || item.style < 0 || item.style > 255 || item.slot < 0 || item.slot > 18 || item.attributes.length > 64) throw new ProjectilePresentationError("MalformedFact", "equipped model item")
+      view.setUint32(at, item.itemId, true); view.setUint32(at + 4, item.definitionIndex, true)
+      bytes[at + 8] = item.quality; bytes[at + 9] = item.style; bytes[at + 10] = item.slot; bytes[at + 11] = item.attributes.length; at += 12
+      for (const attribute of item.attributes) {
+        if (!Number.isSafeInteger(attribute.definition) || attribute.definition < 0 || attribute.definition > UINT32_MAX || !Number.isFinite(attribute.value)) throw new ProjectilePresentationError("MalformedFact", "equipped model attribute")
+        view.setUint32(at, attribute.definition, true); view.setFloat32(at + 4, attribute.value, true); at += 8
+      }
+    }
     const lighting = request.lighting
     if (lighting && (!finite(lighting.origin) || !finite(lighting.angles) || !finite(lighting.cameraPosition) || !finite(lighting.cameraAngles))) {
       throw new ProjectilePresentationError("MalformedFact", "model lighting request")
@@ -579,7 +595,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   if (bytes.byteLength < 12 || bytes.byteLength > 64 * 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose output bytes")
   if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) throw new ProjectilePresentationError("MalformedFact", "model pose output alignment")
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (view.getUint32(0, false) !== 0x504d504f || view.getUint32(4, true) !== 10) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
+  if (view.getUint32(0, false) !== 0x504d504f || view.getUint32(4, true) !== 11) throw new ProjectilePresentationError("MalformedFact", "model pose output identity")
   let at = 12
   const ensure = (length: number) => { if (at + length > bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output truncation") }
   const u8 = () => { ensure(1); return bytes[at++]! }, u32 = () => { ensure(4); const value = view.getUint32(at, true); at += 4; return value },
@@ -597,9 +613,17 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     ensure(8)
     const sampleTick = view.getBigUint64(at, true); at += 8
     const roleCode = u8(), attachmentMode = u8(), attachmentsWorld = u8()
-    if (roleCode > 2 || attachmentMode > 1 || attachmentsWorld > 1 ||
+    if (roleCode > 3 || attachmentMode > 1 || attachmentsWorld > 1 ||
       (attachmentMode === 1 && (roleCode !== 2 || attachmentsWorld !== 1)) || u8()) {
       throw new ProjectilePresentationError("MalformedFact", "model pose role")
+    }
+    let wearable: PosedModel["wearable"] = null
+    if (roleCode === 3) {
+      const itemId = u32(), effect = u32(), controlPoint = Float32Array.from({ length: 12 }, f32)
+      if (itemId === 0 || (effect !== 0 && effect !== 13)) throw new ProjectilePresentationError("MalformedFact", "wearable effect")
+      const particleLength = u32(); ensure(particleLength)
+      const particleBytes = bytes.slice(at, at + particleLength); at += particleLength
+      wearable = Object.freeze({ itemId, effect, controlPoint, particleBytes })
     }
     const model = text(), activity = text(), sequence = u32(), framesPerSecond = f32(), weightedFrameCount = f32(),
       cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
@@ -702,7 +726,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       return Object.freeze({ primitive, indices, positions, normals })
     }))
     if (attachmentMode === 1 && (primitives.length !== 0 || eyes.length !== 0 || flex.length !== 0)) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, cloak, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item"] as const)[roleCode]!, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
+    output.push(Object.freeze({ identity, cloak, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item", "wearable"] as const)[roleCode]!, wearable, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)

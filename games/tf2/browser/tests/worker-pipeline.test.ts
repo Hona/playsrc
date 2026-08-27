@@ -70,7 +70,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 
 async function presentationIdentity(key: string, build = BUILD): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v16\0${build}\0${key}`))
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v17\0${build}\0${key}`))
 }
 
 async function configuration(generation: number, values: readonly number[] = []): Promise<ResourceConfiguration> {
@@ -178,7 +178,7 @@ function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0
     const bytes = new TextEncoder().encode(value)
     u32(bytes.length); values.push(...bytes)
   }
-  u32(10); u32(1); u32(9)
+  u32(11); u32(1); u32(9)
   values.push(...new Array(28).fill(0))
   u32(7); u32(0)
   values.push(0, 0, 0, 0)
@@ -199,7 +199,7 @@ class PipelineWorker implements WorkerLike {
   failure?: WorkerResponse
   animatedWorldMaterial = false
   workerBuild = BUILD
-  presentationSchema = 16
+  presentationSchema = 17
   workerWasmSha256?: string
   malformedModelOutput = false
   modelBits?: number[]
@@ -434,7 +434,7 @@ describe("TF2 Worker transport ownership", () => {
     const wasm = Uint8Array.from([1, 2, 3])
     await expect(client.initialize(wasm, await digest(wasm), 1)).rejects.toThrow("GenerationMismatch")
     expect(worker.requests).toHaveLength(1)
-    expect(worker.requests[0]).toMatchObject({ kind: "initialize", applicationBuild: BUILD, presentationSchema: 16 })
+    expect(worker.requests[0]).toMatchObject({ kind: "initialize", applicationBuild: BUILD, presentationSchema: 17 })
     expect(worker.terminated).toBe(true)
   })
 

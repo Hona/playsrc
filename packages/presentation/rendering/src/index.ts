@@ -1,4 +1,6 @@
 import * as THREE from "three/webgpu"
+import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
+export type { SpriteCardInput } from "./sprite-card"
 import * as TSL from "three/tsl"
 import {
   ExposureController,
@@ -685,7 +687,7 @@ export type MapLoadRequest = Readonly<{
   directionalTextures?: readonly DirectionalTextureInput[]
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
-  particleTextures?: readonly EnvironmentTextureInput[]
+  particleTextures?: readonly (EnvironmentTextureInput & Readonly<{ spriteCard?: SpriteCardInput | null }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -753,6 +755,7 @@ export type ModelPanelPass = Readonly<{
   modelLighting?: ModelLightingInput
   eyeStates?: readonly ModelEyeState[]
   mergedModels?: readonly Readonly<{ model: string; skin: number; pose: NonNullable<ModelItem["pose"]>; modelLighting?: ModelLightingInput; eyeStates?: readonly ModelEyeState[] }>[]
+  particles?: readonly ParticleItem[]
 }>
 
 export type ModelPanelFrameResult = Readonly<{
@@ -3508,6 +3511,11 @@ class RendererOwner implements Renderer {
         modelOccurrenceInstances.set(occurrence.entity,instance)
         mainModelOccurrences.add(instance)
       }
+      const particleDepth = new THREE.DepthTexture(1, 1, THREE.FloatType)
+      disposables.add(particleDepth)
+      const particleDepthNode = TSL.viewportDepthTexture(TSL.screenUV, null, particleDepth)
+      // One generation-owned depth copy, reused across the active render targets.
+      particleDepthNode.getTextureForReference = () => particleDepth
       for (const texture of request.particleTextures ?? []) {
         const state = materialStates.get(texture.material.toLowerCase())
         if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
@@ -3524,9 +3532,11 @@ class RendererOwner implements Renderer {
         const next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
         const blend = TSL.attribute("particleSheetBlend", "float")
         const color = TSL.attribute("particleColor", "vec4")
-        const sampled = current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
+        const sampled = texture.spriteCard?.blendFrames === false ? current : current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
+        const sprite = texture.spriteCard ? spriteCardNodes(texture.spriteCard, sampled, color, particleDepthNode) : null
+        if (sprite) material.positionNode = sprite.position
         material.colorNode = sourceFragmentColor(
-          TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)),
+          sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)),
           state,
           waterFogUniforms,
         )
@@ -3884,6 +3894,9 @@ class RendererOwner implements Renderer {
         this.#modelPanelCamera.setViewOffset(presentation.projection.width, presentation.projection.height,
           presentation.projection.offsetX, presentation.projection.offsetY, presentation.viewport.width, presentation.viewport.height)
         this.#modelPanelCamera.updateProjectionMatrix()
+        const particleCamera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: presentation.verticalFovDegrees, near: presentation.near, far: presentation.far }
+        this.#stageParticleBatches(panel.particles ?? [], particleCamera, value => value === "zero" ? THREE.ZeroFactor : value === "one" ? THREE.OneFactor : value === "source-alpha" ? THREE.SrcAlphaFactor : THREE.OneMinusSrcAlphaFactor)
+        this.#modelPanelScene.add(this.#particles)
         this.#backend.setViewport(x, y, width, height)
         this.#backend.setScissor(x, y, width, height)
         this.#backend.setScissorTest(true)
@@ -3901,6 +3914,7 @@ class RendererOwner implements Renderer {
       return Object.freeze({ panels: Object.freeze(result.map((item) => Object.freeze(item))), milliseconds: performance.now() - started })
     } finally {
       this.#modelPanelScene.clear()
+      this.#waterClipping.add(this.#particles)
       this.#active.waterFogUniforms.enabled.value = previousWaterFog
       this.#backend.setClearColor(previousClearColor, previousClearAlpha)
       this.#backend.setScissorTest(false)
@@ -4894,7 +4908,7 @@ class RendererOwner implements Renderer {
     if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
     for(let index=0;index<capacity;index+=1){const vertex=index*4,offset=index*6;indices[offset]=vertex;indices[offset+1]=vertex+1;indices[offset+2]=vertex+2;indices[offset+3]=vertex;indices[offset+4]=vertex+2;indices[offset+5]=vertex+3}
-    geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
+    geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("particleCenter",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
   }
 
   #updateParticleBatchGeometry(
@@ -4905,6 +4919,7 @@ class RendererOwner implements Renderer {
     camera: Camera,
   ): void {
     const positions = (geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array
+    const centers = (geometry.getAttribute("particleCenter") as THREE.BufferAttribute).array as Float32Array
     const uv = (geometry.getAttribute("uv") as THREE.BufferAttribute).array as Float32Array
     const uvNext = (geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).array as Float32Array
     const sheetBlend = (geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array
@@ -4915,10 +4930,14 @@ class RendererOwner implements Renderer {
     const arrays = { uv, uvNext, sheetBlend, colors }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
+      for (let vertex = 0; vertex < 4; vertex++) centers.set(item.position, index * 12 + vertex * 3)
       writeParticleQuad(item, positions, index * 12)
       writeParticleAppearance(item, arrays, index, updates)
     }
     const vertices = (end - start) * 4
+    const centerAttribute = geometry.getAttribute("particleCenter") as THREE.BufferAttribute
+    centerAttribute.clearUpdateRanges(); centerAttribute.addUpdateRange(0, vertices * 3); centerAttribute.needsUpdate = true
+    if (this.#uploadEvidence) { this.#uploadEvidence.particleUploadBytes += vertices * 12; this.#uploadEvidence.particleFullUploadBytes += vertices * 12; this.#uploadEvidence.particleUploadWrites++ }
     for (const [index, name] of (["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const).entries()) {
       const update = index > 0 ? updates[index - 1]! : undefined
       if (update && update.end === 0) continue
