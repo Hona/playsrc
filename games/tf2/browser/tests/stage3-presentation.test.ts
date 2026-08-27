@@ -162,6 +162,9 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   expect(itemView.getFloat32(itemOffset + 16, true)).toBe(13)
   expect(() => encodeModelPoseBatch([{ ...request, equippedItems: [item, item] }])).toThrow("equipped model items")
   expect(encodeModelPoseBatch([{ ...request, modelPanel: true, worldItem: true, itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", itemBodygroups: [] }])[52]).toBe(6)
+  const point = encodeModelPoseBatch([{ ...request, controlPoint: 99 }])
+  expect(point[52]).toBe(7)
+  expect(new DataView(point.buffer).getUint32(16, true)).toBe(99)
   const weapon = { ...request, model: "models/weapons/c_models/c_soldier_arms.mdl", activity: "ACT_VM_DRAW",
     itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", itemBodygroups: [],
     phase: 0 as const, itemDefinition: 18, activityStartTick: 7n, allowIdleTransition: true }
