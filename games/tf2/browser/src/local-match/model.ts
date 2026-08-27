@@ -1,5 +1,6 @@
 import type { BotConfiguration, BotDifficulty, BotQuotaMode } from "../codec"
 import type { Tf2UiPanelDocument, Tf2UiResourceNode } from "../ui-resources"
+import { tf2MapMode, type Tf2MapMode } from "../maps"
 
 export const TF2_BOT_DIFFICULTIES = Object.freeze(["Easy", "Normal", "Hard", "Expert"] as const)
 export const TF2_BOT_QUOTA_MODES = Object.freeze(["normal", "fill", "match"] as const)
@@ -8,7 +9,7 @@ export const TF2_OFFLINE_PRACTICE_STORAGE_KEY = "playsrc.tf2.OfflinePracticeConf
 export type Tf2LocalMatchMap = Readonly<{
   identity: string
   displayName: string
-  mode: "payload" | "king-of-the-hill" | "capture-the-flag" | "custom"
+  mode: Tf2MapMode
   minimumPlayers: number
   maximumPlayers: number
 }>
@@ -100,10 +101,12 @@ export function createTf2LocalMatchMaps(
     if (identity === "ctf_2fort") {
       return [Object.freeze({ identity, displayName: "2FORT", mode: "capture-the-flag", minimumPlayers: 1, maximumPlayers: 24 })]
     }
+    const mode = tf2MapMode(identity)
+    if (mode === null) throw new Error(`TF2 local match map is not configured: ${identity}`)
     return [Object.freeze({
       identity,
       displayName: identity,
-      mode: "custom",
+      mode,
       minimumPlayers: practice.defaults.minimumPlayers,
       maximumPlayers: practice.defaults.maximumPlayers,
     })]

@@ -2,6 +2,7 @@ import maps from "../../maps.json"
 export const TF2_MAPS = Object.freeze(maps)
 
 export type Tf2TargetName = keyof typeof maps
+export type Tf2MapMode = "custom" | "payload" | "capture-the-flag" | "control-point" | "king-of-the-hill"
 
 const names = Object.keys(maps) as Tf2TargetName[]
 
@@ -17,4 +18,8 @@ export function tf2MapBsp(target: Tf2TargetName): Readonly<{ byteLength: string;
   return "installed" in source
     ? Object.freeze({ byteLength: String(source.installed.byteLength), sha256: source.installed.sha256 })
     : Object.freeze({ byteLength: String(source.download.decodedByteLength), sha256: source.download.decodedSha256 })
+}
+
+export function tf2MapMode(target: string): Tf2MapMode | null {
+  return Object.hasOwn(maps, target) ? maps[target as Tf2TargetName].mode as Tf2MapMode : null
 }
