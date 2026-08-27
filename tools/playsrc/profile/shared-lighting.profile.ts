@@ -5,6 +5,7 @@ import path from "node:path"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { sanityViewAngles } from "./map-sanity"
 import { summarizeFrameTimes } from "./profile-window"
+import { upwardSpawnLightingEvidence } from "./source-lighting-evidence"
 
 test("known-direction Source normals survive clockwise culling and bone/object transforms", async ({ page }, testInfo) => {
   page.on("pageerror", error => console.error(error))
@@ -58,11 +59,16 @@ test("configured maps retain world, viewmodel, and panel illumination", async ({
       state: { ...document.querySelector<HTMLElement>("main")!.dataset },
       canvas: { ...document.querySelector<HTMLElement>("canvas.world-canvas")!.dataset },
     }))
-    await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, `${label}.png`) })
+    const pixels = await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, `${label}.png`) })
     await writeFile(path.join(output, `${label}.json`), JSON.stringify(evidence, null, 2))
     expect(evidence.lighting.viewmodel).not.toBeNull()
     expect(evidence.lighting.geometry.samples.length).toBeGreaterThan(0)
     expect(evidence.lighting.depthIsolated).toBe(true)
+    if (label === "pl_upward-world") {
+      const faces = upwardSpawnLightingEvidence(pixels, evidence.lighting)
+      await writeFile(path.join(output, "pl_upward-face-direction.json"), JSON.stringify(faces, null, 2))
+      expect(faces.upperLuminance, "authored ceiling spots illuminate upward, not downward, launcher faces").toBeGreaterThan(faces.lowerLuminance)
+    }
     return evidence
   }
   const aim = async (target: readonly number[]) => {
