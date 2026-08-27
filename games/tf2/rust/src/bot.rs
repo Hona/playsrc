@@ -285,6 +285,7 @@ pub struct Snapshot {
     pub shots: u32,
     pub hits: u32,
     pub kills: u32,
+    pub assists: u32,
     pub deaths: u32,
     pub captures: u32,
     pub damage: u32,
@@ -493,6 +494,7 @@ struct Bot {
     shots: u32,
     hits: u32,
     kills: u32,
+    assists: u32,
     deaths: u32,
     captures: u32,
     damage_dealt: u32,
@@ -1043,6 +1045,7 @@ impl BotWorld {
                     shots: 0,
                     hits: 0,
                     kills: 0,
+                    assists: 0,
                     deaths: 0,
                     captures: 0,
                     damage_dealt: 0,
@@ -1802,6 +1805,10 @@ impl BotWorld {
         }
     }
 
+    pub fn record_assist(&mut self, player: u32) {
+        if let Some(bot) = self.bots.get_mut(&player) { bot.assists = bot.assists.saturating_add(1); }
+    }
+
     pub fn combat_player(&self, identity: u32) -> Option<crate::CombatPlayerFacts> {
         let bot = self.bots.get(&identity)?;
         if bot.lifecycle != PlayerLifecycle::Active {
@@ -1850,6 +1857,7 @@ impl BotWorld {
                 shots: bot.shots,
                 hits: bot.hits,
                 kills: bot.kills,
+                assists: bot.assists,
                 deaths: bot.deaths,
                 captures: bot.captures,
                 damage: bot.damage_dealt,

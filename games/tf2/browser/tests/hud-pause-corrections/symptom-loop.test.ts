@@ -277,9 +277,9 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const authority = Object.freeze({
       redScore: 2, blueScore: 1, redCount: 2, blueCount: 1,
       players: Object.freeze([
-        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 4, kills: 4, deaths: 1, captures: 0, damage: 425 }),
-        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: false, fake: true, score: 7, kills: 7, deaths: 2, captures: 0, damage: 0 }),
-        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 8 as const, alive: true, fake: true, score: 3, kills: 3, deaths: 0, captures: 0, damage: 0 }),
+        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 4, kills: 4, deaths: 1, captures: 0, damage: 425, assists: 0 }),
+        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: false, fake: true, score: 7, kills: 7, deaths: 2, captures: 0, damage: 0, assists: 0 }),
+        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 8 as const, alive: true, fake: true, score: 3, kills: 3, deaths: 0, captures: 0, damage: 0, assists: 0 }),
       ]),
     })
     const scoreboard = adaptTf2Scoreboard(authority, 2, true, "ctf_2fort", false)
@@ -556,9 +556,9 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const authority = Object.freeze({
       redScore: 3, blueScore: 0, redCount: 2, blueCount: 1,
       players: Object.freeze([
-        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 3, kills: 1, deaths: 0, captures: 1, damage: 125 }),
-        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: true, fake: true, score: 1, kills: 1, deaths: 0, captures: 0, damage: 50 }),
-        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 1 as const, alive: true, fake: true, score: 5, kills: 5, deaths: 0, captures: 0, damage: 500 }),
+        Object.freeze({ identity: 1, name: "unnamed", team: 2 as const, class: 3 as const, alive: true, fake: false, score: 3, kills: 1, deaths: 0, captures: 1, damage: 125, assists: 0 }),
+        Object.freeze({ identity: 2, name: "Chucklenuts", team: 2 as const, class: 5 as const, alive: true, fake: true, score: 1, kills: 1, deaths: 0, captures: 0, damage: 50, assists: 0 }),
+        Object.freeze({ identity: 3, name: "CryBaby", team: 3 as const, class: 1 as const, alive: true, fake: true, score: 5, kills: 5, deaths: 0, captures: 0, damage: 500, assists: 0 }),
       ]),
     })
     const winningScoreboard = adaptTf2Scoreboard(authority, 2, false, "ctf_2fort", false)

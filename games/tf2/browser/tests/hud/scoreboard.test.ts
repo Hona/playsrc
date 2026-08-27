@@ -12,6 +12,7 @@ function roster(count: number): ScoreboardSnapshot {
     fake: index !== 0,
     score: count - index,
     kills: 0,
+    assists: 0,
     deaths: 0,
     captures: 0,
     damage: 0,

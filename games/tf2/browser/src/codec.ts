@@ -593,6 +593,7 @@ export type ScoreboardPlayerSnapshot = Readonly<{
   fake: boolean
   score: number
   kills: number
+  assists: number
   deaths: number
   captures: number
   damage: number
@@ -1487,7 +1488,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 21)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 23)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2217,17 +2218,17 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const scoreboardPlayers: ScoreboardPlayerSnapshot[] = []
   let previousPlayer = 0
   for (let index = 0; index < playerCount; index += 1) {
-    requireBytes(29, "scoreboard player")
+    requireBytes(33, "scoreboard player")
     const identity = view.getUint32(at, true), playerClass = data[at + 4]!, playerTeam = data[at + 5]!
-    const alive = data[at + 6]!, fake = data[at + 7]!, nameLength = data[at + 28]!
+    const alive = data[at + 6]!, fake = data[at + 7]!, nameLength = data[at + 32]!
     if (identity <= previousPlayer || playerClass < 1 || playerClass > 9 || playerTeam > 3
       || alive > 1 || fake > 1 || nameLength < 1 || nameLength > 31
       || (identity === 1) !== (index === 0) || (identity === 1) === (fake === 1)) {
       throw new Tf2CodecError("scoreboard player record is invalid")
     }
-    requireBytes(29 + nameLength, "scoreboard player name")
+    requireBytes(33 + nameLength, "scoreboard player name")
     let name: string
-    try { name = decoder.decode(data.subarray(at + 29, at + 29 + nameLength)) }
+    try { name = decoder.decode(data.subarray(at + 33, at + 33 + nameLength)) }
     catch { throw new Tf2CodecError("scoreboard player name is invalid") }
     scoreboardPlayers.push(Object.freeze({
       identity,
@@ -2241,9 +2242,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       deaths: view.getUint32(at + 16, true),
       captures: view.getUint32(at + 20, true),
       damage: view.getUint32(at + 24, true),
+      assists: view.getUint32(at + 28, true),
     }))
     previousPlayer = identity
-    at += 29 + nameLength
+    at += 33 + nameLength
   }
   const scoreboard: ScoreboardSnapshot = Object.freeze({
     redScore, blueScore, redCount, blueCount, players: Object.freeze(scoreboardPlayers),

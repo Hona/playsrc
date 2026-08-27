@@ -1,4 +1,4 @@
-import type { VguiViewport } from "@playsrc/vgui"
+import type { VguiViewport, VguiRuntime, VguiPanelId } from "@playsrc/vgui"
 import type { Tf2VguiResources } from "../ui-integration"
 import type { Tf2HudBinding } from "../hud"
 import { deathNoticeGeometry, deathNoticeRow, deathNoticeRivalries, retireDeathNotices, type DeathNoticeRow } from "../hud/deathnotice"
@@ -10,13 +10,14 @@ const atlases: Readonly<Record<string, { width: number; height: number; pngDataU
 export class Tf2HudDeathNoticePresentation {
   readonly #root: HTMLElement
   readonly #resources: Tf2VguiResources
+  readonly #detach: () => void
   readonly #properties: ReadonlyMap<string, string>
   readonly #rows: DeathNoticeRow[] = []
   #viewport: VguiViewport
   #lastEvent: { tick: bigint; ordinal: number } | null = null
   #duration = 6
 
-  constructor(root: HTMLElement, resources: Tf2VguiResources, viewport: VguiViewport) {
+  constructor(root: HTMLElement, resources: Tf2VguiResources, viewport: VguiViewport, runtime: VguiRuntime, panel: VguiPanelId) {
     this.#resources = resources
     this.#viewport = viewport
     const layout = resources.document("scripts/hudlayout.res").root.children.find(n => n.name.toLowerCase() === "huddeathnotice")!
@@ -31,7 +32,7 @@ export class Tf2HudDeathNoticePresentation {
     this.#root = root.ownerDocument.createElement("div")
     this.#root.dataset.tf2Deathnotice = "authored"
     Object.assign(this.#root.style, { position: "absolute", pointerEvents: "none", overflow: "hidden" })
-    root.append(this.#root)
+    this.#detach = runtime.attachSurface(panel, this.#root)
     this.setViewport(viewport)
   }
 
@@ -59,10 +60,8 @@ export class Tf2HudDeathNoticePresentation {
     this.#viewport = viewport
     const scale = Math.trunc(viewport.height) / 480
     const width = Math.trunc(this.#number("wide") * scale)
-    const xpos = this.#properties.get("xpos")!
     Object.assign(this.#root.style, {
-      left: `${Math.trunc(viewport.width) - Math.trunc(Number(xpos.slice(1)) * scale)}px`,
-      top: `${Math.trunc(this.#number("ypos") * scale)}px`,
+      left: "0px", top: "0px",
       width: `${width}px`, height: `${Math.trunc(this.#number("tall") * scale)}px`,
     })
     this.#paint()
@@ -149,5 +148,5 @@ export class Tf2HudDeathNoticePresentation {
 
   reset(): void { this.#rows.length = 0; this.#lastEvent = null; this.#root.replaceChildren() }
   setDuration(seconds: number): void { this.#duration = Math.fround(seconds) }
-  destroy(): void { this.reset(); this.#root.remove() }
+  destroy(): void { this.reset(); this.#detach(); this.#root.remove() }
 }

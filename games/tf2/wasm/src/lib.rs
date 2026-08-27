@@ -5449,7 +5449,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 21, MAX)?;
+    u32_field(&mut out, 23, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -5999,6 +5999,7 @@ fn encode_snapshot(
         u32_field(&mut out, player.counters.deaths, MAX)?;
         u32_field(&mut out, player.counters.captures, MAX)?;
         u32_field(&mut out, player.counters.damage, MAX)?;
+        u32_field(&mut out, player.counters.assists, MAX)?;
         extend(&mut out, &[u8::try_from(name.len()).ok()?], MAX)?;
         extend(&mut out, name, MAX)?;
     }
@@ -15473,9 +15474,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x15\0\0\0");
-        assert_eq!(encoded.len(), 1048);
-        assert_eq!(&encoded[1044..], &[0; 4]);
+        assert_eq!(&encoded[..8], b"PSSN\x17\0\0\0");
+        assert_eq!(encoded.len(), 1052);
+        assert_eq!(&encoded[1048..], &[0; 4]);
         assert_eq!(&encoded[944..952], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[980..988], b"PGRL\x01\0\0\0");
         assert_eq!(
