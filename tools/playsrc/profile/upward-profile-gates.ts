@@ -11,6 +11,9 @@ export function assertUpwardProfile(report: any, policy: {
   assert(report.elapsedMilliseconds >= 5000, "active sample duration")
   assert(report.pixels.nonBlack > 20_000, "visible pixels missing")
   if (policy.classes) {
+    assert.equal(report.classSwitches.inputGuard?.unplanned?.length, 0, "unplanned native class input; input is observed, never suppressed")
+    assert.equal(report.classSwitches.inputGuard.captures, policy.classPasses * 9, "all controlled native captures")
+    assert.equal(report.classSwitches.inputGuard.presses, policy.classPasses * 9, "all controlled primary presses")
     assert.equal(report.classSwitches.requested.length, policy.classPasses * 9, "all requested class edges")
     assert.equal(report.classSwitches.observed.length, policy.classPasses * 9, "all observed class edges")
     assert.equal(report.classSwitches.timing.length, report.classSwitches.observed.length, "class timing coverage")
