@@ -429,6 +429,7 @@ export type PosedPrimitive = Readonly<{
   material: number
   vertexCount: number
   translucent:boolean
+  visible:boolean
 }>
 export type PosedAttachment = Readonly<{ name: string; worldAligned: boolean; matrix: Float32Array }>
 export type PosedModel = Readonly<{
@@ -650,11 +651,11 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
     const boneMatrices = new Float32Array(boneCount * 12)
     for (let index = 0; index < boneMatrices.length; index += 1) boneMatrices[index] = f32()
     const primitives = Object.freeze(Array.from({ length: u32() }, () => {
-      const primitive = u32(), material = u32(), vertices = u32(), translucent = u8(), reference = u8()
-      if (translucent > 1 || reference !== 0 || u8() || u8()) {
+      const primitive = u32(), material = u32(), vertices = u32(), translucent = u8(), visible = u8()
+      if (translucent > 1 || visible > 1 || u8() || u8()) {
         throw new ProjectilePresentationError("MalformedFact", "primitive opacity")
       }
-      return Object.freeze({ primitive, material, vertexCount: vertices, translucent: translucent === 1 })
+      return Object.freeze({ primitive, material, vertexCount: vertices, translucent: translucent === 1, visible: visible === 1 })
     }))
     const attachmentCount = u32()
     const attachments = attachmentCount === 0 ? EMPTY_POSE_VALUES : Object.freeze(Array.from({ length: attachmentCount }, () => {

@@ -761,6 +761,10 @@ impl ParticleWorld {
         self.effects.len()
     }
 
+    pub fn event_identity_count(&self) -> usize {
+        self.event_identities.len()
+    }
+
     pub fn advance(
         &mut self,
         events: &[Event],

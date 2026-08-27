@@ -1221,6 +1221,17 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
         )
         .unwrap();
     assert_eq!(&output[..4], b"PSPR");
+    let event_count = world.event_identity_count();
+    let control_request = AdvanceRequest { from_seconds: world.time(), to_seconds: world.time(), ..request };
+    for _ in 0..1000 {
+        world.transact_render_output(&[], &[(7, control([3.0; 3], [3.0; 3]))], control_request,
+            &mut NoHit, &materials, &material_names, 1024 * 1024).unwrap();
+    }
+    assert_eq!(world.event_identity_count(), event_count, "attached transforms must not grow the event ledger");
+    let before = world.clone();
+    assert!(world.transact_render_output(&[], &[(8, control([0.0; 3], [0.0; 3]))], control_request,
+        &mut NoHit, &materials, &material_names, 1024 * 1024).is_err());
+    assert_eq!(world, before);
     assert_eq!(world.time(), 0.5);
     assert_eq!(world.effect_count(), 1);
 }

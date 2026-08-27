@@ -4792,6 +4792,17 @@ export class Tf2Application {
         previousSnapshot=batch.snapshot
       }
       this.#snapshot = snapshot
+      const cosmeticProfile = (globalThis as any).__playsrcProfile
+      const cosmeticEquip = cosmeticProfile?.cosmeticBotEquip
+      if (cosmeticEquip && cosmeticProfile.cosmeticBotEquipResult?.revision !== cosmeticEquip.revision) {
+        cosmeticProfile.cosmeticBotEquipResult = { revision: cosmeticEquip.revision, complete: false }
+        for (const entry of cosmeticEquip.items) {
+          const mutation = new Uint8Array(9), view = new DataView(mutation.buffer)
+          mutation[0] = 2; view.setUint32(1, entry.actor, true); view.setUint32(5, entry.definition ?? 0xffff_ffff, true)
+          await client.equipment(generation, mutation)
+        }
+        cosmeticProfile.cosmeticBotEquipResult = { revision: cosmeticEquip.revision, complete: true }
+      }
       const admissionProfile=botAdmissionProfile()
       if(admissionProfile)recordBotAdmission(admissionProfile,"publication",snapshot.tick,{bytes:publication.snapshotByteLength,firstHostTick:publication.firstHostTick.toString(),lastHostTick:publication.lastHostTick.toString(),actors:snapshot.bots.map(bot=>({actor:bot.identity,class:bot.class,team:bot.team,weapon:bot.weapon?.identity??null,lifecycle:bot.lifecycle}))})
       if (this.#classSelection?.state().visible && this.#classSelection.state().team !== snapshot.team) {
@@ -5123,6 +5134,12 @@ export class Tf2Application {
       const particleMilliseconds=performance.now()-particleStart
       const particleDecodeStart=performance.now(),particleItems=[...decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,
         ...botParts.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : [])],particleDecodeMilliseconds=performance.now()-particleDecodeStart
+      if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmetics = {
+        tick: snapshot.tick.toString(), local: snapshot.equippedItems,
+        actors: visibleBots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, items: bot.equippedItems })),
+        models: botParts.filter(pose => pose.wearable).map(pose => ({ actor: pose.identity - BOT_MODEL_IDENTITY_BASE, model: pose.model, item: pose.wearable!.itemId, controlPoint: [...pose.wearable!.controlPoint] })),
+        particles: particleItems.filter(item => item.effectIdentity >= 0x6000_0000 && item.effectIdentity < 0x7000_0000),
+      }
       const audioStart=performance.now();this.#playAudio(snapshot, camera);const audioMilliseconds=performance.now()-audioStart
       if(this.#paused||!ownsGeneration())return
       const frame=Object.freeze({
