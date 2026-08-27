@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -51,6 +53,20 @@ jobs:
 
       - name: Generate TF2 WASM bindings
         run: bun run build:tf2-wasm-bindings
+
+      - name: Verify changed release WASM pin
+        shell: bash
+        run: |
+          if git diff --quiet HEAD^ HEAD -- apps/web/tf2/releases/current.json; then
+            exit 0
+          fi
+          bun -e '
+            const release = await Bun.file("apps/web/tf2/releases/current.json").json();
+            const bytes = await Bun.file("games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm").arrayBuffer();
+            const actual = { byteLength: String(bytes.byteLength), sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") };
+            console.log(JSON.stringify({ expected: release.objects.wasm, actual }));
+            if (actual.byteLength !== release.objects.wasm.byteLength || actual.sha256 !== release.objects.wasm.sha256) throw new Error("Compiled WASM differs from changed release pin");
+          '
 
       - name: Test
         run: bun test
