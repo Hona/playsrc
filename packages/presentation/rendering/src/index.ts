@@ -23,7 +23,7 @@ import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
-import { particlePipelineKey, particlePipelineVariant } from "./particle-pipeline"
+import { particlePipelineKey, particlePipelineVariant, particlePreparationSides } from "./particle-pipeline"
 import { createParticleQuadWriter } from "./particle-geometry"
 import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
@@ -3502,9 +3502,13 @@ class RendererOwner implements Renderer {
         particleBatchMaterials.set(particlePipelineKey(particlePipelineVariant(texture.material, state)), material)
         const geometry = this.#createParticleBatchGeometry(1)
         disposables.add(geometry)
-        const mesh = new THREE.Mesh(geometry, material)
-        mesh.frustumCulled = false
-        particlePipelineMeshes.add(mesh)
+        for (const side of particlePreparationSides(material)) {
+          const prepared = side === material.side ? material : material.clone()
+          if (prepared !== material) { prepared.side = side; disposables.add(prepared) }
+          const mesh = new THREE.Mesh(geometry, prepared)
+          mesh.frustumCulled = false
+          particlePipelineMeshes.add(mesh)
+        }
       }
     } catch (error) {
       const failed = {

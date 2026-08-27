@@ -17,6 +17,23 @@ use crate::pickup::{
 pub const CONTENTS_RED_TEAM: u32 = 0x800;
 pub const CONTENTS_BLUE_TEAM: u32 = 0x1000;
 
+/// CFuncRegenerate selects the first named entity, then tests prop_dynamic.
+/// Presentation preparation shares this join with actual regeneration.
+pub fn regenerate_associated_model<'a>(
+    graph: &'a playsrc_entity::Graph,
+    entity: &playsrc_entity::Entity,
+) -> Option<&'a playsrc_entity::Entity> {
+    if !class(entity, b"func_regenerate") {
+        return None;
+    }
+    field(entity, b"associatedmodel")
+        .filter(|name| !name.is_empty())
+        .and_then(|name| graph.entities.iter().find(|candidate| {
+            candidate.targetname.as_deref().is_some_and(|target| target.eq_ignore_ascii_case(name))
+        }))
+        .filter(|candidate| class(candidate, b"prop_dynamic"))
+}
+
 pub fn respawn_barrier_collides(
     barrier_team: Option<u8>,
     player_movement: bool,
@@ -748,17 +765,7 @@ impl MapRuntime {
                 counts.regenerate_zones += 1;
                 let source = u32::try_from(entity.index).map_err(|_| invalid(entity.index))?;
                 let team = source_team(entity)?;
-                let associated = field(entity, b"associatedmodel")
-                    .filter(|name| !name.is_empty())
-                    .and_then(|name| {
-                        graph.entities.iter().find(|candidate| {
-                            candidate
-                                .targetname
-                                .as_deref()
-                                .is_some_and(|target| target.eq_ignore_ascii_case(name))
-                        })
-                    })
-                    .filter(|candidate| class(candidate, b"prop_dynamic"));
+                let associated = regenerate_associated_model(graph, entity);
                 let associated_model =
                     associated.and_then(|candidate| u32::try_from(candidate.index).ok());
                 let associated_body =

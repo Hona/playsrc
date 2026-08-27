@@ -1,4 +1,5 @@
 import type { ParticleItem, MaterialStateInput } from "./index"
+import * as THREE from "three/webgpu"
 
 const FACTORS = ["zero", "one", "source-alpha", "one-minus-source-alpha"] as const
 
@@ -12,4 +13,12 @@ export function particlePipelineVariant(material: string, state: MaterialStateIn
 
 export function particlePipelineKey(item: Pick<ParticleItem, "material" | "blendSource" | "blendDestination">): string {
   return `${item.material.toLowerCase()}\0${item.blendSource}\0${item.blendDestination}`
+}
+
+/** Three draws translucent double-sided surfaces back then front. Its async
+ * queue retains a material reference after that temporary side is restored;
+ * preparation must instead retain the two actual side states until settlement. */
+export function particlePreparationSides(material: THREE.Material): readonly THREE.Side[] {
+  return material.transparent && material.side === THREE.DoubleSide && !material.forceSinglePass
+    ? [THREE.BackSide, THREE.FrontSide] : [material.side]
 }

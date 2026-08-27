@@ -35,3 +35,14 @@ test("resupply uses its exact event body and open/close phase without dispatchin
   expect(request.packedBody).toBe(7)
   expect(() => mapPropPipelinePoseRequests({ modelOccurrences: [] } as unknown as PresentationArtifacts, value, camera, 1)).toThrow("unavailable")
 })
+
+test("an untouched authored regenerate association prepares without fabricating a contact event", () => {
+  const values = { ...artifacts, modelOccurrences: artifacts.modelOccurrences.map(value => ({ ...value, regenerate: value.entity === 4 })) }
+  const prepared = mapPropPipelinePoseRequests(values, snapshot, camera, 1)
+  const locker = prepared.find(value => value.request.identity === 4)!.request
+  expect(locker.activity).toBe("open")
+  expect(locker.elapsedSeconds).toBe(0)
+  expect(locker.frameTimeSeconds).toBe(0)
+  expect(locker.packedBody).toBe(2)
+  expect(snapshot.regenerateAnimationEvents).toEqual([])
+})
