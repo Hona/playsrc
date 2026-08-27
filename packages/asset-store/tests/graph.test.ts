@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { MAX_CHUNK_ROLES, chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, parseResourceSet, partitionResourceChunkDescriptors, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
+import { MAX_CHUNK_ROLES, MAX_GRAPH_CHUNKS, chunksForRole, encodeResourceBatch, parseResourceCatalog, parseResourceGraph, parseResourceGraphBytes, parseResourceSet, partitionResourceChunkDescriptors, partitionResourceChunks, selectCatalogTarget } from "../src/graph"
 
 const hash = (value: string) => value.repeat(64)
 const chunk = Object.freeze({
@@ -20,6 +20,17 @@ const graph = Object.freeze({
 })
 
 describe("resource graph", () => {
+  test("admits expanded map and item regions without changing chunk or entry byte bounds", () => {
+    const chunks = Array.from({ length: 1_025 }, (_, index) => ({ ...chunk,
+      encodedSha256: index.toString(16).padStart(64, "0"),
+      entries: [{ ...chunk.entries[0]!, logicalPath: `materials/region${index}/a.vmt` }],
+    }))
+    const parsed = parseResourceGraph({ ...graph, chunks })
+    expect(parsed.chunks).toHaveLength(1_025)
+    const batch = encodeResourceBatch(parsed.chunks.map(descriptor => ({ descriptor, bytes: new Uint8Array(64) })))
+    expect(new DataView(batch.buffer).getUint32(8, true)).toBe(1_025)
+    expect(() => parseResourceGraph({ ...graph, chunks: Array(MAX_GRAPH_CHUNKS + 1).fill(chunk) })).toThrow()
+  })
   test("admits shared per-item closure roles with an explicit producer-consumer bound", () => {
     const roles = Array.from({ length: MAX_CHUNK_ROLES }, (_, index) => `equipment-${String(index).padStart(4, "0")}`)
     const parsed = parseResourceGraph({ ...graph, chunks: [{ ...chunk, roles }] })

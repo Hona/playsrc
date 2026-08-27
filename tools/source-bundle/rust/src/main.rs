@@ -3671,11 +3671,13 @@ fn main() -> Result<(), String> {
         });
     }
     let graph_entries = resources.len();
+    let largest_resource = resources.iter().map(|resource| resource.bytes.len()).max().unwrap_or(0);
+    let largest_role_set = resources.iter().map(|resource| resource.roles.len()).max().unwrap_or(0);
     if let Some(resource) = resources.iter().find(|resource| !playsrc_asset_graph::valid_resource_identity(resource)) {
         return Err(format!("resource graph identity is invalid: {} roles={:?}", resource.logical_path, resource.roles));
     }
     let packed = playsrc_asset_graph::pack(resources)
-        .map_err(|error| format!("resource graph packing failed: {error:?}"))?;
+        .map_err(|error| format!("resource graph packing failed: {error:?}; entries={graph_entries} largestResourceBytes={largest_resource} largestRoleSet={largest_role_set}"))?;
     let graph_encoded_bytes = packed
         .iter()
         .map(|chunk| chunk.encoded.len())

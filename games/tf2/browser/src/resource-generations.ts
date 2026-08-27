@@ -48,7 +48,7 @@ export class ResourceGenerations {
   writable(generation: number): boolean {
     const value = this.get(generation)
     return this.#unretired(generation)
-      && (!value || (value.sha256 === undefined && value.sections.length < 1024))
+      && (!value || (value.sha256 === undefined && value.sections.length < MAX_GRAPH_CHUNKS))
   }
 
   #unretired(generation: number): boolean {
@@ -58,7 +58,7 @@ export class ResourceGenerations {
   finalizable(generation: number): boolean {
     const value = this.get(generation)
     return this.#unretired(generation) && value !== undefined && value.sha256 === undefined
-      && value.sections.length > 0 && value.sections.length <= 1024
+      && value.sections.length > 0 && value.sections.length <= MAX_GRAPH_CHUNKS
   }
 
   loadable(generation: number): boolean {
@@ -111,3 +111,4 @@ export class ResourceGenerations {
     return true
   }
 }
+import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"

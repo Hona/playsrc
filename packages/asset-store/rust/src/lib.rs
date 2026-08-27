@@ -12,7 +12,7 @@ pub const MAX_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CHUNK_ENTRIES: usize = 2_048;
 pub const MAX_CHUNK_ROLES: usize = 2_048;
 pub const MAX_GRAPH_ENTRIES: usize = 8_192;
-pub const MAX_GRAPH_CHUNKS: usize = 1_024;
+pub const MAX_GRAPH_CHUNKS: usize = 2_048;
 pub const MAX_LOGICAL_PATH_BYTES: usize = 4_096;
 pub const LARGE_RESOURCE_BYTES: usize = 4 * 1024 * 1024;
 const COMPRESSION_PERCENT: usize = 95;
@@ -526,7 +526,7 @@ pub fn decode(
 }
 
 pub fn encode_batch(chunks: &[PackedChunk]) -> Result<Vec<u8>, GraphError> {
-    if chunks.is_empty() || chunks.len() > 1_024 {
+    if chunks.is_empty() || chunks.len() > MAX_GRAPH_CHUNKS {
         return Err(GraphError::BoundExceeded);
     }
     let mut output = Vec::new();
@@ -553,7 +553,7 @@ fn batch_chunks(bytes: &[u8]) -> Result<Vec<(ChunkDescriptor, &[u8])>, GraphErro
         return Err(GraphError::MalformedChunk);
     }
     let count = u32_at(bytes, &mut offset)?;
-    if count == 0 || count > 1_024 {
+    if count == 0 || count > MAX_GRAPH_CHUNKS {
         return Err(GraphError::BoundExceeded);
     }
     let mut chunks = Vec::with_capacity(count);
@@ -992,6 +992,19 @@ mod tests {
             })
             .collect();
         assert_eq!(pack(resources), Err(GraphError::BoundExceeded));
+    }
+
+    #[test]
+    fn item_catalog_and_map_regions_share_the_same_bounded_batch_contract() {
+        let resources = (0..1_025).map(|index| resource(
+            &format!("materials/region{index}/a.vmt"), "gameplay", vec![index as u8],
+        )).collect();
+        let packed = pack(resources).unwrap();
+        assert_eq!(packed.len(), 1_025);
+        let batch = encode_batch(&packed).unwrap();
+        let decoded = decode_batch(&batch).unwrap();
+        assert_eq!(decoded.len(), 1_025);
+        assert!(packed.iter().all(|chunk| chunk.encoded.len() <= MAX_CHUNK_BYTES));
     }
 
     #[test]
