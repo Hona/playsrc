@@ -289,6 +289,7 @@ export type ModelItem = Readonly<{
   orientation?: readonly [number, number, number, number]
   scale: number
   skin?: number
+  body?: number
   viewModel?: boolean
   pose?: Readonly<{
     cloak?: SourceCloakBinding | null
@@ -623,7 +624,7 @@ export type MaterialStateInput = Readonly<{
 export type ModelMaterialInput = Readonly<{
   identity: string
   cloakProxy: number
-  shader: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly Readonly<{
     kind: "material" | "model"
@@ -636,6 +637,7 @@ export type ModelMaterialInput = Readonly<{
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
   state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"; cloak?: SourceCloakState }>
+    | Readonly<{ kind: "modulate" }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
 }>
 export type AuthoredTextureInput = Readonly<{
@@ -1135,8 +1137,8 @@ function runtimeStaticLightingNode(
   }
   return lighting
 }
-function modelKey(model: string, skin: number) {
-  return skin === 0 ? model : `${model}#skin=${skin}`
+function modelKey(model: string, skin: number, body = 0) {
+  return `${model}${body === 0 ? "" : `#body=${body}`}${skin === 0 ? "" : `#skin=${skin}`}`
 }
 
 function modelOccurrenceMatrices(
@@ -2189,7 +2191,7 @@ class RendererOwner implements Renderer {
     }
     const modelFacing = new Map(request.modelFacing ?? [])
     for (const model of map.models) {
-      const identity = model.logicalPath.split("#skin=")[0]!.toLowerCase()
+      const identity = model.logicalPath.split("#")[0]!.toLowerCase()
       const facing = modelFacing.get(identity)
       if (!facing) throw new RenderingError("MissingInput", `StudioModel facing ${identity} is unavailable`)
       sourceModelSide(facing)
@@ -2333,7 +2335,7 @@ class RendererOwner implements Renderer {
     try {
       this.#setCamera(camera)
       for (const { item, pass, unposedPanel } of models) {
-        const model = modelKey(item.model, item.skin ?? 0), key = `${pass}:${model}`
+        const model = modelKey(item.model, item.skin ?? 0, item.body ?? 0), key = `${pass}:${model}`
         if (keys.has(key)) continue
         keys.add(key)
         const template = this.#active.modelTemplates.get(model)
@@ -2651,7 +2653,7 @@ class RendererOwner implements Renderer {
     const modelsRequiringLighting = new Set(map.models
       .filter((model) => model.materials.some((material) => {
         const shader = request.modelMaterials?.get(material.logicalPath.toLowerCase())?.shader
-        return shader !== "unlit-generic" && shader !== "unlit-two-texture"
+        return shader !== "unlit-generic" && shader !== "unlit-two-texture" && shader !== "modulate"
       }))
       .map((model) => model.logicalPath))
     const missingLightingEntities = map.modelOccurrences
@@ -3265,7 +3267,7 @@ class RendererOwner implements Renderer {
            if ((typedMaterial?.shader === "eye-refract" || typedMaterial?.shader === "eyes") && !baseTexture) {
              throw new RenderingError("MissingInput", `authored Studio eye iris ${resolved.logicalPath} is unavailable`)
            }
-           if (typedMaterial && typedMaterial.shader !== "unlit-generic" && typedMaterial.shader !== "unlit-two-texture") {
+           if (typedMaterial && typedMaterial.shader !== "unlit-generic" && typedMaterial.shader !== "unlit-two-texture" && typedMaterial.shader !== "modulate") {
              const warp = createModelTexture(resolved.logicalPath, 6, "model")?.texture
              const exponent = createModelTexture(resolved.logicalPath, 5, "model")?.texture
              const iris = typedMaterial.shader === "eye-refract" || typedMaterial.shader === "eyes" ? baseTexture?.texture : undefined
@@ -3287,7 +3289,7 @@ class RendererOwner implements Renderer {
            }
           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
-            side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!),
+            side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#")[0]!.toLowerCase())!),
           })
            let sampled=baseTexture?TSL.texture(baseTexture.texture,TSL.uv()):undefined
            if(sampled&&baseTexture?.input.sourceFormat===1)sampled=sampled.abgr
@@ -3338,6 +3340,10 @@ class RendererOwner implements Renderer {
               else if (second.input.sourceFormat === 16) sampledSecond = TSL.vec4(sampledSecond.bgr, 1)
               base = TSL.vec4(first.rgb.mul(sampledSecond.rgb), 1)
             }
+          if (typedMaterial?.shader === "modulate") {
+            const rgba = TSL.clamp(base, 0, 1)
+            base = TSL.vec4(TSL.mix(TSL.vec3(0.5), rgba.rgb, rgba.a), rgba.a)
+          }
           SOURCE_MODEL_BASE_COLOR.set(geometry, base)
           SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
           material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms)
@@ -4405,7 +4411,7 @@ class RendererOwner implements Renderer {
         item.scale <= 0
       )
         throw new RenderingError("MalformedInput", "render model item is invalid")
-      if (!this.#active!.modelTemplates.has(modelKey(item.model, item.skin ?? 0))) {
+      if (!this.#active!.modelTemplates.has(modelKey(item.model, item.skin ?? 0, item.body ?? 0))) {
         throw new RenderingError("MissingInput", `runtime model ${item.model} skin ${item.skin ?? 0} is unavailable`)
       }
       if (item.viewModel && (!item.viewModelProjection || item.viewModelProjection.kind !== "viewmodel"))
@@ -4421,7 +4427,7 @@ class RendererOwner implements Renderer {
           throw new RenderingError("MalformedInput", `model draw input ${item.identity} is invalid: ${String(error)}`)
         }
       }
-      const runtimeModel = this.#active!.modelLookup.get(modelKey(item.model, item.skin ?? 0))
+      const runtimeModel = this.#active!.modelLookup.get(modelKey(item.model, item.skin ?? 0, item.body ?? 0))
       if (!runtimeModel) throw new RenderingError("IdentityMismatch", "runtime model draw identity differs")
       const skipUnavailableDiagnosticInputs = this.#active!.loadRequest.diagnostic && !item.modelLighting && !item.eyeStates
         && !item.currentFramebufferAvailable && !item.gameProxyValuesAvailable
@@ -5080,7 +5086,7 @@ class RendererOwner implements Renderer {
   }
 
   #stageViewModel(item: ModelItem, frame: Frame): readonly [number, number] {
-    const key = modelKey(item.model, item.skin ?? 0)
+    const key = modelKey(item.model, item.skin ?? 0, item.body ?? 0)
     let retained = this.#viewModelInstances.get(item.identity)
     if (!retained || retained.model !== key) {
       if (retained) {
@@ -5201,7 +5207,7 @@ class RendererOwner implements Renderer {
         bindModelLighting(mesh, uniforms)
         const identity = String(mesh.userData.materialIdentity).toLowerCase()
         const authored = resources.materials?.get(identity)
-        if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture") continue
+        if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture" || authored.shader === "modulate") continue
         if (mesh.userData.dynamicMaterial !== true) {
           mesh.material = Array.isArray(mesh.material)
             ? mesh.material.map((material) => this.#cloneDynamicMaterial(material))
@@ -5375,7 +5381,7 @@ class RendererOwner implements Renderer {
           continue
         }
 
-        const model = modelKey(item.model, item.skin ?? 0)
+        const model = modelKey(item.model, item.skin ?? 0, item.body ?? 0)
         const key = `${model}:${Number(!!item.pose)}:${Number(!!item.modelLighting)}`
         let retained = this.#dynamicModelInstances.get(item.identity)
         if (!retained || retained.model !== key) {

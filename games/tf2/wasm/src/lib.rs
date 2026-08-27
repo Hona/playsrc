@@ -6307,9 +6307,12 @@ fn encode_control_points(out: &mut Vec<u8>, points: Option<&playsrc_tf2::control
         for value in world.master.custom_position { f32_field(out,value,maximum)?; }
         u16_field(out,u16::try_from(world.master.cap_layout.len()).ok()?,maximum)?;
         extend(out,world.master.cap_layout.as_bytes(),maximum)?;
+        i32_field(out,world.local_point.map_or(-1,|p| p as i32),maximum)?;
+        u16_field(out,u16::try_from(world.local_capture_text.len()).ok()?,maximum)?;
+        extend(out,world.local_capture_text.as_bytes(),maximum)?;
         for point in &world.points {
             let area = world.areas.iter().rev().find(|a| a.point == point.index);
-            let flags = u8::from(point.locked) | (u8::from(point.visible)<<1) | (u8::from(point.model_visible)<<2)
+            let flags = u8::from(point.locked) | (u8::from(point.visible)<<1) | (u8::from(point.model_visible)<<2) | ((point.skin() as u8)<<6)
                 | (u8::from(area.is_some_and(|a| a.blocked))<<3)
                 | (u8::from(world.may_capture[point.index][0] && area.is_some_and(|a| a.teams[2].can_cap))<<4)
                 | (u8::from(world.may_capture[point.index][1] && area.is_some_and(|a| a.teams[3].can_cap))<<5);
@@ -6320,6 +6323,7 @@ fn encode_control_points(out: &mut Vec<u8>, points: Option<&playsrc_tf2::control
             for team in [2,3] { i32_field(out,area.map_or(0,|a| a.num_players[team]),maximum)?; }
             for team in [2,3] { i32_field(out,area.map_or(1,|a| a.teams[team].required),maximum)?; }
             floats(out,point.position.into_iter().chain(point.angles),maximum)?;
+            i32_field(out,point.body(),maximum)?;
             for text in [&point.print_name,&point.icons[point.owner as usize],&point.models[point.owner as usize],&point.overlays[point.owner as usize]] {
                 u16_field(out,u16::try_from(text.len()).ok()?,maximum)?; extend(out,text.as_bytes(),maximum)?;
             }
@@ -8133,6 +8137,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
         playsrc_material::Shader::SkyHdr => 8,
         playsrc_material::Shader::SkyLdr => 9,
         playsrc_material::Shader::DecalModulate => 11,
+        playsrc_material::Shader::Modulate => 12,
         playsrc_material::Shader::Unsupported => 255,
     }
 }
@@ -8706,7 +8711,7 @@ fn resolve_models(
         }
         if graph.entities.iter().any(|entity| entity.classname.as_deref() == Some(b"team_control_point")
             && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(entity,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
-            selected_skins.insert(2);
+            selected_skins.insert(playsrc_studio_model::source_skin_family(2, model.skins.len()));
         }
         for flag in &graph.entities {
             if !flag
@@ -8741,10 +8746,19 @@ fn resolve_models(
                 ));
             }
         }
+        let mut bodies = std::collections::BTreeSet::from([0]);
+        if graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point") && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(e,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
+            if let Some(part) = model.body_parts.first() {
+                for team in [2,3] { if team < part.model_names.len() { bodies.insert(part.base * team as i32); } }
+            }
+        }
         for skin_index in selected_skins {
             if skin_index >= model.skins.len() {
+                presentation_failure(&format!("model skin {identity}:{skin_index}/{}", model.skins.len()));
                 return Err(());
             }
+            for body in &bodies {
+            let bodygroups = if *body == 0 { bodygroups.clone() } else { model.body_parts.iter().map(|p| ((*body / p.base) as usize) % p.model_names.len()).collect() };
             let mut primitives = Vec::new();
             for selected in
                 playsrc_studio_model::select_primitives(model, &bodygroups, skin_index, 0)
@@ -8812,14 +8826,11 @@ fn resolve_models(
                 });
             }
             models.push(playsrc_map::RuntimeModel {
-                logical_path: if skin_index == 0 {
-                    identity.clone()
-                } else {
-                    format!("{identity}#skin={skin_index}")
-                },
+                logical_path: format!("{identity}{}{}", if *body == 0 { String::new() } else { format!("#body={body}") }, if skin_index == 0 { String::new() } else { format!("#skin={skin_index}") }),
                 materials: materials.clone(),
                 primitives,
             });
+            }
         }
     }
     let mut occurrences = Vec::new();
@@ -10356,7 +10367,8 @@ fn prepare_model_materials(
         .map(|identity| {
             let material =
                 resolve_material_semantics(&identity, bundle, material_environment(profile, true))
-                    .map_err(|_| ())?;
+                    .map_err(|_| ()).inspect_err(|_| presentation_failure(&format!("model material semantics {identity}")))?;
+            if material.model.is_none() { presentation_failure(&format!("model shader state {identity}")); }
             material
                 .model
                 .is_some()
@@ -10386,7 +10398,7 @@ fn prepare_model_materials(
         .map(|path| {
             Ok((
                 path.clone(),
-                model_authored_texture(&path, decoders, resource_hashes, true).map_err(|_| ())?,
+                model_authored_texture(&path, decoders, resource_hashes, true).map_err(|_| ()).inspect_err(|_| presentation_failure(&format!("model texture {path}")))?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, ()>>()?;
@@ -10498,6 +10510,7 @@ fn encode_model_material(
         match model.shader {
             playsrc_material::ModelShader::UnlitGeneric => 3,
             playsrc_material::ModelShader::UnlitTwoTexture => 4,
+            playsrc_material::ModelShader::Modulate => 5,
             playsrc_material::ModelShader::VertexLitGeneric => 0,
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,
@@ -10546,7 +10559,7 @@ fn encode_model_material(
         out.extend_from_slice(&[0; 24]);
     }
     match &model.state {
-        State::UnlitGeneric(_) => {}
+        State::UnlitGeneric(_) | State::Modulate => {}
         State::UnlitTwoTexture(state) => {
             out.extend_from_slice(&[
                 u8::from(state.second_frame_rate.is_some()),
@@ -11469,6 +11482,8 @@ fn load_cached_presentation(
         .try_fold(expected, |mut output, entity| {
             if let Some(model) = authored_entity_model(entity).map_err(|_| 3_u32)? {
                 output.insert(model);
+            } else if entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"team_control_point")) {
+                output.extend(control_point_model_roots(entity).map_err(|_| 3_u32)?);
             } else if entity
                 .classname
                 .as_deref()
@@ -11657,6 +11672,12 @@ fn presentation_failure(stage: &str) {
     let _ = stage;
 }
 
+fn control_point_model_roots(entity: &playsrc_entity::Entity) -> Result<Vec<String>, ()> {
+    [b"team_model_0".as_slice(), b"team_model_2", b"team_model_3"].into_iter()
+        .filter_map(|key| entity_scalar(entity, key).filter(|name| !name.is_empty()))
+        .map(|name| std::str::from_utf8(name).map(str::to_ascii_lowercase).map_err(|_| ())).collect()
+}
+
 fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPresentation, ()> {
     let PresentationInputs {
         canonical,
@@ -11757,6 +11778,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     for entity in &graph.entities {
         if let Some(model) = authored_entity_model(entity)? {
             roots.insert(model);
+        } else if entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"team_control_point")) {
+            roots.extend(control_point_model_roots(entity)?);
         } else if entity
             .classname
             .as_deref()

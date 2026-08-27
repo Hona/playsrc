@@ -107,7 +107,7 @@ export type CloakState = Readonly<{ enabled: boolean; factor: number; colorTint:
 export type ModelMaterialArtifact = Readonly<{
   identity: string
   cloakProxy: number
-  shader: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes"
+  shader: "unlit-generic" | "unlit-two-texture" | "modulate" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly ModelTextureBinding[]
   environmentMap: null | Readonly<{ tint: readonly [number, number, number]; contrast: number; saturation: number }>
@@ -158,6 +158,7 @@ export type ModelMaterialArtifact = Readonly<{
     | Readonly<{ kind: "eyes"; halfLambert: boolean; dilation: number }>
     | Readonly<{ kind: "unlit-generic" }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
+    | Readonly<{ kind: "modulate" }>
 }>
 export type AuthoredTexturePlane = Readonly<{
   mip: number
@@ -1082,7 +1083,7 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
   const output = new Map<string, ModelMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
     const identity = r.text().toLowerCase(), shaderCode = r.u8(), cloakProxy = r.u8()
-    if (!identity || output.has(identity) || shaderCode > 4 || cloakProxy > 7) throw new ArtifactError("model material identity")
+    if (!identity || output.has(identity) || shaderCode > 5 || cloakProxy > 7) throw new ArtifactError("model material identity")
     const vertexRequirements = r.u16(), bindings: ModelTextureBinding[] = [], bindingIdentities = new Set<string>()
     for (let bindingCount = r.u32(); bindingCount > 0; bindingCount--) {
       const kind = r.u8(), role = r.u8(), colorRead = r.u8()
@@ -1170,13 +1171,13 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
       state = Object.freeze({ kind: "unlit-two-texture", secondFrameRate: frame ? frameRate : null,
         secondScrollRate: scroll ? scrollRate : null, secondScrollAngle: scroll ? scrollAngle : null })
     } else {
-      state = Object.freeze({ kind: "unlit-generic" })
+      state = Object.freeze({ kind: shaderCode === 5 ? "modulate" : "unlit-generic" })
     }
     const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({
       identity,
       cloakProxy,
-      shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic", "unlit-two-texture"] as const)[shaderCode]!,
+      shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic", "unlit-two-texture", "modulate"] as const)[shaderCode]!,
       vertexRequirements,
       bindings: Object.freeze(bindings),
       environmentMap,

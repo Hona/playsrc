@@ -11,7 +11,7 @@ import type {
   Tf2HudWeapon,
   Tf2ReloadPhase,
 } from "./contract"
-import type { CaptureObjectives, RoundSnapshot, Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
+import type { CaptureObjectives, ControlPoints, RoundSnapshot, Tf2Class, Tf2Team, Tf2Weapon } from "../codec"
 import { tf2ClassPresentation } from "../class"
 import { Tf2HudBindingError } from "./contract"
 import { tf2HudAvailable, tf2HudUnavailable } from "./bindings"
@@ -58,6 +58,7 @@ type SessionSnapshot = Readonly<{
   spy?: Readonly<{ cloakMeter: number; invisibility: number; disguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | null; desiredDisguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | null }> | null
   lifecycle: 1 | 2 | 3 | 4
   objectives?: CaptureObjectives | null
+  controlPoints?: ControlPoints | null
   round?: RoundSnapshot
   conditions: readonly [number, number, number, number, number]
   loadout: readonly CompactWeaponState[]

@@ -235,6 +235,8 @@ type PanelState = {
   progress: number
   previousProgress: number
   imageFill: number
+  imageUv: readonly [number, number, number, number] | null
+  fixedDetailUv: boolean
   foregroundColor: Rgba | null
   scalarProperties: Map<string, number>
   progressVariable: string | null
@@ -1557,6 +1559,8 @@ class SourceVguiRuntime implements VguiRuntime {
       progress: 0,
       previousProgress: -1,
       imageFill: 1,
+      imageUv: null,
+      fixedDetailUv: false,
       foregroundColor: null,
       scalarProperties: new Map(),
       progressVariable: null,
@@ -2818,10 +2822,13 @@ class SourceVguiRuntime implements VguiRuntime {
       && frame === 0
       && rotation === 0
       && panel.imageFill === 1
+      && panel.imageUv === null
       && (!sameName(panel.sourceControl, "ScalableImagePanel") || ["src_corner_width", "src_corner_height", "draw_corner_width", "draw_corner_height"].every(name => Number(panel.properties.get(name) ?? 0) === 0))
     if (image.material && !directMaterial) {
       const tiled = panel.properties.get("tileImage") === "1" || panel.properties.get("tileHorizontally") === "1" || panel.properties.get("tileVertically") === "1"
-      const geometry: VguiImageRasterGeometry = sameName(panel.sourceControl, "ScalableImagePanel")
+      const geometry: VguiImageRasterGeometry = panel.imageUv !== null
+        ? Object.freeze({ kind: "crop" as const, u0: panel.imageUv[0], v0: panel.imageUv[1], u1: panel.imageUv[2], v1: panel.imageUv[3], fixedDetailUv: panel.fixedDetailUv })
+        : sameName(panel.sourceControl, "ScalableImagePanel")
         ? Object.freeze({
             kind: "nine-slice" as const,
             sourceCornerWidth: Number(panel.properties.get("src_corner_width") ?? 0),
@@ -3014,6 +3021,8 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.previousProgress !== undefined && (mutation.previousProgress < -1 || mutation.previousProgress > 1)) throw new RuntimeFault("MalformedValue", `${panel.name}:previousProgress`)
     if (mutation.previousProgress !== undefined && !sameName(panel.sourceControl, "ContinuousProgressBar")) throw new RuntimeFault("InvalidOperation", `${panel.name}:previousProgress`)
     if (mutation.imageFill !== undefined && (mutation.imageFill < 0 || mutation.imageFill > 1)) throw new RuntimeFault("MalformedValue", `${panel.name}:imageFill`)
+    if (mutation.imageUv !== undefined && (!Array.isArray(mutation.imageUv) || mutation.imageUv.length !== 4 || mutation.imageUv.some(value => !finite(value) || Math.abs(value) > 8))) throw new RuntimeFault("MalformedValue", `${panel.name}:imageUv`)
+    if (mutation.fixedDetailUv !== undefined && typeof mutation.fixedDetailUv !== "boolean") throw new RuntimeFault("MalformedValue", `${panel.name}:fixedDetailUv`)
     if (mutation.drawColor !== undefined && !this.validColor(mutation.drawColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:drawColor`)
     if (mutation.foregroundColor !== undefined && !this.validColor(mutation.foregroundColor)) throw new RuntimeFault("MalformedValue", `${panel.name}:foregroundColor`)
     if (mutation.scalarProperties !== undefined && (!mutation.scalarProperties || typeof mutation.scalarProperties !== "object" || Array.isArray(mutation.scalarProperties)
@@ -3124,6 +3133,8 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.progress !== undefined) panel.progress = Math.max(0, Math.min(1, mutation.progress))
     if (mutation.previousProgress !== undefined) panel.previousProgress = mutation.previousProgress
     if (mutation.imageFill !== undefined) panel.imageFill = mutation.imageFill
+    if (mutation.imageUv !== undefined) panel.imageUv = Object.freeze([...mutation.imageUv]) as readonly [number, number, number, number]
+    if (mutation.fixedDetailUv !== undefined) panel.fixedDetailUv = mutation.fixedDetailUv
     if (mutation.drawColor !== undefined) panel.drawColor = Object.freeze([...mutation.drawColor]) as Rgba
     if (mutation.foregroundColor !== undefined) panel.foregroundColor = Object.freeze([...mutation.foregroundColor]) as Rgba
     if (mutation.scalarProperties !== undefined) for (const [name, value] of Object.entries(mutation.scalarProperties)) panel.scalarProperties.set(name, value)
