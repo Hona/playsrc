@@ -2,6 +2,8 @@ mod crosshair;
 mod class_selection;
 mod deathnotice;
 mod equipment;
+#[path = "../../../../../rust/src/audio_native.rs"]
+mod audio_native;
 #[allow(dead_code)]
 #[path = "../../../../../rust/src/class.rs"]
 mod class;

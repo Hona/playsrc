@@ -7125,121 +7125,6 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
     (output.len() == 360).then_some(output)
 }
 
-fn sound_definition_code(value: playsrc_tf2::SoundDefinition) -> u8 {
-    match value {
-        playsrc_tf2::SoundDefinition::Configured(index) => 160 + index,
-        playsrc_tf2::SoundDefinition::RocketSingle => 1,
-        playsrc_tf2::SoundDefinition::OriginalSingle => 2,
-        playsrc_tf2::SoundDefinition::StickySingle => 3,
-        playsrc_tf2::SoundDefinition::RocketExplosion => 4,
-        playsrc_tf2::SoundDefinition::OriginalExplosion => 5,
-        playsrc_tf2::SoundDefinition::StickyExplosion => 6,
-        playsrc_tf2::SoundDefinition::ScattergunSingle => 7,
-        playsrc_tf2::SoundDefinition::PistolSingle => 8,
-        playsrc_tf2::SoundDefinition::BatMiss => 9,
-        playsrc_tf2::SoundDefinition::BatHitFlesh => 10,
-        playsrc_tf2::SoundDefinition::BatHitWorld => 11,
-        playsrc_tf2::SoundDefinition::ScattergunReload => 12,
-        playsrc_tf2::SoundDefinition::PistolReload => 13,
-
-        playsrc_tf2::SoundDefinition::ShotgunSingle => 14,
-        playsrc_tf2::SoundDefinition::ShotgunReload => 15,
-        playsrc_tf2::SoundDefinition::ShovelMiss => 16,
-        playsrc_tf2::SoundDefinition::ShovelHitFlesh => 17,
-        playsrc_tf2::SoundDefinition::ShovelHitWorld => 18,
-        playsrc_tf2::SoundDefinition::MinigunWindUp => 19,
-        playsrc_tf2::SoundDefinition::MinigunWindDown => 20,
-        playsrc_tf2::SoundDefinition::MinigunSpin => 21,
-        playsrc_tf2::SoundDefinition::MinigunFire => 22,
-        playsrc_tf2::SoundDefinition::FistMiss => 23,
-        playsrc_tf2::SoundDefinition::FistHitWorld => 24,
-        playsrc_tf2::SoundDefinition::FistHitFlesh => 25,
-        playsrc_tf2::SoundDefinition::SniperSingle => 26,
-        playsrc_tf2::SoundDefinition::SmgSingle => 27,
-        playsrc_tf2::SoundDefinition::KukriMiss => 28,
-        playsrc_tf2::SoundDefinition::KukriHitFlesh => 29,
-        playsrc_tf2::SoundDefinition::KukriHitWorld => 30,
-        playsrc_tf2::SoundDefinition::SmgReload => 31,
-        playsrc_tf2::SoundDefinition::ShotgunEmpty => 32,
-        playsrc_tf2::SoundDefinition::PistolEmpty => 33,
-        playsrc_tf2::SoundDefinition::WrenchMiss => 34,
-        playsrc_tf2::SoundDefinition::WrenchHitFlesh => 35,
-        playsrc_tf2::SoundDefinition::WrenchHitWorld => 36,
-        playsrc_tf2::SoundDefinition::FlameFire => 37,
-        playsrc_tf2::SoundDefinition::FlameLoop => 38,
-        playsrc_tf2::SoundDefinition::FlameEnd => 39,
-        playsrc_tf2::SoundDefinition::FlameAirblast => 40,
-        playsrc_tf2::SoundDefinition::FireAxeMiss => 41,
-        playsrc_tf2::SoundDefinition::FireAxeHitFlesh => 42,
-        playsrc_tf2::SoundDefinition::FireAxeHitWorld => 43,
-        playsrc_tf2::SoundDefinition::FlagEnemyStolen => 44,
-        playsrc_tf2::SoundDefinition::FlagEnemyDropped => 45,
-        playsrc_tf2::SoundDefinition::FlagEnemyCaptured => 46,
-        playsrc_tf2::SoundDefinition::FlagEnemyReturned => 47,
-        playsrc_tf2::SoundDefinition::FlagTeamStolen => 48,
-        playsrc_tf2::SoundDefinition::FlagTeamDropped => 49,
-        playsrc_tf2::SoundDefinition::FlagTeamCaptured => 50,
-        playsrc_tf2::SoundDefinition::FlagTeamReturned => 51,
-        playsrc_tf2::SoundDefinition::FlagSpawn => 52,
-        playsrc_tf2::SoundDefinition::TeamWon => 53,
-        playsrc_tf2::SoundDefinition::TeamLost => 54,
-        playsrc_tf2::SoundDefinition::BottleMiss => 55,
-        playsrc_tf2::SoundDefinition::BottleHitFlesh => 56,
-        playsrc_tf2::SoundDefinition::BottleHitWorld => 57,
-        playsrc_tf2::SoundDefinition::HealthKitTouch => 58,
-        playsrc_tf2::SoundDefinition::AmmoPackTouch => 59,
-        playsrc_tf2::SoundDefinition::RegenerateTouch => 60,
-        playsrc_tf2::SoundDefinition::ItemMaterialize => 61,
-        playsrc_tf2::SoundDefinition::RevolverSingle => 62,
-        playsrc_tf2::SoundDefinition::RevolverReload => 63,
-        playsrc_tf2::SoundDefinition::KnifeMiss => 64,
-        playsrc_tf2::SoundDefinition::KnifeHitFlesh => 65,
-        playsrc_tf2::SoundDefinition::KnifeHitWorld => 66,
-        playsrc_tf2::SoundDefinition::SpyCloak => 67,
-        playsrc_tf2::SoundDefinition::SpyUncloak => 68,
-        playsrc_tf2::SoundDefinition::SyringeSingle => 69,
-        playsrc_tf2::SoundDefinition::BonesawMiss => 70,
-        playsrc_tf2::SoundDefinition::MedigunHealing => 71,
-        playsrc_tf2::SoundDefinition::MedigunDetach => 72,
-        playsrc_tf2::SoundDefinition::MedigunCharged => 73,
-        playsrc_tf2::SoundDefinition::BonesawHitFlesh => 74,
-        playsrc_tf2::SoundDefinition::BonesawHitWorld => 75,
-        playsrc_tf2::SoundDefinition::SyringeReload => 76,
-        playsrc_tf2::SoundDefinition::RoundEnds60 => 77,
-        playsrc_tf2::SoundDefinition::RoundEnds30 => 78,
-        playsrc_tf2::SoundDefinition::RoundEnds10 => 79,
-        playsrc_tf2::SoundDefinition::RoundEnds5 => 80,
-        playsrc_tf2::SoundDefinition::RoundEnds4 => 81,
-        playsrc_tf2::SoundDefinition::RoundEnds3 => 82,
-        playsrc_tf2::SoundDefinition::RoundEnds2 => 83,
-        playsrc_tf2::SoundDefinition::RoundEnds1 => 84,
-        playsrc_tf2::SoundDefinition::Overtime => 85,
-        playsrc_tf2::SoundDefinition::PointSuccess => 86,
-        playsrc_tf2::SoundDefinition::PointFailure => 87,
-        playsrc_tf2::SoundDefinition::PointCaptured => 88,
-        playsrc_tf2::SoundDefinition::PointContested => 89,
-        playsrc_tf2::SoundDefinition::PointContestedNeutral => 90,
-        playsrc_tf2::SoundDefinition::PointEnabled => 91,
-        playsrc_tf2::SoundDefinition::RoundBegins5 => 92,
-        playsrc_tf2::SoundDefinition::RoundBegins4 => 93,
-        playsrc_tf2::SoundDefinition::RoundBegins3 => 94,
-        playsrc_tf2::SoundDefinition::RoundBegins2 => 95,
-        playsrc_tf2::SoundDefinition::RoundBegins1 => 96,
-        playsrc_tf2::SoundDefinition::Stalemate => 97,
-        playsrc_tf2::SoundDefinition::CaptureWarn => 98,
-        playsrc_tf2::SoundDefinition::HologramStart => 99,
-        playsrc_tf2::SoundDefinition::HologramStop => 100,
-        playsrc_tf2::SoundDefinition::HologramMove => 101,
-        playsrc_tf2::SoundDefinition::HologramInterrupted => 102,
-        playsrc_tf2::SoundDefinition::RoundBegins60 => 103,
-        playsrc_tf2::SoundDefinition::RoundBegins30 => 104,
-        playsrc_tf2::SoundDefinition::RoundBegins10 => 105,
-        playsrc_tf2::SoundDefinition::RoundStartSiren => 106,
-        playsrc_tf2::SoundDefinition::TimeAdded => 107,
-        playsrc_tf2::SoundDefinition::EndRoundScored => 108,
-    }
-}
-
 fn encode_random_draw(
     output: &mut Vec<u8>,
     draw: playsrc_tf2::RandomDraw,
@@ -7247,16 +7132,16 @@ fn encode_random_draw(
 ) -> Option<()> {
     let (decision, definition, phase) = match draw.decision {
         playsrc_tf2::RandomDecision::SoundVolume { definition, phase } => {
-            (1, sound_definition_code(definition), phase)
+            (1, definition.code(), phase)
         }
         playsrc_tf2::RandomDecision::SoundPitch { definition, phase } => {
-            (2, sound_definition_code(definition), phase)
+            (2, definition.code(), phase)
         }
         playsrc_tf2::RandomDecision::SoundWave { definition, phase } => {
-            (3, sound_definition_code(definition), phase)
+            (3, definition.code(), phase)
         }
         playsrc_tf2::RandomDecision::SoundLevel { definition, phase } => {
-            (4, sound_definition_code(definition), phase)
+            (4, definition.code(), phase)
         }
         playsrc_tf2::RandomDecision::StickyRightVelocity => {
             (5, 0, playsrc_tf2::SoundQueryPhase::Inspect)
@@ -7326,7 +7211,7 @@ fn encode_audio_event(
                 playsrc_tf2::AudioEventIdentity::ItemPickup => 3,
                 playsrc_tf2::AudioEventIdentity::ItemMaterialize => 4,
             },
-            sound_definition_code(event.definition),
+            event.definition.code(),
             match event.source_kind {
                 playsrc_tf2::AudioSourceKind::Entity => 1,
                 playsrc_tf2::AudioSourceKind::World => 2,
@@ -7337,6 +7222,7 @@ fn encode_audio_event(
             event.samples.wave,
             match event.action {
                 playsrc_tf2::AudioAction::Play => 0,
+                playsrc_tf2::AudioAction::PlayAtPitch(_) => 4,
                 playsrc_tf2::AudioAction::Stop => 1,
                 playsrc_tf2::AudioAction::FadeIn(_) => 2,
                 playsrc_tf2::AudioAction::FadeOut(_) => 3,
@@ -7360,6 +7246,7 @@ fn encode_audio_event(
         [match event.action {
             playsrc_tf2::AudioAction::FadeIn(seconds)
             | playsrc_tf2::AudioAction::FadeOut(seconds) => seconds,
+            playsrc_tf2::AudioAction::PlayAtPitch(pitch) => pitch,
             _ => 0.0,
         }],
         limit,
@@ -11445,13 +11332,9 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
         }
     }
     if wanted.iter().any(|name| !emitted.contains(&name.to_ascii_lowercase())) { return Err(()); }
-    // These stock sound patches use the authored RIFF cue as their loop start.
-    let mut patches = vec![
-        "sound/weapons/flame_thrower_start.wav",
-        "sound/weapons/flame_thrower_loop.wav",
-        "sound/weapons/flame_thrower_end.wav",
-    ];
-    if control_points { patches.extend(["sound/misc/hologram_move.wav", "sound/misc/hologram_malfunction.wav"]); }
+    // Sound patches retain each admitted WAV's authored cue, including equipped
+    // minigun loops. No caller-side filename list owns loop behavior.
+    let patches: Vec<_> = bundle.keys().map(String::as_str).filter(|path| path.starts_with("sound/") && path.ends_with(".wav")).collect();
     out.extend_from_slice(&(patches.len() as u32).to_le_bytes());
     for path in patches {
         let metadata = playsrc_wav::pcm_metadata(bundle.get(path).ok_or(())?).map_err(|_| ())?;
