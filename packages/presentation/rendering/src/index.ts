@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu"
 import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
+import { SourceParticleDepth } from "./particle-depth"
 export type { SpriteCardInput } from "./sprite-card"
 import * as TSL from "three/tsl"
 import {
@@ -879,6 +880,8 @@ export interface Renderer {
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
   prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void>
   prepareParticlePipelines(camera: Camera, fog?: FogInput): Promise<void>
+  requestParticleDepthEvidence(): void
+  readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   modelVisible(model: string, skin: number, position: readonly [number, number, number], angles: readonly [number, number, number], camera: Camera, views: readonly WaterFramePass[]): boolean
@@ -1106,6 +1109,7 @@ type SceneResources = {
   brushModelTemplates:Map<number,THREE.Group>
   particleTextures: Map<string, THREE.DataTexture>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
+  particleDepth: SourceParticleDepth
   particlePipelineMeshes: THREE.Group
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
@@ -2579,6 +2583,7 @@ class RendererOwner implements Renderer {
     const started = performance.now()
     this.#renderBusy = true
     try {
+      await owner.particleDepth.prepare()
       this.#setCamera(camera)
       this.#setSceneFog(this.#fog(fog))
       const profile = browserFrameProfiler()
@@ -2606,6 +2611,9 @@ class RendererOwner implements Renderer {
       this.#renderBusy = false
     }
   }
+
+  requestParticleDepthEvidence(): void { this.#active?.particleDepth.requestEvidence() }
+  readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
     this.#checkAbort(signal, ordinal)
@@ -2752,6 +2760,7 @@ class RendererOwner implements Renderer {
     const particlePipelineMeshes = new THREE.Group()
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
+    const particleDepth = disposables.add(new SourceParticleDepth(this.#backend.backend))
     const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
     const attributes = (this.#backend as unknown as {
       _geometries: { attributes: { delete(attribute: THREE.BufferAttribute): unknown } }
@@ -3670,11 +3679,7 @@ class RendererOwner implements Renderer {
         modelOccurrenceInstances.set(occurrence.entity,instance)
         mainModelOccurrences.add(instance)
       }
-      const particleDepth = new THREE.DepthTexture(1, 1, THREE.FloatType)
-      disposables.add(particleDepth)
-      const particleDepthNode = TSL.viewportDepthTexture(TSL.screenUV, null, particleDepth)
-      // One generation-owned depth copy, reused across the active render targets.
-      particleDepthNode.getTextureForReference = () => particleDepth
+      const particleDepthNode = particleDepth.sample()
       for (const texture of request.particleTextures ?? []) {
         const state = materialStates.get(texture.material.toLowerCase())
         if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
@@ -3694,6 +3699,8 @@ class RendererOwner implements Renderer {
         const sampled = texture.spriteCard?.blendFrames === false ? current : current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
         const sprite = texture.spriteCard ? spriteCardNodes(texture.spriteCard, sampled, color, particleDepthNode) : null
         if (sprite) material.positionNode = sprite.position
+        if (sprite) material.forceSinglePass = true
+        material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
         material.colorNode = sourceFragmentColor(
           sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)),
           state,
@@ -3881,6 +3888,7 @@ class RendererOwner implements Renderer {
       brushModelTemplates,
       particleTextures,
       particleBatchMaterials,
+      particleDepth,
       particlePipelineMeshes,
       materialStates,
       disposables,
@@ -5155,6 +5163,7 @@ class RendererOwner implements Renderer {
         if (!material) throw new RenderingError("IdentityMismatch", `Particle output blend differs from authored material: ${first.material}`)
         const geometry = this.#createParticleBatchGeometry(capacity)
         const mesh = new THREE.Mesh(geometry, material)
+        if (material.userData.sourceParticleDepth) mesh.onBeforeRender = (renderer, _scene, camera) => this.#active!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
         mesh.frustumCulled = false
         const profile = browserFrameProfiler()
         if (profile && !material.userData.firstParticleUse) mesh.onBeforeRender = () => {

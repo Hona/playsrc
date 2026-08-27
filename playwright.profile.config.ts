@@ -8,6 +8,7 @@ export default headedProfileConfiguration({
     : process.env.PROFILE_SCENARIOS === "control-points" ? "control-points.profile.ts"
     : process.env.PROFILE_SCENARIOS === "koth" ? "koth.profile.ts"
     : process.env.PROFILE_SCENARIOS === "map-admission" ? "map-admission.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "burning-flames" ? "burning-flames.profile.ts"
     : process.env.PROFILE_SCENARIOS === "spy-cloak" ? "spy-cloak.profile.ts"
     : process.env.PROFILE_SCENARIOS === "trigger-door"
     ? "trigger-door.profile.ts"

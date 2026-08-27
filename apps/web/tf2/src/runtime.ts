@@ -2104,7 +2104,8 @@ export class Tf2Application {
     const skin = this.#snapshot?.team === 3 ? 1 : 0
     this.#equipmentRenderTask = (async () => {
       const poses = await client.models(generation, encodeModelPoseBatch([{
-        identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: true,
+        identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: Boolean(held?.modelPlayer),
+        itemBodygroups: held?.modelPlayer ? artifacts.models.get(held.modelPlayer)?.bodygroupCounts.map(() => 0) : undefined,
         equippedItems: preview.equippedItems,
         modelPanel: true, modelPanelReset: reset, activity: classPreviewBaseActivity(preview.class),
         previousElapsedSeconds: previous, elapsedSeconds: elapsed, currentTimeSeconds: now, frameTimeSeconds: elapsed - previous,
@@ -2122,6 +2123,10 @@ export class Tf2Application {
         pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes,
         particles: poses.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, artifacts.particleMaterials).items : []),
       }])
+      const cosmeticProfile = (globalThis as any).__playsrcProfile
+      if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmeticPreview = { class: preview.class, model: player.model, time: now,
+        wearables: poses.filter(pose => pose.wearable).map(pose => pose.model),
+        particles: poses.reduce((count, pose) => count + (pose.wearable?.particleBytes.byteLength ? new DataView(pose.wearable.particleBytes.buffer, pose.wearable.particleBytes.byteOffset).getUint32(8, true) : 0), 0) }
     })().catch(error => { if (this.#equipmentPreview === preview) this.#output(`Equipment preview: ${String(error)}`) })
       .finally(() => { this.#equipmentRenderTask = undefined })
   }
@@ -4487,6 +4492,9 @@ export class Tf2Application {
     const renderStart=performance.now()
     const hudPixelRevision = profile?.hudPixelEvidenceRevision
     const captureHudPixels = Number.isSafeInteger(hudPixelRevision) && hudPixelRevision !== (profile?.hudPixelEvidence as { revision?: number } | undefined)?.revision
+    const cosmeticDepthRevision = profile?.cosmeticDepthRevision
+    const captureCosmeticDepth = Number.isSafeInteger(cosmeticDepthRevision) && cosmeticDepthRevision !== (profile?.cosmeticDepthCapture as { revision?: number } | undefined)?.revision
+    if (captureCosmeticDepth) renderer.requestParticleDepthEvidence()
     const rendered=await renderer.render({
       ...prepared.frame,
       hudMaterials:this.#hudIntegration?.materialFrame(),
@@ -4512,6 +4520,12 @@ export class Tf2Application {
       if (profile) profile.hudModelPanel = { ...hudModel, panels: result.panels }
     }
     const rendererProfile=renderer.completeFrameProfile()
+    if (captureCosmeticDepth && profile) {
+      const pixels = this.#canvas.toDataURL("image/png")
+      const buffers = await renderer.readParticleDepthEvidence()
+      if (buffers) profile.cosmeticDepthCapture = { revision: cosmeticDepthRevision, camera, particles: prepared.frame.particles,
+        tick: prepared.snapshot.tick.toString(), pixels, buffers }
+    }
     if (profile?.cloakSampleActive) profile.cloakSampleCopies = Number(profile.cloakSampleCopies ?? 0) + rendered.timings.cloakFramebufferCopies
     const cloakCaptureCondition = profile?.cloakCaptureCondition as { identity: number; factor: number } | undefined
     if (profile && typeof profile.cloakCaptureRevision === "number" && profile.cloakCaptureRevision !== (profile.cloakCapture as { revision?: number } | undefined)?.revision
@@ -5138,7 +5152,7 @@ export class Tf2Application {
       const particleDecodeStart=performance.now(),particleItems=[...decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,
         ...botParts.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : [])],particleDecodeMilliseconds=performance.now()-particleDecodeStart
       if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmetics = {
-        tick: snapshot.tick.toString(), local: snapshot.equippedItems,
+        tick: snapshot.tick.toString(), local: snapshot.equippedItems, camera,
         actors: visibleBots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, items: bot.equippedItems })),
         models: botParts.filter(pose => pose.wearable).map(pose => ({ actor: pose.identity - BOT_MODEL_IDENTITY_BASE, model: pose.model, item: pose.wearable!.itemId, controlPoint: [...pose.wearable!.controlPoint] })),
         particles: particleItems.filter(item => item.effectIdentity >= 0x6000_0000 && item.effectIdentity < 0x7000_0000),

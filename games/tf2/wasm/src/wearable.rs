@@ -90,7 +90,7 @@ impl ParticleStates {
 struct NoQueries;
 impl playsrc_particle::CollisionQuery for NoQueries {
     fn trace_batch(&mut self, requests: &[playsrc_particle::TraceRequest]) -> Result<Vec<playsrc_particle::CollisionResult>, playsrc_particle::Error> {
-        assert!(requests.is_empty(), "authored Burning Flames has no collision queries");
+        if !requests.is_empty() { return Err(playsrc_particle::Error { code: playsrc_particle::ErrorCode::MissingQuery, source: "model-panel".into(), offset: 0, detail: "particle collision input is unavailable in this model panel".into() }); }
         Ok(Vec::new())
     }
 }
@@ -128,6 +128,17 @@ pub fn effect(item: &EquippedItem) -> Result<u32, ()> {
         Some(attribute) if attribute.value == 13.0 => Ok(13),
         _ => Err(()),
     }
+}
+
+pub fn owner_lighting_origin(player_model: &str, origin: [f32; 3]) -> Result<[f32; 3], ()> {
+    let class = match player_model {
+        "models/player/soldier.mdl" => playsrc_tf2::PlayerClass::Soldier,
+        "models/player/medic.mdl" => playsrc_tf2::PlayerClass::Medic,
+        "models/player/heavy.mdl" => playsrc_tf2::PlayerClass::Heavy,
+        _ => return Err(()),
+    };
+    let hull = playsrc_tf2::MovementPolicy { class, modifiers: Default::default() }.resolve().standing_hull;
+    Ok(std::array::from_fn(|axis| origin[axis] + (hull.mins[axis] + hull.maxs[axis]) * 0.5))
 }
 
 pub fn control_point(model: &PresentationModel, pose: &SampledPose, panel: bool) -> Result<Matrix3x4, ()> {

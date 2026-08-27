@@ -22,9 +22,7 @@ export function spriteCardNodes(state: SpriteCardInput, sampled: any, tint: any,
   const position = center.add(offset.mul(finalRadius.div(radius.max(0.000001))))
   let alpha = faded.a
   if (state.depthBlend) {
-    const sceneDepth = depthTexture.r
-    const sceneViewZ = TSL.perspectiveDepthToViewZ(sceneDepth, TSL.cameraNear, TSL.cameraFar)
-    const sceneCompressed = sceneDepth.mul(sceneViewZ.negate()).div(192).clamp(0, 1).mul(255).round().div(255)
+    const sceneCompressed = depthTexture.a
     const spriteDepth = TSL.viewZToPerspectiveDepth(TSL.positionView.z, TSL.cameraNear, TSL.cameraFar).mul(TSL.positionView.z.negate()).div(192)
     const feather = sceneCompressed.sub(spriteDepth).abs().mul(192 / state.depthBlendScale)
       .max(TSL.smoothstep(0.75, 1, sceneCompressed)).clamp(0, 1)
