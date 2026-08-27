@@ -143,7 +143,10 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
       expect(sample.bots).toHaveLength(quota)
       expect(sample.bots.some((b: any) => [8, 9, 10].includes(b.objective))).toBe(true)
       expect(sample.bots.some((b: any) => sample.initial.some((p: any) => p.identity === b.identity && (b.shots > p.shots || Math.hypot(...b.position.map((v: number, i: number) => v - p.position[i])) > 1)))).toBe(true)
-      const memory = await Promise.all(page.workers().map(w => w.evaluate(() => (globalThis as any).__playsrcWorkerMemory ?? null)))
+      const memory = await Promise.all(page.workers().map(w => Promise.race([
+        w.evaluate(() => (globalThis as any).__playsrcWorkerMemory ?? null).catch(() => null),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 1000)),
+      ])))
       const gameplay = memory.find(m => m?.linearBytes)
       expect(gameplay).toBeTruthy()
       expect(gameplay.linearBytes).toBeLessThan(2 * 1024 ** 3)
