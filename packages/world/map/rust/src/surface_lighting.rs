@@ -300,14 +300,12 @@ impl<'source> SurfaceLightingWorld<'source> {
             if let Some((fraction, barycentric)) = ray_triangle(state.start, state.delta, points)
                 && fraction < state.closest
             {
-                let uv = interpolate2(
+                let [ds, dt] = displacement_luxel(
                     surface.lightmap_uv[triangle[0] as usize],
                     surface.lightmap_uv[triangle[1] as usize],
                     surface.lightmap_uv[triangle[2] as usize],
                     barycentric,
                 );
-                let ds = (uv[0] * surface.lightmap_size[0] as f32) as i32;
-                let dt = (uv[1] * surface.lightmap_size[1] as f32) as i32;
                 let light = &self.face_light[face];
                 let smax = surface.lightmap_size[0] as usize + 1;
                 let index = light
@@ -418,6 +416,11 @@ fn lightmap_admitted(surface: &crate::Surface, ds: f32, dt: f32) -> bool {
         && dt <= surface.lightmap_size[1] as f32
 }
 
+fn displacement_luxel(a: [f32; 2], b: [f32; 2], c: [f32; 2], weights: [f32; 3]) -> [i32; 2] {
+    // Canonical displacement coordinates already use surface-local luxel units.
+    interpolate2(a, b, c, weights).map(|value| value as i32)
+}
+
 fn ray_triangle(
     start: [f32; 3],
     delta: [f32; 3],
@@ -479,6 +482,19 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displacement_luxels_are_not_scaled_by_the_surface_extent_twice() {
+        let luxel = displacement_luxel([0.0, 0.0], [32.0, 0.0], [0.0, 16.0], [0.25, 0.5, 0.25]);
+        assert_eq!(luxel, [16, 4]);
+        let samples = LightingSamples::LinearRgb32(
+            (0..33 * 17).map(|index| [index as f32, 0.0, 0.0]).collect(),
+        );
+        assert_eq!(
+            light_sample(&samples, luxel[1] as usize * 33 + luxel[0] as usize),
+            Some([148.0, 0.0, 0.0])
+        );
+    }
 
     #[test]
     fn borrowed_luxels_preserve_every_exponent_and_linear_float_bit() {

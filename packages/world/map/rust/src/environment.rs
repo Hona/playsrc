@@ -3458,7 +3458,8 @@ mod tests {
     fn sky_material_names_use_the_authored_name_for_every_face() {
         assert_eq!(
             super::CubeFace::ALL.map(|face| face.material_path("sky_badlands_01")),
-            ["rt", "lf", "bk", "ft", "up", "dn"].map(|suffix| format!("materials/skybox/sky_badlands_01{suffix}.vmt"))
+            ["rt", "lf", "bk", "ft", "up", "dn"]
+                .map(|suffix| format!("materials/skybox/sky_badlands_01{suffix}.vmt"))
         );
     }
 
