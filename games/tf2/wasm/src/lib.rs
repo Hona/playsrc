@@ -2076,10 +2076,14 @@ pub fn smokestack_occlusion_probe(handle: u32) -> Option<(usize, [f32; 3], [f32;
             slot.area_state.as_ref()?, slot.visibility_candidates.as_ref()?, slot.environment.as_ref()?, slot.session.as_ref()?);
         for state in session.map_smokestacks() {
             let origin = state.transform.origin;
+            let source_leaf = visibility.locate_leaf(origin).ok()?;
+            let source_area = visibility.leaves[source_leaf].area_and_flags & 0x1ff;
             let target = [origin[0], origin[1], origin[2] + state.parameters.jet_length * 0.5];
             for distance in [128.0, 256.0, 512.0] {
                 for offset in [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0], [1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]] {
                     let position = [target[0] + offset[0] * distance, target[1] + offset[1] * distance, target[2]];
+                    let camera_leaf = visibility.locate_leaf(position).ok()?;
+                    if visibility.leaves[camera_leaf].cluster < 0 || visibility.leaves[camera_leaf].area_and_flags & 0x1ff != source_area { continue; }
                     let trace = world.trace_hull(position, target, playsrc_collision::Hull { mins: [0.0; 3], maxs: [0.0; 3] }, 1).ok()?;
                     if trace.start_solid || trace.all_solid || !(0.1..0.9).contains(&trace.fraction)
                         || trace.surface_flags & (0x80 | 0x4) != 0 || !matches!(trace.hit, Some(playsrc_collision::Hit::WorldBrush { .. })) { continue; }
@@ -2087,6 +2091,8 @@ pub fn smokestack_occlusion_probe(handle: u32) -> Option<(usize, [f32; 3], [f32;
                     let input = [position[0], position[1], position[2], position[0], position[1], position[2], yaw, 0.0, 75.0, 16.0 / 9.0, 1.0, 32_768.0, 0.0, -1.0];
                     let view = visibility.view(area, candidates, &playsrc_visibility::ViewQuery { origins: vec![position], bypass_pvs: false }).ok()?;
                     let view = smokestack::RenderView::from_query(&input, &view.leaves, visibility, &environment.node_cull_modes).ok()?;
+                    let point = playsrc_particle::Bounds { minimum: origin, maximum: origin };
+                    if !view.in_pvs(visibility, point) || view.render_leaf(visibility, point, point).is_none() { continue; }
                     let bounds = playsrc_particle::Bounds { minimum: [origin[0] - 16.0, origin[1] - 16.0, origin[2]], maximum: [origin[0] + 16.0, origin[1] + 16.0, origin[2] + state.parameters.jet_length] };
                     if view.render_leaf(visibility, bounds, bounds).is_none() { continue; }
                     let covered = (0..8).all(|corner| {

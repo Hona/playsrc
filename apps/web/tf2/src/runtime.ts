@@ -4556,7 +4556,7 @@ export class Tf2Application {
     const prepared=required??this.#preparedPresentation
     if(
       this.#displayTask||this.#classSelectionRenderTask||this.#teamSelectionRenderTask||!prepared||this.#closed||this.#paused||
-      (!required&&!this.#loaded?.legacyParticleFrames&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
+      (!required&&prepared.revision===this.#lastRenderedPreparedRevision&&this.#viewRevision===this.#lastRenderedViewRevision)
     ){
       if(frameProfiler?.active){
         if(this.#displayTask){
