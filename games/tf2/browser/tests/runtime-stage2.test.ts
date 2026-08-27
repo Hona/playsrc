@@ -12,7 +12,7 @@ import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1181)
+  const bytes = new ArrayBuffer(1185)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -216,10 +216,10 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 140, brushHeader = objective - 64
+  const objective = original.length - 144, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 29 + name.length, 0)
-  const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes)
+  const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes + roster * 4)
   bytes.set(original.subarray(0, brushHeader + 52))
   bytes.set(original.subarray(brushHeader + 52, objective), brushHeader + 52 + insert)
   bytes.set(original.subarray(objective, objective + 68), objective + insert + botBytes)
@@ -426,7 +426,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
         bytes[18] = 54
         bytes[276] = 54
         new DataView(bytes.buffer).setFloat32(320, 100, true)
-        const view = new DataView(bytes.buffer), cloak = base.length
+        const view = new DataView(bytes.buffer), cloak = base.length - 4
         view.setUint32(cloak - 4, 1, true)
         view.setUint32(cloak, 1, true)
         ;[0, 0, 0, 1, 0.5, 0.4].forEach((value, index) => view.setFloat32(cloak + 4 + index * 4, value, true))
@@ -666,10 +666,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 140
+    const objectiveOffset = prior.byteLength - 144
     const botName = new TextEncoder().encode("Chucklenuts")
-    const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
-    const roundOffset = prior.byteLength - 68
+    const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length + 4)
+    const roundOffset = prior.byteLength - 72
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
     bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)
@@ -708,6 +708,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     const decoded = decodeSnapshot(bytes)
     expect(decoded.scoreboard).toMatchObject({ redCount: 1, blueCount: 1, players: [{ name: "unnamed" }, { name: "Chucklenuts", fake: true }] })
     expect(decoded.bots).toEqual([{
+      equippedItems: [],
       identity: 2,
       class: 3,
       team: 3,
@@ -738,9 +739,9 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       if (playerClass === 8) {
         const bound = new Uint8Array(bytes.length + 28); bound.set(bytes)
         const fields = new DataView(bound.buffer)
-        fields.setUint32(bytes.length - 4, 1, true)
-        fields.setUint32(bytes.length, view.getUint32(at, true), true)
-        ;[0, 0, 0, 0.4, 0.5, 1].forEach((value, index) => fields.setFloat32(bytes.length + 4 + index * 4, value, true))
+        fields.setUint32(bytes.length - 12, 1, true)
+        fields.setUint32(bytes.length - 8, view.getUint32(at, true), true)
+        ;[0, 0, 0, 0.4, 0.5, 1].forEach((value, index) => fields.setFloat32(bytes.length - 4 + index * 4, value, true))
         expect(decodeSnapshot(bound).bots[0]?.weapon?.identity).toBe(weapon)
         expect(decodeSnapshot(bound).actorCloaks[0]!.identity).toBe(view.getUint32(at, true))
       } else expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)

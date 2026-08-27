@@ -5,6 +5,7 @@ import { SnapshotRanges } from "./snapshot-retention"
 import { decodeModelPoseOutput, type PosedModel } from "./presentation"
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type VisibilityView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
+import type { Tf2EquipmentState } from "./equipment/types"
 
 const HASH = /^[0-9a-f]{64}$/
 const MAX_PENDING = 64
@@ -597,6 +598,12 @@ export class Tf2WorkerClient {
     if (choice !== null && !["red", "blue", "spectate", "auto"].includes(choice)) throw new Tf2WorkerError("BoundExceeded")
     const response = await this.#request({ kind: "team-selection", generation, choice })
     if (response.kind !== "team-selection" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
+    return response.state
+  }
+
+  async equipment(generation: number, mutation?: ArrayBuffer): Promise<Tf2EquipmentState> {
+    const response = await this.#request({ kind: "equipment", generation, mutation })
+    if (response.kind !== "equipment" || response.generation !== generation) throw new Tf2WorkerError("WorkerFailed")
     return response.state
   }
 

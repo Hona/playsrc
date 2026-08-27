@@ -15,6 +15,7 @@ playsrc-content = { path = "../../../../../../packages/content/rust" }
 playsrc-choreography = { path = "../../../../../../packages/formats/choreography/rust" }
 playsrc-studio-model = { path = "../../../../../../packages/formats/studio-model/rust" }
 playsrc-keyvalues = { path = "../../../../../../packages/formats/keyvalues/rust" }
+playsrc-tf2 = { path = "../../../../rust" }
 playsrc-vtf = { path = "../../../../../../packages/formats/vtf/rust" }
 playsrc-vpk = { path = "../../../../../../packages/formats/vpk/rust" }
 playsrc-vmt = { path = "../../../../../../packages/formats/vmt/rust" }

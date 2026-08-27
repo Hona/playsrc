@@ -263,6 +263,7 @@ pub struct PathContext {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub equipped_items: Vec<crate::equipment::EquippedItem>,
     pub identity: u32,
     pub spy: Option<crate::spy::SpyState>,
     pub name: String,
@@ -1823,6 +1824,7 @@ impl BotWorld {
         self.bots
             .values()
             .map(|bot| Snapshot {
+                equipped_items: Vec::new(),
                 identity: bot.identity,
                 spy: bot.spy,
                 name: bot.name.clone(),
