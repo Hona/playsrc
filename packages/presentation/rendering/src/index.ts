@@ -3483,6 +3483,7 @@ class RendererOwner implements Renderer {
         const material = new THREE.MeshBasicNodeMaterial(materialOptions({
           logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0,
         }, state))
+        disposables.add(material)
         applyParticleDepthState(material, state)
         const current = TSL.texture(value, TSL.uv())
         const next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
@@ -3504,7 +3505,6 @@ class RendererOwner implements Renderer {
         const mesh = new THREE.Mesh(geometry, material)
         mesh.frustumCulled = false
         particlePipelineMeshes.add(mesh)
-        disposables.add(material)
       }
     } catch (error) {
       const failed = {
@@ -3672,8 +3672,8 @@ class RendererOwner implements Renderer {
       modelOccurrenceLighting: Object.freeze(modelOccurrenceLighting),
       brushModelTemplates,
       particleTextures,
-        particleBatchMaterials,
-        particlePipelineMeshes,
+      particleBatchMaterials,
+      particlePipelineMeshes,
       materialStates,
       disposables,
       textureResidency,
@@ -4932,9 +4932,9 @@ class RendererOwner implements Renderer {
         }
         let capacity = 1
         while (capacity < required) capacity *= 2
-        const geometry = this.#createParticleBatchGeometry(capacity)
         const material = this.#active!.particleBatchMaterials.get(key)
         if (!material) throw new RenderingError("IdentityMismatch", `Particle output blend differs from authored material: ${first.material}`)
+        const geometry = this.#createParticleBatchGeometry(capacity)
         const mesh = new THREE.Mesh(geometry, material)
         mesh.frustumCulled = false
         const profile = browserFrameProfiler()
