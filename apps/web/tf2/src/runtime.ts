@@ -2117,9 +2117,10 @@ export class Tf2Application {
     this.#equipmentRenderTask = (async () => {
       const poses = await client.models(generation, encodeModelPoseBatch([{
         identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: Boolean(held?.modelPlayer),
+        itemDefinition: held?.item.definitionIndex,
         itemBodygroups: held?.modelPlayer ? artifacts.models.get(held.modelPlayer)?.bodygroupCounts.map(() => 0) : undefined,
         equippedItems: preview.equippedItems,
-        modelPanel: true, modelPanelReset: reset, activity: classPreviewBaseActivity(preview.class),
+        modelPanel: true, modelPanelReset: reset, activity: held ? "ACT_MP_STAND_IDLE" : classPreviewBaseActivity(preview.class),
         previousElapsedSeconds: previous, elapsedSeconds: elapsed, currentTimeSeconds: now, frameTimeSeconds: elapsed - previous,
         planarSpeed: 0, screenAspectRatio: preview.bounds.width / preview.bounds.height, worldFarPlane: 16384 * Math.sqrt(3),
         skin, lod: 0, bodygroups: artifact.bodygroupCounts.map(() => 0),
@@ -5099,10 +5100,10 @@ export class Tf2Application {
         const reset = key !== this.#cosmeticHudKey
         if (reset) { this.#cosmeticHudKey = key; this.#cosmeticHudStarted = snapshot.tick }
         const elapsed = Number(snapshot.tick - this.#cosmeticHudStarted) * SIMULATION_SAMPLE_INTERVAL_SECONDS
-        const activity = `ACT_MP_STAND_${["PRIMARY", "SECONDARY", "MELEE"][heldItem.slot]}`
         hudRequest = { identity: 0x5fff_ff01, actorIdentity: 1, hudModel: true, modelPanel: true, modelPanelReset: reset,
+          itemDefinition: heldItem.definitionIndex,
           model: hudPortrait.model, itemModel, worldItem: Boolean(itemModel), itemBodygroups: heldModel?.bodygroupCounts.map(() => 0),
-          activity: held.animationReplacements.find(([from]) => from === activity)?.[1] ?? activity, equippedItems: snapshot.equippedItems,
+          activity: "ACT_MP_STAND_IDLE", equippedItems: snapshot.equippedItems,
           previousElapsedSeconds: Math.max(0, elapsed - publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS), elapsedSeconds: elapsed,
           currentTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS, frameTimeSeconds: publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS,
           planarSpeed: 0, screenAspectRatio: hudPortrait.bounds.width / hudPortrait.bounds.height, worldFarPlane: camera.far,
