@@ -575,10 +575,19 @@ test("profile authored headed Upward offline-practice default roster and actual 
       poll()
     }), Math.max(0, deadline - Date.now()))
     await page.keyboard.up("Tab")
+    let lastNativeCapture = 0
     for (const [position, playerClass] of (acceptance ? classes : [...classes, ...classes]).entries()) {
       const index = position % classes.length
       if (Date.now() >= deadline) break
       if (acceptance && position > 0 && position % 4 === 0) await page.waitForTimeout(2100)
+      // Blink's native limiter starts at one, then resets to zero after two
+      // seconds since the last successful lock: four first admissions, then
+      // five per reset. Respect the real wall-clock policy; never emulate lock.
+      if (!acceptance && position >= 4 && (position - 4) % 5 === 0) {
+        const cooldown = Math.max(0, lastNativeCapture + 2100 - Date.now())
+        if (Date.now() + cooldown >= deadline) break
+        await page.waitForTimeout(cooldown)
+      }
       await page.keyboard.press("Comma")
       if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
         const started = performance.now()
@@ -599,8 +608,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
       // The first native click requests capture; it is not a weapon-fire edge.
       // Both scenario modes must admit capture before sending actual held fire.
       await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - Date.now())) })
+      lastNativeCapture = Date.now()
       await page.mouse.down()
-      await page.waitForTimeout(100)
+      // The application's +attack press latch preserves the click through the
+      // authoritative command boundary; stock-loadout hold tests stay at 100ms.
+      await page.waitForTimeout(acceptance ? 100 : 20)
       await page.mouse.up()
       exercisedClasses.push(playerClass)
     }
