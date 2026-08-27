@@ -85,7 +85,7 @@ function visibilityOutput(animated = false): ArrayBuffer {
   const bytes = new Uint8Array(76 + words.length * 4 + 8 + 8 + (animated ? 12 + identity.length + 72 : 0))
   const view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x56, 0x49, 0x53])
-  view.setUint32(4, 6, true)
+  view.setUint32(4, 7, true)
   bytes.fill(0x11, 8, 40)
   bytes.fill(0x22, 40, 72)
   let offset = 76
@@ -194,6 +194,7 @@ function modelPoseOutput(bones = [0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0
 }
 
 class PipelineWorker implements WorkerLike {
+  visibilityResult?: ArrayBuffer
   readonly requests: WorkerRequest[] = []
   readonly mapHash: string
   failure?: WorkerResponse
@@ -272,7 +273,7 @@ class PipelineWorker implements WorkerLike {
         Atomics.store(this.ownership, slot, request.id | 0)
         this.#respond({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: 12, byteLength: bytes.length, lease: request.id, ownership: this.ownership.buffer as SharedArrayBuffer, slot, timings: TIMINGS })
         if (request.visibility) {
-          const outputs = request.visibility.views.map(() => visibilityOutput(this.animatedWorldMaterial))
+          const outputs = request.visibility.views.map(() => this.visibilityResult?.slice(0) ?? visibilityOutput(this.animatedWorldMaterial))
           this.#respond({
             id: request.visibility.id,
             kind: "visibility",
@@ -284,7 +285,7 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "visibility": {
-        const outputs = request.views.map(() => visibilityOutput(this.animatedWorldMaterial))
+        const outputs = request.views.map(() => this.visibilityResult?.slice(0) ?? visibilityOutput(this.animatedWorldMaterial))
         this.#respond({ id: request.id, kind: "visibility", generation: request.generation, outputs, timings: TIMINGS }, outputs)
         return
       }
@@ -667,6 +668,27 @@ describe("TF2 Worker transport ownership", () => {
       0, 0, 1, 0,
       0, 0, 0, 1,
     ])
+    await client.shutdown()
+  })
+
+  test("compile-water ordinary shaders retain their material without invented Water uniforms or auxiliary passes", async () => {
+    const source = new Uint8Array(visibilityOutput())
+    const material = new TextEncoder().encode("maps/ordinary-water.vmt")
+    const at = 124, recordLength = 28 + material.length
+    const bytes = new Uint8Array(source.length + recordLength), view = new DataView(bytes.buffer)
+    bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + recordLength)
+    bytes[116] = 1; bytes[117] = 1; bytes[121] = 1; bytes[122] = 1
+    view.setUint32(at + 4, 3, true); view.setUint32(at + 8, 3, true)
+    view.setUint32(at + 20, 20, true); view.setUint32(at + 24, material.length, true)
+    bytes.set(material, at + 28)
+    const worker = new PipelineWorker(await digest(MAP))
+    worker.visibilityResult = bytes.buffer
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    const visible = await client.visibility(2, VIEW)
+    expect(visible.water.visibleWater).toMatchObject({ material: "maps/ordinary-water.vmt", evaluated: null, overlay: null })
+    expect(visible.water.render).toMatchObject({ cheap: true, reflect: false, refract: false, opaque: true })
+    bytes[118] = 1
+    await expect(client.visibility(2, { ...VIEW, presentationTimeSeconds: 2 })).rejects.toThrow()
     await client.shutdown()
   })
 

@@ -381,7 +381,7 @@ export type WaterFramePlan = Readonly<{
     distanceToWater: number | null
     material: string
     translucent: boolean
-    evaluated: Readonly<{ normalFrame: number; normalTransform: Float32Array; cheapStart: number; cheapEnd: number }>
+    evaluated: null | Readonly<{ normalFrame: number; normalTransform: Float32Array; cheapStart: number; cheapEnd: number }>
     overlay: null | Readonly<{ identity: string; normalFrame: number; normalTransform: Float32Array }>
   }>
   render: Readonly<{ cheap: boolean; reflect: boolean; refract: boolean; reflectEntities: boolean; drawSurface: boolean; opaque: boolean }>
@@ -4183,7 +4183,7 @@ class RendererOwner implements Renderer {
         }
         const water = frame.visibility.water
         const visibleWater = water.visibleWater
-        if (visibleWater) {
+        if (visibleWater?.evaluated) {
           const resource = this.#active.waterMaterials.get(visibleWater.material.toLowerCase())
           if (!resource) throw new RenderingError("MissingInput", `current Water material ${visibleWater.material} is unavailable`)
           const frameIndex = ((visibleWater.evaluated.normalFrame % resource.normalFrames.frameCount)
@@ -4686,7 +4686,11 @@ class RendererOwner implements Renderer {
       ) throw new RenderingError("MalformedInput", "particle draw item is invalid")
     }
     if(this.#active!.result.environment&&!frame.visibility)throw new RenderingError("MissingInput","an exact visibility result is required")
-    if(frame.visibility){if(!Array.isArray(frame.visibility.leaves)||!Array.isArray(frame.visibility.areas)||!Array.isArray(frame.visibility.worldMaterials)||frame.visibility.sky<0||frame.visibility.sky>2||(frame.visibility.eyeLeaf!==null&&(!Number.isSafeInteger(frame.visibility.eyeLeaf)||frame.visibility.eyeLeaf<0)))throw new RenderingError("MalformedInput","visibility view state is invalid");const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}if(water.visibleWater&&(!finite([water.visibleWater.surfaceZ,water.visibleWater.evaluated.cheapStart,water.visibleWater.evaluated.cheapEnd,...water.visibleWater.evaluated.normalTransform])||water.visibleWater.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")}
+    if(frame.visibility){if(!Array.isArray(frame.visibility.leaves)||!Array.isArray(frame.visibility.areas)||!Array.isArray(frame.visibility.worldMaterials)||frame.visibility.sky<0||frame.visibility.sky>2||(frame.visibility.eyeLeaf!==null&&(!Number.isSafeInteger(frame.visibility.eyeLeaf)||frame.visibility.eyeLeaf<0)))throw new RenderingError("MalformedInput","visibility view state is invalid");const water=frame.visibility.water;if(water.passes.length<1||water.passes.length>4||water.passes.filter(pass=>pass.kind==="main").length!==1)throw new RenderingError("MalformedInput","Water view plan is invalid");let prior=-1;for(const pass of water.passes){const order=pass.kind==="reflection"?0:pass.kind==="refraction"?1:pass.kind==="main"?2:3;if(order<prior||!finite([...pass.origin,...pass.angles,pass.clip?.height??0])||pass.surfaces.length>100_000)throw new RenderingError("MalformedInput","Water pass is invalid");prior=order}
+      const selected = water.visibleWater
+      if (selected && (!Number.isFinite(selected.surfaceZ) || (!selected.evaluated && (!water.render.cheap || water.render.reflect || water.render.refract || selected.overlay)))) throw new RenderingError("MalformedInput", "ordinary water surface has an invalid view plan")
+      if(selected?.evaluated&&(!finite([selected.evaluated.cheapStart,selected.evaluated.cheapEnd,...selected.evaluated.normalTransform])||selected.evaluated.normalTransform.length!==16))throw new RenderingError("MalformedInput","current Water state is invalid")
+    }
     if(frame.brushModels){let prior=-1;for(const model of frame.brushModels.models){if(model.sourceIndex<=prior||model.model<1||model.model>=(this.#active!.loadRequest.brushModels?.length??0)||!finite([...model.worldPosition,...model.worldAngles])||model.renderMode<0||model.renderMode>10)throw new RenderingError("MalformedInput","brush-model publication record is invalid");prior=model.sourceIndex}}
   }
 
@@ -4912,7 +4916,7 @@ class RendererOwner implements Renderer {
       ? scene.waterMaterials.get(plan.visibleWater.material.toLowerCase())
       : undefined
     const waterState = waterResource?.state
-    if (plan.visibleWater && !waterState) {
+    if (plan.visibleWater?.evaluated && !waterState) {
       throw new RenderingError("MissingInput", `Water material ${plan.visibleWater.material} is unavailable`)
     }
 

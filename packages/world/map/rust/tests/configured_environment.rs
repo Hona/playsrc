@@ -281,7 +281,7 @@ fn configured_environment_retains_collision_selected_marks_water_and_view_inputs
         water.bottom_material,
         Some(playsrc_map::WaterMaterialIdentity::Map(13))
     );
-    assert!(water.surface_state.above_water);
+    assert!(water.surface_state.as_ref().unwrap().above_water);
     assert!(!water.bottom_state.as_ref().unwrap().above_water);
     assert_eq!(
         water.surface_bindings.environment,

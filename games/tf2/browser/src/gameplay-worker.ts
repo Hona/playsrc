@@ -1076,7 +1076,13 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
       const transactStarted = performance.now()
       const ok = value.exports.playsrc_visibility_query(value.handle, pointer)
       transactMilliseconds += performance.now() - transactStarted
-      if (ok !== 1) { fail(request.id, "TransitionFailed", 203); return }
+      if (ok !== 1) {
+        const length = value.exports.playsrc_visibility_output_length(value.handle)
+        const pointer = value.exports.playsrc_visibility_output_pointer(value.handle) >>> 0
+        const bytes = pointer && length >= 4 && length <= 4096 ? new Uint8Array(value.exports.memory.buffer, pointer, length) : null
+        const reason = bytes && bytes[0] === 80 && bytes[1] === 86 && bytes[2] === 81 && bytes[3] === 69 ? new TextDecoder().decode(bytes.slice(4)) : undefined
+        fail(request.id, "TransitionFailed", 203, reason); return
+      }
       const length = value.exports.playsrc_visibility_output_length(value.handle)
       if (length < 80 || length > 4 * 1024 * 1024) { fail(request.id, "InternalFailure", 818); return }
       const outputCopyStarted = performance.now()

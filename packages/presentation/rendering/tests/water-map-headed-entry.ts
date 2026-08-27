@@ -166,7 +166,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
   exports.playsrc_free(outputPointer, length)
   const view = new DataView(output.buffer)
   const decoder = new TextDecoder("utf-8", { fatal: true })
-  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 6, "Rust Water visibility identity differs")
+  require(decoder.decode(output.subarray(0, 4)) === "PVIS" && view.getUint32(4, true) === 7, "Rust Water visibility identity differs")
   let offset = 76
   const take = (count: number): number => {
     require(offset + count <= output.byteLength, "Rust Water visibility is truncated")
@@ -195,7 +195,7 @@ function visibility(camera: Camera, time: number): VisibilityFrame {
   let current: VisibilityFrame["water"]["visibleWater"] = null
   if (present) {
     const volume = u32(), visibleLeaf = u32(), eyeLeaf = u32(), eyeInVolume = u8(), translucent = u8(), hasOverlay = u8()
-    require(hasOverlay <= 1 && u8() === 0, "Rust Water visibility padding differs")
+    require(hasOverlay <= 1 && u8() === 1, "configured Water shader evaluation is missing")
     const surfaceZ = f32(), distance = u32()
     const size = u32()
     const material = decoder.decode(output.subarray(take(size), offset))
@@ -351,7 +351,7 @@ async function renderScenario(name: "above-frame-0" | "above-frame-30" | "below"
   return Object.freeze({
     name,
     camera,
-    normalFrame: selected.water.visibleWater.evaluated.normalFrame,
+    normalFrame: selected.water.visibleWater.evaluated!.normalFrame,
     material: selected.water.visibleWater.material,
     eyeInVolume: selected.water.visibleWater.eyeInVolume,
     visibilitySky: selected.sky,
@@ -409,7 +409,7 @@ async function benchmarkWater() {
         visibilityMilliseconds,
         renderMilliseconds: output.timings.totalMilliseconds,
         worldMilliseconds: output.timings.worldMilliseconds,
-        normalFrame: selected.water.visibleWater.evaluated.normalFrame,
+        normalFrame: selected.water.visibleWater.evaluated!.normalFrame,
         eyeInVolume: selected.water.visibleWater.eyeInVolume,
         passes: Object.freeze([...output.waterPasses]),
         passTimings: output.waterPassTimings,
@@ -450,7 +450,7 @@ async function renderOverhead(position: readonly [number, number, number], pitch
   }
   const output = await renderer.render({ camera, effects: [], particles: [], models: [], visibility: selected, collisionWorldIdentity: artifacts.environment.collisionWorldIdentity, deltaSeconds: 0.015 })
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  return Object.freeze({ position, pitchDegrees, suppressWater, normalFrame: water.evaluated.normalFrame, material: water.material, eyeLeaf: water.eyeLeaf, visibleLeaf: water.visibleLeaf, passes: output.waterPasses, stateRestored: output.waterStateRestored, drawableSurfaces: scene.drawableSurfaces })
+  return Object.freeze({ position, pitchDegrees, suppressWater, normalFrame: water.evaluated!.normalFrame, material: water.material, eyeLeaf: water.eyeLeaf, visibleLeaf: water.visibleLeaf, passes: output.waterPasses, stateRestored: output.waterStateRestored, drawableSurfaces: scene.drawableSurfaces })
 }
 
 console.info("shipped Water renderer is ready for exact above/below captures")
