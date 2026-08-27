@@ -491,7 +491,7 @@ impl<'source> TextureDecoders<'source> {
 
 struct CompiledPresentationModel {
     flex: Arc<playsrc_studio_model::ModelFlex>,
-    model: Arc<playsrc_studio_model::PresentationModel>,
+    model: Arc<RetainedPresentationModel>,
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
     illumination_attachment: i32,
@@ -500,7 +500,7 @@ struct CompiledPresentationModel {
 
 struct CachedPresentationModel {
     flex: Arc<playsrc_studio_model::ModelFlex>,
-    model: Weak<playsrc_studio_model::PresentationModel>,
+    model: Weak<RetainedPresentationModel>,
     identity: [u8; 32],
     illumination_position: playsrc_studio_model::Vector3,
     illumination_attachment: i32,
@@ -572,7 +572,7 @@ struct Slot {
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
     combat_decals: Option<CombatDecalWorld>,
     particle_output: Vec<u8>,
-    studio_models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    studio_models: BTreeMap<String, Arc<RetainedPresentationModel>>,
     model_lighting_metadata: BTreeMap<String, StudioModelLightingMetadata>,
     model_lighting_world: Option<playsrc_map::ModelLightingWorld<'static>>,
     model_material_opacity: BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
@@ -1395,7 +1395,8 @@ unsafe fn compile_map(
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
-        map.install_studio_models(&studio_models)
+        map.install_studio_models(&studio_models.iter().map(|(identity, model)|
+            (identity.clone(), Arc::clone(model.source()))).collect())
             .map_err(|_| 5_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: runtime.entities.entities.iter().any(|entity| {
@@ -2483,7 +2484,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
 }
 
 fn pose_bot_hitboxes(
-    models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    models: &BTreeMap<String, Arc<RetainedPresentationModel>>,
     bots: &[playsrc_tf2::bot::Snapshot],
     tick: u64,
 ) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, String> {
@@ -2613,7 +2614,7 @@ struct ViewOutput {
 }
 
 fn encode_model_poses(
-    models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    models: &BTreeMap<String, Arc<RetainedPresentationModel>>,
     material_opacity: &BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     viewmodel_bob: &mut BTreeMap<u32, playsrc_studio_model::ViewModelBobState>,
     class_scenes: &mut BTreeMap<u32, ClassPreview>,
@@ -3089,23 +3090,8 @@ fn encode_model_poses(
     Ok(out)
 }
 
-fn canonical_bone_palette(bones: impl IntoIterator<Item = u8>) -> Vec<u8> {
-    // Source vertex bone IDs occupy exactly one byte. Deduplicate in that
-    // bounded domain instead of allocating and sorting every vertex influence
-    // again for every actor and presentation frame.
-    let mut words = [0_u64; 4];
-    for bone in bones {
-        words[usize::from(bone) / 64] |= 1_u64 << (bone % 64);
-    }
-    let mut palette = Vec::with_capacity(words.iter().map(|word| word.count_ones() as usize).sum());
-    for (index, mut word) in words.into_iter().enumerate() {
-        while word != 0 {
-            palette.push((index * 64 + word.trailing_zeros() as usize) as u8);
-            word &= word - 1;
-        }
-    }
-    palette
-}
+mod model_palette;
+use model_palette::RetainedPresentationModel;
 
 fn viewmodel_phase_code(value: playsrc_studio_model::ViewModelPhase) -> u8 {
     match value {
@@ -3153,7 +3139,7 @@ fn encode_model_pose_part(
     request: &ModelPoseRequest,
     role: u8,
     equipped: Option<&playsrc_tf2::equipment::EquippedItem>,
-    model: &playsrc_studio_model::PresentationModel,
+    model: &RetainedPresentationModel,
     sequence: usize,
     timing: playsrc_studio_model::SequenceTiming,
     previous_cycle: f32,
@@ -3323,22 +3309,9 @@ fn encode_model_pose_part(
         out.extend_from_slice(&event.options);
         pbytes(out, &event.name)?;
     }
-    let palette = if request.attachments_only {
-        Vec::new()
-    } else {
-        canonical_bone_palette(selected.iter().flat_map(|selection| {
-            model.geometry[selection.primitive]
-                .vertices
-                .iter()
-                .flat_map(|vertex| {
-                    vertex.bones[..usize::from(vertex.bone_count)]
-                        .iter()
-                        .copied()
-                })
-        }))
-    };
+    let palette = model.selected_palette(selected, request.attachments_only)?;
     out.extend_from_slice(&u32::try_from(palette.len()).map_err(|_| ())?.to_le_bytes());
-    for bone in palette {
+    for bone in palette.iter() {
         let matrix = pose.skinning_matrices.get(usize::from(bone)).ok_or(())?;
         for value in matrix.0 {
             out.extend_from_slice(&value.0.to_le_bytes());
@@ -8845,7 +8818,7 @@ fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<Strin
 
 fn resolve_models(
     graph: Option<&playsrc_entity::Graph>,
-    studio_models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    studio_models: &BTreeMap<String, Arc<RetainedPresentationModel>>,
     bundle: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
@@ -8986,13 +8959,8 @@ fn resolve_models(
             {
                 let primitive = model.geometry.get(selected.primitive).ok_or(())?;
                 let (positions, normals, _) = posed_vertices(model, primitive, &pose)?;
-                let bone_palette =
-                    canonical_bone_palette(primitive.vertices.iter().flat_map(|vertex| {
-                        vertex.bones[..usize::from(vertex.bone_count)]
-                            .iter()
-                            .copied()
-                    }))
-                    .into_iter()
+                let bone_palette = model.primitive_palette(selected.primitive)?
+                    .iter()
                     .map(u16::from)
                     .collect();
                 primitives.push(playsrc_map::RuntimeModelPrimitive {
@@ -9208,7 +9176,7 @@ fn build_model_presentation(
         }
         digest.update((dependency.byte_length as u64).to_le_bytes());
     }
-    let model = Arc::new(*model);
+    let model = Arc::new(RetainedPresentationModel::new(*model));
     let identity = digest.finalize().into();
     presentation_model_cache()
         .lock()
@@ -11455,7 +11423,7 @@ fn decoded_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<Decoded
 }
 type CompiledPresentation = (
     Vec<u8>,
-    BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
+    BTreeMap<String, Arc<RetainedPresentationModel>>,
     BTreeMap<String, StudioModelLightingMetadata>,
     BTreeMap<String, Vec<playsrc_studio_model::ViewModelMaterialOpacity>>,
     RuntimeEnvironment,
@@ -11779,7 +11747,7 @@ fn load_cached_presentation(
             )
         })
         .collect();
-    let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
+    let models: BTreeMap<String, Arc<RetainedPresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
@@ -12459,7 +12427,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             )
         })
         .collect();
-    let models: BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>> = models
+    let models: BTreeMap<String, Arc<RetainedPresentationModel>> = models
         .into_iter()
         .map(|(identity, artifact)| (identity, artifact.model))
         .collect();
@@ -14853,6 +14821,10 @@ mod tests {
     }
 
     use super::*;
+
+    fn canonical_bone_palette(bones: impl IntoIterator<Item = u8>) -> Vec<u8> {
+        model_palette::BonePalette::from_bones(bones).iter().collect()
+    }
 
     #[test]
     fn authored_bone_palettes_are_canonical_sparse_and_bounded_by_source_bone_ids() {
