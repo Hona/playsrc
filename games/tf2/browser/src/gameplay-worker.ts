@@ -3,6 +3,7 @@
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
 import { reclaimModelReads } from "./model-read-ownership"
+import { ReplyWriter, REPLY_BYTES, type SharedReply, type ReplyRange } from "./reply-transport"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import { decodeEquipmentState } from "./equipment/codec"
@@ -53,6 +54,9 @@ type WasmExports = Readonly<{
   playsrc_model_output_take(handle: number): number
   playsrc_model_output_capacity(handle: number): number
   playsrc_model_output_recycle(handle: number, pointer: number, capacity: number): void
+  playsrc_reply_output_capacity(handle: number, kind: number): number
+  playsrc_reply_output_take(handle: number, kind: number): number
+  playsrc_reply_output_recycle(handle: number, kind: number, pointer: number, capacity: number): void
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
   playsrc_visibility_output_pointer(handle: number): number
@@ -99,6 +103,7 @@ const modelOutputLeases = new Map<number, { handle: number; pointer: number; cap
 const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array.BYTES_PER_ELEMENT))
 const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
 let leasedModelBytes = 0
+let replies: ReplyWriter | undefined
 
 // Explicit local diagnostics only. No exports, handles, views, asset bytes or
 // arbitrary engine access cross this interface. The Rust owner records the
@@ -145,7 +150,26 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
 }) })
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
-  scope.postMessage(message, transfer)
+  if (replies) replies.control(message, envelope => scope.postMessage(envelope, transfer))
+  else scope.postMessage(message, transfer)
+}
+
+function postShared(message: SharedReply, release: () => void): void {
+  const started = performance.now()
+  replies!.shared(message, release)
+  const finished = performance.now()
+  const profile = (scope as typeof scope & { __playsrcWorkerProfileReply?: (reply: object) => void }).__playsrcWorkerProfileReply
+  profile?.({ requestId: message.id, kind: message.kind, started, finished, transport: "atomic",
+    bytes: message.kind === "models" ? 0 : message.ranges.reduce((sum, range) => sum + range.length, 0),
+    sharedBytes: message.kind === "models" ? message.ranges[0]!.length : 0, timings: message.timings })
+}
+
+function takeReply(exports: WasmExports, handle: number, kind: number, length: number): ReplyRange & { release: () => void } {
+  const capacity = exports.playsrc_reply_output_capacity(handle, kind)
+  if (!Number.isSafeInteger(capacity) || capacity < length || capacity > MAX_MESSAGE_BYTES) throw new Error("Reply capacity bound exceeded")
+  const pointer = exports.playsrc_reply_output_take(handle, kind) >>> 0
+  if (!pointer) throw new Error("Reply ownership transfer failed")
+  return { pointer, length, release: () => exports.playsrc_reply_output_recycle(handle, kind, pointer, capacity) }
 }
 
 function fail(id: number, code: WorkerFailureCode, detail = 0,reason?:string): void {
@@ -226,6 +250,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_model_output_take,
         candidate.playsrc_model_output_capacity,
         candidate.playsrc_model_output_recycle,
+        candidate.playsrc_reply_output_capacity,
+        candidate.playsrc_reply_output_take,
+        candidate.playsrc_reply_output_recycle,
         candidate.playsrc_visibility_query,
         candidate.playsrc_visibility_output_length,
         candidate.playsrc_visibility_output_pointer,
@@ -273,7 +300,10 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,
       }),
     })
-    post({ id: request.id, kind: "initialized", applicationBuild: __PLAYSRC_APPLICATION_BUILD__, presentationSchema: TF2_PRESENTATION_SCHEMA, wasmSha256: actual })
+    const mailbox = new SharedArrayBuffer(REPLY_BYTES)
+    post({ id: request.id, kind: "initialized", applicationBuild: __PLAYSRC_APPLICATION_BUILD__, presentationSchema: TF2_PRESENTATION_SCHEMA, wasmSha256: actual,
+      replies: { mailbox, memory: candidate.memory, modelOwnership: modelLeaseOwnership.buffer as SharedArrayBuffer } })
+    replies = new ReplyWriter(mailbox)
   } catch {
     fail(request.id, "WasmUnavailable")
   }
@@ -901,17 +931,14 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
     return
   }
   const outputCopyStarted = performance.now()
-  const snapshotPointer = value.exports.playsrc_simulation_output_pointer(value.handle) >>> 0
-  if (!snapshotPointer || snapshotPointer + length > value.exports.memory.buffer.byteLength) {
-    fail(request.id, "InternalFailure", 813)
-    return
-  }
-  const snapshot = new Uint8Array(value.exports.memory.buffer, snapshotPointer, length).slice().buffer
+  const snapshot = takeReply(value.exports, value.handle, 1, length)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
   const attackTick = replayHandle === value.handle ? value.exports.playsrc_gameplay_replay_attack_tick(replayHandle) : 0n
   const attackPlayer = attackTick > 0n ? value.exports.playsrc_gameplay_replay_attack_player(replayHandle) : 0
   const replayAttack = attackTick > 0n ? { hostTick: attackTick, playerClass: attackPlayer & 255, weapon: (attackPlayer >>> 8) & 255, lifecycle: (attackPlayer >>> 16) & 255 } : undefined
-  post({ id: request.id, kind: "simulation", generation: request.generation, output: snapshot, ...(replayAttack ? { replayAttack } : {}), timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, [snapshot])
+  try {
+    postShared({ id: request.id, kind: "simulation", generation: request.generation, ranges: [snapshot], ...(replayAttack ? { replayAttack } : {}), timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, snapshot.release)
+  } catch (error) { snapshot.release(); throw error }
 }
 function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void {
   const started=performance.now()
@@ -946,16 +973,11 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     fail(request.id, "InternalFailure", 814)
     return
   }
-  const outputCopyStarted=performance.now(),outputPointer = value.exports.playsrc_alloc(length) >>> 0
-  if (value.exports.playsrc_particle_output_copy(value.handle, outputPointer, length) !== length) {
-    value.exports.playsrc_free(outputPointer, length)
-    fail(request.id, "InternalFailure", 815)
-    return
-  }
-  const output = new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer
-  value.exports.playsrc_free(outputPointer, length)
+  const outputCopyStarted=performance.now(),output = takeReply(value.exports, value.handle, 2, length)
   const outputCopyMilliseconds=performance.now()-outputCopyStarted
-  post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
+  try {
+    postShared({ id: request.id, kind: "particles", generation: request.generation, ranges: [output], timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, output.release)
+  } catch (error) { output.release(); throw error }
 }
 function admitEquipmentModels(request: Extract<WorkerRequest, { kind: "equipment-models" }>): void {
   const value = request.generation === 0 && wasm ? { exports: wasm, handle: 0 } : requireActive(request.id, request.generation)
@@ -1033,7 +1055,7 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   Atomics.store(modelLeaseOwnership, slot, request.id | 0)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
   try {
-    post({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: outputPointer, byteLength: length, lease: request.id, ownership: modelLeaseOwnership.buffer as SharedArrayBuffer, slot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } })
+    postShared({ id: request.id, kind: "models", generation: request.generation, ranges: [{ pointer: outputPointer, length }], slot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, () => {})
   } catch (error) {
     Atomics.store(modelLeaseOwnership, slot, 0)
     reclaimModelOutputs()
@@ -1064,7 +1086,8 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
   }
   const pointer = value.exports.playsrc_alloc(56) >>> 0
   let inputCopyMilliseconds = 0, transactMilliseconds = 0, outputCopyMilliseconds = 0
-  const outputs: ArrayBuffer[] = []
+  const outputs: Array<ReplyRange & { release: () => void }> = []
+  let published = false
   try {
     for (const view of request.views) {
       const inputCopyStarted = performance.now()
@@ -1086,13 +1109,16 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
       const length = value.exports.playsrc_visibility_output_length(value.handle)
       if (length < 80 || length > 4 * 1024 * 1024) { fail(request.id, "InternalFailure", 818); return }
       const outputCopyStarted = performance.now()
-      const outputPointer = value.exports.playsrc_visibility_output_pointer(value.handle) >>> 0
-      if (outputPointer === 0) { fail(request.id, "InternalFailure", 819); return }
-      outputs.push(new Uint8Array(value.exports.memory.buffer, outputPointer, length).slice().buffer)
+      outputs.push(takeReply(value.exports, value.handle, 4, length))
       outputCopyMilliseconds += performance.now() - outputCopyStarted
     }
-  } finally { value.exports.playsrc_free(pointer, 56) }
-  post({ id: request.id, kind: "visibility", generation: request.generation, outputs, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, outputs)
+    // Both views publish once, with one release/acquire edge and request identity.
+    postShared({ id: request.id, kind: "visibility", generation: request.generation, ranges: outputs, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, () => { for (const output of outputs) output.release() })
+    published = true
+  } finally {
+    value.exports.playsrc_free(pointer, 56)
+    if (!published) for (const output of outputs) output.release()
+  }
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
@@ -1113,6 +1139,7 @@ function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
 
 function dispatch(request: WorkerRequest): void | Promise<void> {
   if (!request || !canonicalId(request.id) || typeof request.kind !== "string") return
+  replies?.reclaim()
   reclaimModelOutputs()
   switch (request.kind) {
     case "initialize":

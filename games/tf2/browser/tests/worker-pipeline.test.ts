@@ -4,6 +4,7 @@ import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { Tf2WorkerClient, Tf2WorkerError, type ResourceConfiguration, type WorkerLike } from "../src/client"
 import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTimings } from "../src/protocol"
 import { reclaimModelReads } from "../src/model-read-ownership"
+import { REPLY_BYTES, ReplyWriter, type ReplyControl } from "../src/reply-transport"
 
 const MAP = Uint8Array.from([0x50, 0x53, 0x4d, 0x50, 9, 8, 7, 6])
 const PRESENTATION = Uint8Array.from([0x50, 0x54, 0x46, 0x32, 1, 2, 3, 4])
@@ -209,21 +210,22 @@ class PipelineWorker implements WorkerLike {
   initializeGate?: Promise<void>
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
-  #message?: (event: MessageEvent<WorkerResponse>) => void
+  #message?: (event: MessageEvent<WorkerResponse | ReplyControl>) => void
+  #replies?: ReplyWriter
   #error?: (event: ErrorEvent) => void
 
   constructor(mapHash: string) {
     this.mapHash = mapHash
   }
 
-  addEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
+  addEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse | ReplyControl>) => void): void
   addEventListener(type: "error", listener: (event: ErrorEvent) => void): void
   addEventListener(type: "message" | "error", listener: unknown): void {
-    if (type === "message") this.#message = listener as (event: MessageEvent<WorkerResponse>) => void
+    if (type === "message") this.#message = listener as (event: MessageEvent<WorkerResponse | ReplyControl>) => void
     else this.#error = listener as (event: ErrorEvent) => void
   }
 
-  removeEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
+  removeEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse | ReplyControl>) => void): void
   removeEventListener(type: "error", listener: (event: ErrorEvent) => void): void
   removeEventListener(type: "message" | "error"): void {
     if (type === "message") this.#message = undefined
@@ -244,7 +246,11 @@ class PipelineWorker implements WorkerLike {
     }
     switch (request.kind) {
       case "initialize":
-        void (this.initializeGate ?? Promise.resolve()).then(() => this.#respond({ id: request.id, kind: "initialized", applicationBuild: this.workerBuild, presentationSchema: this.presentationSchema, wasmSha256: this.workerWasmSha256 ?? request.wasmSha256 }))
+        void (this.initializeGate ?? Promise.resolve()).then(() => {
+          const replies = { mailbox: new SharedArrayBuffer(REPLY_BYTES), memory: new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true }), modelOwnership: this.ownership.buffer as SharedArrayBuffer }
+          this.#respond({ id: request.id, kind: "initialized", applicationBuild: this.workerBuild, presentationSchema: this.presentationSchema, wasmSha256: this.workerWasmSha256 ?? request.wasmSha256, replies })
+          this.#replies = new ReplyWriter(replies.mailbox)
+        })
         return
       case "load": {
         const payload = request.includeMap ? MAP.slice().buffer : undefined
@@ -383,14 +389,17 @@ class PipelineWorker implements WorkerLike {
   }
 
   #respond(response: WorkerResponse, transfer: Transferable[] = []): void {
-    const received = structuredClone(response, { transfer })
+    // Bun's in-process clone cannot clone WebAssembly.Memory. Cross-agent shared
+    // Memory growth is exercised by the real browser transport reproduction.
+    const received = response.kind === "initialized" ? { ...response } : structuredClone(response, { transfer })
     if (response.kind === "resources" && received.kind === "resources" && response.bytes instanceof SharedArrayBuffer) {
       Object.assign(received, { bytes: response.bytes })
     }
     if (response.kind === "models" && received.kind === "models" && response.output instanceof SharedArrayBuffer) {
       Object.assign(received, { output: response.output, ownership: response.ownership })
     }
-    queueMicrotask(() => this.#message?.({ data: received } as MessageEvent<WorkerResponse>))
+    if (this.#replies) this.#replies.control(received, envelope => queueMicrotask(() => this.#message?.({ data: envelope } as MessageEvent<ReplyControl>)))
+    else queueMicrotask(() => this.#message?.({ data: received } as MessageEvent<WorkerResponse>))
   }
 }
 

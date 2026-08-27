@@ -95,7 +95,10 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
 
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          const event = { data: response }
           const sharedSection = event.data?.kind === "resources" && event.data.bytes instanceof SharedArrayBuffer
             && Number.isSafeInteger(event.data.byteLength)
           const bytes = sharedSection ? event.data.byteLength : payloadBytes(event.data)
@@ -108,7 +111,7 @@ test("profiles real headed 2Fort load, Soldier spawn, bots, outdoor visible fram
           record.receivedBytes = bytes
           if (event.data.timings) record.timings = event.data.timings
           this.records.delete(event.data.id)
-        })
+        }
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {

@@ -130,9 +130,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       };
       const __playsrcNativePost = globalThis.postMessage.bind(globalThis);
       globalThis.postMessage = function (message, transfer) {
-         if (message && typeof message === "object") {
+         const response = message?.kind === "reply-control" ? message.response : message;
+         if (response && typeof response === "object") {
            const owned = globalThis.__playsrcWorkerMemory;
-           message.__playsrcProfileMemory = {
+           response.__playsrcProfileMemory = {
             wasmLinearBytes: globalThis.__playsrcProfileWasmMemory?.buffer.byteLength ?? null,
             allocatorLiveBytes: owned?.liveBytes ?? null,
             allocatorHighWaterBytes: owned?.highWaterBytes ?? null,
@@ -142,7 +143,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
              resourceBytes: owned?.resourceBytes ?? null,
              resourceReferencedBytes: owned?.resourceReferencedBytes ?? null,
              sharedResourceBytes: owned?.sharedResourceBytes ?? null,
-             resourceSections: /^(?:resources|loaded|activated|discarded|shutdown|initialized|failed)/.test(message.kind) ? owned?.resourceSections ?? null : undefined,
+              resourceSections: /^(?:resources|loaded|activated|discarded|shutdown|initialized|failed)/.test(response.kind) ? owned?.resourceSections ?? null : undefined,
             heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
            };
          }
@@ -199,7 +200,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
         let resourceSections: unknown = null
-        this.addEventListener("message", (event) => {
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          const event = { data: response }
           const entries = buffers(event.data)
           const memory = event.data?.__playsrcProfileMemory
           if (memory?.resourceSections !== undefined) resourceSections = memory.resourceSections
@@ -210,7 +214,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
             memory: memory ? { ...memory, resourceSections } : null,
             timings: event.data?.kind === "loaded" ? event.data.timings : undefined,
           })
-        })
+        }
       }
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
         const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? []

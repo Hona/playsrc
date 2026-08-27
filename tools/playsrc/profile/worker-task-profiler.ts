@@ -44,21 +44,25 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
     }
   }
   host.postMessage = function(this: any, message: any, ...rest: any[]) {
+    const responseMessage = message?.kind === "reply-control" ? message.response : message
     const task = state.current
     if (!state.active || !task) return originalPost.call(this, message, ...rest)
     // Read byte lengths before transfer detaches ownership. Never retain payloads/views.
-    const shared = typeof SharedArrayBuffer === "function" && message?.output instanceof SharedArrayBuffer
+    const shared = typeof SharedArrayBuffer === "function" && responseMessage?.output instanceof SharedArrayBuffer
     const response = {
-      requestId: message?.id, kind: message?.kind,
-      bytes: shared ? 0 : message?.outputs?.reduce((sum: number, output: ArrayBuffer) => sum + output.byteLength, 0)
-        ?? message?.output?.byteLength ?? message?.payload?.byteLength ?? 0,
-      sharedBytes: shared ? message.byteLength ?? 0 : 0,
-      timings: message?.timings ?? null,
+      requestId: responseMessage?.id, kind: responseMessage?.kind,
+      bytes: shared ? 0 : responseMessage?.outputs?.reduce((sum: number, output: ArrayBuffer) => sum + output.byteLength, 0)
+        ?? responseMessage?.output?.byteLength ?? responseMessage?.payload?.byteLength ?? 0,
+      sharedBytes: shared ? responseMessage.byteLength ?? 0 : 0,
+      timings: responseMessage?.timings ?? null,
       started: host.performance.now(), finished: null as number | null,
     }
     task.responses.push(response)
     try { return originalPost.call(this, message, ...rest) }
     finally { response.finished = host.performance.now() }
+  }
+  host.__playsrcWorkerProfileReply = (response: any) => {
+    if (state.active && state.current) state.current.responses.push(response)
   }
   // The game supplies only allocation counters, not module/heap references.
   host.__playsrcWorkerProfileMemory = (linearBytes: number, liveBytes: number, highWaterBytes: number) => {
@@ -72,6 +76,7 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
       host.onmessage = originalMessage
       host.postMessage = originalPost
       delete host.__playsrcWorkerProfileMemory
+      delete host.__playsrcWorkerProfileReply
       return { timeOrigin: state.timeOrigin, limit, dropped: state.dropped, tasks: state.tasks, clocks: [started, ended] }
     },
   }

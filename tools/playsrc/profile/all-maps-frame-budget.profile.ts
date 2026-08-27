@@ -112,13 +112,16 @@ test("headed authored three-map Soldier, bots, water, HUD, combat, and full-prop
 
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        this.addEventListener("message", (event: MessageEvent) => {
+        const previous = (this as any).__playsrcProfileReply?.bind(this)
+        ;(this as any).__playsrcProfileReply = (response: any) => {
+          previous?.(response)
+          const event = { data: response }
           const record = this.records.get(event.data?.id)
           if (!record) return
           record.finished = performance.now()
           if (event.data?.timings) record.timings = event.data.timings
           this.records.delete(event.data.id)
-        })
+        }
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
