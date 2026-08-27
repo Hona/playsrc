@@ -368,6 +368,20 @@ mod tests {
     }
 
     #[test]
+    fn engineer_pda_definitions_bind_the_authored_class_models_and_slots() {
+        let equipment = Equipment::default();
+        for (definition, weapon, slot, model) in [
+            (25, Weapon::BuildPda, LoadoutPosition::Pda, "models/weapons/c_models/c_builder/c_builder.mdl"),
+            (26, Weapon::DestroyPda, LoadoutPosition::Pda2, "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl"),
+            (28, Weapon::Toolbox, LoadoutPosition::Building, "models/weapons/c_models/c_toolbox/c_toolbox.mdl"),
+        ] {
+            assert_eq!(equipment.weapon_definition(PlayerClass::Engineer, weapon), Some(definition));
+            assert_eq!(equipment.definition(PlayerClass::Engineer, slot), Some(definition));
+            assert_eq!(presentation(definition).unwrap().model_player, model);
+        }
+    }
+
+    #[test]
     fn configured_unusual_description_keeps_quality_effect_and_authored_flavor() {
         let item = presentation(378).unwrap();
         assert_eq!(item.display_name, "Unusual Team Captain");
