@@ -2282,14 +2282,14 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
         let model_panel_reset = reader.u8()?;
-        if kind > 6
-            || (kind == 6 && (actor_identity == 0 || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
-            || (matches!(kind, 3 | 4) && actor_identity != 0)
+        if kind > 7
+            || (kind == 7 && (actor_identity == 0 || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
+            || (matches!(kind, 3 | 4 | 6) && actor_identity != 0)
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
-            || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4))
+            || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4 | 6))
         {
             return Err(());
         }
@@ -2310,8 +2310,8 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
-            0 | 2 | 3 | 4 | 6 if item_text.is_empty() => None,
-            1 | 5 if !item_text.is_empty() => Some(item_text),
+            0 | 2 | 3 | 4 | 7 if item_text.is_empty() => None,
+            1 | 5 | 6 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
         let activity = reader.text()?;
@@ -2337,7 +2337,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
             4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
             5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
-            u8::MAX if matches!(kind, 0 | 3 | 4 | 5 | 6) => None,
+            u8::MAX if matches!(kind, 0 | 3 | 4 | 5 | 6 | 7) => None,
             _ => return Err(()),
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
@@ -2421,14 +2421,14 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
             identity,
-            control_point: (kind == 6).then_some(actor_identity),
+            control_point: (kind == 7).then_some(actor_identity),
             class_selection: kind == 3,
-            model_panel: kind == 3 || kind == 4,
+            model_panel: matches!(kind, 3 | 4 | 6),
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
-            actor_identity: if kind == 6 { 0 } else { actor_identity },
-            cloak: if kind == 6 { None } else { cloak },
-            world_item: kind == 5,
+            actor_identity: if kind == 7 { 0 } else { actor_identity },
+            cloak: if kind == 7 { None } else { cloak },
+            world_item: matches!(kind, 5 | 6),
             sample_tick,
             attachments_only: attachments_only == 1,
             fire_view,
@@ -3430,7 +3430,11 @@ fn encode_model_lighting(
     } else {
         Some(playsrc_studio_model::apply_entity_transform(model, pose, transform).map_err(|_| ())?)
     };
-    let origin = if model.profile == playsrc_studio_model::PresentationProfile::ViewModel
+    let is_wearable = request.equipped_items.iter().any(|item| wearable::model(item, &request.model).ok().flatten() == Some(model.identity.as_str()));
+    let origin = if is_wearable {
+        // Econ wearables sample ambient lighting at their owner's WorldSpaceCenter.
+        wearable::owner_lighting_origin(&request.model, lighting_request.origin)?
+    } else if model.profile == playsrc_studio_model::PresentationProfile::ViewModel
         && let Some(player) = world.gameplay
     {
         source_tf2_viewmodel_lighting_origin(player.movement, player.class)

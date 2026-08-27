@@ -155,6 +155,7 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   expect(itemView.getUint32(itemOffset + 12, true)).toBe(134)
   expect(itemView.getFloat32(itemOffset + 16, true)).toBe(13)
   expect(() => encodeModelPoseBatch([{ ...request, equippedItems: [item, item] }])).toThrow("equipped model items")
+  expect(encodeModelPoseBatch([{ ...request, modelPanel: true, worldItem: true, itemModel: "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", itemBodygroups: [] }])[52]).toBe(6)
 })
 
 test("keeps exact UTF-8 pose bytes across bounded cache eviction and repeated full-roster batches", () => {

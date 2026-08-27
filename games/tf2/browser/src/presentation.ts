@@ -486,7 +486,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       || (request.worldItem !== undefined && typeof request.worldItem !== "boolean")
       || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
       || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
-      || ((request.classSelection || request.modelPanel) && (request.itemModel !== undefined || request.handsOnlyViewmodel || request.phase !== undefined || request.cloak !== undefined))
+      || ((request.classSelection || request.modelPanel) && ((request.itemModel !== undefined && (request.classSelection || !request.worldItem)) || request.handsOnlyViewmodel || request.phase !== undefined || request.cloak !== undefined))
       || (request.modelPanelReset && !request.classSelection && !request.modelPanel)) {
       throw new ProjectilePresentationError("MalformedFact", "model panel pose request")
     }
@@ -515,7 +515,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose sample")
     }
     view.setBigUint64(at, sampleTick, true); at += 8
-    bytes[at] = request.controlPoint !== undefined ? 6 : request.classSelection ? 3 : request.modelPanel ? 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
+    bytes[at] = request.controlPoint !== undefined ? 7 : request.classSelection ? 3 : request.modelPanel ? request.worldItem ? 6 : 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     bytes[at + 3] = Number(request.modelPanelReset ?? false)
