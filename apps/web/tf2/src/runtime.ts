@@ -5,6 +5,7 @@ import { combatPoseSelection } from "./combat-pose-selection"
 import { createSourceAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld, type PcmResource } from "@playsrc/audio"
 import { tf2AudioModuleUrl } from "@playsrc/game-tf2-browser/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
+import { encodeLegacyVisualQuery,decodeLegacyVisualViews } from "@playsrc/game-tf2-browser/legacy-visuals"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -1779,6 +1780,7 @@ export class Tf2Application {
         environment: this.#artifacts.environment,
         materialStates: this.#materialStates(this.#artifacts),
         particleTextures: this.#artifacts.particleTextures,
+        legacyVisualTextures: this.#artifacts.legacyVisualTextures,
         modelOccurrences: this.#artifacts.modelOccurrences,
         modelDrawInputs: this.#artifacts.modelOccurrences.map((occurrence) => Object.freeze({
           entity: occurrence.entity,
@@ -4774,14 +4776,22 @@ export class Tf2Application {
         : prepared.publication.selectedTicks
     const models=prepared.frame.models
     let particles = prepared.frame.particles
+    let legacyVisuals:Frame["legacyVisuals"]
     let legacyParticleMilliseconds = 0, legacyParticleBytes = 0
     if (this.#loaded?.legacyParticleFrames && this.#artifacts) {
       const started = performance.now()
       this.#wasmCalls.particles++
-      const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio }))
-      if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
+      const hasVisuals=this.#artifacts.legacyVisualTextures.length>0
+      const visualPayload=hasVisuals?encodeLegacyVisualQuery([
+        {...camera,aspectRatio,presentationTimeSeconds,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(false)},
+        ...(sky3d&&skyController?[{...sky3d.camera,aspectRatio,presentationTimeSeconds,visibilityPosition:skyController.origin,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(true)}]:[]),
+      ]):new Uint8Array()
+      const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio },visualPayload))
+      if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer || this.#classSelection?.state().visible || this.#teamSelection?.state().visible
+        || !currentPresentedCamera(presentedCamera,{generation:this.#generation,viewportRevision:this.#presentationViewport?.revision??-1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision})) return
       particles = [...(particles ?? []), ...decodeParticleRenderOutput(output.particles, this.#artifacts.particleMaterials).items]
-      if (output.visuals.byteLength !== 0) throw new Error("Legacy frame visual output has no admitted renderer")
+      if(hasVisuals)legacyVisuals=decodeLegacyVisualViews(output.visuals)
+      else if(output.visuals.byteLength)throw new Error("Unexpected legacy visual output")
       legacyParticleBytes = output.particles.byteLength + output.visuals.byteLength
       legacyParticleMilliseconds = performance.now() - started
     }
@@ -4808,6 +4818,7 @@ export class Tf2Application {
     try { rendered=await renderer.render({
       ...prepared.frame,
       particles,
+      legacyVisuals,
       clientFrame: clientFrame.clientFrame,
       clientFrameSeconds: clientFrame.clientFrameSeconds,
       hudMaterials:this.#hudIntegration?.materialFrame(),
@@ -4930,6 +4941,7 @@ export class Tf2Application {
         history.push({ at: performance.now(), ...state }); if (history.length > 64) history.shift()
       }
     }
+    if (profile?.legacyVisualProbe) profile.legacyVisualEvidence=renderer.captureLegacyVisualEvidence()
     if (profile && Number.isSafeInteger(profile.particleEvidenceRevision)
       && (profile.particleEvidence as { revision?: number } | undefined)?.revision !== profile.particleEvidenceRevision) {
       profile.particleEvidence = { revision: profile.particleEvidenceRevision, tick: prepared.snapshot.tick.toString(), camera,

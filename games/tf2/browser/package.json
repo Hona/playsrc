@@ -14,6 +14,7 @@
     "./content-build": "./src/content-build.ts",
     "./maps": "./src/maps.ts",
     "./presentation": "./src/presentation.ts",
+    "./legacy-visuals": "./src/legacy-visuals.ts",
     "./ui-integration": "./src/ui-integration/index.ts",
     "./ui-resources": "./src/ui-resources/index.ts",
     "./hud": "./src/hud/index.ts",

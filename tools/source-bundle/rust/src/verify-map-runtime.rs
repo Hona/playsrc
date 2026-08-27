@@ -163,14 +163,22 @@ fn main() -> Result<(), String> {
         return Err(format!("native map particle simulation failed: {}", String::from_utf8_lossy(&detail)));
     }
     if playsrc_tf2_wasm::playsrc_legacy_particle_frames(handle) == 1 {
-        let mut frame = [0_u8; 64];
+        let mut visual=b"PLVQ".to_vec();
+        for value in [1_u32,1,0] {visual.extend_from_slice(&value.to_le_bytes());}
+        visual.extend_from_slice(&0.0_f32.to_le_bytes());
+        for value in [720_u32,0] {visual.extend_from_slice(&value.to_le_bytes());}
+        let position=smoke_camera.unwrap_or([0.0;3]);
+        for value in position.into_iter().chain(position).chain([90.0,5.0,75.0,16.0/9.0,1.0,30_000.0]) {visual.extend_from_slice(&value.to_le_bytes());}
+        let mut frame = vec![0_u8; 64];
         frame[..32].copy_from_slice(&particle_request);
         frame[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
         frame[32..36].copy_from_slice(&(1.0_f32 / 60.0).to_le_bytes());
+        frame[60..64].copy_from_slice(&(visual.len() as u32).to_le_bytes());frame.extend_from_slice(&visual);
         for (axis, value) in [90.0_f32, 5.0, 75.0, 16.0 / 9.0].into_iter().enumerate() { frame[44 + axis * 4..48 + axis * 4].copy_from_slice(&value.to_le_bytes()); }
         for index in 0..60_u32 {
             let now = index as f32 / 60.0;
             frame[8..12].copy_from_slice(&now.to_le_bytes()); frame[12..16].copy_from_slice(&now.to_le_bytes());
+            frame[80..84].copy_from_slice(&now.to_le_bytes());
             frame[36..40].copy_from_slice(&index.to_le_bytes()); frame[40..44].copy_from_slice(&(index + 1).to_le_bytes());
             if unsafe { playsrc_tf2_wasm::playsrc_particle_transact(handle, frame.as_ptr(), frame.len()) } != 1 { return Err("native legacy particle frame failed".into()); }
         }
@@ -187,8 +195,9 @@ fn main() -> Result<(), String> {
     let mut particle_systems = Vec::new();
     let mut sky_cameras = Vec::new();
     let mut smokestacks = Vec::new();
+    let mut legacy_visuals = Vec::new();
     for entity in &entities.entities {
-        if ![b"info_player_teamspawn".as_slice(), b"info_particle_system", b"sky_camera", b"env_smokestack"].contains(&entity.classname.as_deref().unwrap_or_default()) { continue; }
+        if ![b"info_player_teamspawn".as_slice(), b"info_particle_system", b"sky_camera", b"env_lightglow", b"env_sprite", b"env_glow", b"env_sprite_oriented", b"point_spotlight", b"env_sun", b"env_smokestack"].contains(&entity.classname.as_deref().unwrap_or_default()) { continue; }
         let value = |name: &[u8]| entity.pairs.iter().find(|pair| pair.key.eq_ignore_ascii_case(name)).map(|pair| String::from_utf8_lossy(&pair.value).into_owned());
         let vector = |name: &[u8]| -> Result<[f32; 3], String> {
             let values = value(name).unwrap_or_else(|| "0 0 0".to_owned()).split_whitespace().map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
@@ -198,10 +207,11 @@ fn main() -> Result<(), String> {
             b"env_smokestack" => smokestacks.push(serde_json::json!({"identity":entity.index,"name":value(b"targetname"),"material":value(b"SmokeMaterial"),"position":vector(b"origin")?,"active":value(b"InitialState"),"rate":value(b"Rate"),"speed":value(b"Speed"),"jetLength":value(b"JetLength"),"color":value(b"rendercolor")})),
             b"info_particle_system" => particle_systems.push(serde_json::json!({"identity":entity.index,"name":value(b"targetname"),"effect":value(b"effect_name"),"position":vector(b"origin")?,"active":value(b"start_active")})),
             b"sky_camera" => sky_cameras.push(serde_json::json!({"position":vector(b"origin")?,"scale":value(b"scale")})),
-            _ => spawns.push(serde_json::json!({ "identity": entity.index, "team": value(b"TeamNum"), "position": vector(b"origin")?, "angles": vector(b"angles")?, "disabled": value(b"StartDisabled"), "classFlags": value(b"spawnflags") })),
+            b"info_player_teamspawn" => spawns.push(serde_json::json!({ "identity": entity.index, "team": value(b"TeamNum"), "position": vector(b"origin")?, "angles": vector(b"angles")?, "disabled": value(b"StartDisabled"), "classFlags": value(b"spawnflags") })),
+            _ => legacy_visuals.push(serde_json::json!({"identity":entity.index,"classname":value(b"classname"),"name":value(b"targetname"),"position":vector(b"origin")?,"angles":vector(b"angles")?,"minimumDistance":value(b"MinDist"),"maximumDistance":value(b"MaxDist"),"outerMaximumDistance":value(b"OuterMaxDist"),"color":value(b"rendercolor"),"spawnflags":value(b"spawnflags")})),
         }
     }
-    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras,"smokestacks":smokestacks,"smokeOcclusion":smoke_occlusion})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras,"smokestacks":smokestacks,"smokeOcclusion":smoke_occlusion,"legacyVisuals":legacy_visuals})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     println!(
         "{}",
         serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": payload.len(), "sha256": hex_hash(&payload), "particleOutputBytes": particle_bytes,"skyParticles":sky_particles})

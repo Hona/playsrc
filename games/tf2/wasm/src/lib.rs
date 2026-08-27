@@ -13,6 +13,7 @@ mod acoustic_scene;
 mod wearable;
 mod map_particles;
 mod smokestack;
+mod legacy_visuals;
 pub mod static_prop_artifact;
 
 #[cfg(target_arch = "wasm32")]
@@ -608,6 +609,7 @@ struct ClassPreview {
 }
 
 struct Slot {
+    legacy_visuals: legacy_visuals::Runtime,
     generation: u16,
     payload: Option<Vec<u8>>,
     payload_bytes: usize,
@@ -1169,6 +1171,7 @@ unsafe fn compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
+        let legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph).map_err(|_| 9_u32)?);
         let collision_world = playsrc_collision::compile(&bsp).map_err(|_| 3_u32)?;
         let visibility_world = playsrc_visibility::compile(&bsp).map_err(|_| 3_u32)?;
         let mut canonical =
@@ -1561,6 +1564,7 @@ unsafe fn compile_map(
                 decoders.requests.load(Ordering::Relaxed),
                 decoders.inspections.load(Ordering::Relaxed),
             ],
+            legacy_visuals,
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -1601,6 +1605,7 @@ unsafe fn compile_map(
             spawn,
             session,
             texture_inspections,
+            legacy_visuals,
         )) => Slot {
             generation,
             payload: Some(payload),
@@ -1608,6 +1613,7 @@ unsafe fn compile_map(
             presentation_bytes: cached_presentation.map_or(presentation.len(), <[u8]>::len),
             presentation,
             coverage,
+            legacy_visuals,
             map_particles: (!session.map_particle_systems().is_empty())
                 .then(|| (particles.independent(), map_particles::MapParticles::default())),
             smokestacks: (!session.map_smokestacks().is_empty()).then(|| smokestack::Frames::new(
@@ -1668,6 +1674,7 @@ unsafe fn compile_map(
             map_particles: None,
             smokestacks: None,
             legacy_visual_output: Vec::new(),
+            legacy_visuals: legacy_visuals::Runtime::default(),
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -2151,7 +2158,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_legacy_particle_frames(handle: u32) -> u32 {
-    with(handle, |slot| u32::from(slot.smokestacks.is_some())).unwrap_or(0)
+    with(handle, |slot| u32::from(slot.smokestacks.is_some()||slot.legacy_visuals.required())).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -2204,9 +2211,19 @@ pub fn smokestack_occlusion_probe(handle: u32) -> Option<(usize, [f32; 3], [f32;
 struct LegacyParticleFrame<'a> { seconds: f32, accepted: u32, identity: u32, view: [f32; 4], visual_payload: &'a [u8] }
 
 fn transact_legacy_particle_frame(slot: &mut Slot, request: playsrc_particle::AdvanceRequest, frame: LegacyParticleFrame<'_>) -> u32 {
-    if !frame.visual_payload.is_empty() {
-        *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("legacy frame error detail") = "Legacy visual frame payload has no admitted processor".into();
-        return 0;
+    let visuals=if frame.visual_payload.is_empty() {
+        if slot.legacy_visuals.required() {return 0;} None
+    } else {
+        match legacy_visuals::prepare(slot,frame.visual_payload,frame.identity,frame.accepted,frame.seconds) {
+            Ok(value)=>Some(value),Err(())=>{
+                *SIMULATION_ERROR_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("legacy frame error detail")="Invalid native legacy visual client frame".into();return 0;
+            }
+        }
+    };
+    if slot.smokestacks.is_none() {
+        let Some((state,bytes))=visuals else {return 0;};
+        let Ok(particles)=playsrc_particle::encode_render_output(&[],None,&slot.particle_materials,64*1024*1024) else {return 0;};
+        slot.legacy_visuals=state;slot.legacy_visual_output=bytes;slot.particle_output=particles;return 1;
     }
     let (Some(smoke), Some(visibility)) = (slot.smokestacks.as_mut(), slot.visibility.as_ref()) else { return 0; };
     let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
@@ -2238,7 +2255,11 @@ fn transact_legacy_particle_frame(slot: &mut Slot, request: playsrc_particle::Ad
     let result = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)
         .and_then(|items| playsrc_particle::encode_render_output(&items, None, &slot.particle_materials, 64 * 1024 * 1024));
     match result {
-        Ok(output) => { smoke.prepare(frame.identity, candidate); slot.particle_output = output; slot.legacy_visual_output.clear(); 1 }
+        Ok(output) => {
+            smoke.prepare(frame.identity,candidate);slot.particle_output=output;
+            if let Some((state,bytes))=visuals {slot.legacy_visuals=state;slot.legacy_visual_output=bytes;} else {slot.legacy_visual_output.clear();}
+            1
+        }
         Err(error) => {
             *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("particle error detail") = error.to_string();
             0
@@ -10468,6 +10489,9 @@ fn encode_material_states(
             false,
         )?;
     }
+    for identity in legacy_visuals::World::compile(graph)?.materials() {
+        insert_material_state_target(&mut targets, identity.to_owned(), identity.to_owned(), false)?;
+    }
     let start = out.len();
     out.extend_from_slice(b"PMST");
     out.extend_from_slice(&2u32.to_le_bytes());
@@ -11929,7 +11953,7 @@ fn cached_presentation_models(
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 14
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 15
         || static_prop_artifact::decode_section(static_prop_artifact::section_from_presentation(
             bytes,
         )?)
@@ -12614,7 +12638,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     let mut out = Vec::new();
     out.try_reserve_exact(capacity).map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&14u32.to_le_bytes());
+    out.extend_from_slice(&15u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
@@ -12842,6 +12866,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         &models,
     )?;
     encode_model_materials(&mut out, &prepared_model_materials)?;
+    legacy_visuals::encode_materials(&mut out, graph, bundle, decoders, resource_hashes, profile)?;
     section_ends[6] = out.len();
     for model in &canonical.brush_models {
         out.extend_from_slice(&u32::try_from(model.index).map_err(|_| ())?.to_le_bytes());
@@ -16004,7 +16029,7 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&14_u32.to_le_bytes());
+        bytes.extend_from_slice(&15_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
@@ -16202,6 +16227,7 @@ mod tests {
         let mut guard = slots().lock().unwrap();
         guard.clear();
         guard.push(Slot {
+            legacy_visuals: legacy_visuals::Runtime::default(),
             generation: 1,
             payload: Some(vec![1, 2]),
             payload_bytes: 2,
@@ -16304,6 +16330,7 @@ mod tests {
         assert_eq!(playsrc_dispose(old), 1);
         let mut guard = slots().lock().unwrap();
         guard[0] = Slot {
+            legacy_visuals: legacy_visuals::Runtime::default(),
             generation: 2,
             payload: Some(vec![4]),
             payload_bytes: 1,
