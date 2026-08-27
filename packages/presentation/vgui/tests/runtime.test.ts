@@ -269,6 +269,23 @@ describe("generic Source VGUI runtime", () => {
     expect(runtime.snapshot().frame).toBe(1)
   })
 
+  test("construction batches paint only the final state while retaining synchronous panel state", () => {
+    const { root, runtime } = setup()
+    const panel = operation(runtime, { kind: "create-panel", parent: 1, control: "ImagePanel", name: "Image", properties: [
+      { name: "image", value: "test/icon" }, { name: "wide", value: "32" }, { name: "tall", value: "16" },
+    ] }).panel!
+    const element = descendants(root).find(value => value.dataset.vguiPanel === String(panel))!
+    const writes = element.style.writes
+    runtime.deferPresentation(() => {
+      operation(runtime, { kind: "mutate-control", panel, mutation: { foregroundColor: [20, 30, 40, 255] } })
+      operation(runtime, { kind: "mutate-control", panel, mutation: { foregroundColor: [235, 235, 235, 255] } })
+      expect(runtime.snapshot().panels.find(value => value.id === panel)!.enabled).toBe(true)
+      expect(element.style.writes).toBe(writes)
+    })
+    expect(element.style.backgroundImage).toContain("data:image/png")
+    expect(runtime.snapshot().diagnostics).toEqual([])
+  })
+
   test("retains unchanged label text and accessibility attributes when only authored geometry changes", () => {
     const { root, runtime } = setup()
     const panel = operation(runtime, { kind: "create-panel", parent: 1, control: "Label", name: "StableLabel" }).panel!

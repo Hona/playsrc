@@ -74,3 +74,12 @@ test("prepares only registered eligible wearables without creating effects", () 
   expect(requests.filter(entry => entry.request.equippedItems?.length)).toHaveLength(9)
   expect(requests.every(entry => entry.request.preparation)).toBe(true)
 })
+
+test("an unassigned replacement still prepares both world rosters without inventing a panel team", () => {
+  const prepared = classPipelinePoseRequests(artifacts(), null, camera, 16 / 9)
+  expect(prepared).toHaveLength(18)
+  expect(prepared.every(value => value.pass === "world")).toBe(true)
+  for (let identity = 1; identity <= 9; identity++) {
+    expect(prepared.filter(value => value.request.model === tf2ClassPresentation(identity as Tf2Class).model).map(value => value.request.skin)).toEqual([0, 1])
+  }
+})

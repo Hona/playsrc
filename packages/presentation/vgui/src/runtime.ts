@@ -46,6 +46,7 @@ import {
   type VguiViewport,
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
+import { asciiFold, resourcePropertyReader } from "./resource-properties"
 import { isDirectVguiImageMaterial, VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
 import { registerVguiWindowWorkspace, type VguiWindowWorkspaceRegistration } from "./window-workspace"
 
@@ -320,6 +321,7 @@ type ResourceControlPlan = Readonly<{
   blockName: string
   control: VguiControlName
   properties: readonly Readonly<{ name: string; value: string }>[]
+  first: (name: string) => string | null
   existing: VguiPanelId | null
 }>
 
@@ -330,16 +332,6 @@ class RuntimeFault extends Error {
   ) {
     super(`${code}: ${subject}`)
   }
-}
-
-const ASCII_FOLDS = new Map<string, string>()
-
-function asciiFold(value: string): string {
-  const prior = ASCII_FOLDS.get(value)
-  if (prior !== undefined) return prior
-  const folded = value.replace(/[A-Z]/gu, (character) => character.toLowerCase())
-  if (ASCII_FOLDS.size < 16_384) ASCII_FOLDS.set(value, folded)
-  return folded
 }
 
 function sameName(left: string, right: string): boolean {
@@ -687,6 +679,7 @@ class SourceVguiRuntime implements VguiRuntime {
   private readonly rasterSignatures = new Map<string, string>()
   private readonly presentationSignatures = new Map<VguiPanelId, string>()
   private readonly paintSignatures = new Map<VguiPanelId, string>()
+  private readonly pendingPaint = new Set<VguiPanelId>()
   private readonly popups: VguiPanelId[] = []
   private readonly pendingPressedKeys = new Set<string>()
   private readonly pendingReleasedKeys = new Set<string>()
@@ -961,6 +954,13 @@ class SourceVguiRuntime implements VguiRuntime {
       this.publicationDepth -= 1
       if (this.publicationDepth === 0 && this.layoutPending) this.solveGeometry()
       if (this.publicationDepth === 0 && this.publicationPending) this.publishDom()
+      if (this.publicationDepth === 0) {
+        for (const id of this.pendingPaint) {
+          const panel = this.panels.get(id)
+          if (panel) this.reapplyPanelPresentation(panel)
+        }
+        this.pendingPaint.clear()
+      }
     }
   }
 
@@ -1425,7 +1425,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     const panel = this.createPanelInternal(parent.id, operation.control, operation.name, null)
     try {
-      this.applyPanelProperties(panel, properties)
+      this.applyPanelProperties(panel, properties, resourcePropertyReader(properties))
       this.solveGeometry()
       this.publishDom()
       return panel.id
@@ -2010,15 +2010,16 @@ class SourceVguiRuntime implements VguiRuntime {
         if (!propertyAllowed(controlName, registration, property.name)) throw new RuntimeFault("UnknownProperty", `${controlName}.${property.name}`)
         properties.push({ name: property.name, value: property.value })
       }
-      this.validatePanelReferences(controlName, block.name, properties)
-      this.validatePanelPropertyValues(parent, controlName, block.name, properties)
+      const first = resourcePropertyReader(properties)
+      this.validatePanelReferences(controlName, block.name, first)
+      this.validatePanelPropertyValues(parent, controlName, block.name, properties, first)
       if (!existing) {
         newPanels += 1
         if (["MessageBox", "QueryBox"].some((identity) => sameName(this.sourceControl(controlName), identity))) newAuxiliary += 6
         else if (sameName(this.sourceControl(controlName), "Frame")) newAuxiliary += 3
         known.set(foldedName, { control: controlName, panel: null })
       }
-      plans.push(Object.freeze({ blockName: block.name, control: controlName, properties: Object.freeze(properties), existing: existing?.panel ?? null }))
+      plans.push(Object.freeze({ blockName: block.name, control: controlName, properties: Object.freeze(properties), first, existing: existing?.panel ?? null }))
     }
     const oldResourcePanels = parent.children.filter((id) => this.requirePanel(id).resourceOwner !== null)
     const oldAuxiliary = oldResourcePanels.reduce((count, id) => {
@@ -2037,7 +2038,7 @@ class SourceVguiRuntime implements VguiRuntime {
         panel = this.createPanelInternal(parent.id, plan.control, plan.blockName, document.logicalIdentity)
         applied.set(asciiFold(plan.blockName), panel)
       }
-      this.applyPanelProperties(panel, plan.properties)
+      this.applyPanelProperties(panel, plan.properties, plan.first)
       applied.delete(asciiFold(plan.blockName))
       applied.set(asciiFold(panel.name), panel)
     }
@@ -2046,8 +2047,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.addTrace("resource-replace", parent.id, `${document.logicalIdentity}:${plans.length}`)
   }
 
-  private validatePanelReferences(control: VguiControlName, name: string, properties: readonly Readonly<{ name: string; value: string }>[]): void {
-    const value = (propertyName: string): string | null => properties.find((property) => sameName(property.name, propertyName))?.value ?? null
+  private validatePanelReferences(control: VguiControlName, name: string, value: (name: string) => string | null): void {
     const font = value("font") ?? value("title_font")
     if (font && !this.fonts.has(asciiFold(font))) throw new RuntimeFault("MissingReference", `${name}:font:${font}`)
     const image = value("image")
@@ -2060,8 +2060,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }
   }
 
-  private validatePanelPropertyValues(parent: PanelState, control: VguiControlName, name: string, properties: readonly Readonly<{ name: string; value: string }>[]): void {
-    const first = (propertyName: string): string | null => properties.find((property) => sameName(property.name, propertyName))?.value ?? null
+  private validatePanelPropertyValues(parent: PanelState, control: VguiControlName, name: string, properties: readonly Readonly<{ name: string; value: string }>[], first: (name: string) => string | null): void {
     const probe = {
       parent: parent.id,
       name,
@@ -2145,10 +2144,11 @@ class SourceVguiRuntime implements VguiRuntime {
     }
   }
 
-  private applyPanelProperties(panel: PanelState, properties: readonly Readonly<{ name: string; value: string }>[]): void {
-    const first = (name: string): string | null => properties.find((property) => sameName(property.name, name))?.value ?? null
+  private applyPanelProperties(panel: PanelState, properties: readonly Readonly<{ name: string; value: string }>[], first: (name: string) => string | null): void {
+    const installed = new Set([...panel.properties.keys()].map(asciiFold))
     for (const property of properties) {
-      if (![...panel.properties.keys()].some((name) => sameName(name, property.name))) panel.properties.set(property.name, property.value)
+      const name = asciiFold(property.name)
+      if (!installed.has(name)) { panel.properties.set(property.name, property.value); installed.add(name) }
       const definition = panel.animationDefinitions.get(asciiFold(property.name))
       if (definition) panel.animationValues.set(definition.name, this.convertAnimationScalar(definition.converter, property.value, definition, panel))
     }
@@ -2485,6 +2485,22 @@ class SourceVguiRuntime implements VguiRuntime {
         panel.drawColor = color ? parseColorLiteral(color, 255) ?? WHITE : WHITE
       }
     }
+    if (sameName(sourceControl, "FrameSystemButton")) {
+      const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
+      if (configured && this.images.has(asciiFold(configured))) panel.image = configured
+    }
+    const presentationBorder = this.presentationBorder(panel)
+    if (presentationBorder && PRESENTED_BORDERS.get(panel.element) !== presentationBorder) {
+      PRESENTED_BORDERS.set(panel.element, presentationBorder)
+      panel.animationValues.set("PaintBackgroundType", presentationBorder.backgroundType)
+    }
+    if (!panel.font && (labelDerived || ["TextEntry", "ComboBox", "RichText"].some(name => sameName(sourceControl, name))) && this.fonts.has("default")) {
+      panel.font = "Default"
+    }
+    // Model defaults above remain synchronous. A construction transaction must
+    // not fetch/rasterize transient images or paint pre-layout geometry.
+    if (this.publicationDepth > 0) { this.pendingPaint.add(panel.id); return }
+    this.pendingPaint.delete(panel.id)
     // Geometry, text, accessibility and authored animation clocks are published
     // independently. Retain the paint of simple controls when its inputs agree;
     // composite controls rebuild layered backgrounds in presentControlGeometry.
@@ -2498,10 +2514,6 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.chromeElements.size ? panel.text : null,
     ]) : null
     if (paintSignature !== null && this.paintSignatures.get(panel.id) === paintSignature) return
-    if (sameName(sourceControl, "FrameSystemButton")) {
-      const configured = this.settings.get(asciiFold(panel.enabled ? "FrameSystemButton.Icon" : "FrameSystemButton.DisabledIcon"))
-      if (configured && this.images.has(asciiFold(configured))) panel.image = configured
-    }
     panel.element.style.backgroundImage = "none"
     panel.element.style.backgroundSize = "auto"
     panel.element.style.backgroundPosition = "0% 0%"
@@ -2577,17 +2589,9 @@ class SourceVguiRuntime implements VguiRuntime {
         ? `inset 0 0 0 1px ${rgba(this.resolveColor("TextEntry.FocusEdgeColor", TRANSPARENT))}`
         : "none"
     }
-    const presentationBorder = this.presentationBorder(panel)
-    if (presentationBorder && PRESENTED_BORDERS.get(panel.element) !== presentationBorder) {
-      PRESENTED_BORDERS.set(panel.element, presentationBorder)
-      panel.animationValues.set("PaintBackgroundType", presentationBorder.backgroundType)
-    }
     this.presentPanelBackground(panel, background)
     const alpha = panel.animationValues.get("alpha")
     panel.element.style.opacity = String(Math.max(0, Math.min(255, typeof alpha === "number" ? alpha : 255)) / 255)
-    if (!panel.font && (labelDerived || ["TextEntry", "ComboBox", "RichText"].some((name) => sameName(sourceControl, name))) && this.fonts.has("default")) {
-      panel.font = "Default"
-    }
     if (panel.font) {
       const font = this.fonts.get(asciiFold(panel.font))
       if (!font) throw new RuntimeFault("MissingReference", `${panel.name}:font:${panel.font}`)
@@ -5857,6 +5861,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.imageRasterizer.destroy()
     this.rasterGenerations.clear()
     this.rasterSignatures.clear()
+    this.pendingPaint.clear()
     this.paintSignatures.clear()
     for (const record of this.listeners.splice(0).reverse()) record.target.removeEventListener(record.type, record.listener, record.options)
     if (this.capture !== null) {
