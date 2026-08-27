@@ -52,10 +52,12 @@ export class RenderOwnerProbe {
   #nodeIdentity = 0
   #closed = false
   #frameBookkeeping = 0
+  #install?: () => void
 
   constructor(renderer: Any, profile: Profile, clock = () => performance.now()) {
     this.#profile = profile
     this.#clock = clock
+    this.#install = () => {
     const nodes = data(renderer, "_nodes"), bindings = data(renderer, "_bindings")
     const nodeFrame = data(nodes, "nodeFrame")
     const wrapOwner = (owner: Any, name: string, stage: string) => this.#hook(owner, name, (original, self, args) => {
@@ -130,7 +132,7 @@ export class RenderOwnerProbe {
         if (method(binding, "updateByType")) this.#hook(binding, "updateByType", (fn, receiver, values) => {
           if (!this.#call) return fn.apply(receiver, values)
           let update: RenderOwnerEvidence["events"][number] | undefined
-          this.#measure(() => { update = this.#event("uniform-value", this.#id(values[0], "uniform"), this.#id(data(values[0], "nodeUniform"), "node-uniform"), null, null) })
+          this.#measure(() => { update = this.#event("uniform-value", this.#id(values[0], "uniform"), this.#id(data(data(values[0], "nodeUniform"), "node"), "node"), null, null) })
           const result = fn.apply(receiver, values)
           if (update) update.outcome = outcome(result)
           return result
@@ -140,6 +142,7 @@ export class RenderOwnerProbe {
       if (event) event.outcome = outcome(result)
       return result
     })
+    }
   }
 
   begin(generation: number, device: number): void {
@@ -148,6 +151,8 @@ export class RenderOwnerProbe {
     if (frame < 60 || this.evidence.frames.length >= RENDER_OWNER_LIMITS.frames) return
     this.#measure(() => {
       this.#frameBookkeeping = this.evidence.bookkeepingMilliseconds
+      this.#install?.()
+      this.#install = undefined
       this.#frame = { frame, generation, device, at: this.#clock(), complete: false }
       this.evidence.frames.push(this.#frame)
     })
@@ -167,6 +172,7 @@ export class RenderOwnerProbe {
     if (this.#closed) return
     this.#measure(() => { for (const restore of this.#restore.reverse()) restore(); this.#restore.length = 0 })
     this.#closed = true
+    this.#install = undefined
     this.#frame = undefined
     this.#call = undefined
     this.#node = undefined

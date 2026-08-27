@@ -11,7 +11,8 @@ export function summarizeRenderOwners(evidence: RenderOwnerEvidence) {
   const calls = new Map(evidence.calls.map(c => [c.id, c]))
   const owners = new Map<string, { pass: string | null; stage: string; object: number; material: number; calls: number; inclusiveMilliseconds: number }>()
   for (const call of evidence.calls) {
-    if (!identities.has(call.renderObject) || !Number.isFinite(call.ended - call.at) || call.ended < call.at) throw new Error("Invalid render-owner call")
+    if ((!identities.has(call.renderObject) && !(call.renderObject === 0 && evidence.dropped > 0))
+      || !Number.isFinite(call.ended - call.at) || call.ended < call.at) throw new Error("Invalid render-owner call")
     const key = `${call.pass}:${call.stage}:${call.object}:${call.material}`
     let owner = owners.get(key)
     if (!owner) owners.set(key, owner = { pass: call.pass, stage: call.stage, object: call.object, material: call.material, calls: 0, inclusiveMilliseconds: 0 })
@@ -20,7 +21,7 @@ export function summarizeRenderOwners(evidence: RenderOwnerEvidence) {
   const events = new Map<string, { kind: string; pass: string | null; identity: number; dependency: number; updateType: string | null; calls: number; executed: number; trueReturns: number; falseReturns: number; errors: number }>()
   for (const event of evidence.events) {
     const call = calls.get(event.call)
-    if (!call || !identities.has(event.identity)) throw new Error("Invalid render-owner event join")
+    if (!call || (!identities.has(event.identity) && !(event.identity === 0 && evidence.dropped > 0))) throw new Error("Invalid render-owner event join")
     const key = `${event.kind}:${call.pass}:${event.identity}:${event.updateType}`
     let item = events.get(key)
     if (!item) events.set(key, item = { kind: event.kind, pass: call.pass, identity: event.identity, dependency: event.dependency,
