@@ -4,11 +4,13 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "@playwright/test"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
+import { createEvidenceDirectory } from "../../../../tools/playsrc/src/evidence-directory"
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url))
 const publicRoot = path.resolve(packageRoot, "../../..")
-const evidenceRoot = path.join(packageRoot, "evidence", "runtime")
 const config = await loadLocalConfig(publicRoot)
+const evidenceRoot = await createEvidenceDirectory(config, "vgui-ordering")
+console.log(`Evidence: ${evidenceRoot}`)
 const temporaryRoot = path.join(config.sourceCacheDir, "jobs")
 await mkdir(temporaryRoot, { recursive: true })
 const temporary = await mkdtemp(path.join(temporaryRoot, "vgui-ordering-"))

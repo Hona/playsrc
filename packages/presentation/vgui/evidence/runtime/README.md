@@ -1,5 +1,7 @@
 # Generic VGUI Browser Evidence
 
+New runs write JSON and transient PNG captures to the printed, unique directory under configured `sourceCacheDir/evidence/`, not this source directory. Historical JSON summaries remain here; screenshots are PR attachments, never tracked source or test inputs. Keep attachment URLs in PR descriptions without changing the recorded technical claims.
+
 `bun run verify:runtime-browser` bundles the framework-independent fixture, mounts every selected generic control family in direct DOM, verifies west-aligned disabled Button inheritance and exact scheme colors, replays pointer capture, checkbox, numeric text, slider, modal and cleanup schedules in headed Chrome, and writes `browser-evidence.json` plus `runtime.png` for review.
 
 The retained JSON records the browser identity, complete runtime snapshot, panel/resource counts, DOM names, roles, computed geometry/styles, typed requests, modal accessibility tree and 25-cycle cleanup result. The fixture declares its unmounted font source unavailable, so glyph color is suppressed while the accessibility tree retains text; the screenshot tests non-glyph browser presentation without using a fallback raster.

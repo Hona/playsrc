@@ -13,3 +13,14 @@ playsrc.local.json
 crash.log
 crash.*.log
 games/tf2/browser/src/wasm-generated/
+
+# PR captures are transient attachments, not source. Reviewed fixture exceptions
+# belong in media-fixtures.json and may be explicitly added with git add -f.
+*.[pP][nN][gG]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[gG][iI][fF]
+*.[wW][eE][bB][pP]
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[wW][eE][bB][mM]
