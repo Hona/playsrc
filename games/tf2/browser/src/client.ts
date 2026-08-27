@@ -680,11 +680,11 @@ export class Tf2WorkerClient {
       if (profile?.active) {
         if (profile.simulation.length >= 16_384) profile.simulationDropped += 1
         else profile.simulation.push({
-          requestId: response.id, at: started, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
+          requestId: response.id, at: started, nowSeconds, suspended, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
           replayAttack: response.replayAttack ? { ...response.replayAttack, hostTick: String(response.replayAttack.hostTick) } : null,
           publications: publications.map(publication => ({
             hostFrame: String(publication.hostFrame), firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick),
-            selectedTicks: publication.selectedTicks, eventBatches: publication.eventBatches.length,
+            selectedTicks: publication.selectedTicks, interpolation: publication.interpolation, eventBatches: publication.eventBatches.length,
             player: { tick: String(publication.snapshot.tick), playerClass: publication.snapshot.class, weapon: publication.snapshot.weapon, lifecycle: publication.snapshot.lifecycle },
             weapons: publication.snapshot.loadout.map(weapon => ({ weapon: weapon.weapon, firstPrimaryTick: String(weapon.firstPrimaryTick), nextPrimaryTick: String(weapon.nextPrimaryTick) })),
             activities: publication.snapshot.activities.map(activity => ({ ...activity, tick: String(activity.tick) })),

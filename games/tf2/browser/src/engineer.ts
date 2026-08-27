@@ -115,9 +115,9 @@ function document(source: VguiResourceDocument, suffix: string, children: readon
 }
 
 function panel(runtime: VguiRuntime, parent: VguiPanelId, name: string): VguiPanelId {
-  const value = runtime.snapshot().panels.find(candidate => candidate.parent === parent && candidate.name.toLowerCase() === name.toLowerCase())
-  if (!value) throw new Error(`Authored Engineer panel unavailable: ${name}`)
-  return value.id
+  const value = runtime.findChildByName(parent, name)
+  if (value === null) throw new Error(`Authored Engineer panel unavailable: ${name}`)
+  return value
 }
 
 export type Tf2EngineerPresentation = Readonly<{
@@ -187,8 +187,8 @@ export function initializeTf2EngineerPresentation(request: Readonly<{
           }
           apply(runtime, { kind: "replace-resource", parent: target, document: document(specific, `${variant}-${index}`, children), selection })
           apply(runtime, { kind: "set-dialog-variable", panel: target, name: "metal", value: entry.cost })
-          const number = runtime.snapshot().panels.find(candidate => candidate.parent === target && candidate.name === "NumberLabel")
-          if (number) apply(runtime, { kind: "set-panel-state", panel: number.id, text: String(index + 1) })
+          const number = runtime.findChildByName(target, "NumberLabel")
+          if (number !== null) apply(runtime, { kind: "set-panel-state", panel: number, text: String(index + 1) })
           cards.set(`${kind}:${index}:${variant}`, target)
         }
       }

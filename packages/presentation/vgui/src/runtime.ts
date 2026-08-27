@@ -1022,6 +1022,19 @@ class SourceVguiRuntime implements VguiRuntime {
       })
   }
 
+  findChildByName(parent: VguiPanelId, name: string, recurseDown = false): VguiPanelId | null {
+    const folded = name.toLowerCase()
+    for (const id of this.requirePanel(parent).children) {
+      const child = this.requirePanel(id)
+      if (child.name.toLowerCase() === folded) return id
+      if (recurseDown) {
+        const found = this.findChildByName(id, name, true)
+        if (found !== null) return found
+      }
+    }
+    return null
+  }
+
   snapshotPanels(panels: readonly VguiPanelId[]): readonly VguiPanelSnapshot[] {
     return Object.freeze(panels.map((panel) => this.snapshotPanel(this.requirePanel(panel))))
   }
