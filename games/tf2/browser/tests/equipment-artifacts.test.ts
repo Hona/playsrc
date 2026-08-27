@@ -4,7 +4,7 @@ import { parseEquipmentModelArtifacts } from "../src/artifacts"
 function emptyRegistry(): Uint8Array {
   const bytes = new Uint8Array(72), view = new DataView(bytes.buffer)
   const header = (offset: number, name: string, version: number) => { bytes.set(new TextEncoder().encode(name), offset); view.setUint32(offset + 4, version, true) }
-  header(0, "PEQM", 2); header(12, "PMST", 2); header(24, "PMDL", 2); header(36, "PMIP", 2)
+  header(0, "PEQM", 2); header(12, "PMST", 2); header(24, "PMDL", 3); header(36, "PMIP", 2)
   view.setUint32(48, 4, true)
   header(60, "PPTM", 3)
   return bytes

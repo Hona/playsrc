@@ -134,9 +134,10 @@ describe("TF2 GameUI Escape and pending owner operations", () => {
     ]) expect(panels.find((panel) => panel.name === name)?.effectivelyVisible, name).toBeTrue()
 
     for (const name of [
-      "CharacterSetupButton", "GeneralStoreButton", "AchievementsButton", "CommentaryButton",
+      "GeneralStoreButton", "AchievementsButton", "CommentaryButton",
       "CoachPlayersButton", "WorkshopButton", "ReplayButton", "ReportBugButton", "ToggleChatButton",
     ]) expect(panels.find((panel) => panel.name === name)?.enabled, name).toBeFalse()
+    expect(panels.find((panel) => panel.name === "CharacterSetupButton")?.enabled).toBeTrue()
 
     for (const name of ["SettingsButton", "TF2SettingsButton", "NewUserForumsButton", "FindAGameButton", "QuitButton"]) {
       expect(panels.find((panel) => panel.name === name)?.enabled, name).toBeTrue()
