@@ -624,6 +624,13 @@ impl BotWorld {
         self.bots.is_empty()
     }
 
+    pub(crate) fn roster(&self) -> impl ExactSizeIterator<Item = crate::team_selection::RosterPlayer> + '_ {
+        self.bots.values().map(|bot| crate::team_selection::RosterPlayer {
+            identity: bot.identity,
+            team: bot.team,
+        })
+    }
+
     pub fn configuration(&self) -> Option<Configuration> {
         self.configuration
     }
@@ -2429,6 +2436,7 @@ fn next_respawn_wave(death_tick: u64, interval: f32, configured: f32, population
     earliest.div_ceil(wave) * wave
 }
 fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f32) {
+    crate::admission_metrics::begin_tick(tick);
     crate::admission_metrics::emit(crate::admission_metrics::RESPAWN, bot.identity);
     let policy = MovementPolicy {
         class: bot.class,
@@ -3511,6 +3519,7 @@ mod tests {
                 metrics::set_observer(Some(record));
                 assert_eq!(world.maintain_quota(tick, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut rng).unwrap(), change);
                 assert_eq!(world.snapshots(), expected.snapshots());
+                assert_eq!(world.roster().collect::<Vec<_>>(), expected.snapshots().into_iter().map(|bot| crate::team_selection::RosterPlayer { identity: bot.identity, team: bot.team }).collect::<Vec<_>>());
                 assert_eq!(rng.state(), expected_rng.state());
             }
             let events = EVENTS.with_borrow(|events| events.clone());

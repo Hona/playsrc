@@ -1,24 +1,29 @@
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static HIGH_WATER_BYTES: AtomicUsize = AtomicUsize::new(0);
 static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 pub fn track_allocations(enabled: bool) {
     TRACK_ALLOCATIONS.store(enabled, Ordering::Relaxed);
 }
 
-pub fn allocation_totals() -> (usize, usize) {
-    (ALLOCATIONS.load(Ordering::Relaxed), ALLOCATED_BYTES.load(Ordering::Relaxed))
+// Successful allocation/reallocation requests and their requested sizes. A
+// reallocation counts its complete new size, not just retained heap growth.
+pub fn allocation_totals() -> (u64, u64) {
+    (
+        ALLOCATIONS.load(Ordering::Relaxed),
+        ALLOCATED_BYTES.load(Ordering::Relaxed),
+    )
 }
 
 fn allocation(bytes: usize) {
     if TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        ALLOCATED_BYTES.fetch_add(bytes, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 }
 
@@ -81,6 +86,8 @@ mod tests {
 
     #[test]
     fn explicit_allocator_tracks_growth_shrink_and_release() {
+        track_allocations(true);
+        let initial_totals = allocation_totals();
         let baseline = live_bytes();
         let layout = Layout::from_size_align(256, 8).unwrap();
         let pointer = unsafe { MeasuredAllocator.alloc(layout) };
@@ -94,5 +101,15 @@ mod tests {
         unsafe { MeasuredAllocator.dealloc(pointer, Layout::from_size_align(64, 8).unwrap()) };
         assert_eq!(live_bytes(), baseline);
         assert!(high_water_bytes() >= baseline + 512);
+        assert_eq!(
+            allocation_totals(),
+            (initial_totals.0 + 3, initial_totals.1 + 256 + 512 + 64)
+        );
+        track_allocations(false);
+        let before = allocation_totals();
+        let pointer = unsafe { MeasuredAllocator.alloc_zeroed(layout) };
+        assert!(!pointer.is_null());
+        unsafe { MeasuredAllocator.dealloc(pointer, layout) };
+        assert_eq!(allocation_totals(), before);
     }
 }

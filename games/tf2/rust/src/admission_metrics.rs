@@ -28,7 +28,12 @@ pub fn emit(stage: u32, actor: u32) {
 
 pub fn emit_value(stage: u32, actor: u32, value: u64) {
     if let Some(observer) = OBSERVER.get() {
-        observer(Event { tick: TICK.get(), stage, actor, value });
+        observer(Event {
+            tick: TICK.get(),
+            stage,
+            actor,
+            value,
+        });
     }
 }
 
