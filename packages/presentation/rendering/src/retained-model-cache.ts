@@ -35,6 +35,12 @@ export class RetainedModelCache<Value> {
     this.#entries.clear()
   }
 
+  drain(): Value[] {
+    const values = [...this.#entries.values()]
+    this.#entries.clear()
+    return values
+  }
+
   discardWhere(predicate: (value: Value) => boolean): void {
     for (const [key, value] of this.#entries) if (predicate(value)) {
       this.#entries.delete(key)

@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { RetainedModelCache } from "../src/retained-model-cache"
 
+test("draining transfers each retained owner without disposing or retaining a second reference", () => {
+  const disposed: object[] = [], cache = new RetainedModelCache<object>(2, value => disposed.push(value))
+  const first = {}, second = {}
+  cache.retain("first", first); cache.retain("second", second)
+  expect(cache.drain()).toEqual([first, second])
+  expect(cache.size).toBe(0)
+  cache.clear()
+  expect(disposed).toEqual([])
+})
+
 test("replacement retains only prepared instances with an identical transferred template owner", () => {
   const disposed: object[] = [], template = {}, changed = {}, replacement = {}
   const cache = new RetainedModelCache<{ template: object }>(96, value => disposed.push(value))
