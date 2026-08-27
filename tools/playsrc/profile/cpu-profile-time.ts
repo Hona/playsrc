@@ -1,6 +1,6 @@
 import type { CpuProfile } from "./gameui-profile"
 
-export const CPU_PROFILE_LIMITS = Object.freeze({ nodes: 64_000, samples: 64_000, depth: 256 })
+export const CPU_PROFILE_LIMITS = Object.freeze({ bytes: 64 * 1024 * 1024, nodes: 64_000, samples: 64_000, depth: 256 })
 export type CpuWindow = Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>
 
 function require(value: unknown, message: string): asserts value {

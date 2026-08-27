@@ -29,7 +29,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   const capture = JSON.parse(captureBytes.toString())
   const linked = capture.identity?.gameplayReplay
   const graphIdentity = capture.identity?.applicationGeneration?.resourceRoot
-  require(capture.schema === "playsrc-compositor-evidence-v1" && linked?.complete && /^[0-9a-f]{64}\.replay\.json$/u.test(linked.manifestFile)
+  require(["playsrc-compositor-evidence-v1", "playsrc-compositor-evidence-v2"].includes(capture.schema) && linked?.complete && /^[0-9a-f]{64}\.replay\.json$/u.test(linked.manifestFile)
     && /^[0-9a-f]{64}$/u.test(graphIdentity), "Replay must be linked to the recorded compiled content root")
   const manifestBytes = await readFile(path.join(path.dirname(manifestPath), linked.manifestFile))
   require(linked.manifestFile === `${hash(manifestBytes)}.replay.json`, "Replay manifest hash mismatch")

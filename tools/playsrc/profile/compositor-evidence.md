@@ -20,6 +20,23 @@ Bounds per capture: 128 MiB browser trace buffer, 32 MiB compressed stream, 256 
 
 # Worker CPU/task evidence
 
+New Upward/class/combat captures use `playsrc-compositor-evidence-v2`. Its `mainCpu`
+links the exact SHA-256 and byte count of one immutable `main.cpuprofile`, plus
+source commit/fingerprint, page target before/after, and CDP `Performance.Timestamp`
+brackets around `Profiler.start/stop` in Chromium monotonic microseconds. Replay
+validates those brackets against the original profile bounds and active trace marks:
+
+`bun tools/playsrc/profile/replay-cpu-profile.ts <sha256.manifest.json>`
+
+Main profiles are capped at 64 MiB with the existing 64,000 node/sample and 256-depth
+bounds. Failed/malformed profiles (or an overflow prefix) and collection errors are
+retained before optional heap extraction or assertions; incomplete evidence never
+becomes sampled CPU. External replacements are rejected for v2. Historical v1
+captures may still supply `[main.cpuprofile]`, explicitly **unauthenticated**: replay
+does not rewrite them or infer a missing link. Hash authentication establishes
+content linkage, not a digital signature or independent proof of capture origin.
+Signed timestamps, estimated sampling weights, and unattributed tails are unchanged.
+
 The all-18-edge `class-switch-high-dpi` path also samples the actual gameplay
 Worker through its own CDP target. Its content-addressed `workers.json` artifact
 is linked from the compositor manifest. Replay it without another browser run:

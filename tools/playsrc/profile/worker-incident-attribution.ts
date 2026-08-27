@@ -29,7 +29,10 @@ function sampledStacks(timeline: CpuTimeline, started: number, ended: number) {
 }
 
 export async function replayWorkerIncidents(filename: string) {
-  const { manifest, events, probes } = await loadCompositorEvidence(filename)
+  return loadWorkerIncidents(filename, await loadCompositorEvidence(filename))
+}
+
+export async function loadWorkerIncidents(filename: string, { manifest, events, probes }: Awaited<ReturnType<typeof loadCompositorEvidence>>) {
   const artifact = manifest.identity.workerCpu
   if (!artifact || !/^[0-9a-f]{64}\.workers\.json$/u.test(artifact.file) || !artifact.file.startsWith(artifact.sha256)) throw new Error("Worker evidence identity is missing or invalid")
   const file = path.join(path.dirname(filename), artifact.file)

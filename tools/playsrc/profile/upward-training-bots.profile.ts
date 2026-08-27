@@ -11,9 +11,9 @@ import { classInputViolations, prepareClassCapture } from "./class-input-sequenc
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { summarizeCompositorFreezes, summarizeFreezeTimeline } from "./freeze-timeline"
-import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, type TraceJoin } from "./compositor-evidence"
+import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, startMainCpuEvidence, type TraceJoin, type TraceProbes } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
-import { summarizeCpuProfile, summarizeDistribution, type CpuProfile } from "./gameui-profile"
+import { summarizeCpuProfile, summarizeDistribution } from "./gameui-profile"
 import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
@@ -373,13 +373,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
   if (!Number.isFinite(totalDeadline)) throw new Error("Invalid bounded profile deadline")
   if (totalDeadline - Date.now() < seconds * 1000 + 20_000) throw new Error("Insufficient bounded capture/retention time after lock and startup; partial replay retained")
-  await cdp.send("Performance.enable")
-  await cdp.send("Profiler.enable")
   await cdp.send("HeapProfiler.enable")
   await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true })
-  await cdp.send("Profiler.setSamplingInterval", { interval: 1_000 })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
-  await cdp.send("Profiler.start")
   if (!exerciseClasses) await page.keyboard.down("w")
   await replay?.mark(0)
   await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
@@ -387,8 +383,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
   await mkdir(path.dirname(rawPartial), { recursive: true })
   await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
+  const mainCpu = await startMainCpuEvidence(cdp, evidenceDirectory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint })
   let interrupted = false
   const collectNative = async () => {
+    const mainCapture = await mainCpu.stop()
     const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
       .then(captures => ({ captures, error: null as string | null }), error => ({ captures: [], error: String(error) }))
     await workerCpu?.close().catch(() => undefined)
@@ -398,17 +396,36 @@ test("profile authored headed Upward offline-practice default roster and actual 
       workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
     }
     const workerArtifact = await retainEvidenceBlob(evidenceDirectory, workerBytes, "workers.json")
-    await browserCdp.send("Tracing.end")
-    const completion = await traceFinished
+    let completion: { stream?: string; dataLossOccurred: boolean } = { dataLossOccurred: true }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      completion = await Promise.race([(async () => { await browserCdp.send("Tracing.end"); return traceFinished })(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Native trace completion exceeded 5 seconds")), 5000) })])
+    } catch (error) { mainCapture.evidence.errors.push(String(error)) }
+    finally { clearTimeout(timer) }
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
     await retainEvidenceBlob(evidenceDirectory, raw.bytes, "trace.json.gz")
-    return { workerCapture, workerArtifact, completion, raw }
+    return { workerCapture, workerArtifact, completion, raw, mainCapture }
   }
   let nativeResult: ReturnType<typeof collectNative> | undefined
   const finishNative = () => nativeResult ??= collectNative()
+  const persistNativeEvidence = async (probes: TraceProbes, details: Record<string, unknown>) => {
+    const { raw, completion, workerArtifact, mainCapture } = await finishNative()
+    const sourceFingerprintAfter = await applicationBuildIdentity().catch(error => `unavailable: ${String(error)}`)
+    return retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
+      complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture,
+      identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
+        sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
+        gpu: system?.gpu ?? null, availableCategories, origin: new URL(page.url()).origin,
+        localProductionBundle, label, headed: true, target, launch, interrupted, workerCpu: workerArtifact,
+        nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex"), ...details }, probes })
+  }
+  let retained: ReturnType<typeof persistNativeEvidence> | undefined
+  const retainNativeEvidence = (probes: TraceProbes, details: Record<string, unknown>) => retained ??= persistNativeEvidence(probes, details)
+  const retainInterrupted = () => retainNativeEvidence({ started: 0, ended: 0, joins: [], dropped: 1 }, { sampleError: "Capture interrupted before measurement retention" })
   const interrupt = () => {
     interrupted = true
-    void Promise.allSettled([finishNative(), replay?.stop(false)])
+    void Promise.allSettled([retainInterrupted(), replay?.stop(false)])
   }
   const captureDeadline = setTimeout(interrupt, Math.min(seconds * 1000 + 5000, Math.max(1, totalDeadline - Date.now() - 5000)))
   process.once("SIGTERM", interrupt)
@@ -417,6 +434,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     process.off("SIGTERM", interrupt)
     interrupted = true
     await Promise.allSettled([finishNative(), replay?.stop(false)])
+    const evidence = await retainInterrupted()
+    console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
   }
   await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
@@ -733,11 +752,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const replayArtifact = await replay?.stop(!interrupted && sample.error === null)
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
-  const { workerCapture, workerArtifact, completion, raw } = await finishNative()
+  const { workerCapture, workerArtifact, mainCapture } = await finishNative()
   const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
   // Stop samplers now, but a detached renderer or failed optional sampler must not discard the browser trace.
-  const supplemental = Promise.all([cdp.send("Profiler.stop"), cdp.send("HeapProfiler.stopSampling"),
+  const supplemental = Promise.all([cdp.send("HeapProfiler.stopSampling"),
     cdp.send("Runtime.getHeapUsage"), browserCdp.send("SystemInfo.getProcessInfo")])
     .then(value => ({ value, error: null }), error => ({ value: null, error: String(error) }))
   if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
@@ -754,16 +773,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const record of measured.simulationPublications) joins.push({ kind: "simulation-publication", at: record.at, end: record.at + record.decodeMilliseconds, detail: record })
     for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
   }
-  const sourceFingerprintAfter = await applicationBuildIdentity()
   profilePhases.enter("trace-analysis-retention")
-  const evidence = await retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
-    complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred,
-    identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
-      sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
-      gpu: system?.gpu ?? null, availableCategories, viewport: measured?.viewport ?? null,
-      origin: new URL(page.url()).origin, localProductionBundle, label, headed: true, target, launch,
-      sampleError: sample.error, interrupted, workerCpu: workerArtifact, gameplayReplay: replayArtifact, nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex") },
-    probes: { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped : 1 } })
+  const evidence = await retainNativeEvidence(
+    { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped : 1 },
+    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact })
+  const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
   console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
@@ -773,10 +787,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (interrupted) throw new Error("Capture interrupted; partial diagnostics retained, not passing evidence")
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
+  if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
   const collected = await supplemental
   if (!collected.value) throw new Error(`Optional profiling extraction failed; compositor evidence retained: ${collected.error}`)
-  const [cpuResult, allocationResult, heapAfter, processAfter] = collected.value
-  const cpuProfile = cpuResult.profile as CpuProfile
+  const [allocationResult, heapAfter, processAfter] = collected.value
+  const cpuProfile = mainCapture.profile
   const allocationProfile = allocationResult.profile
   const memoryAfter = await captureProcessMemory(processAfter.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const measurement = measured
@@ -982,7 +997,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
   profilePhases.enter("export")
   await Promise.all([
     writeFile(path.join(directory, `${label}.json`), `${JSON.stringify(report, null, 2)}\n`),
-    writeFile(path.join(directory, `${label}.cpuprofile`), `${JSON.stringify(cpuProfile)}\n`),
     writeFile(path.join(directory, `${evidenceLabel}.measurement.json`), `${JSON.stringify(measurement)}\n`),
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
