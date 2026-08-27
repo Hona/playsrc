@@ -989,7 +989,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   ])
   if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1") {
     // Install only after all active sampling and memory extraction. Compare
-    // actual GPU color/depth/normal planes with the existing CPU skinning oracle
+    // actual GPU color/depth/normal planes with the reference GPU upload path
     // without changing simulation cadence or the measured performance window.
     await page.evaluate(async url => {
       const { installSkinningEvidence } = await import(/* @vite-ignore */ url)
@@ -997,6 +997,22 @@ test("profile authored headed Upward offline-practice default roster and actual 
     }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/skinning-evidence.ts`)
     const records = []
     for (const pass of ["main", "viewmodel"]) {
+      if (pass === "main") {
+        // The performance input sequence can finish facing an empty wall. Only
+        // this post-sample correctness capture uses an aligned live-bot camera.
+        await page.evaluate(() => {
+          const profile = (globalThis as any).__playsrcProfile
+          const bot = profile.bots.find((bot: any) => bot.lifecycle === 1)
+          if (!bot) throw new Error("No live bot for visible palette parity")
+          const yaw = bot.yawDegrees * Math.PI / 180
+          profile.displacementCameraOverride = {
+            position: [bot.position[0] + Math.cos(yaw) * 64, bot.position[1] + Math.sin(yaw) * 64, bot.position[2] + 48],
+            yawDegrees: bot.yawDegrees + 180, pitchDegrees: 0,
+          }
+        })
+        await page.waitForFunction(() => document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayCameraPosition
+          === (globalThis as any).__playsrcProfile.displacementCameraOverride.position.join(","), undefined, { timeout: 5_000 })
+      }
       const record = await page.evaluate(async ({ label, pass }) => Promise.race([
         (globalThis as any).__skinningEvidence.capture(label, pass),
         new Promise((_, reject) => setTimeout(() => reject(new Error(`no skinned ${pass} pass`)), 8_000)),
@@ -1010,7 +1026,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
         if (plane.plane === "color") expect(plane.actorPixels).toBeGreaterThan(40)
         if (plane.plane === "depth") expect(plane.channels[0]).toBeGreaterThan(1)
       }
+      await writeFile(path.join(directory, `${label}-skinning-${pass}.png`), await canvas.screenshot({ timeout: 5_000 }))
+      await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
     }
+    await page.evaluate(() => (globalThis as any).__skinningEvidence.dispose())
   }
   if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
