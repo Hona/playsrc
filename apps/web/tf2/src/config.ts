@@ -1,7 +1,7 @@
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { TF2_CONFIGURED_STARTUP, validateTf2StartupDescriptor, type Tf2StartupDescriptor } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
-import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
+import { tf2MapLoading, TF2_STAMP_BACKGROUND, type Tf2LoadingAsset } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
 const HASH = /^[0-9a-f]{64}$/
 const PRODUCTION_APPLICATION_ORIGIN = "https://playsrc.online"
@@ -12,8 +12,8 @@ export type BrowserTargetConfiguration = Readonly<{
   contentBuild: string
   objects: Readonly<{ bsp: ObjectDescriptor; resources: ObjectDescriptor; dependencyLedger: ObjectDescriptor }>
   loading: Readonly<{
-    mapPhotoLocations: (typeof TF2_MAP_LOADING)[Tf2TargetName]["photoLocations"]
-    mapPhoto: (typeof TF2_MAP_LOADING)[Tf2TargetName]["photo"]
+    mapPhotoLocations: readonly string[]
+    mapPhoto: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }> | null
     stampBackground: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }>
   }>
 }>
@@ -37,12 +37,13 @@ export class BrowserConfigurationError extends Error {
 }
 
 export function parseBrowserConfiguration(value: unknown, applicationOrigin: string): BrowserConfiguration {
+  const names = applicationOrigin === PRODUCTION_APPLICATION_ORIGIN ? TF2_TARGET_NAMES : TF2_DEVELOPMENT_TARGET_NAMES
   if (
     !record(value)
     || Object.keys(value).sort().join("\0") !== "allowedExternalOrigins\0application\0applicationBuild\0assetOrigin\0catalog\0defaultTarget\0presentation\0renderLevel\0startup\0targets\0wasm"
     || value.application !== "tf2"
     || typeof value.applicationBuild !== "string" || !HASH.test(value.applicationBuild)
-    || !TF2_TARGET_NAMES.includes(value.defaultTarget as Tf2TargetName)
+    || !names.includes(value.defaultTarget as Tf2TargetName)
     || (value.renderLevel !== 0 && value.renderLevel !== 1 && value.renderLevel !== 2)
     || typeof value.assetOrigin !== "string" || !acceptedAssetOrigin(applicationOrigin, value.assetOrigin)
     || !Array.isArray(value.allowedExternalOrigins) || value.allowedExternalOrigins.length > 16
@@ -50,20 +51,20 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
     || new Set(value.allowedExternalOrigins).size !== value.allowedExternalOrigins.length
     || !descriptor(value.wasm, "derived-object")
     || !descriptor(value.catalog, "catalog", "application/vnd.playsrc.asset-catalog+json")
-    || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > TF2_TARGET_NAMES.length
+    || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > names.length
     || (applicationOrigin === PRODUCTION_APPLICATION_ORIGIN && value.targets.length !== TF2_TARGET_NAMES.length)
     || !validateTf2StartupDescriptor(value.startup).ok || JSON.stringify(value.startup) !== JSON.stringify(TF2_CONFIGURED_STARTUP)
     || !validPresentation(value.presentation)
   ) throw new BrowserConfigurationError("Browser configuration fields are invalid")
 
   const targets = value.targets.map((candidate) => {
-    if (!record(candidate) || !TF2_TARGET_NAMES.includes(candidate.target as Tf2TargetName)) {
+    if (!record(candidate) || !names.includes(candidate.target as Tf2TargetName)) {
       throw new BrowserConfigurationError("Browser target configuration is invalid")
     }
     return parseTarget(candidate, candidate.target as Tf2TargetName)
   })
   if (targets.some((target, index) => index > 0
-    && TF2_TARGET_NAMES.indexOf(targets[index - 1]!.target) >= TF2_TARGET_NAMES.indexOf(target.target))) {
+    && names.indexOf(targets[index - 1]!.target) >= names.indexOf(target.target))) {
     throw new BrowserConfigurationError("Browser target preparation order is invalid")
   }
   if (!targets.some((target) => target.target === value.defaultTarget)) {
@@ -76,7 +77,7 @@ export function parseBrowserConfiguration(value: unknown, applicationOrigin: str
 }
 
 function parseTarget(value: unknown, target: Tf2TargetName): BrowserTargetConfiguration {
-  const loading = TF2_MAP_LOADING[target]
+  const loading = tf2MapLoading(target)
   if (
     !record(value) || Object.keys(value).sort().join("\0") !== "contentBuild\0loading\0objects\0target"
     || value.target !== target || value.contentBuild !== "24245096"

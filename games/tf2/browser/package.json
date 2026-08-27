@@ -9,6 +9,7 @@
     "./engineer": "./src/engineer.ts",
     "./class": "./src/class.ts",
     "./content-build": "./src/content-build.ts",
+    "./maps": "./src/maps.ts",
     "./presentation": "./src/presentation.ts",
     "./ui-integration": "./src/ui-integration/index.ts",
     "./ui-resources": "./src/ui-resources/index.ts",
