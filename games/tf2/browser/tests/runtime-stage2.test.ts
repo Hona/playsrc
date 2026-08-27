@@ -13,12 +13,13 @@ import { tf2Audio } from "../src/presentation"
 import { configuredEquipmentSounds } from "../src/equipment/audio.generated"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1293)
+  const bytes = new ArrayBuffer(1401)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 29, true)
-  view.setFloat32(bytes.byteLength - 4, 1, true)
+  view.setUint32(4, 30, true)
+  view.setFloat32(bytes.byteLength - 112, 1, true)
+  view.setInt32(bytes.byteLength - 104, -1, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -157,10 +158,10 @@ test("mini-round completion is authoritative and does not change the round state
 
 test("persistent authored view corrections survive snapshot decode and reject nonfinite angles", () => {
   const bytes = snapshot(), view = new DataView(bytes)
-  view.setFloat32(bytes.byteLength - 24, -5, true)
-  view.setFloat32(bytes.byteLength - 20, -150, true)
+  view.setFloat32(bytes.byteLength - 132, -5, true)
+  view.setFloat32(bytes.byteLength - 128, -150, true)
   expect(decodeSnapshot(bytes).viewAngleOffset).toEqual([-5, -150, 0])
-  view.setFloat32(bytes.byteLength - 16, Number.NaN, true)
+  view.setFloat32(bytes.byteLength - 124, Number.NaN, true)
   expect(() => decodeSnapshot(bytes)).toThrow("view angle correction is invalid")
 })
 
@@ -182,6 +183,29 @@ test("control point and overtime events admit every declared wave variant", () =
       else expect(() => decodeSnapshot(bytes.buffer)).toThrow("audio event record is invalid")
     }
   }
+})
+
+test("soundscape selection retains all eight positions and rejects malformed snapshot tails", () => {
+  const bytes = snapshot(), view = new DataView(bytes), at = bytes.byteLength - 108
+  expect(decodeSnapshot(bytes).soundscape).toMatchObject({ entity: 0, soundscape: -1, positionBits: 0 })
+  view.setInt32(at, 9, true)
+  view.setInt32(at + 4, 37, true)
+  view.setUint32(at + 8, 0x81, true)
+  for (let index = 0; index < 24; index++) view.setFloat32(at + 12 + index * 4, index - 12, true)
+  const selected = decodeSnapshot(bytes).soundscape
+  expect(selected).toMatchObject({ entity: 9, soundscape: 37, positionBits: 0x81 })
+  expect(selected.positions).toHaveLength(8)
+  expect(selected.positions[7]).toEqual([9, 10, 11])
+  view.setInt32(at, 0, true)
+  expect(decodeSnapshot(bytes).soundscape.positions).toEqual(selected.positions)
+  for (const [offset, value] of [[0, -1], [4, -2], [8, 256]] as const) {
+    const bad = bytes.slice(0), data = new DataView(bad)
+    data.setInt32(at + offset, value, true)
+    expect(() => decodeSnapshot(bad)).toThrow("soundscape selection is invalid")
+  }
+  view.setFloat32(at + 104, Infinity, true)
+  expect(() => decodeSnapshot(bytes)).toThrow("soundscape selection is invalid")
+  expect(() => decodeSnapshot(bytes.slice(0, -1))).toThrow()
 })
 
 test("death event wire retains exact uint32 damage bits, killing names and repeated occurrences before later sections", () => {
@@ -252,18 +276,18 @@ test("critical draws preserve separate authority and predicted-presentation reco
 
 test("player weapon counters retain full native heads and reject invalid revenge counts", () => {
   const bytes = snapshot(), view = new DataView(bytes)
-  view.setInt32(bytes.byteLength - 12, 800, true)
-  view.setInt32(bytes.byteLength - 8, 35, true)
+  view.setInt32(bytes.byteLength - 120, 800, true)
+  view.setInt32(bytes.byteLength - 116, 35, true)
   expect(decodeSnapshot(bytes)).toMatchObject({ decapitations: 800, revengeCrits: 35 })
-  view.setInt32(bytes.byteLength - 8, 36, true)
+  view.setInt32(bytes.byteLength - 116, 36, true)
   expect(() => decodeSnapshot(bytes)).toThrow("player weapon counters are invalid")
 })
 
 test("native crosshair scale follows counters and rejects non-finite values", () => {
   const bytes = snapshot(), view = new DataView(bytes)
-  view.setFloat32(bytes.byteLength - 4, 1.625, true)
+  view.setFloat32(bytes.byteLength - 112, 1.625, true)
   expect(decodeSnapshot(bytes).weaponCrosshairScale).toBe(1.625)
-  view.setFloat32(bytes.byteLength - 4, NaN, true)
+  view.setFloat32(bytes.byteLength - 112, NaN, true)
   expect(() => decodeSnapshot(bytes)).toThrow("weapon crosshair scale is invalid")
 })
 
@@ -347,15 +371,15 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 184, brushHeader = objective - 64
+  const objective = original.length - 292, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 33 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes + roster * 28)
   bytes.set(original.subarray(0, brushHeader + 52))
   bytes.set(original.subarray(brushHeader + 52, objective), brushHeader + 52 + insert)
   bytes.set(original.subarray(objective, objective + 84), objective + insert + botBytes)
-  bytes.set(original.subarray(objective + 84, original.length - 24), objective + insert + botBytes + 84 + scoreboardBytes)
-  bytes.set(original.subarray(original.length - 24), bytes.length - 24)
+  bytes.set(original.subarray(objective + 84, original.length - 132), objective + insert + botBytes + 84 + scoreboardBytes)
+  bytes.set(original.subarray(original.length - 132), bytes.length - 132)
   const view = new DataView(bytes.buffer)
   view.setBigUint64(8, tick, true)
   view.setBigUint64(424, tick, true) // projectile event
@@ -385,7 +409,7 @@ function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
     view.setUint32(score, i + 2, true); bytes.set([3, 3, 1, 1], score + 4)
     bytes[score + 32] = names[i]!.length; bytes.set(names[i]!, score + 33)
     score += 33 + names[i]!.length
-    view.setFloat32(bytes.length - 24 - roster * 28 + i * 28 + 24, 88, true)
+    view.setFloat32(bytes.length - 132 - roster * 28 + i * 28 + 24, 88, true)
   }
   return bytes
 }
@@ -619,7 +643,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
         bytes[18] = 54
         bytes[276] = 54
         new DataView(bytes.buffer).setFloat32(320, 100, true)
-        const view = new DataView(bytes.buffer), cloak = base.length - 28
+        const view = new DataView(bytes.buffer), cloak = base.length - 136
         bytes.set(base.subarray(cloak), cloak + 28)
         view.setUint32(cloak - 4, 1, true)
         view.setUint32(cloak, 1, true)
@@ -862,14 +886,14 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 184
+    const objectiveOffset = prior.byteLength - 292
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 33 + botName.length + 28)
-    const roundOffset = prior.byteLength - 96
+    const roundOffset = prior.byteLength - 204
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
-    bytes.set(prior.subarray(roundOffset, prior.length - 24), roundOffset + 128 + 33 + botName.length)
-    bytes.set(prior.subarray(prior.length - 24), bytes.length - 24)
+    bytes.set(prior.subarray(roundOffset, prior.length - 132), roundOffset + 128 + 33 + botName.length)
+    bytes.set(prior.subarray(prior.length - 132), bytes.length - 132)
     const view = new DataView(bytes.buffer)
     view.setUint32(objectiveOffset - 4, 1, true)
     const at = objectiveOffset
@@ -902,8 +926,8 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     bytes.set([3, 3, 1, 1], scoreboardBot + 4)
     bytes[scoreboardBot + 32] = botName.length
     bytes.set(botName, scoreboardBot + 33)
-    view.setFloat32(bytes.byteLength - 28, 88, true)
-    view.setFloat32(bytes.byteLength - 4, 1, true)
+    view.setFloat32(bytes.byteLength - 136, 88, true)
+    view.setFloat32(bytes.byteLength - 112, 1, true)
     const decoded = decodeSnapshot(bytes)
     expect(decoded.scoreboard).toMatchObject({ redCount: 1, blueCount: 1, players: [{ name: "unnamed" }, { name: "Chucklenuts", fake: true }] })
     expect(decoded.bots).toEqual([{
@@ -938,7 +962,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       bytes[scoreboardBot + 4] = playerClass
       bytes[at + 64] = weapon
       if (playerClass === 8) {
-        const count = bytes.length - 60
+        const count = bytes.length - 168
         const bound = new Uint8Array(bytes.length + 28)
         bound.set(bytes.subarray(0, count + 4)); bound.set(bytes.subarray(count + 4), count + 32)
         const fields = new DataView(bound.buffer)

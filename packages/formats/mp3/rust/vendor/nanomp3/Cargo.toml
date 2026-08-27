@@ -1,0 +1,7 @@
+[package]
+name = "nanomp3"
+version = "0.1.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/robbie01/nanomp3"
+description = "Vendored nanomp3 with minimp3 SSE DCT accumulation ordering"

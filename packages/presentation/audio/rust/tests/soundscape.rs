@@ -100,6 +100,23 @@ fn manifest_order_case_sensitive_map_append_and_last_definition_wins() {
 }
 
 #[test]
+fn map_binding_requires_exact_bsp_identity_and_a_bounded_configured_name() {
+    let bytes = encode_map_binding("cp_granary", [17; 32]).unwrap();
+    assert_eq!(read_map_binding(&bytes, [17; 32]), Some("cp_granary"));
+    assert_eq!(read_map_binding(&bytes, [18; 32]), None);
+    for name in ["", "../cp_granary", "cp_granary.bsp", "CP_GRANARY"] {
+        assert!(encode_map_binding(name, [0; 32]).is_none());
+    }
+    assert!(encode_map_binding(&"a".repeat(129), [0; 32]).is_none());
+    for size in 0..=40 {
+        assert!(read_map_binding(&bytes[..size], [17; 32]).is_none());
+    }
+    let mut version = bytes.clone();
+    version[4] = 2;
+    assert!(read_map_binding(&version, [17; 32]).is_none());
+}
+
+#[test]
 fn loops_fade_at_absolute_rate_reuse_and_ignore_same_selection_position_update() {
     let content = registry(
         r#"a { dsp 1 playlooping { volume .45 pitch 100 position 0 wave factory.wav }
