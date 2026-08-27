@@ -37,7 +37,7 @@ import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibilit
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { RetainedModelCache } from "./retained-model-cache"
 import { disposeDynamicModel } from "./dynamic-model-disposal"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment } from "./model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "./model-lighting-graphs"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
@@ -4850,6 +4850,7 @@ class RendererOwner implements Renderer {
         }
         const skinned = bindSourceModelMesh(authored.geometry, object.material, skeleton)
         skinned.userData = { ...object.userData }
+        transferModelBindings(object, skinned)
         const parent = object.parent
         if (!parent) throw new RenderingError("MissingInput", "posed model mesh parent is unavailable")
         const index = parent.children.indexOf(object)
