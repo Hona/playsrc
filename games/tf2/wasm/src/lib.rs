@@ -11150,17 +11150,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
         "Player.HitSoundDefaultDing",
         "Player.KillSoundDefaultDing",
     ];
-    let flag_targets: &[&str] = &[
-        "CaptureFlag.EnemyStolen",
-        "CaptureFlag.EnemyDropped",
-        "CaptureFlag.EnemyCaptured",
-        "CaptureFlag.EnemyReturned",
-        "CaptureFlag.TeamStolen",
-        "CaptureFlag.TeamDropped",
-        "CaptureFlag.TeamCaptured",
-        "CaptureFlag.TeamReturned",
-        "CaptureFlag.FlagSpawn",
-    ];
+    let flag_targets: Vec<&str> = playsrc_tf2::audio::FLAG_SOUNDS.iter().map(|definition| definition.identity()).collect();
     let countdown_targets: &[&str] = &[
         "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
         "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
@@ -11202,7 +11192,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     let koth = has_class(b"tf_logic_koth");
     let timer_audio = koth || graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"team_round_timer")) && entity_scalar(entity, b"show_in_hud") == Some(b"1"));
     let mut voice_targets = Vec::new();
-    if flags { voice_targets.extend_from_slice(flag_targets); }
+    if flags { voice_targets.extend_from_slice(&flag_targets); }
     if timer_audio { voice_targets.extend_from_slice(countdown_targets); }
     if control_points { voice_targets.extend(playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|definition| definition.identity())); }
     if !voice_targets.is_empty() { documents.push(("scripts/game_sounds_vo.txt", &voice_targets)); }
