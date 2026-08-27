@@ -1232,6 +1232,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
       const { beforePixels, afterPixels, ...result } = await page.evaluate(phase => (window as any).probe.compare(phase), phase)
       for (const [side, data] of [["before", beforePixels], ["after", afterPixels]]) await writeFile(path.join(directory, `${label}-static-${phase}-${side}.png`), Buffer.from(data.split(",")[1], "base64"))
       await checkNativeWindow()
+      // A same-process layer-0 popup must not silently become the admitted
+      // drawing window after navigation. Keep the original native identity.
+      if (readMacWindows) expect((nativeAdmission.at(-1)!.window as any).id).toBe((nativeAdmission[0]!.window as any).id)
       results.push(result)
     }
     await page.screenshot({ path: path.join(directory, `${label}-static-visible.png`) })
