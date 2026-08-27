@@ -105,6 +105,8 @@ export class SourceParticleDepth {
   }
 
   capture(renderer: THREE.WebGPURenderer, camera: THREE.Camera): void {
+    // Three traverses onBeforeRender while compiling too; no live pass exists then.
+    if (Array.isArray((renderer as any)._compilationPromises)) return
     if (this.#call === renderer.info.calls) return
     const target = renderer.getRenderTarget(), key = target ?? renderer.getCanvasTarget()
     const texture = this.#textures.get(key) ?? this.#create(key)

@@ -5170,6 +5170,7 @@ class RendererOwner implements Renderer {
         mesh.frustumCulled = false
         const profile = browserFrameProfiler()
         mesh.onBeforeRender = (renderer, _scene, camera) => {
+          if (Array.isArray((renderer as any)._compilationPromises)) return
           if (material.userData.sourceParticleDepth) assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera)
           if (profile && !material.userData.firstParticleUse) {
             material.userData.firstParticleUse = true
