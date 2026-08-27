@@ -10873,7 +10873,7 @@ fn encode_sound_node(out: &mut Vec<u8>, node: &playsrc_keyvalues::Node) -> Resul
     Ok(())
 }
 
-fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -> Result<(), ()> {
+fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, graph: &playsrc_entity::Graph) -> Result<(), ()> {
     let weapon_targets: &[&str] = &[
         "Weapon_RPG.Single",
         "Weapon_QuakeRPG.Single",
@@ -10934,9 +10934,6 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "WeaponMedigun.HealingHealer",
         "WeaponMedigun.HealingDetachHealer",
         "WeaponMedigun.Charged",
-        "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
-        "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
-        "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds", "Game.Overtime",
         "Player.HitSoundDefaultDing",
         "Player.KillSoundDefaultDing",
     ];
@@ -10950,6 +10947,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         "CaptureFlag.TeamCaptured",
         "CaptureFlag.TeamReturned",
         "CaptureFlag.FlagSpawn",
+    ];
+    let countdown_targets: &[&str] = &[
+        "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
+        "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
+        "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds",
     ];
     let item_targets: &[&str] = &[
         "HealthKit.Touch",
@@ -10981,12 +10983,17 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
         ("scripts/game_sounds_player.txt", player_targets),
         ("scripts/game_sounds_physics.txt", impact_targets),
     ];
-    if bundle.contains_key("scripts/game_sounds_vo.txt") {
-        documents.push(("scripts/game_sounds_vo.txt", flag_targets));
-        documents.push(("scripts/game_sounds.txt", item_and_round_targets));
-    } else {
-        documents.push(("scripts/game_sounds.txt", item_targets));
-    }
+    let has_class = |name: &[u8]| graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(name)));
+    let flags = has_class(b"item_teamflag");
+    let koth = has_class(b"tf_logic_koth");
+    let timer_audio = koth || graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"team_round_timer")) && entity_scalar(entity, b"show_in_hud") == Some(b"1"));
+    let mut voice_targets = Vec::new();
+    if flags { voice_targets.extend_from_slice(flag_targets); }
+    if timer_audio { voice_targets.extend_from_slice(countdown_targets); }
+    if !voice_targets.is_empty() { documents.push(("scripts/game_sounds_vo.txt", &voice_targets)); }
+    let mut round_targets = if flags || timer_audio { item_and_round_targets.to_vec() } else { item_targets.to_vec() };
+    if timer_audio { round_targets.push("Game.Overtime"); }
+    documents.push(("scripts/game_sounds.txt", &round_targets));
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
     out.extend_from_slice(&3u32.to_le_bytes());
@@ -12149,7 +12156,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         particle_presentation,
     )?;
     encode_particle_textures(&mut out, particle_presentation)?;
-    encode_audio_documents(&mut out, bundle)?;
+    encode_audio_documents(&mut out, bundle, graph).inspect_err(|_| presentation_failure("audio documents"))?;
     encode_model_occurrence_matrices(
         &mut out,
         graph,

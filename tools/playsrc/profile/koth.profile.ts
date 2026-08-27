@@ -4,6 +4,7 @@ import { summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 
 test("headed Viaduct local KOTH capture, contest, overtime, victory and restart with independent team clocks", async ({ page }, testInfo) => {
+  const performanceOnly = process.env.PROFILE_KOTH_PERFORMANCE === "1"
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   const main = page.locator("main")
   await page.goto("/")
@@ -20,8 +21,7 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
   await command("tf_bot_quota 15")
-  await command("setpos -1536 -220 230")
-  await command("setang 0 90 0")
+  await command("setpos -1800 0 230")
   await closeConsole()
   await expect(main).toHaveAttribute("data-bot-count", "15")
 
@@ -55,16 +55,24 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     await pixels(`headed-koth-${bots}-bots-world-and-hud`)
     return { ...result, frames: summarizeFrameTimes(result.frames) }
   }
-  const samples = [await sample(15)]
-  await command("tf_bot_quota 23")
-  samples.push(await sample(23))
+  if (performanceOnly) {
+    await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
+    await command("ent_fire control_point_1 SetUnlockTime 1")
+    await command("setpos -1800 0 230")
+    const samples = [await sample(15)]
+    await command("tf_bot_quota 23")
+    samples.push(await sample(23))
+    await testInfo.attach("koth-source-clock-samples", { body: JSON.stringify({ schema: "playsrc-koth-headed-v1", samples }), contentType: "application/json" })
+    return
+  }
+  await pixels("headed-koth-fifteen-bot-local-world")
   // Deterministic gameplay below uses real brush contact and a real opposing bot.
   // Entity inputs shorten match duration, not clocks, tick rate, or capture time.
   await command("tf_bot_kick all")
   await expect(main).toHaveAttribute("data-bot-count", "0")
   await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
   await command("ent_fire control_point_1 SetUnlockTime 1")
-  await command("setpos -1536 0 230")
+  await command("setpos -1710 0 230")
   await closeConsole()
   const timerRoot = page.locator(".hud-layer [data-vgui-name='HudKothTimeStatus']")
   await expect(timerRoot).toBeVisible()
@@ -76,10 +84,11 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   const enemy = await page.evaluate(() => (globalThis as any).__playsrcProfile.bots.find((bot: any) => bot.team === 3).identity as number)
   const scoreboard = JSON.parse(await main.getAttribute("data-scoreboard-probe") ?? "{}")
   const enemyName = scoreboard.players.find((player: any) => player.identity === enemy).name as string
-  await command("setpos -1536 -130 230")
+  await command("setpos -1800 0 230")
   await command(`bot_teleport "${enemyName}" -1536 0 230 0 90 0`)
+  await page.waitForFunction(() => (globalThis as any).__playsrcProfile.controlPoints.points[0].capturingTeam === 3 && (globalThis as any).__playsrcProfile.controlPoints.points[0].progress > 0, undefined, { timeout: 5_000 })
   await command("ent_fire tf_logic_koth SetRedTimer 3")
-  await command("setpos -1536 0 230")
+  await command("setpos -1710 0 230")
   await closeConsole()
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.round.inOvertime, undefined, { timeout: 10_000 })
   await expect(timerRoot.locator("[data-vgui-name='RedTimer'] [data-vgui-name='OvertimeLabel']")).toBeVisible()
@@ -93,7 +102,7 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await pixels("headed-koth-round-restart")
   await command("jointeam blue")
   await command("ent_fire control_point_1 SetUnlockTime 1")
-  await command("setpos -1536 0 230")
+  await command("setpos -1710 0 230")
   await closeConsole()
   await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.kothTimers[1].paused, undefined, { timeout: 25_000 })
   await expect(timerRoot.locator("[data-vgui-name='RedTimer'] [data-vgui-name='TimePanelValue']")).toHaveText("3:00")
@@ -102,5 +111,4 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
   await closeConsole()
   await expect(page.locator(".hud-layer [data-vgui-name='WinningTeamLabel']")).toHaveText("BLU TEAM WINS!", { timeout: 10_000 })
   await pixels("headed-koth-blue-victory")
-  await testInfo.attach("koth-source-clock-samples", { body: JSON.stringify({ schema: "playsrc-koth-headed-v1", samples }), contentType: "application/json" })
 })

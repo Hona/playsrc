@@ -3219,6 +3219,32 @@ fn main() -> Result<(), String> {
             )?;
         }
     }
+    if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"tf_logic_koth")
+        || value.eq_ignore_ascii_case(b"team_round_timer") && entity.pairs.iter().rev().any(|pair| pair.key.eq_ignore_ascii_case(b"show_in_hud") && pair.value == b"1"))) {
+        for (script, targets) in [
+            ("scripts/game_sounds_vo.txt", ["Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds", "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds", "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds"].as_slice()),
+            ("scripts/game_sounds.txt", ["Game.Overtime", "Game.YourTeamWon", "Game.YourTeamLost"].as_slice()),
+        ] {
+            let bytes = resolver.required(script, "round-audio-script")?;
+            let document = playsrc_keyvalues::parse_text(&bytes, playsrc_keyvalues::EscapeMode::LiteralBackslash, playsrc_keyvalues::Limits::default())
+                .map_err(|error| format!("Round sound script {script}: {error:?}"))?
+                .evaluated(&playsrc_keyvalues::ConditionEnvironment::new([(b"$WIN32".to_vec(), true), (b"$X360".to_vec(), false)]));
+            for target in targets {
+                let node = document.roots.iter().find(|node| node.key.bytes.eq_ignore_ascii_case(target.as_bytes())).ok_or_else(|| format!("Round sound definition {script}:{target} is missing"))?;
+                let mut pending = vec![node];
+                while let Some(node) = pending.pop() {
+                    match &node.value {
+                        playsrc_keyvalues::Value::Object(children) => pending.extend(children),
+                        playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => {
+                            let wave = std::str::from_utf8(&value.token.bytes).map_err(|_| format!("Round sound wave {target} is not UTF-8"))?;
+                            resolver.required(&format!("sound/{}", wave.trim_start_matches('#')), "round-audio-wave")?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     for dependency in &tf2_ui.dependencies {
         resolver.required_expected(
             &dependency.logical_path,

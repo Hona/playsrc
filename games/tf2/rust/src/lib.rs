@@ -1892,6 +1892,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if let Some(objectives) = self.map.objectives_mut() {
                 objectives.reset_round(scores.red_score, scores.blue_score);
             }
+            if self.team_selection.local_team().is_gameplay()
+                && matches!(self.lifecycle, PlayerLifecycle::Active | PlayerLifecycle::Dying)
+            {
+                self.respawn(&mut projectile_events, &mut events, MovementPolicy {
+                    class: self.class, modifiers: self.movement_modifiers,
+                }.resolve());
+            }
             if let Some(bots) = &mut self.bots {
                 bots.round_respawn(self.tick, &mut self.authority_random)
                     .map_err(Error::Bot)?;
