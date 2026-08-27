@@ -268,6 +268,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts) {
   let priorClass: Snapshot["class"] | undefined
   let activity = "ACT_VM_DRAW"
   return Object.freeze({
+    updateArtifacts(next: PresentationArtifacts): void { artifacts = next },
     map(snapshot: Snapshot, view: Readonly<{ aspectRatio: number; farPlane: number }> = Object.freeze({ aspectRatio: 4 / 3, farPlane: 32768 })): Readonly<{ item: ModelItem; request: ModelPoseRequest; standalone: boolean }> {
       if (snapshot.weapon === null || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(snapshot.class) || snapshot.weapon === 54) {
         throw new ProjectilePresentationError("MalformedFact", "class has no implemented viewmodel weapon")

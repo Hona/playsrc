@@ -70,7 +70,7 @@ import {
 import { encodeCommand, mapDerivedKey, type BotConfiguration, type BotQuotaMode, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
 import { blueprintModel, buildingModel, initializeTf2EngineerPresentation, type Tf2EngineerPresentation } from "@playsrc/game-tf2-browser/engineer"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
-import { parsePresentationArtifacts, type PresentationArtifacts } from "@playsrc/game-tf2-browser/artifacts"
+import { parsePresentationArtifacts, parseEquipmentModelArtifacts, type PresentationArtifacts, type EquipmentModelArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
   createParticleBatchEncoder,
   createProjectilePresentationMapper,
@@ -382,6 +382,11 @@ export class Tf2Application {
   #equipmentPreviewReset = true
   #equipmentPreviewElapsed = 0
   #equipmentPreviewStarted = 0
+  #equipmentAdmissionTask?: Promise<void>
+  #equipmentPreparing = false
+  #equipmentAdmissionEpoch = 0
+  #equipmentPanelArtifacts?: EquipmentModelArtifacts
+  readonly #equipmentAdmissions = new Map<number, { definitions: Set<number>; sources: Set<number> }>()
   #resourceRuntime?: Promise<void>
   readonly #immutableObjects = createImmutableObjectAcquirer({
     concurrency: 8,
@@ -763,6 +768,7 @@ export class Tf2Application {
   }
 
   #beginLoadingPresentation(): void {
+    this.#equipmentAdmissionEpoch += 1
     if (this.#equipment?.visible()) this.#equipment.hide()
     if (!this.#configuration) throw new Error("TF2 loading configuration is unavailable")
     const target = this.#loadingTarget ?? this.#activeTarget
@@ -1188,7 +1194,7 @@ export class Tf2Application {
     for (const role of roles) for (const chunk of chunksForRole(graph, role)) chunks.set(chunk.encodedSha256, chunk)
     const groups = partitionResourceChunkDescriptors([...chunks.values()], 32 * 1024 * 1024)
     if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
-    const generation = roles.includes("gameplay") ? this.#reserveGeneration() : undefined
+    const generation = roles.includes("gameplay") || roles.some(role => role.startsWith("equipment-")) ? this.#reserveGeneration() : undefined
     const graphTarget = generation === undefined ? undefined : this.#configuration.targets.find((target) => target.target === graph.target && target.contentBuild === graph.contentBuild)
     if (generation !== undefined && !graphTarget) throw new Error("Authenticated gameplay resource graph target is unavailable")
     const resourceIdentityKey = graphTarget
@@ -1749,6 +1755,9 @@ export class Tf2Application {
       this.#viewmodelClass = undefined
       this.#applyInitialView(this.#loaded)
       finishLoadPhase("presentationSetup")
+      await this.#equipmentAdmissionTask?.catch(() => {})
+      await this.#equipmentRenderTask
+      if (this.#renderer) await this.#renderer.dispose()
       this.#renderer = await createRenderer({
         canvas: this.#canvas,
         configuration: { ...(this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" },
@@ -1817,6 +1826,7 @@ export class Tf2Application {
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
       await this.#client!.activate(this.#generation)
+      await this.#releaseEquipmentAdmissions(this.#generation)
       finishLoadPhase("activation")
       this.#paused = document.hidden
       this.#resetTeamSelection()
@@ -2082,9 +2092,22 @@ export class Tf2Application {
         reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
         clock: { nowSeconds: () => this.#frameClock.current }, random: this.#presentationRandom,
         modelSurface: this.#canvas,
-        onEquip: (identity, slot, definition) => this.#equipmentProfile!.equip(identity, slot, definition),
+        onEquip: async (identity, slot, definition) => {
+          const loadout = this.#equipmentProfile!.state()!.classes[identity - 1]!
+          const replacement = definition ?? loadout.baseItems.find(item => item.slot === slot)?.definitionIndex
+          const definitions = [...new Set([...loadout.items.filter(item => item.slot !== slot).map(item => item.definitionIndex), ...(replacement === undefined ? [] : [replacement])])]
+          await this.#admitEquipment(definitions, this.#loaded ? this.#generation : 0)
+          return this.#equipmentProfile!.equip(identity, slot, definition)
+        },
         onClose: () => { this.#neutral() },
-        onPreview: preview => { if (!preview && this.#equipmentPreview) this.#releaseCosmeticPreviews(); this.#equipmentPreview = preview; this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current },
+        onPreview: preview => {
+          const previous = this.#equipmentPreview
+          this.#equipmentPreview = preview
+          if (!preview && previous) this.#releaseCosmeticPreviews()
+          if (preview && (!previous || previous.class !== preview.class || previous.equippedItems !== preview.equippedItems)) {
+            this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current
+          }
+        },
       })
     }
     this.#neutral()
@@ -2095,17 +2118,91 @@ export class Tf2Application {
   }
 
   #releaseCosmeticPreviews(): void {
-    const client = this.#client, generation = this.#generation
-    if (!client || !this.#artifacts || this.#view.phase !== "Ready") return
+    const client = this.#client, generation = this.#loaded ? this.#generation : 0
+    if (!client || generation === 0 && !this.#equipmentAdmissions.has(0)) return
     void client.models(generation, encodeModelPoseBatch([])).catch(error => {
       if (!this.#closed && generation === this.#generation && this.#view.phase === "Ready") this.#set({ phase: "Failed", detail: this.#failureDetail(error, "Model preview cleanup failed") })
     })
   }
 
+  async #releaseEquipmentAdmissions(except?: number): Promise<void> {
+    for (const [generation, admission] of this.#equipmentAdmissions) {
+      if (generation === except) continue
+      for (const source of admission.sources) await this.#client?.releaseResources(source)
+      this.#equipmentAdmissions.delete(generation)
+      if (generation === 0) this.#equipmentPanelArtifacts = undefined
+    }
+  }
+
+  async #admitEquipment(definitions: readonly number[], generation: number): Promise<void> {
+    const priorTask = this.#equipmentAdmissionTask
+    const epoch = this.#equipmentAdmissionEpoch, operation = this.#operation
+    const task = (async () => {
+      await priorTask
+      if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+      const previous = this.#equipmentAdmissions.get(generation)
+      const wanted = [...new Set(definitions)]
+      if (previous && wanted.every(definition => previous.definitions.has(definition)) && (generation !== 0 || wanted.length === previous.definitions.size)) return
+      const requested = generation === 0 ? wanted : wanted.filter(definition => !previous?.definitions.has(definition))
+      const resources = new Map<string, Uint8Array>()
+      const configuration = await this.#decodeResourceSet(this.#resourceGraph!, requested.map(definition => `equipment-${definition}`), resources, operation.signal)
+      if (!configuration) throw new Error("Equipment admission did not create a bounded resource generation")
+      let retained = false
+      try {
+        const profile = this.#renderLevel === 2 ? 1 : 0
+        const bytes = await this.#client!.admitEquipmentModels(generation, requested, configuration, profile)
+        const artifacts = parseEquipmentModelArtifacts(bytes, resources)
+        if (epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+        this.#equipmentPreparing = true
+        await Promise.all([this.#displayTask, this.#equipmentRenderTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
+        if (!this.#renderer) {
+          this.#renderer = await createRenderer({ canvas: this.#canvas,
+            configuration: { ...(profile === 1 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" }, powerPreference: "high-performance",
+            sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
+            textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy } })
+          this.#resizeRenderer()
+        }
+        if (epoch !== this.#equipmentAdmissionEpoch) throw new DOMException("Equipment admission was replaced", "AbortError")
+        await this.#renderer.admitModels({ models: artifacts.geometry, modelMaterials: artifacts.modelMaterials, authoredTextures: artifacts.authoredTextures,
+          materialStates: artifacts.materialStates, modelFacing: this.#modelFacing(artifacts), particleTextures: artifacts.particleTextures })
+        if (generation === 0) {
+          this.#equipmentPanelArtifacts = artifacts
+          if (previous) for (const source of previous.sources) await this.#client!.releaseResources(source)
+          this.#equipmentAdmissions.set(0, { definitions: new Set(wanted), sources: new Set([configuration.generation]) })
+        } else {
+          if (!this.#artifacts || generation !== this.#generation) throw new DOMException("Equipment map was replaced", "AbortError")
+          this.#artifacts = Object.freeze({ ...this.#artifacts, models: new Map([...this.#artifacts.models, ...artifacts.models]),
+            materialStates: new Map([...this.#artifacts.materialStates, ...artifacts.materialStates]), modelMaterials: new Map([...this.#artifacts.modelMaterials, ...artifacts.modelMaterials]),
+            authoredTextures: new Map([...this.#artifacts.authoredTextures, ...artifacts.authoredTextures]) })
+          this.#viewmodels?.updateArtifacts(this.#artifacts)
+          this.#equipmentAdmissions.set(generation, { definitions: new Set([...(previous?.definitions ?? []), ...wanted]), sources: new Set([...(previous?.sources ?? []), configuration.generation]) })
+        }
+        retained = true
+        const camera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: 30, near: 1, far: 16384 * Math.sqrt(3) }
+        if (artifacts.particleTextures.length) await this.#renderer.prepareParticlePipelines(camera)
+      } finally {
+        this.#equipmentPreparing = false
+        if (!retained) await this.#client?.releaseResources(configuration.generation).catch(() => {})
+      }
+    })()
+    this.#equipmentAdmissionTask = task
+    try { await task } finally { if (this.#equipmentAdmissionTask === task) this.#equipmentAdmissionTask = undefined }
+  }
+
   #renderEquipment(): void {
-    const preview = this.#equipmentPreview, renderer = this.#renderer, client = this.#client, artifacts = this.#artifacts
+    const preview = this.#equipmentPreview, renderer = this.#renderer, client = this.#client
+    if (!preview || this.#equipmentAdmissionTask || this.#equipmentPreparing) return
+    const generation = this.#loaded ? this.#generation : 0
+    const admission = this.#equipmentAdmissions.get(generation)
+    if (!admission || !preview.equippedItems.every(item => admission.definitions.has(item.definitionIndex)) || generation === 0 && admission.definitions.size !== preview.equippedItems.length) {
+      void this.#admitEquipment(preview.equippedItems.map(item => item.definitionIndex), generation).catch(error => {
+        if (this.#equipmentPreview === preview && error?.name !== "AbortError") this.#set({ phase: "Failed", gameUi: "failure", detail: String(error) })
+      })
+      return
+    }
+    const artifacts = generation === 0 ? this.#equipmentPanelArtifacts : this.#artifacts
     if (!preview || !renderer || !client || !artifacts || this.#equipmentRenderTask || this.#displayTask || this.#classSelectionRenderTask || this.#teamSelectionRenderTask) return
-    const generation = this.#generation, now = this.#frameClock.current
+    const now = this.#frameClock.current
     const player = tf2ClassPresentation(preview.class), artifact = artifacts.models.get(player.model)
     if (!artifact) return
     const profile = this.#equipmentProfile!.state()!
@@ -2126,7 +2223,7 @@ export class Tf2Application {
         skin, lod: 0, bodygroups: artifact.bodygroupCounts.map(() => 0),
         lighting: { origin: preview.origin, angles: preview.angles, cameraPosition: [0, 0, 0], cameraAngles: [0, 0, 0] },
       }]))
-      if (this.#equipmentPreview !== preview || generation !== this.#generation) return
+      if (this.#equipmentPreview !== preview || generation !== (this.#loaded ? this.#generation : 0)) return
       const pose = poses.find(pose => pose.role === "single")
       if (!pose) throw new Error("Equipment player pose is unavailable")
       const mergedModels = poses.filter(pose => pose.role !== "single" && pose.role !== "hand").map(pose => ({ model: pose.model,
@@ -2166,7 +2263,7 @@ export class Tf2Application {
   }
 
   #renderClassSelection(): void {
-    if (this.#preparingModelPipelines) return
+    if (this.#preparingModelPipelines || this.#equipmentPreparing) return
     if (!this.#renderer || !this.#client || !this.#artifacts || this.#classSelectionModelPanels.length === 0 || this.#classSelectionRenderTask || this.#displayTask || this.#teamSelectionRenderTask) return
     const renderer = this.#renderer
     const client = this.#client
@@ -2330,7 +2427,7 @@ export class Tf2Application {
   }
 
   #renderTeamSelection(): void {
-    if (this.#preparingModelPipelines) return
+    if (this.#preparingModelPipelines || this.#equipmentPreparing) return
     if (!this.#renderer || !this.#client || !this.#artifacts
       || this.#teamSelectionModelPanels.length === 0 || this.#teamSelectionRenderTask || this.#displayTask || this.#classSelectionRenderTask) return
     const renderer = this.#renderer
@@ -3643,6 +3740,7 @@ export class Tf2Application {
       }
       if (operation) this.#requireOperation(operation)
       await this.#client.activate(generation)
+      await this.#releaseEquipmentAdmissions(generation)
       finishReplacePhase("activation")
       this.#profileMapResidency("activated-before-prior-js-retirement", candidate?.dependencies, staged)
     } catch (error) {
@@ -3809,7 +3907,7 @@ export class Tf2Application {
     return artifacts.materialStates
   }
 
-  #modelFacing(artifacts: PresentationArtifacts): ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>> {
+  #modelFacing(artifacts: Pick<PresentationArtifacts, "models">): ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>> {
     return new Map([...artifacts.models].map(([identity, artifact]) => [identity.toLowerCase(), Object.freeze({
       frontFace: artifact.descriptor.frontFace,
       cullFace: artifact.descriptor.cullFace,
@@ -4364,7 +4462,7 @@ export class Tf2Application {
       if (owners & OPTIONS_FRAME_OWNER) this.#options?.frame(timeSeconds)
       if (owners & HUD_FRAME_OWNER) { this.#hudIntegration?.frame(timeSeconds); this.#engineer?.frame(timeSeconds) }
       if (this.#view.localMatchVisible) this.#localMatch?.frame(timeSeconds)
-      if (this.#equipment?.visible()) this.#equipment.frame(timeSeconds)
+      if (this.#equipment?.visible()) { this.#equipment.frame(timeSeconds); this.#renderEquipment() }
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
       if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
     } catch (error) {
@@ -4384,14 +4482,13 @@ export class Tf2Application {
       if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
       else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
     }
-    if (this.#equipment?.visible()) this.#renderEquipment()
-    else if (this.#classSelection?.state().visible) this.#renderClassSelection()
+    if (this.#classSelection?.state().visible) this.#renderClassSelection()
     else if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
     else this.#offerDisplay()
   }
 
   #offerDisplay():void{
-    if (this.#preparingModelPipelines) return
+    if (this.#preparingModelPipelines || this.#equipmentPreparing) return
     if (this.#equipment?.visible() || this.#classSelection?.state().visible || this.#teamSelection?.state().visible) return
     const frameProfiler = browserFrameProfiler()
     if (frameProfiler?.active) frameProfiler.counters.displayOffers! += 1
@@ -5808,6 +5905,8 @@ export class Tf2Application {
   }
 
   async #teardownGameplay(): Promise<void> {
+    this.#equipmentAdmissionEpoch += 1
+    if (this.#equipment?.visible()) this.#equipment.hide()
     this.#paused = true
     this.#neutral()
     this.#generation += 1
@@ -5818,7 +5917,11 @@ export class Tf2Application {
     this.#viewmodelSequenceCache.clear()
     this.#hudContext = undefined
     this.#hudContextIdentity = -1
-    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
+    await this.#equipmentAdmissionTask?.catch(() => {})
+    await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask, this.#equipmentRenderTask])
+    await this.#renderer?.dispose().catch(() => {})
+    this.#renderer = undefined
+    await this.#releaseEquipmentAdmissions()
     await this.#client?.shutdown().catch(() => {})
     this.#equipmentProfile?.close()
     this.#equipmentProfile = undefined
@@ -5828,8 +5931,6 @@ export class Tf2Application {
     this.#openingCache = undefined
     this.#projectiles?.dispose()
     this.#projectiles = undefined
-    await this.#renderer?.dispose().catch(() => {})
-    this.#renderer = undefined
     await this.#audio?.close().catch(() => {})
     this.#audio = undefined
     this.#audioContext = undefined
