@@ -7,6 +7,9 @@ use playsrc_movement::{
 };
 use playsrc_nav::{Area, Direction, Mesh, PathScratch};
 
+#[path = "bot_control_point.rs"]
+mod control_point;
+
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
     UniformRandomStream, Weapon, WeaponState, ballistics,
@@ -237,6 +240,9 @@ pub enum ObjectiveKind {
     Attack = 5,
     GetHealth = 6,
     GetAmmo = 7,
+    CapturePoint = 8,
+    DefendPoint = 9,
+    BlockCapture = 10,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +311,15 @@ pub struct Human {
     pub velocity: [f32; 3],
 }
 
+#[derive(Clone, Copy)]
+pub struct Objectives<'a> {
+    pub flags: Option<&'a crate::ctf::World>,
+    pub points: Option<&'a crate::control_point::World>,
+    pub in_setup: bool,
+    pub in_overtime: bool,
+    pub time_left: [f32; 2],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SupplyTarget {
     pub identity: u32,
@@ -365,6 +380,7 @@ struct Flag {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Scenario {
+    ControlPoints { initial: [f32; 3] },
     Payload {
         cart: [f32; 3],
         forward: [f32; 3],
@@ -485,6 +501,7 @@ struct Bot {
     path: Vec<u32>,
     path_index: usize,
     goal: [f32; 3],
+    point_action: control_point::Action,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     active_weapon: Option<Weapon>,
     last_fire_tick: Option<u64>,
@@ -514,6 +531,7 @@ pub struct BotWorld {
     configuration: Option<Configuration>,
     next_quota_think: f32,
     path_scratch: PathScratch,
+    point_navigation: control_point::Navigation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -529,6 +547,11 @@ pub enum Error {
 }
 
 impl BotWorld {
+    pub fn configure_control_points(&mut self, points: &crate::control_point::World) -> Result<(), Error> {
+        self.point_navigation = control_point::Navigation::compile(&self.mesh, points, &self.spawns)?;
+        Ok(())
+    }
+
     pub fn new<W: GameplayWorld>(
         mut mesh: Mesh,
         graph: &Graph,
@@ -601,10 +624,12 @@ impl BotWorld {
             }
         }
         let scenario = scenario(graph, objectives)?;
+        let point_navigation = control_point::Navigation::default();
         Ok(Self {
             mesh: Arc::new(mesh),
             spawns,
             scenario,
+            point_navigation,
             bots: BTreeMap::new(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             next_name: None,
@@ -1036,6 +1061,7 @@ impl BotWorld {
                     path: Vec::new(),
                     path_index: 0,
                     goal,
+                    point_action: control_point::Action::default(),
                     loadout,
                     active_weapon,
                     last_fire_tick: None,
@@ -1064,7 +1090,7 @@ impl BotWorld {
         human: Human,
         supplies: &[SupplyTarget],
         random: &mut UniformRandomStream,
-        objectives: Option<&crate::ctf::World>,
+        objectives: Option<Objectives<'_>>,
     ) -> Result<Vec<Attack>, Error> {
         if self.bots.is_empty() {
             return Ok(Vec::new());
@@ -1149,7 +1175,7 @@ impl BotWorld {
                 .and_then(|identity| actors.get(identity).filter(|actor| actor.alive));
             select_weapon(bot, threat, tick, self.tick_interval);
             let authoritative =
-                objectives.and_then(|world| world.bot_objective(bot.identity, bot.team));
+                objectives.and_then(|o| o.flags).and_then(|world| world.bot_objective(bot.identity, bot.team));
             if let Some(flag) = authoritative {
                 bot.carrying_flag = (flag.carrier == Some(bot.identity)).then_some(
                     if bot.team == PlayerTeam::Red {
@@ -1214,6 +1240,8 @@ impl BotWorld {
             };
             let (objective_kind, goal) = if let Some(supply) = selected_supply {
                 supply
+            } else if let Some(frame) = objectives.filter(|o| o.points.is_some()) {
+                control_point::goal(bot, frame, &self.point_navigation, mesh, now, tick, threat, random)?
             } else if let Some(flag) = authoritative {
                 if flag.carrier == Some(bot.identity) {
                     (
@@ -1287,6 +1315,9 @@ impl BotWorld {
                     ObjectiveKind::Attack | ObjectiveKind::GetHealth | ObjectiveKind::GetAmmo => {
                         (0.3, 0.5)
                     }
+                    ObjectiveKind::CapturePoint if bot.point_action.on_point => (0.5, 1.0),
+                    ObjectiveKind::CapturePoint | ObjectiveKind::DefendPoint => (2.0, 3.0),
+                    ObjectiveKind::BlockCapture => (0.5, 1.0),
                 };
                 bot.next_repath_tick =
                     tick + ticks(random.random_float(minimum, maximum), self.tick_interval);
@@ -1346,7 +1377,7 @@ impl BotWorld {
                 modifiers: MovementModifiers::default(),
             }
             .resolve();
-            let should_move = planar > 5.0;
+            let should_move = planar > 5.0 && !(matches!(scenario, Scenario::ControlPoints { .. }) && objectives.is_some_and(|o| o.in_setup));
             let move_yaw = if planar > 0.0 {
                 delta[1].atan2(delta[0])
             } else {
@@ -2637,6 +2668,7 @@ fn objective(
     carrying_flag: Option<PlayerTeam>,
 ) -> (ObjectiveKind, [f32; 3]) {
     match scenario {
+        Scenario::ControlPoints { initial } => (ObjectiveKind::CapturePoint, initial),
         Scenario::Payload { cart, forward } if team == PlayerTeam::Blue => {
             let position = if let Some(threat) = threat {
                 let away = [cart[0] - threat[0], cart[1] - threat[1]];
@@ -2680,6 +2712,11 @@ fn objective(
 }
 
 fn scenario(graph: &Graph, objectives: Option<&crate::ctf::World>) -> Result<Scenario, Error> {
+    if !graph.entities.iter().any(|e| classname(e, b"team_train_watcher")) {
+        if let Some(point) = graph.entities.iter().find(|e| classname(e, b"team_control_point")) {
+            return Ok(Scenario::ControlPoints { initial: vector(point, b"origin").ok_or(Error::InvalidEntity)? });
+        }
+    }
     if let Some(watcher) = graph
         .entities
         .iter()
@@ -2933,6 +2970,43 @@ mod tests {
     }
 
     #[test]
+    fn control_point_bot_walks_nav_to_capture_then_defends_authoritative_owner() {
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "10 50 1"}
+            {"classname" "info_player_teamspawn" "TeamNum" "3" "origin" "250 50 1"}
+            {"classname" "team_control_point_master"}
+            {"classname" "tf_logic_koth"}
+            {"classname" "team_control_point" "targetname" "point" "point_index" "0" "origin" "150 50 1"}
+            {"classname" "trigger_capture_area" "area_cap_point" "point" "model" "*1" "origin" "150 50 1" "area_time_to_cap" "1" "team_cancap_2" "1" "team_cancap_3" "1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        let mut points = crate::control_point::World::from_graph(&graph).unwrap().unwrap();
+        points.set_model_bounds(&[playsrc_entity::ModelBounds { model: 1, mins: [-24.0,-24.0,0.0], maxs: [24.0,24.0,100.0] }]);
+        let mut bots = BotWorld::new(fixture_mesh(), &graph, &Floor, 0.015, None).unwrap();
+        bots.configure_control_points(&points).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        bots.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Soldier), team: Some(PlayerTeam::Red), difficulty: Difficulty::Hard }, PlayerTeam::Blue, PlayerClass::Soldier, &mut random).unwrap();
+        let initial = bots.snapshots()[0].position;
+        let facts = crate::control_point::Facts { points_may_be_captured: true, round_running: true, koth_timer_remaining: Some([180.0;2]), timer_may_expire: true, ..crate::control_point::Facts::default() };
+        let mut captured = false;
+        let mut defended = false;
+        let mut maximum_travel = 0.0_f32;
+        for tick in 0..1000 {
+            bots.advance(&Floor, tick, human_far(), &[], &mut random, Some(Objectives { flags: None, points: Some(&points), in_setup: false, in_overtime: false, time_left: [100.0;2] })).unwrap();
+            let bot = &bots.snapshots()[0];
+            maximum_travel = maximum_travel.max(distance(initial,bot.position));
+            defended |= bot.objective == ObjectiveKind::DefendPoint;
+            let actor = crate::control_point::Actor::active(bot.identity,bot.team,bot.class,bot.position,PLAYER_HULL);
+            let mut events = Vec::new();
+            points.step(tick as f32 * 0.015,facts,&[actor],&Floor,&mut events).unwrap();
+            captured |= events.iter().any(|e| matches!(e, crate::control_point::Event::Captured { .. }));
+        }
+        assert!(maximum_travel > 100.0);
+        assert!(captured);
+        assert!(defended);
+        assert_eq!(points.points()[0].owner, PlayerTeam::Red);
+    }
+
+    #[test]
     fn capture_objectives_follow_live_flag_carriers_and_authored_brush_centers() {
         let graph = playsrc_entity::parse(
             b"{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"2\"\"origin\"\"10 50 1\"}{\"classname\"\"info_player_teamspawn\"\"TeamNum\"\"3\"\"origin\"\"250 50 1\"}{\"classname\"\"item_teamflag\"\"TeamNum\"\"2\"\"origin\"\"250 50 1\"}{\"classname\"\"item_teamflag\"\"TeamNum\"\"3\"\"origin\"\"10 50 1\"}{\"classname\"\"func_capturezone\"\"TeamNum\"\"2\"\"model\"\"*1\"}{\"classname\"\"func_capturezone\"\"TeamNum\"\"3\"\"model\"\"*2\"}\0",
@@ -3006,7 +3080,7 @@ mod tests {
                 },
                 &[],
                 &mut random,
-                Some(&objectives),
+                Some(Objectives { flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
             )
             .unwrap();
         assert_eq!(world.snapshots()[0].objective, ObjectiveKind::DeliverFlag);
@@ -3331,7 +3405,7 @@ mod tests {
                     position: [175.0, 50.0, 1.0],
                 }],
                 &mut random,
-                Some(&objectives),
+                Some(Objectives { flags: Some(&objectives), points: None, in_setup: false, in_overtime: false, time_left: [0.0;2] }),
             )
             .unwrap();
         assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);

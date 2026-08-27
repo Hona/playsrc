@@ -121,6 +121,7 @@ pub struct Point {
     pub unlock_at: Option<f32>,
     pub visible: bool,
     pub model_visible: bool,
+    pub bots_ignore: bool,
     pub models: [String; 4],
     pub icons: [String; 4],
     pub overlays: [String; 4],
@@ -147,6 +148,7 @@ pub struct Area {
     pub point: usize,
     pub model: usize,
     pub origin: [f32; 3],
+    pub bounds: Option<([f32; 3], [f32; 3])>,
     pub disabled: bool,
     pub cap_seconds: f32,
     pub teams: [TeamCapture; 4],
@@ -347,6 +349,7 @@ impl World {
                 unlock_at: None,
                 visible: integer(entity, b"spawnflags", 0) & 1 == 0,
                 model_visible: integer(entity, b"spawnflags", 0) & 2 == 0,
+                bots_ignore: integer(entity, b"spawnflags", 0) & 16 != 0,
                 models: std::array::from_fn(|t| text(entity, format!("team_model_{t}").as_bytes())),
                 icons: std::array::from_fn(|t| text(entity, format!("team_icon_{t}").as_bytes())),
                 overlays: std::array::from_fn(|t| {
@@ -392,6 +395,7 @@ impl World {
                 point,
                 model,
                 origin: vector(e, b"origin")?,
+                bounds: None,
                 disabled,
                 cap_seconds: number(e, b"area_time_to_cap", 0.0),
                 teams,
@@ -449,6 +453,27 @@ impl World {
 
     pub fn points(&self) -> &[Point] {
         &self.points
+    }
+
+    pub fn set_model_bounds(&mut self, bounds: &[playsrc_entity::ModelBounds]) {
+        for area in &mut self.areas {
+            area.bounds = bounds.iter().find(|b| b.model == area.model).map(|b| (b.mins, b.maxs));
+        }
+    }
+
+    pub fn bot_capture_points(&self, team: PlayerTeam) -> impl Iterator<Item = &Point> {
+        self.points.iter().filter(move |point| {
+            (self.koth && self.points.len() == 1) || (point.owner != team && !point.bots_ignore
+                && self.areas.iter().any(|a| a.point == point.index && a.teams[slot(team)].can_cap)
+                && self.team_may_capture(team, point.index, self.facts.waiting_for_players))
+        })
+    }
+
+    pub fn bot_defend_points(&self, team: PlayerTeam) -> impl Iterator<Item = &Point> {
+        let enemy = if team == PlayerTeam::Red { PlayerTeam::Blue } else { PlayerTeam::Red };
+        self.points.iter().filter(move |point| point.owner == team && !point.bots_ignore
+            && self.areas.iter().any(|a| a.point == point.index && a.teams[slot(enemy)].can_cap)
+            && self.team_may_capture(enemy, point.index, self.facts.waiting_for_players))
     }
     pub fn areas(&self) -> &[Area] {
         &self.areas
