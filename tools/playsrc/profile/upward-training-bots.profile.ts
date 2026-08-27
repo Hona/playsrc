@@ -593,7 +593,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
           : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
         poll()
       }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) break
-      await page.mouse.click(Math.round(page.viewportSize()!.width / 2), Math.round(page.viewportSize()!.height / 2))
+      await page.bringToFront()
+      await canvas.focus()
+      await canvas.click()
       // The first native click requests capture; it is not a weapon-fire edge.
       // Both scenario modes must admit capture before sending actual held fire.
       await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - Date.now())) })
