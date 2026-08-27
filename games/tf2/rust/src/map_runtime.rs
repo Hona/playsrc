@@ -122,6 +122,7 @@ pub enum Effect {
     Hurt {
         trigger: u32,
         damage_per_second: f32,
+        damage_type: u32,
         contact: ContactKind,
     },
     Push {
@@ -1863,6 +1864,10 @@ impl MapRuntime {
                             }
                             TriggerKind::Hurt => output.effects.push(Effect::Hurt {
                                 trigger: source,
+                                damage_type: match &entity.behavior {
+                                    BehaviorState::Trigger(state) => state.damage_type as u32,
+                                    _ => 0,
+                                },
                                 damage_per_second: f32::from_bits(match &entity.behavior {
                                     BehaviorState::Trigger(state) => state.mutable_value_bits,
                                     _ => 0,

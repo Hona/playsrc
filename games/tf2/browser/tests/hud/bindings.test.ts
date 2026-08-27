@@ -542,8 +542,8 @@ describe("immutable TF2 HUD binding", () => {
           tick: 31n, ordinal: 1, kind: "killfeed", notice: Object.freeze({
             killer: Object.freeze({ identity: tf2HudAvailable(1), name: "Soldier", team: 2 }),
             victim: Object.freeze({ identity: tf2HudAvailable(2), name: "Demoman", team: 3 }),
-            assister: unavailable("not-applicable"), weaponIcon: tf2HudAvailable("d_rocketlauncher"),
-            weaponIdentity: tf2HudAvailable(18), customKill: 0, critical: false, selfInflicted: false,
+            assister: unavailable("not-applicable"), weaponIcon: tf2HudAvailable("tf_projectile_rocket"),
+            weaponIdentity: tf2HudAvailable(18), customKill: 0, damageBits: 64, critical: false, selfInflicted: false,
             localPlayerInvolved: true, domination: false, revenge: false, silent: false,
           }),
         }),
@@ -779,7 +779,7 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       ]) }),
       events: Object.freeze([
         Object.freeze({ kind: 18 as const, detail: 12, subject: 2, auxiliary: 1,
-          values: Object.freeze([0, 1, 1, 0]) as readonly [number, number, number, number] }),
+          killingWeapon: "sniperrifle", values: Object.freeze([0, 1 << 20, 1, 0]) as readonly [number, number, number, number] }),
         Object.freeze({ kind: 15 as const, detail: 0, subject: 45, auxiliary: 1,
           values: Object.freeze([25, 200, 0, 0]) as readonly [number, number, number, number] }),
       ]),

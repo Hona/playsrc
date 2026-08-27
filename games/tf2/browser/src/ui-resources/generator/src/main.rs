@@ -1,5 +1,6 @@
 mod crosshair;
 mod class_selection;
+mod deathnotice;
 
 use playsrc_content::{Content, ProviderSpec, Resolution};
 use playsrc_keyvalues::{ConditionEnvironment, EscapeMode, Node, ScalarKind, Value};
@@ -119,6 +120,8 @@ struct Report {
 }
 
 const CODE_LOCALIZATION_TOKENS: &[&str] = &[
+    "#DeathMsg_Fall", "#DeathMsg_Suicide", "#DeathMsg_AssistedSuicide", "#DeathMsg_AssistedSuicide_Multiple",
+    "#Msg_Dominating", "#Msg_Revenge",
     "#Gametype_CTF",
     "#TF_CLOAK",
     "#Gametype_Escort",
@@ -1888,6 +1891,7 @@ fn main() -> Result<(), String> {
         .ok_or_else(|| "generator has no ui-resources parent".to_owned())?
         .join("configured.generated.ts");
     fs::write(&output, generated.as_bytes()).map_err(|error| error.to_string())?;
+    deathnotice::write(&content, &report.content_build, output.parent().unwrap())?;
     crosshair::write(
         &content,
         &tf2,

@@ -40,6 +40,7 @@ import { tf2ClassPresentation } from "../class"
 import type { Tf2VguiResources } from "../ui-integration"
 import { Tf2HudCrosshairPresentation } from "./crosshair"
 import { Tf2HudScopePresentation } from "./scope"
+import { Tf2HudDeathNoticePresentation } from "./deathnotice"
 import { Tf2HudDamagePresentation, type Tf2DamageIndicatorInput } from "./damage"
 
 export type Tf2HudIntegrationDiagnostic = Readonly<{
@@ -79,6 +80,7 @@ export type Tf2HudIntegration = Readonly<{
   snapshot(): Tf2HudIntegrationSnapshot
   setPlayerClassUsePlayerModel(value: boolean): void
   setCrosshair(value: Tf2HudCrosshair): void
+  setDeathNoticeTime(seconds: number): void
   setScoreboardVisibility(visible: boolean): void
   reset(reason: "map-replaced" | "disconnect"): void
   destroy(): void
@@ -225,7 +227,7 @@ class Integration implements Tf2HudIntegration {
   #publishedScoreboard?: Tf2HudScoreboard
   #modelPanel: Tf2HudModelPanel | null = null
   #modelPanelFingerprint = ""
-  readonly #deathNotices: Array<{ panel: VguiPanelId; expires: bigint }> = []
+  readonly #deathNotices: Tf2HudDeathNoticePresentation
   #previous: Tf2HudAvailability<Tf2HudSnapshot> = tf2HudUnavailable("initial")
   #binding: Tf2HudBinding | null = null
   #viewport: VguiViewport
@@ -311,7 +313,6 @@ class Integration implements Tf2HudIntegration {
       ["HudItemEffectMeter", "CTFHudElement"],
       ["HudMenuSpyDisguise", "CTFHudElement"],
       ["HudCrosshair", "CTFHudElement"],
-      ["HudDeathNotice", "CTFHudElement"],
       ["HudMedicCharge", "CTFHudElement"],
     ] as const
     for (const [name, control] of roots) apply(this.#runtime, { kind: "create-panel", parent: 1, control, name })
@@ -379,6 +380,7 @@ class Integration implements Tf2HudIntegration {
     this.#captureBaseBounds(panels)
     })
     this.#crosshair = new Tf2HudCrosshairPresentation(request.root)
+    this.#deathNotices = new Tf2HudDeathNoticePresentation(request.root, request.resources, request.viewport)
     this.#scope = new Tf2HudScopePresentation(request.root)
     if (request.damageIndicator) this.#damage = new Tf2HudDamagePresentation(request.root, request.damageIndicator)
   }
@@ -1001,29 +1003,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-panel-state", panel: this.#objective.notification, visible: false })
     }
     this.#publishWinPanel(round, objectives ?? undefined, publication, binding.scoreboard.kind === "available" ? binding.scoreboard.value : undefined)
-    for (let index = this.#deathNotices.length - 1; index >= 0; index -= 1) {
-      const notice = this.#deathNotices[index]!
-      if (notice.expires <= publication.snapshot.tick) {
-        apply(this.#runtime, { kind: "delete-panel", panel: notice.panel, deferred: false })
-        this.#deathNotices.splice(index, 1)
-      }
-    }
-    for (const command of binding.commands) {
-      if (command.kind !== "killfeed-notice") continue
-      const parent = this.#panels.get("huddeathnotice")
-      if (parent === undefined) continue
-      if (this.#deathNotices.length === 4) {
-        apply(this.#runtime, { kind: "delete-panel", panel: this.#deathNotices.shift()!.panel, deferred: false })
-      }
-      const label = apply(this.#runtime, { kind: "create-panel", parent, control: "Label",
-        name: `DeathNotice${command.tick}_${command.ordinal}` })!
-      apply(this.#runtime, { kind: "set-panel-state", panel: parent, visible: true })
-      apply(this.#runtime, { kind: "set-bounds", panel: label, bounds: { x: 0, y: this.#deathNotices.length * 20,
-        width: Math.min(this.#viewport.width, 420), height: 28 } })
-      apply(this.#runtime, { kind: "mutate-control", panel: label, mutation: {
-        text: `${command.notice.killer.name}  ${command.notice.weaponIcon.kind === "available" ? command.notice.weaponIcon.value : ""}  ${command.notice.victim.name}` } })
-      this.#deathNotices.push({ panel: label, expires: command.tick + BigInt(command.notice.localPlayerInvolved ? 800 : 400) })
-    }
+    this.#deathNotices.publish(binding, Math.fround(Math.fround(Number(publication.snapshot.tick)) * Math.fround(0.015)), Math.fround(0.015))
     const medic = this.#medicPanels
     if (medic) {
       const source = publication.snapshot as typeof publication.snapshot & { medigunCharge: number; medigunReleasing: boolean }
@@ -1085,6 +1065,7 @@ class Integration implements Tf2HudIntegration {
       apply(this.#runtime, { kind: "set-viewport", viewport })
       this.#viewport = Object.freeze({ ...viewport })
       this.#scope.setViewport(viewport)
+      this.#deathNotices.setViewport(viewport)
       this.#captureBaseBounds()
       if (this.#binding) {
         this.#publishedValues.clear()
@@ -1176,6 +1157,8 @@ class Integration implements Tf2HudIntegration {
     })
   }
 
+  setDeathNoticeTime(seconds: number): void { this.#deathNotices.setDuration(seconds) }
+
   reset(reason: "map-replaced" | "disconnect"): void {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
     void reason
@@ -1211,8 +1194,7 @@ class Integration implements Tf2HudIntegration {
       this.#objectiveCarrying = false
       this.#waitingPanelVisible = false
       this.#waitingPanelEnding = false
-      for (const notice of this.#deathNotices) apply(this.#runtime, { kind: "delete-panel", panel: notice.panel, deferred: false })
-      this.#deathNotices.length = 0
+      this.#deathNotices.reset()
     })
   }
   destroy(): void {
@@ -1220,6 +1202,7 @@ class Integration implements Tf2HudIntegration {
     this.#destroyed = true
     this.#crosshair.destroy()
     this.#scope.destroy()
+    this.#deathNotices.destroy()
     this.#damage?.reset()
     apply(this.#runtime, { kind: "destroy" })
   }

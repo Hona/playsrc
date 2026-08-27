@@ -203,7 +203,7 @@ pub struct World {
 pub struct Effects {
     pub healing: i32,
     pub teleport: Option<([f32; 3], f32)>,
-    pub sentry_target: Option<(u32, i32)>,
+    pub sentry_target: Option<(u32, i32, u8)>,
 }
 
 impl World {
@@ -695,7 +695,7 @@ impl World {
                                 },
                                 self.interval,
                             );
-                        effects.sentry_target = Some((target, SENTRY_DAMAGE));
+                        effects.sentry_target = Some((target, SENTRY_DAMAGE, building.snapshot.level));
                     }
                 }
                 Kind::Dispenser => {
@@ -1076,7 +1076,7 @@ mod tests {
                 &mut metal,
             )
             .unwrap();
-        assert_eq!(first.sentry_target, Some((2, 16)));
+        assert_eq!(first.sentry_target, Some((2, 16, 1)));
         assert_eq!(world.buildings[0].snapshot.target, Some(2));
         assert_eq!(world.buildings[0].snapshot.shells, 149);
         assert_eq!(world.buildings[0].next_attack_tick, ticks(0.2, 0.015));

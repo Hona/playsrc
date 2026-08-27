@@ -617,6 +617,7 @@ export class Tf2Application {
   #scoreboardVisible = false
   #scoreboardPingAsText = false
   #playerClassUsePlayerModel = true
+  #deathNoticeTime = 6
   #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
   #options?: Tf2OptionsPresentation
@@ -2125,6 +2126,7 @@ export class Tf2Application {
 
       },
     })
+    this.#hudIntegration.setDeathNoticeTime(this.#deathNoticeTime)
     const panels = this.#hudIntegration.snapshot().vgui.panels
     this.#hudRootCounts = Object.freeze({
       playerStatus: panels.filter((panel) => panel.name === "HudPlayerStatus").length,
@@ -2672,6 +2674,8 @@ export class Tf2Application {
           disposition: "visible" as const,
           displayValue: String(Number(this.#playerClassUsePlayerModel)),
         }),
+        Object.freeze({ kind: "convar" as const, name: "hud_deathnotice_time", disposition: "visible" as const,
+          displayValue: String(this.#deathNoticeTime) }),
         Object.freeze({
           kind: "convar" as const,
           name: "developer",
@@ -2903,6 +2907,17 @@ export class Tf2Application {
         this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
       }
       this.#output(`developer = ${this.#developer}`, true)
+      return
+    }
+    if (command === "hud_deathnotice_time" && tokens.length <= 1) {
+      if (tokens.length === 1) {
+        const value = Math.fround(Number.parseFloat(tokens[0]!) || 0)
+        if (!Number.isFinite(value)) { this.#output(`${command} requires finite seconds`); return }
+        this.#deathNoticeTime = value
+        this.#hudIntegration?.setDeathNoticeTime(value)
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      this.#output(`"${command}" = "${this.#deathNoticeTime}" ( def. "6" )`)
       return
     }
     if (command === "cl_hud_playerclass_use_playermodel" && tokens.length <= 1) {
