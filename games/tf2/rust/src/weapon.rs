@@ -1,4 +1,43 @@
 use super::Weapon;
+use crate::class::AmmoType;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttributeTarget {
+    Weapon,
+    Player,
+}
+
+/// Live local-game inputs to the SDK's clip, ammo, firing, and reload hooks.
+/// Resolve again when these inputs or equipment providers change. Existing
+/// attack/reload deadlines are not retroactively rescaled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProfileContext {
+    pub ammo: Option<AmmoType>,
+    pub gun: bool,
+    pub blast_impact: bool,
+    pub decapitations: i32,
+    pub kill_combo: i32,
+    pub health_fraction: f32,
+    pub blast_jumping: bool,
+    pub healer_count: usize,
+    pub reload_speed_scale: f32,
+}
+
+impl Default for ProfileContext {
+    fn default() -> Self {
+        Self {
+            ammo: None,
+            gun: false,
+            blast_impact: false,
+            decapitations: 0,
+            kill_combo: 0,
+            health_fraction: 1.0,
+            blast_jumping: false,
+            healer_count: 0,
+            reload_speed_scale: 1.0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -48,6 +87,88 @@ pub struct WeaponProfile {
 }
 
 impl WeaponProfile {
+    /// Apply the normal local TF2 weapon hooks to an unmodified script profile.
+    /// The closure must query the equipped AttributeGraph, not a second table
+    /// of item statistics. Integer hooks use Source's nearest-even conversion.
+    pub fn with_attributes(
+        mut self,
+        context: ProfileContext,
+        mut query: impl FnMut(AttributeTarget, &str, f32) -> f32,
+    ) -> Self {
+        use AttributeTarget::{Player, Weapon};
+        if self.maximum_clip != 0 {
+            let clip = query(Weapon, "mult_clipsize", self.maximum_clip as f32).round_ties_even();
+            self.maximum_clip = if context.blast_impact {
+                let atomic =
+                    query(Weapon, "mult_clipsize_upgrade_atomic", 0.0).round_ties_even() as i32;
+                let on_kill =
+                    query(Weapon, "clipsize_increase_on_kill", 0.0).round_ties_even() as i32;
+                let earned = if on_kill != 0 {
+                    context.decapitations.min(on_kill)
+                } else {
+                    0
+                };
+                (clip + (atomic + earned) as f32) as u16
+            } else {
+                query(Weapon, "mult_clipsize_upgrade", clip).round_ties_even() as u16
+            };
+        }
+        if let Some(ammo) = context.ammo {
+            let hook = match ammo {
+                AmmoType::Primary => "mult_maxammo_primary",
+                AmmoType::Secondary => "mult_maxammo_secondary",
+                AmmoType::Metal => "mult_maxammo_metal",
+                AmmoType::Grenades1 => "mult_maxammo_grenades1",
+                AmmoType::Grenades2 => "",
+            };
+            if !hook.is_empty() {
+                self.maximum_reserve =
+                    query(Player, hook, self.maximum_reserve as f32).round_ties_even() as u16;
+            }
+        }
+
+        let delay_multiplier = query(Weapon, "mult_postfiredelay", 1.0)
+            - query(Weapon, "kill_combo_fire_rate_boost", 0.0) * context.kill_combo as f32;
+        self.fire_delay *= delay_multiplier;
+        if context.gun {
+            self.fire_delay = query(Player, "hwn_mult_postfiredelay", self.fire_delay);
+            let reduced_health = query(Weapon, "mult_postfiredelay_with_reduced_health", 1.0);
+            if reduced_health != 1.0 {
+                let fraction = ((context.health_fraction - 0.2) / (0.9 - 0.2)).clamp(0.0, 1.0);
+                self.fire_delay *= reduced_health + (1.0 - reduced_health) * fraction;
+            }
+            self.fire_delay = query(
+                Weapon,
+                if context.blast_jumping {
+                    "rocketjump_attackrate_bonus"
+                } else {
+                    "mul_nonrocketjump_attackrate"
+                },
+                self.fire_delay,
+            );
+            if self.maximum_clip == 0 {
+                self.fire_delay = query(Weapon, "fast_reload", self.fire_delay);
+            }
+        }
+        for time in [&mut self.reload_start, &mut self.reload_round] {
+            // A zero profile duration denotes no such reload phase. Do not
+            // create a new phase for clipless or magazine-reloaded weapons.
+            if *time == 0.0 {
+                continue;
+            }
+            for hook in ["mult_reload_time", "mult_reload_time_hidden", "fast_reload"] {
+                *time = query(Weapon, hook, *time);
+            }
+            *time = query(Player, "hwn_mult_reload_time", *time);
+            *time *= context.reload_speed_scale;
+            if context.healer_count == 1 {
+                *time = query(Player, "mult_reload_time_while_healed", *time);
+            }
+            *time = time.max(0.00001);
+        }
+        self
+    }
+
     pub const fn configured(weapon: Weapon) -> Self {
         match weapon {
             Weapon::RocketLauncher => Self {
@@ -290,6 +411,7 @@ pub enum MinigunState {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponRuntime {
+    pub resolved_profile: WeaponProfile,
     pub weapon: Weapon,
     pub clip: u16,
     pub reserve: u16,
@@ -320,8 +442,12 @@ pub enum PrimaryResult {
 
 impl WeaponRuntime {
     pub fn full(weapon: Weapon) -> Self {
-        let profile = WeaponProfile::configured(weapon);
+        Self::full_with_profile(weapon, WeaponProfile::configured(weapon))
+    }
+
+    pub fn full_with_profile(weapon: Weapon, profile: WeaponProfile) -> Self {
         Self {
+            resolved_profile: profile,
             weapon,
             clip: profile.maximum_clip,
             reserve: profile.maximum_reserve,
@@ -345,7 +471,7 @@ impl WeaponRuntime {
     }
 
     pub fn profile(self) -> WeaponProfile {
-        WeaponProfile::configured(self.weapon)
+        self.resolved_profile
     }
 
     pub fn sniper_damage(self) -> Option<f32> {
@@ -576,7 +702,8 @@ impl WeaponRuntime {
         }
         if self.weapon == Weapon::Fists {
             if (held || secondary) && tick >= self.next_primary_tick {
-                self.next_primary_tick = tick.saturating_add(delay_ticks(0.8, tick_interval));
+                self.next_primary_tick =
+                    tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval));
                 self.smack_due_tick = Some(tick.saturating_add(delay_ticks(0.2, tick_interval)));
                 activities.push(ActivityEvent {
                     tick,
@@ -699,7 +826,8 @@ impl WeaponRuntime {
                 }
                 self.firing_begin_tick.get_or_insert(tick);
                 self.reserve -= 1;
-                self.next_primary_tick = tick.saturating_add(delay_ticks(0.1, tick_interval));
+                self.next_primary_tick =
+                    tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval));
                 self.idle_due_tick = Some(tick.saturating_add(delay_ticks(0.2, tick_interval)));
                 activities.push(ActivityEvent {
                     tick,
@@ -772,6 +900,194 @@ fn elapsed_seconds(begin: u64, tick: u64, tick_interval: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rocket_context() -> ProfileContext {
+        ProfileContext {
+            ammo: Some(AmmoType::Primary),
+            gun: true,
+            blast_impact: true,
+            ..ProfileContext::default()
+        }
+    }
+
+    #[test]
+    fn profile_hooks_preserve_stock_values_and_do_not_invent_reload_phases() {
+        for weapon in [
+            Weapon::RocketLauncher,
+            Weapon::Original,
+            Weapon::StickybombLauncher,
+            Weapon::Scattergun,
+            Weapon::Pistol,
+            Weapon::Bat,
+            Weapon::Shotgun,
+            Weapon::Shovel,
+            Weapon::Minigun,
+            Weapon::HeavyShotgun,
+            Weapon::Fists,
+            Weapon::SniperRifle,
+            Weapon::Smg,
+            Weapon::Kukri,
+            Weapon::Flamethrower,
+            Weapon::FireAxe,
+            Weapon::SyringeGun,
+            Weapon::MediGun,
+            Weapon::Bonesaw,
+            Weapon::EngineerShotgun,
+            Weapon::EngineerPistol,
+            Weapon::Wrench,
+            Weapon::Revolver,
+            Weapon::Knife,
+        ] {
+            let script = WeaponProfile::configured(weapon);
+            assert_eq!(
+                script.with_attributes(rocket_context(), |_, _, input| input),
+                script
+            );
+        }
+    }
+
+    #[test]
+    fn clip_and_reserve_hooks_use_distinct_providers_and_source_integer_conversion() {
+        let script = WeaponProfile::configured(Weapon::RocketLauncher);
+        for (clip_multiplier, expected) in [(0.75, 3), (1.25, 5), (0.625, 2), (0.875, 4)] {
+            let profile = script.with_attributes(rocket_context(), |target, hook, input| {
+                match (target, hook) {
+                    (AttributeTarget::Weapon, "mult_clipsize") => input * clip_multiplier,
+                    (AttributeTarget::Player, "mult_maxammo_primary") => input * 3.0,
+                    _ => input,
+                }
+            });
+            assert_eq!(profile.maximum_clip, expected);
+            assert_eq!(profile.maximum_reserve, 60);
+            let runtime = WeaponRuntime::full_with_profile(Weapon::RocketLauncher, profile);
+            assert_eq!((runtime.clip, runtime.reserve), (expected, 60));
+            assert_eq!(runtime.profile(), profile);
+        }
+    }
+
+    #[test]
+    fn airstrike_clip_growth_is_capped_and_does_not_grant_rounds_or_retime_pending_shots() {
+        let script = WeaponProfile::configured(Weapon::RocketLauncher);
+        let mut runtime = WeaponRuntime::full(Weapon::RocketLauncher);
+        runtime.clip = 1;
+        runtime.reserve = 7;
+        runtime.next_primary_tick = 100;
+        runtime.reload_due_tick = Some(120);
+        for (kills, expected_clip) in [(0, 4), (1, 5), (4, 8), (8, 8)] {
+            runtime.resolved_profile = script.with_attributes(
+                ProfileContext {
+                    decapitations: kills,
+                    blast_jumping: true,
+                    ..rocket_context()
+                },
+                |target, hook, input| match (target, hook) {
+                    (AttributeTarget::Weapon, "clipsize_increase_on_kill") => 4.0,
+                    (AttributeTarget::Weapon, "rocketjump_attackrate_bonus") => input * 0.4,
+                    _ => input,
+                },
+            );
+            assert_eq!(runtime.profile().maximum_clip, expected_clip);
+            assert_eq!(runtime.profile().fire_delay, 0.8 * 0.4);
+            assert_eq!((runtime.clip, runtime.reserve), (1, 7));
+            assert_eq!(runtime.next_primary_tick, 100);
+            assert_eq!(runtime.reload_due_tick, Some(120));
+        }
+        runtime.refill();
+        assert_eq!((runtime.clip, runtime.reserve), (8, 20));
+    }
+
+    #[test]
+    fn reload_hooks_preserve_order_and_only_one_healer_enables_the_conditional_hook() {
+        let script = WeaponProfile::configured(Weapon::RocketLauncher);
+        for healers in [0, 1, 2] {
+            let mut calls = Vec::new();
+            let profile = script.with_attributes(
+                ProfileContext {
+                    healer_count: healers,
+                    ..rocket_context()
+                },
+                |target, hook, input| {
+                    if hook.contains("reload") {
+                        calls.push((target, hook.to_owned()));
+                    }
+                    match hook {
+                        "mult_reload_time" => input * 0.5,
+                        "mult_reload_time_hidden" => input + 0.1,
+                        "fast_reload" => input * 0.8,
+                        "hwn_mult_reload_time" => input * 0.9,
+                        "mult_reload_time_while_healed" => input * 0.6,
+                        _ => input,
+                    }
+                },
+            );
+            let extra = if healers == 1 { 0.6 } else { 1.0 };
+            assert_eq!(
+                profile.reload_start,
+                ((0.5 * 0.5 + 0.1) * 0.8) * 0.9 * extra
+            );
+            assert_eq!(
+                profile.reload_round,
+                ((script.reload_round * 0.5 + 0.1) * 0.8) * 0.9 * extra
+            );
+            let mut phase = vec![
+                (AttributeTarget::Weapon, "mult_reload_time".to_owned()),
+                (
+                    AttributeTarget::Weapon,
+                    "mult_reload_time_hidden".to_owned(),
+                ),
+                (AttributeTarget::Weapon, "fast_reload".to_owned()),
+                (AttributeTarget::Player, "hwn_mult_reload_time".to_owned()),
+            ];
+            if healers == 1 {
+                phase.push((
+                    AttributeTarget::Player,
+                    "mult_reload_time_while_healed".to_owned(),
+                ));
+            }
+            assert_eq!(calls, [phase.clone(), phase].concat());
+        }
+        let profile = script.with_attributes(rocket_context(), |_, hook, input| {
+            if hook == "mult_reload_time" {
+                -input
+            } else {
+                input
+            }
+        });
+        assert_eq!(profile.reload_start, 0.00001);
+        assert_eq!(profile.reload_round, 0.00001);
+    }
+
+    #[test]
+    fn resolved_profile_drives_real_ammo_consumption_refire_and_reload_deadlines() {
+        let profile = WeaponProfile::configured(Weapon::RocketLauncher).with_attributes(
+            rocket_context(),
+            |_, hook, input| match hook {
+                "mult_clipsize" => input * 0.75,
+                "mult_postfiredelay" | "mult_reload_time" => input * 0.5,
+                _ => input,
+            },
+        );
+        let mut runtime = WeaponRuntime::full_with_profile(Weapon::RocketLauncher, profile);
+        let mut activities = Vec::new();
+        assert!(matches!(
+            runtime.primary(0, 0.015, true, false, &mut activities),
+            PrimaryResult::Fired { .. }
+        ));
+        assert_eq!(runtime.clip, 2);
+        assert_eq!(runtime.next_primary_tick, delay_ticks(0.4, 0.015));
+        assert!(!runtime.start_reload(runtime.next_primary_tick - 1, 0.015, &mut activities));
+        assert!(runtime.start_reload(runtime.next_primary_tick, 0.015, &mut activities));
+        assert_eq!(
+            runtime.reload_due_tick,
+            Some(runtime.next_primary_tick + delay_ticks(0.25, 0.015))
+        );
+        let due = runtime.reload_due_tick.unwrap();
+        runtime.advance_reload(due, 0.015, &mut activities, &mut Vec::new());
+        assert_eq!(
+            runtime.reload_due_tick,
+            Some(due + delay_ticks(profile.reload_round, 0.015))
+        );
+    }
 
     #[test]
     fn demoman_stock_profiles_preserve_exact_scripts_without_inventing_grenade_physics() {
