@@ -41,6 +41,28 @@ describe("authored GPU texture residency", () => {
     expect(disposed).toBe(1)
   })
 
+  test("repeated exact handoffs keep one texture/template owner and constant resource count", async () => {
+    let disposed = 0
+    const resource = () => ({ dispose() { disposed++ } })
+    let owner = new OwnedResourceGeneration(1, 1), residency = new SharedTextureResidency(owner)
+    const texture = residency.retain("exact-input", resource), geometry = owner.add(resource()), material = owner.add(resource())
+    owner.activate()
+    for (let generation = 2; generation <= 26; generation++) {
+      const nextOwner = new OwnedResourceGeneration(1, generation), next = new SharedTextureResidency(nextOwner, 4, undefined, residency)
+      expect(next.retain("exact-input", () => { throw new Error("duplicate texture") })).toBe(texture)
+      next.commitTransfers([geometry, material])
+      nextOwner.activate()
+      residency.clear()
+      await owner.retire(Promise.resolve())
+      expect(owner.snapshot().resources).toBe(0)
+      expect(nextOwner.snapshot().resources).toBe(3)
+      expect(disposed).toBe(0)
+      owner = nextOwner; residency = next
+    }
+    owner.dispose()
+    expect(disposed).toBe(3)
+  })
+
   test("shares exact source identities across model, world, and decal owners", () => {
     const generation = new OwnedResourceGeneration(1, 1)
     const residency = new SharedTextureResidency(generation)
