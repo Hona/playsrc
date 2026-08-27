@@ -7,6 +7,7 @@ import { TRACE_START, TRACE_END, activeGameplayTraceWindow, chromiumPresentation
 import { attributeCompositorEvidence } from "./compositor-attribution"
 import { CPU_PROFILE_LIMITS, reconstructCpuProfile } from "./cpu-profile-time"
 import type { CpuProfile } from "./gameui-profile"
+import { validateUpwardCapturePlan, type UpwardCapturePlan } from "./upward-capture-plan"
 
 export const COMPOSITOR_TRACE_CATEGORIES = Object.freeze([
   "benchmark", "viz", "gpu", "cc", "renderer.scheduler", "toplevel", "toplevel.flow", "blink.user_timing",
@@ -125,7 +126,7 @@ export function analyzeCompositorEvidence(events: readonly RawTraceEvent[], prob
 export type BlobIdentity = Readonly<{ file: string; sha256: string; bytes: number }>
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json" | "main.cpuprofile"): Promise<BlobIdentity> {
+export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, suffix: "trace.json.gz" | "probes.json.gz" | "manifest.json" | "workers.json" | "main.cpuprofile" | "plan.json"): Promise<BlobIdentity> {
   const sha256 = digest(bytes)
   const file = `${sha256}.${suffix}`
   await mkdir(directory, { recursive: true })
@@ -136,6 +137,26 @@ export async function retainEvidenceBlob(directory: string, bytes: Uint8Array, s
       || digest(await readFile(path.join(directory, file))) !== sha256) throw new Error("Existing immutable trace evidence is corrupt")
   }
   return { file, sha256, bytes: bytes.byteLength }
+}
+
+export async function retainCapturePlan(directory: string, plan: UpwardCapturePlan) {
+  validateUpwardCapturePlan(plan)
+  return retainEvidenceBlob(directory, Buffer.from(JSON.stringify(plan)), "plan.json")
+}
+
+export async function loadCapturePlan(filename: string, manifest: any): Promise<UpwardCapturePlan | null> {
+  const artifact = manifest.identity.capturePlan as BlobIdentity | undefined
+  if (artifact === undefined) return null // Historical absence is unknown, not a guessed default.
+  if (!artifact || !/^[0-9a-f]{64}$/u.test(artifact.sha256) || artifact.file !== `${artifact.sha256}.plan.json`
+    || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > TRACE_LIMITS.probeBytes) throw new Error("Capture plan identity invalid")
+  const file = path.join(path.dirname(filename), artifact.file)
+  if ((await stat(file)).size !== artifact.bytes) throw new Error("Capture plan byte identity mismatch")
+  const bytes = await readFile(file)
+  if (bytes.length !== artifact.bytes || digest(bytes) !== artifact.sha256) throw new Error("Capture plan hash identity mismatch")
+  const plan = JSON.parse(bytes.toString("utf8"))
+  validateUpwardCapturePlan(plan)
+  if (plan.target !== manifest.identity.target || plan.entry !== manifest.identity.entry) throw new Error("Capture plan scenario identity mismatch")
+  return plan
 }
 
 type MainTarget = { targetId: string; type: string; url: string; browserContextId?: string }
@@ -293,9 +314,10 @@ export async function retainCompositorEvidence(options: Readonly<{
   categories?: readonly string[];
   maximumEvents?: number;
   mainCpu?: { evidence: MainCpuEvidence; profile: CpuProfile | undefined };
+  collectionErrors?: readonly string[];
 }>) {
   // Persist original bytes before parsing/analysis: malformed and overflow traces are evidence too.
-  const errors: string[] = []
+  const errors: string[] = [...(options.collectionErrors ?? [])]
   const limits = { ...TRACE_LIMITS, events: options.maximumEvents ?? TRACE_LIMITS.events }
   const trace = await retainEvidenceBlob(options.directory, options.raw.subarray(0, TRACE_LIMITS.compressedBytes), "trace.json.gz")
   if (trace.bytes !== options.raw.byteLength) errors.push("Raw trace exceeded the compressed byte bound")

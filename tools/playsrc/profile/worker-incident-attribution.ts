@@ -5,8 +5,9 @@ import type { WorkerCpuCapture } from "./worker-cpu-profiler"
 import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
-import { loadCompositorEvidence, TRACE_LIMITS } from "./compositor-evidence"
+import { loadCompositorEvidence, loadCapturePlan, TRACE_LIMITS } from "./compositor-evidence"
 import { activeGameplayTraceWindow, summarizeActivePresentationSilence } from "./compositor-truth"
+import { assertWorkerInstrumentation } from "./upward-profile-gates"
 
 function sampledStacks(timeline: CpuTimeline, started: number, ended: number) {
   const { nodes, parents } = timeline
@@ -42,12 +43,17 @@ export async function loadWorkerIncidents(filename: string, { manifest, events, 
   if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("Worker evidence hash mismatch")
   const value = JSON.parse(bytes.toString("utf8"))
   if (value.schema !== "playsrc-worker-cpu-v1" || !Array.isArray(value.captures) || value.error) throw new Error(`Worker CPU evidence is incomplete: ${value.error ?? "invalid schema"}`)
+  const capturePlan = await loadCapturePlan(filename, manifest)
   const window = activeGameplayTraceWindow(events)
   const analyses = attributeWorkerIncidents(events, value.captures, window, {
     requests: probes.joins.filter(probe => probe.kind === "worker").map(probe => probe.detail as { id: number }),
     publications: probes.joins.filter(probe => probe.kind === "simulation-publication").map(probe => probe.detail as { requestId: number }),
   })
-  return { window, compositorComplete: manifest.complete, compositorErrors: manifest.errors,
+  if (capturePlan?.workerCpu === "required") assertWorkerInstrumentation(analyses.map(analysis => ({
+    deadlineStopped: analysis.deadlineStopped, sampleCount: analysis.activeCpu.sampleCount, captureComplete: analysis.captureComplete,
+  })))
+  return { window, compositorComplete: manifest.complete, compositorErrors: manifest.errors, capturePlan,
+    workerInstrumentation: { requested: capturePlan?.workerCpu ?? "unknown", capturedTargets: analyses.length },
     compositorSilence: summarizeActivePresentationSilence(events, window),
     workerArtifact: artifact, unsampledTargets: value.unsampledTargets ?? [], analyses }
 }

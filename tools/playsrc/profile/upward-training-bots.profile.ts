@@ -11,10 +11,11 @@ import { classInputViolations, prepareClassCapture } from "./class-input-sequenc
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { summarizeCompositorFreezes, summarizeFreezeTimeline } from "./freeze-timeline"
-import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, startMainCpuEvidence, type TraceJoin, type TraceProbes } from "./compositor-evidence"
+import { COMPOSITOR_TRACE_CATEGORIES, TRACE_LIMITS, drainTraceStream, retainCompositorEvidence, retainEvidenceBlob, retainCapturePlan, startMainCpuEvidence, type TraceJoin, type TraceProbes } from "./compositor-evidence"
 import { attributeFrameTails } from "./frame-tail-attribution"
 import { summarizeCpuProfile, summarizeDistribution } from "./gameui-profile"
-import { profileSampleSeconds, summarizeFrameTimes } from "./profile-window"
+import { summarizeFrameTimes } from "./profile-window"
+import { upwardCapturePlan } from "./upward-capture-plan"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { startWorkerCpuCapture } from "./worker-cpu-profiler"
@@ -22,25 +23,26 @@ import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
 import { startGameplayReplayJournal } from "./gameplay-replay"
-import { assertUpwardProfile } from "./upward-profile-gates"
+import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 test.afterEach(async () => { await retainIncomplete?.(); retainIncomplete = undefined })
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
-  const seconds = profileSampleSeconds()
-  const createServer = process.env.PROFILE_STARTUP_CREATE_SERVER === "1"
-  const target = createServer ? "ctf_2fort" : "pl_upward"
-  const entry = createServer ? "create-server" : "training"
-  const exerciseClasses = process.env.PROFILE_UPWARD_CLASS_SWITCH === "1"
-  const acceptance = process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1"
+  const capturePlan = upwardCapturePlan(process.env)
+  const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
+  const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
+  const createServer = entry === "create-server"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
+  const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
+  await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
+  console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
   const replay = exerciseClasses ? await startGameplayReplayJournal(page, evidenceDirectory, evidenceLabel) : undefined
   retainIncomplete = () => replay?.stop(false) ?? Promise.resolve()
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
@@ -206,18 +208,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Upward")
       const mapPanel = layer.locator("[data-vgui-name='OfflinePractice_MapSelectionPanel']")
       const playerEntry = mapPanel.locator("[data-vgui-name='NumPlayersTextEntry']")
-      if (process.env.PROFILE_UPWARD_TRAINING_PLAYERS) await playerEntry.fill(process.env.PROFILE_UPWARD_TRAINING_PLAYERS)
+      if (capturePlan.playersOverride) await playerEntry.fill(capturePlan.playersOverride)
       playerCount = Number(await playerEntry.inputValue())
       start = mapPanel.locator("[data-vgui-name='StartOfflinePracticeButton']")
     }
-    if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1") expect(playerCount).toBe(createServer ? 24 : 16)
+    if (acceptance) expect(playerCount).toBe(createServer ? 24 : 16)
     else expect(playerCount).toBeGreaterThanOrEqual(12)
     const mapStarted = Date.now()
     networkStage = `${cache}-map`
     await start.click({ timeout: 5_000 })
     await expect(root).toHaveAttribute("data-team-selection-visible", "true", { timeout: 110_000 })
     const teamAdmissionMilliseconds = Date.now() - mapStarted
-    await chooseTf2Team(page, process.env.PROFILE_ACCEPTANCE_STOCK_TEAM === "blue" || process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && cache === "warm" ? "blue" : "red")
+    await chooseTf2Team(page, cache === "warm" ? capturePlan.warmTeam : capturePlan.coldTeam)
     await expect(root).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
     const readyMilliseconds = Date.now() - mapStarted
     const classSelectionMilliseconds = Date.now() - mapStarted
@@ -305,11 +307,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     })
   }
   await loadPractice("cold")
-  if (process.env.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1") await loadPractice("warm")
-  if (process.env.PROFILE_ACCEPTANCE_STOCK_ONLY === "1") {
+  if (capturePlan.warmReload) await loadPractice("warm")
+  if (capturePlan.stockOnly) {
     const stock = await acceptStockLoadouts(page, directory, label)
     const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
-    await writeFile(path.join(directory, `${label}-correctness.json`), JSON.stringify({ headed: true, loads, stock, losses, team: process.env.PROFILE_ACCEPTANCE_STOCK_TEAM, performanceSample: false }, null, 2))
+    await writeFile(path.join(directory, `${label}-correctness.json`), JSON.stringify({ headed: true, capturePlan, capturePlanArtifact, loads, stock, losses, team: capturePlan.warmReload ? capturePlan.warmTeam : capturePlan.coldTeam, performanceSample: false }, null, 2))
     expect(stock).toHaveLength(27)
     expect(losses).toEqual([])
     return
@@ -319,7 +321,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
   profilePhases.enter("pre-sample")
   const expectedBots = playerCount - 1
 
-  const combat = process.env.PROFILE_PARTICLE_COMBAT === "1"
   const combatCommand = async (value: string): Promise<void> => {
     await page.keyboard.press("Backquote")
     const entry = page.locator("[aria-label='Console command']")
@@ -342,7 +343,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   const before = await canvas.screenshot({ timeout: 20_000 })
-  if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses) await canvas.click({ position: { x: 300, y: 250 } })
+  if (capturePlan.interaction === "movement-weapon") await canvas.click({ position: { x: 300, y: 250 } })
   const cdp = await context.newCDPSession(page)
   const browserCdp = await context.browser()!.newBrowserCDPSession()
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
@@ -361,7 +362,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
-  const workerCpu = exerciseClasses || acceptance ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
+  const workerCpu = capturePlan.workerCpu === "required" ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
   const nativeScreenshot = process.env.PROFILE_NATIVE_SCREENSHOT === "1" ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
   if (nativeScreenshot) {
     if (process.platform !== "darwin") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
@@ -376,17 +377,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await cdp.send("HeapProfiler.enable")
   await cdp.send("HeapProfiler.startSampling", { samplingInterval: 65_536, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true })
   const heapBefore = await cdp.send("Runtime.getHeapUsage")
-  if (!exerciseClasses) await page.keyboard.down("w")
-  await replay?.mark(0)
-  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
-    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
   const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
   await mkdir(path.dirname(rawPartial), { recursive: true })
   await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
   const mainCpu = await startMainCpuEvidence(cdp, evidenceDirectory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint })
   let interrupted = false
+  let traceStarted = false
   const collectNative = async () => {
     const mainCapture = await mainCpu.stop()
+    const collectionErrors: string[] = []
     const workerCapture = await (workerCpu?.stop() ?? Promise.resolve([]))
       .then(captures => ({ captures, error: null as string | null }), error => ({ captures: [], error: String(error) }))
     await workerCpu?.close().catch(() => undefined)
@@ -396,28 +395,36 @@ test("profile authored headed Upward offline-practice default roster and actual 
       workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
     }
     const workerArtifact = await retainEvidenceBlob(evidenceDirectory, workerBytes, "workers.json")
+    if (workerCapture.error) collectionErrors.push(workerCapture.error)
+    if (capturePlan.workerCpu === "required") {
+      try { assertWorkerInstrumentation(workerCapture.captures.map(capture => ({
+        deadlineStopped: capture.deadlineStopped, sampleCount: capture.profile.samples?.length ?? 0,
+        captureComplete: capture.execution.dropped === 0,
+      }))) } catch (error) { collectionErrors.push(String(error)) }
+    }
     let completion: { stream?: string; dataLossOccurred: boolean } = { dataLossOccurred: true }
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
+      if (!traceStarted) throw new Error("Native trace did not start; main CPU diagnostics retained")
       completion = await Promise.race([(async () => { await browserCdp.send("Tracing.end"); return traceFinished })(),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Native trace completion exceeded 5 seconds")), 5000) })])
-    } catch (error) { mainCapture.evidence.errors.push(String(error)) }
+    } catch (error) { collectionErrors.push(String(error)) }
     finally { clearTimeout(timer) }
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
     await retainEvidenceBlob(evidenceDirectory, raw.bytes, "trace.json.gz")
-    return { workerCapture, workerArtifact, completion, raw, mainCapture }
+    return { workerCapture, workerArtifact, completion, raw, mainCapture, collectionErrors }
   }
   let nativeResult: ReturnType<typeof collectNative> | undefined
   const finishNative = () => nativeResult ??= collectNative()
   const persistNativeEvidence = async (probes: TraceProbes, details: Record<string, unknown>) => {
-    const { raw, completion, workerArtifact, mainCapture } = await finishNative()
+    const { raw, completion, workerArtifact, mainCapture, collectionErrors } = await finishNative()
     const sourceFingerprintAfter = await applicationBuildIdentity().catch(error => `unavailable: ${String(error)}`)
     return retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
-      complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture,
+      complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture, collectionErrors,
       identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
         sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
         gpu: system?.gpu ?? null, availableCategories, origin: new URL(page.url()).origin,
-        localProductionBundle, label, headed: true, target, launch, interrupted, workerCpu: workerArtifact,
+        localProductionBundle, label, headed: true, target, entry, launch, interrupted, workerCpu: workerArtifact, capturePlan: capturePlanArtifact,
         nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex"), ...details }, probes })
   }
   let retained: ReturnType<typeof persistNativeEvidence> | undefined
@@ -427,7 +434,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     interrupted = true
     void Promise.allSettled([retainInterrupted(), replay?.stop(false)])
   }
-  const captureDeadline = setTimeout(interrupt, Math.min(seconds * 1000 + 5000, Math.max(1, totalDeadline - Date.now() - 5000)))
+  let captureDeadline: ReturnType<typeof setTimeout> | undefined
   process.once("SIGTERM", interrupt)
   retainIncomplete = async () => {
     clearTimeout(captureDeadline)
@@ -437,6 +444,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const evidence = await retainInterrupted()
     console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
   }
+  // Preserve the authored order: sampler setup before movement input. A slow
+  // Profiler.start must not advance the player before the original input edge.
+  if (!exerciseClasses) await page.keyboard.down("w")
+  await replay?.mark(0)
+  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
+  traceStarted = true
+  captureDeadline = setTimeout(interrupt, Math.min(seconds * 1000 + 5000, Math.max(1, totalDeadline - Date.now() - 5000)))
   await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
@@ -723,7 +738,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       } finally { await page.mouse.up(); await action("none") }
     }
   }
-  const interaction = process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses
+  const interaction = capturePlan.interaction === "movement-weapon"
     ? (async () => {
       await page.waitForTimeout(300)
       for (let index = 0; index < 6; index += 1) {
@@ -862,7 +877,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    schema: "playsrc-tf2-upward-training-bots-profile-v2", label, headed: true, target, entry, launch,
+    schema: "playsrc-tf2-upward-training-bots-profile-v2", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -1045,7 +1060,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     }
     await page.evaluate(() => (globalThis as any).__skinningEvidence.dispose())
   }
-  if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1" && exerciseClasses) {
+  if (acceptance && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
     await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(stock, null, 2))
     const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
@@ -1085,8 +1100,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
   })}`)
-  if (process.env.PROFILE_INTEGRATED_ACCEPTANCE === "1") expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
+  if (acceptance) expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
   assertUpwardProfile(report, { expectedBots, playerCount, classes: exerciseClasses, classPasses: acceptance ? 1 : 2,
+    workerRequired: capturePlan.workerCpu === "required",
     sourceUnchanged: sourceFingerprintAfter === sourceFingerprint, workerCaptures: workerCapture.captures,
     compositor: process.env.PROFILE_UPWARD_REQUIRE_COMPOSITOR === "1", smooth: process.env.PROFILE_UPWARD_TRAINING_REQUIRE_SMOOTH === "1" })
 })

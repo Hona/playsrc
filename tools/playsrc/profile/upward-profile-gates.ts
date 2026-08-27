@@ -1,9 +1,16 @@
 import assert from "node:assert/strict"
 
+export function assertWorkerInstrumentation(captures: readonly { deadlineStopped?: boolean; sampleCount: number; captureComplete: boolean }[]) {
+  assert.equal(captures.length, 1, "actual Worker capture")
+  assert.equal(captures[0]!.deadlineStopped, false, "Worker deadline")
+  assert(captures[0]!.sampleCount > 0, "actual Worker CPU samples")
+  assert.equal(captures[0]!.captureComplete, true, "Worker capture completeness")
+}
+
 /** Shared by headed capture and immutable offline re-analysis. No weaker replay gates. */
 export function assertUpwardProfile(report: any, policy: {
   expectedBots: number; playerCount: number; classes: boolean; classPasses: 1 | 2; smooth: boolean; compositor: boolean;
-  sourceUnchanged: boolean; workerCaptures: readonly { deadlineStopped?: boolean }[];
+  sourceUnchanged: boolean; workerRequired: boolean; workerCaptures: readonly { deadlineStopped?: boolean }[];
 }) {
   assert.equal(report.activeBots, policy.expectedBots, "bot roster")
   assert.equal(report.teams.red + report.teams.blue, policy.playerCount, "team population")
@@ -37,11 +44,11 @@ export function assertUpwardProfile(report: any, policy: {
     assert(report.compositor.intervals?.maximumMilliseconds < 250, "native compositor gap")
     assert(report.compositorSilence?.maximumActiveSilenceMilliseconds < 250, "boundary-overlapping active silence")
     assert(report.compositorSilence?.maximumCensoredBoundaryMilliseconds < 250, "censored boundary coverage")
-    assert.equal(policy.workerCaptures.length, 1, "actual Worker capture")
-    assert.equal(policy.workerCaptures[0]!.deadlineStopped, false, "Worker deadline")
-    assert(report.workerIncidents[0]?.samples > 0, "actual Worker CPU samples")
-    assert.equal(report.workerIncidents[0]?.captureComplete, true, "Worker capture completeness")
   }
+  if (policy.workerRequired) assertWorkerInstrumentation(policy.workerCaptures.map((capture, index) => ({
+    deadlineStopped: capture.deadlineStopped, sampleCount: report.workerIncidents[index]?.activeCpu?.sampleCount ?? 0,
+    captureComplete: report.workerIncidents[index]?.captureComplete === true,
+  })))
   assert.equal(report.screen.visibility, "visible", "visible headed window")
   assert.equal(report.gpu.losses.length, 0, "GPU losses")
   assert.equal(report.compositorEvidence.complete, true, "complete immutable compositor evidence")

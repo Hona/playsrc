@@ -31,7 +31,7 @@ export async function verifyRetainedUpward(reportPath: string, manifestPath: str
     publications: probes.joins.filter(value => value.kind === "simulation-publication").map(value => value.detail as { requestId: number }),
   })
   report.compositorEvidence = { file: path.basename(manifestPath), complete: manifest.complete, errors: manifest.errors, analysis }
-  assertUpwardProfile(report, { expectedBots: 15, playerCount: 16, classes: true, classPasses: 2, smooth: true, compositor: true,
+  assertUpwardProfile(report, { expectedBots: 15, playerCount: 16, classes: true, classPasses: 2, workerRequired: true, smooth: true, compositor: true,
     sourceUnchanged: manifest.identity.sourceFingerprint === manifest.identity.sourceFingerprintAfter, workerCaptures: capture.captures })
   const value = { schema: "playsrc-retained-upward-verification-v1", newCapture: false, gatesPassed: true,
     sourceReportSha256: createHash("sha256").update(sourceBytes).digest("hex"), nativeManifest: path.basename(manifestPath),
