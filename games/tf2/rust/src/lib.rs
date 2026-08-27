@@ -7,6 +7,7 @@ pub mod building;
 pub mod class;
 pub mod combat;
 pub mod condition;
+pub mod control_point;
 pub mod ctf;
 pub mod damage;
 pub mod deathnotice;
