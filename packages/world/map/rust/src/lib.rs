@@ -5,6 +5,7 @@ mod lighting;
 pub use lighting::*;
 mod environment;
 pub use environment::*;
+pub mod pixel_visibility;
 mod displacement;
 pub use displacement::{CollisionDisplacement, DisplacementSurface};
 mod area_portals;
