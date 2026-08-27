@@ -7,6 +7,9 @@ use playsrc_particle::{Bounds, RenderItem, Primitive};
 use playsrc_tf2::UniformRandomStream;
 use std::sync::Arc;
 
+// CParticleMgr's non-Xbox legacy allocation pool, independent of PCF particles.
+const MAX_LEGACY_PARTICLES: usize = 2048;
+
 #[derive(Clone, Debug)]
 struct Particle {
     identity: u32,
@@ -119,6 +122,7 @@ impl Smokestacks {
     ) -> Vec<RenderItem> {
         self.stacks.retain(|entity, _| states.iter().any(|state| state.entity == *entity));
         self.order.retain(|entity| self.stacks.contains_key(entity));
+        let mut allocated = self.stacks.values().map(|stack| stack.particles.len()).sum::<usize>();
         let dt = frame_time.min(0.1);
         let mut output = Vec::new();
         for state in states {
@@ -152,6 +156,10 @@ impl Smokestacks {
                 while remaining >= stack.next_event {
                     remaining -= stack.next_event;
                     stack.next_event = stack.interval;
+                    // A failed Source allocation still consumes the timed event,
+                    // but none of the initializer's random draws.
+                    if allocated == MAX_LEGACY_PARTICLES { continue; }
+                    allocated += 1;
                     let angle = frand(&mut self.random, 0.0, 2.0 * std::f32::consts::PI);
                     let (sin, cos) = angle.sin_cos();
                     let position = std::array::from_fn(|axis| state.transform.origin[axis]
@@ -175,6 +183,7 @@ impl Smokestacks {
                 if !state.emit || stack.drawn || always {
                     let twist = (parameters.twist * (std::f32::consts::PI * 2.0) / 360.0) * frame_time;
                     let (sin, cos) = twist.sin_cos();
+                    let previous_count = stack.particles.len();
                     stack.particles.retain_mut(|particle| {
                         particle.age += dt;
                         if particle.age * inv_lifetime >= 1.0 { return false; }
@@ -192,6 +201,7 @@ impl Smokestacks {
                         particle.sort_z = -dot(sub(particle.position, camera.position), camera.forward);
                         true
                     });
+                    allocated -= previous_count - stack.particles.len();
                 }
                 if recalculate {
                     stack.bbox_counter = 0;
@@ -516,5 +526,24 @@ mod tests {
         state.emit = false;
         let output = advance(&mut world, &state, 0.1, 0.1, true);
         assert_eq!(output[0].color, [1, 0, 0]);
+    }
+
+    #[test]
+    fn legacy_allocation_pool_is_shared_and_failed_allocations_still_consume_events() {
+        let mut world = Smokestacks::new(1);
+        let mut first = state();
+        first.parameters.rate = 20_000.0;
+        first.parameters.speed = 0.0; // Source retains these invisible particles.
+        let mut second = first.clone(); second.entity.slot = 2; second.source = 2;
+        let states = [first.clone(), second.clone()];
+        let view = |_| View { position: [0.0; 3], forward: [1.0, 0.0, 0.0] };
+        for frame in 0..10 {
+            assert!(world.advance(&states, frame as f32 * 0.1, 0.1, view, |_| false, |_, _, _| Some(0), |_| true).is_empty());
+        }
+        assert_eq!(world.stacks.values().map(|stack| stack.particles.len()).sum::<usize>(), MAX_LEGACY_PARTICLES);
+        let prior = world.stacks[&second.entity].next_identity;
+        world.advance(&[second.clone()], 1.0, 0.1, view, |_| false, |_, _, _| Some(0), |_| true);
+        assert!(world.stacks[&second.entity].next_identity > prior);
+        assert!(world.stacks[&second.entity].next_identity - prior <= 2001);
     }
 }
