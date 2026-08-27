@@ -304,6 +304,14 @@ export class SoundRegistry {
     return Object.freeze([...this.#definitions.values()])
   }
 
+  resources(): readonly string[] {
+    const resources = new Set<string>()
+    for (const definition of this.#definitions.values()) {
+      for (const wave of definition.waves) if (wave.resource !== null) resources.add(wave.resource)
+    }
+    return Object.freeze([...resources])
+  }
+
   clearOverrides(): void {
     for (const [key, value] of this.#definitions) {
       if (value.override) this.#definitions.delete(key)

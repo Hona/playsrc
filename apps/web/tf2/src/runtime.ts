@@ -194,138 +194,6 @@ const PARTICLE_SYSTEMS = new Set([
   "bullet_tracer01_red_crit",
   "bullet_tracer01_blue_crit",
 ])
-const SOUND_PATHS = [
-  "sound/items/smallmedkit1.wav",
-  "sound/items/gunpickup2.wav",
-  "sound/items/regenerate.wav",
-  "sound/items/spawn_item.wav",
-  "sound/weapons/rocket_shoot.wav",
-  "sound/weapons/stickybomblauncher_shoot.wav",
-  "sound/weapons/quake_rpg_fire_remastered.wav",
-  "sound/weapons/quake_explosion_remastered.wav",
-  "sound/weapons/explode1.wav",
-  "sound/weapons/explode2.wav",
-  "sound/weapons/explode3.wav",
-  "sound/weapons/pipe_bomb1.wav",
-  "sound/weapons/pipe_bomb2.wav",
-  "sound/weapons/pipe_bomb3.wav",
-  "sound/weapons/scatter_gun_shoot.wav",
-  "sound/weapons/pistol_shoot.wav",
-  "sound/weapons/cbar_miss1.wav",
-  "sound/weapons/bat_hit.wav",
-  "sound/weapons/cbar_hit1.wav",
-  "sound/weapons/cbar_hit2.wav",
-  "sound/weapons/scatter_gun_worldreload.wav",
-  "sound/weapons/pistol_worldreload.wav",
-
-  "sound/weapons/shotgun_shoot.wav",
-  "sound/weapons/shotgun_worldreload.wav",
-  "sound/weapons/shovel_swing.wav",
-  "sound/weapons/axe_hit_flesh1.wav",
-  "sound/weapons/axe_hit_flesh2.wav",
-  "sound/weapons/axe_hit_flesh3.wav",
-  "sound/weapons/minigun_wind_up.wav",
-  "sound/weapons/minigun_wind_down.wav",
-  "sound/weapons/minigun_spin.wav",
-  "sound/weapons/minigun_shoot.wav",
-  "sound/weapons/bat_draw_swoosh1.wav",
-  "sound/weapons/bat_draw_swoosh2.wav",
-  "sound/weapons/cbar_hitbod1.wav",
-  "sound/weapons/cbar_hitbod2.wav",
-  "sound/weapons/cbar_hitbod3.wav",
-  "sound/weapons/fist_hit_world1.wav",
-  "sound/weapons/fist_hit_world2.wav",
-  "sound/weapons/sniper_shoot.wav",
-  "sound/weapons/smg_shoot.wav",
-  "sound/weapons/smg_worldreload.wav",
-  "sound/weapons/machete_swing.wav",
-  "sound/weapons/shotgun_empty.wav",
-  "sound/weapons/pistol/pistol_empty.wav",
-  "sound/weapons/wrench_swing.wav",
-  "sound/weapons/wrench_hit_world.wav",
-  "sound/weapons/flame_thrower_start.wav",
-  "sound/weapons/flame_thrower_loop.wav",
-  "sound/weapons/flame_thrower_end.wav",
-  "sound/weapons/flame_thrower_airblast.wav",
-  "sound/weapons/bottle_hit_flesh1.wav",
-  "sound/weapons/bottle_hit_flesh2.wav",
-  "sound/weapons/bottle_hit_flesh3.wav",
-  "sound/weapons/bottle_hit1.wav",
-  "sound/weapons/bottle_hit2.wav",
-  "sound/weapons/bottle_hit3.wav",
-
-
-  "sound/weapons/revolver_shoot.wav",
-  "sound/weapons/revolver_worldreload.wav",
-  "sound/weapons/knife_swing.wav",
-  "sound/weapons/blade_hit1.wav",
-  "sound/weapons/blade_hit2.wav",
-  "sound/weapons/blade_hit3.wav",
-  "sound/weapons/blade_hitworld.wav",
-  "sound/player/spy_cloak.wav",
-  "sound/player/spy_uncloak.wav",
-  "sound/weapons/syringegun_shoot.wav",
-  "sound/weapons/syringegun_worldreload.wav",
-  "sound/weapons/medigun_heal.wav",
-  "sound/weapons/medigun_heal_detach.wav",
-  "sound/weapons/medigun_charged.wav",
-  "sound/ui/hitsound.wav",
-  "sound/ui/killsound.wav",
-  "sound/player/crit_hit.wav",
-  "sound/player/crit_hit2.wav",
-  "sound/player/crit_hit3.wav",
-  "sound/player/crit_hit4.wav",
-  "sound/player/crit_hit5.wav",
-  "sound/physics/plastic/plastic_box_impact_hard1.wav",
-  "sound/physics/plastic/plastic_box_impact_hard2.wav",
-  "sound/physics/plastic/plastic_box_impact_hard3.wav",
-  "sound/physics/concrete/concrete_impact_bullet1.wav",
-  "sound/physics/concrete/concrete_impact_bullet2.wav",
-  "sound/physics/concrete/concrete_impact_bullet3.wav",
-  "sound/physics/concrete/concrete_impact_bullet4.wav",
-  "sound/physics/wood/wood_solid_impact_bullet1.wav",
-  "sound/physics/wood/wood_solid_impact_bullet2.wav",
-  "sound/physics/wood/wood_solid_impact_bullet3.wav",
-  "sound/physics/wood/wood_solid_impact_bullet4.wav",
-  "sound/physics/wood/wood_solid_impact_bullet5.wav",
-  "sound/physics/metal/metal_solid_impact_bullet1.wav",
-  "sound/physics/metal/metal_solid_impact_bullet2.wav",
-  "sound/physics/metal/metal_solid_impact_bullet3.wav",
-  "sound/physics/metal/metal_solid_impact_bullet4.wav",
-  "sound/physics/surfaces/sand_impact_bullet1.wav",
-  "sound/physics/surfaces/sand_impact_bullet2.wav",
-  "sound/physics/surfaces/sand_impact_bullet3.wav",
-  "sound/physics/surfaces/sand_impact_bullet4.wav",
-  "sound/physics/glass/glass_impact_bullet1.wav",
-  "sound/physics/glass/glass_impact_bullet2.wav",
-  "sound/physics/glass/glass_impact_bullet3.wav",
-  "sound/physics/glass/glass_impact_bullet4.wav",
-  "sound/physics/flesh/flesh_impact_bullet1.wav",
-  "sound/physics/flesh/flesh_impact_bullet2.wav",
-  "sound/physics/flesh/flesh_impact_bullet3.wav",
-  "sound/physics/flesh/flesh_impact_bullet4.wav",
-  "sound/physics/flesh/flesh_impact_bullet5.wav",
-] as const
-const CTF_SOUND_PATHS = [
-  "sound/vo/intel_enemystolen.mp3",
-  "sound/vo/intel_enemystolen2.mp3",
-  "sound/vo/intel_enemystolen3.mp3",
-  "sound/vo/intel_enemystolen4.mp3",
-  "sound/vo/intel_enemydropped.mp3",
-  "sound/vo/intel_enemydropped2.mp3",
-  "sound/vo/intel_enemycaptured.mp3",
-  "sound/vo/intel_enemycaptured2.mp3",
-  "sound/vo/intel_enemyreturned.mp3",
-  "sound/vo/intel_enemyreturned2.mp3",
-  "sound/vo/intel_enemyreturned3.mp3",
-  "sound/vo/intel_teamstolen.mp3",
-  "sound/vo/intel_teamdropped.mp3",
-  "sound/vo/intel_teamdropped2.mp3",
-  "sound/vo/intel_teamcaptured.mp3",
-  "sound/vo/intel_teamreturned.mp3",
-  "sound/misc/your_team_won.mp3",
-  "sound/misc/your_team_lost.mp3",
-] as const
 
 export type ApplicationView = Readonly<{
   phase: "Startup" | "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
@@ -1873,9 +1741,13 @@ export class Tf2Application {
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
       const audioContext = new AudioContextConstructor()
       this.#audioContext = audioContext
-      const audioPaths = this.#artifacts.audio.documents.some((document) => document.logicalPath === "scripts/game_sounds_vo.txt")
-        ? [...SOUND_PATHS, ...CTF_SOUND_PATHS]
-        : SOUND_PATHS
+      this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
+        logicalPath: document.logicalPath,
+        mode: "base" as const,
+        preload: false,
+        entries: document.entries,
+      })))
+      const audioPaths = this.#audioRegistry.resources()
       const audioStarted = performance.now()
       const audioResourcesReady = Promise.all(audioPaths.map(async (identity) => {
         const bytes = this.#dependencyEntries.get(identity)
@@ -1919,12 +1791,6 @@ export class Tf2Application {
       }
       this.#audio = createAudioSystem(audioContext, audioResources)
       this.#audioBuffers = new Map(audioResources.map((resource) => [resource.identity, resource.buffer]))
-      this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
-        logicalPath: document.logicalPath,
-        mode: "base" as const,
-        preload: false,
-        entries: document.entries,
-      })))
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
