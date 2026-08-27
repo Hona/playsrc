@@ -1559,7 +1559,7 @@ impl MapRuntime {
         let record = InputRecord { target: EventTarget::Expression(target.to_vec()), input: input.to_vec(), value: Variant::String(value.to_vec()),
             activator: Some(self.player), caller: Some(self.player), output_action: None, producer_sequence: self.next_producer_sequence };
         self.next_producer_sequence += 1;
-        let batch = self.world.phase(tick, &[WorldCommand::QueueInput { input: record, delay }])?;
+        let batch = self.world.enqueue_input(tick, record, delay)?;
         self.consume(batch).map_err(MapError::from)
     }
 

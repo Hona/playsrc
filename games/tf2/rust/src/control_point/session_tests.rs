@@ -88,11 +88,17 @@ fn session_attack_defend_keeps_mini_round_entities_timer_and_scores_then_switche
     assert_eq!(defended.winning_team, Some(PlayerTeam::Red));
     assert_eq!(defended.win_reason, round::WIN_REASON_DEFEND_UNTIL_TIME_LIMIT);
     assert_eq!(defended.rounds_played, 2);
-    session.map.fire_input(session.tick, b"master", b"SetWinner", b"3", 0.015).unwrap();
+    session.fire_entity_input(b"master", b"SetWinner", b"3", 0.0).unwrap();
     for _ in 0..3 { session.advance(Command::default()).unwrap(); }
     assert_eq!(session.round.winning_team(), Some(PlayerTeam::Red));
     assert_eq!(session.restrictions.team_win, Some(PlayerTeam::Red), "late master I/O cannot replace the accepted timer winner");
     for _ in 0..1020 { session.advance(Command::default()).unwrap(); }
     assert_eq!(session.team_selection.local_team(), PlayerTeam::Blue);
     assert_eq!(session.round.snapshot(vec![]).blue_score, 4);
+    session.fire_entity_input(b"master", b"SetWinnerAndForceCaps", b"3", 0.0).unwrap();
+    assert_ne!(session.round.state(), round::State::TeamWin, "enqueue is not ServiceEvents");
+    let won = session.advance(Command::default()).unwrap();
+    assert_eq!(won.round.winning_team, Some(PlayerTeam::Blue));
+    assert!(!won.round.full_round);
+    assert!(won.round.events.iter().any(|event| matches!(event, round::Event::RoundWon { team: PlayerTeam::Blue, .. })));
 }

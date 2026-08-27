@@ -1310,6 +1310,16 @@ impl EntityWorld {
         tick: u64,
         commands: &[WorldCommand],
     ) -> Result<TransitionBatch, RuntimeFailure> {
+        self.command_transaction(tick, commands, true)
+    }
+
+    /// CEventQueue::AddEvent does not service events. Console inputs are queued
+    /// between simulation phases, including zero-delay inputs.
+    pub fn enqueue_input(&mut self, tick: u64, input: InputRecord, delay: f32) -> Result<TransitionBatch, RuntimeFailure> {
+        self.command_transaction(tick, &[WorldCommand::QueueInput { input, delay }], false)
+    }
+
+    fn command_transaction(&mut self, tick: u64, commands: &[WorldCommand], service_events: bool) -> Result<TransitionBatch, RuntimeFailure> {
         if tick < self.state.current_tick {
             return Err(failure(
                 RuntimeFailureCode::TickRegression,
@@ -1327,9 +1337,11 @@ impl EntityWorld {
                 return Err(error);
             }
         }
-        if let Err(error) = self.drain_due_events(&mut batch) {
-            self.state = phase_start;
-            return Err(error);
+        if service_events {
+            if let Err(error) = self.drain_due_events(&mut batch) {
+                self.state = phase_start;
+                return Err(error);
+            }
         }
         self.commit_removals();
         let Some(revision) = self.state.revision.checked_add(1) else {

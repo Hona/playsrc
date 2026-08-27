@@ -117,6 +117,14 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
   await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.inSetup, undefined, { timeout: 5_000 })
   const first = map === "cp_dustbowl" ? [-216, 2792, -230] : [-6016, 4338, 80]
   await standOnPoint(first)
+  if (process.env.PROFILE_ATTACK_DEFEND_STAGE_HUD === "1") {
+    await command("ent_fire cap_red_1 SetOwner 3")
+    await command("ent_fire cap_red_2 SetOwner 3")
+    await close()
+    await expect(page.locator(".hud-layer [data-vgui-name='AdvancingTeamLabel']")).toHaveText("BLU TEAM SEIZES AREA", { timeout: 5000 })
+    await capture(`${map}-mini-round-advances-panel`)
+    return
+  }
   if (performanceOnly) {
     const samples = []
     for (const quota of [15, 23]) {
@@ -155,13 +163,6 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
       await capture(`${map}-${quota}-bots-finish`)
     }
     await json(`${map}-bounded-performance`, samples)
-    if (map === "cp_dustbowl") {
-      await command("ent_fire cap_red_1 SetOwner 3")
-      await command("ent_fire cap_red_2 SetOwner 3")
-      await close()
-      await expect(page.locator(".hud-layer [data-vgui-name='AdvancingTeamLabel']")).toHaveText("BLU TEAM SEIZES AREA")
-      await capture(`${map}-mini-round-advances-panel`)
-    }
     return
   }
   const points = map === "cp_dustbowl" ? [[-216, 2792, -230], [2280, 2364, -128], [2310, -1560, 20], [-1548, -1980, -30], [-1856, 640, 18], [544, 704, 18]] : [[-6016, 4338, 80], [-6016, 1362, -64]]
