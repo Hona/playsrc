@@ -1027,7 +1027,7 @@ function parseAudio(r: Reader): AudioArtifact {
   }
   const patches = new Map<string, Readonly<{ sampleRate: number; frames: number; loopStartSeconds: number | null }>>()
   const patchCount = r.u32()
-  if (patchCount > 128) throw new ArtifactError("sound patch count")
+  if (patchCount > MAX_GRAPH_ENTRIES) throw new ArtifactError("sound patch count")
   for (let index = 0; index < patchCount; index++) {
     const path = r.text(), sampleRate = r.u32(), frames = r.u32(), cue = r.u32()
     if (patches.has(path) || sampleRate === 0 || frames === 0 || (cue !== 0xffff_ffff && cue >= frames)) throw new ArtifactError("sound patch metadata")
@@ -1043,6 +1043,14 @@ function parseAudio(r: Reader): AudioArtifact {
     unavailable.add(path)
   }
   return Object.freeze({ mixerSha256, mixerGain, documents: Object.freeze(documents), patches, unavailable })
+}
+
+/** Decode a standalone native PAUD document with the full-artifact decoder. */
+export function parseAudioArtifact(bytes: Uint8Array): AudioArtifact {
+  const reader = new Reader(bytes)
+  const audio = parseAudio(reader)
+  if (reader.offset !== bytes.byteLength) throw new ArtifactError("audio artifact trailing bytes")
+  return audio
 }
 
 function parseOccurrenceMatrices(r: Reader): readonly ModelOccurrenceMatrix[] {
@@ -1542,3 +1550,4 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     staticProps,
   })
 }
+import { MAX_GRAPH_ENTRIES } from "@playsrc/asset-store/graph"
