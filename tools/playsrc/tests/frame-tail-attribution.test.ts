@@ -2,6 +2,20 @@ import { describe, expect, test } from "bun:test"
 import { attributeFrameTails } from "../profile/frame-tail-attribution"
 
 describe("visible gameplay frame-tail attribution", () => {
+  test("negative deltas and adjacent frame boundaries retain points exactly once and clip predecessor weights", () => {
+    const result = attributeFrameTails({
+      frames: [{ at: 10, displayFrame: 1 }, { at: 50, displayFrame: 2 }, { at: 100, displayFrame: 3 }],
+      workers: [], inputs: [], longAnimationFrames: [], trace: [], traceOffsetMicroseconds: 0,
+      cpu: { startTime: 0, endTime: 100_000,
+        nodes: [{ id: 1, callFrame: { functionName: "render", url: "", lineNumber: 0, columnNumber: 0 } }],
+        samples: [1, 1, 1, 1], timeDeltas: [5000, 45000, -20000, 50000] },
+    })
+    expect(result.frames.map(frame => frame.cpuSampling)).toEqual([
+      { sampleCount: 1, estimatedMilliseconds: 40, unattributedMilliseconds: 0, outsideProfileMilliseconds: 0 },
+      { sampleCount: 2, estimatedMilliseconds: 30, unattributedMilliseconds: 20, outsideProfileMilliseconds: 0 },
+    ])
+    expect(result.frames[0]!.stacks[0]).toMatchObject({ samples: 1, estimatedMilliseconds: 40 })
+  })
   test("retains every long frame and correlates GC, worker scheduling, CPU stacks and actual visible input", () => {
     const result = attributeFrameTails({
       frames: [

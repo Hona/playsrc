@@ -1,5 +1,6 @@
 import type { ChromiumTraceEvent } from "./compositor-truth"
-import { summarizeDistribution, type CpuProfile } from "./gameui-profile"
+import { summarizeCpuProfile, summarizeDistribution } from "./gameui-profile"
+import { reconstructCpuProfile, selectCpuWindow, validateCpuWindow, type CpuTimeline } from "./cpu-profile-time"
 import type { WorkerCpuCapture } from "./worker-cpu-profiler"
 import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
@@ -7,24 +8,23 @@ import path from "node:path"
 import { loadCompositorEvidence, TRACE_LIMITS } from "./compositor-evidence"
 import { activeGameplayTraceWindow, summarizeActivePresentationSilence } from "./compositor-truth"
 
-function sampledStacks(profile: CpuProfile, started: number, ended: number) {
-  const nodes = new Map(profile.nodes.map(node => [node.id, node]))
-  const parents = new Map<number, number>()
-  for (const node of profile.nodes) for (const child of node.children ?? []) parents.set(child, node.id)
-  const counts = new Map<number, number>()
-  let at = profile.startTime
-  for (const [index, id] of (profile.samples ?? []).entries()) {
-    at += profile.timeDeltas?.[index] ?? 0
-    if (at >= started && at < ended) counts.set(id, (counts.get(id) ?? 0) + 1)
+function sampledStacks(timeline: CpuTimeline, started: number, ended: number) {
+  const { nodes, parents } = timeline
+  const counts = new Map<number, { samples: number; estimatedMilliseconds: number }>()
+  for (const sample of selectCpuWindow(timeline, { startedMicroseconds: started, endedMicroseconds: ended }).samples) {
+    const value = counts.get(sample.nodeId) ?? { samples: 0, estimatedMilliseconds: 0 }
+    value.samples += sample.samples
+    value.estimatedMilliseconds += sample.estimatedMicroseconds / 1000
+    counts.set(sample.nodeId, value)
   }
-  return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([id, samples]) => {
+  return [...counts].sort((a, b) => b[1].samples - a[1].samples).slice(0, 12).map(([id, value]) => {
     const frames = []
     let node = nodes.get(id)
     while (node && frames.length < 24) {
       frames.push(node.callFrame)
       node = nodes.get(parents.get(node.id) ?? -1)
     }
-    return { samples, frames }
+    return { ...value, frames }
   })
 }
 
@@ -39,12 +39,13 @@ export async function replayWorkerIncidents(filename: string) {
   if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("Worker evidence hash mismatch")
   const value = JSON.parse(bytes.toString("utf8"))
   if (value.schema !== "playsrc-worker-cpu-v1" || !Array.isArray(value.captures) || value.error) throw new Error(`Worker CPU evidence is incomplete: ${value.error ?? "invalid schema"}`)
-  const analyses = attributeWorkerIncidents(events, value.captures, activeGameplayTraceWindow(events), {
+  const window = activeGameplayTraceWindow(events)
+  const analyses = attributeWorkerIncidents(events, value.captures, window, {
     requests: probes.joins.filter(probe => probe.kind === "worker").map(probe => probe.detail as { id: number }),
     publications: probes.joins.filter(probe => probe.kind === "simulation-publication").map(probe => probe.detail as { requestId: number }),
   })
-  return { compositorComplete: manifest.complete, compositorErrors: manifest.errors,
-    compositorSilence: summarizeActivePresentationSilence(events, activeGameplayTraceWindow(events)),
+  return { window, compositorComplete: manifest.complete, compositorErrors: manifest.errors,
+    compositorSilence: summarizeActivePresentationSilence(events, window),
     workerArtifact: artifact, unsampledTargets: value.unsampledTargets ?? [], analyses }
 }
 
@@ -60,13 +61,14 @@ export function attributeWorkerIncidents(
   window: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>,
   browser: Readonly<{ requests: readonly { id: number; [key: string]: unknown }[]; publications: readonly { requestId: number; [key: string]: unknown }[] }> = { requests: [], publications: [] },
 ) {
+  validateCpuWindow(window)
   if (captures.length > 32) throw new Error("Worker capture target bound exceeded")
   return captures.map(capture => {
-    if (capture.execution.clocks.length !== 2 || capture.execution.tasks.length > 16_384
-      || capture.profile.nodes.length > 64_000 || (capture.profile.samples?.length ?? 0) > 64_000
-      || capture.profile.samples?.length !== capture.profile.timeDeltas?.length) throw new Error("Worker CPU/task evidence bounds are invalid")
+    const timeline = reconstructCpuProfile(capture.profile)
+    if (capture.execution.clocks.length !== 2 || capture.execution.tasks.length > 16_384) throw new Error("Worker CPU/task evidence bounds are invalid")
     const clocks = capture.execution.clocks.map(clock => {
-      const matches = events.filter(event => event.name === clock.name && typeof event.ts === "number")
+      if (!Number.isFinite(clock.before) || !Number.isFinite(clock.after) || clock.after < clock.before) throw new Error("Invalid Worker clock interval")
+      const matches = events.filter(event => event.name === clock.name && Number.isFinite(event.ts))
       if (matches.length !== 1) throw new Error(`Worker clock mark ${clock.name} is missing or ambiguous`)
       const mark = matches[0]!
       return {
@@ -85,6 +87,9 @@ export function attributeWorkerIncidents(
       || capture.profile.endTime > clocks[1]!.traceMicroseconds + 1_000
       || capture.profile.startTime >= capture.profile.endTime) throw new Error("Worker CPU profile is outside calibrated trace clock bounds")
     const thread = events.filter(event => event.pid === clocks[0]!.pid && event.tid === clocks[0]!.tid)
+    for (const task of capture.execution.tasks) {
+      if (!Number.isFinite(task.started) || !Number.isFinite(task.finished) || task.finished < task.started) throw new Error("Invalid Worker task interval")
+    }
     const tasks = capture.execution.tasks.filter(task => task.started * 1000 + offset < window.endedMicroseconds
       && task.finished * 1000 + offset > window.startedMicroseconds)
     const slow = tasks.filter(task => task.finished - task.started >= 20)
@@ -110,11 +115,13 @@ export function attributeWorkerIncidents(
           publication: browser.publications.find(publication => publication.requestId === response.requestId) ?? null,
         })),
         // Counter deltas bound memory.grow to this task, not to an instruction.
-        stacks: sampledStacks(capture.profile, started, ended),
+        stacks: sampledStacks(timeline, started, ended),
+        activeStacks: sampledStacks(timeline, Math.max(started, window.startedMicroseconds), Math.min(ended, window.endedMicroseconds)),
       }
     })
     return {
       target: capture.target, samplingIntervalMicroseconds: capture.samplingIntervalMicroseconds,
+      cpu: summarizeCpuProfile(capture.profile), activeCpu: summarizeCpuProfile(capture.profile, window),
       clock: { domain: "Chromium monotonic microseconds", workerTimeOrigin: capture.execution.timeOrigin, offsetMicroseconds: offset, clocks },
       samples: capture.profile.samples?.length ?? 0, profileStarted: capture.profile.startTime, profileEnded: capture.profile.endTime,
       captureComplete: capture.execution.dropped === 0 && capture.deadlineStopped !== true, droppedTasks: capture.execution.dropped,
