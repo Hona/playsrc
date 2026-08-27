@@ -61,8 +61,8 @@ export class TimerDeltas {
     item.diesAt = now + this.#settings.lifetime
     if (!item.visible) this.#active++
     item.visible = true
-    const seconds = Math.abs(amount)
-    this.#apply({ kind: "mutate-control", panel: item.panel, mutation: { text: `${amount > 0 ? "+" : "-"}${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` } })
+    const seconds = amount > 0 ? amount : (-amount) | 0
+    this.#apply({ kind: "mutate-control", panel: item.panel, mutation: { text: `${amount > 0 ? "+" : "-"}${Math.trunc(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` } })
     this.#apply({ kind: "set-panel-state", panel: item.panel, visible: true })
   }
 

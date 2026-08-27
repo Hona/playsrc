@@ -511,8 +511,9 @@ class Integration implements Tf2HudIntegration {
     const setVisible = (panel: VguiPanelId, visible: boolean, name: string): void => {
       this.#objectiveValue(`round-visible:${name}`, String(visible), { kind: "set-panel-state", panel, visible })
     }
-    setVisible(panels.match, timerVisible, "match")
-    setVisible(panels.background, timerVisible, "match-background")
+    const matchVisible = timerVisible || round.kothTimers !== null
+    setVisible(panels.match, matchVisible, "match")
+    setVisible(panels.background, matchVisible, "match-background")
     setVisible(panels.timer, timerVisible, "timer")
     for (const event of round.events) {
       if (event.kind === 2) { this.#waitingPanelVisible = true; this.#waitingPanelEnding = false }

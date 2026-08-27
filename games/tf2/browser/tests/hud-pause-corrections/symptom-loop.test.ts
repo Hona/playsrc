@@ -678,7 +678,8 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(visible(hud.snapshot().vgui.panels, ["HudKothTimeStatus"])).toEqual([])
     publish(2n, { ...timer, remaining: 0, paused: false }, blue, true)
     let panels = hud.snapshot().vgui.panels
-    expect(visible(panels, ["HudKothTimeStatus", "HudMatchStatus"])).toEqual(["HudKothTimeStatus"])
+    expect(visible(panels, ["HudKothTimeStatus", "HudMatchStatus"])).toEqual(["HudKothTimeStatus", "HudMatchStatus"])
+    expect(visible(panels, ["ObjectiveStatusTimePanel"])).toEqual([])
     const redRoot = panels.find(panel => panel.name === "RedTimer")!.id
     const blueRoot = panels.find(panel => panel.name === "BlueTimer")!.id
     expect(panels.find(panel => panel.parent === redRoot && panel.name === "TimePanelValue")?.text).toBe("0:00")
