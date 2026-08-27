@@ -2903,6 +2903,18 @@ fn main() -> Result<(), String> {
         Some(aggregate)
     };
     stage("map-materials-and-models", &mut stage_started);
+    let visuals = playsrc_entity::visual_resources::from_graph(&graph).map_err(|error| error.to_string())?;
+    for path in &visuals.materials {
+        collect_material(&mut resolver, path, true, SelectionEnvironment::default(), true, "map-visual-material")?;
+    }
+    for stem in &visuals.smoke_series {
+        for index in 1..=MAX_DEPENDENCY_REQUESTS {
+            let path = format!("{stem}{index}.vmt");
+            if resolver.optional(&path, "smokestack-material-series")?.is_none() { break; }
+            collect_material(&mut resolver, &path, true, SelectionEnvironment::default(), true, "map-visual-material")?;
+            if index == MAX_DEPENDENCY_REQUESTS { return Err("smokestack material series exceeds dependency bound".into()); }
+        }
+    }
     let (registry, particle_sources) = particles::collect(&mut resolver, &graph, &target,
         pak.entries.iter().any(|entry| entry.raw_name.eq_ignore_ascii_case(b"particles.txt")))?;
     let roots = playsrc_tf2::particle_resources::roots(&graph).into_iter()
