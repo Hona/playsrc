@@ -20,7 +20,7 @@ export class DeploymentError extends Error {
   }
 }
 
-export async function buildStaticSite(target: string | undefined): Promise<string> {
+export async function buildStaticSite(target: string | undefined, approvedRelease = false): Promise<string> {
   const sourceRelease = await readTf2Release(target)
   const applicationBuild = await applicationBuildIdentity()
   await rm(DIST_DIRECTORY, { recursive: true, force: true })
@@ -32,9 +32,8 @@ export async function buildStaticSite(target: string | undefined): Promise<strin
   })
   if (await child.exited !== 0) throw new DeploymentError("TF2 static application build failed")
   const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
-  // A local candidate describes the actual compiled artifact, not the last
-  // published WASM. Publication separately requires the approved release pin.
-  const release = parseTf2Release({ ...sourceRelease, objects: { ...sourceRelease.objects, wasm: {
+  // Local candidates use their new compiler output; production uses the approved CAS artifact.
+  const release = approvedRelease ? sourceRelease : parseTf2Release({ ...sourceRelease, objects: { ...sourceRelease.objects, wasm: {
     kind: "derived-object", mediaType: "application/octet-stream", byteLength: String(compiledWasm.byteLength),
     sha256: new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex"),
   } } })
@@ -96,6 +95,9 @@ async function verifyRemoteObjects(target: string | undefined): Promise<void> {
         }
         return bytes
       }
+      const approvedWasm = await readObject(release.objects.wasm)
+      const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
+      assertReleaseWasmInterface(compiledWasm, approvedWasm)
       const catalogBytes = await readObject(release.objects.catalog)
       const catalog = parseResourceCatalogBytes(catalogBytes)
       if (catalog.application !== "tf2" || catalog.entries.length !== release.targets.length) throw new DeploymentError("remote resource catalog target table differs")
@@ -177,14 +179,24 @@ export async function verifyCloudflareDeployment(target: string | undefined): Pr
 }
 
 export async function deployCloudflare(target: string | undefined): Promise<void> {
-  const applicationBuild = await buildStaticSite(target)
-  const approved = await readTf2Release(target)
-  const candidate = parseTf2Release(JSON.parse(await readFile(path.join(DIST_DIRECTORY, "release.json"), "utf8")).release)
-  if (JSON.stringify(candidate) !== JSON.stringify(approved)) throw new DeploymentError("Compiled package differs from the approved release; refusing mixed-generation publication")
+  const applicationBuild = await buildStaticSite(target, true)
   await verifyRemoteObjects(target)
   await applyCloudflareInfrastructure()
   const result = await runWrangler(["deploy", `--config=${WRANGLER_CONFIG}`])
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
   await waitForDeployment(target, applicationBuild)
   console.log(JSON.stringify({ target, applicationBuild, url: `${TF2_APPLICATION_ORIGIN}/tf2` }))
+}
+
+export function assertReleaseWasmInterface(compiled: Uint8Array, approved: Uint8Array): void {
+  const contracts = [compiled, approved].map(bytes => {
+    const module = new WebAssembly.Module(bytes)
+    return {
+      imports: WebAssembly.Module.imports(module),
+      exports: WebAssembly.Module.exports(module).sort((a, b) => a.name.localeCompare(b.name)),
+    }
+  })
+  if (JSON.stringify(contracts[0]) !== JSON.stringify(contracts[1])) {
+    throw new DeploymentError("Approved WASM import/export contract differs from browser bindings")
+  }
 }
