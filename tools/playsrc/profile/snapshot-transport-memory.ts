@@ -8,7 +8,7 @@ export function summarizeSnapshotTransport(before: SnapshotTransportBoundary, af
   if (![before.at, after.at].every(Number.isFinite) || after.at < before.at) throw new Error("Snapshot transport boundary clock invalid")
   for (const boundary of [before, after]) for (const [key, value] of Object.entries(boundary.values)) {
     if (!(key === "retainedBaselineBytes" || counters.includes(key as typeof counters[number]))) throw new Error(`Unknown snapshot metric semantics: ${key}`)
-    if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid snapshot metric gauge/counter: ${key}`)
+    if (!Number.isFinite(value) || value < 0 || key !== "decodeMilliseconds" && !Number.isSafeInteger(value)) throw new Error(`Invalid snapshot metric gauge/counter: ${key}`)
   }
   const sameOwner = before.ownerToken !== null && before.ownerToken === after.ownerToken
   const counterDeltas = Object.fromEntries(counters.map(key => {
