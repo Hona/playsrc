@@ -82,11 +82,12 @@ export function installWebGpuShaderProbe(host: any = globalThis) {
     return value.id
   }
   for (const method of ["createRenderPipeline", "createRenderPipelineAsync"]) wrap(method, ([descriptor], result, at, returned, device) => {
-    if (!host.__playsrcFrameProfiler?.active) return
+    if (!host.__playsrcFrameProfiler?.active && !host.__playsrcFrameProfiler?.captureModelPrograms) return
     if (state.pipelines.length >= 512) { state.dropped += 1; return }
     const record: any = {
       method, at, returned, device: deviceIds.get(device) ?? null, label: String(descriptor.label ?? "").slice(0, 256),
       phase: host.__playsrcFrameProfiler.currentPass?.identity ?? null,
+      admission: host.__playsrcFrameProfiler.active ? "sample" : host.__playsrcFrameProfiler.modelPreparation?.ended === undefined ? "preparation" : "post-preparation",
       vertex: { source: source(descriptor.vertex.module), entryPoint: descriptor.vertex.entryPoint,
         buffers: Array.isArray(descriptor.vertex.buffers) ? descriptor.vertex.buffers.map((buffer: any) => buffer ? { ...buffer, attributes: Array.isArray(buffer.attributes) ? buffer.attributes.map((attribute: any) => ({ ...attribute })) : null } : null) : null },
       fragment: descriptor.fragment ? { source: source(descriptor.fragment.module), entryPoint: descriptor.fragment.entryPoint,

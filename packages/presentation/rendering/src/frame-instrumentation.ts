@@ -49,6 +49,9 @@ export type BrowserFrameProfiler = {
   losses: { kind: string; at: number; message: string }[]
   gpuTimestamps?: { frame: number; milliseconds: number }[]
   nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
+  captureModelPrograms?: boolean
+  modelPreparation?: { started: number; ended?: number; models: { model: string; skin: number; pass: string }[] }
+  firstModelUses?: { at: number; model: string; skin: number; identity: number; pass: string | null }[]
 }
 
 type RendererInfo = {
@@ -90,7 +93,12 @@ export class RendererFrameInstrumentation {
   }
 
   pass<T>(identity: string, callback: () => T): T {
-    if (!this.#profile.active) return callback()
+    if (!this.#profile.active) {
+      if (!this.#profile.captureModelPrograms) return callback()
+      const prior = this.#profile.currentPass
+      this.#profile.currentPass = { identity, submissions: 0, commandBuffers: 0, renderPasses: 0, drawCalls: 0, milliseconds: 0, renderPipelines: 0, nodeBuilderMisses: 0 }
+      try { return callback() } finally { this.#profile.currentPass = prior }
+    }
     const prior = this.#profile.currentPass
     const pass: RendererPassProfile = { identity, submissions: 0, commandBuffers: 0, renderPasses: 0, drawCalls: 0, milliseconds: 0, renderPipelines: 0, nodeBuilderMisses: 0 }
     const draws = this.#info.render.drawCalls

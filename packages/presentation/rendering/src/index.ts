@@ -2313,6 +2313,11 @@ class RendererOwner implements Renderer {
     const keys = new Set<string>()
     const started = performance.now()
     this.#renderBusy = true
+    const preparationProfile = browserFrameProfiler()
+    if (preparationProfile) {
+      preparationProfile.captureModelPrograms = true
+      preparationProfile.modelPreparation = { started, models: models.map(({ item, pass }) => ({ model: item.model, skin: item.skin ?? 0, pass })) }
+    }
     try {
       this.#setCamera(camera)
       for (const { item, pass } of models) {
@@ -2367,6 +2372,7 @@ class RendererOwner implements Renderer {
       if (profile) {
         profile.counters.preparedModelVariants = keys.size
         profile.counters.modelPipelinePreparationMilliseconds = performance.now() - started
+        profile.modelPreparation!.ended = performance.now()
       }
     } finally {
       this.#setSceneFog(previousFog)
@@ -5326,6 +5332,22 @@ class RendererOwner implements Renderer {
         }
         this.#applyDynamicModelLighting(retained, item)
         this.#applyDynamicModelCloak(retained, item)
+        const coldProfile = browserFrameProfiler()
+        if (coldProfile?.captureModelPrograms && !retained.instance.userData.coldModelObserved) {
+          retained.instance.userData.coldModelObserved = true
+          let observed = false
+          for (const mesh of retained.meshes ?? []) {
+            const original = mesh.onBeforeRender
+            mesh.onBeforeRender = function (...args) {
+              original.apply(this, args)
+              mesh.onBeforeRender = original
+              if (observed) return
+              observed = true
+              const records = coldProfile.firstModelUses ??= []
+              if (records.length < 256) records.push({ at: performance.now(), model: item.model, skin: item.skin ?? 0, identity: item.identity, pass: coldProfile.currentPass?.identity ?? null })
+            }
+          }
+        }
         if (item.angles) sourceTransform(retained.instance, item.position, item.angles)
         else {
           retained.instance.position.set(...item.position)
