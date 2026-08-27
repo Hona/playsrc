@@ -406,6 +406,42 @@ impl Mesh {
         best.map(|(area, _)| area)
     }
 
+    /// Authored cell order for the Source overlapping-area query.
+    pub fn areas_at(&self, position: [f32; 3]) -> impl Iterator<Item = &Area> {
+        let x = self.grid.coordinate(position[0], 0, self.grid.width);
+        let y = self.grid.coordinate(position[1], 1, self.grid.height);
+        self.grid.cells[x + y * self.grid.width].iter().map(|index| &self.areas[*index])
+    }
+
+    /// Bounded Source spiral search with caller-owned reachability/LOS checks.
+    pub fn nearest_area_matching(&self, position: [f32; 3], maximum_distance: f32, mut accepted: impl FnMut(&Area, [f32;3]) -> bool) -> Option<&Area> {
+        if !maximum_distance.is_finite() || maximum_distance <= 0.0 { return None; }
+        let origin_x = self.grid.coordinate(position[0], 0, self.grid.width);
+        let origin_y = self.grid.coordinate(position[1], 1, self.grid.height);
+        let mut best = None;
+        let mut distance = maximum_distance * maximum_distance;
+        let mut shift = 0;
+        let mut limit = ((maximum_distance / GRID_CELL_SIZE).ceil() as usize).min(self.grid.width.max(self.grid.height));
+        while shift <= limit {
+            let min_x = origin_x.saturating_sub(shift);
+            let max_x = origin_x.saturating_add(shift).min(self.grid.width - 1);
+            let min_y = origin_y.saturating_sub(shift);
+            let max_y = origin_y.saturating_add(shift).min(self.grid.height - 1);
+            for x in min_x..=max_x { for y in min_y..=max_y {
+                if x > min_x && x < max_x && y > min_y && y < max_y { continue; }
+                for &index in &self.grid.cells[x + y * self.grid.width] {
+                    let area = &self.areas[index]; let point = area.closest_point(position);
+                    let range = distance_squared(point, position);
+                    if range < distance && accepted(area, point) {
+                        best = Some(area); distance = range; limit = shift + 1;
+                    }
+                }
+            } }
+            shift += 1;
+        }
+        best
+    }
+
     pub fn build_path<F>(&self, start: u32, goal: u32, cost: F) -> Option<Vec<u32>>
     where
         F: FnMut(&Area, &Area, Direction, f32) -> Option<f32>,
@@ -1048,6 +1084,19 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_navigation_lookup_preserves_cell_order_and_reachability_filters() {
+        let bytes=fixture(&[
+            ([0.0,0.0,0.0],[100.0,100.0,0.0],std::array::from_fn(|_|Vec::new()),0),
+            ([100.0,0.0,0.0],[200.0,100.0,0.0],std::array::from_fn(|_|Vec::new()),0),
+        ]);
+        let mesh=parse(&bytes,Profile::TeamFortress2,Some(128),Limits::default()).unwrap();
+        assert_eq!(mesh.areas_at([50.0,50.0,2.0]).filter(|area|area.contains_xy([50.0,50.0,2.0])).map(|area|area.identity).collect::<Vec<_>>(),[1]);
+        assert_eq!(mesh.nearest_area_matching([99.0,50.0,2.0],50.0,|area,_|area.identity!=1).unwrap().identity,2);
+        assert!(mesh.nearest_area_matching([-50.0,50.0,0.0],50.0,|_,_|true).is_none());
+        assert!(mesh.nearest_area_matching([0.0;3],f32::INFINITY,|_,_|true).is_none());
+    }
 
     type FixtureArea = ([f32; 3], [f32; 3], [Vec<u32>; 4], u32);
 

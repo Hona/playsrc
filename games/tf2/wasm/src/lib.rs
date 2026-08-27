@@ -1607,6 +1607,42 @@ pub struct CompiledArtifact {
     pub payload_sha256: [u8; 32],
     pub derived_sha256: [u8; 32],
 }
+
+/// Bounded native acceptance through the same compiled-map transaction used by
+/// the browser. This does not replace headed presentation or timing evidence.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
+    let section = ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
+    let hash: [u8; 32] = Sha256::digest(resources).into();
+    let handle = unsafe { playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, hash.as_ptr()) };
+    let result = (|| {
+        let failure = playsrc_result_error(handle);
+        if failure != 0 { return Err(format!("map compilation failed: {failure}")); }
+        let (index, _) = decode(handle).ok_or("invalid map handle")?;
+        let mut command = [0_u8; gameplay_protocol::HEADER_BYTES];
+        command[..4].copy_from_slice(b"PCMD");
+        command[4..8].copy_from_slice(&8_u32.to_le_bytes());
+        command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
+        command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
+        command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
+        for batch in 0..189 {
+            if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), if batch == 0 { 1 } else if batch == 188 { 31 } else { 64 }) } == 0 {
+                return Err(format!("gameplay transaction failed: {}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
+            }
+            command[32..36].fill(0); command[42..44].fill(0);
+            let values = slots().lock().expect("TF2 slots");
+            let snapshot = values[index].latest_game_snapshot.as_ref().ok_or("missing gameplay snapshot")?;
+            observe(snapshot);
+            if snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
+        }
+        let values = slots().lock().expect("TF2 slots");
+        let paths = values[index].session.as_ref().and_then(|session| session.bot_world()).map_or_else(Vec::new, |bots|bots.navigation_diagnostics());
+        Err(format!("walking bots did not complete the control-point round within 180 simulation seconds: {}", paths.join("\n")))
+    })();
+    playsrc_dispose(handle);
+    result
+}
+
 pub fn compile_artifact(
     bsp: &[u8],
     profile: u32,
