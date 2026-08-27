@@ -3087,6 +3087,7 @@ class SourceVguiRuntime implements VguiRuntime {
       throw new RuntimeFault("MalformedValue", `${panel.name}:activeIndex`)
     }
     if (mutation.url !== undefined && !URL.test(mutation.url)) throw new RuntimeFault("MalformedValue", `${panel.name}:url`)
+    if (mutation.accessibleName !== undefined && !validString(mutation.accessibleName, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.title !== undefined && !validString(mutation.title, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.description !== undefined && !validString(mutation.description, this.limits.maxTextCodeUnits)) throw new RuntimeFault("TextLimit", panel.name)
     if (mutation.text !== undefined) {
@@ -3155,6 +3156,7 @@ class SourceVguiRuntime implements VguiRuntime {
     if (mutation.description !== undefined) {
       panel.accessibleDescription = mutation.description
     }
+    if (mutation.accessibleName !== undefined) panel.accessibleName = mutation.accessibleName
     this.reapplyPanelPresentation(panel)
     this.publishDom()
   }

@@ -383,6 +383,7 @@ export type VguiKey =
   | string
 
 export type VguiControlMutation = Readonly<{
+  accessibleName?: string
   text?: string
   command?: string | null
   value?: number

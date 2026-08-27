@@ -28,7 +28,7 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
   // This UI-only projection takes one owned copy, never one copy per string.
   if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) bytes = new Uint8Array(bytes)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 1) throw new Error("invalid equipment state")
+  if (bytes.byteLength > 1024 * 1024 || view.getUint32(0, true) !== 0x49454654 || view.getUint32(4, true) !== 2) throw new Error("invalid equipment state")
   const revision = view.getUint32(8, true), count = view.getUint32(12, true)
   if (count > 256) throw new Error("invalid supported item count")
   let at = 16
@@ -45,18 +45,22 @@ export function decodeEquipmentState(bytes: Uint8Array): Tf2EquipmentState {
     const weapon = view.getUint8(at++), classes = view.getUint8(at++)
     if (classes < 1 || classes > 27) throw new Error("invalid class eligibility")
     const classSlots = Array.from({ length: classes }, () => {
-      const identity = view.getUint8(at++), slot = view.getUint8(at++)
+      const identity = view.getUint8(at++), slot = view.getUint8(at++), runtime = view.getUint8(at++)
       if (identity < 1 || identity > 9 || slot > 18) throw new Error("invalid class slot")
-      return Object.freeze({ class: identity as Tf2Class, slot })
+      return Object.freeze({ class: identity as Tf2Class, slot, weapon: runtime === 0 ? null : runtime as Tf2Weapon })
     })
-    const name = text(), image = text(), attach = view.getUint8(at++), deathNoticeIcon = text() || null, modelPlayer = text()
+    const name = text(), displayName = text(), image = text()
+    const lines = view.getUint32(at, true); at += 4
+    if (lines > 128) throw new Error("invalid item description count")
+    const description = Object.freeze(Array.from({ length: lines }, () => Object.freeze({ text: text(), color: text() })))
+    const attach = view.getUint8(at++), deathNoticeIcon = text() || null, modelPlayer = text()
     if (attach > 1) throw new Error("invalid item attachment")
     const pairs = () => {
       const count = view.getUint32(at, true); at += 4
       if (count > 128) throw new Error("invalid item replacements")
       return Object.freeze(Array.from({ length: count }, () => Object.freeze([text(), text()] as const)))
     }
-    inventory.push(Object.freeze({ item: decoded.items[0]!, weapon: weapon === 0 ? null : weapon as Tf2Weapon, classSlots: Object.freeze(classSlots), name, image, modelPlayer,
+    inventory.push(Object.freeze({ item: decoded.items[0]!, weapon: weapon === 0 ? null : weapon as Tf2Weapon, classSlots: Object.freeze(classSlots), name, displayName, description, image, modelPlayer,
       attachToHands: attach === 1, deathNoticeIcon, animationReplacements: pairs(), soundOverrides: pairs() }))
   }
   const classes = Array.from({ length: 9 }, (_, index) => {

@@ -40,6 +40,9 @@ export class Tf2EquipmentPresentation {
   #content: VguiPanelId | undefined
   #releaseSurface: (() => void) | undefined
   #selected: number | null = null
+  readonly #itemPanels = new Map<VguiPanelId, Tf2SupportedItem>()
+  #hover: { panel: VguiPanelId; item: Tf2SupportedItem; since: number } | undefined
+  #tooltip: VguiPanelId | undefined
 
   constructor(request: Tf2EquipmentPresentationRequest) {
     this.#request = request; this.#viewport = request.viewport
@@ -57,6 +60,10 @@ export class Tf2EquipmentPresentation {
     if (!initialized.ok) throw new Error(`Equipment UI ${initialized.diagnostic.code}:${initialized.diagnostic.subject}`)
     this.#runtime = initialized.runtime
     this.#apply({ kind: "set-panel-state", panel: 1, visible: false, proportional: true })
+    request.root.addEventListener("pointerover", this.#enterItem)
+    request.root.addEventListener("focusin", this.#enterItem)
+    request.root.addEventListener("pointerout", this.#leaveItem)
+    request.root.addEventListener("focusout", this.#leaveItem)
   }
 
   #apply(operation: VguiOperation): VguiPanelId | undefined {
@@ -83,12 +90,15 @@ export class Tf2EquipmentPresentation {
   visible(): boolean { return this.#visible }
   snapshot() { return { visible: this.#visible, page: this.#page, class: this.#class, vgui: this.#runtime.snapshot() } }
   hide(): void {
+    this.#clearTooltip()
     this.#visible = false; this.#releaseSurface?.(); this.#releaseSurface = undefined
     this.#apply({ kind: "set-panel-state", panel: 1, visible: false }); this.#request.root.style.display = "none"
     this.#request.onPreview(null); this.#request.onClose()
   }
   #render(): void {
     if (!this.#visible || !this.#state) return
+    this.#clearTooltip()
+    this.#itemPanels.clear()
     this.#releaseSurface?.(); this.#releaseSurface = undefined
     if (this.#page !== "loadout") this.#request.onPreview(null)
     this.#runtime.deferPresentation(() => {
@@ -153,19 +163,21 @@ export class Tf2EquipmentPresentation {
     const selected = item?.item.definitionIndex === this.#selected
     const button = this.#button(parent, `Item${command.replaceAll(" ", "-") || `${x}-${y}`}`, "", command, x, y, scalar(template, "wide")!, scalar(template, "tall")!, {
       border: selected ? "BackpackItemSelectedBorder" : `BackpackItemBorder${QUALITY_SUFFIX[item?.item.quality ?? 0]}`,
-      tooltiptext: item ? this.#localize(item.name) : "",
+      tooltiptext: "",
     })
     if (!item) { this.#apply({ kind: "set-panel-state", panel: button, enabled: command !== "" }); return }
+    this.#itemPanels.set(button, item)
+    this.#apply({ kind: "mutate-control", panel: button, mutation: { accessibleName: item.displayName, description: item.description.map(line => line.text).join("\n") } })
     const width = Number(scalar(template, "model_wide")), height = Number(scalar(template, "model_tall"))
     const image = this.#create(button, "ImagePanel", "ItemIcon", { xpos: scalar(template, "model_xpos") ?? String((Number(scalar(template, "wide")) - width) / 2), ypos: scalar(template, "model_ypos")!, wide: String(width), tall: String(height), image: `../${item.image}`, scaleImage: "1" })
     this.#apply({ kind: "set-panel-state", panel: image, mouseInput: false, keyboardInput: false })
     if (name) {
-      const text = this.#localize(item.name)
+      const text = item.displayName
       const available = Number(scalar(template, "wide")) * this.#viewport.height / 480
       const large = this.#request.resources.clientScheme.fonts.find(font => font.name === "ItemFontNameLarge")
       const font = (large?.measure?.(text, null).width ?? Infinity) <= available ? "ItemFontNameLarge" : "ItemFontNameSmall"
       const label = this.#create(button, "CExLabel", "ItemName", { xpos: "0", ypos: scalar(template, "text_ypos")!, wide: "f0", tall: "16", textAlignment: "center", font,
-        fgcolor: `QualityColor${QUALITY_COLOR[item.item.quality]}`, labelText: item.name, zpos: "2" })
+        fgcolor: `QualityColor${QUALITY_COLOR[item.item.quality]}`, labelText: item.displayName, zpos: "2" })
       this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
     } else if (this.#state?.classes.some(value => value.items.some(equipped => equipped.itemId === item.item.itemId))) {
       const authored = block(block(this.#request.resources.panelDocument("resource/ui/econ/itemmodelpanel.res").roots[0]!, "MainContentsContainer"), "equippedlabel")
@@ -175,6 +187,98 @@ export class Tf2EquipmentPresentation {
       const label = this.#create(button, "CExLabel", "EquippedLabel", props)
       this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
     }
+    if (item.item.attributes.some(attribute => attribute.definition === 134)) {
+      const authored = block(block(this.#request.resources.panelDocument("resource/ui/econ/itemmodelpanel.res").roots[0]!, "MainContentsContainer"), "is_unusual_icon")
+      const wide = Number(scalar(authored, "wide"))
+      const icon = this.#create(button, "ImagePanel", "UnusualIcon", { xpos: String(Number(scalar(template, "wide")) - 1 - wide), ypos: "1", wide: String(wide),
+        tall: scalar(authored, "tall")!, zpos: scalar(authored, "zpos")!, image: "viewmode_unusual", scaleImage: "1" })
+      this.#apply({ kind: "set-panel-state", panel: icon, mouseInput: false, keyboardInput: false })
+    }
+  }
+
+  #findItem(target: EventTarget | null): { panel: VguiPanelId; item: Tf2SupportedItem } | undefined {
+    let element = target as HTMLElement | null
+    while (element && element !== this.#request.root) {
+      const panel = Number(element.dataset?.vguiPanel)
+      const item = this.#itemPanels.get(panel)
+      if (item) return { panel, item }
+      element = element.parentElement
+    }
+    return undefined
+  }
+  readonly #enterItem = (event: Event): void => {
+    if (!this.#visible) return
+    const item = this.#findItem(event.target)
+    if (item?.panel === this.#hover?.panel) return
+    this.#clearTooltip()
+    if (item) this.#hover = { ...item, since: this.#request.clock.nowSeconds() }
+  }
+  readonly #leaveItem = (event: Event): void => {
+    const next = this.#findItem((event as MouseEvent).relatedTarget)
+    if (next?.panel !== this.#hover?.panel) this.#clearTooltip()
+  }
+  #clearTooltip(): void {
+    this.#hover = undefined
+    if (this.#tooltip !== undefined) { this.#apply({ kind: "delete-panel", panel: this.#tooltip, deferred: false }); this.#tooltip = undefined }
+  }
+  #showTooltip(): void {
+    const hover = this.#hover
+    if (!hover || this.#tooltip !== undefined || this.#content === undefined) return
+    const itemPanel = this.#runtime.snapshot().panels.find(panel => panel.id === hover.panel)
+    if (!itemPanel) return
+    const scale = this.#viewport.height / 480
+    const authored = block(this.#request.resources.panelDocument(this.#page === "loadout" ? "resource/ui/classloadoutpanel.res" : "resource/ui/econ/backpackpanel.res").roots[0]!, "mouseoveritempanel")
+    const contents = this.#request.resources.panelDocument("resource/ui/econ/itemmodelpanel.res").roots[0]!
+    const configuration = block(contents, "mouseoveritempanel")
+    const labels = block(contents, "MainContentsContainer")
+    const width = Number(scalar(authored, "wide")), textWidth = Number(scalar(configuration, "text_wide")), textX = Number(scalar(configuration, "text_xpos"))
+    const nameFont = scalar(block(labels, "namelabel"), "font")!
+    const attributeFont = scalar(block(authored, "attriblabel"), "font")!
+    const measure = (fontName: string, text: string): number => {
+      const font = this.#request.resources.clientScheme.fonts.find(font => font.name === fontName)
+      if (!font) throw new Error(`Missing authored equipment font ${fontName}`)
+      const metrics = font.metricsForViewport?.(this.#viewport.height) ?? font
+      const measured = (metrics.measure ?? font.measure)?.(text, textWidth * scale)
+      if (!measured) throw new Error(`Equipment font measurement is unavailable: ${fontName}`)
+      return measured.height / scale
+    }
+    const lines = [{ text: hover.item.displayName, color: `QualityColor${QUALITY_COLOR[hover.item.item.quality]}`, font: nameFont },
+      ...hover.item.description.map(line => ({ ...line, font: attributeFont }))]
+    const heights = lines.map(line => measure(line.font, line.text))
+    const top = Number(scalar(configuration, "text_ypos")), height = top + heights.reduce((sum, value) => sum + value, 0) + Number(scalar(authored, "padding_height"))
+    const item = { x: itemPanel.bounds.x / scale, y: itemPanel.bounds.y / scale, width: itemPanel.bounds.width / scale, height: itemPanel.bounds.height / scale }
+    const candidates = [[item.x + item.width / 2 - width / 2, item.y + item.height + 4],
+      [item.x - width - 4, item.y - height / 2], [item.x + item.width + 4, item.y - height / 2],
+      [item.x - width + 18, item.y - 7], [item.x + item.width - 20, item.y - 7], [item.x + item.width / 2 - width / 2, item.y - height - 4]]
+    let x = 0, y = 0
+    for (const candidate of candidates) {
+      x = candidate[0]!; y = candidate[1]!
+      let valid = true
+      if (x < 0) x = 0
+      else if (x + width > this.#viewport.width / scale) {
+        const shifted = this.#viewport.width / scale - width
+        if (shifted >= 0) x = shifted; else valid = false
+      }
+      if (y < 0) y = 0
+      else if (y + height + 32 > 480) {
+        const shifted = item.y - height - 4
+        if (shifted >= 0) y = shifted; else valid = false
+      }
+      if (valid && !(x < item.x + item.width && x + width > item.x && y < item.y + item.height && y + height > item.y)) break
+    }
+    this.#runtime.deferPresentation(() => {
+      const panel = this.#create(this.#content!, "EditablePanel", "ItemTooltip", { xpos: String(x), ypos: String(y), wide: String(width), tall: String(height),
+        zpos: scalar(authored, "zpos")!, border: `BackpackItemMouseOverBorder${QUALITY_SUFFIX[hover.item.item.quality]}`, paintborder: "1", paintbackground: "1", PaintBackgroundType: "2" })
+      this.#tooltip = panel
+      this.#apply({ kind: "set-panel-state", panel, mouseInput: false, keyboardInput: false })
+      let at = top
+      lines.forEach((line, index) => {
+        const label = this.#create(panel, "CExLabel", index === 0 ? "ItemTooltipName" : `ItemDescription${index}`, { xpos: String(textX), ypos: String(at), wide: String(textWidth), tall: String(heights[index]),
+          font: line.font, labelText: line.text, fgcolor: line.color, textAlignment: "center", centerwrap: "1", wrap: "1" })
+        this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
+        at += heights[index]!
+      })
+    })
   }
   #command(command: string): void {
     if (!this.#visible || this.#busy) return
@@ -205,7 +309,16 @@ export class Tf2EquipmentPresentation {
     if (!this.#visible || event.code !== "Escape") return false
     this.#command("back"); event.preventDefault(); event.stopImmediatePropagation(); return true
   }
-  frame(timeSeconds: number): void { if (this.#visible) this.#apply({ kind: "frame", timeSeconds }) }
+  frame(timeSeconds: number): void {
+    if (!this.#visible) return
+    this.#apply({ kind: "frame", timeSeconds })
+    if (this.#hover && timeSeconds >= this.#hover.since + 0.1) this.#showTooltip()
+  }
   setViewport(viewport: VguiViewport): void { this.#viewport = viewport; this.#apply({ kind: "set-viewport", viewport }); this.#render() }
-  destroy(): void { this.#releaseSurface?.(); this.#request.onPreview(null); this.#apply({ kind: "destroy" }) }
+  destroy(): void {
+    this.#releaseSurface?.(); this.#request.onPreview(null)
+    this.#request.root.removeEventListener("pointerover", this.#enterItem); this.#request.root.removeEventListener("focusin", this.#enterItem)
+    this.#request.root.removeEventListener("pointerout", this.#leaveItem); this.#request.root.removeEventListener("focusout", this.#leaveItem)
+    this.#itemPanels.clear(); this.#hover = undefined; this.#apply({ kind: "destroy" })
+  }
 }
