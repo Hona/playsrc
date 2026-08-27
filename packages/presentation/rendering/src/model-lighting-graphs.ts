@@ -35,6 +35,12 @@ export class ModelLightingGraphs {
   }
 
   get size(): number { return this.#graphs.size }
+
+  releaseDrawReferences(): void {
+    const references = [this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
+      ...this.lighting.local.flatMap(light => Object.values(light)), ...Object.values(this.eyes)]
+    for (const node of references) (node as unknown as { reference: object | null }).reference = null
+  }
 }
 
 export function bindModelLighting(mesh: THREE.Mesh, lighting: SourceModelLightingUniforms, eye?: SourceModelEyeUniforms): void {

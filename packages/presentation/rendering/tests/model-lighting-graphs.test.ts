@@ -29,6 +29,22 @@ test("one graph reads independent lighting and eye values in alternating object 
   }
 })
 
+test("a verified graph handoff drops last-draw object references and rebinds without changing graph identity", () => {
+  const graphs = new ModelLightingGraphs(), old = new THREE.Mesh(), next = new THREE.Mesh()
+  const before = createSourceModelLightingUniforms(), after = createSourceModelLightingUniforms()
+  before.ambientEnabled.value = 0; after.ambientEnabled.value = 1
+  bindModelLighting(old, before); bindModelLighting(next, after)
+  const node = graphs.lighting.ambientEnabled as any
+  node.updateReference({ object: old }); node.updateValue()
+  const graph = graphs.get("exact", () => TSL.vec4(1))
+  expect(node.reference).toBe(old)
+  graphs.releaseDrawReferences()
+  expect(node.reference).toBeNull()
+  expect(graphs.get("exact", () => { throw new Error("rebuilt graph") })).toBe(graph)
+  node.updateReference({ object: next }); node.updateValue()
+  expect(node.node.value).toBe(1)
+})
+
 test("graph structure is retained across actor replacement, but isolated across scene/fog/exposure owners", () => {
   const world = new ModelLightingGraphs(), panel = new ModelLightingGraphs(), nextGeneration = new ModelLightingGraphs()
   let created = 0
