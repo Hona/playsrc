@@ -3,6 +3,7 @@ import type { DerivedObjectCache, VerifiedDerivedObject } from "@playsrc/asset-s
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { Tf2WorkerClient, Tf2WorkerError, type ResourceConfiguration, type WorkerLike } from "../src/client"
 import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTimings } from "../src/protocol"
+import { TF2_PRESENTATION_SCHEMA } from "../src/protocol"
 import { reclaimModelReads } from "../src/model-read-ownership"
 import { REPLY_BYTES, ReplyWriter, type ReplyControl } from "../src/reply-transport"
 
@@ -71,7 +72,7 @@ async function digest(bytes: Uint8Array): Promise<string> {
 }
 
 async function presentationIdentity(key: string, build = BUILD): Promise<string> {
-  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v18\0${build}\0${key}`))
+  return digest(new TextEncoder().encode(`playsrc-tf2-presentation-v${TF2_PRESENTATION_SCHEMA}\0${build}\0${key}`))
 }
 
 async function configuration(generation: number, values: readonly number[] = []): Promise<ResourceConfiguration> {
@@ -202,7 +203,7 @@ class PipelineWorker implements WorkerLike {
   failure?: WorkerResponse
   animatedWorldMaterial = false
   workerBuild = BUILD
-  presentationSchema = 18
+  presentationSchema: number = TF2_PRESENTATION_SCHEMA
   workerWasmSha256?: string
   malformedModelOutput = false
   modelBits?: number[]
@@ -447,7 +448,7 @@ describe("TF2 Worker transport ownership", () => {
     const wasm = Uint8Array.from([1, 2, 3])
     await expect(client.initialize(wasm, await digest(wasm), 1)).rejects.toThrow("GenerationMismatch")
     expect(worker.requests).toHaveLength(1)
-    expect(worker.requests[0]).toMatchObject({ kind: "initialize", applicationBuild: BUILD, presentationSchema: 18 })
+    expect(worker.requests[0]).toMatchObject({ kind: "initialize", applicationBuild: BUILD, presentationSchema: TF2_PRESENTATION_SCHEMA })
     expect(worker.terminated).toBe(true)
   })
 
