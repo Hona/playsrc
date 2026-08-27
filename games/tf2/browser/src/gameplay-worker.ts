@@ -2,6 +2,7 @@
 
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
+import { reclaimModelReads } from "./model-read-ownership"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
@@ -86,11 +87,10 @@ const resourceSets = new ResourceGenerations((section) => {
   if (section.authoredBacking) wasm!.playsrc_resource_release(section.pointer, section.length)
   else wasm!.playsrc_free(section.pointer, section.length)
 })
-const modelOutputLeases = new Map<number, { generation: number; handle: number; pointer: number; capacity: number; slot: number }>()
+const modelOutputLeases = new Map<number, { handle: number; pointer: number; capacity: number; slot: number }>()
 const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array.BYTES_PER_ELEMENT))
 const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
 let leasedModelBytes = 0
-let closing: Extract<WorkerRequest, { kind: "shutdown" }> | undefined
 
 // Explicit local diagnostics only. No exports, handles, views, asset bytes or
 // arbitrary engine access cross this interface. The Rust owner records the
@@ -948,34 +948,28 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
     return
   }
   const slot = freeModelLeaseSlots.pop()!
-  modelOutputLeases.set(request.id, { generation: request.generation, handle: value.handle, pointer: outputPointer, capacity, slot })
+  modelOutputLeases.set(request.id, { handle: value.handle, pointer: outputPointer, capacity, slot })
   leasedModelBytes += capacity
   // Publish completed WASM writes with an explicit release/acquire edge. Zero is
-  // returned only after the client has finished every read; the ACK also gates reuse.
+  // returned only after the client has finished every read. The next admitted
+  // request reclaims released allocations before any model output can reuse them.
   Atomics.store(modelLeaseOwnership, slot, request.id | 0)
   const outputCopyMilliseconds = performance.now() - outputCopyStarted
   try {
     post({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: outputPointer, byteLength: length, lease: request.id, ownership: modelLeaseOwnership.buffer as SharedArrayBuffer, slot, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } })
   } catch (error) {
     Atomics.store(modelLeaseOwnership, slot, 0)
-    releaseModelOutput({ id: request.id, kind: "release-model-output", generation: request.generation, lease: request.id })
+    reclaimModelOutputs()
     throw error
   }
 }
 
-function releaseModelOutput(request: Extract<WorkerRequest, { kind: "release-model-output" }>): void {
-  const retained = modelOutputLeases.get(request.lease)
-  if (!retained || retained.generation !== request.generation || request.id !== request.lease || !wasm ||
-    Atomics.load(modelLeaseOwnership, retained.slot) !== 0) return
-  modelOutputLeases.delete(request.lease)
-  freeModelLeaseSlots.push(retained.slot)
-  leasedModelBytes -= retained.capacity
-  wasm.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
-  if (closing && modelOutputLeases.size === 0) {
-    const request = closing
-    closing = undefined
-    shutdown(request)
-  }
+function reclaimModelOutputs(): void {
+  reclaimModelReads(modelLeaseOwnership, modelOutputLeases, retained => {
+    freeModelLeaseSlots.push(retained.slot)
+    leasedModelBytes -= retained.capacity
+    wasm!.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
+  })
 }
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const started = performance.now()
@@ -1019,10 +1013,10 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
 }
 
 function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
-  // A queued shutdown can run before the main thread has read an earlier response.
-  // Keep its immutable allocation alive until the decoder acknowledges ownership.
+  // The client drains its decoders before sending shutdown. Reject an invalid
+  // caller rather than reclaiming a still-owned immutable allocation.
   if (modelOutputLeases.size > 0) {
-    closing = request
+    fail(request.id, "TransitionFailed")
     return
   }
   if (wasm && active) wasm.playsrc_dispose(active.handle)
@@ -1036,10 +1030,7 @@ function shutdown(request: Extract<WorkerRequest, { kind: "shutdown" }>): void {
 
 function dispatch(request: WorkerRequest): void | Promise<void> {
   if (!request || !canonicalId(request.id) || typeof request.kind !== "string") return
-  if (closing && request.kind !== "release-model-output") {
-    fail(request.id, "TransitionFailed")
-    return
-  }
+  reclaimModelOutputs()
   switch (request.kind) {
     case "initialize":
       return initialize(request)
@@ -1069,8 +1060,6 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return observe(request)
     case "particles":
       return particles(request)
-    case "release-model-output":
-      return releaseModelOutput(request)
     case "models": {
       const companion = request.visibility
       if (companion && (!canonicalId(companion.id) || companion.id === request.id || !Number.isFinite(companion.queuedAt))) {

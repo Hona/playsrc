@@ -214,7 +214,7 @@ describe("opt-in structured browser frame profiler", () => {
     expect(state.losses[0]).toMatchObject({ kind: "validation", at: 20 })
     expect(state.losses[0].message).toContain("Destroyed texture")
   })
-  test("distinguishes resident shared model bytes from transferred response bytes and ignores lease acknowledgments", () => {
+  test("distinguishes resident shared model bytes from transferred response bytes", () => {
     class Worker {
       listener?: (event: { data: unknown }) => void
       addEventListener(_type: string, listener: (event: { data: unknown }) => void): void { this.listener = listener }
@@ -226,7 +226,6 @@ describe("opt-in structured browser frame profiler", () => {
     const worker = new browser.Worker("gameplay.js")
     worker.postMessage({ id: 9, kind: "models", batch: new Uint8Array(12) })
     worker.listener!({ data: { id: 9, kind: "models", output: new SharedArrayBuffer(256), byteOffset: 32, byteLength: 96 } })
-    worker.postMessage({ id: 9, kind: "release-model-output", generation: 1, lease: 9 })
     expect(state.worker).toHaveLength(1)
     expect(state.worker[0]).toMatchObject({ receivedBytes: 0, sharedBytes: 96 })
     expect(state.counters.workerPending).toBe(0)

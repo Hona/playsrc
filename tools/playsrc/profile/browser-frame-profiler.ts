@@ -276,7 +276,7 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
       }
 
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
-        if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string" && message.kind !== "release-model-output") {
+        if (state.active && Number.isSafeInteger(message?.id) && typeof message?.kind === "string") {
           const started=host.performance.now()
           const register=(id:number,kind:string,bytes:number,sharedDispatch:boolean,views?:number)=>{
             const record={id,kind,started,bytes,pending:state.counters.workerPending,sharedDispatch,...(views===undefined?{}:{views})}

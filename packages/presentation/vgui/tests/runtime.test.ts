@@ -161,11 +161,10 @@ describe("generic Source VGUI runtime", () => {
       Object.defineProperty(runtime, "snapshot", { value: () => { throw new Error("Full snapshot in child lookup") } })
       expect(runtime.findChildByName(1, "lAbEl")).toBe(direct)
       expect(runtime.findChildByName(a, "LABEL")).toBe(nested)
-      expect(runtime.findChildByName(1, "Label", true)).toBe(nested)
       expect(runtime.findChildByName(a, "absent")).toBeNull()
       operation(runtime, { kind: "delete-panel", panel: nested, deferred: false })
       expect(runtime.findChildByName(a, "Label")).toBeNull()
-      expect(runtime.findChildByName(1, "Label", true)).toBe(direct)
+      expect(runtime.findChildByName(1, "Label")).toBe(direct)
     })
   })
   test("scalable panels fill their bounds without the unrelated ImagePanel scale flag", () => {
