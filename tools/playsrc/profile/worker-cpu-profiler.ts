@@ -1,18 +1,26 @@
 import type { CDPSession, Page } from "@playwright/test"
+import { EventEmitter } from "node:events"
 import type { CpuProfile } from "./gameui-profile"
 import { installWorkerTaskProfiler } from "./worker-task-profiler"
+import { admitWorkerExecutionContext } from "./worker-runtime-admission"
 
 // Non-flattened CDP sessions let the browser address a real dedicated Worker;
 // page Profiler.start samples only the renderer, not its Workers.
-export class WorkerCdpSession {
+export class WorkerCdpSession extends EventEmitter {
   #next = 0
   #pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   constructor(readonly browser: CDPSession, readonly sessionId: string) {
+    super()
     browser.on("Target.receivedMessageFromTarget", this.#receive)
+    browser.on("Target.detachedFromTarget", this.#detached)
+  }
+  #detached = (event: { sessionId: string }) => {
+    if (event.sessionId === this.sessionId) this.emit("Inspector.detached", event)
   }
   #receive = (event: { sessionId: string; message: string }) => {
     if (event.sessionId !== this.sessionId) return
     const message = JSON.parse(event.message)
+    if (message.method) { this.emit(message.method, message.params); return }
     const pending = this.#pending.get(message.id)
     if (!pending) return
     this.#pending.delete(message.id)
@@ -36,7 +44,9 @@ export class WorkerCdpSession {
     })
   }
   async close(): Promise<void> {
+    this.emit("Inspector.detached", {})
     this.browser.off("Target.receivedMessageFromTarget", this.#receive)
+    this.browser.off("Target.detachedFromTarget", this.#detached)
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(new Error("Worker CDP session closed"))
@@ -70,13 +80,14 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
   // Rayon helpers can be synchronously parked in WASM/Atomics.wait and cannot
   // service Runtime.evaluate. Sample the actual gameplay Worker; all other
   // browser/renderer/Worker/GPU threads remain in the native trace.
-  const attached: Array<{ target: typeof targets[number]; session: WorkerCdpSession }> = []
+  const attached: Array<{ target: typeof targets[number]; session: WorkerCdpSession; contextId?: number }> = []
   try {
     for (const target of gameplay) {
       const { sessionId } = await browser.send("Target.attachToTarget", { targetId: target.targetId, flatten: false })
       const session = new WorkerCdpSession(browser, sessionId)
-      const entry = { target, session }
+      const entry: typeof attached[number] = { target, session }
       attached.push(entry)
+      entry.contextId = await admitWorkerExecutionContext(session)
       await session.send("Profiler.enable")
       await session.send("Profiler.setSamplingInterval", { interval: 1_000 })
     }
@@ -86,9 +97,9 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
     const stop = (): Promise<WorkerCpuCapture[]> => {
       if (stopped) return stopped
       if (deadline) clearTimeout(deadline)
-      stopped = Promise.all(attached.map(async ({ target, session }) => {
+      stopped = Promise.all(attached.map(async ({ target, session, contextId }) => {
         const { profile } = await session.send("Profiler.stop")
-        const result = await session.send("Runtime.evaluate", { expression: "globalThis.__playsrcWorkerTasks.stop()", returnByValue: true })
+        const result = await session.send("Runtime.evaluate", { expression: "globalThis.__playsrcWorkerTasks.stop()", returnByValue: true, contextId })
         if (result.exceptionDetails) throw new Error(`Worker profiler collection failed: ${JSON.stringify(result.exceptionDetails)}`)
         return { target, samplingIntervalMicroseconds: 1_000, profile, execution: result.result.value, deadlineStopped }
       }))
@@ -98,9 +109,9 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
       unsampledTargets: targets.filter(target => !gameplay.includes(target)),
       async start() {
         deadline = setTimeout(() => { deadlineStopped = true; void stop().catch(() => undefined) }, 12_000)
-        await Promise.all(attached.map(async ({ target, session }) => {
+        await Promise.all(attached.map(async ({ target, session, contextId }) => {
           const expression = `(${installWorkerTaskProfiler.toString()})(globalThis, ${JSON.stringify(target.targetId)})`
-          const result = await session.send("Runtime.evaluate", { expression })
+          const result = await session.send("Runtime.evaluate", { expression, contextId })
           if (result.exceptionDetails) throw new Error(`Worker profiler injection failed: ${JSON.stringify(result.exceptionDetails)}`)
           await session.send("Profiler.start")
         }))
