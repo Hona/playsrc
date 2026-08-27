@@ -866,6 +866,7 @@ export interface Renderer {
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
+  prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; panel: boolean }>[], camera: Camera): Promise<void>
   render(frame: Frame): Promise<FrameResult>
   renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult>
   modelVisible(model: string, skin: number, position: readonly [number, number, number], angles: readonly [number, number, number], camera: Camera, views: readonly WaterFramePass[]): boolean
@@ -1482,6 +1483,7 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   readonly #retainedModelPanels = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(32, retained => this.#disposeDynamicInstance(retained.instance))
+  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes: THREE.Mesh[] }>(64, retained => this.#disposeDynamicInstance(retained.instance))
   #viewModelInstances = new Map<number, RetainedViewModel>()
   // Detached occurrences share a bounded, generation-owned residency budget.
   // Never substitute one actor's mutable materials or skeleton for another's.
@@ -2262,6 +2264,7 @@ class RendererOwner implements Renderer {
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
       this.#retainedModelPanels.clear()
+      this.#preparedModelInstances.clear()
       this.#stagedDynamic = undefined
       this.#worldVisibilitySurfaces = undefined
       this.#worldVisibilityIdentity = undefined
@@ -2296,6 +2299,73 @@ class RendererOwner implements Renderer {
     }
     this.#setCamera(camera)
     await this.#prepareReachablePipelines(this.#active, undefined, this.#loadOrdinal, leaves)
+  }
+
+  async prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; panel: boolean }>[], camera: Camera): Promise<void> {
+    this.#requireReady()
+    if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "model pipeline preparation requires an idle active map")
+    if (models.length > 64) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
+    const ordinal = this.#loadOrdinal
+    const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes: THREE.Mesh[] } }[] = []
+    const world = new THREE.Scene(), panelScene = new THREE.Scene()
+    const keys = new Set<string>()
+    const started = performance.now()
+    this.#renderBusy = true
+    try {
+      this.#setCamera(camera)
+      for (const { item, panel } of models) {
+        const model = modelKey(item.model, item.skin ?? 0), key = `${panel ? "panel" : "view"}:${model}`
+        if (keys.has(key)) continue
+        keys.add(key)
+        const template = this.#active.modelTemplates.get(model)
+        if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
+        const instance = template.clone(true), meshes: THREE.Mesh[] = []
+        instance.traverse(object => { if (object instanceof THREE.Mesh) meshes.push(object) })
+        const skeleton = createSourceModelSkeleton(item.pose.boneMatrices)
+        instance.userData.sourceSkeleton = skeleton
+        const retained = { model, instance, meshes }
+        staged.push({ key, retained })
+        // Compilation needs the authored bind attributes/palette shape, not a
+        // rendered synthetic gameplay pose. Keep authored material depth/alpha
+        // state; ordinary runtime pose application still owns draw disposition.
+        for (let index = 0; index < meshes.length; index++) {
+          const old = meshes[index]!, authored = SOURCE_MODEL_BIND_GEOMETRY.get(old.geometry)
+          if (!authored || authored.palette.some(bone => bone >= item.pose!.boneMatrices.length / 12)) throw new RenderingError("IdentityMismatch", "prepared model palette differs from authored skeleton")
+          const material = Array.isArray(old.material) ? old.material.map(value => value.clone()) : old.material.clone()
+          const mesh = bindSourceModelMesh(authored.geometry, material, skeleton)
+          mesh.userData = { ...old.userData, dynamicMaterial: true }
+          const parent = old.parent!, position = parent.children.indexOf(old)
+          parent.remove(old); parent.add(mesh)
+          parent.children.splice(parent.children.indexOf(mesh), 1); parent.children.splice(position, 0, mesh)
+          meshes[index] = mesh
+        }
+        this.#applyDynamicModelLighting(retained, item, panel ? {
+          materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
+          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap,
+          exposure: this.#modelPanelExposure, graphs: this.#active.modelPanelLightingGraphs,
+        } : undefined)
+        ;(panel ? panelScene : world).add(instance)
+      }
+      // compileAsync waits for actual native pipeline readiness. It neither
+      // submits a game frame nor advances simulation/animation/input clocks.
+      for (const scene of [world, panelScene]) {
+        if (scene.children.length) await this.#backend.compileAsync(scene, this.#camera)
+        this.#checkAbort(undefined, ordinal)
+      }
+      for (const { key, retained } of staged) {
+        retained.instance.removeFromParent()
+        this.#preparedModelInstances.retain(key, retained)
+      }
+      staged.length = 0
+      const profile = browserFrameProfiler()
+      if (profile) {
+        profile.counters.preparedModelVariants = keys.size
+        profile.counters.modelPipelinePreparationMilliseconds = performance.now() - started
+      }
+    } finally {
+      for (const { retained } of staged) this.#disposeDynamicInstance(retained.instance)
+      this.#renderBusy = false
+    }
   }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
@@ -3612,7 +3682,7 @@ class RendererOwner implements Renderer {
           retained = undefined
         }
         if (!retained) {
-          retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}`) ?? { model: identity, instance: template.clone(true) }
+          retained = this.#retainedModelPanels.take(`${instanceIdentity}:${identity}`) ?? this.#preparedModelInstances.take(`panel:${identity}`) ?? { model: identity, instance: template.clone(true) }
           this.#modelPanelInstances.set(instanceIdentity, retained)
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
@@ -3669,7 +3739,7 @@ class RendererOwner implements Renderer {
             merged = undefined
           }
           if (!merged) {
-            merged = this.#retainedModelPanels.take(`${instanceKey}:${key}`) ?? { model: key, instance: childTemplate.clone(true) }
+            merged = this.#retainedModelPanels.take(`${instanceKey}:${key}`) ?? this.#preparedModelInstances.take(`panel:${key}`) ?? { model: key, instance: childTemplate.clone(true) }
             this.#modelPanelInstances.set(instanceKey, merged)
           }
           merged.meshes = this.#applyPose(merged.instance, child.pose, merged.meshes !== undefined, merged.meshes)
@@ -4931,9 +5001,10 @@ class RendererOwner implements Renderer {
       if (retained) {
         if (item.pose) this.#applyPose(retained.instance, item.pose, true, retained.meshes)
       } else {
-        const instance = this.#active!.modelTemplates.get(key)!.clone(true)
+        const prepared = this.#preparedModelInstances.take(`view:${key}`)
+        const instance = prepared?.instance ?? this.#active!.modelTemplates.get(key)!.clone(true)
         if (!item.pose) throw new RenderingError("MalformedInput", "viewmodel pose is missing")
-        const meshes = this.#applyPose(instance, item.pose, false)
+        const meshes = this.#applyPose(instance, item.pose, false, prepared?.meshes)
         const root = new THREE.Group()
         root.userData.identity = item.identity
         root.setRotationFromMatrix(new THREE.Matrix4().set(0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1))
@@ -5439,6 +5510,7 @@ class RendererOwner implements Renderer {
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#retainedModelPanels.clear()
+    this.#preparedModelInstances.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined
@@ -5551,6 +5623,7 @@ class RendererOwner implements Renderer {
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#retainedModelPanels.clear()
+    this.#preparedModelInstances.clear()
     this.#stagedDynamic = undefined
     this.#worldVisibilitySurfaces = undefined
     this.#worldVisibilityIdentity = undefined
