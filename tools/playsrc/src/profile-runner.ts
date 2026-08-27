@@ -33,6 +33,7 @@ const PROFILES = Object.freeze({
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" } },
   "macos-window-identity": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "macos-window-identity" } },
+  "pixel-visibility": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "pixel-visibility" } },
   // Full acceptance measured 60.182s, plus 1.579s observed browser preparation and
   // source verification. Reserve 65s, without inflating the short tooltip check.
   "burning-flames": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "burning-flames" }, minimumRemainingMilliseconds: environment => environment.PROFILE_COSMETIC_TOOLTIP_ONLY === "1" ? DEFAULT_BROWSER_MINIMUM_MILLISECONDS : 65_000 },
