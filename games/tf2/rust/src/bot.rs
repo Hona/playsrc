@@ -4054,7 +4054,7 @@ mod tests {
                 bone_contents: 0x4000_0000, minimum: [-4.0; 3], maximum: [4.0; 3], origin: [0.0; 3],
                 bone_to_world: [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,41.0],
             }]); }
-            let attack = Attack { attacker: identity, team: PlayerTeam::Blue, weapon, target: crate::PLAYER_IDENTITY,
+            let attack = Attack { phase: AttackPhase::Fire, attacker: identity, team: PlayerTeam::Blue, weapon, target: crate::PLAYER_IDENTITY,
                 position: [-64.0, 0.0, 0.0], eye_position: [-64.0, 0.0, 41.0], pitch_degrees: 0.0, yaw_degrees: 0.0 };
             let mut events = Vec::new();
             session.fire_hitscan(weapon, 0.0, 0.0, &mut events, Some(attack)).unwrap();
