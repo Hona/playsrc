@@ -50,6 +50,22 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     await writeFile(testInfo.outputPath(`${name}-canvas.png`), bytes)
     return decodeScreenshot(bytes)
   }
+  const captureRejections: object[] = []
+  const capturePointer = async () => {
+    await page.bringToFront()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await root.getAttribute("data-pointer-locked") !== "true") await page.locator(".world-canvas").click()
+      try { await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: 750 }); return }
+      catch {
+        const state = await root.evaluate(element => ({ detail: (element as HTMLElement).dataset.detail, focus: document.hasFocus(), visibility: document.visibilityState, locked: Boolean(document.pointerLockElement) }))
+        if (!state.detail?.includes("Too many pointer lock requests") || attempt === 2) throw new Error(`Native scope capture failed: ${JSON.stringify(state)}`)
+        captureRejections.push(state)
+        // Respect the browser's real unlock/relock policy outside sampling.
+        // Never replace capture or input with synthetic event dispatch.
+        await page.waitForTimeout(2100)
+      }
+    }
+  }
   await page.goto("/")
   await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
   const entry = page.locator("[aria-label='Console command']")
@@ -76,9 +92,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   const angle = target.yawDegrees * Math.PI / 180
   await command(`setpos ${target.position[0] - Math.cos(angle) * 180} ${target.position[1] - Math.sin(angle) * 180} ${target.position[2]}`)
   await page.keyboard.press("Backquote")
-  await page.bringToFront()
-  await page.locator(".world-canvas").click()
-  await expect(root).toHaveAttribute("data-pointer-locked", "true")
+  await capturePointer()
   console.log("[sniper] native mouse captured")
   let pointerX = 640, pointerY = 360
   const aim = async (point?: readonly [number, number, number]) => {
@@ -185,7 +199,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
         return canvas.width === Math.floor(width * dpr) && canvas.height === Math.floor(height * dpr)
       }, { width: width!, height: height!, dpr })
       if (await root.getAttribute("data-pointer-locked") !== "true") {
-        await page.locator(".world-canvas").click()
+        await capturePointer()
         pointerX = width! / 2; pointerY = height! / 2
       }
       await expect(root).toHaveAttribute("data-pointer-locked", "true")
@@ -231,7 +245,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     await expect(root).toHaveAttribute("data-bot-count", String(index + 1))
   }
   await page.keyboard.press("Backquote")
-  await page.locator(".world-canvas").click()
+  await capturePointer()
   pointerX = 640; pointerY = 360
   await expect(root).toHaveAttribute("data-pointer-locked", "true")
   await page.keyboard.press("Digit1")
@@ -308,7 +322,7 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
     }
     await page.keyboard.press("Backquote")
     if (await root.getAttribute("data-pointer-locked") !== "true") {
-      await page.locator(".world-canvas").click()
+      await capturePointer()
       pointerX = 640; pointerY = 360
     }
     await expect(root).toHaveAttribute("data-pointer-locked", "true")
@@ -327,4 +341,5 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   }
   expect(errors).toEqual([])
   expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
+  await writeFile(testInfo.outputPath("native-capture-rejections.json"), JSON.stringify(captureRejections, null, 2))
 })
