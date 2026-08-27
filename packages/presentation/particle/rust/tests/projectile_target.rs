@@ -624,7 +624,7 @@ fn advances_children_controls_and_equivalent_partitions_deterministically() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut whole =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     let mut partitioned = whole.clone();
     let event = create_event(vec![control([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])]);
     let mut no_hit = NoHit;
@@ -719,7 +719,7 @@ fn sphere_local_velocity_uses_source_forward_right_up_basis() {
         ([0.0, 0.0, half_turn, half_turn], [6.0, 4.0, 8.0]),
     ] {
         let mut world =
-            playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+            playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
         let mut point = control([10.0, 20.0, 30.0], [10.0, 20.0, 30.0]);
         point.orientation = orientation;
         let (items, _) = world
@@ -753,7 +753,7 @@ fn first_frame_creates_only_authored_initial_particles_before_emitters() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     let (items, bounds) = world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -823,7 +823,7 @@ fn consumes_supplied_collisions_and_preserves_state_after_atomic_failure() {
     let bytes = fixture(true);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     let mut collision_calls = 0;
     let mut collision_requests = 0;
     let mut collision = |requests: &[TraceRequest]| {
@@ -898,7 +898,7 @@ fn emission_overrun_fails_without_publishing_an_effect() {
         max_particles_total: 1,
         ..WorldLimits::default()
     };
-    let mut world = playsrc_particle::ParticleWorld::new(&registry, limits).unwrap();
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), limits).unwrap();
     let error = world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -921,7 +921,7 @@ fn configured_substep_limit_accepts_real_frame_delays_above_ten_steps() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -946,7 +946,7 @@ fn substep_limit_fails_without_consuming_partial_time() {
         max_substeps: 2,
         ..WorldLimits::default()
     };
-    let mut world = playsrc_particle::ParticleWorld::new(&registry, limits).unwrap();
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), limits).unwrap();
     let error = world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -969,7 +969,7 @@ fn configured_substep_capacity_survives_coalesced_live_bot_combat() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -991,7 +991,7 @@ fn authored_capacity_drops_excess_emission_without_failing_the_world() {
     let bytes = fixture_with_limit(false, 1);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1012,7 +1012,7 @@ fn replacement_and_immediate_stop_are_explicit_and_ordered() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1067,7 +1067,7 @@ fn resolves_shader_blend_sheet_and_derived_trail_output() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     let (raw, _) = world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1158,7 +1158,7 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     let event = create_event(vec![control([0.0; 3], [0.0; 3])]);
     let request = AdvanceRequest {
         from_seconds: 0.0,
@@ -1180,6 +1180,7 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
         world
             .transact_render_output(
                 std::slice::from_ref(&event),
+                &[],
                 request,
                 &mut NoHit,
                 &BTreeMap::new(),
@@ -1195,6 +1196,7 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
         world
             .transact_render_output(
                 std::slice::from_ref(&event),
+                &[],
                 request,
                 &mut NoHit,
                 &materials,
@@ -1210,6 +1212,7 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
     let output = world
         .transact_render_output(
             &[event],
+            &[],
             request,
             &mut NoHit,
             &materials,
@@ -1227,7 +1230,7 @@ fn natural_death_graceful_stop_reset_and_repeated_failure_clean_up_atomically() 
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1342,7 +1345,7 @@ fn restart_preserves_seed_and_live_particles_while_rescheduling_finite_emitters(
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1382,7 +1385,7 @@ fn dormancy_stops_emission_but_keeps_the_collection_and_live_simulation() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
     let mut world =
-        playsrc_particle::ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],
@@ -1442,6 +1445,70 @@ fn dormancy_stops_emission_but_keeps_the_collection_and_live_simulation() {
 }
 
 #[test]
+fn sequence_lifetime_overrides_random_lifetime_after_sequence_initialization() {
+    for (rate, span, expected) in [(30.0, 18.0, 0.6), (30.0, 0.0, 1.0), (0.0, 18.0, 2.0)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16],
+                attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16],
+                attributes: vec![
+                    ("material", TestValue::Text("effects/test.vmt")),
+                    ("initial_particles", TestValue::Int(1)),
+                    ("initializers", TestValue::Refs(vec![2, 3, 4])),
+                    ("renderers", TestValue::Refs(vec![5])),
+                ] },
+            element("Lifetime Random", 2, vec![
+                ("functionName", TestValue::Text("Lifetime Random")),
+                ("lifetime_min", TestValue::Float(2.0)),
+                ("lifetime_max", TestValue::Float(2.0)),
+            ]),
+            element("Lifetime From Sequence", 3, vec![
+                ("functionName", TestValue::Text("Lifetime From Sequence")),
+                ("Frames Per Second", TestValue::Float(rate)),
+            ]),
+            element("Sequence Random", 4, vec![
+                ("functionName", TestValue::Text("Sequence Random")),
+                ("sequence_min", TestValue::Int(2)),
+                ("sequence_max", TestValue::Int(2)),
+            ]),
+            element("render_animated_sprites", 5, vec![
+                ("functionName", TestValue::Text("render_animated_sprites")),
+            ]),
+        ]);
+        let registry = registry(&bytes);
+        let materials = BTreeMap::from([("effects/test.vmt".to_owned(), ParticleMaterial {
+            shader: ParticleMaterialShader::SpriteCard,
+            blend: ParticleBlendState { source: ParticleBlendFactor::One, destination: ParticleBlendFactor::OneMinusSourceAlpha },
+            color_space: ParticleColorSpace::SrgbTextureLinearTint,
+            dual_sequence: false,
+            sheet: ParticleSheet { sequences: BTreeMap::from([(2, SheetSequence {
+                clamp: true, duration_seconds: span,
+                frames: vec![SheetFrame { duration_seconds: span, images: [[0.0, 0.0, 1.0, 1.0]; 4] }],
+            })]) },
+        })]);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &materials, WorldLimits::default()).unwrap();
+        let mut second = create_event(vec![control([100.0; 3], [100.0; 3])]);
+        second.identity = 2;
+        if let EventCommand::Create { effect_identity, owner_identity, .. } = &mut second.command {
+            *effect_identity = 8;
+            *owner_identity = Some(2);
+        }
+        let request = AdvanceRequest { from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3] };
+        let (items, _) = world.advance(&[create_event(vec![control([0.0; 3], [0.0; 3])]), second], request, &mut NoHit).unwrap();
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert_eq!(item.sequence, 2);
+            assert_eq!(item.lifetime_seconds, expected);
+        }
+        let (remaining, _) = world.advance(&[Event { identity: 3, timestamp_seconds: 0.0, source_order: 0,
+            command: EventCommand::Destroy { effect_identity: 7 } }], request, &mut NoHit).unwrap();
+        assert_eq!(world.effect_count(), 1);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].effect_identity, 8);
+    }
+}
+
+#[test]
 fn configured_substep_budget_accepts_more_than_ten_exact_particle_steps() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
@@ -1449,7 +1516,7 @@ fn configured_substep_budget_accepts_more_than_ten_exact_particle_steps() {
         max_substeps: 12,
         ..WorldLimits::default()
     };
-    let mut world = playsrc_particle::ParticleWorld::new(&registry, limits).unwrap();
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), limits).unwrap();
     world
         .advance(
             &[create_event(vec![control([0.0; 3], [0.0; 3])])],

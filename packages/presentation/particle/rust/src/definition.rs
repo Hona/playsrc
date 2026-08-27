@@ -681,6 +681,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Assign target CP",
             "Color Random",
             "Lifetime From Control Point Life Time",
+            "Lifetime From Sequence",
             "Lifetime Pre-Age Noise",
             "Lifetime Random",
             "Position Along Path Random",
@@ -1206,6 +1207,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
         &["starting control point", "maximum end control point"]
     } else if function.identity.eq_ignore_ascii_case("Lifetime Random") {
         &["lifetime_min", "lifetime_max", "lifetime_random_exponent"]
+    } else if function.identity.eq_ignore_ascii_case("Lifetime From Sequence") {
+        &["frames per second"]
     } else if function.identity.eq_ignore_ascii_case("Radius Random") {
         &["radius_min", "radius_max", "radius_random_exponent"]
     } else if function.identity.eq_ignore_ascii_case("Alpha Random") {

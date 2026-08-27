@@ -4953,7 +4953,7 @@ export class Tf2Application {
       const livingBots=snapshot.bots.filter(bot=>bot.lifecycle===1)
       const needsCriticalAttachment=publication.eventBatches.some(batch=>batch.snapshot.events.some(event=>event.kind===17&&event.auxiliary===1&&event.values[2]===1))
       const flagCarriers=new Set((snapshot.objectives?.flags??[]).flatMap(flag=>flag.carrier===null?[]:[flag.carrier]))
-      const visibleBots=livingBots.filter(bot=>needsCriticalAttachment||flagCarriers.has(bot.identity)||this.#renderer!.modelVisible(
+      const visibleBots=livingBots.filter(bot=>bot.equippedItems.some(item=>item.definitionIndex===378)||needsCriticalAttachment||flagCarriers.has(bot.identity)||this.#renderer!.modelVisible(
         tf2ClassPresentation(bot.class).model,
         bot.team===2?0:1,
         bot.position,
@@ -4982,6 +4982,7 @@ export class Tf2Application {
         if (!artifact) throw new Error(`Authored Spy world weapon unavailable: ${itemModel}`)
         return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity), itemModel, worldItem: true, itemBodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)) })
       })
+      const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, equippedItems: visibleBots[index]!.equippedItems }))
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
         if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
         const artifact=this.#artifacts!.models.get(flag.model)
@@ -5032,7 +5033,7 @@ export class Tf2Application {
           screenAspectRatio: Math.max(1,viewport.width)/Math.max(1,viewport.height), worldFarPlane: camera.far,
           skin: state.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition,state.worldAngles) }))
       }
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...botRequests,...objectiveRequests,...controlPointRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...equippedBotRequests,...objectiveRequests,...controlPointRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       if(admissionProfile)recordBotAdmission(admissionProfile,"model-request",snapshot.tick,{actors:botRequests.map(request=>({actor:request.identity-BOT_MODEL_IDENTITY_BASE,model:request.model,skin:request.skin,activity:request.activity,itemModel:"itemModel" in request?request.itemModel:null}))})
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       const modelOutput=modelRequest===undefined?undefined:await modelRequest
@@ -5048,7 +5049,7 @@ export class Tf2Application {
       const watchPose = watchRequest && modelPoses.find(pose => pose.identity === watchRequest!.identity)
       if (watchRequest && (!watchPose || watchPose.role !== "hand" || !watchPose.viewmodel)) throw new Error("Authored Spy offhand watch pose differs")
       const botParts=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
-      const botPoses=botParts.filter(pose=>pose.role!=="item")
+      const botPoses=botParts.filter(pose=>pose.role==="single")
       const controlPointPoses=modelPoses.filter(pose=>controlPointRequests.some(request=>request.identity===pose.identity))
       const objectivePoses=modelPoses.filter(pose=>objectiveRequests.some(request=>request.identity===pose.identity))
       if(controlPointPoses.length!==controlPointRequests.length)throw new Error("TF2 control point pose output differs from authoritative state")
@@ -5113,7 +5114,8 @@ export class Tf2Application {
       const particleOutput=await client.particles(generation,particleBatch)
       if(!ownsGeneration())return
       const particleMilliseconds=performance.now()-particleStart
-      const particleDecodeStart=performance.now(),particleItems=decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,particleDecodeMilliseconds=performance.now()-particleDecodeStart
+      const particleDecodeStart=performance.now(),particleItems=[...decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,
+        ...botParts.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : [])],particleDecodeMilliseconds=performance.now()-particleDecodeStart
       const audioStart=performance.now();this.#playAudio(snapshot, camera);const audioMilliseconds=performance.now()-audioStart
       if(this.#paused||!ownsGeneration())return
       const frame=Object.freeze({
@@ -5130,7 +5132,7 @@ export class Tf2Application {
             const renderBounds = snapshot.entityPresentation.studioAnimations.find(animation => animation.sourceIndex === pose.identity)?.bounds
             return Object.freeze({ identity: pose.identity, model: pose.model, position: state.worldPosition, angles: state.worldAngles, scale: 1, skin: state.skin, body: occurrence.body, pose, renderBounds, modelLighting: pose.lighting!, eyeStates: pose.eyes })
           }),
-          ...botParts.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
+          ...botParts.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.wearable?0x20000+pose.wearable.itemId*0x10000:pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...controlPointPoses.map(pose=>{const point=snapshot.controlPoints!.points.find(point=>OBJECTIVE_MODEL_IDENTITY_BASE+point.identity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:point.position,angles:point.angles,scale:1,skin:point.skin,body:point.body,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),

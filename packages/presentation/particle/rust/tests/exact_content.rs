@@ -476,7 +476,7 @@ fn exact_projectile_timelines_cover_every_output_field_through_cleanup() {
     let mut complete_output = 0xcbf2_9ce4_8422_2325_u64;
     let mut visual_region_digests = Vec::new();
     for (root_index, root) in roots.into_iter().enumerate() {
-        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let mut world = ParticleWorld::new(&registry, &BTreeMap::new(), WorldLimits::default()).unwrap();
         let create = Event {
             identity: 1,
             timestamp_seconds: 0.0,
@@ -625,7 +625,7 @@ fn configured_wall_explosion_stays_in_front_of_every_oriented_impact_plane() {
     ] {
         let origin = [10.0, 20.0, 30.0];
         let wall: [f32; 3] = std::array::from_fn(|axis| origin[axis] - normal[axis]);
-        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let mut world = ParticleWorld::new(&registry, &BTreeMap::new(), WorldLimits::default()).unwrap();
         let (items, _) = world
             .advance(
                 &[Event {
@@ -781,7 +781,7 @@ fn exact_pyro_flame_airblast_and_shotgun_closures_emit_authored_particles() {
         registry
             .target_closure(&[DefinitionLookup::Name(root)])
             .unwrap_or_else(|error| panic!("{root}: {error:?}"));
-        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let mut world = ParticleWorld::new(&registry, &BTreeMap::new(), WorldLimits::default()).unwrap();
         let control = |index, position| ControlPoint {
             index,
             position,
@@ -834,7 +834,7 @@ fn exact_pyro_flame_airblast_and_shotgun_closures_emit_authored_particles() {
             (closure.definitions.len(), closure.materials.len()),
             (definitions, materials)
         );
-        let mut world = ParticleWorld::new(&registry, WorldLimits::default()).unwrap();
+        let mut world = ParticleWorld::new(&registry, &BTreeMap::new(), WorldLimits::default()).unwrap();
         let control = |index, position, duration| ControlPoint {
             index,
             position,
