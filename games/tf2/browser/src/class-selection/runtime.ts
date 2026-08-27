@@ -268,7 +268,7 @@ class Integration implements Tf2ClassSelectionIntegration {
           apply(this.#runtime, { kind: "set-panel-state", panel: sub, mouseInput: false })
         } else apply(this.#runtime, { kind: "set-panel-state", panel: control, mouseInput: false })
       }
-      for (const name of ["Offense", "Defense", "Support", "CountLabel", "ClassMenuSelect"]) {
+      for (const name of ["Offense", "Defense", "Support", "CountLabel", "ClassMenuSelect", "TFPlayerModel"]) {
         const label = panel(this.#runtime, name, this.#owner)
         if (label !== null) apply(this.#runtime, { kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
       }

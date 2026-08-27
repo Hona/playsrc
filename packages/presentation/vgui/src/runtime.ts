@@ -2918,6 +2918,7 @@ class SourceVguiRuntime implements VguiRuntime {
       image.revision,
       rasterWidth,
       rasterHeight,
+      pixelRatio,
       this.viewport.width,
       this.viewport.height,
       tint,
