@@ -222,10 +222,11 @@ pub(super) fn dispose(handle: u32) {
 #[cfg(feature = "collision-replay")]
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_collision_replay_mode(reference: u32) -> u32 {
-    if reference > 1 {
+    if reference > 2 {
         return 0;
     }
     playsrc_collision::replay_diagnostics::select_reference(reference == 1);
+    playsrc_collision::replay_diagnostics::select_displacement_reference(reference == 2);
     1
 }
 #[cfg(feature = "collision-replay")]

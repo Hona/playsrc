@@ -1,8 +1,13 @@
 //! Offline differential replay only; absent from ordinary game builds.
 use std::cell::Cell;
+/// Triangles, hierarchy nodes, distinct edge planes, retained heap bytes.
+pub fn displacement_storage(world: &crate::World) -> [usize; 4] {
+    crate::displacement::storage(world)
+}
 thread_local! {
     static REFERENCE: Cell<bool> = const { Cell::new(false) };
-    static COUNTERS: Cell<[u64; 6]> = const { Cell::new([0; 6]) };
+    static DISPLACEMENT_REFERENCE: Cell<bool> = const { Cell::new(false) };
+    static COUNTERS: Cell<[u64; 11]> = const { Cell::new([0; 11]) };
 }
 pub fn reference() -> bool {
     REFERENCE.get()
@@ -11,10 +16,17 @@ pub fn select_reference(reference: bool) {
     REFERENCE.set(reference);
     reset();
 }
-pub fn reset() {
-    COUNTERS.set([0; 6]);
+pub fn displacement_reference() -> bool {
+    DISPLACEMENT_REFERENCE.get()
 }
-pub fn counters() -> [u64; 6] {
+pub fn select_displacement_reference(reference: bool) {
+    DISPLACEMENT_REFERENCE.set(reference);
+    reset();
+}
+pub fn reset() {
+    COUNTERS.set([0; 11]);
+}
+pub fn counters() -> [u64; 11] {
     COUNTERS.get()
 }
 pub(crate) fn count(index: usize, amount: usize) {

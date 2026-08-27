@@ -4,6 +4,17 @@ import path from "node:path"
 import { parseGameplayReplay, startGameplayReplayJournal } from "../profile/gameplay-replay"
 import { drainTraceStream } from "../profile/compositor-evidence"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
+import { verifyReplayHash } from "../profile/replay-gameplay"
+
+test("historical replay stays strict and explicit two-build comparisons report historical mismatches", () => {
+  expect(verifyReplayHash("a", "a", "tick:1")).toBe(false)
+  expect(() => verifyReplayHash("b", "a", "tick:1")).toThrow("diverged")
+  const hashes = new Map<string, string>()
+  expect(verifyReplayHash("b", "a", "tick:1", hashes, true)).toBe(true)
+  expect(verifyReplayHash("b", "a", "tick:1", hashes)).toBe(true)
+  expect(() => verifyReplayHash("a", "a", "tick:1", hashes)).toThrow("diverged")
+  expect(() => verifyReplayHash("b", "a", "tick:2", hashes)).toThrow("diverged")
+})
 
 test("a missing final native presentation cannot hide boundary silence", () => {
   const value = summarizeActivePresentationSilence([
