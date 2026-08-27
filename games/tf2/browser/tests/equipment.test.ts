@@ -58,3 +58,12 @@ test("equipped actor attributes preserve quality, slot and finite particle effec
   view.setFloat32(20, NaN, true)
   expect(() => decodeEquippedItems(view, 0)).toThrow("invalid item attribute")
 })
+test("local inventory owns each implemented hitscan unlock exactly once", () => {
+  const state = decodeEquipmentState(new Uint8Array(nativeEquipment))
+  for (const definitionIndex of [45, 1103, 425, 1153, 415, 424, 312, 41, 61, 460, 220, 402]) {
+    const items = state.inventory.filter(item => item.item.definitionIndex === definitionIndex)
+    expect(items).toHaveLength(1)
+    expect(items[0]!.item).toMatchObject({ itemId: definitionIndex + 1, quality: 6 })
+    expect(items[0]!.classSlots.length).toBeGreaterThan(0)
+  }
+})

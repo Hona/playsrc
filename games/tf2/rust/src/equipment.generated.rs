@@ -127,6 +127,18 @@ SupportedItem { definition_index: 28, implementation: Implementation::Weapon(Wea
 SupportedItem { definition_index: 29, implementation: Implementation::Weapon(Weapon::MediGun), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 30, implementation: Implementation::Weapon(Weapon::InvisibilityWatch), quality: 0, style: 0, attributes: &[] },
 SupportedItem { definition_index: 378, implementation: Implementation::Wearable, quality: 5, style: 0, attributes: &[ItemAttribute { definition: 134, value: 13.0 }] },
+SupportedItem { definition_index: 45, implementation: Implementation::Weapon(Weapon::Scattergun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 1103, implementation: Implementation::Weapon(Weapon::Scattergun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 425, implementation: Implementation::Weapon(Weapon::HeavyShotgun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 1153, implementation: Implementation::Weapon(Weapon::Shotgun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 415, implementation: Implementation::Weapon(Weapon::Shotgun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 424, implementation: Implementation::Weapon(Weapon::Minigun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 312, implementation: Implementation::Weapon(Weapon::Minigun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 41, implementation: Implementation::Weapon(Weapon::Minigun), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 61, implementation: Implementation::Weapon(Weapon::Revolver), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 460, implementation: Implementation::Weapon(Weapon::Revolver), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 220, implementation: Implementation::Weapon(Weapon::HandgunScoutPrimary), quality: 6, style: 0, attributes: &[] },
+SupportedItem { definition_index: 402, implementation: Implementation::Weapon(Weapon::SniperRifle), quality: 6, style: 0, attributes: &[] },
 ];
 fn configured_schema_input() -> crate::schema::SchemaInput {
 use crate::schema::{SchemaInput, SchemaNode};
