@@ -11054,21 +11054,16 @@ fn encode_particle_textures(
     materials: &BTreeMap<String, CompiledParticlePresentation>,
 ) -> Result<(), ()> {
     out.extend_from_slice(b"PPTM");
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
     for (identity, material) in materials {
-        let texture = &material.texture;
         pbytes(out, identity.as_bytes())?;
         pbytes(out, material.source_path.as_bytes())?;
-        pbytes(out, texture.logical_path.as_bytes())?;
-        out.extend_from_slice(&texture.width.to_le_bytes());
-        out.extend_from_slice(&texture.height.to_le_bytes());
-        out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(texture.rgba.as_slice())));
-        pbytes(out, &texture.rgba)?;
+        encode_model_authored_texture(out, &material.texture_path, &material.texture)?;
         out.extend_from_slice(&u32::from(material.sprite_card.is_some()).to_le_bytes());
         if let Some(state) = &material.sprite_card {
             out.extend_from_slice(&u32::from(state.depth_blend.as_ref().is_some_and(|v| v.value)).to_le_bytes());
@@ -11837,11 +11832,8 @@ fn presentation_capacity(
     add(4 + environment.len())?;
     add(12)?;
     for (identity, particle) in particles {
-        add(56
-            + identity.len()
-            + particle.source_path.len()
-            + particle.texture.logical_path.len())?;
-        add(particle.texture.rgba.len())?;
+        add(60 + identity.len() + particle.source_path.len())?;
+        add(encoded_model_authored_texture_length(&particle.texture_path, &particle.texture)?)?;
     }
     for model in &map.brush_models {
         add(68)?;
@@ -14151,7 +14143,8 @@ struct CompiledParticlePresentation {
     sprite_card: Option<playsrc_material::ParticleMaterialState>,
     state: playsrc_material::StaticState,
     metadata: playsrc_vtf::Metadata,
-    texture: DecodedTexture,
+    texture_path: String,
+    texture: ModelAuthoredTexture,
 }
 
 fn compile_particles(
@@ -14272,7 +14265,8 @@ fn compile_particle_materials(
                 .as_ref()
                 .ok_or(())?
                 .to_ascii_lowercase();
-            let texture = rgba_texture(&texture_path, decoders)?;
+            let hashes = BTreeMap::from([(texture_path.clone(), <[u8; 32]>::from(Sha256::digest(b.get(&texture_path).ok_or(())?)))]);
+            let texture = model_authored_texture(&texture_path, decoders, &hashes, true)?;
             let state = playsrc_material::static_state(
                 &material,
                 playsrc_material::TextureAlphaFacts {
@@ -14316,6 +14310,7 @@ fn compile_particle_materials(
                         sprite_card: material.particle.clone(),
                         state,
                         metadata: metadata.clone(),
+                        texture_path,
                         texture,
                     },
                 ),
@@ -15127,6 +15122,9 @@ mod tests {
         assert_eq!(state.overbright_factor.value, 5.0);
         assert!(state.depth_blend.as_ref().unwrap().value);
         assert_eq!(state.depth_blend_scale.value, 100.0);
+        assert_eq!(presentation[fire].texture.manifest().mip_count, 11);
+        assert_eq!(presentation["effects/rocketrailsmoke.vmt"].texture.manifest().mip_count, 10);
+        assert!(matches!(presentation[fire].texture, ModelAuthoredTexture::Referenced(_)));
         assert_eq!(materials[fire].sheet.sequences.values().map(|s| s.duration_seconds).collect::<Vec<_>>(), [19.0,21.0,18.0,19.0,19.0]);
         let hashes = resources.iter().map(|(path, bytes)| (path.clone(), <[u8;32]>::from(Sha256::digest(bytes)))).collect();
         for class in ["soldier", "medic", "heavy"] {

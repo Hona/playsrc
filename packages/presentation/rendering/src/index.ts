@@ -689,7 +689,7 @@ export type MapLoadRequest = Readonly<{
   directionalTextures?: readonly DirectionalTextureInput[]
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
-  particleTextures?: readonly (EnvironmentTextureInput & Readonly<{ spriteCard?: SpriteCardInput | null }>)[]
+  particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -1108,7 +1108,7 @@ type SceneResources = {
   modelOccurrenceInstances:Map<number,THREE.Group>
   modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
   brushModelTemplates:Map<number,THREE.Group>
-  particleTextures: Map<string, THREE.DataTexture>
+  particleTextures: Map<string, THREE.Texture>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   particleDepth: SourceParticleDepth
   particlePipelineMeshes: THREE.Group
@@ -2207,7 +2207,7 @@ class RendererOwner implements Renderer {
       return value
     }
     const waterFog = active?.waterFogUniforms ?? createSourceWaterFogUniforms()
-    const particleTextures = active?.particleTextures ?? new Map<string, THREE.DataTexture>()
+    const particleTextures = active?.particleTextures ?? new Map<string, THREE.Texture>()
     const particleBatchMaterials = active?.particleBatchMaterials ?? new Map<string, THREE.MeshBasicNodeMaterial>()
     const particleDepth = active?.particleDepth ?? disposables.add(new SourceParticleDepth(this.#backend.backend))
     const particlePipelineMeshes = active?.particlePipelineMeshes ?? new THREE.Group()
@@ -2288,7 +2288,7 @@ class RendererOwner implements Renderer {
     }
     if ((request.particleTextures?.length ?? 0) > 256) throw new RenderingError("BoundExceeded", "particle pipeline material closure exceeds 256 variants")
     for (const texture of request.particleTextures ?? []) {
-      if (texture.width * texture.height * 4 !== texture.rgba.byteLength || (await digest(texture.rgba)) !== texture.sha256)
+      if (!texture.material || texture.mipCount < 1 || texture.planes.length < texture.mipCount)
         throw new RenderingError("MalformedInput", "particle texture input is invalid")
     }
     const materialStates = new Map<string, MaterialStateInput>()
@@ -2763,7 +2763,7 @@ class RendererOwner implements Renderer {
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
     const brushModelTemplates=new Map<number,THREE.Group>()
-    const particleTextures = new Map<string, THREE.DataTexture>()
+    const particleTextures = new Map<string, THREE.Texture>()
     const particleBatchMaterials = new Map<string, THREE.MeshBasicNodeMaterial>()
     const particlePipelineMeshes = new THREE.Group()
     const materialStates = new Map(request.materialStates ?? [])
@@ -5042,15 +5042,14 @@ class RendererOwner implements Renderer {
   }
 
   #buildParticleMaterials(inputs: NonNullable<MapLoadRequest["particleTextures"]>, states: ReadonlyMap<string, MaterialStateInput>, disposables: OwnedResourceGeneration,
-    waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.DataTexture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group): void {
+    waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.Texture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group): void {
     const depthNode = depth.sample()
     for (const texture of inputs) {
       const state = states.get(texture.material.toLowerCase())
       if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
       const key = particlePipelineKey(particlePipelineVariant(texture.material, state))
       if (materials.has(key)) continue
-      requireMipInputs(texture.material, state)
-      const value = textureFromRgba(texture, THREE.SRGBColorSpace, state)
+      const value = textureFromAuthored(texture, THREE.SRGBColorSpace, 0, this.textureQuality)
       textures.set(texture.material.toLowerCase(), value); disposables.add(value)
       const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0 }, state))
       disposables.add(material); applyParticleDepthState(material, state)

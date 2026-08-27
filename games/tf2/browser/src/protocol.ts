@@ -1,7 +1,7 @@
 import type { Tf2TeamChoice, Tf2TeamSelectionServerState } from "./team-selection/model"
 import type { Tf2EquipmentState } from "./equipment/types"
 
-export const TF2_PRESENTATION_SCHEMA = 17
+export const TF2_PRESENTATION_SCHEMA = 18
 
 export type VisibilityView = Readonly<{
   position: readonly [number, number, number]

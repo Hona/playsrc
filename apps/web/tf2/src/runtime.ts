@@ -5682,7 +5682,7 @@ export class Tf2Application {
         compressedPlaneBytes: compressedBytes,
         directionalBytes: this.#artifacts.directionalTextures.reduce((total, texture) => total
           + (texture.authored.planes.find((plane) => plane.mip === 0 && plane.frame === 0 && plane.face === 0 && plane.slice === 0)?.rgba.byteLength ?? 0), 0),
-        particleBytes: this.#artifacts.particleTextures.reduce((total, texture) => total + texture.rgba.byteLength, 0),
+        particleBytes: this.#artifacts.particleTextures.reduce((total, texture) => total + texture.planes.reduce((bytes, plane) => bytes + plane.rgba.byteLength, 0), 0),
       })
       profile.materialAnimation=Object.freeze({
         generation:this.#generation,
