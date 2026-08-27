@@ -274,6 +274,7 @@ class MemoryCache implements DerivedObjectCache {
 
 class CourseWorker implements WorkerLike {
   configuredBytes = 0
+  replayAttack?: Extract<WorkerResponse, { kind: "simulation" }>["replayAttack"]
   #message?: (event: MessageEvent<WorkerResponse>) => void
   addEventListener(type: "message", listener: (event: MessageEvent<WorkerResponse>) => void): void
   addEventListener(type: "error", listener: (event: ErrorEvent) => void): void
@@ -289,7 +290,7 @@ class CourseWorker implements WorkerLike {
       this.configuredBytes = request.definition.byteLength
       response = { id: request.id, kind: "course-configured", generation: request.generation }
     } else if(request.kind==="observe"){
-      response={id:request.id,kind:"simulation",generation:request.generation,output:simulationOutput()}
+      response={id:request.id,kind:"simulation",generation:request.generation,output:simulationOutput(),replayAttack:this.replayAttack}
     } else if (request.kind === "shutdown") response = { id: request.id, kind: "shutdown" }
     else response = { id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 }
     queueMicrotask(() => this.#message?.({ data: response } as MessageEvent<WorkerResponse>))
@@ -834,9 +835,38 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       const publications = await client.observe(4, 1, command)
       expect(profile.simulation[0]).toMatchObject({ publications: [{ hostFrame: "1", firstHostTick: "1", lastHostTick: "1", selectedTicks: 1, eventBatches: 1 }] })
       expect(profile.simulation[0].requestId).toBeNumber()
+      expect(profile.simulation[0].replayAttack).toBeNull()
+      expect(profile.simulation[0].publications[0].player).toEqual({
+        tick: String(publications[0]!.snapshot.tick), playerClass: publications[0]!.snapshot.class,
+        weapon: publications[0]!.snapshot.weapon, lifecycle: publications[0]!.snapshot.lifecycle,
+      })
+      expect(profile.simulation[0].publications[0].weapons).toEqual(publications[0]!.snapshot.loadout.map(weapon => ({
+        weapon: weapon.weapon, firstPrimaryTick: String(weapon.firstPrimaryTick), nextPrimaryTick: String(weapon.nextPrimaryTick),
+      })))
       expect(profile.simulation[0].decodeMilliseconds).toBeGreaterThanOrEqual(0)
       expect(profile.simulation[0]).not.toHaveProperty("snapshotBytes")
       expect(publications[0]!.snapshot).toBe(publications[0]!.eventBatches[0]!.snapshot)
+    } finally {
+      await client.shutdown()
+      if (previous === undefined) delete host.__playsrcFrameProfiler
+      else host.__playsrcFrameProfiler = previous
+    }
+  })
+
+  test("opt-in attack telemetry preserves the Rust owner's tick and player instead of inferring a shot", async () => {
+    const host = globalThis as any, previous = host.__playsrcFrameProfiler
+    const profile = { active: true, simulation: [] as any[], simulationDropped: 0 }
+    host.__playsrcFrameProfiler = profile
+    const worker = new CourseWorker()
+    worker.replayAttack = { hostTick: 1n, playerClass: 3, weapon: 1, lifecycle: 1 }
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), "cd".repeat(32))
+    try {
+      const command = encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: true, detonate: false })
+      const publications = await client.observe(4, 1, command)
+      expect(command.byteLength).toBe(0)
+      expect(profile.simulation[0].replayAttack).toEqual({ hostTick: "1", playerClass: 3, weapon: 1, lifecycle: 1 })
+      expect(profile.simulation[0].publications[0].activities).toEqual(publications[0]!.snapshot.activities.map(activity => ({ ...activity, tick: String(activity.tick) })))
+      expect(profile.simulation[0].replayAttack).not.toHaveProperty("fired")
     } finally {
       await client.shutdown()
       if (previous === undefined) delete host.__playsrcFrameProfiler
