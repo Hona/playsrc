@@ -27,7 +27,7 @@ import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profi
 import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
 import { macPageAdmission, requireMacPageAdmission, type MacPageAdmission } from "./macos-page-admission"
-import { tf2UiResources } from "@playsrc/game-tf2-browser/ui-resources"
+import { auditEngineerMenus } from "./engineer-menu-audit"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -405,6 +405,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await checkNativeWindow(nativeScreenshot ?? undefined)
   await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
   if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
+  if (process.env.PROFILE_ENGINEER_UI_ONLY === "1") {
+    await auditEngineerMenus(page, root, directory, label, combatCommand)
+    await checkNativeWindow(nativeReader ? path.join(directory, `${label}-ui-after.desktop.png`) : undefined)
+    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+    if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
+    return
+  }
   const memoryBefore = await captureProcessMemory(processBefore?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const browserVersion = await browserCdp.send("Browser.getVersion")
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
@@ -1201,64 +1208,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(report.nodeBuilds.filter((build: any) => build.material.includes("/models/player/"))).toEqual([])
   }
   if (process.env.PROFILE_CLASS_UI_AUDIT === "1") {
-    await combatCommand("joinclass engineer")
-    await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[1]).toBe("9")
-    const menus = []
-    for (const [key, menu] of [["Digit4", "build"], ["Digit5", "destroy"]] as const) {
-      await page.keyboard.press(key)
-      await expect(root).toHaveAttribute("data-engineer-menu", menu)
-      const file = path.join(directory, `${label}-engineer-${menu}.png`)
-      await page.screenshot({ path: file })
-      const native = path.join(directory, `${label}-engineer-${menu}.desktop.png`)
-      if (process.platform === "darwin" && spawnSync("screencapture", ["-x", native], { timeout: 5000 }).status !== 0) throw new Error("Engineer desktop capture failed")
-      menus.push({ menu, file, native, controls: await page.locator(".engineer-layer").evaluate(element => ({
-        panels: element.querySelectorAll("[data-vgui-panel]").length, rasters: element.querySelectorAll("canvas[data-vgui-raster]").length,
-        visibleText: (element as HTMLElement).innerText,
-      })) })
-    }
-    await writeFile(path.join(directory, `${label}-engineer-ui.json`), JSON.stringify({ menus, performanceSample: false }))
-    if (process.env.PROFILE_ENGINEER_BINDING_AUDIT === "1") {
-      await page.keyboard.press("Escape")
-      await page.locator("[data-vgui-name='SettingsButton']").click()
-      await expect(page.locator("main")).toHaveAttribute("data-options-visible", "true")
-      const list = page.locator("[data-vgui-name='listpanel_keybindlist']")
-      const row = tf2UiResources.keyboardActions.findIndex(action => action.binding === "lastinv")
-      expect(row).toBeGreaterThanOrEqual(0)
-      const target = list.locator(`[data-vgui-item='${row + 1}']`)
-      await list.hover()
-      for (let attempt = 0; attempt < 16; attempt++) {
-        const bounds = await target.boundingBox(), viewport = await list.boundingBox()
-        if (bounds && viewport && bounds.y >= viewport.y && bounds.y + bounds.height <= viewport.y + viewport.height) break
-        await page.mouse.wheel(0, 240)
-        await page.waitForTimeout(40)
-      }
-      await target.click({ timeout: 3000 })
-      await page.locator("[data-vgui-name='ChangeKeyButton']").click()
-      await page.keyboard.press("F8")
-      await page.screenshot({ path: path.join(directory, `${label}-options-rebound.png`) })
-      await expect(list.locator(`[data-vgui-item='${row + 1}'] [data-vgui-column='Key']`)).toHaveText("F8", { timeout: 3000 })
-      await page.locator("[data-vgui-name='OptionsDialog'] [data-vgui-name='OKButton']").click()
-      await expect(page.locator("main")).toHaveAttribute("data-options-visible", "false")
-      await page.locator("[data-vgui-name='ResumeButton']").click()
-      await page.keyboard.press("F8")
-      await expect(root).toHaveAttribute("data-engineer-menu", "none")
-      for (const [key, menu] of [["Digit4", "build"], ["Digit5", "destroy"]] as const) {
-        await page.keyboard.press("Digit3")
-        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("42")
-        await page.keyboard.press(key)
-        await expect(root).toHaveAttribute("data-engineer-menu", menu)
-        const labelControl = page.locator(`.engineer-layer [data-vgui-name='${menu === "build" ? "HudMenuEngyBuild" : "HudMenuEngyDestroy"}'] [data-vgui-name='CancelLabel']`)
-        await expect(labelControl).toContainText(/'F8'/i)
-        const file = path.join(directory, `${label}-engineer-${menu}-rebound.png`)
-        await page.screenshot({ path: file })
-        const text = await labelControl.innerText()
-        await page.keyboard.press("F8")
-        await expect(root).toHaveAttribute("data-engineer-menu", "none")
-        await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("42")
-        menus.push({ menu, file, binding: text, canceledTo: 42 })
-      }
-    }
-    await writeFile(path.join(directory, `${label}-engineer-ui.json`), JSON.stringify({ menus, performanceSample: false }))
+    await auditEngineerMenus(page, root, directory, label, combatCommand)
   }
   if (process.env.PROFILE_STATIC_PROP_AUDIT === "1") {
     // This independent pixel/depth fixture runs after the complete gameplay
