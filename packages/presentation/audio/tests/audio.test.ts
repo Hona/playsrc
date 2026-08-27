@@ -262,6 +262,13 @@ function start(overrides: Partial<StartSound> = {}): StartSound {
 }
 
 describe("Source sound registry and neutral voice state", () => {
+  test("RIFF cue metadata loops an immediate patch start without inventing a fade envelope", () => {
+    const world = new SourceAudioWorld(new SoundRegistry([targetDocument]), { maxActiveVoices: 16 })
+    const { voice } = world.start(start({ resourceLoopStartSeconds: 0 }))
+    expect(voice.loopStartSeconds).toBe(0)
+    expect(voice.envelope).toBeUndefined()
+    expect(voice.startTimeSeconds).toBe(5)
+  })
   test("resolves exact target fields and producer-selected original wave ordinals", () => {
     const registry = new SoundRegistry([targetDocument])
     const rocket = registry.get("weapon_rpg.single")!

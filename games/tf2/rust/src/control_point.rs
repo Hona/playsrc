@@ -1210,7 +1210,7 @@ impl World {
                     if transition != 1 { events.push(Event::Sound { point: index, recipient: None, definition: SoundDefinition::HologramStart, action: AudioAction::Play }); }
                     let definition = if transition == 1 { SoundDefinition::HologramInterrupted } else { SoundDefinition::HologramMove };
                     point.loop_sound = Some(definition);
-                    events.push(Event::Sound { point: index, recipient: None, definition, action: AudioAction::FadeIn(0.0) });
+                    events.push(Event::Sound { point: index, recipient: None, definition, action: AudioAction::Play });
                 } else { events.push(Event::Sound { point: index, recipient: None, definition: SoundDefinition::HologramStop, action: AudioAction::Play }); }
             }
             if transition == 0 && point.warn_on_cap == 0 {
@@ -1782,5 +1782,18 @@ mod tests {
         assert!(!w.won);
         assert_eq!(w.points[0].owner, PlayerTeam::Unassigned);
         assert!(!w.contested());
+    }
+
+    #[test]
+    fn hologram_patch_starts_immediately_and_replaces_the_loop_without_a_zero_duration_fade() {
+        let mut world = world(false);
+        let mut events = vec![Event::CaptureStarted { point: 2, team: PlayerTeam::Red, cappers: vec![1] }];
+        world.capture_sounds(0, &mut events);
+        assert!(events.iter().any(|event| matches!(event, Event::Sound { definition: SoundDefinition::HologramMove, action: AudioAction::Play, .. })));
+        let mut events = vec![Event::BlockStateChanged { point: 2, blocked: true }];
+        world.capture_sounds(0, &mut events);
+        assert!(events.iter().any(|event| matches!(event, Event::Sound { definition: SoundDefinition::HologramMove, action: AudioAction::Stop, .. })));
+        assert!(events.iter().any(|event| matches!(event, Event::Sound { definition: SoundDefinition::HologramInterrupted, action: AudioAction::Play, .. })));
+        assert!(!events.iter().any(|event| matches!(event, Event::Sound { action: AudioAction::FadeIn(_), .. })));
     }
 }
