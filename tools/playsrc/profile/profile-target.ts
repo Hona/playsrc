@@ -1,6 +1,10 @@
-import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
+import { TF2_DEVELOPMENT_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
 export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env, fallback: Tf2TargetName = "jump_beef"): Tf2TargetName {
+  if (environment.PROFILE_MAP_TARGET) {
+    if (!TF2_DEVELOPMENT_TARGET_NAMES.includes(environment.PROFILE_MAP_TARGET as Tf2TargetName)) throw new Error("Profile map target is not admitted")
+    return environment.PROFILE_MAP_TARGET as Tf2TargetName
+  }
   if (environment.PROFILE_SCENARIOS === "control-points") return "cp_badlands"
   if (environment.PROFILE_SCENARIOS === "koth") return "koth_viaduct"
   if (environment.PROFILE_UPGRADE_ROSTER === "23") return "ctf_2fort"

@@ -321,6 +321,7 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
 test("uses the default TF2 horizontal-4:3 world projection and Source clip planes", () => {
   const snapshot = {
     position: Object.freeze([10, 20, 30]),
+    viewAngleOffset: Object.freeze([0, 0, 0]),
     movement: { viewOffset: Object.freeze([0, 0, 68]) },
   } as unknown as Snapshot
   expect(tf2Camera(snapshot, 90, -10)).toEqual({
@@ -331,6 +332,9 @@ test("uses the default TF2 horizontal-4:3 world projection and Source clip plane
     near: 7,
     far: 28_377.919921875,
   })
+  const snapped = { ...snapshot, viewAngleOffset: [-5, -150, 0] as const }
+  expect(tf2Camera(snapped, 330, 0)).toMatchObject({ yawDegrees: 180, pitchDegrees: -5 })
+  expect(tf2Camera(snapped, 335, 2)).toMatchObject({ yawDegrees: 185, pitchDegrees: -3 })
 })
 
 test("joins the current team skin to the matching viewmodel template", () => {

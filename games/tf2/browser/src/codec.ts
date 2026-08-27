@@ -701,6 +701,7 @@ export type Snapshot = Readonly<{
   conditions: readonly [number, number, number, number, number]
   respawnTouchCount: number
   movement: MovementSnapshot
+  viewAngleOffset: readonly [number, number, number]
   movementTick: MovementTick | null
   position: readonly [number, number, number]
   velocity: readonly [number, number, number]
@@ -1595,7 +1596,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 25)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 26)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2473,6 +2474,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const equippedItems = readEquipment(`bot-equipment/${bot.identity}`)
     return equippedItems.length === 0 ? bot : Object.freeze({ ...bot, equippedItems })
   })
+  requireBytes(12, "view angle correction")
+  const viewAngleOffset = vector(view, at)
+  if (!finite(viewAngleOffset)) throw new Tf2CodecError("view angle correction is invalid")
+  at += 12
   if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
@@ -2495,6 +2500,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     conditions,
     respawnTouchCount: view.getUint32(52, true),
     movement,
+    viewAngleOffset,
     movementTick,
     position: movement.position,
     velocity: movement.velocity,

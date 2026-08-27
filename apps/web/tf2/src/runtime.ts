@@ -109,7 +109,7 @@ import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleReso
 import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
-import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
+import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
 import {
@@ -502,6 +502,7 @@ export class Tf2Application {
   #catalogReplacement?: Promise<void>
   #yaw = 0
   #pitch = 0
+  #appliedViewAngleOffset: readonly [number, number, number] = [0, 0, 0]
   #pointerMovementX = 0
   #viewRevision = 0
   #mouseViewRevision=0
@@ -1989,7 +1990,7 @@ export class Tf2Application {
       random: this.#presentationRandom,
       damageIndicator:Object.freeze({material:damageTexture.material,texture:damageTexture,
         eyePosition:()=>this.#snapshot?tf2Camera(this.#snapshot,this.#yaw,this.#pitch).position:[0,0,0],
-        yawDegrees:()=>this.#yaw,random:()=>this.#presentationRandom!.nextUnit()}),
+        yawDegrees:()=>this.#yaw+(this.#snapshot?.viewAngleOffset[1]??0),random:()=>this.#presentationRandom!.nextUnit()}),
       onCommand: (command) => {
 
         if (command.kind === "select-weapon" && (command.weapon >= 1 && command.weapon <= 21 || command.weapon >= 40 && command.weapon <= 45 || command.weapon >= 50 && command.weapon <= 54) && command.weapon !== 54) this.#selectWeapon = command.weapon as Tf2Weapon
@@ -4451,7 +4452,7 @@ export class Tf2Application {
       profile.bots=prepared.snapshot.bots.map(bot=>({...bot,weapon:bot.weapon&&{...bot.weapon,nextPrimaryTick:bot.weapon.nextPrimaryTick.toString(),nextReloadTick:bot.weapon.nextReloadTick.toString()},lastFireTick:bot.lastFireTick?.toString()??null,respawnTick:bot.respawnTick?.toString()??null,tick:prepared.snapshot.tick.toString()}))
       profile.round=prepared.snapshot.round
       profile.controlPoints=prepared.snapshot.controlPoints
-      profile.controlPoints=prepared.snapshot.controlPoints
+      profile.player={team:prepared.snapshot.team,class:prepared.snapshot.class,position:prepared.snapshot.position,viewAngleOffset:prepared.snapshot.viewAngleOffset,camera}
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}
@@ -4659,14 +4660,13 @@ export class Tf2Application {
       }
     }finally{this.#simulationBusy=false}
   }
-  #applyAuthoritativeView(publication:SimulationPublication,sampledMovementX:number):void{
+  #applyAuthoritativeView(publication:SimulationPublication,_sampledMovementX:number):void{
     for(const batch of publication.eventBatches){
-      for(const event of batch.snapshot.events){
-        if(event.kind===9&&event.detail===1){
-          this.#yaw=rebasePointerYaw(event.values[3],sampledMovementX,this.#pointerMovementX)
-          this.#viewRevision+=1
-          this.#authoritativeViewRevision+=1
-        }
+      const offset = batch.snapshot.viewAngleOffset
+      if (offset.some((value, axis) => !Object.is(value, this.#appliedViewAngleOffset[axis]))) {
+        this.#appliedViewAngleOffset = offset
+        this.#viewRevision+=1
+        this.#authoritativeViewRevision+=1
       }
     }
   }
@@ -5426,9 +5426,10 @@ export class Tf2Application {
     if(event.movementX===0&&event.movementY===0)return
     const scale = this.#mouseSensitivity / 3
     const movementX=event.movementX*scale
-    const angles = applyPointerDelta(this.#yaw, this.#pitch, movementX, event.movementY * scale * (this.#reverseMouse ? -1 : 1))
-    this.#yaw = angles.yaw
-    this.#pitch = angles.pitch
+    const offset = this.#snapshot?.viewAngleOffset ?? [0, 0, 0]
+    const angles = applyPointerDelta(this.#yaw + offset[1]!, this.#pitch + offset[0]!, movementX, event.movementY * scale * (this.#reverseMouse ? -1 : 1))
+    this.#yaw = angles.yaw - offset[1]!
+    this.#pitch = angles.pitch - offset[0]!
     this.#pointerMovementX+=movementX
     this.#viewRevision+=1
     this.#mouseViewRevision+=1

@@ -310,10 +310,12 @@ export async function prepareSourceBundleProducer(config: LocalConfig): Promise<
 export async function buildSourceBundle(config: LocalConfig, target: string): Promise<SourceBundleArtifact> {
   const { executable: generatorPath, generatorSha256, environment } = await prepareSourceBundleProducer(config)
   const source = new Bun.CryptoHasher("sha256")
-    .update("playsrc-configured-source-v1\0")
+    .update("playsrc-configured-source-v2\0")
     .update(config.tf2Dir).update("\0")
     .update(TF2_CONTENT_BUILD.contentBuild).update("\0")
     .update(target)
+    .update(await readFile(path.join(repositoryRoot, "games/tf2/maps.json")))
+    .update(await readFile(path.join(repositoryRoot, "games/tf2/content-build.json")))
   if (resolveMapTarget(target).navigation === "local") {
     const location = await realpath(path.join(config.tf2Dir, "maps", `${target}.nav`))
     if (!location.startsWith(`${config.tf2Dir}${path.sep}`)) {

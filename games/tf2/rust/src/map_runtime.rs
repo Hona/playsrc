@@ -389,7 +389,7 @@ pub struct MapRuntime {
     volumes: Vec<Volume>,
     pickups: Vec<MapPickup>,
     building_exclusions: Vec<BuildingExclusion>,
-    team_spawns: [Option<[f32; 3]>; 2],
+    team_spawns: [Option<crate::PlayerSpawn>; 2],
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
@@ -711,7 +711,7 @@ impl MapRuntime {
                 if let Some(team) = source_team(entity)? {
                     let index = usize::from(team == 3);
                     if team_spawns[index].is_none() {
-                        team_spawns[index] = Some(vector(entity, b"origin", None)?);
+                        team_spawns[index] = Some(crate::PlayerSpawn { position: vector(entity, b"origin", None)?, angles: vector(entity, b"angles", Some([0.0; 3]))? });
                     }
                 }
             }
@@ -1215,8 +1215,8 @@ impl MapRuntime {
         Ok(true)
     }
 
-    pub(crate) fn team_spawn(&self, team: crate::PlayerTeam) -> Option<[f32; 3]> {
-        if let Some(points) = &self.control_points { return points.spawns().iter().find(|s| s.team == team && !s.disabled).map(|s| s.position); }
+    pub(crate) fn team_spawn(&self, team: crate::PlayerTeam) -> Option<crate::PlayerSpawn> {
+        if let Some(points) = &self.control_points { return points.spawns().iter().find(|s| s.team == team && !s.disabled).map(|s| crate::PlayerSpawn { position: s.position, angles: s.angles }); }
         match team {
             crate::PlayerTeam::Red => self.team_spawns[0],
             crate::PlayerTeam::Blue => self.team_spawns[1],
