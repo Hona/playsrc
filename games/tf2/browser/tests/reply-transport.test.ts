@@ -94,13 +94,13 @@ test("legacy particle and visual ranges publish and release atomically with exac
   const f = fixture()
   const reply = f.reply(1)
   new Uint8Array(f.shared.memory.buffer, 32, 4).set([0x50, 0x4c, 0x56, 0x46])
-  const measured = { ...timings, wasmLinearMemoryBytes: 65536, wasmAllocatorLiveBytes: 12345, wasmAllocatorHighWaterBytes: 23456 }
+  const measured = { ...timings, wasmLinearMemoryBytes: 3_000_000_000, wasmAllocatorLiveBytes: 2_200_012_345, wasmAllocatorHighWaterBytes: 2_500_023_456 }
   f.writer.shared({ ...reply, ranges: [...reply.ranges, { pointer: 32, length: 4 }], timings: measured }, () => f.released.push(1))
   const run = f.reader.run()
   const response = await f.next() as Extract<WorkerResponse, { kind: "particles" }>
   expect([...new Uint8Array(response.output)]).toEqual([1, 2, 3, 4])
   expect([...new Uint8Array(response.visualOutput!)]).toEqual([0x50, 0x4c, 0x56, 0x46])
-  expect(response.timings.wasmAllocatorLiveBytes).toBe(12345)
+  expect(response.timings.wasmAllocatorLiveBytes).toBe(2_200_012_345)
   f.writer.reclaim(); expect(f.released).toEqual([1])
   expect(() => f.writer.shared({ ...f.reply(2), timings: { ...measured, wasmAllocatorLiveBytes: 0.5 } }, () => {})).toThrow("memory gauges")
   f.reader.close(); await run

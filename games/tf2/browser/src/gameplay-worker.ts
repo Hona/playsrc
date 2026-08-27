@@ -711,9 +711,9 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       modelCacheHits: exports.playsrc_model_cache_count(candidate, 0),
       modelCacheMisses: exports.playsrc_model_cache_count(candidate, 1),
       wasmLinearMemoryBytes: exports.memory.buffer.byteLength,
-      wasmAllocatorLiveBytes: exports.playsrc_memory_bytes(0),
-      wasmAllocatorHighWaterBytes: exports.playsrc_memory_bytes(1),
-      wasmCompileOwnerBytes: Array.from({ length: 12 }, (_, index) => exports.playsrc_compile_memory_bytes(candidate, index)),
+      wasmAllocatorLiveBytes: exports.playsrc_memory_bytes(0) >>> 0,
+      wasmAllocatorHighWaterBytes: exports.playsrc_memory_bytes(1) >>> 0,
+      wasmCompileOwnerBytes: Array.from({ length: 12 }, (_, index) => exports.playsrc_compile_memory_bytes(candidate, index) >>> 0),
       resourceSections: configuration.sections.length,
       resourceBytes: request.configurationBytes,
       totalMilliseconds: performance.now() - started,
@@ -984,8 +984,8 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
     const outputCopyMilliseconds=performance.now()-outputCopyStarted
     const memory = legacyFrame ? {
       wasmLinearMemoryBytes: value.exports.memory.buffer.byteLength,
-      wasmAllocatorLiveBytes: value.exports.playsrc_memory_bytes(0),
-      wasmAllocatorHighWaterBytes: value.exports.playsrc_memory_bytes(1),
+      wasmAllocatorLiveBytes: value.exports.playsrc_memory_bytes(0) >>> 0,
+      wasmAllocatorHighWaterBytes: value.exports.playsrc_memory_bytes(1) >>> 0,
     } : {}
     postShared({ id: request.id, kind: "particles", generation: request.generation, ranges: visual ? [output, visual] : [output], timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,...memory,totalMilliseconds:performance.now()-started} }, () => { output.release(); visual?.release() })
   } catch (error) { output.release(); visual?.release(); throw error }
