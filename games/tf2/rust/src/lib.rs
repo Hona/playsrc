@@ -4278,7 +4278,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             attacker_team = PlayerTeam::Unassigned;
         }
         let attacker_conditions = if input.attacker == PLAYER_IDENTITY {
-            condition::ConditionState::from_active_words(self.conditions.words()).map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?
+            self.conditions.runtime_state()
         } else { self.bots.as_ref().and_then(|bots| bots.conditions(input.attacker)).cloned().unwrap_or_default() };
         let attacker_is_crit_boosted = attacker_conditions.is_crit_boosted();
         let before = if input.victim == PLAYER_IDENTITY {
@@ -4296,8 +4296,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map_err(|_| Error::Bot(bot::Error::Damage))?;
             health.current = self.health;
             health.maximum = self.maximum_health();
-            let mut conditions = condition::ConditionState::from_active_words(self.conditions.words())
-                .map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?;
+            let mut conditions = self.conditions.runtime_state();
             result = damage::apply_damage(
                 self.lifecycle == PlayerLifecycle::Active,
                 &mut health,
