@@ -345,6 +345,7 @@ pub struct Rules {
     cap_in_progress_until: f32,
     pending_events: Vec<Event>,
     respawn_waves: [Option<f32>; 2],
+    original_respawn_waves: [Option<f32>; 2],
 }
 
 impl Rules {
@@ -386,6 +387,7 @@ impl Rules {
             cap_in_progress_until: 0.0,
             pending_events: Vec::new(),
             respawn_waves: [None; 2],
+            original_respawn_waves: [None; 2],
         })
     }
 
@@ -558,8 +560,18 @@ impl Rules {
 
     pub fn set_respawn_wave(&mut self, team: PlayerTeam, seconds: f32) {
         if seconds >= 0.0 && seconds.is_finite() && team.is_gameplay() {
-            self.respawn_waves[usize::from(team == PlayerTeam::Blue)] = Some(seconds);
+            let index = usize::from(team == PlayerTeam::Blue);
+            self.original_respawn_waves[index].get_or_insert(seconds);
+            self.respawn_waves[index] = Some(seconds);
         }
+    }
+
+    pub fn add_respawn_wave(&mut self, team: PlayerTeam, seconds: f32) {
+        if !team.is_gameplay() || !seconds.is_finite() { return; }
+        let index = usize::from(team == PlayerTeam::Blue);
+        let current = self.respawn_waves[index].unwrap_or(crate::bot::RESPAWN_WAVE_SECONDS);
+        self.original_respawn_waves[index].get_or_insert(current);
+        self.respawn_waves[index] = Some((current + seconds).max(0.0));
     }
 
     pub fn respawn_waves(&self) -> [Option<f32>; 2] {
@@ -811,6 +823,7 @@ impl Rules {
     }
 
     fn enter_preround(&mut self, full_reset: bool, events: &mut Vec<Event>) {
+        self.respawn_waves = self.original_respawn_waves;
         self.winning_team = None;
         self.win_reason = 0;
         self.in_overtime = false;
@@ -894,6 +907,23 @@ fn boolean(entity: &Entity, name: &[u8], default: bool) -> Result<bool, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn point_capture_wave_adjustments_use_default_then_restore_original_on_restart() {
+        let mut rules = Rules::active(Configuration::default()).unwrap();
+        rules.add_respawn_wave(PlayerTeam::Blue, -4.0);
+        assert_eq!(rules.respawn_waves(), [None, Some(6.0)]);
+        rules.add_respawn_wave(PlayerTeam::Blue, 4.0);
+        assert_eq!(rules.respawn_waves()[1], Some(10.0));
+        rules.add_respawn_wave(PlayerTeam::Blue, -50.0);
+        assert_eq!(rules.respawn_waves()[1], Some(0.0));
+        rules.restart(false);
+        assert_eq!(rules.respawn_waves()[1], Some(10.0));
+        rules.set_respawn_wave(PlayerTeam::Red, 8.0);
+        rules.add_respawn_wave(PlayerTeam::Red, -4.0);
+        rules.restart(true);
+        assert_eq!(rules.respawn_waves(), [Some(8.0), Some(10.0)]);
+    }
 
     fn koth() -> Rules {
         let graph =

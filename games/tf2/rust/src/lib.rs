@@ -2657,6 +2657,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         for event in &map_phase.control_point_events {
             match event {
+                control_point::Event::RespawnWaveAdjustment { team, seconds } => self.round.add_respawn_wave(*team, *seconds as f32),
                 control_point::Event::Captured { cappers, .. } if cappers.contains(&PLAYER_IDENTITY) => self.scoreboard.local_capture(),
                 control_point::Event::RoundWon { team, reason, .. } => {
                     round_events.extend(self.round.win(*team, *reason).map_err(Error::Round)?);
