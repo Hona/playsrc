@@ -113,6 +113,12 @@ export class RendererFrameInstrumentation {
     if (this.#profile.active) this.#poseUploadBytes += bytes
   }
 
+  dynamicModel(event: "created" | "reused" | "parked" | "disposed" | "materialCreated" | "materialDisposed" | "graphCreated"): void {
+    if (!this.#profile.active) return
+    const key = `dynamicModel.${event}`
+    this.#profile.counters[key] = (this.#profile.counters[key] ?? 0) + 1
+  }
+
   indexUpload(bytes: number): void {
     if (this.#profile.active) this.#indexUploadBytes += bytes
   }
