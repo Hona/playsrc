@@ -48,6 +48,7 @@ export type BrowserFrameProfiler = {
   capabilities: { timestampQuery: boolean; longAnimationFrame: boolean }
   losses: { kind: string; at: number; message: string }[]
   gpuTimestamps?: { frame: number; milliseconds: number }[]
+  nodeBuilds?: { at: number; milliseconds: number; pass: string | null; material: string; vertexCharacters: number; fragmentCharacters: number }[]
 }
 
 type RendererInfo = {
@@ -173,9 +174,23 @@ export function installNodeBuilderInstrumentation(
   manager._createNodeBuilder = function (...arguments_: any[]): any {
     if (!profile.active) return original.apply(this, arguments_)
     profile.counters.nodeBuilderMisses = (profile.counters.nodeBuilderMisses ?? 0) + 1
-    const started = performance.now()
-    try { return original.apply(this, arguments_) }
-    finally { profile.counters.nodeBuilderMilliseconds = (profile.counters.nodeBuilderMilliseconds ?? 0) + performance.now() - started }
+    const builder = original.apply(this, arguments_)
+    const build = builder.build
+    if (typeof build !== "function") throw new Error("WebGPU node-builder build contract is unavailable")
+    builder.build = function (...args: any[]) {
+      const started = performance.now()
+      try { return build.apply(this, args) }
+      finally {
+        const milliseconds = performance.now() - started
+        profile.counters.nodeBuilderMilliseconds = (profile.counters.nodeBuilderMilliseconds ?? 0) + milliseconds
+        const records = profile.nodeBuilds ??= []
+        if (records.length < 512) records.push({ at: started, milliseconds, pass: profile.currentPass?.identity ?? null,
+          material: String(arguments_[0]?.object?.userData?.materialIdentity ?? arguments_[1]?.name ?? "").slice(0, 256),
+          vertexCharacters: this.vertexShader?.length ?? 0, fragmentCharacters: this.fragmentShader?.length ?? 0 })
+        else profile.counters.nodeBuildsDropped = (profile.counters.nodeBuildsDropped ?? 0) + 1
+      }
+    }
+    return builder
   }
   return () => { manager._createNodeBuilder = original }
 }
