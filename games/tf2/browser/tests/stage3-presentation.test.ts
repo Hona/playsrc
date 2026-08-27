@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the lit fire-tick PMRQ v8 contract", () => {
+test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v9 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,11 +132,17 @@ test("encodes each Unicode model/activity exactly once into the lit fire-tick PM
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(8)
+  expect(view.getUint32(4, true)).toBe(9)
   expect(view.getUint32(8, true)).toBe(1)
-  expect(view.getBigUint64(16, true)).toBe(0n)
-  expect(view.getUint32(56, true)).toBe(new TextEncoder().encode(request.model).byteLength)
-  expect(new TextDecoder().decode(bytes.subarray(60, 60 + view.getUint32(56, true)))).toBe(request.model)
+  expect(view.getUint32(16, true)).toBe(0)
+  expect(view.getBigUint64(44, true)).toBe(0n)
+  expect(view.getUint32(84, true)).toBe(new TextEncoder().encode(request.model).byteLength)
+  expect(new TextDecoder().decode(bytes.subarray(88, 88 + view.getUint32(84, true)))).toBe(request.model)
+  const cloak = { identity: 42, localFactor: 0.5, worldFactor: 0.95, rawFactor: 1, playerTint: [0.4, 0.5, 1] as const }
+  const encoded = new DataView(encodeModelPoseBatch([{ ...request, cloak }]).buffer)
+  expect(encoded.getUint32(16, true)).toBe(42)
+  expect(encoded.getFloat32(24, true)).toBe(Math.fround(0.95))
+  expect(() => encodeModelPoseBatch([{ ...request, cloak: { ...cloak, identity: -1 } }])).toThrow("model actor identity")
 })
 
 test("keeps exact UTF-8 pose bytes across bounded cache eviction and repeated full-roster batches", () => {
@@ -189,9 +195,9 @@ test("encodes stock fists as one hands-only viewmodel without an invented item",
     bodygroups: Object.freeze([0]),
   })
   const bytes = encodeModelPoseBatch([request])
-  expect(bytes[24]).toBe(2)
+  expect(bytes[52]).toBe(2)
   const modelBytes = new TextEncoder().encode(request.model).byteLength
-  expect(new DataView(bytes.buffer).getUint32(60 + modelBytes, true)).toBe(0)
+  expect(new DataView(bytes.buffer).getUint32(88 + modelBytes, true)).toBe(0)
   expect(() => encodeModelPoseBatch([{ ...request, itemModel: "models/invented.mdl", itemBodygroups: [] }])).toThrow(ProjectilePresentationError)
 })
 
@@ -223,9 +229,9 @@ test("encodes historical attachment-only fire samples without extra model transa
   const bytes = encodeModelPoseBatch([request, { ...request, sampleTick: 19n, attachmentsOnly: false }])
   const view = new DataView(bytes.buffer)
   expect(view.getUint32(8, true)).toBe(2)
-  expect(view.getBigUint64(16, true)).toBe(18n)
-  expect([...bytes.subarray(24, 28)]).toEqual([1, 1, 1, 0])
-  expect([0, 1, 2].map((index) => view.getFloat32(28 + index * 4, true))).toEqual([10, 20, 30])
+  expect(view.getBigUint64(44, true)).toBe(18n)
+  expect([...bytes.subarray(52, 56)]).toEqual([1, 1, 1, 0])
+  expect([0, 1, 2].map((index) => view.getFloat32(56 + index * 4, true))).toEqual([10, 20, 30])
   expect(() => encodeModelPoseBatch([{ ...request, fireView: undefined }]))
     .toThrow(ProjectilePresentationError)
 })
@@ -247,9 +253,11 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
     u32(bytes.byteLength)
     output.push(...bytes)
   }
-  u32(9)
+  u32(10)
   u32(1)
   u32(9)
+  output.push(1, 0, 1, 0)
+  ;[0.5, 0.95, 1, 1, 0.5, 0.4].forEach(f32)
   u32(7)
   u32(0)
   output.push(0, 0, 0, 0)
@@ -280,6 +288,9 @@ test("decodes compact authored PMPO bone matrices and rejects invalid or truncat
   const bytes = Uint8Array.from(output)
   const pose = decodeModelPoseOutput(bytes)[0]!
   expect(pose.sampleTick).toBe(7n)
+  expect(pose.cloak?.worldFactor).toBe(Math.fround(0.95))
+  expect(pose.cloak?.localFactor).toBe(0.5)
+  expect(pose.cloak?.player).toBe(true)
   expect(pose.attachmentsOnly).toBe(false)
   const primitive = pose.primitives[0]!
   expect([...pose.boneMatrices]).toEqual([1, 0, 0, 4, 0, 1, 0, 5, 0, 0, 1, 6])

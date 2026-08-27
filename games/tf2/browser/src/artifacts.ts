@@ -106,6 +106,7 @@ export type ModelTextureBinding = Readonly<{
 export type CloakState = Readonly<{ enabled: boolean; factor: number; colorTint: readonly [number, number, number]; refractAmount: number }>
 export type ModelMaterialArtifact = Readonly<{
   identity: string
+  cloakProxy: number
   shader: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly ModelTextureBinding[]
@@ -1077,11 +1078,11 @@ function cloak(r: Reader): CloakState {
 }
 
 function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifact> {
-  magic(r, "PMDL")
+  if (r.decode(r.take(4)) !== "PMDL" || r.u32() !== 2) throw new ArtifactError("PMDL identity")
   const output = new Map<string, ModelMaterialArtifact>()
   for (let count = r.u32(); count > 0; count--) {
-    const identity = r.text().toLowerCase(), shaderCode = r.u8()
-    if (!identity || output.has(identity) || shaderCode > 4 || r.u8()) throw new ArtifactError("model material identity")
+    const identity = r.text().toLowerCase(), shaderCode = r.u8(), cloakProxy = r.u8()
+    if (!identity || output.has(identity) || shaderCode > 4 || cloakProxy > 7) throw new ArtifactError("model material identity")
     const vertexRequirements = r.u16(), bindings: ModelTextureBinding[] = [], bindingIdentities = new Set<string>()
     for (let bindingCount = r.u32(); bindingCount > 0; bindingCount--) {
       const kind = r.u8(), role = r.u8(), colorRead = r.u8()
@@ -1174,6 +1175,7 @@ function parseModelMaterials(r: Reader): ReadonlyMap<string, ModelMaterialArtifa
     const opacity=r.u8(),framebuffer=r.u8(),requirementCount=r.u8();if(opacity>1||framebuffer>2||requirementCount>8||r.u8())throw new ArtifactError("model draw state");const names=["ambient-cube","local-lights","camera-position","studio-eye-parameters","local-environment","current-framebuffer","authored-texture-planes","game-proxy-values"] as const,requiredInputs=Object.freeze(Array.from({length:requirementCount},()=>{const code=r.u8();if(code<1||code>8)throw new ArtifactError("model draw requirement");return names[code-1]!}))
     output.set(identity, Object.freeze({
       identity,
+      cloakProxy,
       shader: (["vertex-lit-generic", "eye-refract", "eyes", "unlit-generic", "unlit-two-texture"] as const)[shaderCode]!,
       vertexRequirements,
       bindings: Object.freeze(bindings),

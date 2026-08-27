@@ -160,6 +160,10 @@ export type Command = Readonly<{
   } | {
     action: "whack"
     identity: number
+  } | {
+    action: "stealth-condition"
+    identity: number
+    enabled: boolean
   }>
 }>
 
@@ -606,6 +610,8 @@ export type SpySnapshot = Readonly<{
   noAttackUntil: number
 }>
 
+export type ActorCloakState = Readonly<{ identity: number; localFactor: number; worldFactor: number; rawFactor: number; playerTint: readonly [number, number, number] }>
+
 export type BuildingPlacement = Readonly<{ object: Tf2BuildingObject; position: readonly [number, number, number]; yawDegrees: number; valid: boolean }>
 export type BuildingSnapshot = Readonly<{
   identity: number
@@ -632,6 +638,7 @@ export type BuildingSnapshot = Readonly<{
 }>
 
 export type Snapshot = Readonly<{
+  actorCloaks: readonly ActorCloakState[]
   tick: bigint
   class: Tf2Class
   team: Tf2Team
@@ -884,10 +891,11 @@ export function encodeCommand(command: Command): ArrayBuffer {
   view.setUint32(52, packedObjectives, true)
   if (command.botControl) {
     const control = command.botControl
+    if (!["teleport", "whack", "stealth-condition"].includes(control.action) || (control.action === "stealth-condition" && typeof control.enabled !== "boolean")) throw new Tf2CodecError("command bot control action is invalid")
     if (!canonicalIdentity(control.identity) || control.identity <= 1) {
       throw new Tf2CodecError("command bot control identity is invalid")
     }
-    data[56] = control.action === "teleport" ? 1 : 2
+    data[56] = control.action === "teleport" ? 1 : control.action === "whack" ? 2 : control.enabled ? 3 : 4
     view.setUint32(60, control.identity, true)
     if (control.action === "teleport") {
       const values = [...control.position, control.pitchDegrees, control.yawDegrees]
@@ -1473,7 +1481,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 19)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 20)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1596,7 +1604,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     (activeDisguiseClass !== 0 && (activeDisguiseClass > 9 || (activeDisguiseTeam !== 2 && activeDisguiseTeam !== 3))) ||
     (desiredDisguiseClass === 0) !== (desiredDisguiseTeam === 0) ||
     (desiredDisguiseClass !== 0 && (desiredDisguiseClass > 9 || (desiredDisguiseTeam !== 2 && desiredDisguiseTeam !== 3))) ||
-    !loadout.some((entry) => entry.weapon === 54)
+    (lifecycle === 1 && weapon !== 0 && !loadout.some((entry) => entry.weapon === 54))
   )) throw new Tf2CodecError("Spy snapshot state is invalid")
   const spy: SpySnapshot | null = tf2Class !== 8 ? null : Object.freeze({
     cloakMeter,
@@ -2311,7 +2319,19 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     if(!finite([...positions,...normals,...uv]))throw new Tf2CodecError("combat decal geometry is non-finite")
     combatDecals.push(Object.freeze({identity,face,reference,positions,normals,uv,indices}))
   }
-  if(at!==bytes.byteLength)throw new Tf2CodecError("combat decal section has trailing bytes")
+  requireBytes(4, "actor cloak count")
+  const cloakCount = view.getUint32(at, true); at += 4
+  if (cloakCount > 32 || cloakCount !== Number(spy !== null) + bots.filter(bot => bot.class === 8).length) throw new Tf2CodecError("actor cloak roster differs")
+  requireBytes(cloakCount * 28, "actor cloak records")
+  const actorCloaks: ActorCloakState[] = []
+  for (let index = 0; index < cloakCount; index++) {
+    const identity = view.getUint32(at, true)
+    const values = Array.from({ length: 6 }, (_, component) => view.getFloat32(at + 4 + component * 4, true))
+    if (identity < 1 || (index > 0 && identity <= actorCloaks[index - 1]!.identity) || (identity === 1 ? spy === null || (health > 0 && values[2] !== spy.invisibility) : !bots.some(bot => bot.identity === identity && bot.class === 8)) || values.some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new Tf2CodecError("actor cloak record is invalid")
+    actorCloaks.push(Object.freeze({ identity, localFactor: values[0]!, worldFactor: values[1]!, rawFactor: values[2]!, playerTint: Object.freeze(values.slice(3)) as readonly [number, number, number] }))
+    at += 28
+  }
+  if(at!==bytes.byteLength)throw new Tf2CodecError("snapshot has trailing bytes")
   if(entityPresentation.collisionRevision!==collisionSnapshot.identity)throw new Tf2CodecError("Entity presentation revision join is invalid")
 
   const tick = view.getBigUint64(8, true)
@@ -2319,6 +2339,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const frozenProjectileEvents = Object.freeze(projectileEvents)
   return Object.freeze({
     tick,
+    actorCloaks: Object.freeze(actorCloaks),
     class: tf2Class as Tf2Class,
     team,
     weapon: weapon === 0 ? null : weapon as Tf2Weapon,

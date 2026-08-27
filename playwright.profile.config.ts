@@ -4,6 +4,7 @@ import { headedProfileTarget } from "./tools/playsrc/profile/profile-target"
 export default headedProfileConfiguration({
   match: process.env.PROFILE_SKINNING_EQUIVALENCE === "1"
     ? "skinning-equivalence.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "spy-cloak" ? "spy-cloak.profile.ts"
     : process.env.PROFILE_SCENARIOS === "trigger-door"
     ? "trigger-door.profile.ts"
     : process.env.PROFILE_SCENARIOS === "sniper-scope"

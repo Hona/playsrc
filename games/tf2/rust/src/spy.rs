@@ -12,6 +12,56 @@ pub const QUICK_DISGUISE_SECONDS: f32 = 0.5;
 pub const DISGUISE_WEAR_OFF_SECONDS: f32 = 0.5;
 pub const KNIFE_DAMAGE: f32 = 40.0;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloakRenderState {
+    pub local_factor: f32,
+    pub world_factor: f32,
+    pub raw_factor: f32,
+    pub player_tint: [f32; 3],
+}
+
+pub fn cloak_render_state(
+    invisibility: f32,
+    blink: bool,
+    empty_motion_cloak: bool,
+    team: PlayerTeam,
+    enemy: bool,
+    deathcam_target: bool,
+) -> CloakRenderState {
+    CloakRenderState {
+        local_factor: if blink || empty_motion_cloak {
+            0.3
+        } else if invisibility < 0.01 {
+            0.0
+        } else {
+            0.22 + invisibility * (0.5 - 0.22)
+        },
+        world_factor: if !enemy || deathcam_target {
+            invisibility.min(0.95)
+        } else {
+            invisibility
+        },
+        raw_factor: invisibility,
+        player_tint: if team == PlayerTeam::Red {
+            [1.0, 0.5, 0.4]
+        } else {
+            [0.4, 0.5, 1.0]
+        },
+    }
+}
+
+pub fn player_hulls_touch(
+    left: [f32; 3],
+    left_hull: playsrc_collision::Hull,
+    right: [f32; 3],
+    right_hull: playsrc_collision::Hull,
+) -> bool {
+    (0..3).all(|axis| {
+        left[axis] + left_hull.maxs[axis] >= right[axis] + right_hull.mins[axis]
+            && right[axis] + right_hull.maxs[axis] >= left[axis] + left_hull.mins[axis]
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Disguise {
     pub class: PlayerClass,
@@ -30,6 +80,7 @@ pub struct SpyState {
     pub no_attack_until: f32,
     pub next_stealth_time: f32,
     pub disguise_wear_off_until: f32,
+    pub last_stealth_expose_time: Option<f32>,
 }
 
 impl Default for SpyState {
@@ -45,6 +96,7 @@ impl Default for SpyState {
             no_attack_until: 0.0,
             next_stealth_time: 0.0,
             disguise_wear_off_until: 0.0,
+            last_stealth_expose_time: None,
         }
     }
 }
@@ -59,6 +111,27 @@ pub enum SpyEvent {
 }
 
 impl SpyState {
+    pub fn note_damage(&mut self, now: f32, damage: i32, bleeding: bool) {
+        if damage > 5 || bleeding {
+            self.expose(now);
+        }
+    }
+    pub fn expose(&mut self, now: f32) {
+        if self.cloaked {
+            self.last_stealth_expose_time = Some(now);
+        }
+    }
+
+    pub fn blink(self, now: f32) -> bool {
+        self.last_stealth_expose_time
+            .is_some_and(|time| now - time <= 0.3)
+    }
+
+    pub fn reveal_invisibility(&mut self, now: f32, urine: bool) {
+        if self.blink(now) || urine {
+            self.invisibility *= 0.85;
+        }
+    }
     pub fn toggle_cloak(&mut self, now: f32) -> Option<SpyEvent> {
         if now < self.next_stealth_time {
             return None;
@@ -197,6 +270,40 @@ fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloak_proxy_thresholds_observers_and_blink_are_not_alpha() {
+        let render = |fraction, blink, enemy| {
+            cloak_render_state(fraction, blink, false, PlayerTeam::Red, enemy, false)
+        };
+        assert_eq!(render(0.009, false, true).local_factor, 0.0);
+        assert_eq!(render(0.01, false, true).local_factor, 0.2228);
+        assert_eq!(render(1.0, false, true).local_factor, 0.5);
+        assert_eq!(render(1.0, false, true).world_factor, 1.0);
+        assert_eq!(render(1.0, false, false).world_factor, 0.95);
+        assert_eq!(render(0.85, true, true).local_factor, 0.3);
+        assert_eq!(render(0.85, true, true).world_factor, 0.85);
+        let mut spy = SpyState::default();
+        spy.toggle_cloak(0.0);
+        spy.expose(2.0);
+        spy.advance(2.25, 0.015);
+        spy.reveal_invisibility(2.25, false);
+        assert_eq!(spy.invisibility, 0.85);
+        spy.advance(2.31, 0.015);
+        spy.reveal_invisibility(2.31, false);
+        assert_eq!(spy.invisibility, 1.0);
+        spy.last_stealth_expose_time = None;
+        spy.note_damage(3.0, 5, false);
+        assert!(!spy.blink(3.0));
+        spy.note_damage(3.0, 6, false);
+        assert!(spy.blink(3.0));
+        spy.last_stealth_expose_time = Some(0.0);
+        assert!(spy.blink(0.3));
+        assert!(!spy.blink(0.300001));
+        spy.last_stealth_expose_time = None;
+        spy.note_damage(4.0, 1, true);
+        assert!(spy.blink(4.0));
+    }
 
     #[test]
     fn backstab_requires_all_three_strict_planar_source_thresholds() {

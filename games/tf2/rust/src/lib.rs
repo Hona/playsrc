@@ -472,6 +472,7 @@ pub enum Condition {
     Disguised = 3,
     Stealthed = 4,
     Invulnerable = 5,
+    StealthedBlink = 9,
     Phase = 14,
     HealthBuff = 21,
     Overhealed = 23,
@@ -1057,6 +1058,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let selected = self.team_selection.select(choice, random)?;
         if let Some(team) = selected {
+            if team != before.local_team
+                && let Some(spy) = self.spy.as_mut()
+            {
+                *spy = spy::SpyState::default();
+                for condition in [
+                    Condition::Stealthed,
+                    Condition::StealthedBlink,
+                    Condition::Disguised,
+                    Condition::Disguising,
+                    Condition::DisguiseWearingOff,
+                ] {
+                    self.conditions.remove(condition);
+                }
+                self.secondary_was_held = false;
+            }
             if team.is_gameplay() && team != before.local_team {
                 if let Some(spawn) = self.map.team_spawn(team) {
                     self.spawn = spawn;
@@ -1622,6 +1638,26 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         if let Some(control) = command.bot_control {
             match control {
+                bot::Control::StealthCondition { identity, enabled } => {
+                    let now = self.tick as f32 * self.movement_configuration.tick_interval;
+                    if let Some((origin, enabled)) = self
+                        .bots
+                        .as_mut()
+                        .ok_or(Error::Bot(bot::Error::MissingScenario))?
+                        .stealth_condition(identity, enabled, now)
+                        .map_err(Error::Bot)?
+                    {
+                        self.emit_entity_weapon_sound(
+                            if enabled {
+                                SoundDefinition::SpyCloak
+                            } else {
+                                SoundDefinition::SpyUncloak
+                            },
+                            origin,
+                            identity,
+                        );
+                    }
+                }
                 bot::Control::Teleport {
                     identity,
                     position,
@@ -2782,11 +2818,47 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn advance_spy(&mut self, command: Command) {
+        let policy = MovementPolicy {
+            class: self.class,
+            modifiers: MovementModifiers::default(),
+        }
+        .resolve();
+        let hull = if self.movement.crouch.uses_crouched_hull() {
+            policy.crouched_hull
+        } else {
+            policy.standing_hull
+        };
+        if let Some(bots) = self.bots.as_mut() {
+            let human = bot::Human {
+                team: self.team_selection.local_team(),
+                class: self.class,
+                alive: self.health > 0,
+                position: self.movement.position,
+                velocity: self.movement.velocity,
+            };
+            let decloaks = bots.advance_spies(self.tick, human, hull);
+            for (identity, origin) in decloaks {
+                self.emit_entity_weapon_sound(SoundDefinition::SpyUncloak, origin, identity);
+            }
+        }
+        if self.lifecycle != PlayerLifecycle::Active || self.health <= 0 {
+            self.secondary_was_held = command.detonate;
+            return;
+        }
         let Some(state) = self.spy.as_mut() else {
             self.secondary_was_held = command.detonate;
             return;
         };
         let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        if self.bots.as_ref().is_some_and(|bots| {
+            bots.touches_enemy(
+                self.team_selection.local_team(),
+                self.movement.position,
+                hull,
+            )
+        }) {
+            state.expose(now);
+        }
         let mut notifications = [None; 4];
         if command.detonate && !self.secondary_was_held {
             notifications[0] = state.toggle_cloak(now);
@@ -2800,6 +2872,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         [notifications[2], notifications[3]] =
             state.advance(now, self.movement_configuration.tick_interval);
+        state.reveal_invisibility(now, self.conditions.contains(Condition::Urine));
+        if state.blink(now) {
+            self.conditions.insert(Condition::StealthedBlink);
+        } else {
+            self.conditions.remove(Condition::StealthedBlink);
+        }
         if state.cloaked {
             self.conditions.insert(Condition::Stealthed);
         } else {
@@ -3806,6 +3884,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 return Ok(());
             }
             self.health = health.current.max(0);
+            if let Some(spy) = self.spy.as_mut() {
+                spy.note_damage(
+                    self.tick as f32 * self.movement_configuration.tick_interval,
+                    result.health_damage,
+                    self.conditions.contains(Condition::Bleeding),
+                );
+            }
             after = self.health;
             events.push(Event::Damaged {
                 amount: result.health_damage as f32,

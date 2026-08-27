@@ -12,11 +12,11 @@ import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1177)
+  const bytes = new ArrayBuffer(1181)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 19, true)
+  view.setUint32(4, 20, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -195,7 +195,7 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 136, brushHeader = objective - 64
+  const objective = original.length - 140, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 29 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes)
@@ -396,12 +396,19 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
   test("decodes every canonical class identity and a genuinely unarmed class snapshot", () => {
     for (let identity = 1; identity <= 9; identity += 1) {
-      const bytes = new Uint8Array(snapshot())
+      const base = new Uint8Array(snapshot())
+      const bytes = new Uint8Array(base.length + (identity === 8 ? 28 : 0))
+      bytes.set(base)
       bytes[16] = identity
       if (identity === 8) {
         bytes[18] = 54
         bytes[276] = 54
         new DataView(bytes.buffer).setFloat32(320, 100, true)
+        const view = new DataView(bytes.buffer), cloak = base.length
+        view.setUint32(cloak - 4, 1, true)
+        view.setUint32(cloak, 1, true)
+        ;[0, 0, 0, 1, 0.5, 0.4].forEach((value, index) => view.setFloat32(cloak + 4 + index * 4, value, true))
+        expect(decodeSnapshot(bytes).actorCloaks[0]!.identity).toBe(1)
       }
       expect(decodeSnapshot(bytes).class).toBe(identity)
     }
@@ -637,10 +644,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 136
+    const objectiveOffset = prior.byteLength - 140
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 29 + botName.length)
-    const roundOffset = prior.byteLength - 64
+    const roundOffset = prior.byteLength - 68
     bytes.set(prior.subarray(0, objectiveOffset))
     bytes.set(prior.subarray(objectiveOffset, roundOffset), objectiveOffset + 128)
     bytes.set(prior.subarray(roundOffset), roundOffset + 128 + 29 + botName.length)
@@ -706,7 +713,15 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       bytes[at + 4] = playerClass
       bytes[scoreboardBot + 4] = playerClass
       bytes[at + 64] = weapon
-      expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)
+      if (playerClass === 8) {
+        const bound = new Uint8Array(bytes.length + 28); bound.set(bytes)
+        const fields = new DataView(bound.buffer)
+        fields.setUint32(bytes.length - 4, 1, true)
+        fields.setUint32(bytes.length, view.getUint32(at, true), true)
+        ;[0, 0, 0, 0.4, 0.5, 1].forEach((value, index) => fields.setFloat32(bytes.length + 4 + index * 4, value, true))
+        expect(decodeSnapshot(bound).bots[0]?.weapon?.identity).toBe(weapon)
+        expect(decodeSnapshot(bound).actorCloaks[0]!.identity).toBe(view.getUint32(at, true))
+      } else expect(decodeSnapshot(bytes).bots[0]?.weapon?.identity).toBe(weapon)
     }
     bytes[at + 64] = 22
     expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)

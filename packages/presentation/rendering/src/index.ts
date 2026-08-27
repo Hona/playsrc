@@ -89,6 +89,7 @@ import { sourceWaterTangentAttributes } from "./source-water-geometry"
 import { createSourceRefractMaterial } from "./source-refract"
 import { SourceHudMaterials, type HudMaterialFrame } from "./source-hud-materials"
 export type { HudMaterial, HudTexture, HudMaterialDraw, HudMaterialFrame } from "./source-hud-materials"
+import { SourceCloakFramebuffer, SourceModelCloak, sourceCloakTransparentSort, type SourceCloakState, type SourceCloakBinding } from "./source-cloak"
 import { prepareWaterPipelineVisibility } from "./water-pipeline-visibility"
 import {
   buildRuntimeLightmap,
@@ -286,6 +287,7 @@ export type ModelItem = Readonly<{
   skin?: number
   viewModel?: boolean
   pose?: Readonly<{
+    cloak?: SourceCloakBinding | null
     viewmodel?: null | Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back"; reflected: boolean; drawDisposition: "draw" | "suppressed-success" | "suppressed" }>
     boneMatrices: Float32Array
     flex?: readonly Readonly<{ primitive: number; indices: Uint32Array; positions: Float32Array; normals: Float32Array }>[]
@@ -616,6 +618,7 @@ export type MaterialStateInput = Readonly<{
 }>
 export type ModelMaterialInput = Readonly<{
   identity: string
+  cloakProxy: number
   shader: "unlit-generic" | "unlit-two-texture" | "vertex-lit-generic" | "eye-refract" | "eyes"
   vertexRequirements: number
   bindings: readonly Readonly<{
@@ -628,7 +631,7 @@ export type ModelMaterialInput = Readonly<{
   opacity: "opaque" | "translucent"
   framebuffer: "none" | "potential" | "current"
   requiredInputs: readonly string[]
-  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes" }>
+  state: Readonly<{ kind: "unlit-generic" | "vertex-lit-generic" | "eye-refract" | "eyes"; cloak?: SourceCloakState }>
     | Readonly<{ kind: "unlit-two-texture"; secondFrameRate: number | null; secondScrollRate: number | null; secondScrollAngle: number | null }>
 }>
 export type AuthoredTextureInput = Readonly<{
@@ -780,6 +783,7 @@ export type FrameResult = Readonly<{
   timings: Readonly<{
     particleItems: number
     particleBatches: number
+    cloakFramebufferCopies: number
     dynamicItemsMilliseconds: number
     worldMilliseconds: number
     viewModelMilliseconds: number
@@ -974,6 +978,7 @@ type ModelLightingScene = Readonly<{
 }>
 
 type ModelLightingTextures = Readonly<{
+  normal?: () => THREE.Texture | undefined
   warp?: THREE.Texture
   exponent?: THREE.Texture
   iris?: THREE.Texture
@@ -1460,6 +1465,7 @@ class RendererOwner implements Renderer {
   #effects = new THREE.Group()
   #particles = new THREE.Group()
   #viewModels = new THREE.Group()
+  #cloakFramebuffer = new SourceCloakFramebuffer()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
   #viewCamera = new THREE.PerspectiveCamera(41.114, 1, 1, 32_768)
   readonly #underwaterOverlay = new THREE.QuadMesh()
@@ -1811,6 +1817,23 @@ class RendererOwner implements Renderer {
     return Object.freeze({ sceneGeneration: this.#sceneGeneration, samples: Object.freeze(samples) })
   }
 
+  #modelEvidenceOccluders(): THREE.Mesh[] {
+    const meshes: THREE.Mesh[] = []
+    const add = (object: THREE.Object3D): void => {
+      object.traverseVisible(child => {
+        if (!(child instanceof THREE.Mesh)) return
+        const materials = Array.isArray(child.material) ? child.material : [child.material]
+        if (materials.some(material => material.visible && material.depthWrite && !material.transparent && !material.alphaTest)) meshes.push(child)
+      })
+    }
+    for (const batch of this.#active!.worldBatches) add(batch.mesh)
+    for (const { ownership, batch } of this.#active!.staticPropBatches) if (ownership === 0) add(batch.mesh)
+    for (const prop of this.#active!.staticPropInstances) if (prop.ownership === 0) add(prop.object)
+    for (const [identity, object] of this.#active!.modelOccurrenceInstances) add(this.#dynamicModelInstances.get(identity)?.instance ?? object)
+    for (const retained of this.#dynamicBrushInstances.values()) add(retained.instance)
+    return meshes
+  }
+
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence {
     if (!this.#active || this.#lifecycle !== "Ready") {
       throw new RenderingError("InvalidState", "renderer viewmodel evidence is unavailable")
@@ -1820,7 +1843,7 @@ class RendererOwner implements Renderer {
     const viewRay = new THREE.Raycaster()
     viewRay.layers.set(1)
     const worldRay = new THREE.Raycaster()
-    const world = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const world = this.#modelEvidenceOccluders()
     const samples: ModelGeometryEvidence["samples"][number][] = []
     for (const y of [-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6]) {
       for (const x of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) {
@@ -1859,7 +1882,7 @@ class RendererOwner implements Renderer {
     this.#setCamera(camera)
     this.#scene.updateMatrixWorld(true)
     const ray = new THREE.Raycaster()
-    const world = this.#active.worldBatches.filter((batch) => batch.mesh.visible).map((batch) => batch.mesh)
+    const world = this.#modelEvidenceOccluders()
     const instances = [...this.#dynamicModelInstances.values()].map((instance) => instance.instance).filter(instance => instance.visible)
     const samples: ModelGeometryEvidence["samples"][number][] = []
     for (const y of [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45]) {
@@ -2138,7 +2161,7 @@ class RendererOwner implements Renderer {
     const modelMaterials = new Map<string, ModelMaterialInput>()
     for (const [identity, material] of request.modelMaterials ?? []) {
       const key = identity.toLowerCase()
-      if (key !== material.identity.toLowerCase() || modelMaterials.has(key) || material.vertexRequirements < 0 ||
+      if (key !== material.identity.toLowerCase() || modelMaterials.has(key) || material.vertexRequirements < 0 || !Number.isInteger(material.cloakProxy) || material.cloakProxy < 0 || material.cloakProxy > 7 ||
         new Set(material.requiredInputs).size !== material.requiredInputs.length ||
         material.requiredInputs.some((input) => ![
           "ambient-cube", "local-lights", "camera-position", "studio-eye-parameters",
@@ -3093,9 +3116,11 @@ class RendererOwner implements Renderer {
                ? createModelTexture(resolved.logicalPath, 10, "model")?.texture
                : undefined
              const environment = createModelCubemap(resolved.logicalPath)
-             if (warp || exponent || iris || ambientOcclusion || environment) {
+              const normal = typedMaterial.state.kind === "vertex-lit-generic" && typedMaterial.state.cloak?.enabled ? () => createModelTexture(resolved.logicalPath, 7)?.texture : undefined
+              if (warp || exponent || iris || ambientOcclusion || environment || normal) {
                modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({
-                 warp,
+                  warp,
+                  normal,
                  exponent,
                  iris,
                  ambientOcclusion,
@@ -3674,6 +3699,7 @@ class RendererOwner implements Renderer {
 
   async render(frame: Frame): Promise<FrameResult> {
     const frameStarted = performance.now()
+    this.#cloakFramebuffer.copies = 0
     this.#requireReady()
     if (!this.#active) throw new RenderingError("InvalidState", "renderer has no active map")
     if (this.#renderBusy) throw new RenderingError("InvalidState", "a render is already in progress")
@@ -3908,7 +3934,7 @@ class RendererOwner implements Renderer {
         sky3dPass,
         visibleMainStaticPropSources: this.#visibleStaticSources[0],
         runtimeStaticPropScreen: this.#runtimeStaticPropScreen(),
-        timings:Object.freeze({particleItems:frame.particles?.length??0,particleBatches:this.#particleBatchCount,dynamicItemsMilliseconds,worldMilliseconds,viewModelMilliseconds,totalMilliseconds:performance.now()-frameStarted}),
+        timings:Object.freeze({particleItems:frame.particles?.length??0,particleBatches:this.#particleBatchCount,cloakFramebufferCopies:this.#cloakFramebuffer.copies,dynamicItemsMilliseconds,worldMilliseconds,viewModelMilliseconds,totalMilliseconds:performance.now()-frameStarted}),
         viewModelPass,
         pacing:this.#pacing.records(),
         capture,
@@ -4909,6 +4935,7 @@ class RendererOwner implements Renderer {
       this.#applyPose(retained.instance, item.pose, true, retained.meshes)
     }
     this.#applyDynamicModelLighting(retained, item)
+    this.#applyDynamicModelCloak(retained, item)
     const frameState = item.pose?.viewmodel
     if (!frameState) throw new RenderingError("MalformedInput", "complete viewmodel frame state is missing")
     const encoded = this.#active!.loadRequest.modelFacing?.get(item.model.toLowerCase())
@@ -4952,6 +4979,25 @@ class RendererOwner implements Renderer {
       if (object.userData.dynamicGeometry === true) object.geometry.dispose()
     })
     for (const skeleton of skeletons) skeleton.dispose()
+  }
+
+  #applyDynamicModelCloak(retained: { instance: THREE.Group; meshes?: THREE.Mesh[] }, item: ModelItem): void {
+    const meshes = retained.meshes
+    if (!meshes) return
+    let cloak = retained.instance.userData.sourceModelCloak as SourceModelCloak | undefined
+    if (!cloak && !item.pose?.cloak && !(retained.instance.userData.sourceStaticCloak ??= meshes.some(mesh => {
+      const material = this.#active!.loadRequest.modelMaterials?.get(String(mesh.userData.materialIdentity).toLowerCase())
+      return material && (material.cloakProxy & 3) === 0 && "cloak" in material.state && material.state.cloak?.enabled && material.state.cloak.factor !== 0
+    }))) return
+    if (!cloak) {
+      cloak = new SourceModelCloak(meshes, this.#cloakFramebuffer,
+        identity => this.#active!.loadRequest.modelMaterials?.get(identity),
+        identity => this.#active!.modelLightingTextures.get(identity)?.normal?.())
+      retained.instance.userData.sourceModelCloak = cloak
+      this.#backend.setTransparentSort((a, b) => sourceCloakTransparentSort(a, b, this.#backend.info.calls))
+    }
+    cloak?.update(item.pose?.cloak, item.viewModel === true, retained.instance, item.viewModel ? this.#viewCamera : this.#camera, item.identity)
+    retained.instance.visible = item.viewModel === true || (item.pose?.cloak?.worldFactor ?? 0) < 1
   }
 
   #applyDynamicModelLighting(
@@ -5171,6 +5217,7 @@ class RendererOwner implements Renderer {
           retained.meshes = this.#applyPose(retained.instance, item.pose, retained.meshes !== undefined, retained.meshes, item.renderBounds)
         }
         this.#applyDynamicModelLighting(retained, item)
+        this.#applyDynamicModelCloak(retained, item)
         if (item.angles) sourceTransform(retained.instance, item.position, item.angles)
         else {
           retained.instance.position.set(...item.position)
@@ -5466,6 +5513,7 @@ class RendererOwner implements Renderer {
   }
 
   async dispose(): Promise<void> {
+    this.#cloakFramebuffer.dispose()
     if (this.#lifecycle === "Disposed") return
     this.#lifecycle = "Disposed"
     this.#loadOrdinal += 1

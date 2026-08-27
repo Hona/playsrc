@@ -221,6 +221,10 @@ pub enum Control {
     Whack {
         identity: u32,
     },
+    StealthCondition {
+        identity: u32,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +264,7 @@ pub struct PathContext {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub identity: u32,
+    pub spy: Option<crate::spy::SpyState>,
     pub name: String,
     pub class: PlayerClass,
     pub team: PlayerTeam,
@@ -453,6 +458,7 @@ struct SupplyCache {
 #[derive(Clone, Debug)]
 struct Bot {
     identity: u32,
+    spy: Option<crate::spy::SpyState>,
     name: String,
     class: PlayerClass,
     team: PlayerTeam,
@@ -998,6 +1004,7 @@ impl BotWorld {
                     health: HealthState::spawn(class, 0.0, 0.0)
                         .map_err(|_| Error::InvalidEntity)?,
                     conditions: ConditionState::default(),
+                    spy: (class == PlayerClass::Spy).then(crate::spy::SpyState::default),
                     afterburn: None,
                     last_flame_damage_time: f32::NEG_INFINITY,
                     ammo: class.data().maximum_ammo,
@@ -1391,12 +1398,13 @@ impl BotWorld {
             let Some(active_weapon) = bot.active_weapon else {
                 continue;
             };
-            let in_range = threat.is_some_and(|target| {
-                let range = distance(bot.movement.position, target.position);
-                range < max_attack_range(active_weapon)
-                    && (!is_melee(active_weapon) || range < MELEE_FIRE_RANGE)
-                    && line_of_fire_clear(world, bot_eye(bot), target)
-            });
+            let in_range = bot.spy.is_none_or(|spy| spy.can_attack(now))
+                && threat.is_some_and(|target| {
+                    let range = distance(bot.movement.position, target.position);
+                    range < max_attack_range(active_weapon)
+                        && (!is_melee(active_weapon) || range < MELEE_FIRE_RANGE)
+                        && line_of_fire_clear(world, bot_eye(bot), target)
+                });
             activities.clear();
             ammo.clear();
             let eye_position = bot_eye(bot);
@@ -1692,6 +1700,13 @@ impl BotWorld {
             return Ok(None);
         }
         victim.health.current = victim.health.current.max(0);
+        if let Some(spy) = victim.spy.as_mut() {
+            spy.note_damage(
+                tick as f32 * self.tick_interval,
+                result.health_damage,
+                victim.conditions.contains(ConditionId::BLEEDING),
+            );
+        }
         let killed = result.death.is_some();
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
@@ -1785,6 +1800,7 @@ impl BotWorld {
             .values()
             .map(|bot| Snapshot {
                 identity: bot.identity,
+                spy: bot.spy,
                 name: bot.name.clone(),
                 class: bot.class,
                 team: bot.team,
@@ -1817,6 +1833,88 @@ impl BotWorld {
                 respawn_tick: bot.respawn_tick,
             })
             .collect()
+    }
+
+    pub fn stealth_condition(
+        &mut self,
+        identity: u32,
+        enabled: bool,
+        now: f32,
+    ) -> Result<Option<([f32; 3], bool)>, Error> {
+        let bot = self.bots.get_mut(&identity).ok_or(Error::InvalidEntity)?;
+        let spy = bot.spy.as_mut().ok_or(Error::InvalidEntity)?;
+        if bot.lifecycle != PlayerLifecycle::Active || spy.cloaked == enabled {
+            return Ok(None);
+        }
+        spy.cloaked = enabled;
+        if enabled {
+            spy.invisibility_complete_time = now + crate::spy::CLOAK_FADE_IN_SECONDS;
+        }
+        Ok(Some((bot.movement.position, enabled)))
+    }
+
+    pub fn advance_spies(
+        &mut self,
+        tick: u64,
+        human: Human,
+        human_hull: Hull,
+    ) -> Vec<(u32, [f32; 3])> {
+        let now = tick as f32 * self.tick_interval;
+        let actors = self.actors(human, tick);
+        let mut decloaks = Vec::new();
+        for bot in self.bots.values_mut() {
+            let Some(spy) = bot.spy.as_mut() else {
+                continue;
+            };
+            if bot.lifecycle != PlayerLifecycle::Active {
+                continue;
+            }
+            if actors.enemies(bot.team).any(|actor| {
+                crate::spy::player_hulls_touch(
+                    bot.movement.position,
+                    PLAYER_HULL,
+                    actor.position,
+                    if actor.identity == crate::PLAYER_IDENTITY {
+                        human_hull
+                    } else {
+                        PLAYER_HULL
+                    },
+                )
+            }) {
+                spy.expose(now);
+            }
+            if spy.advance(now, self.tick_interval)[0] == Some(crate::spy::SpyEvent::Uncloaked) {
+                decloaks.push((bot.identity, bot.movement.position));
+            }
+            spy.reveal_invisibility(now, bot.conditions.contains(ConditionId::URINE));
+            if spy.cloaked && !bot.conditions.contains(ConditionId::STEALTHED) {
+                bot.conditions
+                    .add(
+                        ConditionId::STEALTHED,
+                        crate::condition::ConditionDuration::Permanent,
+                        None,
+                        true,
+                        false,
+                    )
+                    .expect("permanent stock stealth condition");
+            } else if !spy.cloaked {
+                bot.conditions.remove(ConditionId::STEALTHED, true);
+            }
+        }
+        decloaks
+    }
+
+    pub fn touches_enemy(&self, team: PlayerTeam, position: [f32; 3], hull: Hull) -> bool {
+        self.bots.values().any(|bot| {
+            bot.team != team
+                && bot.lifecycle == PlayerLifecycle::Active
+                && crate::spy::player_hulls_touch(
+                    position,
+                    hull,
+                    bot.movement.position,
+                    PLAYER_HULL,
+                )
+        })
     }
 
     fn actors(&self, human: Human, tick: u64) -> ActorFrame {
@@ -2346,6 +2444,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.health =
         HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
     bot.conditions = ConditionState::default();
+    bot.spy = (bot.class == PlayerClass::Spy).then(crate::spy::SpyState::default);
     bot.ammo = bot.class.data().maximum_ammo;
     bot.next_regenerate_tick = 0;
     bot.yaw_degrees = spawn.yaw_degrees;
@@ -3911,6 +4010,62 @@ mod tests {
                 PlayerClass::Heavy,
                 PlayerClass::Sniper,
             ]
+        );
+    }
+
+    #[test]
+    fn independent_spy_conditions_advance_without_bot_ai_and_reset_on_respawn() {
+        let mut world =
+            BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(0).unwrap();
+        world
+            .apply(
+                Request {
+                    operation: Operation::Add,
+                    count: 2,
+                    class: Some(PlayerClass::Spy),
+                    team: Some(PlayerTeam::Blue),
+                    difficulty: Difficulty::Easy,
+                },
+                PlayerTeam::Red,
+                PlayerClass::Soldier,
+                &mut random,
+            )
+            .unwrap();
+        let initial = world.snapshots();
+        let first = initial[0].identity;
+        let second = initial[1].identity;
+        let human = Human {
+            team: PlayerTeam::Red,
+            class: PlayerClass::Soldier,
+            alive: true,
+            position: [5000.0; 3],
+            velocity: [0.0; 3],
+        };
+        world.stealth_condition(first, true, 0.0).unwrap();
+        for tick in 1..=67 {
+            world.advance_spies(tick, human, PLAYER_HULL);
+        }
+        let snapshot = world.snapshots();
+        assert_eq!(snapshot[0].spy.unwrap().invisibility, 1.0);
+        assert_eq!(snapshot[1].spy.unwrap().invisibility, 0.0);
+        world.stealth_condition(second, true, 1.005).unwrap();
+        for tick in 68..=135 {
+            world.advance_spies(tick, human, PLAYER_HULL);
+        }
+        let snapshot = world.snapshots();
+        assert_eq!(snapshot[1].spy.unwrap().invisibility, 1.0);
+        assert!(snapshot[0].spy.unwrap().cloak_meter < snapshot[1].spy.unwrap().cloak_meter);
+        world.stealth_condition(first, false, 2.025).unwrap();
+        world.advance_spies(136, human, PLAYER_HULL);
+        assert_eq!(world.snapshots()[0].spy.unwrap().invisibility, 0.0);
+        assert_eq!(world.snapshots()[1].spy.unwrap().invisibility, 1.0);
+        world.round_respawn(137, &mut random).unwrap();
+        assert!(
+            world
+                .snapshots()
+                .iter()
+                .all(|bot| bot.spy == Some(crate::spy::SpyState::default()))
         );
     }
 

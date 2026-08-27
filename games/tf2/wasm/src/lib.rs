@@ -1984,6 +1984,9 @@ struct ModelPoseRequest {
     model_panel: bool,
     model_panel_reset: bool,
     flex_controllers: Option<BTreeMap<String, f32>>,
+    actor_identity: u32,
+    cloak: Option<playsrc_tf2::spy::CloakRenderState>,
+    world_item: bool,
     sample_tick: u64,
     attachments_only: bool,
     fire_view: Option<([f32; 3], [f32; 4])>,
@@ -2171,7 +2174,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 8 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 9 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2182,17 +2185,36 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut identities = std::collections::BTreeMap::<u32, (u64, bool)>::new();
     for _ in 0..count {
         let identity = reader.u32()?;
+        let actor_identity = reader.u32()?;
+        let local_factor = reader.f32()?;
+        let world_factor = reader.f32()?;
+        let raw_factor = reader.f32()?;
+        let player_tint = [reader.f32()?, reader.f32()?, reader.f32()?];
+        if [local_factor, world_factor, raw_factor]
+            .into_iter()
+            .chain(player_tint)
+            .any(|value| !(0.0..=1.0).contains(&value) || (actor_identity == 0 && value != 0.0))
+        {
+            return Err(());
+        }
+        let cloak = (actor_identity != 0).then_some(playsrc_tf2::spy::CloakRenderState {
+            local_factor,
+            world_factor,
+            raw_factor,
+            player_tint,
+        });
         let sample_tick = reader.u64()?;
         let kind = reader.u8()?;
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
         let model_panel_reset = reader.u8()?;
-        if kind > 4
+        if kind > 5
+            || (matches!(kind, 3 | 4) && actor_identity != 0)
             || attachments_only > 1
             || has_fire_view > 1
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
-            || model_panel_reset > 1 || (model_panel_reset != 0 && kind < 3)
+            || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4))
         {
             return Err(());
         }
@@ -2214,7 +2236,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
             0 | 2 | 3 | 4 if item_text.is_empty() => None,
-            1 if !item_text.is_empty() => Some(item_text),
+            1 | 5 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
         let activity = reader.text()?;
@@ -2240,7 +2262,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
             4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
             5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
-            u8::MAX if kind == 0 || kind == 3 || kind == 4 => None,
+            u8::MAX if matches!(kind, 0 | 3 | 4 | 5) => None,
             _ => return Err(()),
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
@@ -2314,6 +2336,9 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             model_panel: kind == 3 || kind == 4,
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
+            actor_identity,
+            cloak,
+            world_item: kind == 5,
             sample_tick,
             attachments_only: attachments_only == 1,
             fire_view,
@@ -2482,7 +2507,7 @@ fn encode_model_poses(
 ) -> Result<Vec<u8>, ()> {
     out.clear();
     out.extend_from_slice(b"PMPO");
-    out.extend_from_slice(&9u32.to_le_bytes());
+    out.extend_from_slice(&10u32.to_le_bytes());
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
@@ -2549,7 +2574,7 @@ fn encode_model_poses(
         let previous_cycle = pose_cycle(request.previous_elapsed, timing);
         let cycle = pose_cycle(request.elapsed, timing);
         let class_pose_parameters = request.class_selection.then(|| pose_parameters.clone());
-        if let Some(item_identity) = request.item.as_ref() {
+        if let Some(item_identity) = request.item.as_ref().filter(|_| !request.world_item) {
             let item = models.get(item_identity).ok_or(())?;
             let frame = playsrc_studio_model::produce_viewmodel_frame(
                 model,
@@ -2839,19 +2864,51 @@ fn encode_model_poses(
                 world,
             )?;
             output_count = output_count.checked_add(1).ok_or(())?;
-            if request.class_selection {
-                let scene = playsrc_tf2::class_selection::scene_for_model(&request.model).ok_or(())?;
-                let item = models.get(scene.held_model).ok_or(())?;
-                let item_pose = playsrc_studio_model::sample_pose(item, &playsrc_studio_model::AnimationState {
-                    base_sequence: 0, cycle: playsrc_studio_model::Float32(0),
-                    pose_parameters: vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()], layers: Vec::new(),
-                }).map_err(|_| ())?;
-                let merged = playsrc_studio_model::merge_model_pose(model, pose, item, &item_pose).map_err(|_| ())?;
-                let item_skin = if request.skin < item.skins.len() { request.skin } else { 0 };
-                let item_selected = playsrc_studio_model::select_primitives(item, &vec![0; item.body_parts.len()], item_skin, 0).map_err(|_| ())?;
-                let item_timing = playsrc_studio_model::sequence_timing(item, 0, &vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()]).map_err(|_| ())?;
-                encode_model_pose_part(&mut out, request, 2, item, 0, item_timing, 0.0, 0.0, &[], &merged,
-                    &item_selected, item_selected.len(), None, world)?;
+            if request.world_item || request.class_selection {
+                let item_identity = if request.class_selection {
+                    playsrc_tf2::class_selection::scene_for_model(&request.model).ok_or(())?.held_model
+                } else { request.item.as_deref().ok_or(())? };
+                let item = models.get(item_identity).ok_or(())?;
+                let parameters = vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()];
+                let sampled_item = playsrc_studio_model::sample_pose(
+                    item,
+                    &playsrc_studio_model::AnimationState {
+                        base_sequence: 0,
+                        cycle: playsrc_studio_model::Float32(0),
+                        pose_parameters: parameters.clone(),
+                        layers: Vec::new(),
+                    },
+                )
+                .map_err(|_| ())?;
+                let merged =
+                    playsrc_studio_model::merge_model_pose(model, pose, item, &sampled_item)
+                        .map_err(|_| ())?;
+                let panel_bodygroups = request.class_selection.then(|| vec![0; item.body_parts.len()]);
+                let primitives = playsrc_studio_model::select_primitives(
+                    item,
+                    panel_bodygroups.as_deref().unwrap_or(&request.item_bodygroups),
+                    playsrc_studio_model::source_skin_family(request.skin as i32, item.skins.len()),
+                    if request.class_selection { 0 } else { request.lod },
+                )
+                .map_err(|_| ())?;
+                let item_timing =
+                    playsrc_studio_model::sequence_timing(item, 0, &parameters).map_err(|_| ())?;
+                encode_model_pose_part(
+                    &mut out,
+                    request,
+                    2,
+                    item,
+                    0,
+                    item_timing,
+                    0.0,
+                    0.0,
+                    &[],
+                    &merged,
+                    &primitives,
+                    primitives.len(),
+                    None,
+                    world,
+                )?;
                 output_count = output_count.checked_add(1).ok_or(())?;
             }
         }
@@ -2928,6 +2985,22 @@ fn encode_model_pose_part(
     world: &mut ModelPoseWorld<'_>,
 ) -> Result<(), ()> {
     out.extend_from_slice(&request.identity.to_le_bytes());
+    if let Some(state) = request.cloak {
+        out.extend_from_slice(&[
+            1,
+            u8::from(request.actor_identity == playsrc_tf2::PLAYER_IDENTITY),
+            u8::from(view.is_none() && role == 0),
+            0,
+        ]);
+        for value in [state.local_factor, state.world_factor, state.raw_factor]
+            .into_iter()
+            .chain(state.player_tint)
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    } else {
+        out.extend_from_slice(&[0; 28]);
+    }
     out.extend_from_slice(&request.sample_tick.to_le_bytes());
     out.extend_from_slice(&[
         role,
@@ -5305,7 +5378,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 19, MAX)?;
+    u32_field(&mut out, 20, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -5973,6 +6046,49 @@ fn encode_snapshot(
             for index in triangle {
                 u32_field(&mut out, *index, MAX)?;
             }
+        }
+    }
+    let cloak_count = usize::from(snapshot.spy.is_some())
+        + snapshot.bots.iter().filter(|bot| bot.spy.is_some()).count();
+    u32_field(&mut out, cloak_count as u32, MAX)?;
+    let mut cloak = |identity: u32,
+                     spy: playsrc_tf2::spy::SpyState,
+                     team: playsrc_tf2::PlayerTeam,
+                     alive: bool|
+     -> Option<()> {
+        let state = playsrc_tf2::spy::cloak_render_state(
+            if alive { spy.invisibility } else { 0.0 },
+            alive && spy.blink(snapshot.tick as f32 * 0.015),
+            false,
+            team,
+            snapshot.team.is_gameplay() && team != snapshot.team,
+            false,
+        );
+        u32_field(&mut out, identity, MAX)?;
+        floats(
+            &mut out,
+            [state.local_factor, state.world_factor, state.raw_factor]
+                .into_iter()
+                .chain(state.player_tint),
+            MAX,
+        )
+    };
+    if let Some(spy) = snapshot.spy {
+        cloak(
+            playsrc_tf2::PLAYER_IDENTITY,
+            spy,
+            snapshot.team,
+            snapshot.health > 0.0,
+        )?;
+    }
+    for bot in &snapshot.bots {
+        if let Some(spy) = bot.spy {
+            cloak(
+                bot.identity,
+                spy,
+                bot.team,
+                bot.lifecycle == playsrc_tf2::PlayerLifecycle::Active,
+            )?;
         }
     }
     Some(out)
@@ -10100,7 +10216,7 @@ fn prepare_model_materials(
     }
     let mut material_section = Vec::new();
     material_section.extend_from_slice(b"PMDL");
-    material_section.extend_from_slice(&1_u32.to_le_bytes());
+    material_section.extend_from_slice(&2_u32.to_le_bytes());
     material_section.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
@@ -10150,6 +10266,20 @@ fn encode_model_material(
 ) -> Result<(), ()> {
     use playsrc_material::ModelShaderState as State;
     let model = material.model.as_ref().ok_or(())?;
+    let mut cloak_proxy = 0;
+    let mut player_tint = false;
+    for proxy in &material.proxies {
+        if proxy.name.eq_ignore_ascii_case(b"invis") {
+            cloak_proxy = 1;
+        } else if proxy.name.eq_ignore_ascii_case(b"weapon_invis") {
+            cloak_proxy = 2;
+        } else if proxy.name.eq_ignore_ascii_case(b"vm_invis") {
+            cloak_proxy = 3;
+        } else if proxy.name.eq_ignore_ascii_case(b"spy_invis") {
+            cloak_proxy = 2;
+            player_tint = true;
+        }
+    }
     pbytes(out, identity.as_bytes())?;
     let requirements = model.vertex_requirements;
     let requirement_bits = u16::from(requirements.position)
@@ -10168,7 +10298,7 @@ fn encode_model_material(
             playsrc_material::ModelShader::EyeRefract => 1,
             playsrc_material::ModelShader::Eyes => 2,
         },
-        0,
+        cloak_proxy | (u8::from(player_tint) << 2),
     ]);
     out.extend_from_slice(&requirement_bits.to_le_bytes());
     let source_textures = material
@@ -15214,8 +15344,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x13\0\0\0");
-        assert_eq!(encoded.len(), 1044);
+        assert_eq!(&encoded[..8], b"PSSN\x14\0\0\0");
+        assert_eq!(encoded.len(), 1048);
+        assert_eq!(&encoded[1044..], &[0; 4]);
         assert_eq!(&encoded[944..952], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[980..988], b"PGRL\x01\0\0\0");
         assert_eq!(
