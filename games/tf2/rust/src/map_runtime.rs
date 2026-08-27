@@ -1389,6 +1389,7 @@ impl MapRuntime {
         let mut result = MapPhase::default();
         for input in [b"RoundSpawn".as_slice(), b"RoundActivate"] {
             for (source, handle) in &sources {
+                if !self.world.accepts_external_input(*handle, input) { continue; }
                 let batch = self.world.phase(tick, &[WorldCommand::Input(InputRecord { target: EventTarget::Direct(*handle), input: input.to_vec(), value: Variant::Void, activator: None, caller: None, output_action: None, producer_sequence: self.next_producer_sequence })])?;
                 self.next_producer_sequence += 1;
                 result.append(self.consume(batch)?);
@@ -2448,6 +2449,17 @@ mod tests {
         assert_eq!(map.world.entity(map.source_handle(3).unwrap()).unwrap().world_transform.origin, [10.0,0.0,0.0]);
         let later = map.world.phase(600, &[]).unwrap();
         assert!(!later.records.iter().any(|record| matches!(&record.transition, Transition::Output { output, .. } if output == b"OnTrigger")));
+    }
+
+    #[test]
+    fn repeated_round_broadcasts_ignore_non_subscribers_without_spending_direct_io_diagnostics() {
+        let mut text = String::from(r#"{"classname" "team_control_point_master"}{"classname" "team_control_point" "targetname" "point"}"#);
+        for _ in 0..200 { text += r#"{"classname" "logic_relay"}"#; }
+        let graph = playsrc_entity::parse(text.as_bytes(), Default::default()).unwrap();
+        let mut map = MapRuntime::compile(&graph, 0.015, 42, Vec::new()).unwrap();
+        for tick in 1..100 {
+            map.activate_control_point_round(tick, crate::control_point::Facts::default()).unwrap();
+        }
     }
 
     #[derive(Clone)]

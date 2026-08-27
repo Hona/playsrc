@@ -1141,6 +1141,17 @@ impl EntityWorld {
         self.state.current_tick
     }
 
+    /// Whether a game-owned entity subscribes to a broadcast input. Broadcasts
+    /// ignore non-subscribers rather than treating them as failed direct I/O.
+    pub fn accepts_external_input(&self, handle: EntityHandle, input: &[u8]) -> bool {
+        self.entity(handle).is_some_and(|entity| {
+            self.config.external_classes.iter().any(|binding| {
+                entity.definition.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(&binding.classname))
+                    && binding.inputs.iter().any(|name| name.eq_ignore_ascii_case(input))
+            })
+        })
+    }
+
     /// Game round cleanup clears scheduled map I/O before recreating map entities.
     pub fn clear_event_queue(&mut self) {
         self.state.queue.clear();
