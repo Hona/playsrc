@@ -843,7 +843,7 @@ fn parse_item(
     let mut class_slots: BTreeMap<_, _> = usable_by.iter().map(|class| (*class, slot)).collect();
     if let Some(classes) = object(&fields, "used_by_classes") {
         for field in classes {
-            let Some(class) = usable_by.iter().find(|class| class.data().identity == field.key) else {
+            let Some(class) = usable_by.iter().find(|class| class.data().source_name == field.key) else {
                 continue;
             };
             if let SchemaValue::Scalar(value) = &field.value
@@ -950,10 +950,6 @@ fn parse_item_attributes(
     };
     let mut output = Vec::new();
     for field in fields {
-        let SchemaValue::Object(values) = &field.value else {
-            continue;
-        };
-        let class = required_scalar(values, "attribute_class", &format!("item:{item}"))?;
         let definition = definitions
             .values()
             .find(|definition| definition.name == field.key)
@@ -962,14 +958,18 @@ fn parse_item_attributes(
                 field: "attribute",
                 value: field.key.clone(),
             })?;
-        if definition.class != class {
-            return Err(SchemaError::InvalidField {
-                record: format!("item:{item}"),
-                field: "attribute_class",
-                value: class.into(),
-            });
-        }
-        let raw = required_scalar(values, "value", &format!("item:{item}"))?;
+        let raw = match &field.value {
+            SchemaValue::Scalar(value) => value.as_str(),
+            SchemaValue::Object(values) => {
+                let class = required_scalar(values, "attribute_class", &format!("item:{item}"))?;
+                if definition.class != class {
+                    return Err(SchemaError::InvalidField {
+                        record: format!("item:{item}"), field: "attribute_class", value: class.into(),
+                    });
+                }
+                required_scalar(values, "value", &format!("item:{item}"))?
+            }
+        };
         let value = match definition.value_kind {
             AttributeValueKind::Numeric => {
                 ItemAttributeValue::Numeric(raw.parse::<f32>().map_err(|_| {
@@ -1130,6 +1130,34 @@ mod tests {
                 SchemaNode::scalar("stored_as_integer", "0"),
             ],
         )
+    }
+
+    #[test]
+    fn per_class_slots_and_head_normalization_follow_item_schema_rules() {
+        let items = vec![
+            SchemaNode::object("1153", vec![SchemaNode::scalar("name", "Panic Attack"), SchemaNode::scalar("item_class", "tf_weapon_shotgun"), SchemaNode::scalar("item_slot", "primary"),
+                SchemaNode::object("used_by_classes", vec![SchemaNode::scalar("engineer", "1"), SchemaNode::scalar("soldier", "secondary"), SchemaNode::scalar("pyro", "secondary"), SchemaNode::scalar("heavy", "secondary")])]),
+            SchemaNode::object("378", vec![SchemaNode::scalar("name", "Team Captain"), SchemaNode::scalar("item_class", "tf_wearable"), SchemaNode::scalar("item_slot", "head"),
+                SchemaNode::object("used_by_classes", vec![SchemaNode::scalar("soldier", "1"), SchemaNode::scalar("medic", "1"), SchemaNode::scalar("heavy", "1")])]),
+        ];
+        let schema = ItemSchema::compose(base_input(Vec::new(), Vec::new(), items)).unwrap();
+        let shotgun = schema.definition(1153).unwrap();
+        assert_eq!(shotgun.slot_for_class(PlayerClass::Engineer), Some(LoadoutPosition::Primary));
+        assert_eq!(shotgun.slot_for_class(PlayerClass::Soldier), Some(LoadoutPosition::Secondary));
+        assert_eq!(shotgun.slot_for_class(PlayerClass::Scout), None);
+        let hat = schema.definition(378).unwrap();
+        assert_eq!(hat.slot, LoadoutPosition::Misc);
+        assert_eq!(hat.slot_for_class(PlayerClass::Medic), Some(LoadoutPosition::Misc));
+    }
+
+    #[test]
+    fn single_line_attributes_precede_multiline_attributes_without_dropping_either() {
+        let attributes = vec![numeric_attribute(1, "first", "value_is_additive"), numeric_attribute(2, "second", "value_is_additive")];
+        let items = vec![SchemaNode::object("1", vec![SchemaNode::scalar("name", "both"), SchemaNode::scalar("item_class", "tf_weapon_bottle"), SchemaNode::scalar("item_slot", "melee"),
+            SchemaNode::object("attributes", vec![SchemaNode::object("second", vec![SchemaNode::scalar("attribute_class", "second"), SchemaNode::scalar("value", "2")])]),
+            SchemaNode::object("static_attrs", vec![SchemaNode::scalar("first", "1")])])];
+        let schema = ItemSchema::compose(base_input(Vec::new(), attributes, items)).unwrap();
+        assert_eq!(schema.definition(1).unwrap().static_attributes.iter().map(|attribute| attribute.definition).collect::<Vec<_>>(), [1, 2]);
     }
 
     #[test]
