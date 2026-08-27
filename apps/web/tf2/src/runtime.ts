@@ -516,6 +516,7 @@ export class Tf2Application {
   #deathNoticeTime = 6
   #crosshairSettings?: Tf2CrosshairSettings
   #settings?: Tf2BrowserSettings
+  #weaponPreferences = Object.freeze({ rememberActive: false, rememberLast: false })
   #options?: Tf2OptionsPresentation
   #localMatch?: Tf2LocalMatchPresentation
   #pendingLocalMatch?: Tf2LocalMatchLaunch
@@ -1070,11 +1071,15 @@ export class Tf2Application {
     if (request.owner === "game") {
       const crosshairIds = new Set<string>(TF2_CROSSHAIR_SETTINGS.map((setting) => setting.settingId))
       if (request.changes.some((change) => !crosshairIds.has(change.settingId)
-        && (!["cl_hud_playerclass_use_playermodel", "tf_scoreboard_ping_as_text"].includes(change.settingId)
+        && (!["cl_hud_playerclass_use_playermodel", "tf_scoreboard_ping_as_text", "tf_remember_activeweapon", "tf_remember_lastswitched"].includes(change.settingId)
           || typeof change.nextValue !== "boolean"))) {
         return reject(`browser game owner does not implement every requested effect: ${request.changes.map((change) => `${change.settingId}=${String(change.nextValue)}`).join(",")}`)
       }
       const model = request.changes.find((change) => change.settingId === "cl_hud_playerclass_use_playermodel")
+      if (request.changes.some(change => change.settingId === "tf_remember_activeweapon" || change.settingId === "tf_remember_lastswitched")) {
+        this.#replaceWeaponPreferences({ ...this.#settings!.snapshot().settings.current,
+          ...Object.fromEntries(request.changes.map(change => [change.settingId, change.nextValue])) })
+      }
       if (model) {
         this.#playerClassUsePlayerModel = model.nextValue as boolean
         this.#hudIntegration?.setPlayerClassUsePlayerModel(this.#playerClassUsePlayerModel)
@@ -1104,6 +1109,10 @@ export class Tf2Application {
       throw new Error(`Configured dependency ${logicalPath} differs`)
     }
     return bytes
+  }
+
+  #replaceWeaponPreferences(settings: Readonly<Record<string, unknown>>): void {
+    this.#weaponPreferences = Object.freeze({ rememberActive: settings.tf_remember_activeweapon === true, rememberLast: settings.tf_remember_lastswitched === true })
   }
 
   #nextOperation(): ApplicationOperation {
@@ -1478,6 +1487,7 @@ export class Tf2Application {
     this.#dependencyEntries.clear()
     this.#initializeConsole()
     const currentSettings = this.#settings.snapshot().settings.current
+    this.#replaceWeaponPreferences(currentSettings)
     this.#bindingValues.clear()
     for (const schema of TF2_SELECTED_OPTIONS.settings) {
       if (schema.kind !== "binding") continue
@@ -2649,7 +2659,7 @@ export class Tf2Application {
 
   #catalog(): ConsoleCatalog {
     const crosshair = this.#settings?.crosshairConVars() ?? []
-    const combatSettings=["tf_dingalingaling","tf_dingalingaling_lasthit"] as const
+    const combatSettings=["tf_dingalingaling","tf_dingalingaling_lasthit","tf_remember_activeweapon","tf_remember_lastswitched"] as const
     return Object.freeze({
       revision: `tf2-jump-catalog-developer-${this.#developer}-console-${Number(this.#consoleEnabled)}-fps-${this.#showFps}-pos-${this.#showPos}-hdr-${this.#renderLevel}-flagcaps-${this.#flagCapturesPerRound}-flagreturn-${Number(this.#flagReturnOnTouch)}-settings-${this.#settings?.snapshot().settings.revision ?? 0}`,
       items: Object.freeze([
@@ -2962,6 +2972,17 @@ export class Tf2Application {
       return
     }
     const crosshair = TF2_CROSSHAIR_SETTINGS.find((setting) => setting.name === command)
+    if (command === "tf_remember_activeweapon" || command === "tf_remember_lastswitched") {
+      if (!this.#settings || tokens.length > 1) { this.#output(`${command} accepts one integer`); return }
+      if (tokens[0] !== undefined) {
+        this.#settings.synchronize({ [command]: Number.parseInt(tokens[0], 10) > 0 })
+        this.#replaceWeaponPreferences(this.#settings.snapshot().settings.current)
+        localStorage.setItem(TF2_BROWSER_SETTINGS_STORAGE_KEY, new TextDecoder().decode(this.#settings.persistence()))
+        this.#console?.apply({ kind: "replace-catalog", catalog: this.#catalog() })
+      }
+      this.#output(`"${command}" = "${Number(this.#settings.snapshot().settings.current[command] === true)}"`)
+      return
+    }
     if(command==="tf_dingalingaling"||command==="tf_dingalingaling_lasthit"){
       if(!this.#settings||tokens.length>1||(tokens[0]!==undefined&&tokens[0]!=="0"&&tokens[0]!=="1")){
         this.#output(`${command} accepts exactly 0 or 1`)
@@ -4487,6 +4508,7 @@ export class Tf2Application {
       selectClass: this.#selectClass,
       selectWeapon: this.#selectWeapon === "last" ? undefined : this.#selectWeapon,
       selectLastWeapon: this.#selectWeapon === "last",
+      weaponPreferences: this.#weaponPreferences,
       disguise: this.#disguise,
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,

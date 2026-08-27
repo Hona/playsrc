@@ -430,6 +430,15 @@ class CourseWorker implements WorkerLike {
 }
 
 describe("TF2 canonical gameplay command and snapshot contract", () => {
+  test("remember-weapon preferences share the command carrying respawn and lastinv selections", () => {
+    for (const rememberActive of [false, true]) for (const rememberLast of [false, true]) {
+      const bytes = encodeCommand({ forward: 0, side: 0, yawDegrees: 0, pitchDegrees: 0, jump: false, crouch: false, fire: false, detonate: false,
+        respawn: true, selectLastWeapon: true, weaponPreferences: { rememberActive, rememberLast } })
+      const view = new DataView(bytes)
+      expect(view.getUint8(57)).toBe(128 | Number(rememberActive) | Number(rememberLast) << 1)
+      expect(view.getUint8(33)).toBe(255)
+    }
+  })
   test("accepts every authored KOTH and capture announcer wave ordinal, rejecting the first out-of-range wave", () => {
     for (const [definition, waveCount] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2], [103, 1], [104, 1], [105, 1], [106, 1], [107, 1], [108, 1]] as const) {
       const source = rosterSnapshot(1n, 0, 0), at = 977
@@ -671,7 +680,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })
     const commandView = new DataView(command)
     expect(new TextDecoder().decode(command.slice(0, 4))).toBe("PCMD")
-    expect(commandView.getUint32(4, true)).toBe(8)
+    expect(commandView.getUint32(4, true)).toBe(9)
     expect(command.byteLength).toBe(164)
     expect(commandView.getUint32(28, true)).toBe(0xff)
     expect(commandView.getUint32(32, true)).toBe(0x0203_0304)

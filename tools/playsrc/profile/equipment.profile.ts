@@ -15,7 +15,7 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   const local = await loadLocalConfig(), directory = path.join(local.sourceCacheDir, "profiles/equipment")
   await mkdir(directory, { recursive: true })
   const errors: string[] = []
-  page.on("pageerror", error => errors.push(error.message))
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.message) })
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureEquipment: false, equipmentFrames: [] } })
   const sample = async () => page.evaluate(async () => {
     const profile = (globalThis as any).__playsrcProfile
@@ -155,7 +155,8 @@ test("twelve hitscan items admit their models, native firing and authored audio"
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, subset ? "profiles/equipment/hitscan-targeted" : "profiles/equipment/hitscan")
   await mkdir(directory, { recursive: true })
   const errors: string[] = [], records: unknown[] = []
-  page.on("pageerror", error => errors.push(error.message))
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.message) })
+  page.on("console", message => { if (message.type() === "error") console.error(message.text()) })
   await page.addInitScript(combat => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true, captureMelee: combat, captureHitscan: combat } }, combat)
   const main = page.locator("main"), equipment = page.locator(".equipment-layer")
   const command = async (text: string) => {
