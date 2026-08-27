@@ -79,8 +79,8 @@ export function resolveTf2CrosshairGeometry(
     const active = player.activeWeapon.kind === "available" ? player.activeWeapon.value : null
     asset = active === null
       ? tf2AuthoredCrosshairs.stock
-      : tf2AuthoredCrosshairs.weapons.find((weapon) => weapon.weaponIdentities.includes(active))?.crosshair
-        ?? tf2AuthoredCrosshairs.stock
+      : tf2AuthoredCrosshairs.weapons.find((weapon) => weapon.source.logicalPath === player.weapons.find(weapon => weapon.identity === active)?.crosshairScript)?.crosshair
+    if (!asset) throw new Error(`Configured TF2 crosshair script unavailable for active weapon ${active}`)
   }
   if (!asset) return null
   const nominalWidth = kind === "custom" ? 32 : asset.crop!.width

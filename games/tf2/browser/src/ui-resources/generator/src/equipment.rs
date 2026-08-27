@@ -144,7 +144,48 @@ fn emit(nodes: &[SchemaNode]) -> String {
     }).collect::<Vec<_>>().join(",\n"))
 }
 
-pub struct GeneratedEquipment { pub images: Vec<String>, pub tokens: Vec<String> }
+pub struct GeneratedEquipment { pub images: Vec<String>, pub tokens: Vec<String>, pub weapon_scripts: BTreeSet<String> }
+
+fn weapon_entity(item_class: &str, class: crate::class::PlayerClass) -> &str {
+    use crate::class::PlayerClass::*;
+    match (item_class, class) {
+        ("tf_weapon_shotgun", Soldier) => "tf_weapon_shotgun_soldier",
+        ("tf_weapon_shotgun", Heavy) => "tf_weapon_shotgun_hwg",
+        ("tf_weapon_shotgun", Pyro) => "tf_weapon_shotgun_pyro",
+        ("tf_weapon_shotgun", Engineer) => "tf_weapon_shotgun_primary",
+        ("tf_weapon_pistol", Scout) => "tf_weapon_pistol_scout",
+        ("tf_weapon_bottle", Soldier) => "tf_weapon_shovel",
+        ("tf_weapon_shovel", Demoman) => "tf_weapon_bottle",
+        ("tf_weapon_revolver", Engineer) => "tf_weapon_revolver_secondary",
+        ("saxxy", Scout) => "tf_weapon_bat", ("saxxy", Sniper) => "tf_weapon_club",
+        ("saxxy", Soldier) => "tf_weapon_shovel", ("saxxy", Demoman) => "tf_weapon_bottle",
+        ("saxxy", Medic) => "tf_weapon_bonesaw", ("saxxy", Heavy | Pyro) => "tf_weapon_fireaxe",
+        ("saxxy", Spy) => "tf_weapon_knife", ("saxxy", Engineer) => "tf_weapon_wrench",
+        _ => item_class,
+    }
+}
+
+fn weapon_hud(content: &Content, entity: &str) -> Result<(String, String), String> {
+    let script = format!("scripts/{entity}.ctx");
+    let (_, bytes) = super::dependency(content, &script)?;
+    let mut bytes = bytes.ok_or_else(|| format!("configured weapon script missing: {script}"))?;
+    let blocks = bytes.len() / 8 * 8;
+    icefast::Ice::new(0, b"E2NcUkG2").decrypt(&mut bytes[..blocks]);
+    let document = playsrc_keyvalues::parse_text(&bytes, playsrc_keyvalues::EscapeMode::LiteralBackslash, Default::default()).map_err(|error| format!("{script}: {error}"))?;
+    let playsrc_keyvalues::Value::Object(fields) = &document.roots.first().ok_or("weapon script root missing")?.value else { return Err("weapon script root is not an object".into()); };
+    let field = |key: &str| fields.iter().find_map(|node| match &node.value {
+        playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(key.as_bytes()) => std::str::from_utf8(&value.token.bytes).ok(), _ => None,
+    });
+    let integer = |key: &str, default: i32| -> Result<i32, String> {
+        field(key).map_or(Ok(default), |value| value.parse().map_err(|_| format!("invalid weapon field {script}:{key}")))
+    };
+    let energy = entity == "tf_weapon_flaregun_revenge";
+    let ammo = if energy || field("primary_ammo").is_none_or(|name| name.eq_ignore_ascii_case("none")) { "Hidden" }
+        else if integer("clip_size", -1)? < 0 { "Total" } else { "ClipAndReserve" };
+    let suppress = matches!(entity, "tf_weapon_invis" | "tf_weapon_pda_spy" | "tf_weapon_pda_engineer_build" | "tf_weapon_pda_engineer_destroy");
+    Ok((script.clone(), format!("WeaponHud {{ script: {script:?}, ammo: AmmoDisplay::{ammo}, bucket: {}, position: {}, draws_crosshair: {}, suppress_crosshair: {suppress} }}",
+        integer("bucket", 0)?, integer("bucket_position", 0)?, integer("DrawCrosshair", 1)? > 0)))
+}
 
 pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipment, String> {
     let (english_source, english_bytes) = super::dependency(content, "resource/tf_english.txt")?;
@@ -191,7 +232,7 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
         .map_err(|error| format!("equipment schema: {error:?}"))?;
     let mut output = format!("// Generated from configured items_game SHA-256 {}.\n// Regenerate with generate:tf2-ui.\npub const ITEM_PRESENTATIONS: &[ItemPresentation] = &[\n", schema::ITEM_SCHEMA_SHA256);
     writeln!(output, "// Configured English localization SHA-256 {}", english_source.sha256.unwrap()).unwrap();
-    let mut generated = GeneratedEquipment { images: Vec::new(), tokens: Vec::new() };
+    let mut generated = GeneratedEquipment { images: Vec::new(), tokens: Vec::new(), weapon_scripts: BTreeSet::new() };
     for supported in &supported_items {
         let item = schema.definition(supported.definition_index).ok_or("supported definition missing")?;
         let name = scalar(&item.source, "item_name").ok_or("item localization missing")?;
@@ -210,9 +251,18 @@ pub fn generate(content: &Content, repository: &Path) -> Result<GeneratedEquipme
                 .unwrap_or_else(|| scalar(&item.source, "model_player").unwrap_or("").to_owned());
             format!("(PlayerClass::{class:?}, {model:?})")
         }).collect::<Vec<_>>().join(", ");
-        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], animation_slot: {:?}, extra_sounds: &{:?}, image: {:?}, model_player: {:?}, class_models: &[{}], attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
+        let mut class_hud = Vec::new();
+        if supported.weapon.is_some() {
+            let item_class = scalar(&item.source, "item_class").ok_or("weapon item class missing")?;
+            for class in item.class_slots.keys() {
+                let (script, hud) = weapon_hud(content, weapon_entity(item_class, *class))?;
+                if supported.implemented { generated.weapon_scripts.insert(script); }
+                class_hud.push(format!("(PlayerClass::{class:?}, {hud})"));
+            }
+        }
+        writeln!(output, "ItemPresentation {{ definition_index: {}, name: {:?}, display_name: {:?}, description: &[{}], animation_slot: {:?}, extra_sounds: &{:?}, image: {:?}, model_player: {:?}, class_models: &[{}], class_hud: &[{}], attach_to_hands: {}, animation_replacements: &[{}], sound_overrides: &[{}], death_notice_icon: {:?}, class_slots: &[{}] }},", item.index, name, display_name,
             description.iter().map(|(text, color)| format!("DescriptionLine {{ text: {text:?}, color: {color:?} }}")).collect::<Vec<_>>().join(", "), scalar(&item.source, "anim_slot"), supported.extra_sounds, image,
-            scalar(&item.source, "model_player").unwrap_or(""), class_models, scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
+            scalar(&item.source, "model_player").unwrap_or(""), class_models, class_hud.join(", "), scalar(&item.source, "attach_to_hands") == Some("1"), pairs(object(visuals, "animation_replacement"), ""), pairs(visuals, "sound_"),
             scalar(&item.source, "item_iconname"),
             item.class_slots.iter().map(|(class, slot)| format!("(PlayerClass::{class:?}, LoadoutPosition::{slot:?})")).collect::<Vec<_>>().join(", ")).unwrap();
     }

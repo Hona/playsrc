@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test"
 import { decodeEquipmentState, decodeEquippedItems } from "../src/equipment/codec"
+import nativeEquipment from "./fixtures/equipment-state.json"
 
 function packet(): Uint8Array {
   const bytes: number[] = []
   const u32 = (value: number) => bytes.push(value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24)
   const text = (value: string) => { const encoded = new TextEncoder().encode(value); u32(encoded.length); bytes.push(...encoded) }
   const item = () => { u32(1); u32(14); u32(13); bytes.push(0, 0, 0, 0) }
-  bytes.push(...new TextEncoder().encode("TFEI")); u32(4); u32(0); u32(1)
-  item(); bytes.push(4, 1, 1, 0, 4, 0); text("#TF_Weapon_Scattergun"); text("Scattergun"); text("backpack/weapons/w_scattergun")
+  bytes.push(...new TextEncoder().encode("TFEI")); u32(5); u32(0); u32(1)
+  item(); bytes.push(4, 1, 1, 0, 4, 0, 2, 0, 0, 1); text("scripts/tf_weapon_scattergun.ctx"); text("#TF_Weapon_Scattergun"); text("Scattergun"); text("backpack/weapons/w_scattergun")
   u32(1); text("Level 1 Scattergun"); text("ItemAttribLevel")
   text(""); u32(0)
   bytes.push(1); text(""); text("models/weapons/c_models/c_scattergun.mdl"); u32(0); u32(0)
@@ -23,11 +24,22 @@ test("equipment projection preserves canonical definition identity independently
   expect(state.classes[0]!.items).toEqual([state.inventory[0]!.item])
   expect(state.inventory[0]!.displayName).toBe("Scattergun")
   expect(state.inventory[0]!.description).toEqual([{ text: "Level 1 Scattergun", color: "ItemAttribLevel" }])
-  expect(state.inventory[0]!.classSlots).toEqual([{ class: 1, slot: 0, weapon: 4, selectionSlot: 0 }])
+  expect(state.inventory[0]!.classSlots).toEqual([{ class: 1, slot: 0, weapon: 4, selectionSlot: 0,
+    hud: { script: "scripts/tf_weapon_scattergun.ctx", ammoDisplay: "clip-and-reserve", bucket: 0, position: 0, drawsCrosshair: true, suppressCrosshair: false } }])
   expect(state.classes.length).toBe(9)
   expect(Object.isFrozen(state.inventory)).toBe(true)
   const shared = new Uint8Array(new SharedArrayBuffer(packet().length)); shared.set(packet())
   expect(decodeEquipmentState(shared)).toEqual(state)
+})
+
+test("native inventory transports exact per-class weapon scripts and ammo contracts", () => {
+  const state = decodeEquipmentState(new Uint8Array(nativeEquipment))
+  const hud = (definition: number, playerClass: number) => state.inventory.find(item => item.item.definitionIndex === definition)!.classSlots.find(slot => slot.class === playerClass)!.hud
+  expect(hud(10, 3)).toMatchObject({ script: "scripts/tf_weapon_shotgun_soldier.ctx", ammoDisplay: "clip-and-reserve" })
+  expect(hud(12, 7)).toMatchObject({ script: "scripts/tf_weapon_shotgun_pyro.ctx", ammoDisplay: "clip-and-reserve" })
+  expect(hud(15, 6)).toMatchObject({ ammoDisplay: "total" })
+  expect(hud(25, 9)).toMatchObject({ ammoDisplay: "hidden", suppressCrosshair: true })
+  expect(state.classes.every(playerClass => playerClass.baseItems.length > 0)).toBe(true)
 })
 
 test("equipment projections reject truncated records and invalid stable identities", () => {

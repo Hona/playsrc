@@ -2585,6 +2585,7 @@ export class Tf2Application {
       scoreboard: tf2HudAvailable<Tf2HudScoreboard>(scoreboard),
       freezePanel: tf2HudUnavailable<Tf2HudFreezePanel>("not-produced"),
       playerClassUsePlayerModel: this.#playerClassUsePlayerModel,
+      inventory: this.#equipmentProfile!.state()!.inventory,
     })
     return this.#hudContext
   }

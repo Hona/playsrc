@@ -69,7 +69,22 @@ pub struct DescriptionLine {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum AmmoDisplay { Hidden = 0, Total = 1, ClipAndReserve = 2 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeaponHud {
+    pub script: &'static str,
+    pub ammo: AmmoDisplay,
+    pub bucket: u8,
+    pub position: u8,
+    pub draws_crosshair: bool,
+    pub suppress_crosshair: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct ItemPresentation {
+    pub class_hud: &'static [(PlayerClass, WeaponHud)],
     pub definition_index: u32,
     pub name: &'static str,
     pub display_name: &'static str,
@@ -214,7 +229,7 @@ impl Equipment {
     }
 
     pub fn encode_state(&self) -> Vec<u8> {
-        let mut out = b"TFEI\x04\0\0\0".to_vec();
+        let mut out = b"TFEI\x05\0\0\0".to_vec();
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(SUPPORTED_ITEMS.len() as u32).to_le_bytes());
         for supported in SUPPORTED_ITEMS {
@@ -228,7 +243,14 @@ impl Equipment {
                 else { vec![(*class, *slot)] }
             }).collect();
             out.push(eligible.len() as u8);
-            for (class, slot) in eligible { out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8), supported.selection_slot(class, slot).unwrap_or(u8::MAX)]); }
+            for (class, slot) in eligible {
+                out.extend_from_slice(&[class as u8, slot as u8, supported.weapon_for_class(class).map_or(0, |weapon| weapon as u8), supported.selection_slot(class, slot).unwrap_or(u8::MAX)]);
+                let hud = metadata.class_hud.iter().find(|(eligible, _)| *eligible == class).map(|(_, hud)| hud);
+                out.extend_from_slice(&hud.map_or([0; 4], |hud| [hud.ammo as u8, hud.bucket, hud.position,
+                    u8::from(hud.draws_crosshair) | (u8::from(hud.suppress_crosshair) << 1)]));
+                let script = hud.map_or("", |hud| hud.script);
+                out.extend_from_slice(&(script.len() as u32).to_le_bytes()); out.extend_from_slice(script.as_bytes());
+            }
             for text in [metadata.name, metadata.display_name, metadata.image] {
                 out.extend_from_slice(&(text.len() as u32).to_le_bytes());
                 out.extend_from_slice(text.as_bytes());
@@ -474,5 +496,18 @@ mod tests {
         corrupt[8..12].copy_from_slice(&999_999u32.to_le_bytes());
         assert_eq!(Equipment::restore(&corrupt), Err(EquipmentError::UnsupportedItem));
         assert_eq!(Equipment::restore(&corrupt[..corrupt.len()-1]), Err(EquipmentError::InvalidPersistence));
+    }
+    #[test]
+    fn configured_weapon_hud_uses_class_translated_scripts_not_runtime_family_guesses() {
+        let hud = |definition, class| presentation(definition).unwrap().class_hud.iter().find(|(eligible, _)| *eligible == class).unwrap().1;
+        assert_eq!(hud(10, PlayerClass::Soldier).script, "scripts/tf_weapon_shotgun_soldier.ctx");
+        assert_eq!(hud(12, PlayerClass::Pyro).script, "scripts/tf_weapon_shotgun_pyro.ctx");
+        assert_eq!(hud(23, PlayerClass::Scout).script, "scripts/tf_weapon_pistol_scout.ctx");
+        assert_eq!(hud(22, PlayerClass::Engineer).script, "scripts/tf_weapon_pistol.ctx");
+        assert_eq!(hud(220, PlayerClass::Scout).script, "scripts/tf_weapon_handgun_scout_primary.ctx");
+        assert!(matches!(hud(220, PlayerClass::Scout).ammo, AmmoDisplay::ClipAndReserve));
+        assert!(matches!(hud(15, PlayerClass::Heavy).ammo, AmmoDisplay::Total));
+        assert!(matches!(hud(25, PlayerClass::Engineer).ammo, AmmoDisplay::Hidden));
+        assert!(hud(25, PlayerClass::Engineer).suppress_crosshair);
     }
 }

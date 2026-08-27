@@ -50,7 +50,6 @@ struct AuthoredCrosshair {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WeaponCrosshair {
-    weapon_identities: Vec<u8>,
     source: SourceIdentity,
     crosshair: AuthoredCrosshair,
     autoaim: Option<AuthoredCrosshair>,
@@ -293,7 +292,6 @@ fn icon(content: &Content, node: &Node, name: &str) -> Result<AuthoredCrosshair,
 fn weapon(
     content: &Content,
     logical_path: &str,
-    identities: &[u8],
 ) -> Result<WeaponCrosshair, String> {
     let mut source = match content
         .resolve_resource(logical_path)
@@ -337,7 +335,6 @@ fn weapon(
         .map(|value| icon(content, value, "autoaim"))
         .transpose()?;
     Ok(WeaponCrosshair {
-        weapon_identities: identities.to_vec(),
         source: identity,
         crosshair,
         autoaim,
@@ -454,6 +451,7 @@ pub(crate) fn write(
     tf2: &Path,
     content_build: &str,
     output_directory: &Path,
+    weapon_scripts: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     let icon_resource = match content
         .resolve_resource("scripts/mod_textures.txt")
@@ -487,39 +485,7 @@ pub(crate) fn write(
         return Err("authored HUD icon crosshair_default is not an object".to_owned());
     }
     let stock = icon(content, default_icon, "")?;
-    let weapons = vec![
-        weapon(content, "scripts/tf_weapon_rocketlauncher.ctx", &[1, 2])?,
-        weapon(content, "scripts/tf_weapon_pipebomblauncher.ctx", &[3])?,
-        weapon(content, "scripts/tf_weapon_scattergun.ctx", &[4])?,
-        weapon(content, "scripts/tf_weapon_pistol_scout.ctx", &[5])?,
-        weapon(content, "scripts/tf_weapon_bat.ctx", &[6])?,
-      weapon(content, "scripts/tf_weapon_shotgun_soldier.ctx", &[7])?,
-        weapon(content, "scripts/tf_weapon_shovel.ctx", &[8])?,
-      weapon(content, "scripts/tf_weapon_minigun.ctx", &[9])?,
-        weapon(content, "scripts/tf_weapon_shotgun_hwg.ctx", &[10])?,
-        weapon(content, "scripts/tf_weapon_fists.ctx", &[11])?,
-        weapon(content, "scripts/tf_weapon_sniperrifle.ctx", &[12])?,
-        weapon(content, "scripts/tf_weapon_smg.ctx", &[13])?,
-        weapon(content, "scripts/tf_weapon_club.ctx", &[14])?,
-        weapon(content, "scripts/tf_weapon_bottle.ctx", &[17])?,
-        weapon(content, "scripts/tf_weapon_grenadelauncher.ctx", &[18])?,
-        weapon(content, "scripts/tf_weapon_shotgun_primary.ctx", &[40])?,
-        weapon(content, "scripts/tf_weapon_pistol.ctx", &[41])?,
-        weapon(content, "scripts/tf_weapon_wrench.ctx", &[42])?,
-        weapon(content, "scripts/tf_weapon_flamethrower.ctx", &[15])?,
-        weapon(content, "scripts/tf_weapon_fireaxe.ctx", &[16])?,
-        weapon(content, "scripts/tf_weapon_revolver.ctx", &[50])?,
-        weapon(content, "scripts/tf_weapon_knife.ctx", &[51])?,
-        weapon(content, "scripts/tf_weapon_builder.ctx", &[52])?,
-        weapon(content, "scripts/tf_weapon_pda_spy.ctx", &[53])?,
-        weapon(content, "scripts/tf_weapon_invis.ctx", &[54])?,
-        weapon(content, "scripts/tf_weapon_pda_engineer_build.ctx", &[43])?,
-        weapon(content, "scripts/tf_weapon_pda_engineer_destroy.ctx", &[44])?,
-        weapon(content, "scripts/tf_weapon_builder.ctx", &[45])?,
-        weapon(content, "scripts/tf_weapon_syringegun_medic.ctx", &[19])?,
-        weapon(content, "scripts/tf_weapon_medigun.ctx", &[20])?,
-        weapon(content, "scripts/tf_weapon_bonesaw.ctx", &[21])?,
-    ];
+    let weapons = weapon_scripts.iter().map(|script| weapon(content, script)).collect::<Result<Vec<_>, _>>()?;
 
     let directory_bytes = fs::read(tf2.join("tf2_textures_dir.vpk"))
         .map_err(|error| format!("crosshair texture index: {error}"))?;
@@ -567,7 +533,7 @@ pub(crate) fn write(
         return Err("configured content contains no paired authored crosshair styles".to_owned());
     }
     let report = AuthoredCrosshairs {
-        schema: "playsrc-tf2-authored-crosshairs-v1",
+        schema: "playsrc-tf2-authored-crosshairs-v2",
         content_build: content_build.to_owned(),
         icon_source: SourceIdentity {
             logical_path: icon_resource.provenance.logical_path,

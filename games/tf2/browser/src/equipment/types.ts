@@ -25,7 +25,16 @@ export type Tf2SupportedItem = Readonly<{
   soundOverrides: readonly (readonly [string, string])[]
   deathNoticeIcon: string | null
   weapon: Tf2Weapon | null
-  classSlots: readonly Readonly<{ class: Tf2Class; slot: number; weapon: Tf2Weapon | null; selectionSlot: number | null }>[]
+  classSlots: readonly Readonly<{ class: Tf2Class; slot: number; weapon: Tf2Weapon | null; selectionSlot: number | null; hud: Tf2WeaponHud | null }>[]
+}>
+
+export type Tf2WeaponHud = Readonly<{
+  script: string
+  ammoDisplay: "hidden" | "total" | "clip-and-reserve"
+  bucket: number
+  position: number
+  drawsCrosshair: boolean
+  suppressCrosshair: boolean
 }>
 
 export type Tf2EquipmentState = Readonly<{

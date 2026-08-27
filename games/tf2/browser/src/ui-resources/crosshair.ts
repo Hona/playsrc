@@ -37,14 +37,13 @@ export type Tf2AuthoredCrosshair = Readonly<{
 }>
 
 export type Tf2AuthoredWeaponCrosshair = Readonly<{
-  weaponIdentities: readonly number[]
   source: Tf2AuthoredCrosshairSource
   crosshair: Tf2AuthoredCrosshair
   autoaim: Tf2AuthoredCrosshair | null
 }>
 
 export type Tf2AuthoredCrosshairDescriptor = Readonly<{
-  schema: "playsrc-tf2-authored-crosshairs-v1"
+  schema: "playsrc-tf2-authored-crosshairs-v2"
   contentBuild: string
   iconSource: Tf2AuthoredCrosshairSource
   stock: Tf2AuthoredCrosshair
@@ -137,7 +136,7 @@ function asset(input: unknown, subject: string): Tf2AuthoredCrosshair {
 
 export function createTf2AuthoredCrosshairDescriptor(input: unknown): Tf2AuthoredCrosshairDescriptor {
   const value = record(input, "descriptor")
-  if (value.schema !== "playsrc-tf2-authored-crosshairs-v1"
+  if (value.schema !== "playsrc-tf2-authored-crosshairs-v2"
     || value.contentBuild !== TF2_CONTENT_BUILD.contentBuild
     || !Array.isArray(value.styles)
     || value.styles.length === 0
@@ -148,25 +147,19 @@ export function createTf2AuthoredCrosshairDescriptor(input: unknown): Tf2Authore
   }
   const stock = asset(value.stock, "stock icon")
   if (stock.file !== "" || stock.crop === null) throw new Error("TF2 authored stock crosshair is not an atlas icon")
-  const occupiedWeapons = new Set<number>()
+  const occupiedWeapons = new Set<string>()
   const weapons = value.weapons.map((input, index) => {
     const item = record(input, `weapon ${index}`)
-    if (!Array.isArray(item.weaponIdentities) || item.weaponIdentities.length === 0) {
-      throw new Error(`TF2 authored weapon crosshair ${index} identities are malformed`)
+    const script = source(item.source, `weapon ${index} script`)
+    if (!/^scripts\/tf_weapon_[a-z0-9_]+\.ctx$/u.test(script.logicalPath) || occupiedWeapons.has(script.logicalPath)) {
+      throw new Error(`TF2 authored weapon crosshair ${index} script is invalid or duplicated`)
     }
-    const identities = item.weaponIdentities.map((identity) => {
-      if (!Number.isSafeInteger(identity) || identity <= 0 || occupiedWeapons.has(identity)) {
-        throw new Error(`TF2 authored weapon crosshair ${index} identity is invalid or duplicated`)
-      }
-      occupiedWeapons.add(identity)
-      return identity
-    })
+    occupiedWeapons.add(script.logicalPath)
     const crosshair = asset(item.crosshair, `weapon ${index} icon`)
     if (crosshair.crop === null) throw new Error(`TF2 authored weapon crosshair ${index} has no atlas crop`)
     const autoaim = item.autoaim === null ? null : asset(item.autoaim, `weapon ${index} autoaim`)
     return Object.freeze({
-      weaponIdentities: Object.freeze(identities),
-      source: source(item.source, `weapon ${index} script`),
+      source: script,
       crosshair,
       autoaim,
     })
@@ -185,7 +178,7 @@ export function createTf2AuthoredCrosshairDescriptor(input: unknown): Tf2Authore
     return style
   })
   return Object.freeze({
-    schema: "playsrc-tf2-authored-crosshairs-v1",
+    schema: "playsrc-tf2-authored-crosshairs-v2",
     contentBuild: value.contentBuild,
     iconSource: source(value.iconSource, "icon definition"),
     stock,

@@ -1948,6 +1948,7 @@ fn main() -> Result<(), String> {
         output
             .parent()
             .ok_or_else(|| "generator output has no parent".to_owned())?,
+        &equipment.weapon_scripts,
     )?;
     println!(
         "generated {} bytes sha256 {}",
