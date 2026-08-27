@@ -450,11 +450,16 @@ fn trace_inner<const REFERENCE: bool>(
                 let triangle = &tree.triangles[index];
                 #[cfg(feature = "replay-reference")]
                 crate::replay_diagnostics::count(7, 1);
-                if !intersects(query_bounds, triangle.bounds(positions)) {
+                if REFERENCE && !intersects(query_bounds, triangle.bounds(positions)) {
                     continue;
                 }
                 if let Some(fraction) = ray_triangle(ray_start, delta, triangle, positions)
                     && fraction < output.fraction
+                    // Reconstruct extrema only for a potentially winning ray.
+                    // Keep the original bounds predicate (including its epsilon)
+                    // even though the barycentric test has already succeeded:
+                    // its accepted [-.001, 1.001] interval is intentionally wider.
+                    && (REFERENCE || intersects(query_bounds, triangle.bounds(positions)))
                 {
                     let end_position = interpolate(start, end, fraction);
                     set_hit(output, tree, triangle, index, Some(fraction), end_position);
