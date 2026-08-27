@@ -12,6 +12,7 @@ pub struct HitscanProfile {
 impl HitscanProfile {
     pub const fn configured(weapon: Weapon) -> Option<Self> {
         match weapon {
+            Weapon::Minigun => Some(Self { pellets: 4, damage: 9.0, range: 8192.0, spread: 0.08, accurate_after_seconds: 0.25 }),
             Weapon::HandgunScoutPrimary => Some(Self { pellets: 4, damage: 12.0, range: 8192.0, spread: 0.04, accurate_after_seconds: 0.25 }),
             Weapon::Scattergun
             | Weapon::Shotgun

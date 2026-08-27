@@ -7254,6 +7254,8 @@ fn encode_random_draw(
             (10, 0, playsrc_tf2::SoundQueryPhase::Inspect)
         }
         playsrc_tf2::RandomDecision::WeaponCritical => (14, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::EnemySpeedOnHit => (64, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::BulletSpread => (65, 0, playsrc_tf2::SoundQueryPhase::Inspect),
     };
     extend(
         output,

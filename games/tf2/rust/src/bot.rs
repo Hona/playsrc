@@ -515,6 +515,10 @@ struct SupplyCache {
 
 #[derive(Clone, Debug)]
 struct Bot {
+    movement_stuns: crate::hitscan::MovementStuns,
+    weapon_knockback: bool,
+    blast_since_movement: bool,
+    blast_jump_state: bool,
     critical_history: crate::critical::PlayerHistory,
     identity: u32,
     spy: Option<crate::spy::SpyState>,
@@ -1119,6 +1123,10 @@ impl BotWorld {
             self.bots.insert(
                 identity,
                 Bot {
+                    movement_stuns: crate::hitscan::MovementStuns::default(),
+                    weapon_knockback: false,
+                    blast_since_movement: false,
+                    blast_jump_state: false,
                     damagers: crate::deathnotice::DamagerHistory::default(),
                     critical_history: crate::critical::PlayerHistory::default(),
                     identity,
@@ -1481,22 +1489,19 @@ impl BotWorld {
                 bot.yaw_degrees.to_radians()
             };
             let relative = move_yaw - bot.yaw_degrees.to_radians();
+            let (forward, side) = bot.movement_stuns.command(now,
+                if should_move { policy.maximum_speed * relative.cos() } else { 0.0 },
+                if should_move { policy.maximum_speed * relative.sin() } else { 0.0 });
+            if bot.blast_since_movement && bot.movement.velocity[2] > 250.0 { bot.blast_jump_state = true; }
+            bot.blast_since_movement = false;
             let movement = step(
                 world,
                 bot.movement,
                 StepInput {
                     command_number: u32::try_from(tick).unwrap_or(u32::MAX),
                     command: MoveCommand {
-                        forward: if should_move {
-                            policy.maximum_speed * relative.cos()
-                        } else {
-                            0.0
-                        },
-                        side: if should_move {
-                            policy.maximum_speed * relative.sin()
-                        } else {
-                            0.0
-                        },
+                        forward,
+                        side,
                         yaw_degrees: bot.yaw_degrees,
                         jump: bot.crossing.as_ref().is_none_or(|crossing| crossing.drop_position.is_none()) && jump_height >= STEP_HEIGHT && jump_height < MAX_JUMP_HEIGHT,
                         crouch: false,
@@ -1516,6 +1521,7 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
+            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.blast_jump_state = false; }
 
             if let Some((due, target, weapon)) = bot.pending_melee
                 && tick > due
@@ -1647,6 +1653,7 @@ impl BotWorld {
     pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
         for bot in self.bots.values_mut() {
             if bot.lifecycle == PlayerLifecycle::Active {
+                if !bot.movement_stuns.think(now) { bot.conditions.remove(ConditionId::STUNNED, true); }
                 bot.health
                     .advance(
                         now,
@@ -1826,6 +1833,10 @@ impl BotWorld {
         let Some(victim) = self.bots.get_mut(&input.victim) else {
             return Ok(None);
         };
+        if input.damage_type.contains(DamageType::BLAST) {
+            if input.attacker != input.victim { victim.blast_since_movement = true; }
+            else if matches!(victim.class, PlayerClass::Soldier | PlayerClass::Demoman) { victim.blast_jump_state = true; }
+        }
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
             &mut victim.health,
@@ -1979,6 +1990,38 @@ impl BotWorld {
 
     pub fn record_assist(&mut self, player: u32) {
         if let Some(bot) = self.bots.get_mut(&player) { bot.assists = bot.assists.saturating_add(1); }
+    }
+
+    pub fn hitscan_target(&self, identity: u32) -> Option<crate::hitscan::Target> {
+        let bot = self.bots.get(&identity)?;
+        if bot.lifecycle != PlayerLifecycle::Active { return None; }
+        let hull = bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve());
+        let size = crate::sub(hull.maxs, hull.mins);
+        let center = crate::add(bot.movement.position, crate::scale(crate::add(hull.mins, hull.maxs), 0.5));
+        Some(crate::hitscan::Target { position: bot.movement.position, center, size,
+            eye_forward: crate::angle_vectors(bot.pitch_degrees, bot.yaw_degrees, 0.0).0,
+            in_air_due_to_explosion: bot.conditions.contains(ConditionId::ROCKETPACK) || bot.movement.ground.is_none() && bot.movement.water_level == 0 && bot.blast_jump_state,
+            healed: bot.conditions.contains(ConditionId::HEALTH_BUFF),
+            push_immune: bot.conditions.contains(ConditionId::MEGAHEAL) || bot.conditions.contains(ConditionId::PHASE),
+            knocked_back: bot.weapon_knockback,
+        })
+    }
+
+    pub fn stun_movement(&mut self, identity: u32, attacker: u32, now: f32, duration: f32, amount: f32, forward_only: bool) -> Result<bool, Error> {
+        let Some(bot) = self.bots.get_mut(&identity) else { return Ok(false); };
+        if bot.lifecycle != PlayerLifecycle::Active || [ConditionId::PHASE, ConditionId::MEGAHEAL, ConditionId::PASSTIME_INTERCEPTION,
+            ConditionId::INVULNERABLE_HIDE_UNLESS_DAMAGED].into_iter().any(|condition| bot.conditions.contains(condition)) { return Ok(false); }
+        bot.movement_stuns.add(now, duration, amount, forward_only);
+        bot.conditions.add(ConditionId::STUNNED, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false).map_err(|_| Error::InvalidEntity)?;
+        Ok(true)
+    }
+
+    pub fn scattergun_push(&mut self, identity: u32, attacker: u32, now: f32, impulse: [f32; 3]) -> Result<bool, Error> {
+        if self.hitscan_target(identity).is_none_or(|target| target.push_immune || target.knocked_back) { return Ok(false); }
+        if !self.apply_impulse(identity, impulse) { return Ok(false); }
+        self.stun_movement(identity, attacker, now, 0.3, 1.0, true)?;
+        self.bots.get_mut(&identity).unwrap().weapon_knockback = true;
+        Ok(true)
     }
 
     pub fn combat_player(&self, identity: u32) -> Option<crate::CombatPlayerFacts> {
@@ -2618,6 +2661,10 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     if matches!(bot.objective, ObjectiveKind::CapturePoint | ObjectiveKind::DefendPoint | ObjectiveKind::BlockCapture) {
         bot.objective = ObjectiveKind::CapturePoint;
     }
+    bot.movement_stuns = crate::hitscan::MovementStuns::default();
+    bot.weapon_knockback = false;
+    bot.blast_since_movement = false;
+    bot.blast_jump_state = false;
     crate::admission_metrics::begin_tick(tick);
     crate::admission_metrics::emit(crate::admission_metrics::RESPAWN, bot.identity);
     let policy = MovementPolicy {
