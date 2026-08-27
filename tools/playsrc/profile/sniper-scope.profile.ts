@@ -308,7 +308,11 @@ test("Sniper Mouse2 retains real world pixels through the authored Refract scope
   for (const map of ["pl_upward", "jump_beef"]) {
     const generation = Number(await root.getAttribute("data-generation"))
     await command(`map ${map}`)
-    await expect.poll(async () => Number(await root.getAttribute("data-generation"))).toBeGreaterThan(generation)
+    await expect.poll(async () => {
+      const detail = await root.getAttribute("data-detail")
+      if (detail?.startsWith("Prior map retained:")) throw new Error(detail)
+      return Number(await root.getAttribute("data-generation"))
+    }, { timeout: 60_000 }).toBeGreaterThan(generation)
     await settleTf2Gameplay(page, "red")
     await expect(scope).not.toBeVisible()
     await command("joinclass sniper")
