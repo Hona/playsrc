@@ -62,7 +62,10 @@ struct ScopeTexture {
     source: SourceIdentity,
     width: u32,
     height: u32,
-    frame: AuthoredFrame,
+    clamp_s: bool,
+    clamp_t: bool,
+    no_lod: bool,
+    mips: Vec<AuthoredFrame>,
 }
 
 #[derive(Serialize)]
@@ -133,11 +136,20 @@ fn png_data(width: u32, height: u32, samples: &[u8]) -> Result<Vec<u8>, String> 
 }
 
 fn frame(bytes: &[u8], frame_index: u16, crop: Option<&Crop>) -> Result<AuthoredFrame, String> {
+    frame_mip(bytes, frame_index, 0, crop)
+}
+
+fn frame_mip(
+    bytes: &[u8],
+    frame_index: u16,
+    mip: u8,
+    crop: Option<&Crop>,
+) -> Result<AuthoredFrame, String> {
     let plane = playsrc_vtf::decode(
         bytes,
         playsrc_vtf::Dialect::Source2013Pc,
         playsrc_vtf::SubresourceIdentity::HighResolution {
-            mip: 0,
+            mip,
             frame: frame_index,
             face: playsrc_vtf::Face::Right,
             slice: 0,
@@ -325,10 +337,7 @@ fn weapon(
     })
 }
 
-fn scope_source(
-    content: &Content,
-    logical_path: &str,
-) -> Result<(SourceIdentity, Vec<u8>), String> {
+fn scope_source(content: &Content, logical_path: &str) -> Result<(SourceIdentity, Vec<u8>), String> {
     let (record, bytes) = crate::dependency(content, logical_path)?;
     Ok((
         identity(&record)?,
@@ -344,12 +353,67 @@ fn scope_texture(content: &Content, logical_path: &str) -> Result<ScopeTexture, 
         playsrc_vtf::Limits::default(),
     )
     .map_err(|error| format!("{logical_path}: {error}"))?;
+    let mip_count = if metadata.effective_flags & 0x100 != 0 {
+        1
+    } else {
+        metadata.mip_count
+    };
     Ok(ScopeTexture {
         source,
         width: u32::from(metadata.width),
         height: u32::from(metadata.height),
-        frame: frame(&bytes, 0, None).map_err(|error| format!("{logical_path}: {error}"))?,
+        clamp_s: metadata.effective_flags & 4 != 0,
+        clamp_t: metadata.effective_flags & 8 != 0,
+        no_lod: metadata.effective_flags & 0x200 != 0,
+        mips: (0..mip_count)
+            .map(|mip| frame_mip(&bytes, 0, mip, None))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{logical_path}: {error}"))?,
     })
+}
+
+fn scope_material(content: &Content, suffix: &str) -> Result<SourceIdentity, String> {
+    let (identity, bytes) = scope_source(content, &format!("materials/hud/scope_sniper_{suffix}.vmt"))?;
+    let document = playsrc_keyvalues::parse_text(
+        &bytes,
+        EscapeMode::LiteralBackslash,
+        playsrc_keyvalues::Limits::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let root = document.roots.first().ok_or("scope material has no shader")?;
+    if !root.key.bytes.eq_ignore_ascii_case(b"Refract") {
+        return Err("scope shader differs".to_owned());
+    }
+    for (key, expected) in [
+        ("$refractamount", ".1"),
+        ("$bluramount", "1"),
+        ("$normalmap", "HUD\\scope_normal_ul"),
+        ("$refracttinttexture", "HUD\\scope_sniper_ul"),
+        ("$translucent", "1"),
+        ("$ignorez", "1"),
+        ("$nofog", "1"),
+        ("$forcealphawrite", "1"),
+    ] {
+        if scalar(root, key.as_bytes())? != expected.as_bytes() {
+            return Err(format!("scope {suffix} {key} differs"));
+        }
+    }
+    if suffix != "ul" {
+        let expected = match suffix {
+            "ur" => "[-1 1]",
+            "lr" => "[-1 -1]",
+            "ll" => "[1 -1]",
+            _ => return Err("scope quadrant differs".to_owned()),
+        };
+        let proxy = child(child(root, b"Proxies")?, b"TextureTransform")?;
+        if scalar(root, b"$scaleamount")? != expected.as_bytes()
+            || scalar(proxy, b"scaleVar")? != b"$scaleamount"
+            || scalar(proxy, b"resultVar")? != b"$bumptransform"
+        {
+            return Err("scope transform differs".to_owned());
+        }
+    }
+    Ok(identity)
 }
 
 pub(crate) fn write(
@@ -495,14 +559,11 @@ pub(crate) fn write(
     .map_err(|error| format!("authored crosshair output: {error}"))?;
 
     let scope = AuthoredScope {
-        schema: "playsrc-tf2-authored-sniper-scope-v1",
+        schema: "playsrc-tf2-authored-sniper-scope-v2",
         content_build: content_build.to_owned(),
         quadrants: ["ul", "ur", "lr", "ll"]
             .into_iter()
-            .map(|suffix| {
-                scope_source(content, &format!("materials/hud/scope_sniper_{suffix}.vmt"))
-                    .map(|value| value.0)
-            })
+            .map(|suffix| scope_material(content, suffix))
             .collect::<Result<Vec<_>, _>>()?,
         charge_material: scope_source(content, "materials/hud/sniperscope_numbers.vmt")?.0,
         tint: scope_texture(content, "materials/hud/scope_sniper_ul.vtf")?,

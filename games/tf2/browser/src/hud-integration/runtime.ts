@@ -75,6 +75,7 @@ export type Tf2HudIntegration = Readonly<{
   setViewport(viewport: VguiViewport): void
   probe(): Tf2HudIntegrationProbe
   modelPanel(): Tf2HudModelPanel | null
+  materialFrame(): import("@playsrc/rendering").HudMaterialFrame | undefined
   snapshot(): Tf2HudIntegrationSnapshot
   setPlayerClassUsePlayerModel(value: boolean): void
   setCrosshair(value: Tf2HudCrosshair): void
@@ -973,6 +974,8 @@ class Integration implements Tf2HudIntegration {
     this.#modelPanelFingerprint = fingerprint
   }
 
+  materialFrame(): import("@playsrc/rendering").HudMaterialFrame | undefined { return this.#scope.materialFrame() }
+
   publish(publication: SessionSimulationPublication, context: SessionHudContext): Tf2HudBinding {
     if (this.#destroyed) throw new Error("TF2 HUD integration is destroyed")
     return this.#runtime.deferPresentation(() => {
@@ -1081,6 +1084,7 @@ class Integration implements Tf2HudIntegration {
     this.#runtime.deferPresentation(() => {
       apply(this.#runtime, { kind: "set-viewport", viewport })
       this.#viewport = Object.freeze({ ...viewport })
+      this.#scope.setViewport(viewport)
       this.#captureBaseBounds()
       if (this.#binding) {
         this.#publishedValues.clear()

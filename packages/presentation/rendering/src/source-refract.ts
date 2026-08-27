@@ -20,6 +20,7 @@ export type SourceRefractPixelRequest = Readonly<{
   state: SourceRefractShaderState
   coordinate: Vector2
   normal: Vector4
+  tintTexture?: Vector3
   sample: (coordinate: Vector2) => Vector4
 }>
 
@@ -45,7 +46,7 @@ function validate(state: SourceRefractShaderState): void {
 
 export function evaluateSourceRefractPixel(input: SourceRefractPixelRequest): SourceRefractPixelResult {
   validate(input.state)
-  if (![...input.coordinate, ...input.normal].every(Number.isFinite)) {
+  if (![...input.coordinate, ...input.normal, ...(input.tintTexture ?? [])].every(Number.isFinite)) {
     throw new SourceRefractError("Refract pixel input is invalid")
   }
   const scale = input.normal[3] * input.state.refractAmount
@@ -71,9 +72,9 @@ export function evaluateSourceRefractPixel(input: SourceRefractPixelRequest): So
   }
   return Object.freeze({
     rgba: Object.freeze([
-      color[0]! * sourceShaderGammaToLinear(input.state.refractTint[0]),
-      color[1]! * sourceShaderGammaToLinear(input.state.refractTint[1]),
-      color[2]! * sourceShaderGammaToLinear(input.state.refractTint[2]),
+      color[0]! * sourceShaderGammaToLinear(input.state.refractTint[0]) * (input.tintTexture ? 2 * input.tintTexture[0] : 1),
+      color[1]! * sourceShaderGammaToLinear(input.state.refractTint[1]) * (input.tintTexture ? 2 * input.tintTexture[1] : 1),
+      color[2]! * sourceShaderGammaToLinear(input.state.refractTint[2]) * (input.tintTexture ? 2 * input.tintTexture[2] : 1),
       input.normal[3],
     ]) as Vector4,
     warpedCoordinate,
@@ -84,13 +85,14 @@ export function evaluateSourceRefractPixel(input: SourceRefractPixelRequest): So
 export function createSourceRefractMaterial(input: Readonly<{
   state: SourceRefractShaderState
   normal: THREE.Texture
+  tint?: THREE.Texture
+  framebuffer?: THREE.Texture
 }>): Readonly<{ material: THREE.MeshBasicNodeMaterial; normalNode: ReturnType<typeof TSL.texture> }> {
   validate(input.state)
   const normalNode = TSL.texture(input.normal, TSL.uv())
   const warped = TSL.screenUV.add(normalNode.xy.mul(2).sub(1).mul(normalNode.a).mul(input.state.refractAmount))
-  const first = TSL.viewportSharedTexture(
-    input.state.blurAmount === 1 ? warped.add(TSL.vec2(-0.5 / 512, -0.5 / 512)) : warped,
-  )
+  const coordinate = input.state.blurAmount === 1 ? warped.add(TSL.vec2(-0.5 / 512, -0.5 / 512)) : warped
+  const first = input.framebuffer ? TSL.texture(input.framebuffer, coordinate) : TSL.viewportSharedTexture(coordinate)
   first.value.minFilter = THREE.LinearFilter
   first.value.magFilter = THREE.LinearFilter
   let color: any = first.rgb
@@ -107,6 +109,7 @@ export function createSourceRefractMaterial(input: Readonly<{
     depthWrite: false,
     blending: THREE.NormalBlending,
   })
+  if (input.tint) color = color.mul(TSL.texture(input.tint, TSL.uv()).rgb).mul(2)
   material.colorNode = TSL.vec4(
     color.mul(TSL.vec3(...input.state.refractTint.map(sourceShaderGammaToLinear) as unknown as Vector3)),
     normalNode.a,

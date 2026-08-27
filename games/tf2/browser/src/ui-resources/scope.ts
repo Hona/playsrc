@@ -8,10 +8,13 @@ export type Tf2ScopeTexture = Readonly<{
   source: Tf2ScopeSource
   width: number
   height: number
-  frame: Readonly<{ index: number; pngSha256: string; pngDataUrl: string }>
+  clampS: boolean
+  clampT: boolean
+  noLod: boolean
+  mips: readonly Readonly<{ index: number; pngSha256: string; pngDataUrl: string }>[]
 }>
 export type Tf2AuthoredScope = Readonly<{
-  schema: "playsrc-tf2-authored-sniper-scope-v1"
+  schema: "playsrc-tf2-authored-sniper-scope-v2"
   contentBuild: string
   quadrants: readonly Tf2ScopeSource[]
   chargeMaterial: Tf2ScopeSource
@@ -32,29 +35,34 @@ function source(input: unknown, path: string): Tf2ScopeSource {
 
 function texture(input: unknown, path: string): Tf2ScopeTexture {
   const value = input as Record<string, unknown>
-  const frame = value?.frame as Record<string, unknown>
   if (!value || !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height)
     || (value.width as number) <= 0 || (value.height as number) <= 0 || (value.width as number) > 1024
-    || (value.height as number) > 1024 || !frame || frame.index !== 0 || typeof frame.pngSha256 !== "string"
-    || !SHA256.test(frame.pngSha256) || typeof frame.pngDataUrl !== "string"
-    || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u.test(frame.pngDataUrl)) {
+    || (value.height as number) > 1024 || typeof value.clampS !== "boolean" || typeof value.clampT !== "boolean" || typeof value.noLod !== "boolean"
+    || !Array.isArray(value.mips) || value.mips.length < 1 || value.mips.length > 11) {
     throw new Error(`TF2 authored Sniper scope texture differs: ${path}`)
   }
   return Object.freeze({
     source: source(value.source, path),
     width: value.width as number,
     height: value.height as number,
-    frame: Object.freeze({ index: 0, pngSha256: frame.pngSha256, pngDataUrl: frame.pngDataUrl }),
+    clampS: value.clampS,
+    clampT: value.clampT,
+    noLod: value.noLod,
+    mips: Object.freeze(value.mips.map((frame: Record<string, unknown>) => {
+      if (frame.index !== 0 || typeof frame.pngSha256 !== "string" || !SHA256.test(frame.pngSha256)
+        || typeof frame.pngDataUrl !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u.test(frame.pngDataUrl)) throw new Error(`TF2 scope mip differs: ${path}`)
+      return Object.freeze({ index: 0, pngSha256: frame.pngSha256, pngDataUrl: frame.pngDataUrl })
+    })),
   })
 }
 
 export function createTf2AuthoredScope(input: unknown): Tf2AuthoredScope {
   const value = input as Record<string, unknown>
-  if (!value || value.schema !== "playsrc-tf2-authored-sniper-scope-v1"
+  if (!value || value.schema !== "playsrc-tf2-authored-sniper-scope-v2"
     || value.contentBuild !== TF2_CONTENT_BUILD.contentBuild || !Array.isArray(value.quadrants)
     || value.quadrants.length !== 4) throw new Error("TF2 authored Sniper scope descriptor is malformed")
   return Object.freeze({
-    schema: "playsrc-tf2-authored-sniper-scope-v1",
+    schema: "playsrc-tf2-authored-sniper-scope-v2",
     contentBuild: value.contentBuild,
     quadrants: Object.freeze((["ul", "ur", "lr", "ll"] as const)
       .map((suffix, index) => source(value.quadrants[index], `materials/hud/scope_sniper_${suffix}.vmt`))),

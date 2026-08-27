@@ -28,6 +28,7 @@ export function requireBrowserBudget(milliseconds: number): void {
 const PROFILES = Object.freeze({
   "trigger-door": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "trigger-door" } },
   "trigger-door-upward": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "trigger-door", PROFILE_DOOR_MAP: "pl_upward" } },
+  "sniper-scope": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "sniper-scope" } },
   gameplay: { config: "playwright.profile.config.ts", target: "jump_beef" },
   "frame-budget": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "frame-budget" } },
   "map-load": { config: "playwright.profile.config.ts", target: "jump_beef" },

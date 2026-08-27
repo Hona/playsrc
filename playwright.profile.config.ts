@@ -4,6 +4,8 @@ import { headedProfileTarget } from "./tools/playsrc/profile/profile-target"
 export default headedProfileConfiguration({
   match: process.env.PROFILE_SCENARIOS === "trigger-door"
     ? "trigger-door.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "sniper-scope"
+    ? "sniper-scope.profile.ts"
     : process.env.PROFILE_SCENARIOS === "integrated-lifecycle"
     ? "integrated-lifecycle.profile.ts"
     : process.env.PROFILE_PYRO_AUDIO === "1"
