@@ -61,16 +61,18 @@ describe("completed multi-pass renderer instrumentation", () => {
     const { info, profile } = fixture()
     profile.counters.renderPipelines = 0
     profile.counters.nodeBuilderMisses = 0
-    const manager = { _createNodeBuilder: () => ({ shader: "authored" }) }
+    const manager = { _createNodeBuilder: () => ({ build() { return "authored" }, vertexShader: "vertex", fragmentShader: "fragment" }) }
     const original = manager._createNodeBuilder
     const restore = installNodeBuilderInstrumentation(manager, profile)
     const instrumentation = new RendererFrameInstrumentation(info, profile)
     instrumentation.pass("main", () => {
-      manager._createNodeBuilder()
+      expect(manager._createNodeBuilder().build()).toBe("authored")
       profile.counters.renderPipelines! += 1
     })
     expect(instrumentation.complete()?.passes[0]).toMatchObject({ identity: "main", renderPipelines: 1, nodeBuilderMisses: 1 })
     expect(profile.counters.nodeBuilderMilliseconds).toBeGreaterThanOrEqual(0)
+    expect(profile.nodeBuilds).toHaveLength(1)
+    expect(profile.nodeBuilds![0]).toMatchObject({ pass: "main", vertexCharacters: 6, fragmentCharacters: 8 })
     restore()
     expect(manager._createNodeBuilder).toBe(original)
   })
