@@ -918,7 +918,7 @@ unsafe fn resource_sections<'a>(
     pointer: *const ResourceSection,
     count: usize,
 ) -> Result<BTreeMap<String, &'a [u8]>, ()> {
-    if pointer.is_null() || count == 0 || count > 1_024 {
+    if pointer.is_null() || count == 0 || count > playsrc_asset_graph::MAX_GRAPH_CHUNKS {
         return Err(());
     }
     let sections = unsafe { std::slice::from_raw_parts(pointer, count) };

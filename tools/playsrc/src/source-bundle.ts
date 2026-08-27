@@ -5,7 +5,7 @@ import type { LocalConfig } from "./config"
 import { repositoryRoot } from "./config"
 import { rustEnvironment } from "./setup"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
-import { parseResourceGraphBytes, type ResourceGraph } from "@playsrc/asset-store/graph"
+import { MAX_GRAPH_CHUNKS, parseResourceGraphBytes, type ResourceGraph } from "@playsrc/asset-store/graph"
 import toolchains from "../toolchains.json"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { buildCacheDirectory, rustBuildIdentity } from "./build-identity"
@@ -118,7 +118,7 @@ export function parseSourceBundleReport(output: string, target: string): SourceB
     || report.graphEntries !== (report.entries as number) + (report.derivedEntries as number)
     || !Number.isSafeInteger(report.graphChunks)
     || (report.graphChunks as number) < 1
-    || (report.graphChunks as number) > 1_024
+    || (report.graphChunks as number) > MAX_GRAPH_CHUNKS
     || !Number.isSafeInteger(report.graphEncodedBytes)
     || (report.graphEncodedBytes as number) < 1
     || (report.graphEncodedBytes as number) > 1024 * 1024 * 1024

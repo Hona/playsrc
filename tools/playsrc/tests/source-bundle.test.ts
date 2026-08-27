@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseSourceBundleCache, parseSourceBundleReport } from "../src/source-bundle"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
+import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
 
 const graphSha256 = "1".repeat(64)
 const ledgerSha256 = "2".repeat(64)
@@ -33,6 +34,11 @@ const valid = {
 }
 
 describe("source dependency bundle report", () => {
+  test("keeps Process-sized region reports within the shared graph admission bound", () => {
+    const report = { ...valid, target: "cp_process_final", requests: 4104, entries: 4055, graphEntries: 4313, graphChunks: 1033 }
+    expect(parseSourceBundleReport(JSON.stringify(report), report.target).graphChunks).toBe(1033)
+    expect(() => parseSourceBundleReport(JSON.stringify({ ...report, graphChunks: MAX_GRAPH_CHUNKS + 1 }), report.target)).toThrow("source bundle report is malformed")
+  })
   test("accepts exact bounded bundle and ledger descriptors", () => {
     expect(parseSourceBundleReport(JSON.stringify(valid), "jump_beef")).toEqual({
       target: "jump_beef",

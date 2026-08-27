@@ -2,6 +2,7 @@
 
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
+import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
 import { reclaimModelReads } from "./model-read-ownership"
 import { ReplyWriter, REPLY_BYTES, type SharedReply, type ReplyRange } from "./reply-transport"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
@@ -305,7 +306,7 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
 
 function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resources" }>): void {
   const exports = wasm
-  if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > 1_024
+  if (!exports || !Array.isArray(request.chunks) || request.chunks.length < 1 || request.chunks.length > MAX_GRAPH_CHUNKS
     || typeof request.shared !== "boolean" || request.shared !== (request.generation !== undefined)
     || (request.generation !== undefined && (!resourceSets.writable(request.generation) || request.generation <= (active?.generation ?? 0)))) {
     fail(request.id, "MalformedRequest")

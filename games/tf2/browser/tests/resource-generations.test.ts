@@ -191,10 +191,11 @@ test("late finalization, load and activation cannot republish a superseded candi
 
 test("a full bounded generation seals once even though it cannot append another region", () => {
   const owners = new ResourceGenerations(() => {})
-  for (let index = 0; index < 1024; index += 1) owners.adopt(1, section(index * 32))
+  for (let index = 0; index < MAX_GRAPH_CHUNKS; index += 1) owners.adopt(1, section(index * 32))
   expect(owners.writable(1)).toBe(false)
   expect(owners.finalizable(1)).toBe(true)
-  expect(owners.finalize(1, 12 + 1024 * 20, HASH)).toBe(true)
+  expect(owners.finalize(1, 12 + MAX_GRAPH_CHUNKS * 20, HASH)).toBe(true)
   expect(owners.loadable(1)).toBe(true)
   expect(owners.finalizable(1)).toBe(false)
 })
+import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"

@@ -7,7 +7,7 @@ const MAX_CHUNK_BYTES = 32 * 1024 * 1024
 const MAX_CHUNK_ENTRIES = 2_048
 export const MAX_CHUNK_ROLES = 2_048
 const MAX_GRAPH_ENTRIES = 8_192
-const MAX_GRAPH_CHUNKS = 1_024
+export const MAX_GRAPH_CHUNKS = 2_048
 
 export const RESOURCE_GRAPH_MEDIA_TYPE = "application/vnd.playsrc.resource-graph+json"
 export const RESOURCE_CHUNK_MEDIA_TYPE = "application/vnd.playsrc.resource-chunk"
