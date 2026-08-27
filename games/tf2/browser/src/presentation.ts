@@ -4,8 +4,18 @@ import type { Camera, Effect, ModelEyeState, ModelLightingInput, ModelLocalLight
 import type { ModelItem } from "@playsrc/rendering"
 import type { PresentationArtifacts } from "./artifacts"
 import { tf2ClassPresentation, type Tf2ClassPresentation } from "./class"
-import type { Snapshot, ActorCloakState } from "./codec"
 import type { Tf2EquippedItem } from "./equipment/types"
+import type { Snapshot, ActorCloakState, EntityPresentation } from "./codec"
+
+/** Static skin inputs do not create a prop animation. Keep their template bounds;
+ * only animated props replace those bounds with the authored sequence bounds. */
+export function studioModelFrameState(presentation: EntityPresentation, identity: number) {
+  const state = presentation.studioModels.find(model => model.sourceIndex === identity)
+  if (!state) throw new Error(`Studio model state unavailable: ${identity}`)
+  const animation = presentation.studioAnimations.find(animation => animation.sourceIndex === identity)
+  return Object.freeze({ position: state.worldPosition, angles: state.worldAngles, skin: state.skin,
+    renderBounds: animation?.bounds })
+}
 
 const UINT32_MAX = 0xffff_ffff
 const NORMAL_TOLERANCE = 1e-4

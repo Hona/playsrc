@@ -86,6 +86,7 @@ import {
   sourceViewOrientation,
   tf2Audio,
   tf2Camera,
+  studioModelFrameState,
   transformAttachment,
   type ModelPoseRequest,
   type PosedModel,
@@ -5360,10 +5361,8 @@ export class Tf2Application {
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...studioPoses.map(pose => {
-            const state = snapshot.entityPresentation.studioModels.find(model => model.sourceIndex === pose.identity)!
             const occurrence = this.#artifacts!.modelOccurrences.find(value => value.entity === pose.identity)!
-            const renderBounds = snapshot.entityPresentation.studioAnimations.find(animation => animation.sourceIndex === pose.identity)?.bounds
-            return Object.freeze({ identity: pose.identity, model: pose.model, position: state.worldPosition, angles: state.worldAngles, scale: 1, skin: state.skin, body: occurrence.body, pose, renderBounds, modelLighting: pose.lighting!, eyeStates: pose.eyes })
+            return Object.freeze({ identity: pose.identity, model: pose.model, ...studioModelFrameState(snapshot.entityPresentation, pose.identity), scale: 1, body: occurrence.body, pose, modelLighting: pose.lighting!, eyeStates: pose.eyes })
           }),
           ...botParts.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity+(pose.wearable?0x20000+pose.wearable.itemId*0x10000:pose.role==="item"?0x10000:0),model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...controlPointPoses.map(pose=>{const point=snapshot.controlPoints!.points.find(point=>OBJECTIVE_MODEL_IDENTITY_BASE+point.identity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:point.position,angles:point.angles,scale:1,skin:point.skin,body:point.body,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
