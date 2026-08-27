@@ -68,6 +68,8 @@ pub enum WeaponActivity {
     MeleePrimary,
     FistLeft,
     FistRight,
+    Prefire,
+    Postfire,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,6 +452,7 @@ pub struct WeaponRuntime {
     pub firing_begin_tick: Option<u64>,
     pub idle_due_tick: Option<u64>,
     pub smack_due_tick: Option<u64>,
+    pub push_due_time: Option<f32>,
     pub charged_damage: f32,
     pub next_secondary_tick: u64,
     pub unzoom_due_tick: Option<u64>,
@@ -492,6 +495,7 @@ impl WeaponRuntime {
             firing_begin_tick: None,
             idle_due_tick: None,
             smack_due_tick: None,
+            push_due_time: None,
             charged_damage: 0.0,
             next_secondary_tick: 0,
             unzoom_due_tick: None,
@@ -555,6 +559,7 @@ impl WeaponRuntime {
         self.firing_begin_tick = None;
         self.idle_due_tick = None;
         self.smack_due_tick = None;
+        self.push_due_time = None;
         self.charged_damage = 0.0;
         self.next_secondary_tick = 0;
         self.unzoom_due_tick = None;
@@ -727,6 +732,12 @@ impl WeaponRuntime {
         released: bool,
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
+        if self.weapon == Weapon::HandgunScoutPrimary && secondary && tick >= self.next_secondary_tick {
+            self.next_primary_tick = source_deadline_tick(tick, 0.6, tick_interval);
+            self.next_secondary_tick = source_deadline_tick(tick, 1.5, tick_interval);
+            self.push_due_time = Some(tick as f32 * tick_interval + 0.2);
+            activities.push(ActivityEvent { tick, weapon: self.weapon, activity: WeaponActivity::SecondaryAttack });
+        }
         if self.weapon == Weapon::Minigun {
             return self.minigun_attack(tick, tick_interval, held, secondary, activities);
         }
@@ -802,7 +813,7 @@ impl WeaponRuntime {
                 activities.push(ActivityEvent {
                     tick,
                     weapon: self.weapon,
-                    activity: WeaponActivity::Idle,
+                    activity: WeaponActivity::Postfire,
                 });
             }
             return PrimaryResult::None;
@@ -815,12 +826,12 @@ impl WeaponRuntime {
                 self.minigun_state = MinigunState::Starting;
                 self.spin_begin_tick = Some(tick);
                 self.firing_begin_tick = None;
-                self.next_primary_tick = tick.saturating_add(delay_ticks(self.spinup_seconds, tick_interval));
+                self.next_primary_tick = source_deadline_tick(tick, self.spinup_seconds, tick_interval);
                 self.idle_due_tick = Some(self.next_primary_tick);
                 activities.push(ActivityEvent {
                     tick,
                     weapon: self.weapon,
-                    activity: WeaponActivity::Draw,
+                    activity: WeaponActivity::Prefire,
                 });
             }
             MinigunState::Starting if tick >= self.next_primary_tick => {
@@ -838,35 +849,39 @@ impl WeaponRuntime {
                 self.next_primary_tick = tick.saturating_add(delay_ticks(0.1, tick_interval));
                 self.idle_due_tick = Some(self.next_primary_tick);
             }
-            MinigunState::Spinning if primary && tick >= self.next_primary_tick => {
-                self.minigun_state = if self.reserve > 0 {
-                    MinigunState::Firing
-                } else {
-                    MinigunState::DryFire
-                };
+            MinigunState::Spinning => {
+                self.firing_begin_tick = None;
+                if primary && tick >= self.next_primary_tick {
+                    self.minigun_state = if self.reserve > 0 { MinigunState::Firing } else { MinigunState::DryFire };
+                }
+                activities.push(ActivityEvent { tick, weapon: self.weapon, activity: WeaponActivity::SecondaryAttack });
             }
             MinigunState::DryFire => {
+                self.firing_begin_tick = None;
+                self.spin_begin_tick = None;
                 if !primary && secondary {
                     self.minigun_state = MinigunState::Spinning;
                 } else if self.reserve > 0 {
                     self.minigun_state = MinigunState::Firing;
                 }
+                activities.push(ActivityEvent { tick, weapon: self.weapon, activity: WeaponActivity::SecondaryAttack });
             }
             MinigunState::Firing if primary && tick >= self.next_primary_tick => {
                 if self.reserve == 0 {
                     self.minigun_state = MinigunState::DryFire;
                     return PrimaryResult::None;
                 }
+                let began_firing = self.firing_begin_tick.is_none();
                 self.firing_begin_tick.get_or_insert(tick);
                 self.reserve -= 1;
                 self.next_primary_tick =
                     tick.saturating_add(delay_ticks(self.profile().fire_delay, tick_interval));
                 self.idle_due_tick = Some(tick.saturating_add(delay_ticks(0.2, tick_interval)));
-                activities.push(ActivityEvent {
+                if began_firing { activities.push(ActivityEvent {
                     tick,
                     weapon: self.weapon,
                     activity: WeaponActivity::PrimaryAttack,
-                });
+                }); }
                 return PrimaryResult::Fired {
                     charge_seconds: 0.0,
                 };
@@ -935,6 +950,36 @@ fn elapsed_seconds(begin: u64, tick: u64, tick_interval: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortstop_shove_has_independent_cooldown_and_does_not_consume_ammo() {
+        let mut weapon = WeaponRuntime::full(Weapon::HandgunScoutPrimary);
+        let mut activities = Vec::new();
+        assert_eq!(weapon.attack(100, 0.015, true, true, false, &mut activities), PrimaryResult::None);
+        assert_eq!((weapon.next_primary_tick, weapon.next_secondary_tick, weapon.push_due_time), (140, 200, Some(1.7)));
+        assert_eq!(weapon.clip, 4);
+        assert_eq!(activities[0].activity, WeaponActivity::SecondaryAttack);
+        assert_eq!(weapon.attack(139, 0.015, true, true, false, &mut activities), PrimaryResult::None);
+        assert!(matches!(weapon.attack(140, 0.015, true, true, false, &mut activities), PrimaryResult::Fired { .. }));
+        assert_eq!(weapon.clip, 3);
+        assert_eq!(weapon.next_secondary_tick, 200);
+    }
+
+    #[test]
+    fn minigun_prefire_and_postfire_keep_the_looped_primary_action_clock() {
+        let mut weapon = WeaponRuntime::full(Weapon::Minigun);
+        weapon.spinup_seconds = 0.6;
+        let mut activities = Vec::new();
+        weapon.attack(100, 0.015, true, false, false, &mut activities);
+        assert_eq!(weapon.next_primary_tick, 140);
+        assert_eq!(activities[0].activity, WeaponActivity::Prefire);
+        for tick in 101..200 { weapon.attack(tick, 0.015, true, false, false, &mut activities); }
+        assert_eq!(activities.iter().filter(|event| event.activity == WeaponActivity::PrimaryAttack).count(), 1);
+        assert!(weapon.reserve < 199);
+        for tick in 200..220 { weapon.attack(tick, 0.015, false, false, false, &mut activities); }
+        assert_eq!(weapon.minigun_state, MinigunState::Idle);
+        assert_eq!(activities.last().unwrap().activity, WeaponActivity::Postfire);
+    }
 
     fn rocket_context() -> ProfileContext {
         ProfileContext {

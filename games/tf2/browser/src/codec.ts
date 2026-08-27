@@ -1970,7 +1970,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 11 ||
+    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 13 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")

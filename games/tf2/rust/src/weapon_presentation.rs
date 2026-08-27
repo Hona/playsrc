@@ -66,6 +66,9 @@ fn translate_viewmodel(role: &str, activity: &str, overrides: &[(&str, &str)]) -
     }
     let role = role.to_ascii_uppercase();
     let mapped_role = if role == "PRIMARY2" { "PRIMARY" } else { &role };
+    if matches!(activity, "ACT_MP_ATTACK_STAND_PREFIRE" | "ACT_MP_ATTACK_STAND_POSTFIRE" | "ACT_MP_ATTACK_STAND_PRIMARYFIRE") {
+        return format!("ACT_{mapped_role}_{}", activity.strip_prefix("ACT_MP_").unwrap());
+    }
     if !matches!(
         mapped_role,
         "PRIMARY" | "SECONDARY" | "MELEE" | "PDA" | "ITEM1" | "ITEM2" | "SECONDARY2"
@@ -122,6 +125,9 @@ pub fn viewmodel_activity(
         return None;
     }
     let weapon = supported.weapon_for_class(class)?;
+    if weapon == Weapon::HandgunScoutPrimary && activity == "ACT_VM_SECONDARYATTACK" {
+        return Some("ACT_SECONDARY_VM_ALTATTACK".to_owned());
+    }
     let presentation = equipment::presentation(definition_index)?;
     if !presentation.attach_to_hands {
         return Some(activity.to_owned());
