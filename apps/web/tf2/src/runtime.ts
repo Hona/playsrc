@@ -2138,7 +2138,7 @@ export class Tf2Application {
     const priorTask = this.#equipmentAdmissionTask
     const epoch = this.#equipmentAdmissionEpoch, operation = this.#operation
     const task = (async () => {
-      await priorTask
+      await priorTask?.catch(error => { if (error?.name !== "AbortError") throw error })
       if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
       const previous = this.#equipmentAdmissions.get(generation)
       const wanted = [...new Set(definitions)]
@@ -2184,7 +2184,10 @@ export class Tf2Application {
         this.#equipmentPreparing = false
         if (!retained) await this.#client?.releaseResources(configuration.generation).catch(() => {})
       }
-    })()
+    })().catch(error => {
+      if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+      throw error
+    })
     this.#equipmentAdmissionTask = task
     try { await task } finally { if (this.#equipmentAdmissionTask === task) this.#equipmentAdmissionTask = undefined }
   }
@@ -2233,11 +2236,12 @@ export class Tf2Application {
         pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes,
         particles: poses.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, artifacts.particleMaterials).items : []),
       }])
+      if (this.#equipmentRoot) this.#equipmentRoot.dataset.previewModel = player.model
       const cosmeticProfile = (globalThis as any).__playsrcProfile
       if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmeticPreview = { class: preview.class, model: player.model, time: now,
         wearables: poses.filter(pose => pose.wearable).map(pose => pose.model),
         particles: poses.reduce((count, pose) => count + (pose.wearable?.particleBytes.byteLength ? new DataView(pose.wearable.particleBytes.buffer, pose.wearable.particleBytes.byteOffset).getUint32(8, true) : 0), 0) }
-    })().catch(error => { if (this.#equipmentPreview === preview) this.#output(`Equipment preview: ${String(error)}`) })
+    })().catch(error => { if (this.#equipmentPreview === preview) this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Equipment preview failed") }) })
       .finally(() => { this.#equipmentRenderTask = undefined })
   }
 

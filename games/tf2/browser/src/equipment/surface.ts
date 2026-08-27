@@ -7,7 +7,7 @@ export function attachEquipmentSurface(runtime: VguiRuntime, panel: VguiPanelId,
   wrapper.dataset.equipmentViewportClip = "true"
   Object.assign(wrapper.style, { position: "absolute", inset: "0", overflow: "hidden", width: "100%", height: "100%", pointerEvents: "none" })
   Object.assign(canvas.style, { position: "absolute", width: `${viewport.width}px`, height: `${viewport.height}px`,
-    left: `${-bounds.x}px`, top: `${-bounds.y}px`, backgroundColor: "transparent", pointerEvents: "none" })
+    left: `${-bounds.x}px`, top: `${-bounds.y}px`, backgroundColor: "transparent", visibility: "visible", pointerEvents: "none" })
   wrapper.append(canvas)
   const detach = runtime.attachSurface(panel, wrapper)
   let attached = true
