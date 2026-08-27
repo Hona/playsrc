@@ -132,8 +132,17 @@ test("the leased owner exits boundedly when Vite close stalls, releasing both li
     const readyDeadline = Date.now() + 2_000
     while (!await Bun.file(filename).exists() && Date.now() < readyDeadline) await Bun.sleep(10)
     expect(JSON.parse(await readFile(filename, "utf8")).pid).toBe(owner.pid)
+    expect(processIsAlive(child)).toBe(true)
     const began = Date.now()
     await writeFile(`${filename}.lease`, JSON.stringify({ schema: "playsrc-profile-owner-lease-v1", token: "close-test", expiresAt: 0 }))
+    let assetsClosed = false
+    while (!assetsClosed && Date.now() - began < 1_500) {
+      try { await (await fetch(urls[1]!, { signal: AbortSignal.timeout(100) })).text() }
+      catch { assetsClosed = true }
+      if (!assetsClosed) await Bun.sleep(25)
+    }
+    expect(assetsClosed).toBe(true)
+    expect(processIsAlive(owner.pid)).toBe(true) // Vite is still stuck; asset cleanup is independent.
     expect(await exitWithin(owner, 3_500)).toBe(1)
     expect(Date.now() - began).toBeLessThan(3_000)
     expect(await new Response(owner.stderr).text()).toContain("2000 ms cleanup budget")
