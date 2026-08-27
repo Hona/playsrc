@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { RetainedModelCache } from "../src/retained-model-cache"
 
+test("replacement retains only prepared instances with an identical transferred template owner", () => {
+  const disposed: object[] = [], template = {}, changed = {}, replacement = {}
+  const cache = new RetainedModelCache<{ template: object }>(96, value => disposed.push(value))
+  const same = { template }, other = { template: changed }
+  cache.retain("world:scout", same)
+  cache.retain("panel:animated", other)
+  cache.discardWhere(value => ![template, replacement].includes(value.template))
+  expect(cache.take("world:scout")).toBe(same)
+  expect(cache.take("panel:animated")).toBeUndefined()
+  expect(disposed).toEqual([other])
+  cache.clear()
+  expect(disposed).toEqual([other])
+})
+
 test("a panel without pose input cannot acquire a parked posed occurrence", () => {
   const cache = new RetainedModelCache<object>(32, () => {})
   const posed = { skeleton: new Float32Array(16) }, bind = { texture: "authored" }

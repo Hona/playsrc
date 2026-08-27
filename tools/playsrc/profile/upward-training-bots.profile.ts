@@ -642,6 +642,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       simulationPublications: instrumentation.simulation, simulationPublicationsDropped: instrumentation.simulationDropped,
       classSwitches, lifecycle, nodeBuilds: instrumentation.nodeBuilds,
+      pipelinePreparation: { models: instrumentation.modelPreparation, retainedTemplates: instrumentation.counters.retainedModelTemplates ?? 0,
+        reusedPreparedModels: instrumentation.counters.reusedPreparedModels ?? 0 },
       dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0,
         panels, rasterImages: document.querySelectorAll("img[data-vgui-raster]").length, rasterCanvases: document.querySelectorAll("canvas[data-vgui-raster]").length,
         accessibility: { hudLabels: hudRoot?.querySelectorAll("[aria-label]").length ?? 0, gameView: surface.getAttribute("aria-label") },
@@ -960,7 +962,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry,
+    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
     schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),

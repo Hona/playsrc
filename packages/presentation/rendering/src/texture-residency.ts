@@ -110,9 +110,9 @@ export class SharedTextureResidency<T extends OwnedResource> {
     return identity === undefined ? undefined : this.#resources.get(identity)?.value
   }
 
-  commitTransfers(): void {
+  commitTransfers(resources: readonly OwnedResource[] = []): void {
     if (!this.#source) return
-    this.#source.#generation.transferTo(this.#generation, [...this.#borrowed.values()])
+    this.#source.#generation.transferTo(this.#generation, [...this.#borrowed.values(), ...resources])
     for (const identity of this.#borrowed.keys()) this.#source.#resources.delete(identity)
     this.#borrowed.clear()
     this.#source = undefined
