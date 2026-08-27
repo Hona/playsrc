@@ -162,6 +162,26 @@ test("persistent authored view corrections survive snapshot decode and reject no
   expect(() => decodeSnapshot(bytes)).toThrow("view angle correction is invalid")
 })
 
+test("control point and overtime events admit every declared wave variant", () => {
+  const source = new Uint8Array(snapshot())
+  const at = Buffer.from(source).indexOf("CSNP")
+  expect(at).toBeGreaterThan(0)
+  for (const [definition, waves] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2]]) {
+    for (let wave = 0; wave <= waves!; wave++) {
+      const bytes = new Uint8Array(source.length + 52)
+      bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)
+      const view = new DataView(bytes.buffer)
+      view.setUint32(132, 1, true)
+      view.setBigUint64(at, 7n, true)
+      bytes[at + 10] = 1; bytes[at + 11] = definition!; bytes[at + 12] = 1; bytes[at + 14] = wave
+      view.setUint32(at + 16, 1, true); view.setUint32(at + 20, 0xffff_ffff, true)
+      for (const offset of [36, 40, 44]) view.setFloat32(at + offset, 0.5, true)
+      if (wave < waves!) expect(decodeSnapshot(bytes.buffer).audioEvents[0]?.samples.wave).toBe(wave)
+      else expect(() => decodeSnapshot(bytes.buffer)).toThrow("audio event record is invalid")
+    }
+  }
+})
+
 test("death event wire retains exact uint32 damage bits, killing names and repeated occurrences before later sections", () => {
   const base = new Uint8Array(snapshot()), name = new TextEncoder().encode("tf_projectile_rocket")
   const record = new Uint8Array(28 + name.length), event = new DataView(record.buffer)
