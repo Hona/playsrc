@@ -151,6 +151,7 @@ export class Tf2WorkerClient {
   #shutdownRequested?: Promise<void>
   #staleMessages = 0
   #queuedModels?: QueuedModels
+  readonly #modelReads = new Set<Promise<readonly PosedModel[]>>()
   readonly #snapshotStreams = new Map<number, SimulationSnapshotStream>()
   #initialization?: Readonly<{ wasmSha256: string; threads: number; ready: Promise<void> }>
 
@@ -202,8 +203,8 @@ export class Tf2WorkerClient {
     this.#pending.clear()
   }
 
-  #reserve(): { id: number; response: Promise<WorkerResponse> } {
-    if (this.#closed || this.#shutdownRequested) throw new Tf2WorkerError("Closed")
+  #reserve(shutdown = false): { id: number; response: Promise<WorkerResponse> } {
+    if (this.#closed || this.#shutdownRequested && !shutdown) throw new Tf2WorkerError("Closed")
     if (this.#pending.size >= MAX_PENDING) throw new Tf2WorkerError("BoundExceeded")
     while (this.#pending.has(this.#nextId)) {
       this.#nextId = this.#nextId === 0xffff_ffff ? 1 : this.#nextId + 1
@@ -246,7 +247,7 @@ export class Tf2WorkerClient {
   #request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
     if (this.#queuedModels) this.#flushModels()
     try {
-      const pending = this.#reserve()
+      const pending = this.#reserve(request.kind === "shutdown")
       this.#send(request, pending.id, transfer)
       return pending.response
     } catch (error) {
@@ -715,7 +716,14 @@ export class Tf2WorkerClient {
       throw new Tf2WorkerError("WorkerFailed")
     return new Uint8Array(response.output)
   }
-  async models(generation: number, batch: Uint8Array): Promise<readonly PosedModel[]> {
+  models(generation: number, batch: Uint8Array): Promise<readonly PosedModel[]> {
+    const read = this.#readModels(generation, batch)
+    this.#modelReads.add(read)
+    void read.then(() => this.#modelReads.delete(read), () => this.#modelReads.delete(read))
+    return read
+  }
+
+  async #readModels(generation: number, batch: Uint8Array): Promise<readonly PosedModel[]> {
     if (batch.byteLength < 12 || batch.byteLength > 1024 * 1024) throw new Tf2WorkerError("BoundExceeded")
     if (this.#queuedModels) this.#flushModels()
     const pending = this.#reserve()
@@ -745,11 +753,6 @@ export class Tf2WorkerClient {
       return decodeModelPoseOutput(new Uint8Array(response.output, response.byteOffset, response.byteLength))
     } finally {
       Atomics.store(ownership, response.slot, 0)
-      try {
-        this.#worker.postMessage({ id: response.id, kind: "release-model-output", generation, lease: response.lease })
-      } catch {
-        this.#error()
-      }
     }
   }
 
@@ -868,6 +871,10 @@ export class Tf2WorkerClient {
 
   async #finishShutdown(): Promise<void> {
     try {
+      // Submit already reserved reads, then finish their synchronous decoders
+      // before shutdown can overtake their shared-memory ownership release.
+      if (this.#queuedModels) this.#flushModels()
+      if (this.#modelReads.size > 0) await Promise.allSettled(this.#modelReads)
       const response = await this.#request({ kind: "shutdown" })
       if (response.kind !== "shutdown") throw new Tf2WorkerError("WorkerFailed")
     } finally {

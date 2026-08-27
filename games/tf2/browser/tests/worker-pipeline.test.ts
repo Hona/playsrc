@@ -3,6 +3,7 @@ import type { DerivedObjectCache, VerifiedDerivedObject } from "@playsrc/asset-s
 import type { ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { Tf2WorkerClient, Tf2WorkerError, type ResourceConfiguration, type WorkerLike } from "../src/client"
 import type { VisibilityView, WorkerRequest, WorkerResponse, WorkerTransactionTimings } from "../src/protocol"
+import { reclaimModelReads } from "../src/model-read-ownership"
 
 const MAP = Uint8Array.from([0x50, 0x53, 0x4d, 0x50, 9, 8, 7, 6])
 const PRESENTATION = Uint8Array.from([0x50, 0x54, 0x46, 0x32, 1, 2, 3, 4])
@@ -202,9 +203,8 @@ class PipelineWorker implements WorkerLike {
   workerWasmSha256?: string
   malformedModelOutput = false
   modelBits?: number[]
-  readonly modelLeases = new Map<number, SharedArrayBuffer>()
+  readonly modelLeases = new Map<number, { output: SharedArrayBuffer; slot: number }>()
   readonly ownership = new Int32Array(new SharedArrayBuffer(256))
-  closing?: number
   initializeGate?: Promise<void>
   terminated = false
   readonly resources = new Map<number, Uint8Array[]>()
@@ -235,6 +235,7 @@ class PipelineWorker implements WorkerLike {
 
   postMessage(message: WorkerRequest, transfer: Transferable[] = []): void {
     const request = structuredClone(message, { transfer })
+    reclaimModelReads(this.ownership, this.modelLeases, lease => new Uint8Array(lease.output).fill(0xff))
     this.requests.push(request)
     if (this.failure) {
       this.#respond({ ...this.failure, id: request.id } as WorkerResponse)
@@ -266,8 +267,8 @@ class PipelineWorker implements WorkerLike {
         const output = new SharedArrayBuffer(bytes.length + 24)
         new Uint8Array(output, 12, bytes.length).set(bytes)
         if (this.malformedModelOutput) new Uint8Array(output)[12] = 0
-        this.modelLeases.set(request.id, output)
         const slot = request.id % 64
+        this.modelLeases.set(request.id, { output, slot })
         Atomics.store(this.ownership, slot, request.id | 0)
         this.#respond({ id: request.id, kind: "models", generation: request.generation, output, byteOffset: 12, byteLength: bytes.length, lease: request.id, ownership: this.ownership.buffer as SharedArrayBuffer, slot, timings: TIMINGS })
         if (request.visibility) {
@@ -372,18 +373,8 @@ class PipelineWorker implements WorkerLike {
         return
       }
       case "shutdown":
-        if (this.modelLeases.size > 0) { this.closing = request.id; return }
+        expect(this.modelLeases.size).toBe(0)
         this.#respond({ id: request.id, kind: "shutdown" })
-        return
-      case "release-model-output":
-        expect(Atomics.load(this.ownership, request.lease % 64)).toBe(0)
-        const output = this.modelLeases.get(request.lease)
-        if (output) new Uint8Array(output).fill(0xff)
-        this.modelLeases.delete(request.lease)
-        if (this.closing !== undefined && this.modelLeases.size === 0) {
-          this.#respond({ id: this.closing, kind: "shutdown" })
-          this.closing = undefined
-        }
         return
       default:
         this.#respond({ id: request.id, kind: "failure", code: "MalformedRequest", detail: 0 })
@@ -403,6 +394,19 @@ class PipelineWorker implements WorkerLike {
 }
 
 describe("TF2 Worker transport ownership", () => {
+  test("the gameplay model-to-particle continuation returns read ownership without an ACK task", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    for (let frame = 0; frame < 100; frame++) {
+      const poses = await client.models(7, new Uint8Array(12))
+      await client.particles(7, new Uint8Array(32))
+      expect(poses[0]!.boneMatrices[0]).toBe(1)
+      expect(Object.is(poses[0]!.boneMatrices[1], -0)).toBe(true)
+      expect(worker.modelLeases.size).toBe(0)
+    }
+    expect(worker.requests.map(request => request.kind)).toEqual(Array.from({ length: 100 }, () => ["models", "particles"]).flat())
+    await client.shutdown()
+  })
   test("single-flights authenticated activation and aborts delayed generations without a watchdog or stale publication", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     let release!: () => void
@@ -466,11 +470,10 @@ describe("TF2 Worker transport ownership", () => {
     expect(result[0]!.model).toBe("model")
     expect(result[0]!.boneMatrices.buffer).toBeInstanceOf(ArrayBuffer)
     expect([...new Uint32Array(result[0]!.boneMatrices.buffer)]).toEqual([0x3f800000, 0x80000000, 0, 0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000, 0])
-    expect(worker.modelLeases.size).toBe(0)
-    expect(worker.requests.map(request => request.kind)).toEqual(["models", "release-model-output"])
-    const request = worker.requests[1]
-    expect(request).toMatchObject({ id: worker.requests[0]!.id, generation: 7, lease: worker.requests[0]!.id })
+    expect(Atomics.load(worker.ownership, worker.requests[0]!.id % 64)).toBe(0)
+    expect(worker.requests.map(request => request.kind)).toEqual(["models"])
     await client.shutdown()
+    expect(worker.modelLeases.size).toBe(0)
   })
 
   test("releases a shared model lease after a synchronous decoder rejects its exact bytes", async () => {
@@ -478,23 +481,25 @@ describe("TF2 Worker transport ownership", () => {
     worker.malformedModelOutput = true
     const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     await expect(client.models(3, new Uint8Array(12))).rejects.toThrow("model pose output identity")
-    expect(worker.modelLeases.size).toBe(0)
-    expect(worker.requests.map(request => request.kind)).toEqual(["models", "release-model-output"])
+    expect(Atomics.load(worker.ownership, worker.requests[0]!.id % 64)).toBe(0)
+    expect(worker.requests.map(request => request.kind)).toEqual(["models"])
     await client.shutdown()
+    expect(worker.modelLeases.size).toBe(0)
   })
 
-  test("does not reclaim an unread model lease when shutdown overtakes the browser response", async () => {
+  test("drains unread model decoders before shutdown without another Worker task", async () => {
     const worker = new PipelineWorker(await digest(MAP))
     const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
     const models = client.models(3, new Uint8Array(12))
     const shutdown = client.shutdown()
+    expect(worker.requests.map(request => request.kind)).toEqual(["models"])
     expect(client.shutdown()).toBe(shutdown)
     await expect(client.models(3, new Uint8Array(12))).rejects.toThrow("Closed")
     const [poses] = await Promise.all([models, shutdown])
     expect(poses[0]!.model).toBe("model")
     expect(poses[0]!.boneMatrices[0]).toBe(1)
     expect(Object.is(poses[0]!.boneMatrices[1], -0)).toBe(true)
-    expect(worker.requests.map(request => request.kind)).toEqual(["models", "shutdown", "release-model-output"])
+    expect(worker.requests.map(request => request.kind)).toEqual(["models", "shutdown"])
     expect(worker.modelLeases.size).toBe(0)
     expect(worker.terminated).toBe(true)
   })
@@ -509,7 +514,7 @@ describe("TF2 Worker transport ownership", () => {
     for (const invalid of [0x7fc00001, 0x7f800001, 0xffc00001, 0x7f800000, 0xff800000]) {
       worker.modelBits = [invalid, ...bits.slice(1)]
       await expect(client.models(2, new Uint8Array(12))).rejects.toThrow("model pose scalar")
-      expect(worker.modelLeases.size).toBe(0)
+      expect([...worker.modelLeases.values()].every(lease => Atomics.load(worker.ownership, lease.slot) === 0)).toBe(true)
     }
     await client.shutdown()
   })
@@ -630,7 +635,7 @@ describe("TF2 Worker transport ownership", () => {
     const models = client.models(2, batch).then((value) => { order.push("models"); return value })
     const visibility = client.visibility(2, VIEW).then((value) => { order.push("visibility"); return value })
     const [posed, visible] = await Promise.all([models, visibility])
-    expect(worker.requests.map((request) => request.kind)).toEqual(["models", "release-model-output"])
+    expect(worker.requests.map((request) => request.kind)).toEqual(["models"])
     expect(worker.requests[0]).toMatchObject({ visibility: { views: [VIEW] } })
     expect(batch.byteLength).toBe(0)
     expect(posed).toMatchObject([{ identity: 9, model: "model" }])
@@ -672,8 +677,7 @@ describe("TF2 Worker transport ownership", () => {
     const models = client.models(2, new Uint8Array(12))
     const views = client.visibilityViews(2, [VIEW, sky])
     const [, results] = await Promise.all([models, views])
-    expect(worker.requests).toHaveLength(2)
-    expect(worker.requests[1]!.kind).toBe("release-model-output")
+    expect(worker.requests).toHaveLength(1)
     expect(worker.requests[0]).toMatchObject({ kind: "models", visibility: { views: [VIEW, sky] } })
     expect(results).toHaveLength(2)
     expect(results[0]).not.toBe(results[1])
@@ -710,7 +714,7 @@ describe("TF2 Worker transport ownership", () => {
     const models = client.models(2, new Uint8Array(12))
     const particles = client.particles(2, new Uint8Array(32))
     await Promise.all([models, particles])
-    expect(worker.requests.map((request) => request.kind)).toEqual(["models", "particles", "release-model-output"])
+    expect(worker.requests.map((request) => request.kind)).toEqual(["models", "particles"])
     await client.shutdown()
   })
 
@@ -835,7 +839,7 @@ describe("TF2 Worker transport ownership", () => {
     const visibility = client.visibility(3, VIEW)
     await Promise.all([models, visibility])
     expect(worker.requests.map((request) => [request.kind, "generation" in request ? request.generation : null]))
-      .toEqual([["models", 2], ["visibility", 3], ["release-model-output", 2]])
+      .toEqual([["models", 2], ["visibility", 3]])
     await client.shutdown()
   })
 

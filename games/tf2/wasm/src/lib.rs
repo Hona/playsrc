@@ -2922,9 +2922,20 @@ fn encode_model_poses(
 }
 
 fn canonical_bone_palette(bones: impl IntoIterator<Item = u8>) -> Vec<u8> {
-    let mut palette = bones.into_iter().collect::<Vec<_>>();
-    palette.sort_unstable();
-    palette.dedup();
+    // Source vertex bone IDs occupy exactly one byte. Deduplicate in that
+    // bounded domain instead of allocating and sorting every vertex influence
+    // again for every actor and presentation frame.
+    let mut words = [0_u64; 4];
+    for bone in bones {
+        words[usize::from(bone) / 64] |= 1_u64 << (bone % 64);
+    }
+    let mut palette = Vec::with_capacity(words.iter().map(|word| word.count_ones() as usize).sum());
+    for (index, mut word) in words.into_iter().enumerate() {
+        while word != 0 {
+            palette.push((index * 64 + word.trailing_zeros() as usize) as u8);
+            word &= word - 1;
+        }
+    }
     palette
 }
 
@@ -14306,6 +14317,32 @@ mod tests {
             canonical_bone_palette((0_u8..=255).rev()),
             (0_u8..=255).collect::<Vec<_>>()
         );
+        let repeated = canonical_bone_palette(std::iter::repeat_n(19, 100_000));
+        assert_eq!(repeated, [19]);
+        assert!(repeated.capacity() <= 256, "palette allocation must not scale with vertex references");
+    }
+
+    #[test]
+    fn bounded_palette_preserves_every_sort_dedup_result_and_matrix_order() {
+        let mut state = 0x12ab_7f89_u32;
+        for length in [0, 1, 3, 32, 255, 256, 1024, 65_536] {
+            let references = (0..length).map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            }).collect::<Vec<_>>();
+            let mut expected = references.clone();
+            expected.sort_unstable();
+            expected.dedup();
+            let actual = canonical_bone_palette(references);
+            assert_eq!(actual, expected);
+            assert!(actual.capacity() <= 256);
+            // The palette's ascending IDs own the output matrix order, including
+            // sparse high IDs. The compact transport does not resend the IDs.
+            let encode = |palette: &[u8]| palette.iter().flat_map(|bone| {
+                [u32::from(*bone), 0x8000_0000, 0x3f80_0000].into_iter().flat_map(u32::to_le_bytes)
+            }).collect::<Vec<_>>();
+            assert_eq!(encode(&actual), encode(&expected));
+        }
     }
 
     #[test]

@@ -53,7 +53,6 @@ export type WorkerRequest = WorkerEnvelope & (
   | Readonly<{ id: number; kind: "discard"; generation: number }>
   | Readonly<{ id: number; kind: "set-position"; generation: number; position: readonly [number, number, number] }>
   | Readonly<{ id: number; kind: "particles"; generation: number; batch: ArrayBuffer }>
-  | Readonly<{ id: number; kind: "release-model-output"; generation: number; lease: number }>
   | Readonly<{
       id: number
       kind: "models"
