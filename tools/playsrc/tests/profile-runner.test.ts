@@ -5,7 +5,7 @@ import path from "node:path"
 import { headedProfileConfiguration } from "../profile/profile-config"
 import { headedProfileTarget } from "../profile/profile-target"
 import { applicationBuildIdentity, buildCacheDirectory, rustBuildIdentity } from "../src/build-identity"
-import { acquireHeadedProfileLock, parseHeadedProfile, releaseHeadedProfileLock, requireBrowserBudget, ProfileCapacityDeferred, stopOwner } from "../src/profile-runner"
+import { acquireHeadedProfileLock, parseHeadedProfile, releaseHeadedProfileLock, requireBrowserBudget, profileMinimumRemainingMilliseconds, ProfileCapacityDeferred, stopOwner } from "../src/profile-runner"
 import { ProfileQueueTimeout } from "../src/profile-lock"
 import { fileFingerprint } from "../src/file-fingerprint"
 import { readWasmManifest, restoreThreadedBuild } from "../src/tf2-wasm-build"
@@ -369,6 +369,33 @@ describe("bounded headed profile orchestration", () => {
   test("defers an exhausted queue/build budget before launching an incomplete sample", () => {
     expect(() => requireBrowserBudget(16_000)).toThrow(ProfileCapacityDeferred)
     expect(() => requireBrowserBudget(30_000)).not.toThrow()
+  })
+
+  test("measured cosmetic acceptance cannot enter on the shorter tooltip-only budget", () => {
+    // Retained failed command: queue + exact startup consumed the real command
+    // budget. These are timing fixtures, not a newly measured browser sample.
+    const failed = { configuration: 1, queue: 47_823, identity: 31, owner: 76_482, browserOwner: 1_579, headed: 44_090 }
+    const completed = { headed: 60_182, browserOwner: 223, verification: 80 }
+    const tooltip = { headed: 4_386, browserOwner: 687, verification: 21 }
+    const beforeBrowser = 175_000 - 5_000 - failed.configuration - failed.queue - failed.identity - failed.owner
+    expect(beforeBrowser).toBe(45_663)
+    expect(failed.headed).toBeLessThan(completed.headed)
+    const fullMinimum = profileMinimumRemainingMilliseconds("burning-flames", {})
+    expect(fullMinimum).toBeGreaterThan(completed.headed + failed.browserOwner + completed.verification)
+    expect(() => requireBrowserBudget(beforeBrowser, fullMinimum)).toThrow(ProfileCapacityDeferred)
+    expect(() => requireBrowserBudget(failed.headed, fullMinimum)).toThrow(ProfileCapacityDeferred)
+    expect(() => requireBrowserBudget(fullMinimum - 1, fullMinimum)).toThrow(ProfileCapacityDeferred)
+    expect(() => requireBrowserBudget(fullMinimum, fullMinimum)).not.toThrow()
+    const tooltipMinimum = profileMinimumRemainingMilliseconds("burning-flames", { PROFILE_COSMETIC_TOOLTIP_ONLY: "1" })
+    expect(tooltipMinimum).toBe(30_000)
+    expect(tooltipMinimum).toBeGreaterThan(tooltip.headed + tooltip.browserOwner + tooltip.verification)
+    expect(() => requireBrowserBudget(beforeBrowser, tooltipMinimum)).not.toThrow()
+    expect(profileMinimumRemainingMilliseconds("burning-flames", { PROFILE_COSMETIC_TOOLTIP_ONLY: "0" })).toBe(fullMinimum)
+    expect(profileMinimumRemainingMilliseconds("burning-flames", { PROFILE_COSMETIC_VISUAL_ONLY: "1" })).toBe(fullMinimum)
+    expect(profileMinimumRemainingMilliseconds("control-points", { PROFILE_CP_FULL_MATCH: "1" })).toBe(120_000)
+    expect(profileMinimumRemainingMilliseconds("control-points", {})).toBe(30_000)
+    expect(profileMinimumRemainingMilliseconds("skinning-equivalence", {})).toBe(80_000)
+    expect(profileMinimumRemainingMilliseconds("gameplay", { PROFILE_COSMETIC_TOOLTIP_ONLY: "1" })).toBe(30_000)
   })
 
   test("changed browser launch or binary identity cannot reuse an old process", async () => {
