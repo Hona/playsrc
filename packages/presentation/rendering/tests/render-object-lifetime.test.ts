@@ -35,3 +35,22 @@ test("retiring old draws removes resource listeners but preserves transferred ge
   lifetime.restore()
   expect(manager.createRenderObject).toBe(original)
 })
+
+test("a flex geometry replacement moves the draw subscription off its immutable bind geometry", () => {
+  const manager = new RenderObjects({ backend: {}, contextNode: { id: 1, version: 0 }, _currentSourceMaterial: null },
+    { getCacheKey: () => 0, delete() {} }, {}, { delete() {} }, { deleteForRender() {} }, {})
+  const lifetime = installRenderObjectLifetime(manager)
+  const bind = new THREE.BoxGeometry(), flex = bind.clone(), material = new THREE.MeshBasicMaterial()
+  const mesh = new THREE.Mesh(bind, material), root = new THREE.Group()
+  root.add(mesh)
+  const draw = manager.get(mesh, material, new THREE.Scene(), new THREE.PerspectiveCamera(), {}, { id: 1 }, null)
+  expect((bind as any)._listeners.dispose).toHaveLength(1)
+  mesh.geometry = flex
+  draw.setGeometry(flex)
+  expect((bind as any)._listeners.dispose).toHaveLength(0)
+  expect((flex as any)._listeners.dispose).toHaveLength(1)
+  lifetime.release(root)
+  expect((bind as any)._listeners.dispose).toHaveLength(0)
+  expect((flex as any)._listeners.dispose).toHaveLength(0)
+  lifetime.restore()
+})
