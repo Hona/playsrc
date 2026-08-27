@@ -7,7 +7,7 @@ import { applicationBuildIdentity } from "../src/build-identity"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
-import { prepareClassCapture } from "./class-input-sequence"
+import { classInputViolations, prepareClassCapture } from "./class-input-sequence"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { summarizeCompositorFreezes, summarizeFreezeTimeline } from "./freeze-timeline"
@@ -434,12 +434,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const started = performance.now()
     ;(globalThis as any).__playsrcProfile.classInputSampleStarted = started
     performance.mark(startMark, { startTime: started })
-    const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean }> = []
-    const mark = (phase: string, detail: { playerClass?: number; key?: string; visible?: boolean } = {}) => {
+    const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean; button?: number; trusted?: boolean; controllerAction?: string | null }> = []
+    const mark = (phase: string, detail: { playerClass?: number; key?: string; visible?: boolean; button?: number; trusted?: boolean; controllerAction?: string | null } = {}) => {
       lifecycle.push({ at: Number((performance.now() - started).toFixed(3)), phase, ...detail })
     }
-    const keydown = (event: KeyboardEvent) => { if (event.code === "Comma" || /^Digit[1-9]$/u.test(event.code)) mark("key-down", { key: event.code }) }
-    const pointerdown = () => mark(document.pointerLockElement === surface ? "weapon-fire" : "pointer-capture")
+    const controllerAction = () => (globalThis as any).__playsrcProfile.classInputAction ?? null
+    const keydown = (event: KeyboardEvent) => mark("key-down", { key: event.code, trusted: event.isTrusted, controllerAction: controllerAction() })
+    const pointerdown = (event: PointerEvent) => mark(event.button !== 0 ? "other-pointer-button" : document.pointerLockElement === surface ? "weapon-fire" : "pointer-capture",
+      { button: event.button, trusted: event.isTrusted, controllerAction: controllerAction() })
     document.addEventListener("keydown", keydown, true)
     surface.addEventListener("pointerdown", pointerdown, true)
     let ended = started
@@ -577,7 +579,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const classes = ["heavyweapons", "pyro", "medic", "spy", "engineer", "sniper", "scout", "demoman", "soldier"] as const
     const digits = [5, 3, 7, 9, 6, 8, 1, 4, 2] as const
     const identities = [6, 7, 5, 8, 9, 2, 1, 4, 3] as const
-    const deadline = Date.now() + seconds * 1000
+    const now = () => performance.now()
+    const deadline = now() + seconds * 1000
+    const action = (value: string) => page.evaluate(value => { (globalThis as any).__playsrcProfile.classInputAction = value }, value)
+    await action("scoreboard")
     await page.keyboard.down("Tab")
     visibleScoreboardRows = await root.evaluate((element, timeout) => new Promise<number | null>(resolve => {
       const started = performance.now()
@@ -588,56 +593,64 @@ test("profile authored headed Upward offline-practice default roster and actual 
         else requestAnimationFrame(poll)
       }
       poll()
-    }), Math.max(0, deadline - Date.now()))
+    }), Math.max(0, deadline - now()))
     await page.keyboard.up("Tab")
+    await action("none")
     let lastNativeCapture = 0
     for (const [position, playerClass] of (acceptance ? classes : [...classes, ...classes]).entries()) {
       const index = position % classes.length
-      if (Date.now() >= deadline) break
+      if (now() >= deadline) break
       // Blink's native limiter starts at one, then resets to zero after two
       // seconds since the last successful lock: four first admissions, then
       // five per reset. Respect the real wall-clock policy; never emulate lock.
       const cooling = acceptance ? position > 0 && position % 4 === 0 : position >= 4 && (position - 4) % 5 === 0
       if (!await prepareClassCapture({
-        earliestCapture: cooling ? lastNativeCapture + 2100 : 0, deadline, now: Date.now,
+        earliestCapture: cooling ? lastNativeCapture + 2100 : 0, deadline, now,
         delay: milliseconds => page.waitForTimeout(milliseconds),
         select: async () => {
-          exercisedClasses.push(playerClass)
-          await page.keyboard.press("Comma")
-          if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
-            const started = performance.now()
-            const poll = () => element.dataset.classSelectionVisible === "true" ? resolve(true)
-              : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
-            poll()
-          }), Math.max(0, deadline - Date.now()))) return false
-          await page.keyboard.press(`Digit${digits[index]}`)
-          if (!await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
-            const started = performance.now()
-            const poll = () => (element.dataset.hudProbe ?? "").split(":")[1] === String(identity) ? resolve(true)
-              : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
-            poll()
-          }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })) return false
-          // The grenade/sticky rigid-body path is deliberately unavailable.
-          // Exercise the Demoman's authored Bottle via a real slot key instead
-          // of counting a mouse press which the application must reject.
-          if (identities[index] === 4) await page.keyboard.press("Digit3")
-          return root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
-            const started = performance.now()
-            let selectedTick: number | undefined
-            const poll = () => {
-              const hud = (element.dataset.hudProbe ?? "").split(":")
-              if (hud[1] === String(identity) && (identity !== 4 || hud[2] === "17") && element.dataset.classSelectionVisible === "false") {
-                selectedTick ??= Number(element.dataset.snapshotTick)
-                const frames = (globalThis as any).__playsrcFrameProfiler.completedFrames
-                if (frames.length && Number(frames.at(-1).tick) >= selectedTick!) { resolve(true); return }
+          await action("select")
+          try {
+            exercisedClasses.push(playerClass)
+            await page.keyboard.press("Comma")
+            if (!await root.evaluate((element, timeout) => new Promise<boolean>(resolve => {
+              const started = performance.now()
+              const poll = () => element.dataset.classSelectionVisible === "true" ? resolve(true)
+                : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+              poll()
+            }), Math.max(0, deadline - now()))) return false
+            await page.keyboard.press(`Digit${digits[index]}`)
+            if (!await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
+              const started = performance.now()
+              const poll = () => (element.dataset.hudProbe ?? "").split(":")[1] === String(identity) ? resolve(true)
+                : performance.now() - started >= timeout ? resolve(false) : requestAnimationFrame(poll)
+              poll()
+            }), { identity: identities[index], timeout: Math.max(0, deadline - now()) })) return false
+            // The grenade/sticky rigid-body path is deliberately unavailable.
+            // Exercise the Demoman's authored Bottle via a real slot key instead
+            // of counting a mouse press which the application must reject.
+            if (identities[index] === 4) await page.keyboard.press("Digit3")
+            return await root.evaluate((element, { identity, timeout }) => new Promise<boolean>(resolve => {
+              const started = performance.now()
+              let selectedTick: number | undefined
+              const poll = () => {
+                const hud = (element.dataset.hudProbe ?? "").split(":")
+                if (hud[1] === String(identity) && (identity !== 4 || hud[2] === "17") && element.dataset.classSelectionVisible === "false") {
+                  selectedTick ??= Number(element.dataset.snapshotTick)
+                  const frames = (globalThis as any).__playsrcFrameProfiler.completedFrames
+                  if (frames.length && Number(frames.at(-1).tick) >= selectedTick!) { resolve(true); return }
+                }
+                if (performance.now() - started >= timeout) resolve(false)
+                else requestAnimationFrame(poll)
               }
-              if (performance.now() - started >= timeout) resolve(false)
-              else requestAnimationFrame(poll)
-            }
-            poll()
-          }), { identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })
+              poll()
+            }), { identity: identities[index], timeout: Math.max(0, deadline - now()) })
+          } finally { await action("none") }
         },
       })) break
+      // A lock acquired during the idle/setup interval was not this controller's
+      // capture. Do not manufacture exclusivity by unlocking or ignoring input.
+      if (await page.evaluate(() => document.pointerLockElement !== null)) break
+      await action("capture")
       await page.bringToFront()
       await canvas.focus()
       // Visibility, class state and a completed frame were acknowledged above.
@@ -646,17 +659,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await page.mouse.click(capturePoint.x, capturePoint.y)
       // The first native click requests capture; it is not a weapon-fire edge.
       // Both scenario modes must admit capture before sending actual held fire.
-      await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - Date.now())) })
-      lastNativeCapture = Date.now()
+      await expect(root).toHaveAttribute("data-pointer-locked", "true", { timeout: Math.max(1, Math.min(2000, deadline - now())) })
+      lastNativeCapture = now()
       const beforeAttack = await page.evaluate(() => {
         const records = (globalThis as any).__playsrcFrameProfiler.simulation
         return { index: records.length, hostTick: records.at(-1)?.replayAttack?.hostTick ?? "0" }
       })
       const minimumHold = acceptance ? 100 : 20
-      const pressedAt = Date.now()
-      if (pressedAt + minimumHold >= deadline) break
-      await page.mouse.down()
+      if (now() + minimumHold >= deadline) break
+      await action("attack")
       try {
+        await page.mouse.down()
+        const pressedAt = now()
         const admitted = await page.evaluate(({ before, identity, timeout }) => new Promise<any>(resolve => {
           const started = performance.now()
           let cursor = before.index
@@ -681,13 +695,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
             else requestAnimationFrame(poll)
           }
           poll()
-        }), { before: beforeAttack, identity: identities[index], timeout: Math.max(0, deadline - Date.now()) })
+        }), { before: beforeAttack, identity: identities[index], timeout: Math.max(0, deadline - now()) })
         if (!admitted || admitted.at >= seconds * 1000) break
-        const remainingHold = Math.max(0, pressedAt + minimumHold - Date.now())
-        if (Date.now() + remainingHold >= deadline) break
+        const remainingHold = Math.max(0, pressedAt + minimumHold - now())
+        if (now() + remainingHold >= deadline) break
         if (remainingHold) await page.waitForTimeout(remainingHold)
         admittedAttacks.push(admitted)
-      } finally { await page.mouse.up() }
+      } finally { await page.mouse.up(); await action("none") }
     }
   }
   const interaction = process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses
@@ -872,7 +886,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     },
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
     botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
-    classSwitches: { requested: exercisedClasses, attacks: admittedAttacks, lifecycle: measurement.lifecycle, timing: summarizeClassSwitchLifecycle(measurement.lifecycle), observed: measurement.classSwitches.map((item, index, values) => ({
+    classSwitches: { requested: exercisedClasses, attacks: admittedAttacks,
+      inputGuard: { unplanned: classInputViolations(measurement.lifecycle), captures: measurement.lifecycle.filter(event => event.phase === "pointer-capture").length, presses: measurement.lifecycle.filter(event => event.phase === "weapon-fire").length },
+      lifecycle: measurement.lifecycle, timing: summarizeClassSwitchLifecycle(measurement.lifecycle), observed: measurement.classSwitches.map((item, index, values) => ({
       ...item,
       millisecondsSincePrevious: Number((item.at - (values[index - 1]?.at ?? 0)).toFixed(3)),
       createdTextures: item.textures - (values[index - 1]?.textures ?? 0),
