@@ -176,6 +176,17 @@ describe("allocation capture -> immutable manifest -> offline memory attribution
     expect(await readFile(filename)).toEqual(bytes)
   }))
 
+  test("failed native trace still authenticates retained heap bytes without inventing a PID/clock join", () => inDirectory(async directory => {
+    const { input } = await fixture(directory)
+    const saved = await retainCompositorEvidence({ ...input, raw: Buffer.alloc(0), complete: false, dataLossOccurred: true,
+      collectionErrors: ["Native trace completion exceeded 5 seconds"] })
+    const filename = path.join(directory, saved.artifact.file)
+    expect(await replayAllocationMemory(filename)).toMatchObject({ status: "incomplete", estimatedAllocation: null,
+      evidence: { main: { profile: input.memory.main.profile, capturedBytes: input.memory.main.capturedBytes } } })
+    await writeFile(path.join(directory, input.memory.main.profile!.file), "tampered")
+    await expect(replayAllocationMemory(filename)).rejects.toThrow("identity")
+  }))
+
   test("bounded structural validation rejects sample/node inconsistencies without recursive traversal", () => {
     for (const bad of [{ ...profile, samples: [{ nodeId: 99, size: 1, ordinal: 1 }] },
       { ...profile, samples: [profile.samples[0], profile.samples[0]] },
