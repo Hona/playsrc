@@ -1,3 +1,6 @@
+import { TF2_CONTENT_BUILD } from "../content-build"
+import { TF2_MAPS, type Tf2TargetName } from "../maps"
+
 export type Tf2LoadingAsset = Readonly<{
   logicalPath: string
   byteLength: number
@@ -35,6 +38,11 @@ export type Tf2LoadingBackgroundResult =
     }>
   | Readonly<{ ok: false; generation: number; code: "InvalidInput" | "MalformedMapPhoto"; subject: string; checkedLocations: readonly string[] }>
 
+type MapLoading = Readonly<{
+  photoLocations: readonly string[]
+  photo: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }> | null
+}>
+
 const SHA256 = /^[0-9a-f]{64}$/u
 const MAP = /^[a-z0-9][a-z0-9_-]{0,94}$/u
 const asset = (value: Tf2LoadingAsset | undefined): value is Tf2LoadingAsset => Boolean(value
@@ -46,105 +54,33 @@ export const TF2_STAMP_BACKGROUND = Object.freeze({
   texture: Object.freeze({ logicalPath: "materials/vgui/stamp_background_map.vtf", byteLength: 1_398_360, sha256: "2f00d21971c788a51bd254ec5b69ad79af52caad35f0cde2a1ec9f4dbaf4a955", providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
 })
 
-export const TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS = Object.freeze([
-  "jump-beef-pak:maps/jump_beef.bsp!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-00-workshop:materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-09-tf:materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-10-hl2:materials/vgui/maps/menu_photos_jump_beef.vmt",
-  "game-11-download:materials/vgui/maps/menu_photos_jump_beef.vmt",
-] as const)
+function mapLoading(target: Tf2TargetName): MapLoading {
+  const source = TF2_MAPS[target]
+  const material = `materials/vgui/maps/menu_photos_${target}.vmt`
+  const archives = ["tf2_textures", "tf2_sound_vo_english", "tf2_sound_misc", "tf2_misc", "hl2_textures", "hl2_sound_vo_english", "hl2_sound_misc", "hl2_misc"]
+  const photoLocations = Object.freeze([
+    `${source.pakProvider}:${source.logicalPath}!${material}`,
+    `game-00-workshop:${material}`,
+    ...archives.map((archive, index) => `game-0${index + 1}-${archive}_dir.vpk:${archive}_dir.vpk!${material}`),
+    `game-09-tf:${material}`, `game-10-hl2:${material}`, `game-11-download:${material}`,
+  ])
+  const photo = source.loadingPhoto
+  return Object.freeze({
+    photoLocations,
+    photo: photo ? Object.freeze({
+      material: Object.freeze({ ...photo.material, logicalPath: material, providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
+      texture: Object.freeze({ ...photo.texture, logicalPath: `materials/vgui/maps/menu_photos_${target}.vtf`, providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
+    }) : null,
+  })
+}
 
-export const TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS = Object.freeze([
-  "pl_upward-pak:maps/pl_upward.bsp!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-00-workshop:materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-09-tf:materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-10-hl2:materials/vgui/maps/menu_photos_pl_upward.vmt",
-  "game-11-download:materials/vgui/maps/menu_photos_pl_upward.vmt",
-] as const)
+export const TF2_MAP_LOADING = Object.freeze(Object.fromEntries(
+  (Object.keys(TF2_MAPS) as Tf2TargetName[]).map((target) => [target, mapLoading(target)]),
+)) as Readonly<Record<Tf2TargetName, MapLoading>>
 
-export const TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS = Object.freeze([
-  "ctf_2fort-pak:maps/ctf_2fort.bsp!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-00-workshop:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-09-tf:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-10-hl2:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-  "game-11-download:materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-] as const)
-
-export const TF2_CTF_2FORT_MAP_PHOTO = Object.freeze({
-  material: Object.freeze({
-    logicalPath: "materials/vgui/maps/menu_photos_ctf_2fort.vmt",
-    byteLength: 126,
-    sha256: "6c1228fd96a0f6029a924ea19d7801c9681db084742db8583e8f3d425056aac4",
-    providerIdentity: "tf2_misc_dir.vpk",
-    providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc,
-  }),
-  texture: Object.freeze({
-    logicalPath: "materials/vgui/maps/menu_photos_ctf_2fort.vtf",
-    byteLength: 349_784,
-    sha256: "1ec1d0a675522d3245e72817d83f9292ea9c60bcfde8d40bfe1b38eff2c889ad",
-    providerIdentity: "tf2_textures_dir.vpk",
-    providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures,
-  }),
-})
-
-export const TF2_MAP_LOADING = Object.freeze({
-  jump_beef: Object.freeze({ photoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, photo: null }),
-  pl_upward: Object.freeze({ photoLocations: TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, photo: null }),
-  ctf_2fort: Object.freeze({ photoLocations: TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS, photo: TF2_CTF_2FORT_MAP_PHOTO }),
-  koth_viaduct: Object.freeze({
-    photoLocations: Object.freeze([
-      "koth_viaduct-pak:maps/koth_viaduct.bsp!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-00-workshop:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-09-tf:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-10-hl2:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-      "game-11-download:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
-    ]),
-    photo: Object.freeze({
-      material: Object.freeze({ logicalPath: "materials/vgui/maps/menu_photos_koth_viaduct.vmt", byteLength: 129, sha256: "2f8dddeef0cff874e22ed4b58909fc5bf44b67fa0da9d55f1cd4956d22751ba4", providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
-      texture: Object.freeze({ logicalPath: "materials/vgui/maps/menu_photos_koth_viaduct.vtf", byteLength: 349784, sha256: "af246c72096fc065b5b5a2c0cd617638f31e783067104315ae7ffde691b1e70a", providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
-    }),
-  }),
-})
-
-export function tf2MapLoading(target: string): Readonly<{
-  photoLocations: readonly string[]
-  photo: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }> | null
-}> {
-  const descriptor = Object.hasOwn(TF2_MAP_LOADING, target) ? TF2_MAP_LOADING[target as keyof typeof TF2_MAP_LOADING] : undefined
-  if (!descriptor) throw new Error(`Loading presentation is not admitted for ${target}`)
-  return descriptor
+export function tf2MapLoading(target: string): MapLoading {
+  if (!Object.hasOwn(TF2_MAP_LOADING, target)) throw new Error(`Loading presentation is not declared for ${target}`)
+  return TF2_MAP_LOADING[target as Tf2TargetName]
 }
 
 export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): Tf2LoadingBackgroundResult {
@@ -170,4 +106,3 @@ export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): T
     disposition: found ? "map-photo" : "configured-generic",
   })
 }
-import { TF2_CONTENT_BUILD } from "../content-build"

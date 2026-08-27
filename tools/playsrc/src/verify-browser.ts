@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { repositoryRoot, type LocalConfig } from "./config"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
 import { TF2_CONTENT_BUILD } from "@playsrc/game-tf2-browser/content-build"
 import { TF2_BROWSER_SETTINGS_STORAGE_KEY } from "@playsrc/game-tf2-browser/settings-integration"
 import { chunksForRole, parseResourceGraphBytes } from "@playsrc/asset-store/graph"
@@ -250,7 +250,7 @@ async function classifySupportBlockers(
       `GameUI base-background graph role differs: ${logicalPath}`)
   }
   const mapPhoto = requests.get("materials/vgui/maps/menu_photos_jump_beef.vmt")
-  require(mapPhoto?.outcome === "authoritative-absence" && JSON.stringify((mapPhoto.checked as Record<string, string>[]).map((location) => `${location.providerIdentity}:${location.location}`)) === JSON.stringify(TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS),
+  require(mapPhoto?.outcome === "authoritative-absence" && JSON.stringify((mapPhoto.checked as Record<string, string>[]).map((location) => `${location.providerIdentity}:${location.location}`)) === JSON.stringify(TF2_MAP_LOADING.jump_beef.photoLocations),
     "jump_beef map-photo checked locations differ")
 
   const content: string[] = []

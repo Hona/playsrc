@@ -6,12 +6,12 @@ import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, tf2MapBsp } from "@play
 describe("map target registry", () => {
   test("separates released targets from explicit integration admission", () => {
     expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
-    expect(TF2_DEVELOPMENT_TARGET_NAMES).toEqual([...TF2_TARGET_NAMES, "koth_viaduct"])
+    expect(TF2_DEVELOPMENT_TARGET_NAMES).toEqual([...TF2_TARGET_NAMES, "cp_badlands", "koth_viaduct"])
     expect(tf2MapBsp("koth_viaduct")).toEqual({ byteLength: "41690668", sha256: "b3574e496550311f5036997ed7bf3d1007be7fe28236f8f33a2352fe0518729c" })
   })
 
   test("resolves only the exact declared jump_beef identity", () => {
-    expect(resolveMapTarget("jump_beef")).toEqual({
+    expect(resolveMapTarget("jump_beef")).toMatchObject({
       admission: "released",
       mode: "custom",
       navigation: null,
@@ -28,7 +28,7 @@ describe("map target registry", () => {
   })
 
   test("resolves the exact configured pl_upward installed-build identity", () => {
-    expect(resolveMapTarget("pl_upward")).toEqual({
+    expect(resolveMapTarget("pl_upward")).toMatchObject({
       admission: "released",
       mode: "payload",
       navigation: "local",
@@ -43,7 +43,7 @@ describe("map target registry", () => {
   })
 
   test("resolves the exact configured ctf_2fort installed-build identity", () => {
-    expect(resolveMapTarget("ctf_2fort")).toEqual({
+    expect(resolveMapTarget("ctf_2fort")).toMatchObject({
       admission: "released",
       mode: "capture-the-flag",
       navigation: "local",

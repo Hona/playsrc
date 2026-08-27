@@ -1,4 +1,5 @@
 import maps from "../../maps.json"
+export const TF2_MAPS = Object.freeze(maps)
 
 export type Tf2TargetName = keyof typeof maps
 

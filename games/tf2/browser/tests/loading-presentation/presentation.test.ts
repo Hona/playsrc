@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { TF2_LOCAL_LOADING_PHASES, TF2_MAIN_MENU_STATE, transitionTf2GameUi, type Tf2GameUiState, type Tf2LoadingState } from "../../src/gameui"
-import { createTf2LoadingPresentation, resolveTf2LoadingBackground, TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, TF2_STAMP_BACKGROUND, tf2LoadingMapDisplayName } from "../../src/loading-presentation"
+import { createTf2LoadingPresentation, resolveTf2LoadingBackground, TF2_MAP_LOADING, TF2_STAMP_BACKGROUND, tf2LoadingMapDisplayName } from "../../src/loading-presentation"
 import { tf2UiResources } from "../../src/ui-resources"
 
 const resource = (path: string) => tf2UiResources.panels.find((panel) => panel.source.logicalPath === path)!
 const loadingResource = resource("resource/loadingdialognobanner.res")
 const failureResource = resource("resource/loadingdialogerror.res")
-const background = resolveTf2LoadingBackground({ generation: 1, mapIdentity: "jump_beef", viewport: { width: 1_280, height: 720 }, mapPhotoLookups: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS.map((location) => ({ location, outcome: "missing" as const })), backingMaterial: TF2_STAMP_BACKGROUND.material, backingTexture: TF2_STAMP_BACKGROUND.texture })
+const background = resolveTf2LoadingBackground({ generation: 1, mapIdentity: "jump_beef", viewport: { width: 1_280, height: 720 }, mapPhotoLookups: TF2_MAP_LOADING.jump_beef.photoLocations.map((location) => ({ location, outcome: "missing" as const })), backingMaterial: TF2_STAMP_BACKGROUND.material, backingTexture: TF2_STAMP_BACKGROUND.texture })
 const loading = (): Tf2LoadingState => transitionTf2GameUi(TF2_MAIN_MENU_STATE, { kind: "loading-started", mapIdentity: "jump_beef" }).state as Tf2LoadingState
 
 describe("TF2 loading presentation operations", () => {
