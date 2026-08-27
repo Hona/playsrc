@@ -469,6 +469,23 @@ pub enum PrimaryResult {
 }
 
 impl WeaponRuntime {
+    pub fn full_with_attributes(weapon: Weapon, context: ProfileContext,
+        mut query: impl FnMut(AttributeTarget, &str, f32) -> f32) -> Self {
+        let mut base = WeaponProfile::configured(weapon);
+        let discard = weapon == Weapon::Scattergun && query(AttributeTarget::Weapon, "set_scattergun_no_reload_single", 0.0) == 1.0;
+        if discard {
+            // c_scout_arms ACT_ITEM2_VM_RELOAD has 50 frames at 30 fps;
+            // DefaultReload finishes 0.2 seconds before that sequence ends.
+            base.reload_start = 49.0 / 30.0 - 0.2;
+            base.reload_round = 0.0;
+        }
+        let profile = base.with_attributes(context, &mut query);
+        let mut runtime = Self::full_with_profile(weapon, profile);
+        runtime.discard_chambered_on_reload = discard;
+        runtime.spinup_seconds = query(AttributeTarget::Weapon, "mult_minigun_spinup_time", 0.75);
+        runtime
+    }
+
     pub fn full(weapon: Weapon) -> Self {
         Self::full_with_profile(weapon, WeaponProfile::configured(weapon))
     }

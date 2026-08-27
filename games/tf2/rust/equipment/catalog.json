@@ -43,5 +43,6 @@
   {"definitionIndex":61,"weapon":"Revolver","quality":6},
   {"definitionIndex":460,"weapon":"Revolver","quality":6},
   {"definitionIndex":220,"weapon":"HandgunScoutPrimary","quality":6,"extraSounds":["Weapon_Hands.Push","Weapon_Hands.PushImpact"]},
-  {"definitionIndex":402,"weapon":"SniperRifle","quality":6}
+  {"definitionIndex":402,"weapon":"SniperRifle","quality":6},
+  {"definitionIndex":326,"weapon":"FireAxe","quality":6,"implemented":false}
 ]

@@ -843,7 +843,6 @@ pub struct Session<W: GameplayWorld + Clone> {
     movement_stuns: hitscan::MovementStuns,
     minigun_audio: minigun_audio::State,
     scattergun_jumped: bool,
-    bot_equipment: BTreeMap<u32, equipment::Equipment>,
     ammo: class::AmmoLedger,
     movement: MovementState,
     air_dashes: u8,
@@ -1019,14 +1018,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             critical_history: critical::PlayerHistory::default(),
             equipment: equipment::Equipment::default(),
             active_equipment: equipment::Equipment::default(),
-            equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default(), PlayerClass::Soldier),
+            equipment_attributes: equipment::AttributeProviders::new(&equipment::Equipment::default().equipped_items(PlayerClass::Soldier), PlayerClass::Soldier),
             revenge_crits: 0,
             equipment_respawn_requested: false,
             decapitations: 0,
             movement_stuns: hitscan::MovementStuns::default(),
             minigun_audio: minigun_audio::State::default(),
             scattergun_jumped: false,
-            bot_equipment: BTreeMap::new(),
             ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
                 Player {
@@ -1131,14 +1129,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
     pub fn revenge_crits(&self) -> i32 { self.revenge_crits }
 
     pub fn equip_bot_cosmetic(&mut self, identity: u32, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
-        let class = self.bots.as_ref().and_then(|bots| bots.snapshots().into_iter().find(|bot| bot.identity == identity)).map(|bot| bot.class)
-            .ok_or(equipment::EquipmentError::IneligibleSlot)?;
         if let Some(definition) = definition_index {
             if equipment::supported_item(definition).is_none_or(|item| item.implementation != equipment::Implementation::Wearable) {
                 return Err(equipment::EquipmentError::UnsupportedItem);
             }
         }
-        self.bot_equipment.entry(identity).or_default().equip(class, schema::LoadoutPosition::Misc, definition_index)
+        self.equip_bot_item(identity, schema::LoadoutPosition::Misc, definition_index)
+    }
+
+    pub fn equip_bot_item(&mut self, identity: u32, slot: schema::LoadoutPosition, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
+        self.bots.as_mut().ok_or(equipment::EquipmentError::IneligibleSlot)?.equip_item(identity, slot, definition_index)
     }
 
     pub fn equip_item(&mut self, class: PlayerClass, slot: schema::LoadoutPosition, definition_index: Option<u32>) -> Result<bool, equipment::EquipmentError> {
@@ -1154,19 +1154,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn equipped_weapon_attribute(&mut self, owner: u32, weapon: Weapon, hook: &str, input: f32) -> f32 {
-        if owner != PLAYER_IDENTITY { return input; }
-        self.equipment_attributes.weapon(weapon, hook, input)
+        if owner == PLAYER_IDENTITY { return self.equipment_attributes.weapon(weapon, hook, input); }
+        self.bots.as_mut().map_or(input, |bots| bots.equipped_weapon_attribute(owner, weapon, hook, input))
     }
 
     pub fn equipped_player_attribute(&mut self, owner: u32, hook: &str, input: f32) -> f32 {
-        if owner != PLAYER_IDENTITY { return input; }
-        self.equipment_attributes.player(hook, input)
+        if owner == PLAYER_IDENTITY { return self.equipment_attributes.player(hook, input); }
+        self.bots.as_mut().map_or(input, |bots| bots.equipped_player_attribute(owner, hook, input))
     }
 
     pub fn weapon_source(&self, owner: u32, weapon: Weapon) -> Option<weapon::WeaponSource> {
         let definition_index = self.equipped_weapon_definition(owner, weapon)?;
         let generation = if owner == PLAYER_IDENTITY { self.loadout.get(&weapon)?.generation }
-            else { self.bots.as_ref()?.weapon_generation(owner, weapon)? };
+            else { self.bots.as_ref()?.weapon_runtime(owner, weapon)?.generation };
         Some(weapon::WeaponSource { owner, definition_index, generation })
     }
 
@@ -1189,7 +1189,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         -> Result<damage::CritCheckResult, Error> {
         let mut state = if owner == PLAYER_IDENTITY {
             self.loadout.get(&weapon).map(|weapon| weapon.critical)
-        } else { self.bots.as_ref().and_then(|bots| bots.critical_weapon(owner, weapon)) }
+        } else { self.bots.as_ref().and_then(|bots| bots.weapon_runtime(owner, weapon)).map(|runtime| runtime.critical) }
             .ok_or(Error::MissingWeapon { owner, weapon })?;
         let now = self.tick as f32 * self.movement_configuration.tick_interval;
         // Reject malformed caller facts before changing history, RNG, or cache.
@@ -1219,7 +1219,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         state.last_tick = Some(self.tick);
         state.result = Some(result);
         if owner == PLAYER_IDENTITY { self.loadout.get_mut(&weapon).unwrap().critical = state; }
-        else { self.bots.as_mut().unwrap().set_critical_weapon(owner, weapon, state); }
+        else { self.bots.as_mut().unwrap().weapon_runtime_mut(owner, weapon).unwrap().critical = state; }
         Ok(result)
     }
 
@@ -1243,7 +1243,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let same_class = self.loadout_class == self.class;
         self.active_equipment = self.equipment.clone();
         let new_items = self.active_equipment.equipped_items(self.class);
-        self.equipment_attributes = equipment::AttributeProviders::new(&self.active_equipment, self.class);
+        self.equipment_attributes = equipment::AttributeProviders::new(&new_items, self.class);
         for weapon in self.active_equipment.weapons(self.class) {
             let context = weapon::ProfileContext {
                 decapitations: self.decapitations,
@@ -1252,21 +1252,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 blast_impact: matches!(weapon, Weapon::RocketLauncher | Weapon::Original | Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
                 ..Default::default()
             };
-            let mut base_profile = weapon::WeaponProfile::configured(weapon);
-            let discard_chambered = weapon == Weapon::Scattergun && self.equipment_attributes.weapon(weapon, "set_scattergun_no_reload_single", 0.0) == 1.0;
-            if discard_chambered {
-                // Configured c_scout_arms ACT_ITEM2_VM_RELOAD: 50 frames at 30 fps;
-                // DefaultReload finishes 0.2 seconds before the sequence ends.
-                base_profile.reload_start = 49.0 / 30.0 - 0.2;
-                base_profile.reload_round = 0.0;
-            }
-            let profile = base_profile.with_attributes(context, |target, hook, input| match target {
+            let mut runtime = WeaponRuntime::full_with_attributes(weapon, context, |target, hook, input| match target {
                 weapon::AttributeTarget::Weapon => self.equipment_attributes.weapon(weapon, hook, input),
                 weapon::AttributeTarget::Player => self.equipment_attributes.player(hook, input),
             });
-            let mut runtime = WeaponRuntime::full_with_profile(weapon, profile);
-            runtime.discard_chambered_on_reload = discard_chambered;
-            runtime.spinup_seconds = self.equipment_attributes.weapon(weapon, "mult_minigun_spinup_time", 0.75);
             let definition = |items: &[equipment::EquippedItem]| items.iter().find_map(|item| {
                 (equipment::supported_item(item.definition_index).unwrap().weapon_for_class(self.class)
                     == Some(weapon)).then_some(item.definition_index)
@@ -3127,13 +3116,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             round,
             jump: jump_output,
             events,
-            bots: bots.into_iter().map(|mut bot| {
-                if let Some(equipment) = self.bot_equipment.get(&bot.identity) {
-                    bot.equipped_items = equipment.equipped_items(bot.class).into_iter().filter(|item|
-                        equipment::supported_item(item.definition_index).is_some_and(|item| item.implementation == equipment::Implementation::Wearable)).collect();
-                }
-                bot
-            }).collect(),
+            bots,
             pickups: self.map.pickups(),
             metal: self.ammo.metal,
             scoreboard,
@@ -4442,8 +4425,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn equipped_weapon_definition(&self, owner: u32, weapon: Weapon) -> Option<u32> {
         if owner == PLAYER_IDENTITY { return self.active_equipment.weapon_definition(self.class, weapon); }
-        let class = self.bots.as_ref()?.class(owner)?;
-        self.bot_equipment.get(&owner).cloned().unwrap_or_default().weapon_definition(class, weapon)
+        self.bots.as_ref()?.weapon_definition(owner, weapon)
     }
 
     fn killing_weapon_name(&self, owner: u32, weapon: Weapon) -> &'static str {

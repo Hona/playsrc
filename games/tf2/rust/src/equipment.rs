@@ -129,13 +129,13 @@ pub struct AttributeProviders {
 }
 
 impl AttributeProviders {
-    pub fn new(equipment: &Equipment, class: PlayerClass) -> Self {
+    pub fn new(items: &[EquippedItem], class: PlayerClass) -> Self {
         use crate::attribute::{AttributeEntity, AttributeGraph, ProviderKind};
         let mut graph = AttributeGraph::default();
         graph.insert(AttributeEntity::new(1, ProviderKind::Player)).unwrap();
         let mut weapons = std::collections::BTreeMap::new();
-        for item in equipment.equipped_items(class) {
-            let supported = supported_item(item.definition_index).unwrap();
+        for item in items {
+            let supported = registered_item(item.definition_index).expect("validated equipped item definition");
             let identity = item.item_id + 1;
             let kind = match supported.weapon_for_class(class) {
                 Some(weapon) => { weapons.insert(weapon, identity); ProviderKind::Weapon },
@@ -143,7 +143,7 @@ impl AttributeProviders {
             };
             let mut entity = AttributeEntity::new(identity, kind);
             entity.attributes = schema().definition(item.definition_index).unwrap().static_attributes.clone();
-            for attribute in item.attributes {
+            for attribute in &item.attributes {
                 let attribute = crate::schema::ItemAttribute { definition: attribute.definition,
                     value: crate::schema::ItemAttributeValue::Numeric(attribute.value) };
                 if let Some(current) = entity.attributes.iter_mut().find(|current| current.definition == attribute.definition) {
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn active_provision_transitions_are_idempotent_and_leave_weapon_ownership_intact() {
-        let mut providers = AttributeProviders::new(&Equipment::default(), PlayerClass::Pyro);
+        let mut providers = AttributeProviders::new(&Equipment::default().equipped_items(PlayerClass::Pyro), PlayerClass::Pyro);
         let identity = providers.weapons[&Weapon::FireAxe];
         providers.graph.stop_providing_to(identity, 1).unwrap();
         providers.active_only.push((Weapon::FireAxe, identity));
@@ -484,7 +484,7 @@ mod tests {
             for stock in class.data().stock_items.iter().filter(|stock| supported_item(stock.definition).is_some()) {
                 assert!(items.iter().any(|item| item.definition_index == stock.definition && item.slot as u8 == stock.slot));
             }
-            let mut providers = AttributeProviders::new(&equipment, class);
+            let mut providers = AttributeProviders::new(&equipment.equipped_items(class), class);
             assert_eq!(providers.player("mult_maxammo_primary", 1.0), 1.0);
         }
     }

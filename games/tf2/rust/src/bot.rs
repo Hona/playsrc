@@ -515,11 +515,22 @@ struct SupplyCache {
 }
 
 #[derive(Clone, Debug)]
+struct BotEquipment {
+    selected: crate::equipment::Equipment,
+    active: Vec<crate::equipment::EquippedItem>,
+    class: PlayerClass,
+    providers: crate::equipment::AttributeProviders,
+    next_generation: u64,
+}
+
+#[derive(Clone, Debug)]
 struct Bot {
+    equipment: Option<Box<BotEquipment>>,
     movement_stuns: crate::hitscan::MovementStuns,
     weapon_knockback: bool,
     blast_since_movement: bool,
     blast_jump_state: bool,
+    decapitations: i32,
     critical_history: crate::critical::PlayerHistory,
     identity: u32,
     spy: Option<crate::spy::SpyState>,
@@ -1131,10 +1142,12 @@ impl BotWorld {
             self.bots.insert(
                 identity,
                 Bot {
+                    equipment: None,
                     movement_stuns: crate::hitscan::MovementStuns::default(),
                     weapon_knockback: false,
                     blast_since_movement: false,
                     blast_jump_state: false,
+                    decapitations: 0,
                     damagers: crate::deathnotice::DamagerHistory::default(),
                     critical_history: crate::critical::PlayerHistory::default(),
                     identity,
@@ -1661,14 +1674,21 @@ impl BotWorld {
     pub fn advance_health(&mut self, now: f32) -> Result<(), Error> {
         for bot in self.bots.values_mut() {
             if bot.lifecycle == PlayerLifecycle::Active {
+                let (healing, active_penalty, received) = if let Some(equipment) = &mut bot.equipment {
+                    equipment.providers.set_active(bot.active_weapon);
+                    let healing = equipment.providers.player("mult_health_fromhealers", 1.0);
+                    let penalty = bot.active_weapon.map_or(1.0, |weapon| equipment.providers.weapon(weapon, "mult_health_fromhealers_penalty_active", 1.0));
+                    let received = bot.active_weapon.map_or(1.0, |weapon| equipment.providers.weapon(weapon, "mult_healing_received", 1.0));
+                    (healing, penalty, received)
+                } else { (1.0, 1.0, 1.0) };
                 bot.health
                     .advance(
                         now,
                         self.tick_interval,
                         HealthConfiguration::default(),
-                        1.0,
-                        1.0,
-                        1.0,
+                        healing,
+                        active_penalty,
+                        received,
                         &mut bot.conditions,
                     )
                     .map_err(|_| Error::InvalidEntity)?;
@@ -1787,9 +1807,10 @@ impl BotWorld {
         if bot.lifecycle != PlayerLifecycle::Active || tick < bot.next_regenerate_tick {
             return false;
         }
-        bot.health.current = bot.class.data().maximum_health.max(bot.health.current);
+        apply_bot_equipment(bot);
+        bot.health.current = bot.health.maximum.max(bot.health.current);
         bot.afterburn = None;
-        bot.ammo = bot.class.data().maximum_ammo;
+        bot.ammo = bot_maximum_ammo(bot);
         for state in bot.loadout.values_mut() {
             state.regenerate(tick, self.tick_interval);
         }
@@ -1799,6 +1820,51 @@ impl BotWorld {
 
     pub fn contains(&self, identity: u32) -> bool {
         self.bots.contains_key(&identity)
+    }
+
+    /// Weapon changes take effect at the next resupply/spawn. Cosmetic changes
+    /// preserve the existing immediate local-bot preview contract.
+    pub fn equip_item(&mut self, identity: u32, slot: crate::schema::LoadoutPosition, definition: Option<u32>) -> Result<bool, crate::equipment::EquipmentError> {
+        let bot = self.bots.get_mut(&identity).ok_or(crate::equipment::EquipmentError::IneligibleSlot)?;
+        let mut selected = bot.equipment.as_ref().map_or_else(crate::equipment::Equipment::default, |equipment| equipment.selected.clone());
+        let changed = selected.equip(bot.class, slot, definition)?;
+        if !changed { return Ok(false); }
+        if bot.equipment.is_none() {
+            let active = crate::equipment::Equipment::default().equipped_items(bot.class);
+            let providers = crate::equipment::AttributeProviders::new(&active, bot.class);
+            bot.equipment = Some(Box::new(BotEquipment { selected: selected.clone(), active, class: bot.class, providers,
+                next_generation: bot.loadout.values().map(|runtime| runtime.generation).max().unwrap_or(0).checked_add(1).expect("bounded bot weapon generation") }));
+        }
+        let equipment = bot.equipment.as_mut().unwrap();
+        equipment.selected = selected;
+        if changed && matches!(slot, crate::schema::LoadoutPosition::Head | crate::schema::LoadoutPosition::Misc | crate::schema::LoadoutPosition::Misc2) {
+            equipment.active.retain(|item| item.slot != slot);
+            equipment.active.extend(equipment.selected.equipped_items(bot.class).into_iter().filter(|item| item.slot == slot));
+            equipment.active.sort_by_key(|item| item.slot);
+            equipment.providers = crate::equipment::AttributeProviders::new(&equipment.active, bot.class);
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn weapon_definition(&self, identity: u32, weapon: Weapon) -> Option<u32> {
+        let bot = self.bots.get(&identity)?;
+        if let Some(equipment) = &bot.equipment { return equipped_definition(&equipment.active, bot.class, weapon); }
+        bot.class.data().stock_items.iter().find_map(|item| crate::equipment::supported_item(item.definition)
+            .filter(|item| item.weapon_for_class(bot.class) == Some(weapon)).map(|item| item.definition_index))
+    }
+
+    pub(crate) fn equipped_weapon_attribute(&mut self, identity: u32, weapon: Weapon, hook: &str, input: f32) -> f32 {
+        let Some(bot) = self.bots.get_mut(&identity) else { return input; };
+        let Some(equipment) = &mut bot.equipment else { return input; };
+        equipment.providers.set_active(bot.active_weapon);
+        equipment.providers.weapon(weapon, hook, input)
+    }
+
+    pub(crate) fn equipped_player_attribute(&mut self, identity: u32, hook: &str, input: f32) -> f32 {
+        let Some(bot) = self.bots.get_mut(&identity) else { return input; };
+        let Some(equipment) = &mut bot.equipment else { return input; };
+        equipment.providers.set_active(bot.active_weapon);
+        equipment.providers.player(hook, input)
     }
 
     pub fn teleport(
@@ -1935,17 +2001,16 @@ impl BotWorld {
         }
     }
 
-    pub(crate) fn critical_weapon(&self, identity: u32, weapon: Weapon) -> Option<crate::critical::WeaponState> {
-        Some(self.bots.get(&identity)?.loadout.get(&weapon)?.critical)
+    pub(crate) fn weapon_runtime(&self, identity: u32, weapon: Weapon) -> Option<&WeaponRuntime> {
+        self.bots.get(&identity)?.loadout.get(&weapon)
     }
 
-    pub(crate) fn weapon_generation(&self, identity: u32, weapon: Weapon) -> Option<u64> {
-        Some(self.bots.get(&identity)?.loadout.get(&weapon)?.generation)
+    pub(crate) fn weapon_runtime_mut(&mut self, identity: u32, weapon: Weapon) -> Option<&mut WeaponRuntime> {
+        self.bots.get_mut(&identity)?.loadout.get_mut(&weapon)
     }
 
-    pub(crate) fn set_critical_weapon(&mut self, identity: u32, weapon: Weapon, state: crate::critical::WeaponState) {
-        self.bots.get_mut(&identity).expect("validated critical owner").loadout.get_mut(&weapon)
-            .expect("validated critical weapon").critical = state;
+    pub fn weapons(&self, identity: u32) -> impl Iterator<Item = Weapon> + '_ {
+        self.bots.get(&identity).into_iter().flat_map(|bot| bot.loadout.keys().copied())
     }
 
     pub(crate) fn critical_history_mut(&mut self, identity: u32) -> Option<&mut crate::critical::PlayerHistory> {
@@ -2086,7 +2151,9 @@ impl BotWorld {
             .values()
             .map(|bot| Snapshot {
                 conditions: bot.conditions.words(),
-                equipped_items: Vec::new(),
+                equipped_items: bot.equipment.as_ref().map_or_else(Vec::new, |equipment| equipment.active.iter().filter(|item|
+                    !bot.class.data().stock_items.iter().any(|stock| stock.definition == item.definition_index && stock.slot == item.slot as u8))
+                    .cloned().collect()),
                 identity: bot.identity,
                 spy: bot.spy,
                 name: bot.name.clone(),
@@ -2525,8 +2592,70 @@ fn threat_order(bot: &Bot, left: Actor, right: Actor) -> std::cmp::Ordering {
         })
         .then_with(|| left.identity.cmp(&right.identity))
 }
+fn equipped_definition(items: &[crate::equipment::EquippedItem], class: PlayerClass, weapon: Weapon) -> Option<u32> {
+    items.iter().find_map(|item| crate::equipment::registered_item(item.definition_index)
+        .filter(|definition| definition.weapon_for_class(class) == Some(weapon)).map(|_| item.definition_index))
+}
+
+fn bot_maximum_ammo(bot: &Bot) -> crate::class::AmmoLedger {
+    let mut maximum = bot.class.data().maximum_ammo;
+    for runtime in bot.loadout.values() {
+        if let Some(ammo) = crate::weapon_ammo_kind(runtime.weapon) { maximum.set(ammo, runtime.profile().maximum_reserve); }
+    }
+    maximum
+}
+
+fn bot_default_weapon(bot: &Bot) -> Option<Weapon> {
+    let default = crate::default_weapon(bot.class)?;
+    let Some(equipment) = &bot.equipment else { return Some(default); };
+    let slot = bot.class.data().stock_items.iter().find(|item| crate::equipment::registered_item(item.definition)
+        .is_some_and(|item| item.weapon_for_class(bot.class) == Some(default)))?.slot;
+    equipment.active.iter().find(|item| item.slot as u8 == slot)
+        .and_then(|item| crate::equipment::registered_item(item.definition_index))
+        .and_then(|item| item.weapon_for_class(bot.class))
+        .filter(|weapon| bot.loadout.contains_key(weapon))
+}
+
+fn apply_bot_equipment(bot: &mut Bot) {
+    let Some(equipment) = &mut bot.equipment else { return; };
+    let items = equipment.selected.equipped_items(bot.class);
+    let old_items = std::mem::replace(&mut equipment.active, items);
+    let same_class = equipment.class == bot.class;
+    if !same_class || old_items != equipment.active {
+        equipment.providers = crate::equipment::AttributeProviders::new(&equipment.active, bot.class);
+    }
+    equipment.class = bot.class;
+    let mut previous = std::mem::take(&mut bot.loadout);
+    for weapon in equipment.selected.weapons(bot.class) {
+        let context = crate::weapon::ProfileContext { decapitations: bot.decapitations,
+            ammo: crate::weapon_ammo_kind(weapon), gun: crate::weapon_ammo_kind(weapon).is_some(),
+            blast_impact: weapon == Weapon::GrenadeLauncher || weapon_damage_type(weapon).is_some_and(|kind| kind.contains(DamageType::BLAST)), ..Default::default() };
+        let mut runtime = WeaponRuntime::full_with_attributes(weapon, context, |target, hook, input| match target {
+            crate::weapon::AttributeTarget::Weapon => equipment.providers.weapon(weapon, hook, input),
+            crate::weapon::AttributeTarget::Player => equipment.providers.player(hook, input),
+        });
+        if same_class && equipped_definition(&old_items, bot.class, weapon) == equipped_definition(&equipment.active, bot.class, weapon)
+            && let Some(mut old) = previous.remove(&weapon) {
+            old.resolved_profile = runtime.resolved_profile;
+            old.discard_chambered_on_reload = runtime.discard_chambered_on_reload;
+            old.spinup_seconds = runtime.spinup_seconds;
+            runtime = old;
+        } else {
+            runtime.generation = equipment.next_generation;
+            equipment.next_generation = equipment.next_generation.checked_add(1).expect("bounded bot weapon generation");
+        }
+        bot.loadout.insert(weapon, runtime);
+    }
+    let maximum = HealthState::spawn(bot.class, equipment.providers.player("add_maxhealth", 0.0),
+        equipment.providers.player("add_maxhealth_nonbuffed", 0.0)).expect("validated equipped health attributes");
+    bot.health.maximum = maximum.maximum;
+    bot.health.maximum_for_buffing = maximum.maximum_for_buffing;
+    if bot.active_weapon.is_none_or(|weapon| !bot.loadout.contains_key(&weapon)) { bot.active_weapon = bot_default_weapon(bot); }
+    bot.equipment.as_mut().unwrap().providers.set_active(bot.active_weapon);
+}
+
 fn select_weapon(bot: &mut Bot, threat: Option<Actor>, tick: u64, interval: f32) {
-    let Some(primary) = crate::default_weapon(bot.class) else {
+    let Some(primary) = bot_default_weapon(bot) else {
         return;
     };
     let mut selected = primary;
@@ -2727,6 +2856,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
         HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
     bot.conditions = ConditionState::default();
     bot.critical_history.reset_for_spawn();
+    bot.decapitations = 0;
     bot.spy = (bot.class == PlayerClass::Spy).then(crate::spy::SpyState::default);
     bot.ammo = bot.class.data().maximum_ammo;
     bot.next_regenerate_tick = 0;
@@ -2743,7 +2873,10 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.path_crossings = Arc::default();
     bot.nav_area_mark = None;
     bot.avoid_at = 0.0;
-    bot.active_weapon = crate::default_weapon(bot.class);
+    apply_bot_equipment(bot);
+    bot.health.current = bot.health.maximum;
+    bot.ammo = bot_maximum_ammo(bot);
+    bot.active_weapon = bot_default_weapon(bot);
     bot.pending_melee = None;
     bot.respawn_tick = None;
     bot.death_tick = None;
@@ -3309,6 +3442,64 @@ mod tests {
         assert_eq!(result.force, hit.force);
         assert_eq!(session.health, 200);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn bot_health_uses_equipped_passive_and_active_provider_rates_without_changing_healer_attribution() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Pyro),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }, PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
+        let identity = world.snapshots()[0].identity;
+        let bot = world.bots.get_mut(&identity).unwrap();
+        let selected = crate::equipment::Equipment::default();
+        let mut active = selected.equipped_items(PlayerClass::Pyro);
+        // Registered metadata is a fixture, not an inventory capability grant.
+        *active.iter_mut().find(|item| item.slot == crate::schema::LoadoutPosition::Melee).unwrap() = crate::equipment::EquippedItem {
+            item_id: 327, definition_index: 326, quality: 6, style: 0, slot: crate::schema::LoadoutPosition::Melee, attributes: Vec::new(),
+        };
+        let providers = crate::equipment::AttributeProviders::new(&active, PlayerClass::Pyro);
+        bot.equipment = Some(Box::new(BotEquipment { selected, active, providers, class: PlayerClass::Pyro, next_generation: 1 }));
+        bot.active_weapon = Some(Weapon::Flamethrower);
+        bot.health.current = 50;
+        bot.health.last_damage_time = 0.0;
+        bot.health.start_healing(crate::health::Healer { identity: 999, scorer: 999, rate: 24.0, overheal_multiplier: 1.0,
+            overheal_decay_multiplier: 1.0, dispenser: false, accumulated: 0.0, healed_last_second: 0.0,
+            overheal_fill_rate_multiplier: 1.0, healing_from_medics_multiplier: 1.0 }, &mut bot.conditions).unwrap();
+        let mut expected_health = bot.health.clone();
+        let mut expected_conditions = bot.conditions.clone();
+        assert_eq!(world.equipped_player_attribute(identity, "mult_health_fromhealers", 1.0), 0.25);
+        assert_eq!(world.equipped_weapon_attribute(identity, Weapon::Flamethrower, "mult_healing_received", 1.0), 1.0);
+        for tick in 1..=100 {
+            let now = tick as f32 * 0.015;
+            expected_health.advance(now, 0.015, HealthConfiguration::default(), 0.25, 1.0, 1.0, &mut expected_conditions).unwrap();
+            world.advance_health(now).unwrap();
+        }
+        assert_eq!(world.bots[&identity].health, expected_health);
+        assert_eq!(world.bots[&identity].health.healers[0].scorer, 999);
+        assert!(world.bots[&identity].health.current < 60);
+    }
+
+    #[test]
+    fn bot_equipment_is_lazy_validated_and_dropped_with_its_actor() {
+        let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+        let mut random = UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Soldier),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }, PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
+        let identity = world.snapshots()[0].identity;
+        let generation = world.weapon_runtime(identity, Weapon::RocketLauncher).unwrap().generation;
+        assert!(!world.equip_item(identity, crate::schema::LoadoutPosition::Primary, Some(18)).unwrap());
+        assert!(world.bots[&identity].equipment.is_none());
+        assert_eq!(world.equip_item(identity, crate::schema::LoadoutPosition::Primary, Some(u32::MAX)), Err(crate::equipment::EquipmentError::UnsupportedItem));
+        assert!(world.bots[&identity].equipment.is_none());
+        assert!(world.equip_item(identity, crate::schema::LoadoutPosition::Misc, Some(378)).unwrap());
+        assert_eq!(world.snapshots()[0].equipped_items.len(), 1);
+        assert_eq!(world.snapshots()[0].equipped_items[0].definition_index, 378);
+        assert_eq!(world.weapon_runtime(identity, Weapon::RocketLauncher).unwrap().generation, generation);
+        assert_eq!(world.equipped_player_attribute(identity, "mult_health_fromhealers", 1.0), 1.0);
+        world.apply(Request { operation: Operation::KickAll, count: 0, class: None, team: None, difficulty: Difficulty::Normal },
+            PlayerTeam::Red, PlayerClass::Soldier, &mut random).unwrap();
+        assert!(world.bots.is_empty());
     }
 
     fn capture_graph() -> Graph {
