@@ -5,10 +5,12 @@ import { test, expect } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { summarizeFrameTimes } from "./profile-window"
+import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
 
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 })
 
 test("authored backpack native equip and browser restart persistence", async ({ page }) => {
+  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX === "1")
   test.setTimeout(100_000)
   const local = await loadLocalConfig(), directory = path.join(local.sourceCacheDir, "profiles/equipment")
   await mkdir(directory, { recursive: true })
@@ -143,4 +145,88 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   if (stock) expect(stock.equipmentFrames.length).toBeGreaterThan(30)
   if (unusual) expect(unusual.equipmentFrames.length).toBeGreaterThan(30)
   await writeFile(path.join(directory, process.env.PLAYSRC_EQUIPMENT_UI_ONLY ? "ui-summary.json" : "native-summary.json"), JSON.stringify(report, null, 2))
+})
+
+test("twelve hitscan items admit their models, native firing and authored audio", async ({ page }) => {
+  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX !== "1")
+  test.setTimeout(140_000)
+  const subset = process.env.PLAYSRC_HITSCAN_ITEMS?.split(",").map(Number)
+  const directory = path.join((await loadLocalConfig()).sourceCacheDir, subset ? "profiles/equipment/hitscan-targeted" : "profiles/equipment/hitscan")
+  await mkdir(directory, { recursive: true })
+  const errors: string[] = [], records: unknown[] = []
+  page.on("pageerror", error => errors.push(error.message))
+  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true } })
+  const main = page.locator("main"), equipment = page.locator(".equipment-layer")
+  const command = async (text: string) => {
+    if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+    await page.locator("[aria-label='Console command']").fill(text)
+    await page.keyboard.press("Enter")
+    if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  }
+  const actual = () => page.evaluate(() => (globalThis as any).__playsrcProfile.weaponPose as { model: string; definition: number; class: number; ammo: { clip: number; reserve: number } } | null)
+  await page.goto("/", { waitUntil: "domcontentloaded" })
+  await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
+  await command("map pl_upward")
+  await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 45_000 })
+  await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+  await page.locator(".class-selection-layer [data-vgui-name='soldier']").click()
+  await expect(main).toHaveAttribute("data-phase", "Ready")
+  const cases = [
+    [45, 1, "scout", 0], [1103, 1, "scout", 0], [425, 6, "heavyweapons", 1], [1153, 9, "engineer", 0],
+    [415, 3, "soldier", 1], [424, 6, "heavyweapons", 0], [312, 6, "heavyweapons", 0], [41, 6, "heavyweapons", 0],
+    [61, 8, "spy", 1], [460, 8, "spy", 1], [220, 1, "scout", 0], [402, 2, "sniper", 0],
+  ] as const
+  const selectedCases = cases.filter(([definition]) => !subset || subset.includes(definition))
+  expect(selectedCases.length).toBeGreaterThan(0)
+  const requested = selectedCases.map(([definition]) => definition)
+  for (const [definition, playerClass, className, slot] of selectedCases) {
+    await command(`joinclass ${className}`)
+    await expect.poll(async () => (await actual())?.class).toBe(playerClass)
+    await page.keyboard.press("Comma")
+    await page.locator(".class-selection-layer [data-vgui-name='EditLoadoutButton']").click()
+    await equipment.locator(`[data-vgui-name='Itemslot-${slot}']`).click()
+    await equipment.locator(`[data-vgui-name='Itemitem-${definition}']`).click()
+    await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible({ timeout: 20_000 })
+    await equipment.locator("[data-vgui-name='BackButton']").click()
+    await equipment.locator("[data-vgui-name='BackButton']").click()
+    await expect(equipment).toBeHidden()
+    // Switching class is a real respawn path even when the current map's room
+    // does not admit an immediate loadout refresh.
+    if ((await actual())?.definition !== definition) {
+      const other = playerClass === 3 ? "scout" : "soldier"
+      await command(`joinclass ${other}`)
+      await expect.poll(async () => (await actual())?.class).toBe(playerClass === 3 ? 1 : 3)
+      await command(`joinclass ${className}`)
+      await expect.poll(async () => (await actual())?.class).toBe(playerClass)
+    }
+    const metadata = nativeEquipment.inventory.find(item => item.item.definitionIndex === definition)!
+    const selection = metadata.classSlots.find(value => value.class === playerClass)!.selectionSlot
+    await page.keyboard.press(`Digit${selection + 1}`)
+    await expect.poll(async () => (await actual())?.definition).toBe(definition)
+    await expect.poll(async () => (await actual())?.model).toBe(metadata.modelPlayer)
+    const before = (await actual())!
+    await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 400 } })
+    await page.mouse.down({ button: "left" })
+    await expect.poll(async () => {
+      const pose = await actual()
+      return pose ? pose.ammo.clip + pose.ammo.reserve : Infinity
+    }).toBeLessThan(before.ammo.clip + before.ammo.reserve)
+    await page.mouse.up({ button: "left" })
+    const after = (await actual())!
+    expect(after.ammo.clip + after.ammo.reserve).toBeLessThan(before.ammo.clip + before.ammo.reserve)
+    const sounds = metadata.soundOverrides.filter(([slot]) => slot === "sound_single_shot" || slot === "sound_double_shot" || slot === "sound_burst").map(([, name]) => name)
+    await expect.poll(async () => {
+      const played = await main.getAttribute("data-audio-starts") ?? ""
+      return sounds.some(sound => played.includes(sound))
+    }).toBe(true)
+    const audio = await main.getAttribute("data-audio-starts") ?? ""
+    expect(sounds.some(sound => audio.includes(sound)), `${definition}: ${audio}`).toBe(true)
+    await page.screenshot({ path: path.join(directory, `${definition}.png`) })
+    records.push({ definition, model: after.model, before: { clip: before.ammo.clip, reserve: before.ammo.reserve },
+      after: { clip: after.ammo.clip, reserve: after.ammo.reserve }, sounds: sounds.filter(sound => audio.includes(sound)) })
+    await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ platform: process.platform, requested, complete: false, records, errors }, null, 2))
+    await command("-attack")
+  }
+  expect(errors).toEqual([])
+  await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ platform: process.platform, requested, complete: true, records, errors }, null, 2))
 })

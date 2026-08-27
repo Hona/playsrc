@@ -1,4 +1,4 @@
-import bytes from "./equipment-state.json"
+import bytes from "./equipment-state.json" with { type: "json" }
 import { decodeEquipmentState } from "../../src/equipment/codec"
 import type { Tf2Class } from "../../src/codec"
 
