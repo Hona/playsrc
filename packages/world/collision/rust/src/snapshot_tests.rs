@@ -1,6 +1,47 @@
 use super::*;
 
 struct Random(u32);
+#[test]
+fn retained_supports_stay_lazy_on_cold_misses_and_are_reused() {
+    let geometry = PreparedConvex::compile(
+        &box_vertices(Hull {
+            mins: [-1.0; 3],
+            maxs: [1.0; 3],
+        }),
+        &box_faces(),
+        &box_edges(),
+        Transform::IDENTITY.basis().unwrap(),
+    );
+    assert!(
+        geometry
+            .directions
+            .iter()
+            .all(|direction| direction.support.get().is_none())
+    );
+    for _ in 0..2 {
+        let trace = geometry
+            .trace(
+                [-100.0, 0.0, 0.0],
+                [-101.0, 0.0, 0.0],
+                Hull {
+                    mins: [0.0; 3],
+                    maxs: [0.0; 3],
+                },
+                1,
+                SnapshotLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(trace.fraction, 1.0);
+        assert_eq!(
+            geometry
+                .directions
+                .iter()
+                .filter(|direction| direction.support.get().is_some())
+                .count(),
+            1
+        );
+    }
+}
 impl Random {
     fn value(&mut self, scale: f32) -> f32 {
         self.0 = self.0.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -49,7 +90,7 @@ fn compare(
                 maxs: [0.0001; 3],
             },
         };
-        let reference = trace_convex_reference(
+        let reference = trace_convex(
             start,
             end,
             hull,

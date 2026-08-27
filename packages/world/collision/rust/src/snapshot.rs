@@ -1378,7 +1378,7 @@ impl World {
                     #[cfg(feature = "replay-reference")]
                     let mut candidate = if crate::replay_diagnostics::reference() {
                         crate::replay_diagnostics::count(3, 1);
-                        trace_convex_reference(
+                        trace_convex(
                             request.start,
                             request.end,
                             request.hull,
@@ -1480,22 +1480,6 @@ fn trace_box(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn trace_convex(
-    start: [f32; 3],
-    end: [f32; 3],
-    hull: Hull,
-    local_vertices: &[[f32; 3]],
-    faces: &[Face],
-    edges: &[[f32; 3]],
-    basis: Basis,
-    contents: u32,
-    limits: SnapshotLimits,
-) -> Result<Trace, Error> {
-    PreparedConvex::compile(local_vertices, faces, edges, basis)
-        .trace(start, end, hull, contents, limits)
-}
-
 // World-space support intervals belong to an immutable object transform, not
 // to a movement query. Keep the original arithmetic and first-feature order;
 // in particular, do not merge approximately parallel planes.
@@ -1509,16 +1493,16 @@ impl PartialEq for PreparedConvexCache {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 struct PreparedDirection {
     normal: [f32; 3],
-    minimum: f32,
-    maximum: f32,
+    support: OnceLock<(f32, f32)>,
     triangle: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 struct PreparedConvex {
+    vertices: Vec<[f32; 3]>,
     directions: Vec<PreparedDirection>,
     face_count: usize,
     source_face_count: usize,
@@ -1571,19 +1555,9 @@ impl PreparedConvex {
             if !seen.insert(normal.map(f32::to_bits)) {
                 return directions.len();
             }
-            #[cfg(feature = "replay-reference")]
-            crate::replay_diagnostics::count(5, vertices.len());
-            let (minimum, maximum) = vertices.iter().copied().fold(
-                (f32::INFINITY, f32::NEG_INFINITY),
-                |(minimum, maximum), vertex| {
-                    let projection = dot(vertex, normal);
-                    (minimum.min(projection), maximum.max(projection))
-                },
-            );
             directions.push(PreparedDirection {
                 normal,
-                minimum,
-                maximum,
+                support: OnceLock::new(),
                 triangle,
             });
             directions.len()
@@ -1603,6 +1577,7 @@ impl PreparedConvex {
             }
         }
         Self {
+            vertices,
             directions,
             face_count,
             source_face_count: faces.len(),
@@ -1659,17 +1634,27 @@ impl PreparedConvex {
         };
         let axes = directions.iter().flat_map(|direction| {
             let radius = dot_abs(direction.normal, extents);
+            // Preserve lazy support traversal from the direct clipper. A cold
+            // miss must not prepare unused edge supports, either. Subsequent
+            // queries share only the exact intervals actually visited.
+            let &(minimum, maximum) = direction.support.get_or_init(|| {
+                #[cfg(feature = "replay-reference")]
+                crate::replay_diagnostics::count(5, self.vertices.len());
+                self.vertices.iter().copied().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY),
+                    |(minimum, maximum), vertex| {
+                        let projection = dot(vertex, direction.normal);
+                        (minimum.min(projection), maximum.max(projection))
+                    },
+                )
+            });
             [
                 IntervalAxis::new(
                     scale(direction.normal, -1.0),
-                    -(direction.minimum - radius),
+                    -(minimum - radius),
                     direction.triangle,
                 ),
-                IntervalAxis::new(
-                    direction.normal,
-                    direction.maximum + radius,
-                    direction.triangle,
-                ),
+                IntervalAxis::new(direction.normal, maximum + radius, direction.triangle),
             ]
         });
         let mut trace = clip_axes(start, end, ray_start, ray_end, axes, contents, point)?;
@@ -1678,9 +1663,8 @@ impl PreparedConvex {
     }
 }
 
-#[cfg(any(test, feature = "replay-reference"))]
 #[allow(clippy::too_many_arguments)]
-fn trace_convex_reference(
+fn trace_convex(
     start: [f32; 3],
     end: [f32; 3],
     hull: Hull,
