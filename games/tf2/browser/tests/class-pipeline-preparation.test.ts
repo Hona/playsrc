@@ -19,7 +19,7 @@ function artifacts() {
 }
 
 test("prepares exact declared class previews and resident viewmodels without commands or clock advancement", () => {
-  const prepared = classPipelinePoseRequests(artifacts(), 1, camera, 16 / 9)
+  const prepared = classPipelinePoseRequests(artifacts(), 1, camera, 16 / 9, [])
   expect(prepared.filter(value => value.pass === "panel")).toHaveLength(9)
   expect(prepared.filter(value => value.pass === "view")).toHaveLength(2)
   expect(prepared.filter(value => value.pass === "world")).toHaveLength(18)
@@ -40,10 +40,18 @@ test("missing class facts and a larger-than-resident resource set fail before pr
   const values = artifacts()
   const models = values.models as Map<string, ModelArtifact>
   models.delete(tf2ClassPresentation(3).model)
-  expect(() => classPipelinePoseRequests(values, 0, camera, 1)).toThrow("unavailable")
+  expect(() => classPipelinePoseRequests(values, 0, camera, 1, [])).toThrow("unavailable")
   const full = artifacts()
   for (let i = 0; i < 96; i++) (full.models as Map<string, ModelArtifact>).set(`models/test${i}.mdl`, {
     profile: "viewmodel", skinCount: 1, bodygroupCounts: [], sequences: [{ label: "reference" }],
   } as ModelArtifact)
-  expect(() => classPipelinePoseRequests(full, 0, camera, 1)).toThrow("bound")
+  expect(() => classPipelinePoseRequests(full, 0, camera, 1, [])).toThrow("bound")
+})
+
+test("prepares only registered eligible wearables without creating effects", () => {
+  const item = { itemId: 379, definitionIndex: 378, quality: 5, style: 0, slot: 7, attributes: [{ definition: 134, value: 13 }] }
+  const requests = classPipelinePoseRequests(artifacts(), 0, camera, 16 / 9, [{ item, name: "", displayName: "", description: [], image: "", modelPlayer: "", attachToHands: false,
+    animationReplacements: [], soundOverrides: [], deathNoticeIcon: null, weapon: null, classSlots: [{ class: 3, slot: 7, weapon: null }, { class: 5, slot: 7, weapon: null }, { class: 6, slot: 7, weapon: null }] }])
+  expect(requests.filter(entry => entry.request.equippedItems?.length)).toHaveLength(9)
+  expect(requests.every(entry => entry.request.preparation)).toBe(true)
 })

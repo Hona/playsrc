@@ -113,7 +113,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v10 contract", () => {
+test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v11 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -132,7 +132,7 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(10)
+  expect(view.getUint32(4, true)).toBe(11)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getUint32(16, true)).toBe(0)
   expect(view.getBigUint64(44, true)).toBe(0n)
@@ -142,6 +142,10 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const encoded = new DataView(encodeModelPoseBatch([{ ...request, cloak }]).buffer)
   expect(encoded.getUint32(16, true)).toBe(42)
   expect(encoded.getFloat32(24, true)).toBe(Math.fround(0.95))
+  expect(new Uint8Array(encoded.buffer)[55]).toBe(2)
+  const actor = new DataView(encodeModelPoseBatch([{ ...request, actorIdentity: 5 }]).buffer)
+  expect(actor.getUint32(16, true)).toBe(5)
+  expect(new Uint8Array(actor.buffer)[55]).toBe(0)
   expect(() => encodeModelPoseBatch([{ ...request, cloak: { ...cloak, identity: -1 } }])).toThrow("model actor identity")
   const item = { itemId: 379, definitionIndex: 378, quality: 5, style: 0, slot: 8, attributes: [{ definition: 134, value: 13 }] }
   const equipped = encodeModelPoseBatch([{ ...request, equippedItems: [item] }])

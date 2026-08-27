@@ -6,6 +6,7 @@ use playsrc_particle::{ParticleWorld, ParticleMaterial, ControlPoint, Event, Eve
 #[derive(Clone)]
 struct State {
     model: String,
+    actor: u32,
     skin: usize,
     world: Option<ParticleWorld>,
     identity: u32,
@@ -15,7 +16,7 @@ struct State {
 
 #[derive(Clone, Default)]
 pub struct ParticleStates {
-    states: BTreeMap<(bool, u32, u32), State>,
+    states: BTreeMap<(u8, u32, u32), State>,
     serial: u32,
     pub pending: Vec<Event>,
     pub controls: BTreeMap<u32, ControlPoint>,
@@ -29,14 +30,25 @@ pub struct ParticleInputs<'a> {
 }
 
 impl ParticleStates {
+    pub fn retain_gameplay(&mut self, snapshot: Option<&playsrc_tf2::Snapshot>, time: f32) {
+        let remove = self.states.iter().filter(|(key, state)| key.0 != 1 && !snapshot.is_some_and(|snapshot| {
+            if state.actor == playsrc_tf2::PLAYER_IDENTITY {
+                snapshot.health > 0.0 && snapshot.equipped_items.iter().any(|item| item.item_id == key.2)
+            } else { snapshot.bots.iter().any(|bot| bot.identity == state.actor && bot.lifecycle == playsrc_tf2::PlayerLifecycle::Active && bot.equipped_items.iter().any(|item| item.item_id == key.2)) }
+        })).map(|(key, state)| (*key, state.identity)).collect::<Vec<_>>();
+        for (key, identity) in remove { self.states.remove(&key); if key.0 == 0 { self.queue(time, EventCommand::Destroy { effect_identity: identity }); } }
+    }
+
     pub fn retain(&mut self, requests: &[super::ModelPoseRequest]) {
-        let scopes = requests.iter().map(|r| r.model_panel).collect::<BTreeSet<_>>();
-        let keys = requests.iter().flat_map(|r| r.equipped_items.iter().map(move |i| (r.model_panel, r.identity, i.item_id))).collect::<BTreeSet<_>>();
+        if requests.is_empty() { self.states.retain(|key, _| key.0 != 1); return; }
+        let requests = requests.iter().filter(|r| !r.preparation).collect::<Vec<_>>();
+        let owners = requests.iter().map(|r| (scope(r), r.identity)).collect::<BTreeSet<_>>();
+        let keys = requests.iter().flat_map(|r| r.equipped_items.iter().map(move |i| (scope(r), r.identity, i.item_id))).collect::<BTreeSet<_>>();
         let time = requests.iter().find(|r| !r.model_panel).map_or(0.0, |r| r.current_time);
-        let removed = self.states.iter().filter(|(key, _)| scopes.contains(&key.0) && !keys.contains(key)).map(|(key, s)| (*key, s.identity)).collect::<Vec<_>>();
+        let removed = self.states.iter().filter(|(key, _)| owners.contains(&(key.0, key.1)) && !keys.contains(key)).map(|(key, s)| (*key, s.identity)).collect::<Vec<_>>();
         for (key, identity) in removed {
             self.states.remove(&key);
-            if !key.0 { self.queue(time, EventCommand::Destroy { effect_identity: identity }); }
+            if key.0 == 0 { self.queue(time, EventCommand::Destroy { effect_identity: identity }); }
         }
     }
 
@@ -52,24 +64,25 @@ impl ParticleStates {
 
     pub fn sample(&mut self, inputs: &ParticleInputs<'_>, request: &super::ModelPoseRequest, item: &EquippedItem, model: &PresentationModel, pose: &SampledPose) -> Result<Vec<u8>, ()> {
         if effect(item)? == 0 { return Ok(Vec::new()); }
+        if !request.model_panel && request.actor_identity == 0 { return Err(()); }
         let lighting = request.lighting.ok_or(())?;
         let local = control_point(model, pose, request.model_panel)?.0.map(|v| f32::from_bits(v.0));
         let transform = entity_transform(lighting.origin, lighting.angles, local);
         let position = [transform[3], transform[7], transform[11]];
-        let key = (request.model_panel, request.identity, item.item_id);
+        let key = (scope(request), request.identity, item.item_id);
         if self.states.get(&key).is_some_and(|s| s.model != model.identity || s.skin != request.skin || s.world.as_ref().is_some_and(|w| w.time() > request.current_time) || request.model_panel_reset) {
             let state = self.states.remove(&key).ok_or(())?;
             if !request.model_panel { self.queue(request.current_time, EventCommand::Destroy { effect_identity: state.identity }); }
         }
         if !self.states.contains_key(&key) {
             self.serial = self.serial.checked_add(1).ok_or(())?;
-            self.states.insert(key, State { model: model.identity.clone(), skin: request.skin,
+            self.states.insert(key, State { model: model.identity.clone(), actor: request.actor_identity, skin: request.skin,
                 world: request.model_panel.then(|| inputs.template.independent()), identity: 0x6000_0000_u32.checked_add(self.serial).ok_or(())?, event: 0, position });
         }
         let state = self.states.get_mut(&key).ok_or(())?;
         let cp = ControlPoint { index: 0, position, previous_position: state.position,
-            orientation: quaternion(transform), velocity: [0.0; 3], radius: 0.0, density: 0.0, duration: 0.0, parent: None, object_identity: Some(request.identity) };
-        let command = if state.event == 0 { EventCommand::Create { effect_identity: state.identity, definition: "superrare_burning1".into(), seed: u64::from(state.identity), owner_identity: Some(request.identity), control_points: vec![cp] } }
+            orientation: quaternion(transform), velocity: [0.0; 3], radius: 0.0, density: 0.0, duration: 0.0, parent: None, object_identity: (!request.model_panel).then_some(request.actor_identity) };
+        let command = if state.event == 0 { EventCommand::Create { effect_identity: state.identity, definition: "superrare_burning1".into(), seed: u64::from(state.identity), owner_identity: (!request.model_panel).then_some(request.actor_identity), control_points: vec![cp] } }
             else { EventCommand::SetControlPoint { effect_identity: state.identity, control_point: cp } };
         let from = state.world.as_ref().map_or_else(|| inputs.template.time(), ParticleWorld::time);
         let timestamp_seconds = if state.event == 0 { request.current_time } else { from };
@@ -88,6 +101,7 @@ impl ParticleStates {
 }
 
 struct NoQueries;
+fn scope(request: &super::ModelPoseRequest) -> u8 { if request.hud_model { 2 } else { u8::from(request.model_panel) } }
 impl playsrc_particle::CollisionQuery for NoQueries {
     fn trace_batch(&mut self, requests: &[playsrc_particle::TraceRequest]) -> Result<Vec<playsrc_particle::CollisionResult>, playsrc_particle::Error> {
         if !requests.is_empty() { return Err(playsrc_particle::Error { code: playsrc_particle::ErrorCode::MissingQuery, source: "model-panel".into(), offset: 0, detail: "particle collision input is unavailable in this model panel".into() }); }
@@ -181,5 +195,21 @@ mod tests {
         assert!(model(&equipped, "models/player/soldier.mdl").is_err());
         equipped.definition_index = 18;
         assert_eq!(model(&equipped, "models/player/soldier.mdl"), Ok(None));
+    }
+
+    #[test]
+    fn preview_release_and_absent_actors_retire_only_their_owned_effects() {
+        let mut states = ParticleStates::default();
+        let state = |identity| State { model: "hat".into(), actor: 2, skin: 0, world: None, identity, event: 1, position: [0.0; 3] };
+        states.states.insert((1, 100, 379), state(1));
+        states.states.insert((0, 200, 379), state(2));
+        states.states.insert((2, 300, 379), state(3));
+        states.retain(&[]);
+        assert_eq!(states.states.len(), 2);
+        assert!(states.pending.is_empty());
+        states.retain_gameplay(None, 1.0);
+        assert!(states.states.is_empty());
+        assert_eq!(states.pending.len(), 1);
+        assert_eq!(states.pending[0].command, EventCommand::Destroy { effect_identity: 2 });
     }
 }

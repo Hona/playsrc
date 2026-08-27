@@ -11,6 +11,7 @@ import { summarizeFrameTimes } from "./profile-window"
 
 test("Burning Flames Team Captain: real backpack equip, preview, two actors and depth", async ({ page, browser }) => {
   test.setTimeout(170_000)
+  page.setDefaultTimeout(10_000)
   const directory = path.join((await loadLocalConfig()).sourceCacheDir, "evidence/burning-flames", `complete-${Date.now()}`)
   await mkdir(directory, { recursive: true })
   const errors: string[] = []
@@ -60,7 +61,7 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     await page.keyboard.press("Comma")
     await page.locator(".class-selection-layer [data-vgui-name='EditLoadoutButton']").click()
-    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.cosmeticPreview?.particles > 0)
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.cosmeticPreview?.particles >= 12)
     records.preview = await page.evaluate(() => (globalThis as any).__playsrcProfile.cosmeticPreview)
     await page.screenshot({ path: path.join(directory, "preview.png") }); desktop("preview")
     await closeEquipment()
@@ -68,11 +69,21 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     await command("tf_bot_add 2 soldier blue easy")
     await page.waitForFunction(() => (globalThis as any).__playsrcProfile.bots?.filter((bot: any) => bot.class === 3).length >= 2)
     const actors = await page.evaluate(() => (globalThis as any).__playsrcProfile.bots.filter((bot: any) => bot.class === 3).slice(0, 2).map((bot: any) => ({ identity: bot.identity, name: bot.name })))
-    await command("setpos 512 1420 586"); await command("setang 0 270 0")
-    for (const [index, actor] of actors.entries()) await command(`bot_teleport "${actor.name}" ${470 + index * 84} 1300 586 0 90 0`)
+    // Open area 4 in the configured NAV: [-1200,325,508] to [-775,750,510].
+    await command("setpos -1120 537.5 512")
+    await page.evaluate(() => { (globalThis as any).__playsrcProfile.displacementCameraOverride = { yawDegrees: 0, pitchDegrees: 0 } })
+    for (const [index, actor] of actors.entries()) {
+      const y = 495.5 + index * 84
+      await command(`bot_teleport "${actor.name}" -920 ${y} 512 0 180 0`)
+      await page.waitForFunction(({ identity, y }) => { const bot = (globalThis as any).__playsrcProfile.bots?.find((bot: any) => bot.identity === identity); return bot?.position[0] === -920 && bot?.position[1] === y }, { identity: actor.identity, y })
+    }
+    records.fixture = await page.evaluate(() => (globalThis as any).__playsrcProfile.bots)
+    await shot("fixture-world")
+    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.cosmetics?.actors.length === 2)
     const cdp = await browser.newBrowserCDPSession()
     const processes = (await cdp.send("SystemInfo.getProcessInfo")).processInfo.map((p: any) => ({ id: p.id, type: p.type }))
     const sample = async (label: string) => {
+      if (process.env.PROFILE_COSMETIC_VISUAL_ONLY === "1") { records[label] = { measured: false }; await page.waitForTimeout(200); return }
       const memoryBefore = await captureProcessMemory(processes)
       const cpuBefore = await cdp.send("SystemInfo.getProcessInfo")
       await page.evaluate(() => { const p = (globalThis as any).__playsrcFrameProfiler; p.completedFrames = []; p.gpuTimestamps = []; p.worker = []; p.simulation = []; p.active = true; p.sampleStart = performance.now() })
@@ -86,7 +97,7 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     await sample("baseline")
     const before = await shot("unequipped-world")
     await page.evaluate(items => { (globalThis as any).__playsrcProfile.cosmeticBotEquip = { revision: 1, items } }, actors.map((actor: any) => ({ actor: actor.identity, definition: 378 })))
-    await page.waitForFunction(() => { const p = (globalThis as any).__playsrcProfile; return p.cosmeticBotEquipResult?.complete && p.cosmetics?.models.length === 2 && new Set(p.cosmetics.particles.map((i: any) => i.effectIdentity)).size === 2 })
+    await page.waitForFunction(() => { const p = (globalThis as any).__playsrcProfile; return p.cosmeticBotEquipResult?.complete && p.cosmetics?.models.length === 2 && p.cosmetics.particles.length >= 24 && new Set(p.cosmetics.particles.map((i: any) => i.effectIdentity)).size === 2 })
     const first = await shot("two-actors-a")
     await sample("equipped")
     const second = await shot("two-actors-b"); desktop("two-actors")
@@ -119,6 +130,9 @@ test("Burning Flames Team Captain: real backpack equip, preview, two actors and 
     expect(errors).toEqual([])
   } finally {
     records.errors = errors
+    records.terminal = await page.evaluate(() => ({ phase: document.querySelector<HTMLElement>("main")?.dataset.phase,
+      detail: document.querySelector<HTMLElement>("main")?.dataset.detail, cosmetics: (globalThis as any).__playsrcProfile.cosmetics,
+      bots: (globalThis as any).__playsrcProfile.bots, console: document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText })).catch(() => null)
     await writeFile(path.join(directory, "report.json"), JSON.stringify(records, null, 2))
     await page.screenshot({ path: path.join(directory, "terminal.png") }).catch(() => {})
     desktop("terminal")

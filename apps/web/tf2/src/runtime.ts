@@ -337,6 +337,7 @@ type PreparedPresentation=Readonly<{
   particleDecodeMilliseconds:number
   audioMilliseconds:number
   particleOutputBytes:number
+  hudModelPoses: readonly PosedModel[]
 }>
 
 function changedCamera(previous: Camera | undefined, next: Camera): boolean {
@@ -419,6 +420,8 @@ export class Tf2Application {
   #maximumScheduledSamples=0
   #maximumPublicationTicks=0
   #phaseTimings=[0,0,0,0,0]
+  #cosmeticHudKey = ""
+  #cosmeticHudStarted = 0n
   #pendingProjectileTimeline:Snapshot["projectileTimeline"][number][]=[]
   #audioRunning = false
   #artifacts?: PresentationArtifacts
@@ -1859,10 +1862,10 @@ export class Tf2Application {
       this.#requireOperation(operation)
       if (this.#snapshot.team === 2 || this.#snapshot.team === 3) {
       const classPreparation = [...classPipelinePoseRequests(this.#artifacts, this.#snapshot.team === 2 ? 0 : 1, warmupCamera,
-        warmupViewport.width / warmupViewport.height), ...mapPropPipelinePoseRequests(this.#artifacts, this.#snapshot, warmupCamera,
+        warmupViewport.width / warmupViewport.height, this.#equipmentProfile!.state()!.inventory), ...mapPropPipelinePoseRequests(this.#artifacts, this.#snapshot, warmupCamera,
         warmupViewport.width / warmupViewport.height)]
       const preparationByIdentity = new Map(classPreparation.map(value => [value.request.identity, value]))
-      const classPoses = await this.#client!.models(this.#generation, encodeModelPoseBatch(classPreparation.map(value => value.request)))
+      const classPoses = await this.#client!.models(this.#generation, encodeModelPoseBatch(classPreparation.map(value => ({ ...value.request, preparation: true }))))
       this.#requireOperation(operation)
       await this.#renderer.prepareModelPipelines(classPoses.map(pose => {
         const preparation = preparationByIdentity.get(pose.identity)
@@ -2043,6 +2046,7 @@ export class Tf2Application {
       loadoutAvailable: () => this.#equipmentProfile?.state() !== undefined,
       onEditLoadout: identity => { void this.#showEquipment(identity) },
       onModelPanels: (panels) => {
+        if (panels.length === 0 && this.#classSelectionModelPanels.length > 0) this.#releaseCosmeticPreviews()
         if (panels.length === 0) this.#classSelectionBackgroundKey = ""
         if (panels[1]?.model !== this.#classSelectionModelPanels[1]?.model || panels[1]?.skin !== this.#classSelectionModelPanels[1]?.skin) {
           this.#classSelectionAnimationStarted = this.#frameClock.current
@@ -2080,7 +2084,7 @@ export class Tf2Application {
         modelSurface: this.#canvas,
         onEquip: (identity, slot, definition) => this.#equipmentProfile!.equip(identity, slot, definition),
         onClose: () => { this.#neutral() },
-        onPreview: preview => { this.#equipmentPreview = preview; this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current },
+        onPreview: preview => { if (!preview && this.#equipmentPreview) this.#releaseCosmeticPreviews(); this.#equipmentPreview = preview; this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current },
       })
     }
     this.#neutral()
@@ -2088,6 +2092,14 @@ export class Tf2Application {
     this.#classSelection?.dispatch({ kind: "hide" })
     this.#teamSelection?.dispatch({ kind: "hide" })
     this.#equipment.show(state, playerClass)
+  }
+
+  #releaseCosmeticPreviews(): void {
+    const client = this.#client, generation = this.#generation
+    if (!client || !this.#artifacts || this.#view.phase !== "Ready") return
+    void client.models(generation, encodeModelPoseBatch([])).catch(error => {
+      if (!this.#closed && generation === this.#generation && this.#view.phase === "Ready") this.#set({ phase: "Failed", detail: this.#failureDetail(error, "Model preview cleanup failed") })
+    })
   }
 
   #renderEquipment(): void {
@@ -4511,10 +4523,16 @@ export class Tf2Application {
     const hudModel=this.#hudIntegration?.modelPanel()
     let hudModelMilliseconds=0
     if(hudModel){
+      const hudPoses = prepared.hudModelPoses.filter(pose => pose.model === hudModel.model || pose.role !== "single")
+      const playerPose = hudPoses.find(pose => pose.role === "single" && pose.model === hudModel.model)
       const result=await renderer.renderModelPanels([Object.freeze({
         identity:"classmodelpanel",model:hudModel.model,skin:hudModel.skin,
         kind:"studio" as const,fov:hudModel.fov,origin:hudModel.origin,angles:hudModel.angles,
         bounds:hudModel.bounds,background:"transparent" as const,presentationTimeSeconds,
+        ...(playerPose ? { pose: playerPose, modelLighting: playerPose.lighting ?? undefined, eyeStates: playerPose.eyes,
+          mergedModels: hudPoses.filter(pose => pose.role === "item" || pose.role === "wearable").map(pose => ({ model: pose.model, skin: hudModel.skin < (this.#artifacts!.models.get(pose.model)?.skinCount ?? 0) ? hudModel.skin : 0, pose, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes })),
+          particles: hudPoses.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : []),
+        } : {}),
       })])
       hudModelMilliseconds=result.milliseconds
       if (profile) profile.hudModelPanel = { ...hudModel, panels: result.panels }
@@ -4816,7 +4834,7 @@ export class Tf2Application {
         for (const entry of cosmeticEquip.items) {
           const mutation = new Uint8Array(9), view = new DataView(mutation.buffer)
           mutation[0] = 2; view.setUint32(1, entry.actor, true); view.setUint32(5, entry.definition ?? 0xffff_ffff, true)
-          await client.equipment(generation, mutation)
+          await client.equipment(generation, mutation.buffer)
         }
         cosmeticProfile.cosmeticBotEquipResult = { revision: cosmeticEquip.revision, complete: true }
       }
@@ -5017,7 +5035,7 @@ export class Tf2Application {
         if (!artifact) throw new Error(`Authored Spy world weapon unavailable: ${itemModel}`)
         return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity), itemModel, worldItem: true, itemBodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)) })
       })
-      const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, equippedItems: visibleBots[index]!.equippedItems }))
+      const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, actorIdentity: visibleBots[index]!.identity, equippedItems: visibleBots[index]!.equippedItems }))
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{
         if(flag.disabled&&!flag.visibleWhenDisabled||flag.carrier===1)return []
         const artifact=this.#artifacts!.models.get(flag.model)
@@ -5068,12 +5086,36 @@ export class Tf2Application {
           screenAspectRatio: Math.max(1,viewport.width)/Math.max(1,viewport.height), worldFarPlane: camera.far,
           skin: state.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition,state.worldAngles) }))
       }
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...equippedBotRequests,...objectiveRequests,...controlPointRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
+      const hudPortrait = this.#hudIntegration?.modelPanel()
+      let hudRequest: ModelPoseRequest | undefined
+      if (hudPortrait && snapshot.lifecycle === 1 && hudPortrait.model === tf2ClassPresentation(snapshot.class).model && snapshot.equippedItems.some(item => item.definitionIndex === 378)) {
+        const inventory = this.#equipmentProfile!.state()!.inventory
+        const heldItem = snapshot.equippedItems.find(item => inventory.some(entry => entry.item.definitionIndex === item.definitionIndex && entry.classSlots.some(slot => slot.class === snapshot.class && slot.weapon === snapshot.weapon)))
+        if (!heldItem || heldItem.slot > 2) throw new Error("Equipped HUD weapon metadata is unavailable")
+        const held = inventory.find(entry => entry.item.definitionIndex === heldItem.definitionIndex)!
+        const itemModel = held.modelPlayer || undefined, heldModel = itemModel ? this.#artifacts.models.get(itemModel) : undefined
+        if (itemModel && !heldModel) throw new Error(`Equipped HUD weapon model is unavailable: ${itemModel}`)
+        const key = `${generation}:${snapshot.class}:${snapshot.team}:${snapshot.weapon}:${snapshot.equippedItems.map(item => item.itemId).join(",")}`
+        const reset = key !== this.#cosmeticHudKey
+        if (reset) { this.#cosmeticHudKey = key; this.#cosmeticHudStarted = snapshot.tick }
+        const elapsed = Number(snapshot.tick - this.#cosmeticHudStarted) * SIMULATION_SAMPLE_INTERVAL_SECONDS
+        const activity = `ACT_MP_STAND_${["PRIMARY", "SECONDARY", "MELEE"][heldItem.slot]}`
+        hudRequest = { identity: 0x5fff_ff01, actorIdentity: 1, hudModel: true, modelPanel: true, modelPanelReset: reset,
+          model: hudPortrait.model, itemModel, worldItem: Boolean(itemModel), itemBodygroups: heldModel?.bodygroupCounts.map(() => 0),
+          activity: held.animationReplacements.find(([from]) => from === activity)?.[1] ?? activity, equippedItems: snapshot.equippedItems,
+          previousElapsedSeconds: Math.max(0, elapsed - publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS), elapsedSeconds: elapsed,
+          currentTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS, frameTimeSeconds: publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS,
+          planarSpeed: 0, screenAspectRatio: hudPortrait.bounds.width / hudPortrait.bounds.height, worldFarPlane: camera.far,
+          skin: hudPortrait.skin, lod: 0, bodygroups: this.#artifacts.models.get(hudPortrait.model)!.bodygroupCounts.map(() => 0),
+          lighting: { origin: hudPortrait.origin, angles: hudPortrait.angles, cameraPosition: [0,0,0], cameraAngles: [0,0,0] } }
+      } else { this.#cosmeticHudKey = "" }
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...equippedBotRequests,...objectiveRequests,...controlPointRequests,...buildingRequests,...(placementRequest?[placementRequest]:[]),...(hudRequest ? [hudRequest] : [])]
       if(admissionProfile)recordBotAdmission(admissionProfile,"model-request",snapshot.tick,{actors:botRequests.map(request=>({actor:request.identity-BOT_MODEL_IDENTITY_BASE,model:request.model,skin:request.skin,activity:request.activity,itemModel:"itemModel" in request?request.itemModel:null}))})
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
       const modelPoses=modelOutput===undefined?[]:modelOutput
+      const hudModelPoses = modelPoses.filter(pose => pose.identity === 0x5fff_ff01)
       const modelMilliseconds=performance.now()-modelStart
       if(admissionProfile)recordBotAdmission(admissionProfile,"model-complete",snapshot.tick,{milliseconds:modelMilliseconds})
       const viewmodelIdentities=new Set([...historicalViewmodels.map(request=>request.identity),...(viewmodel?[viewmodel.item.identity]:[])])
@@ -5152,7 +5194,7 @@ export class Tf2Application {
       const particleDecodeStart=performance.now(),particleItems=[...decodeParticleRenderOutput(particleOutput,this.#artifacts.particleMaterials).items,
         ...botParts.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, this.#artifacts!.particleMaterials).items : [])],particleDecodeMilliseconds=performance.now()-particleDecodeStart
       if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmetics = {
-        tick: snapshot.tick.toString(), local: snapshot.equippedItems, camera,
+        tick: snapshot.tick.toString(), local: snapshot.equippedItems, camera: visibilityCamera,
         actors: visibleBots.map(bot => ({ identity: bot.identity, class: bot.class, team: bot.team, items: bot.equippedItems })),
         models: botParts.filter(pose => pose.wearable).map(pose => ({ actor: pose.identity - BOT_MODEL_IDENTITY_BASE, model: pose.model, item: pose.wearable!.itemId, controlPoint: [...pose.wearable!.controlPoint] })),
         particles: particleItems.filter(item => item.effectIdentity >= 0x6000_0000 && item.effectIdentity < 0x7000_0000),
@@ -5226,6 +5268,7 @@ export class Tf2Application {
         particleDecodeMilliseconds,
         audioMilliseconds,
         particleOutputBytes:particleOutput.byteLength,
+        hudModelPoses,
       })
       this.#requiredParticleDisplayFrames.admit(prepared, particleItems.map(item=>item.effectIdentity))
       this.#preparedPresentation=prepared
