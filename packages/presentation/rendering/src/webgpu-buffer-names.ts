@@ -22,11 +22,11 @@ export function installWebGpuBufferNames(backend: BufferNamingBackend): () => vo
       throw new Error("WebGPU uniform declaration contract is unavailable")
     }
     builder.getUniformFromNode = function (node, type, stage, name) {
-      if (!name && (type === "buffer" || type === "storageBuffer" || type === "indirectStorageBuffer")) {
+      if (type === "buffer" || type === "storageBuffer" || type === "indirectStorageBuffer") {
         // Let Three's base declaration allocator own uniqueness, including
         // explicitly named uniforms/varyings. The WGSL override otherwise
         // replaces this already-registered local name with a global ID.
-        name = NodeBuilder.prototype.getUniformFromNode.call(this, node, type, stage).name
+        name = NodeBuilder.prototype.getUniformFromNode.call(this, node, type, stage, name).name
       }
       return uniform.call(this, node, type, stage, name)
     }

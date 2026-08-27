@@ -82,3 +82,14 @@ test("Three's declaration allocator resolves a prior explicit name without alias
   expect(automatic.name).toBe("nodeUniform1_1")
   expect(builder.getBindings()[0].bindings).toHaveLength(2)
 })
+
+test("an explicit buffer name cannot alias a preceding automatic declaration", () => {
+  const gpu = backend()
+  installWebGpuBufferNames(gpu)
+  const builder = gpu.createNodeBuilder()
+  builder.shaderStage = "vertex"
+  const automatic = builder.getUniformFromNode(buffer(new Float32Array(16), "mat4", 1), "buffer", "vertex")
+  const explicit = builder.getUniformFromNode(buffer(new Float32Array(16), "mat4", 1), "buffer", "vertex", automatic.name)
+  expect(explicit.name).not.toBe(automatic.name)
+  expect(explicit.name).toBe(`${automatic.name}_1`)
+})
