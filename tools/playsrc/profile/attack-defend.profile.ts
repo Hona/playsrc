@@ -122,12 +122,15 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
     await command("ent_fire cap_red_2 SetOwner 3")
     await close()
     await expect(page.locator(".hud-layer [data-vgui-name='AdvancingTeamLabel']")).toHaveText("BLU TEAM SEIZES AREA", { timeout: 5000 })
+    expect(await page.evaluate(() => (globalThis as any).__playsrcProfile.round.blueScore)).toBe(2)
     await capture(`${map}-mini-round-advances-panel`)
     return
   }
   if (performanceOnly) {
     const samples = []
-    for (const quota of [15, 23]) {
+    const quotas = process.env.PROFILE_ATTACK_DEFEND_QUOTA ? [Number(process.env.PROFILE_ATTACK_DEFEND_QUOTA)] : [15, 23]
+    if (quotas.some(quota => quota !== 15 && quota !== 23)) throw new Error("attack/defend sampling requires 15 or 23 bots")
+    for (const quota of quotas) {
       await command(`tf_bot_quota ${quota}`)
       await close()
       await expect(main).toHaveAttribute("data-bot-count", String(quota))
@@ -138,9 +141,9 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
         const initial = profile.bots.map((b: any) => ({ identity: b.identity, position: b.position, shots: b.shots }))
         const tick = Number(root.dataset.snapshotTick), start = performance.now(), frames: number[] = []
         const initialCamera = root.dataset.cameraPosition
-        let previous = start
+        let previous: number | undefined
         await new Promise<void>(resolve => {
-          const frame = (now: number) => { frames.push(now - previous); previous = now; if (now - start >= 5000) resolve(); else requestAnimationFrame(frame) }
+          const frame = (now: number) => { if (previous !== undefined) frames.push(now - previous); previous = now; if (now - start >= 5000) resolve(); else requestAnimationFrame(frame) }
           requestAnimationFrame(frame)
         })
         return { elapsed: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, initial, bots: profile.bots, quality: profile.videoQuality, loading: root.dataset.loadPerformance, initialCamera, finalCamera: root.dataset.cameraPosition }
@@ -156,6 +159,7 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
         new Promise<null>(resolve => setTimeout(() => resolve(null), 1000)),
       ])))
       const gameplay = memory.find(m => m?.linearBytes)
+      await json(`${map}-${quota}-memory`, memory)
       expect(gameplay).toBeTruthy()
       expect(gameplay.linearBytes).toBeLessThan(2 * 1024 ** 3)
       expect(gameplay.copiedModelSourceBytes).toBe(0)

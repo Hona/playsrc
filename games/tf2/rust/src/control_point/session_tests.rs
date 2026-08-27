@@ -95,9 +95,18 @@ fn session_attack_defend_keeps_mini_round_entities_timer_and_scores_then_switche
     for _ in 0..1020 { session.advance(Command::default()).unwrap(); }
     assert_eq!(session.team_selection.local_team(), PlayerTeam::Blue);
     assert_eq!(session.round.snapshot(vec![]).blue_score, 4);
-    session.fire_entity_input(b"master", b"SetWinnerAndForceCaps", b"3", 0.0).unwrap();
+    for _ in 0..400 { session.advance(Command::default()).unwrap(); }
+    session.fire_entity_input(b"p0", b"SetOwner", b"3", 0.0).unwrap();
+    // A pusher acknowledgement services the same entity queue before the game
+    // phase. Its capture/score outputs must remain owned by the session.
+    session.apply_mover_results(&[]).unwrap();
+    let first = session.advance(Command::default()).unwrap();
+    assert_eq!(first.round.blue_score, 5, "first queued owner input retains its capture score");
+    let last = session.map.control_points().unwrap().points()[1].identity;
+    session.map_input(last, b"SetOwner", playsrc_entity::Variant::Integer(3)).unwrap();
     assert_ne!(session.round.state(), round::State::TeamWin, "enqueue is not ServiceEvents");
     let won = session.advance(Command::default()).unwrap();
+    assert_eq!(won.round.blue_score, 6);
     assert_eq!(won.round.winning_team, Some(PlayerTeam::Blue));
     assert!(!won.round.full_round);
     assert!(won.round.events.iter().any(|event| matches!(event, round::Event::RoundWon { team: PlayerTeam::Blue, .. })));
