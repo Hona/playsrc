@@ -27,7 +27,7 @@ fn configured_graph(map: &str) -> playsrc_entity::Graph {
 #[ignore = "requires playsrc.local.json and the exact configured ctf_2fort and pl_upward BSPs"]
 fn configured_maps_select_only_their_authored_round_rules() {
     let two_fort = round::Configuration::from_graph(&configured_graph("ctf_2fort")).unwrap();
-    assert_eq!(two_fort.timer, None);
+    assert!(two_fort.timers.is_empty());
     assert_eq!(two_fort.defending_team, None);
     assert_eq!(two_fort.waiting_seconds, 30.0);
     assert_eq!(two_fort.preround_seconds, 5.0);
@@ -35,7 +35,8 @@ fn configured_maps_select_only_their_authored_round_rules() {
     assert!(!two_fort.stalemate_enabled);
 
     let upward = round::Configuration::from_graph(&configured_graph("pl_upward")).unwrap();
-    let timer = upward.timer.unwrap();
+    assert_eq!(upward.timers.len(), 1);
+    let timer = upward.timers[0];
     assert_eq!(timer.initial_seconds, 330);
     assert_eq!(timer.setup_seconds, 70);
     assert_eq!(timer.maximum_seconds, 600);
