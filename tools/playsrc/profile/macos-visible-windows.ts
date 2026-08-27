@@ -11,7 +11,7 @@ export type MacWindowSnapshot = Readonly<{ windows: readonly Window[]; screens: 
 
 /** CGWindowList is front-to-back. Nonzero layers include system permission
  * alerts; page focus/visibility alone cannot admit an unoccluded capture. */
-export function admitMacWindow(snapshot: MacWindowSnapshot, browserPid: number): Readonly<{ window: Window; occluders: readonly Window[]; cursors: readonly Window[] }> {
+export function admitMacWindow(snapshot: MacWindowSnapshot, browserPid: number): Readonly<{ window: Window; occluders: readonly Window[]; browserOverlays: readonly Window[]; cursors: readonly Window[] }> {
   const target = snapshot.windows.findIndex(window => window.pid === browserPid && window.layer === 0 && window.alpha > 0)
   if (target < 0) throw new Error("Native browser window is not on screen")
   const window = snapshot.windows[target]!, b = window.bounds
@@ -21,9 +21,11 @@ export function admitMacWindow(snapshot: MacWindowSnapshot, browserPid: number):
   // The system's cursor plane is expected native input, not a foreign alert.
   // Retain it separately; never move/hide it or ignore arbitrary overlay layers.
   const cursors = snapshot.windows.filter(w => w.layer === snapshot.cursorLayer && w.owner === "Window Server")
-  const occluders = snapshot.windows.slice(0, target).filter(w => !cursors.includes(w) && w.alpha > 0 && w.bounds.Width > 0 && w.bounds.Height > 0
+  const covering = snapshot.windows.slice(0, target).filter(w => !cursors.includes(w) && w.alpha > 0 && w.bounds.Width > 0 && w.bounds.Height > 0
     && w.bounds.X < b.X + b.Width && w.bounds.X + w.bounds.Width > b.X && w.bounds.Y < b.Y + b.Height && w.bounds.Y + w.bounds.Height > b.Y)
-  return { window, occluders, cursors }
+  // Native pointer-lock notices belong to the browser, not to the document.
+  // Report them separately for pixel review, not as foreign-window occlusion.
+  return { window, occluders: covering.filter(w => w.pid !== browserPid), browserOverlays: covering.filter(w => w.pid === browserPid), cursors }
 }
 
 export async function macWindowReader(cacheDir: string): Promise<(() => Promise<MacWindowSnapshot>) | undefined> {
