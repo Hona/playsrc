@@ -11,6 +11,18 @@ test("render owner instrumentation is explicit, bounded and comparison-plan sign
   expect(() => assertMatchingCapturePlans(owners, upwardCapturePlan({ PROFILE_RENDER_OWNERS: "1" }))).not.toThrow()
 })
 
+test("replacement is an explicit comparison dimension without rewriting archived v1 plans", () => {
+  const ordinary = upwardCapturePlan({ PROFILE_UPWARD_CLASS_SWITCH: "1" })
+  const replacement = upwardCapturePlan({ PROFILE_UPWARD_CLASS_SWITCH: "1", PROFILE_CLASS_REPLACEMENT: "1" })
+  expect(replacement.replacement).toBe(true)
+  expect(() => assertMatchingCapturePlans(ordinary, replacement)).toThrow("differ")
+  const { replacement: _, ...fields } = ordinary
+  const historical = { ...fields, schema: "playsrc-upward-capture-plan-v1" }
+  expect(() => validateUpwardCapturePlan(historical)).not.toThrow()
+  expect(() => assertMatchingCapturePlans(historical, historical)).not.toThrow()
+  expect(() => assertMatchingCapturePlans(historical, ordinary)).toThrow("differ")
+})
+
 test("one effective plan owns existing scenario, interaction and Worker switches", () => {
   const ordinary = upwardCapturePlan({ PROFILE_UPWARD_TRAINING_INTERACTION: "1" })
   expect(ordinary).toMatchObject({ target: "pl_upward", entry: "training", interaction: "movement-weapon", workerCpu: "not-requested", sampleSeconds: 6 })
