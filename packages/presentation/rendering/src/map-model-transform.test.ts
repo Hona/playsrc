@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
-import { applyMapModelTransform, type MapModelTransform } from "./map-model-transform"
+import { applyMapModelTransform, applyMapModelRenderBounds, type MapModelTransform } from "./map-model-transform"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 
 test("an admitted fixed-matrix occurrence follows authoritative closed/mid/open/close/retrigger transforms without replacing GPU resources", () => {
@@ -36,4 +36,23 @@ test("authoritative world angles retain authored model scale and visibility chan
   expect(instance.visible).toBe(false)
   applyMapModelTransform(instance, { ...state, draw: true })
   expect(instance.visible).toBe(true)
+})
+
+test("animated map occurrences keep frustum admission using authored sequence bounds, not the closed pose", () => {
+  const geometry = new THREE.BufferGeometry(), material = new THREE.MeshBasicMaterial()
+  const mesh = new THREE.SkinnedMesh(geometry, material)
+  mesh.frustumCulled = false
+  applyMapModelRenderBounds(mesh, [[-128, -4, -64], [128, 0, 192]])
+  const sphere = mesh.boundingSphere!
+  expect(mesh.frustumCulled).toBe(true)
+  expect(sphere.center.toArray()).toEqual([0, -2, 64])
+  for (const x of [-128, 128]) for (const y of [-4, 0]) for (const z of [-64, 192]) {
+    expect(sphere.center.distanceTo(new THREE.Vector3(x, y, z))).toBeLessThanOrEqual(sphere.radius + 1e-6)
+  }
+  applyMapModelRenderBounds(mesh, [[-128, -4, -64], [128, 0, 64]])
+  expect(mesh.boundingSphere).toBe(sphere)
+  expect(mesh.geometry).toBe(geometry)
+  expect(mesh.material).toBe(material)
+  expect(() => applyMapModelRenderBounds(mesh, [[0, 0, 0], [-1, 0, 0]])).toThrow("render bounds")
+  geometry.dispose(); material.dispose()
 })

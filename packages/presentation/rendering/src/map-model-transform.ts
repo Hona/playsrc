@@ -7,6 +7,15 @@ export type MapModelTransform = Readonly<{
   draw: boolean
 }>
 
+export function applyMapModelRenderBounds(mesh: THREE.SkinnedMesh, bounds: readonly [readonly [number, number, number], readonly [number, number, number]]): void {
+  const [minimum, maximum] = bounds
+  if (![...minimum, ...maximum].every(Number.isFinite) || minimum.some((value, axis) => value > maximum[axis]!)) throw new Error("authored model render bounds are invalid")
+  const sphere = mesh.boundingSphere ??= new THREE.Sphere()
+  sphere.center.set((minimum[0] + maximum[0]) / 2, (minimum[1] + maximum[1]) / 2, (minimum[2] + maximum[2]) / 2)
+  sphere.radius = Math.hypot(maximum[0] - minimum[0], maximum[1] - minimum[1], maximum[2] - minimum[2]) / 2
+  mesh.frustumCulled = true
+}
+
 /** Keep the admitted occurrence and its GPU resources; only Entity owns motion. */
 export function applyMapModelTransform(instance: THREE.Object3D, state: MapModelTransform): void {
   if (!instance.matrixAutoUpdate) {

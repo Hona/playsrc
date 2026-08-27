@@ -27,7 +27,7 @@ import { createParticleQuadWriter } from "./particle-geometry"
 import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
-import { applyMapModelTransform } from "./map-model-transform"
+import { applyMapModelTransform, applyMapModelRenderBounds } from "./map-model-transform"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
@@ -288,6 +288,7 @@ export type ModelItem = Readonly<{
       translucent:boolean
     }>[]
   }>
+  renderBounds?: readonly [readonly [number, number, number], readonly [number, number, number]]
   viewModelProjection?: Readonly<{
     kind: "viewmodel"
     horizontalFov4By3: number
@@ -4679,6 +4680,7 @@ class RendererOwner implements Renderer {
     pose: NonNullable<ModelItem["pose"]>,
     _retainGeometry: boolean,
     retainedMeshes?: THREE.Mesh[],
+    renderBounds?: ModelItem["renderBounds"],
   ): THREE.Mesh[] {
     const meshes = retainedMeshes ?? []
     if (!retainedMeshes) instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
@@ -4728,6 +4730,7 @@ class RendererOwner implements Renderer {
         object = skinned
         meshes[primitive] = object
       }
+      if (renderBounds && object instanceof THREE.SkinnedMesh) applyMapModelRenderBounds(object, renderBounds)
       object.userData.posedPrimitive = posed.primitive
       if (object.userData.dynamicMaterial !== true) {
         object.material = Array.isArray(object.material) ? object.material.map((material) => material.clone()) : object.material.clone()
@@ -5030,7 +5033,7 @@ class RendererOwner implements Renderer {
         const staticInstance = this.#active!.modelOccurrenceInstances.get(item.identity)
         if (staticInstance) staticInstance.visible = false
         if (item.pose) {
-          retained.meshes = this.#applyPose(retained.instance, item.pose, retained.meshes !== undefined, retained.meshes)
+          retained.meshes = this.#applyPose(retained.instance, item.pose, retained.meshes !== undefined, retained.meshes, item.renderBounds)
         }
         this.#applyDynamicModelLighting(retained, item)
         if (item.angles) sourceTransform(retained.instance, item.position, item.angles)

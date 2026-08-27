@@ -6275,6 +6275,7 @@ fn encode_entity_presentation(
         u32_field(&mut out, animation.source_index, MAX)?;
         floats(&mut out, [animation.elapsed_seconds], MAX)?;
         u32_field(&mut out, u32::try_from(animation.sequence.len()).ok()?, MAX)?;
+        floats(&mut out, animation.bounds.into_iter().flatten(), MAX)?;
         extend(&mut out, &animation.sequence, MAX)?;
     }
     Some(out)

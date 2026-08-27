@@ -9,6 +9,7 @@ struct Sequence {
     entry_node: i32,
     cycles_per_second: f32,
     looping: bool,
+    bounds: [[f32; 3]; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +29,10 @@ impl Definition {
                     entry_node: sequence.entry_node,
                     cycles_per_second: f32::from_bits(timing.cycles_per_second.0),
                     looping: timing.looping,
+                    bounds: [
+                        sequence.bounds_min.0.map(|value| f32::from_bits(value.0)),
+                        sequence.bounds_max.0.map(|value| f32::from_bits(value.0)),
+                    ],
                 })
             })
             .collect::<Result<Vec<_>, ()>>()
@@ -51,6 +56,7 @@ pub struct AnimationPresentation {
     pub source_index: u32,
     pub sequence: Vec<u8>,
     pub elapsed_seconds: f32,
+    pub bounds: [[f32; 3]; 2],
 }
 
 impl Animation {
@@ -134,6 +140,7 @@ impl Animation {
             source_index,
             sequence: self.definition.0[self.sequence].name.clone(),
             elapsed_seconds: (now - self.started).max(0.0),
+            bounds: self.definition.0[self.sequence].bounds,
         })
     }
 }
@@ -151,6 +158,7 @@ mod tests {
                     entry_node: 0,
                     cycles_per_second: 1.0 / 0.3,
                     looping: false,
+                    bounds: [[-128.0, -4.0, -64.0], [128.0, 0.0, 192.0]],
                 })
                 .collect(),
         )))

@@ -175,6 +175,20 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
   expect(b.studioModels[0]!.worldPosition[2]).toBe(360)
   expect(b.studioModels[0]).not.toBe(a.studioModels[0])
   expect(c.studioModels).toBe(b.studioModels)
+  const animated = new Uint8Array(first.length + 40), animationOffset = insert + 36
+  animated.set(first.subarray(0, animationOffset))
+  animated.set(first.subarray(animationOffset), animationOffset + 40)
+  const view = new DataView(animated.buffer)
+  view.setUint32(152, 132, true)
+  view.setUint32(animationOffset - 4, 1, true)
+  view.setUint32(animationOffset, 784, true)
+  view.setFloat32(animationOffset + 4, 0.15, true)
+  view.setUint32(animationOffset + 8, 4, true)
+  ;[-128, -4, -64, 128, 0, 192].forEach((value, axis) => view.setFloat32(animationOffset + 12 + axis * 4, value, true))
+  animated.set(new TextEncoder().encode("open"), animationOffset + 36)
+  expect(decodeSnapshot(animated).entityPresentation.studioAnimations[0]).toMatchObject({ sourceIndex: 784, sequence: "open", bounds: [[-128, -4, -64], [128, 0, 192]] })
+  view.setFloat32(animationOffset + 24, -129, true)
+  expect(() => decodeSnapshot(animated)).toThrow("Studio animation is invalid")
 })
 
 // Large canonical records, not a model of game rules. Every optimized result is
