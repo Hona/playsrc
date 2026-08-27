@@ -205,6 +205,64 @@ impl MovementStuns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn configured_rules(definition: u32, weapon: Weapon, disguised: bool, state: State) -> BulletRules {
+        use crate::attribute::{AttributeGraph, AttributeEntity, ProviderKind, QueryValue};
+        let schema = crate::equipment::schema();
+        let mut graph = AttributeGraph::default();
+        let mut entity = AttributeEntity::new(1, ProviderKind::Weapon);
+        entity.attributes = schema.definition(definition).unwrap().static_attributes.clone();
+        graph.insert(entity).unwrap();
+        BulletRules::resolve(weapon, HitscanProfile::configured(weapon).unwrap(), state, 2.0, disguised, |hook, input| {
+            let QueryValue::Numeric(value) = graph.query_numeric(schema, 1, 1, hook, input, false).unwrap().value else { unreachable!() };
+            value
+        })
+    }
+
+    #[test]
+    fn configured_unlock_bullets_are_resolved_before_critical_and_range_damage() {
+        for (definition, weapon, damage, pellets, spread) in [
+            (45, Weapon::Scattergun, 5.4, 12, 0.0675),
+            (1103, Weapon::Scattergun, 6.0, 10, 0.081),
+            (425, Weapon::HeavyShotgun, 5.1, 10, 0.0675),
+            (1153, Weapon::Shotgun, 4.8, 15, 0.0675),
+            (415, Weapon::Shotgun, 6.0, 10, 0.0675),
+            (424, Weapon::Minigun, 9.0, 4, 0.064),
+            (312, Weapon::Minigun, 10.8, 4, 0.08),
+            (41, Weapon::Minigun, 6.75, 4, 0.08),
+            (61, Weapon::Revolver, 34.0, 1, 0.0),
+            (460, Weapon::Revolver, 40.0, 1, 0.025),
+            (220, Weapon::HandgunScoutPrimary, 12.0, 4, 0.04),
+            (402, Weapon::SniperRifle, 50.0, 1, 0.0),
+        ] {
+            let rules = configured_rules(definition, weapon, false, State::default());
+            assert!((rules.profile.damage - damage).abs() < 0.00001, "{definition}");
+            assert_eq!(rules.profile.pellets, pellets, "{definition}");
+            assert!((rules.profile.spread - spread).abs() < 0.00001, "{definition}");
+        }
+        assert_eq!(configured_rules(460, Weapon::Revolver, true, State::default()).profile.damage, 48.0);
+        assert!(configured_rules(61, Weapon::Revolver, false, State::default()).critical_falloff);
+        assert!(configured_rules(1103, Weapon::Scattergun, false, State::default()).backattack_minicrits);
+        assert!(configured_rules(415, Weapon::Shotgun, false, State::default()).airborne_minicrits);
+        assert_eq!(configured_rules(41, Weapon::Minigun, false, State::default()).slow_on_hit, 1.0);
+    }
+
+    #[test]
+    fn panic_attack_uses_wide_authored_grid_and_two_jitter_draws_per_pellet() {
+        let rules = configured_rules(1153, Weapon::Shotgun, false, State::default());
+        assert!(rules.fixed_pattern);
+        let mut calls = 0;
+        let direction = rules.direction_with_random(7, 9.0, [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], |lo, hi| {
+            calls += 1; assert_eq!((lo, hi), (-0.07, 0.07)); 0.0
+        });
+        assert_eq!(calls, 2);
+        assert!((direction[1] / direction[0] + 0.0675).abs() < 0.00001);
+        assert!((direction[2] / direction[0] - 0.03375).abs() < 0.00001);
+        let maximum = configured_rules(1153, Weapon::Shotgun, false, State { consecutive_shots: 5, ..State::default() });
+        assert!((maximum.profile.spread - 0.0675 * 1.5).abs() < 0.00001);
+        let mut state = State::default(); state.fired(100, 0.015);
+        state.idle(state.idle_tick); assert_eq!(state.consecutive_shots, 1);
+        state.idle(state.idle_tick + 1); assert_eq!(state.consecutive_shots, 0);
+    }
     #[test]
     fn movement_stuns_keep_source_priority_expiry_and_fade_order() {
         let mut stuns = MovementStuns::default();
