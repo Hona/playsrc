@@ -159,17 +159,27 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
     await command("ent_fire control_point_1 SetUnlockTime 1")
     await command("setpos -1800 0 230")
+    const captureBot = await page.evaluate(() => {
+      const profile = (globalThis as any).__playsrcProfile
+      const bot = profile.bots.find((bot: any) => bot.team === 2 && bot.health > 0)
+      const roster = JSON.parse(document.querySelector<HTMLElement>("main")!.dataset.scoreboardProbe!)
+      const player = roster.players.find((player: any) => player.identity === bot.identity)
+      return { identity: bot.identity as number, name: player.name as string, from: bot.position }
+    })
+    // Seed a live capture through Source's bot_teleport input, not point ownership
+    // or progress counters. The unchanged bot AI then moves, captures and defends.
+    await command(`bot_teleport "${captureBot.name}" -1536 0 232 0 90 0`)
     await closeConsole()
     await page.waitForFunction(() => {
       const point = (globalThis as any).__playsrcProfile.controlPoints.points[0]
       return point.owner !== 0 || point.capturingTeam !== 0
-    }, undefined, { timeout: 30_000 })
+    }, undefined, { timeout: 10_000 })
     const samples = [await sample(15)]
     await command("tf_bot_quota 23")
     samples.push(await sample(23))
     expect(bspRequests).toBeLessThanOrEqual(1)
     const reportPath = testInfo.outputPath("koth-source-clock-samples.json")
-    await writeFile(reportPath, JSON.stringify({ schema: "playsrc-koth-headed-v1", bspRequests, loading, samples }))
+    await writeFile(reportPath, JSON.stringify({ schema: "playsrc-koth-headed-v1", bspRequests, loading, captureBot, samples }))
     await testInfo.attach("koth-source-clock-samples", { path: reportPath, contentType: "application/json" })
     return
   }
