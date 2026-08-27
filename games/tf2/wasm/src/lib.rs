@@ -10909,10 +10909,13 @@ fn map_prop_pipeline_animations(graph: &playsrc_entity::Graph) -> BTreeMap<usize
     let mut pipeline_animations = graph.entities.iter()
         .filter_map(|entity| playsrc_tf2::regenerate_associated_model(graph, entity))
         .map(|entity| (entity.index, vec![b"open".as_slice(), b"close".as_slice()])).collect::<BTreeMap<_, _>>();
+    // Prepare door-motion outputs, not unrelated staging/UI relays. Other
+    // animated props are selected by the authoritative runtime snapshot.
     // CEventQueue tries authored target names before classname fallback. An
     // unresolved activator or wildcard is not a guessed preparation target;
     // its selected animation still arrives through the runtime snapshot.
     for source in &graph.entities {
+        if !source.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"func_door") || name.eq_ignore_ascii_case(b"func_door_rotating")) { continue; }
         for connection in &source.connections {
             let playsrc_entity::Connection::Parsed { target, input, parameter, .. } = connection else { continue };
             if !input.eq_ignore_ascii_case(b"SetAnimation") || parameter.is_empty() || target.contains(&b'*') { continue; }
@@ -10960,7 +10963,16 @@ mod map_prop_pipeline_tests {
         let graph = playsrc_entity::parse(br#"
           {"classname" "info_target" "targetname" "prop_dynamic"}
           {"classname" "prop_dynamic" "targetname" "door"}
-          {"classname" "logic_relay" "OnTrigger" "prop_dynamic,SetAnimation,open,0,-1" "OnUser1" "!activator,SetAnimation,close,0,-1"}
+          {"classname" "func_door" "OnOpen" "prop_dynamic,SetAnimation,open,0,-1" "OnUser1" "!activator,SetAnimation,close,0,-1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        assert!(map_prop_pipeline_animations(&graph).is_empty());
+    }
+
+    #[test]
+    fn unrelated_staging_relays_do_not_expand_door_preparation() {
+        let graph = playsrc_entity::parse(br#"
+          {"classname" "prop_dynamic" "targetname" "banner"}
+          {"classname" "logic_relay" "OnTrigger" "banner,SetAnimation,intro,0,-1"}
         "#, playsrc_entity::Limits::default()).unwrap();
         assert!(map_prop_pipeline_animations(&graph).is_empty());
     }
