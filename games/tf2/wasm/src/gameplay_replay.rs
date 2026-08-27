@@ -217,6 +217,7 @@ pub(super) fn dispose(handle: u32) {
     }
     let mut value = journal().lock().expect("gameplay replay");
     if value.as_ref().is_some_and(|value| value.handle == handle) {
+        admission_metrics::dispose();
         *value = None;
     }
 }

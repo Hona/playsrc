@@ -1712,14 +1712,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 identity: PLAYER_IDENTITY,
                 team: self.team_selection.local_team(),
             }];
-            roster.extend(
-                bots.snapshots()
-                    .into_iter()
-                    .map(|bot| team_selection::RosterPlayer {
-                        identity: bot.identity,
-                        team: bot.team,
-                    }),
-            );
+            roster.extend(bots.roster());
             self.team_selection
                 .replace_roster(roster)
                 .map_err(Error::TeamSelection)?;

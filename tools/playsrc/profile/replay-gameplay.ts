@@ -8,6 +8,7 @@ import { acquireMap } from "../src/targets"
 import { buildCollisionReplay } from "../src/collision-replay-build"
 import { summarizeDistribution } from "./gameui-profile"
 import { parseGameplayReplay, REPLAY_BYTES } from "./gameplay-replay"
+import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "../../../games/tf2/browser/src/admission-metrics"
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 function require(value: unknown, message: string): asserts value { if (!value) throw new Error(message) }
@@ -42,13 +43,13 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   const checkpoint = manifest.checkpoint
   require(checkpoint && /^[0-9a-f]{64}$/u.test(checkpoint.configurationSha256) && [0, 1].includes(checkpoint.profile), "Replay content checkpoint invalid")
   const config = await loadLocalConfig()
-  const map = await acquireMap(config, "pl_upward")
-  const bsp = await readFile(path.join(config.sourceCacheDir, map.decoded.cachePath))
-  require(hash(bsp) === replay.bspSha256, "Configured Upward BSP differs from replay checkpoint")
   const graphBytes = await readFile(objectPath(config.assetDir, graphIdentity))
   require(hash(graphBytes) === graphIdentity, "Captured resource graph hash mismatch")
   const graph = parseResourceGraph(JSON.parse(graphBytes.toString("utf8")))
-  require(graph.target === "pl_upward", "Captured graph is not Upward")
+  require(graph.target === "pl_upward" || graph.target === "ctf_2fort", "Captured graph is not a supported local bot map")
+  const map = await acquireMap(config, graph.target)
+  const bsp = await readFile(path.join(config.sourceCacheDir, map.decoded.cachePath))
+  require(hash(bsp) === replay.bspSha256, "Configured BSP differs from replay checkpoint")
   const wasm = await readFile(wasmPath)
   require(wasm.length <= 64 * 1024 * 1024, "Replay WASM bound exceeded")
   const baseline = baselineWasmPath ? await readFile(baselineWasmPath) : undefined
@@ -192,7 +193,17 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
       }
       require(tick === recordedTicks.length, "Admitted tick count changed")
     }
-    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations, historicalHashMismatches,
+    let admission
+    if (typeof e.playsrc_admission_metrics_length === "function") {
+      const length = e.playsrc_admission_metrics_length()
+      require(length <= MAX_ADMISSION_EVENTS * ADMISSION_EVENT_BYTES, "Admission evidence exceeded its bound")
+      const pointer = e.playsrc_alloc(Math.max(1, length)) >>> 0
+      try {
+        require(e.playsrc_admission_metrics_copy(pointer, length) === length, "Admission evidence copy failed")
+        admission = { dropped: e.playsrc_admission_metrics_dropped(), events: decodeAdmissionMetrics(new DataView(e.memory.buffer, pointer, length)) }
+      } finally { e.playsrc_free(pointer, Math.max(1, length)) }
+    }
+    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, activeTicks, mutations, historicalHashMismatches, admission,
       cpuMicroseconds: process.cpuUsage(cpuStarted), rssBefore, rssAfter: process.memoryUsage().rss,
       tickMilliseconds: summarizeDistribution(tickTimes), observeMilliseconds: summarizeDistribution(observations.map(value => value.milliseconds)), observations,
       counters: counterTotals,

@@ -2,6 +2,7 @@
 
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
+import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__ } from "virtual:playsrc-generation"
@@ -99,13 +100,12 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
   admission() {
     if (!wasm || !replayHandle) return null
     const length = wasm.playsrc_admission_metrics_length()
-    if (length > 8192 * 56 || length % 56 !== 0) throw new Error("Admission metrics bound exceeded")
+    if (length > MAX_ADMISSION_EVENTS * ADMISSION_EVENT_BYTES || length % ADMISSION_EVENT_BYTES !== 0) throw new Error("Admission metrics bound exceeded")
     const pointer = wasm.playsrc_alloc(Math.max(1, length)) >>> 0
     try {
       if (wasm.playsrc_admission_metrics_copy(pointer, length) !== length) throw new Error("Admission metrics copy failed")
       const bytes = new DataView(wasm.memory.buffer, pointer, length)
-      const events = []
-      for (let offset = 0; offset < length; offset += 56) events.push({ stage: bytes.getUint32(offset, true), actor: bytes.getUint32(offset + 4, true), tick: Number(bytes.getBigUint64(offset + 8, true)), at: Number(bytes.getBigUint64(offset + 16, true)) / 1e6, heapBytes: Number(bytes.getBigUint64(offset + 24, true)), allocations: Number(bytes.getBigUint64(offset + 32, true)), allocatedBytes: Number(bytes.getBigUint64(offset + 40, true)), value: Number(bytes.getBigUint64(offset + 48, true)) })
+      const events = decodeAdmissionMetrics(bytes)
       return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
