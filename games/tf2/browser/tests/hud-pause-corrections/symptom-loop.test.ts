@@ -16,6 +16,7 @@ import { initializeTf2BrowserSettings, initializeTf2OptionsPresentation } from "
 import { TF2_HUD_DYNAMIC_IMAGES, adaptTf2Scoreboard, tf2HudAvailable, tf2HudUnavailable, type SessionHudContext, type SessionSimulationPublication } from "../../src/hud"
 import type { Tf2VguiResources } from "../../src/ui-integration"
 import { tf2UiResources, type Tf2UiResourceNode } from "../../src/ui-resources"
+import { nativeEquipment, stockItems } from "../fixtures/equipment"
 import { FakeDocument, createRoot, descendants } from "../../../../../packages/presentation/vgui/tests/fake-dom"
 
 const generic = new Set<string>(VGUI_GENERIC_CONTROL_NAMES)
@@ -46,7 +47,9 @@ function scheme(): VguiScheme {
     height: image.textures[0]?.height ?? 1,
     frames: image.textures[0]?.frames ?? 1,
     hardwareFiltered: false,
-    variants: Object.freeze(([[0, 0, 0, 255], [255, 255, 255, 128], [117, 107, 94, 255]] as const).map(tint => Object.freeze({ frame: 0, rotation: 0, tint, browserUrl: "data:image/png;base64,AA==" }))),
+    variants: Object.freeze(Array.from({ length: image.textures[0]?.frames ?? 1 }, (_, frame) =>
+      ([[255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 128], [117, 107, 94, 255]] as const).map(tint =>
+        Object.freeze({ frame, rotation: 0 as const, tint, browserUrl: "data:image/png;base64,AA==" }))).flat()),
   }))
   const presentedNames = new Set(presentedImages.map((image) => image.name.toLowerCase()))
   for (const [index, name] of TF2_HUD_DYNAMIC_IMAGES.entries()) {
@@ -198,6 +201,7 @@ function compact(
   const snapshot = Object.freeze({
     tick,
     class: classIdentity,
+    equippedItems: stockItems(classIdentity),
     team,
     weapon,
     health: classIdentity === 3 ? 200 : 175,
@@ -213,6 +217,7 @@ function compact(
 }
 
 const context: SessionHudContext = Object.freeze({
+  inventory: nativeEquipment.inventory,
   playerIdentity: 1,
   liveHudSuppressed: false,
   respawnAllowed: true,
@@ -350,6 +355,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       const snapshot = Object.freeze({
         ...base.snapshot,
         class: 5,
+        equippedItems: stockItems(5),
         weapon,
         health: 150,
         maximumHealth: 150,
@@ -436,13 +442,13 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(second.find((panel) => panel.name === "HudWeaponAmmo")?.state.scalarProperties.reloadPhase).toBe(2)
     expect(secondBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Stickybomb Launcher" } })
 
-    const modelBinding = hud.publish(compact(3n, 3, 3, 2, 4, 20), contextWithModel(true))
+    const modelBinding = hud.publish(compact(3n, 3, 3, 1, 4, 20), contextWithModel(true))
     const model = hud.snapshot().vgui.panels
     expect(visible(model, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["classmodelpanel"])
-    expect(model.find((panel) => panel.name === "classmodelpanel")?.state.scalarProperties).toMatchObject({ class: 3, team: 3, skin: 1, weaponIdentity: 2 })
+    expect(model.find((panel) => panel.name === "classmodelpanel")?.state.scalarProperties).toMatchObject({ class: 3, team: 3, skin: 1, weaponIdentity: 1 })
     expect(model.find((panel) => panel.name === "classmodelpanelBG")?.state.image).toBe("../hud/character_blue_bg_clipped")
     expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "modelIdentity", value: { kind: "available", value: "models/player/soldier.mdl" } })
-    expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Original" } })
+    expect(modelBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Rocket Launcher" } })
     expect(hud.modelPanel()).toMatchObject({ model: "models/player/soldier.mdl", skin: 1, origin: [145, -5, -90] })
 
     hud.publish(compact(4n, 3, 2, 1, 4, 20), contextWithModel(false))
