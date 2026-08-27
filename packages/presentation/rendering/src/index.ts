@@ -5440,6 +5440,7 @@ class RendererOwner implements Renderer {
 
   #disposeDynamicInstance(instance: THREE.Object3D): void {
     this.#instrumentation?.dynamicModel("disposed")
+    this.#renderObjectLifetime?.release(instance)
     disposeDynamicModel(instance, this.#instrumentation ? () => this.#instrumentation!.dynamicModel("materialDisposed") : undefined)
   }
 
