@@ -256,6 +256,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub points: Vec<Point>,
+    pub may_capture: Vec<[bool; 2]>,
     pub areas: Vec<Area>,
     pub master: Master,
     pub configuration: Configuration,
@@ -487,6 +488,7 @@ impl World {
     pub fn snapshot(&self, events: Vec<Event>) -> Snapshot {
         Snapshot {
             points: self.points.clone(),
+            may_capture: self.points.iter().map(|p| [self.team_may_capture(PlayerTeam::Red, p.index, self.facts.waiting_for_players), self.team_may_capture(PlayerTeam::Blue, p.index, self.facts.waiting_for_players)]).collect(),
             areas: self.areas.clone(),
             master: self.master.clone(),
             configuration: self.configuration,
@@ -1028,7 +1030,7 @@ impl World {
         let team = self.points[0].owner;
         if self.koth && team.is_gameplay() {
             if let Some(timers) = self.facts.koth_timer_remaining {
-                if timers[slot(team) - 2] > 0.0 || !self.facts.timer_may_expire {
+                if timers[slot(team) - 2] > 0.0 || !self.facts.timer_may_expire || self.contested() {
                     return;
                 }
             }

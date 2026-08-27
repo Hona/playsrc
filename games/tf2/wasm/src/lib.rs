@@ -1981,6 +1981,7 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 #[derive(Clone, Debug)]
 struct ModelPoseRequest {
     identity: u32,
+    control_point: Option<u32>,
     class_selection: bool,
     model_panel: bool,
     model_panel_reset: bool,
@@ -2209,7 +2210,8 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let attachments_only = reader.u8()?;
         let has_fire_view = reader.u8()?;
         let model_panel_reset = reader.u8()?;
-        if kind > 5
+        if kind > 6
+            || (kind == 6 && (actor_identity == 0 || [local_factor, world_factor, raw_factor].into_iter().chain(player_tint).any(|v| v != 0.0)))
             || (matches!(kind, 3 | 4) && actor_identity != 0)
             || attachments_only > 1
             || has_fire_view > 1
@@ -2236,7 +2238,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         let model = reader.text()?.to_ascii_lowercase();
         let item_text = reader.text()?.to_ascii_lowercase();
         let item = match kind {
-            0 | 2 | 3 | 4 if item_text.is_empty() => None,
+            0 | 2 | 3 | 4 | 6 if item_text.is_empty() => None,
             1 | 5 if !item_text.is_empty() => Some(item_text),
             _ => return Err(()),
         };
@@ -2263,7 +2265,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             3 => Some(playsrc_studio_model::ViewModelPhase::ReloadInsertOrLoop),
             4 => Some(playsrc_studio_model::ViewModelPhase::ReloadFinish),
             5 => Some(playsrc_studio_model::ViewModelPhase::Idle),
-            u8::MAX if matches!(kind, 0 | 3 | 4 | 5) => None,
+            u8::MAX if matches!(kind, 0 | 3 | 4 | 5 | 6) => None,
             _ => return Err(()),
         };
         let packed_body_value = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
@@ -2333,12 +2335,13 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
             identity,
+            control_point: (kind == 6).then_some(actor_identity),
             class_selection: kind == 3,
             model_panel: kind == 3 || kind == 4,
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
-            actor_identity,
-            cloak,
+            actor_identity: if kind == 6 { 0 } else { actor_identity },
+            cloak: if kind == 6 { None } else { cloak },
             world_item: kind == 5,
             sample_tick,
             attachments_only: attachments_only == 1,
@@ -2512,7 +2515,7 @@ fn encode_model_poses(
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
-        BTreeMap::<(String, usize, u32, u32), playsrc_studio_model::SampledPose>::new();
+        BTreeMap::<(String, usize, u32, u32, Vec<u32>), playsrc_studio_model::SampledPose>::new();
     for original in requests {
         let mut scene_request;
         let mut scene_event_clock = None;
@@ -2534,6 +2537,13 @@ fn encode_model_poses(
             &scene_request
         } else { original };
         let model = models.get(&request.model).ok_or(())?;
+        let control_point = if let Some(identity) = request.control_point {
+            let points = world.gameplay.and_then(|g| g.control_points.as_ref()).ok_or(())?;
+            let point = points.points.iter().find(|p| p.identity == identity).ok_or(())?;
+            if point.models[point.owner as usize] != request.model { return Err(()); }
+            let area = points.areas.iter().rev().find(|a| a.point == point.index);
+            Some((point,area,points.configuration))
+        } else { None };
         let bodygroups = if let Some(body) = request.packed_body {
             model
                 .body_parts
@@ -2568,7 +2578,19 @@ fn encode_model_poses(
         let pose_parameters = model
             .pose_parameters
             .iter()
-            .map(|parameter| playsrc_studio_model::Float32(if request.class_selection && parameter.name.eq_ignore_ascii_case(b"move_x") { 1.0f32.to_bits() } else { 0 }))
+            .map(|parameter| {
+                let mut value: f32 = if request.class_selection && parameter.name.eq_ignore_ascii_case(b"move_x") { 1.0 } else { 0.0 };
+                if let Some((point,area,configuration)) = control_point {
+                    for team in [playsrc_tf2::PlayerTeam::Red, playsrc_tf2::PlayerTeam::Blue] {
+                        if parameter.name.eq_ignore_ascii_case(format!("cappoint_{}_percentage",team as u8).as_bytes()) {
+                            value = if let Some(a) = area.filter(|a| a.capturing_team.is_gameplay()) {
+                                if a.capturing_team == team { a.progress(configuration) } else if point.owner == team { 1.0-a.progress(configuration) } else { 0.0 }
+                            } else if point.owner == team { 1.0 } else { 0.0 };
+                        }
+                    }
+                }
+                playsrc_studio_model::Float32(value.to_bits())
+            })
             .collect::<Vec<_>>();
         let timing = playsrc_studio_model::sequence_timing(model, sequence, &pose_parameters)
             .map_err(|_| ())?;
@@ -2726,6 +2748,7 @@ fn encode_model_poses(
                 sequence,
                 cycle.to_bits(),
                 request.elapsed.to_bits(),
+                pose_parameters.iter().map(|p| p.0).collect(),
             );
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 sampled_poses.entry(pose_key.clone())
@@ -5450,7 +5473,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 23, MAX)?;
+    u32_field(&mut out, 24, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -5944,6 +5967,7 @@ fn encode_snapshot(
             MAX,
         )?;
     }
+    encode_control_points(&mut out, snapshot.control_points.as_ref(), MAX)?;
     encode_objectives(&mut out, snapshot.objectives.as_ref(), MAX)?;
     u32_field(&mut out, u32::from(snapshot.metal), MAX)?;
     u32_field(&mut out, u32::try_from(snapshot.pickups.len()).ok()?, MAX)?;
@@ -6231,6 +6255,41 @@ fn encode_round(
         extend(out, &[kind, detail, team, flags], maximum)?;
         u32_field(out, identity, maximum)?;
     }
+    Some(())
+}
+
+fn encode_control_points(out: &mut Vec<u8>, points: Option<&playsrc_tf2::control_point::Snapshot>, maximum: usize) -> Option<()> {
+    use playsrc_tf2::PlayerTeam;
+    let begin = out.len();
+    extend(out, b"PCPN", maximum)?;
+    u32_field(out, 0, maximum)?;
+    u32_field(out, points.map_or(0, |p| p.points.len() as u32), maximum)?;
+    if let Some(world) = points {
+        for value in world.master.custom_position { f32_field(out,value,maximum)?; }
+        u16_field(out,u16::try_from(world.master.cap_layout.len()).ok()?,maximum)?;
+        extend(out,world.master.cap_layout.as_bytes(),maximum)?;
+        for point in &world.points {
+            let area = world.areas.iter().rev().find(|a| a.point == point.index);
+            let flags = u8::from(point.locked) | (u8::from(point.visible)<<1) | (u8::from(point.model_visible)<<2)
+                | (u8::from(area.is_some_and(|a| a.blocked))<<3)
+                | (u8::from(world.may_capture[point.index][0] && area.is_some_and(|a| a.teams[2].can_cap))<<4)
+                | (u8::from(world.may_capture[point.index][1] && area.is_some_and(|a| a.teams[3].can_cap))<<5);
+            u32_field(out,point.identity,maximum)?;
+            extend(out,&[team_code(point.owner),area.map_or(0,|a| team_code(a.capturing_team)),area.map_or(0,|a| team_code(a.team_in_zone)),flags],maximum)?;
+            for value in [area.map_or(0.0,|a| a.remaining),area.map_or(0.0,|a| a.progress(world.configuration)),point.unlock_at.unwrap_or(-1.0),
+                area.map_or(0.0,|a| a.total_time(PlayerTeam::Red,world.configuration)),area.map_or(0.0,|a| a.total_time(PlayerTeam::Blue,world.configuration))] { f32_field(out,value,maximum)?; }
+            for team in [2,3] { i32_field(out,area.map_or(0,|a| a.num_players[team]),maximum)?; }
+            for team in [2,3] { i32_field(out,area.map_or(1,|a| a.teams[team].required),maximum)?; }
+            floats(out,point.position.into_iter().chain(point.angles),maximum)?;
+            for text in [&point.print_name,&point.icons[point.owner as usize],&point.models[point.owner as usize],&point.overlays[point.owner as usize]] {
+                u16_field(out,u16::try_from(text.len()).ok()?,maximum)?; extend(out,text.as_bytes(),maximum)?;
+            }
+            u32_field(out,area.map_or(0,|a| a.touching.len() as u32),maximum)?;
+            if let Some(area) = area { for player in &area.touching { u32_field(out,*player,maximum)?; } }
+        }
+    }
+    let length = u32::try_from(out.len()-begin).ok()?;
+    out[begin+4..begin+8].copy_from_slice(&length.to_le_bytes());
     Some(())
 }
 
@@ -8596,6 +8655,10 @@ fn resolve_models(
         let mut selected_skins = std::collections::BTreeSet::from([0usize]);
         if model.skins.len() > 1 {
             selected_skins.insert(1);
+        }
+        if graph.entities.iter().any(|entity| entity.classname.as_deref() == Some(b"team_control_point")
+            && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(entity,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
+            selected_skins.insert(2);
         }
         for flag in &graph.entities {
             if !flag
@@ -15419,6 +15482,7 @@ mod tests {
             entity_transforms: Vec::new(),
             entity_events: Vec::new(),
             objectives: None,
+            control_points: None,
             round: playsrc_tf2::round::Rules::active(playsrc_tf2::round::Configuration::default())
                 .unwrap()
                 .snapshot(Vec::new()),

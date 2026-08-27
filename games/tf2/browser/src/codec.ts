@@ -458,6 +458,36 @@ export type CaptureObjectives = Readonly<{
   events: readonly CaptureEvent[]
 }>
 
+export type ControlPoint = Readonly<{
+  identity: number
+  owner: 0 | Tf2Team
+  capturingTeam: 0 | Tf2Team
+  teamInZone: 0 | Tf2Team
+  locked: boolean
+  visible: boolean
+  modelVisible: boolean
+  blocked: boolean
+  mayCapture: readonly [boolean, boolean]
+  remaining: number
+  progress: number
+  unlockAt: number | null
+  captureTimes: readonly [number, number]
+  playerCounts: readonly [number, number]
+  requiredCappers: readonly [number, number]
+  position: readonly [number, number, number]
+  angles: readonly [number, number, number]
+  printName: string
+  icon: string
+  model: string
+  overlay: string
+  touching: readonly number[]
+}>
+export type ControlPoints = Readonly<{
+  customPosition: readonly [number, number]
+  capLayout: string
+  points: readonly ControlPoint[]
+}>
+
 export type RoundState = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
 export type RoundEvent = Readonly<{
   kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12
@@ -541,7 +571,7 @@ export type BotSnapshot = Readonly<{
   team: Tf2Team
   lifecycle: 1 | 2
   difficulty: BotDifficulty
-  objective: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  objective: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
   health: number
   maximumHealth: number
   target: number | null
@@ -674,6 +704,7 @@ export type Snapshot = Readonly<{
   entityTransforms: readonly EntityTransform[]
   entityEvents: readonly EntityEvent[]
   objectives: CaptureObjectives | null
+  controlPoints: ControlPoints | null
   round: RoundSnapshot
   jump: JumpSnapshot | null
   events: readonly GameplayEvent[]
@@ -1268,6 +1299,55 @@ function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: nu
     tick: view.getBigUint64(24, true), entityRevision: view.getBigUint64(32, true), collisionRevision: view.getBigUint64(40, true), models: ranges ? ranges.array("brushes", models) : Object.freeze(models), studioModels: ranges ? ranges.array("studios", studioModels) : Object.freeze(studioModels), studioAnimations: Object.freeze(studioAnimations) })
 }
 
+function decodeControlPoints(buffer: ArrayBuffer, offset: number, available: number): Readonly<{ points: ControlPoints | null; length: number }> {
+  if (available < 12) throw new Tf2CodecError("Control point header is truncated")
+  const view = new DataView(buffer, offset, available), data = new Uint8Array(buffer, offset, available)
+  const length = view.getUint32(4, true), count = view.getUint32(8, true)
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PCPN" || length < 12 || length > available || count > 8) throw new Tf2CodecError("Control point header is invalid")
+  if (count === 0) {
+    if (length !== 12) throw new Tf2CodecError("Absent control point section has payload")
+    return Object.freeze({ points: null, length })
+  }
+  let at = 12
+  const require = (size: number): void => { if (at + size > length) throw new Tf2CodecError("Control point record is truncated") }
+  const text = (): string => {
+    require(2)
+    const size = view.getUint16(at, true); at += 2; require(size)
+    let value: string
+    try { value = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(at, at + size)) }
+    catch { throw new Tf2CodecError("Control point string is not UTF-8") }
+    at += size; return value
+  }
+  require(8)
+  const customPosition = Object.freeze([view.getFloat32(at, true), view.getFloat32(at + 4, true)] as const); at += 8
+  if (!finite(customPosition)) throw new Tf2CodecError("Control point layout is invalid")
+  const capLayout = text(), points: ControlPoint[] = []
+  for (let index = 0; index < count; index++) {
+    require(68)
+    const identity = view.getUint32(at, true), owner = data[at + 4]!, capturingTeam = data[at + 5]!, teamInZone = data[at + 6]!, flags = data[at + 7]!
+    const remaining = view.getFloat32(at + 8, true), progress = view.getFloat32(at + 12, true), unlock = view.getFloat32(at + 16, true)
+    const captureTimes = Object.freeze([view.getFloat32(at + 20, true), view.getFloat32(at + 24, true)] as const)
+    const playerCounts = Object.freeze([view.getInt32(at + 28, true), view.getInt32(at + 32, true)] as const)
+    const requiredCappers = Object.freeze([view.getInt32(at + 36, true), view.getInt32(at + 40, true)] as const)
+    const position = vector(view, at + 44), angles = vector(view, at + 56)
+    if (![owner, capturingTeam, teamInZone].every(team => team === 0 || team === 2 || team === 3) || flags > 63
+      || !finite([remaining, progress, unlock, ...captureTimes, ...position, ...angles]) || unlock < -1) throw new Tf2CodecError("Control point state is invalid")
+    at += 68
+    const printName = text(), icon = text(), model = text(), overlay = text()
+    require(4)
+    const touchingCount = view.getUint32(at, true); at += 4
+    if (touchingCount > 32) throw new Tf2CodecError("Control point contact limit exceeded")
+    require(touchingCount * 4)
+    const touching = Array.from({ length: touchingCount }, (_, i) => view.getUint32(at + i * 4, true)); at += touchingCount * 4
+    points.push(Object.freeze({ identity, owner: owner as 0 | Tf2Team, capturingTeam: capturingTeam as 0 | Tf2Team, teamInZone: teamInZone as 0 | Tf2Team,
+      locked: (flags & 1) !== 0, visible: (flags & 2) !== 0, modelVisible: (flags & 4) !== 0, blocked: (flags & 8) !== 0,
+      mayCapture: Object.freeze([(flags & 16) !== 0, (flags & 32) !== 0] as const), remaining, progress, unlockAt: unlock === -1 ? null : unlock,
+      captureTimes, playerCounts, requiredCappers, position, angles, printName, icon, model, overlay, touching: Object.freeze(touching) }))
+  }
+  if (at !== length) throw new Tf2CodecError("Control point section has trailing bytes")
+  return Object.freeze({ points: Object.freeze({ customPosition, capLayout, points: Object.freeze(points) }), length })
+}
+
 function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): Readonly<{ objectives: CaptureObjectives | null; length: number }> {
   if (length < 12) throw new Tf2CodecError("Capture objective section is truncated")
   const data = new Uint8Array(buffer, offset, length), view = new DataView(buffer, offset, length)
@@ -1488,7 +1568,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 23)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 24)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -2134,7 +2214,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const nextPrimaryTick = view.getBigUint64(item + 112, true), nextReloadTick = view.getBigUint64(item + 120, true)
     if (botClass === undefined || botClass < 1 || botClass > 9 || (botTeam !== 2 && botTeam !== 3)
       || (lifecycle !== 1 && lifecycle !== 2) || difficulty === undefined || difficulty > 3
-      || objective === undefined || objective < 1 || objective > 7
+      || objective === undefined || objective < 1 || objective > 10
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
       || animationRole === undefined || animationRole < 1 || animationRole > 3
       || weapon === undefined || (weapon > 21 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
@@ -2164,6 +2244,10 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     bots.push(bot)
   }
   at += botCount * 128
+  const readControlPoints = () => decodeControlPoints(buffer, base + at, bytes.byteLength - at)
+  const pointResult = ranges ? ranges.section("control-points", at, bytes.byteLength - at, readControlPoints) : readControlPoints()
+  at += pointResult.length
+  const controlPoints = pointResult.points
   const readObjectives = () => decodeObjectives(buffer, base + at, bytes.byteLength - at)
   const objectiveResult = ranges ? ranges.section("objectives", at, bytes.byteLength - at, readObjectives) : readObjectives()
   at += objectiveResult.length
@@ -2401,6 +2485,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     entityTransforms: Object.freeze(entityTransforms),
     entityEvents: Object.freeze(entityEvents),
     objectives,
+    controlPoints,
     round,
     jump,
     events: Object.freeze(events),

@@ -380,6 +380,7 @@ function stable64(value: string) {
 export type ModelPoseRequest = Readonly<{
   identity: number
   classSelection?: boolean
+  controlPoint?: number
   modelPanel?: boolean
   modelPanelReset?: boolean
   cloak?: ActorCloakState
@@ -481,7 +482,8 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     view.setUint32(at, request.identity, true); at += 4
     const cloak = request.cloak
     if (cloak && (!Number.isSafeInteger(cloak.identity) || cloak.identity < 1 || cloak.identity > 0xffff_ffff)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
-    view.setUint32(at, cloak?.identity ?? 0, true); at += 4
+    if (request.controlPoint !== undefined && (!Number.isSafeInteger(request.controlPoint) || request.controlPoint <= 0 || request.controlPoint > 0xffff_ffff || cloak || request.itemModel || request.classSelection || request.modelPanel)) throw new ProjectilePresentationError("MalformedFact", "control point pose identity")
+    view.setUint32(at, request.controlPoint ?? cloak?.identity ?? 0, true); at += 4
     for (const value of cloak ? [cloak.localFactor, cloak.worldFactor, cloak.rawFactor, ...cloak.playerTint] : [0, 0, 0, 0, 0, 0]) {
       if (!Number.isFinite(value) || value < 0 || value > 1) throw new ProjectilePresentationError("MalformedFact", "model actor cloak")
       view.setFloat32(at, value, true); at += 4
@@ -496,7 +498,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       throw new ProjectilePresentationError("MalformedFact", "model pose sample")
     }
     view.setBigUint64(at, sampleTick, true); at += 8
-    bytes[at] = request.classSelection ? 3 : request.modelPanel ? 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
+    bytes[at] = request.controlPoint !== undefined ? 6 : request.classSelection ? 3 : request.modelPanel ? 4 : request.worldItem ? 5 : request.handsOnlyViewmodel ? 2 : request.itemModel === undefined ? 0 : 1
     bytes[at + 1] = Number(request.attachmentsOnly ?? false)
     bytes[at + 2] = Number(request.fireView !== undefined)
     bytes[at + 3] = Number(request.modelPanelReset ?? false)

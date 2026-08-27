@@ -12,11 +12,11 @@ import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1189)
+  const bytes = new ArrayBuffer(1201)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 23, true)
+  view.setUint32(4, 24, true)
   view.setBigUint64(8, 7n, true)
   data.set([3, 2, 1, 0], 16)
   view.setFloat32(20, 200, true)
@@ -116,6 +116,9 @@ function snapshot(): ArrayBuffer {
   at += 60
   view.setUint32(at, 0, true)
   at += 4
+  data.set(new TextEncoder().encode("PCPN"), at)
+  view.setUint32(at + 4, 12, true)
+  at += 12
   data.set(new TextEncoder().encode("PCTF"), at)
   view.setUint32(at + 4, 1, true)
   at += 12
@@ -218,14 +221,14 @@ test("studio occurrence revision bytes retain closed, moving, blocked, reversed 
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 148, brushHeader = objective - 64
+  const objective = original.length - 160, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 33 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes + roster * 4)
   bytes.set(original.subarray(0, brushHeader + 52))
   bytes.set(original.subarray(brushHeader + 52, objective), brushHeader + 52 + insert)
-  bytes.set(original.subarray(objective, objective + 72), objective + insert + botBytes)
-  bytes.set(original.subarray(objective + 72), objective + insert + botBytes + 72 + scoreboardBytes)
+  bytes.set(original.subarray(objective, objective + 84), objective + insert + botBytes)
+  bytes.set(original.subarray(objective + 84), objective + insert + botBytes + 84 + scoreboardBytes)
   const view = new DataView(bytes.buffer)
   view.setBigUint64(8, tick, true)
   view.setBigUint64(424, tick, true) // projectile event
@@ -240,7 +243,7 @@ function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
     view.setFloat32(at + 40, i * 8, true); bytes[at + 67] = 1
   }
   view.setUint32(objective + insert - 4, roster, true)
-  let score = objective + insert + botBytes + 20
+  let score = objective + insert + botBytes + 32
   bytes[score + 9] = roster; bytes[score + 10] = roster + 1
   score += 52
   for (let i = 0; i < roster; i++) {
@@ -668,7 +671,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     })).toThrow("command bot configuration is invalid")
 
     const prior = new Uint8Array(snapshot())
-    const objectiveOffset = prior.byteLength - 148
+    const objectiveOffset = prior.byteLength - 160
     const botName = new TextEncoder().encode("Chucklenuts")
     const bytes = new Uint8Array(prior.byteLength + 128 + 33 + botName.length + 4)
     const roundOffset = prior.byteLength - 72
@@ -678,7 +681,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     const view = new DataView(bytes.buffer)
     view.setUint32(objectiveOffset - 4, 1, true)
     const at = objectiveOffset
-    const scoreboardOffset = objectiveOffset + 20
+    const scoreboardOffset = objectiveOffset + 32
     view.setUint32(at, 2, true)
     bytes.set([3, 3, 1, 1, 1], at + 4)
     view.setInt32(at + 12, 200, true)
@@ -1014,7 +1017,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
   test("identical objective events are retained once for each exact tick, not deduplicated with state", () => {
     const withObjective = (tick: bigint) => {
-      const base = rosterSnapshot(tick, 31, 1), at = 1041 + 128 + 31 * 128
+      const base = rosterSnapshot(tick, 31, 1), at = 1053 + 128 + 31 * 128
       const bytes = new Uint8Array(base.length + 48), view = new DataView(bytes.buffer)
       bytes.set(base.subarray(0, at + 12)); bytes.set(base.subarray(at + 12), at + 60)
       bytes[at + 8] = 1; view.setUint32(at + 32, 1, true)
