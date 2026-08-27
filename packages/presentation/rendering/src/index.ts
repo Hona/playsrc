@@ -36,6 +36,8 @@ import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buf
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
 import { RetainedStaticSceneGroup } from "./static-scene-group"
 import { RetainedModelCache } from "./retained-model-cache"
+import { disposeDynamicModel } from "./dynamic-model-disposal"
+import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment } from "./model-lighting-graphs"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
@@ -975,6 +977,7 @@ type ModelLightingScene = Readonly<{
   textures: ReadonlyMap<string, ModelLightingTextures>
   cubemap: (identity: string) => THREE.CubeTexture | undefined
   exposure: ReturnType<typeof TSL.uniform>
+  graphs: ModelLightingGraphs
 }>
 
 type ModelLightingTextures = Readonly<{
@@ -994,6 +997,8 @@ type SceneResources = {
   group: THREE.Group
   modelTemplates: Map<string, THREE.Group>
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
+  modelLightingGraphs: ModelLightingGraphs
+  modelPanelLightingGraphs: ModelLightingGraphs
   modelPanelMaterialAnimations: ReadonlyMap<string, readonly ModelPanelMaterialAnimation[]>
   modelOccurrenceInstances:Map<number,THREE.Group>
   modelOccurrenceLighting: readonly SourceModelLightingUniforms[]
@@ -1437,7 +1442,9 @@ function validateDirectionalInputs(
   return result
 }
 
-type RetainedViewModel = { model: string; root: THREE.Group; instance: THREE.Group; meshes: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }
+type DynamicModelLighting = { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; environmentShape?: string }
+type RetainedDynamicModel = DynamicModelLighting & { model: string; seen: number }
+type RetainedViewModel = RetainedDynamicModel & { root: THREE.Group; meshes: THREE.Mesh[] }
 
 class RendererOwner implements Renderer {
   readonly configuration: RenderConfiguration
@@ -1475,8 +1482,10 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   #viewModelInstances = new Map<number, RetainedViewModel>()
-  readonly #retainedViewModels = new RetainedModelCache<RetainedViewModel>(32, retained => this.#disposeDynamicInstance(retained.root))
-  #dynamicModelInstances = new Map<number, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[]; seen: number }>()
+  // Detached occurrences share a bounded, generation-owned residency budget.
+  // Never substitute one actor's mutable materials or skeleton for another's.
+  readonly #retainedModels = new RetainedModelCache<RetainedDynamicModel | RetainedViewModel>(32, retained => this.#disposeDynamicInstance("root" in retained ? retained.root : retained.instance))
+  #dynamicModelInstances = new Map<number, RetainedDynamicModel>()
   #dynamicBrushInstances = new Map<number, { model: number; appearance: string; instance: THREE.Group; seen: number }>()
   #dynamicRevision = 0
   #particleBatchMeshes: { key: string; capacity: number; mesh: THREE.Mesh }[] = []
@@ -2248,7 +2257,7 @@ class RendererOwner implements Renderer {
       this.#clearParticleBatches()
       this.#clearDynamic(this.#viewModels)
       this.#viewModelInstances.clear()
-      this.#retainedViewModels.clear()
+      this.#retainedModels.clear()
       for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
       this.#modelPanelInstances.clear()
       this.#stagedDynamic = undefined
@@ -2420,6 +2429,8 @@ class RendererOwner implements Renderer {
     group.add(mainStaticProps, skyStaticProps, mainModelOccurrences, projectedMarkGroup)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelLightingTextures = new Map<string, ModelLightingTextures>()
+    const modelLightingGraphs = new ModelLightingGraphs()
+    const modelPanelLightingGraphs = new ModelLightingGraphs()
     const modelPanelMaterialAnimations = new Map<string, ModelPanelMaterialAnimation[]>()
     const modelOccurrenceInstances=new Map<number,THREE.Group>()
     const modelOccurrenceLighting: SourceModelLightingUniforms[] = []
@@ -3301,6 +3312,7 @@ class RendererOwner implements Renderer {
             textures: modelLightingTextures,
             cubemap: modelCubemap,
             exposure: exposureUniform,
+            graphs: modelLightingGraphs,
           })
           if (retained.lighting) modelOccurrenceLighting.push(retained.lighting)
           instance.traverse((object) => {
@@ -3498,6 +3510,8 @@ class RendererOwner implements Renderer {
       group,
       modelTemplates,
       modelLightingTextures,
+      modelLightingGraphs,
+      modelPanelLightingGraphs,
       modelPanelMaterialAnimations,
       modelOccurrenceInstances,
       modelOccurrenceLighting: Object.freeze(modelOccurrenceLighting),
@@ -3633,7 +3647,7 @@ class RendererOwner implements Renderer {
         sourceTransform(retained.instance, presentation.origin, panel.angles)
         const panelLighting = {
           materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
-          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure,
+          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure, graphs: this.#active.modelPanelLightingGraphs,
         }
         if (panel.modelLighting) this.#applyDynamicModelLighting(retained, {
           identity: 0, model: panel.model, position: presentation.origin, angles: panel.angles, scale: 1,
@@ -4674,16 +4688,7 @@ class RendererOwner implements Renderer {
   }
 
   #clearDynamic(group: THREE.Group): void {
-    for (const child of [...group.children]) {
-      group.remove(child)
-      child.traverse((object) => {
-        if (!(object instanceof THREE.Mesh)) return
-        if (object.userData.dynamicMaterial === true) {
-          for (const material of Array.isArray(object.material) ? object.material : [object.material]) material.dispose()
-        }
-        if (object.userData.dynamicGeometry === true) object.geometry.dispose()
-      })
-    }
+    for (const child of [...group.children]) this.#disposeDynamicInstance(child)
   }
 
   #createParticleBatchGeometry(capacity:number):THREE.BufferGeometry{
@@ -4891,7 +4896,7 @@ class RendererOwner implements Renderer {
         }
       }
       if (object.userData.dynamicMaterial !== true) {
-        object.material = Array.isArray(object.material) ? object.material.map((material) => material.clone()) : object.material.clone()
+        object.material = Array.isArray(object.material) ? object.material.map((material) => this.#cloneDynamicMaterial(material)) : this.#cloneDynamicMaterial(object.material)
         object.userData.dynamicMaterial = true
       }
       if (Array.isArray(object.material)) {
@@ -4913,9 +4918,11 @@ class RendererOwner implements Renderer {
     if (!retained || retained.model !== key) {
       if (retained) {
         retained.root.parent?.remove(retained.root)
-        this.#retainedViewModels.retain(`${item.identity}:${retained.model}`, retained)
+        this.#retainedModels.retain(`view:${item.identity}:${retained.model}`, retained)
       }
-      retained = this.#retainedViewModels.take(`${item.identity}:${key}`)
+      const cached = this.#retainedModels.take(`view:${item.identity}:${key}`)
+      if (cached && !("root" in cached)) throw new RenderingError("IdentityMismatch", "retained model namespace differs")
+      retained = cached as RetainedViewModel | undefined
       if (retained) {
         if (item.pose) this.#applyPose(retained.instance, item.pose, true, retained.meshes)
       } else {
@@ -4963,22 +4970,14 @@ class RendererOwner implements Renderer {
     return sourceViewportDepthRange(projection.depthRange)
   }
 
-  #disposeDynamicInstance(instance: THREE.Group): void {
-    instance.parent?.remove(instance)
-    const skeletons = new Set<THREE.Skeleton>()
-    instance.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return
-      if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton)
-      if (object.userData.dynamicMaterial === true) {
-        if (Array.isArray(object.material)) {
-          for (const material of object.material) material.dispose()
-        } else {
-          object.material.dispose()
-        }
-      }
-      if (object.userData.dynamicGeometry === true) object.geometry.dispose()
-    })
-    for (const skeleton of skeletons) skeleton.dispose()
+  #cloneDynamicMaterial(material: THREE.Material): THREE.Material {
+    this.#instrumentation?.dynamicModel("materialCreated")
+    return material.clone()
+  }
+
+  #disposeDynamicInstance(instance: THREE.Object3D): void {
+    this.#instrumentation?.dynamicModel("disposed")
+    disposeDynamicModel(instance, this.#instrumentation ? () => this.#instrumentation!.dynamicModel("materialDisposed") : undefined)
   }
 
   #applyDynamicModelCloak(retained: { instance: THREE.Group; meshes?: THREE.Mesh[] }, item: ModelItem): void {
@@ -5001,7 +5000,7 @@ class RendererOwner implements Renderer {
   }
 
   #applyDynamicModelLighting(
-    retained: { instance: THREE.Group; meshes?: THREE.Mesh[]; lighting?: SourceModelLightingUniforms; eyes?: Map<number, SourceModelEyeUniforms>; cubemapIdentity?: string | null; cubemapNodes?: any[] },
+    retained: DynamicModelLighting,
     item: ModelItem,
     scene?: ModelLightingScene,
   ): void {
@@ -5014,23 +5013,31 @@ class RendererOwner implements Renderer {
       textures: this.#active!.modelLightingTextures,
       cubemap: this.#active!.modelCubemap,
       exposure: this.#active!.exposureUniform,
+      graphs: this.#active!.modelLightingGraphs,
     }
     let uniforms = retained.lighting
-    if (!uniforms) {
-      uniforms = createSourceModelLightingUniforms()
-      retained.lighting = uniforms
+    const localEnvironment = input.localEnvironment ? resources.cubemap(input.localEnvironment) : undefined
+    const environmentShape = modelEnvironmentShape(localEnvironment)
+    const meshes = retained.meshes ?? []
+    if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh && !object.userData.sourceCloakOverlay) meshes.push(object) })
+    retained.meshes = meshes
+    if (retained.cubemapIdentity !== input.localEnvironment) {
+      if (localEnvironment) for (const mesh of meshes) bindModelEnvironment(mesh, localEnvironment)
       retained.cubemapIdentity = input.localEnvironment
-      const cubemapNodes: any[] = []
-      const meshes = retained.meshes ?? []
-      if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object) })
+    }
+    if (!uniforms || retained.environmentShape !== environmentShape) {
+      uniforms ??= createSourceModelLightingUniforms()
+      retained.lighting = uniforms
+      retained.environmentShape = environmentShape
       for (const mesh of meshes) {
+        bindModelLighting(mesh, uniforms)
         const identity = String(mesh.userData.materialIdentity).toLowerCase()
         const authored = resources.materials?.get(identity)
         if (!authored || authored.shader === "unlit-generic" || authored.shader === "unlit-two-texture") continue
         if (mesh.userData.dynamicMaterial !== true) {
           mesh.material = Array.isArray(mesh.material)
-            ? mesh.material.map((material) => material.clone())
-            : mesh.material.clone()
+            ? mesh.material.map((material) => this.#cloneDynamicMaterial(material))
+            : this.#cloneDynamicMaterial(mesh.material)
           mesh.userData.dynamicMaterial = true
         }
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
@@ -5054,7 +5061,7 @@ class RendererOwner implements Renderer {
           }> | null
           let environment: Readonly<{ texture: THREE.CubeTexture; tint: readonly [number, number, number]; scale: number }> | undefined
           if (environmentState && (textures?.environment || input.localEnvironment)) {
-            const texture = textures?.environment ?? (input.localEnvironment && resources.cubemap(input.localEnvironment))
+            const texture = textures?.environment ?? localEnvironment
             if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
             environment = Object.freeze({
               texture,
@@ -5064,44 +5071,45 @@ class RendererOwner implements Renderer {
           }
           let base = SOURCE_MODEL_BASE_COLOR.get(mesh.geometry)
           if (!base) throw new RenderingError("MissingInput", `authored model base sample ${identity} is unavailable`)
+          const graphKey = `${identity}:${base.uuid}:${textures?.environment ? "authored" : environmentShape}`
+          let eyeShader = false
           if (authored.shader === "eye-refract" || authored.shader === "eyes") {
             const primitive = Number(mesh.userData.posedPrimitive ?? mesh.userData.sourcePrimitive)
             const eye = item.eyeStates?.find((value) => value.primitive === primitive)
             if (!eye || !textures?.iris || typeof state.dilation !== "number") {
               throw new RenderingError("MissingInput", `authored Studio eye state ${identity}:${primitive} is unavailable`)
             }
-            const eyeUniforms = createSourceModelEyeUniforms()
+            const eyeUniforms = retained.eyes?.get(primitive) ?? createSourceModelEyeUniforms()
             const eyes = retained.eyes ?? new Map<number, SourceModelEyeUniforms>()
             eyes.set(primitive, eyeUniforms)
             retained.eyes = eyes
             updateSourceModelEyeUniforms(eyeUniforms, eye)
-            base = sourceEyeIrisNode(textures.iris, eyeUniforms, state.dilation, authored.shader === "eye-refract")
+            bindModelLighting(mesh, uniforms, eyeUniforms)
+            eyeShader = true
           }
-          const shaded = sourceModelSurfaceNode(base, uniforms, {
-            halfLambert: state.phong ? true : state.halfLambert,
-            diffuseWarp: textures?.warp,
-            exponentTexture: textures?.exponent,
-            phong: state.phong,
-            environment,
-            ...(authored.shader === "eye-refract" ? {
-              eye: {
-                ambientOcclusion: textures?.ambientOcclusion,
-                ambientOcclusionColor: state.ambientOcclusionColor!,
-                glossiness: state.glossiness!,
-              },
-            } : {}),
-          }, resources.exposure)
-          material.colorNode = sourceFragmentColor(shaded.color, resources.states.get(identity), resources.waterFog)
-          if (shaded.environmentNode && !textures?.environment) cubemapNodes.push(shaded.environmentNode)
+          material.colorNode = resources.graphs.get(graphKey, () => {
+            this.#instrumentation?.dynamicModel("graphCreated")
+            if (eyeShader) base = sourceEyeIrisNode(textures!.iris!, resources.graphs.eyes, state.dilation!, authored.shader === "eye-refract")
+            const shaded = sourceModelSurfaceNode(base, resources.graphs.lighting, {
+              halfLambert: state.phong ? true : state.halfLambert,
+              diffuseWarp: textures?.warp,
+              exponentTexture: textures?.exponent,
+              phong: state.phong,
+              environment,
+              ...(authored.shader === "eye-refract" ? {
+                eye: {
+                  ambientOcclusion: textures?.ambientOcclusion,
+                  ambientOcclusionColor: state.ambientOcclusionColor!,
+                  glossiness: state.glossiness!,
+                },
+              } : {}),
+            }, resources.exposure)
+            const color = shaded.environmentNode && !textures?.environment ? perObjectModelEnvironment(shaded.color, shaded.environmentNode) : shaded.color
+            return sourceFragmentColor(color, resources.states.get(identity), resources.waterFog)
+          })
           material.needsUpdate = true
         }
       }
-      if (cubemapNodes.length > 0) retained.cubemapNodes = cubemapNodes
-    } else if (retained.cubemapNodes && retained.cubemapIdentity !== input.localEnvironment) {
-      const texture = input.localEnvironment && resources.cubemap(input.localEnvironment)
-      if (!texture) throw new RenderingError("MissingInput", `model cubemap ${input.localEnvironment} is unavailable`)
-      for (const node of retained.cubemapNodes) node.value = texture
-      retained.cubemapIdentity = input.localEnvironment
     }
     updateSourceModelLightingUniforms(uniforms, input)
     if (retained.eyes) {
@@ -5203,11 +5211,17 @@ class RendererOwner implements Renderer {
           continue
         }
 
-        const key = modelKey(item.model, item.skin ?? 0)
+        const model = modelKey(item.model, item.skin ?? 0)
+        const key = `${model}:${Number(!!item.pose)}:${Number(!!item.modelLighting)}`
         let retained = this.#dynamicModelInstances.get(item.identity)
         if (!retained || retained.model !== key) {
-          if (retained) this.#disposeDynamicInstance(retained.instance)
-          retained = { model: key, instance: this.#active!.modelTemplates.get(key)!.clone(true), seen: revision }
+          if (retained) {
+            retained.instance.removeFromParent()
+            this.#retainedModels.retain(`world:${item.identity}:${retained.model}`, retained)
+          }
+          const cached = this.#retainedModels.take(`world:${item.identity}:${key}`)
+          this.#instrumentation?.dynamicModel(cached ? "reused" : "created")
+          retained = cached ?? { model: key, instance: this.#active!.modelTemplates.get(model)!.clone(true), seen: revision }
           this.#dynamicModelInstances.set(item.identity, retained)
         }
         retained.seen = revision
@@ -5240,7 +5254,9 @@ class RendererOwner implements Renderer {
     }
     for (const [identity, retained] of this.#dynamicModelInstances) {
       if (retained.seen === revision) continue
-      this.#disposeDynamicInstance(retained.instance)
+      retained.instance.removeFromParent()
+      this.#retainedModels.retain(`world:${identity}:${retained.model}`, retained)
+      this.#instrumentation?.dynamicModel("parked")
       this.#dynamicModelInstances.delete(identity)
       const staticInstance = this.#active!.modelOccurrenceInstances.get(identity)
       if (staticInstance) staticInstance.visible = frame.modelVisibility?.get(identity) ?? true
@@ -5248,7 +5264,7 @@ class RendererOwner implements Renderer {
     for (const [identity, retained] of this.#viewModelInstances) {
       if (retained.seen === revision) continue
       retained.root.parent?.remove(retained.root)
-      this.#retainedViewModels.retain(`${identity}:${retained.model}`, retained)
+      this.#retainedModels.retain(`view:${identity}:${retained.model}`, retained)
       this.#viewModelInstances.delete(identity)
     }
     // A map occurrence is not a static prop. Its Entity transform includes
@@ -5414,7 +5430,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
-    this.#retainedViewModels.clear()
+    this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
@@ -5525,7 +5541,7 @@ class RendererOwner implements Renderer {
     this.#clearParticleBatches()
     this.#clearDynamic(this.#viewModels)
     this.#viewModelInstances.clear()
-    this.#retainedViewModels.clear()
+    this.#retainedModels.clear()
     for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
     this.#modelPanelInstances.clear()
     this.#stagedDynamic = undefined
