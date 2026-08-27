@@ -82,9 +82,10 @@ test("Lakeside authored smokestacks, TurnOff drain, reentry and replacement", as
   await page.locator("canvas.world-canvas").click()
   await expect(main).toHaveAttribute("data-pointer-locked", "true")
   const beforeInput = await page.evaluate(() => (globalThis as any).__playsrcProfile.player.position)
+  const inputYaw = await page.evaluate(() => (globalThis as any).__playsrcProfile.player.camera.yawDegrees)
   await page.keyboard.down("w"); await page.waitForTimeout(400); await page.keyboard.up("w")
   const afterInput = await page.evaluate(() => (globalThis as any).__playsrcProfile.player.position)
-  expect(Math.hypot(afterInput[0] - beforeInput[0], afterInput[1] - beforeInput[1])).toBeGreaterThan(8)
+  expect((afterInput[0] - beforeInput[0]) * Math.cos(inputYaw * Math.PI / 180) + (afterInput[1] - beforeInput[1]) * Math.sin(inputYaw * Math.PI / 180)).toBeGreaterThan(8)
   const stack = facts.smokestacks[0], origin = stack.position
   const camera = { position: [origin[0], origin[1] - 80, origin[2] + 20], yawDegrees: 90, pitchDegrees: 5 }
   await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, camera)
@@ -149,9 +150,11 @@ test("Lakeside authored smokestacks, TurnOff drain, reentry and replacement", as
   const yaw = probe.yawDegrees * Math.PI / 180
   const particleDepths = occludedItems.map((item: any) => (item.position[0] - probe.position[0]) * Math.cos(yaw) + (item.position[1] - probe.position[1]) * Math.sin(yaw))
   expect(wallDepth).toBeGreaterThan(0)
+  expect(wallDepth).toBeLessThan(191)
   expect(wallDepth).toBeLessThan(Math.min(...particleDepths) - 2)
   await command("ent_fire env_smokestack TurnOff"); await closeConsole(); await page.waitForTimeout((lifetime + 0.25) * 1000)
   const occludedStopped = await capture("smoke-occluded-stopped")
+  expect(occludedStopped.particles.items.some((item: any) => item.effectIdentity === 0x5000_0000 + probe.identity)).toBe(false)
   let occludedChanged = 0
   for (let y = before.height / 2 - 40; y < before.height / 2 + 40; y++) for (let x = before.width / 2 - 40; x < before.width / 2 + 40; x++) {
     const offset = (y * before.width + x) * before.channels
