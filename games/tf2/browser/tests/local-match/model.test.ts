@@ -10,6 +10,17 @@ const source = tf2UiResources.panels.find((panel) => panel.source.logicalPath ==
 const configuredMaps = Object.freeze(["jump_beef", "pl_upward", "ctf_2fort"])
 
 describe("TF2 authored offline practice and local server configuration", () => {
+  test("prepared KOTH maps retain authored practice eligibility and never become custom deathmatch", () => {
+    const configured = [...configuredMaps, "koth_viaduct", "koth_sawmill", "koth_harvest_final", "koth_lakeside_final"]
+    const practice = createTf2OfflinePracticeCatalog(source, configured)
+    expect(practice.maps.filter(map => map.mode === "king-of-the-hill").map(map => map.identity)).toEqual(["koth_viaduct", "koth_lakeside_final", "koth_sawmill"])
+    const maps = createTf2LocalMatchMaps(configured, practice)
+    expect(maps.filter(map => map.identity.startsWith("koth_")).map(map => map.mode)).toEqual(Array(4).fill("king-of-the-hill"))
+    const viaduct = maps.find(map => map.identity === "koth_viaduct")!
+    expect(tf2LocalMatchLaunch("training", { mapIdentity: viaduct.identity, difficulty: 2, playerCount: 16, quotaMode: "normal" }, viaduct).configuration.quota).toBe(15)
+    expect(tf2LocalMatchLaunch("create-server", { mapIdentity: viaduct.identity, difficulty: 2, playerCount: 23, quotaMode: "normal" }, viaduct).configuration.quota).toBe(23)
+    expect(() => createTf2LocalMatchMaps(["koth_unconfigured"], practice)).toThrow("not configured")
+  })
   test("retains exact authored defaults and excludes unsupported practice modes and maps", () => {
     const practice = createTf2OfflinePracticeCatalog(source, configuredMaps)
     expect(practice.defaults).toEqual({

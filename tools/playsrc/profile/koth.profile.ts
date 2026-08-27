@@ -24,7 +24,25 @@ test("headed Viaduct local KOTH capture, contest, overtime, victory and restart 
     await entry.fill(text); await entry.press("Enter")
   }
   const closeConsole = async () => { if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote") }
-  await command("map koth_viaduct")
+  if (process.env.PROFILE_KOTH_TRAINING === "1") {
+    const layer = page.locator(".local-match-layer")
+    await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+    await page.locator(".gameui-layer [data-vgui-name='TrainingEntry'] [data-vgui-name='ModeButton']").click()
+    await layer.locator("[data-vgui-name='OfflinePracticePanel'] [data-vgui-name='StartButton']").click()
+    await layer.locator("[data-vgui-name='OfflinePractice_ModeSelectionPanel'] [data-vgui-name='NextButton']").click()
+    await expect(layer.locator("[data-vgui-name='GameModeLabel']")).toHaveText("King of the Hill")
+    await layer.locator("[data-vgui-name='SelectCurrentGameModeButton']").click()
+    await expect(layer.locator("[data-vgui-name='MapNameLabel']")).toHaveText("Viaduct")
+    await layer.locator("[data-vgui-name='DifficultyComboBox']").click()
+    await page.getByRole("option", { name: "Normal", exact: true }).click()
+    await layer.locator("[data-vgui-name='NumPlayersTextEntry']").fill("16")
+    const path = testInfo.outputPath("headed-koth-authored-training.png")
+    await page.screenshot({ path })
+    await testInfo.attach("headed-koth-authored-training", { path, contentType: "image/png" })
+    await layer.locator("[data-vgui-name='StartOfflinePracticeButton']").click()
+  } else {
+    await command("map koth_viaduct")
+  }
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole()
   await chooseTf2Team(page, "red")
