@@ -434,6 +434,7 @@ pub struct WeaponRuntime {
     pub hitscan: crate::hitscan::State,
     pub deploy_multiplier: f32,
     pub spinup_seconds: f32,
+    pub postfire_until: Option<f32>,
     pub discard_chambered_on_reload: bool,
     pub generation: u64,
     pub critical: crate::critical::WeaponState,
@@ -479,6 +480,7 @@ impl WeaponRuntime {
             hitscan: crate::hitscan::State::default(),
             deploy_multiplier: 1.0,
             spinup_seconds: 0.75,
+            postfire_until: None,
             discard_chambered_on_reload: false,
             resolved_profile: profile,
             weapon,
@@ -555,6 +557,7 @@ impl WeaponRuntime {
         self.charge_begin_tick = None;
 
         self.minigun_state = MinigunState::Idle;
+        self.postfire_until = None;
         self.spin_begin_tick = None;
         self.firing_begin_tick = None;
         self.idle_due_tick = None;
@@ -808,6 +811,7 @@ impl WeaponRuntime {
                 && self.idle_due_tick.is_none_or(|due| tick >= due)
             {
                 self.minigun_state = MinigunState::Idle;
+                self.postfire_until = Some(tick as f32 * tick_interval + 40.0 / 30.0);
                 self.spin_begin_tick = None;
                 self.firing_begin_tick = None;
                 self.idle_due_tick = Some(tick.saturating_add(delay_ticks(2.0, tick_interval)));
@@ -825,6 +829,7 @@ impl WeaponRuntime {
                     return PrimaryResult::None;
                 }
                 self.minigun_state = MinigunState::Starting;
+                self.postfire_until = None;
                 self.spin_begin_tick = Some(tick);
                 self.firing_begin_tick = None;
                 self.next_primary_tick = source_deadline_tick(tick, self.spinup_seconds, tick_interval);

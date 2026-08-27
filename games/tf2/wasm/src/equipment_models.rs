@@ -171,7 +171,7 @@ pub(super) fn encode_headers(out: &mut Vec<u8>, models: &[(String, Box<CompiledP
         out.extend_from_slice(&(model.body_parts.len() as u32).to_le_bytes());
         for part in &model.body_parts { out.extend_from_slice(&(part.model_names.len() as u32).to_le_bytes()); }
         let parameters = vec![studio::Float32(0); model.pose_parameters.len()];
-        let pose = studio::sample_pose(model, &studio::AnimationState { base_sequence: 0, cycle: studio::Float32(0), pose_parameters: parameters.clone(), layers: Vec::new() }).map_err(|_| ())?;
+        let pose = studio::sample_pose(model, &studio::AnimationState { base_sequence: 0, cycle: studio::Float32(0), pose_parameters: parameters.clone(), layers: Vec::new(), bone_rotations: Vec::new() }).map_err(|_| ())?;
         out.extend_from_slice(&(model.attachments.len() as u32).to_le_bytes());
         for attachment in &model.attachments {
             pbytes(out, &attachment.name)?;

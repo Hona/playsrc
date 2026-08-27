@@ -239,8 +239,9 @@ pub enum ReloadState {
     Finishing = 3,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponState {
+    pub prefire_playback_rate: f32,
     pub weapon: Weapon,
     pub clip: u16,
     pub reserve: u16,
@@ -255,6 +256,7 @@ impl WeaponState {
     fn from_runtime(runtime: WeaponRuntime) -> Self {
         let profile = runtime.profile();
         Self {
+            prefire_playback_rate: if runtime.weapon == Weapon::Minigun { 0.75 / runtime.spinup_seconds.max(0.00001) } else { 1.0 },
             weapon: runtime.weapon,
             clip: runtime.clip,
             reserve: runtime.reserve,
@@ -3625,7 +3627,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Respawned);
         }
         let selected = if command.select_last_weapon { self.last_weapon } else { command.select_weapon };
-        if let Some(weapon) = selected
+        let can_holster = if self.weapon == Some(Weapon::Minigun) {
+            let state = self.loadout[&Weapon::Minigun];
+            let while_spinning = self.equipment_attributes.weapon(Weapon::Minigun, "mod_minigun_can_holster_while_spinning", 0.0).round_ties_even() != 0.0;
+            if while_spinning { !matches!(state.minigun_state, weapon::MinigunState::Starting | weapon::MinigunState::Firing) }
+            else { state.minigun_state == weapon::MinigunState::Idle && state.postfire_until.is_none_or(|due| self.tick as f32 * self.movement_configuration.tick_interval >= due) }
+        } else { true };
+        if can_holster && let Some(weapon) = selected
             && self.loadout.contains_key(&weapon)
             && weapon != Weapon::InvisibilityWatch
             && Some(weapon) != self.weapon
@@ -8233,6 +8241,12 @@ mod tests {
                 .iter()
                 .any(|event| event.definition == SoundDefinition::MinigunWindDown)
         );
+
+        let postfire = session.loadout[&Weapon::Minigun].postfire_until.unwrap();
+        while session.tick as f32 * session.movement_configuration.tick_interval < postfire {
+            session.advance(Command { select_weapon: Some(Weapon::HeavyShotgun), ..Command::default() }).unwrap();
+            assert_eq!(session.weapon, Some(Weapon::Minigun));
+        }
 
         session
             .advance(Command {

@@ -2183,6 +2183,7 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 
 #[derive(Clone, Debug)]
 struct ModelPoseRequest {
+    barrel_angle: Option<f32>,
     item_definition: Option<u32>,
     activity_start_tick: Option<u64>,
     allow_idle_transition: bool,
@@ -2583,6 +2584,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
         };
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
+            barrel_angle: None,
             item_definition,
             activity_start_tick,
             allow_idle_transition: idle_transition != 0,
@@ -2672,6 +2674,7 @@ fn pose_bot_hitboxes(
         let pose = playsrc_studio_model::sample_pose_at_time(
             model,
             &playsrc_studio_model::AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: sequence,
                 cycle: playsrc_studio_model::Float32(pose_cycle(elapsed, timing).to_bits()),
                 pose_parameters: parameters,
@@ -2771,7 +2774,7 @@ fn encode_model_poses(
     out.extend_from_slice(&0_u32.to_le_bytes());
     let mut output_count = 0_u32;
     let mut sampled_poses =
-        BTreeMap::<(String, usize, u32, u32, Vec<u32>), playsrc_studio_model::SampledPose>::new();
+        BTreeMap::<(String, usize, u32, u32, Vec<u32>, Option<u32>), playsrc_studio_model::SampledPose>::new();
     for original in requests {
         let mut scene_request;
         let mut scene_event_clock = None;
@@ -2793,7 +2796,7 @@ fn encode_model_poses(
             &scene_request
         } else { original };
         let resolved_weapon;
-        let request = if let Some(resolved) = weapon_pose::prepare(request, models, weapon_animations)? {
+        let request = if let Some(resolved) = weapon_pose::prepare(request, models, weapon_animations, world.gameplay)? {
             resolved_weapon = resolved;
             &resolved_weapon
         } else { request };
@@ -2877,6 +2880,7 @@ fn encode_model_poses(
                     phase: request.phase.ok_or(())?,
                     previous_cycle: playsrc_studio_model::Float32(previous_cycle.to_bits()),
                     composition: playsrc_studio_model::ViewModelCompositionRequest {
+                        item_bone_rotations: weapon_pose::bone_rotations(request, item),
                         translated_activity: request.activity.as_bytes().to_vec(),
                         hand_sequence: sequence,
                         cycle: playsrc_studio_model::Float32(cycle.to_bits()),
@@ -3021,6 +3025,7 @@ fn encode_model_poses(
                 cycle.to_bits(),
                 request.elapsed.to_bits(),
                 pose_parameters.iter().map(|p| p.0).collect(),
+                request.barrel_angle.map(f32::to_bits),
             );
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 sampled_poses.entry(pose_key.clone())
@@ -3037,6 +3042,7 @@ fn encode_model_poses(
                 let pose = playsrc_studio_model::sample_pose_at_time(
                     model,
                     &playsrc_studio_model::AnimationState {
+                        bone_rotations: weapon_pose::bone_rotations(request, model),
                         base_sequence,
                         cycle: playsrc_studio_model::Float32(base_cycle.to_bits()),
                         pose_parameters,
@@ -3170,6 +3176,7 @@ fn encode_model_poses(
                 let sampled_item = playsrc_studio_model::sample_pose(
                     item,
                     &playsrc_studio_model::AnimationState {
+                        bone_rotations: weapon_pose::bone_rotations(request, item),
                         base_sequence: 0,
                         cycle: playsrc_studio_model::Float32(0),
                         pose_parameters: parameters.clone(),
@@ -3213,6 +3220,7 @@ fn encode_model_poses(
                 let item = models.get(*model_path).ok_or(())?;
                 let parameters = vec![playsrc_studio_model::Float32(0); item.pose_parameters.len()];
                 let sampled = playsrc_studio_model::sample_pose(item, &playsrc_studio_model::AnimationState {
+                    bone_rotations: Vec::new(),
                     base_sequence: 0, cycle: playsrc_studio_model::Float32(0), pose_parameters: parameters.clone(), layers: Vec::new(),
                 }).map_err(|_| ())?;
                 let merged = playsrc_studio_model::merge_model_pose(model, pose, item, &sampled).map_err(|_| ())?;
@@ -9083,6 +9091,7 @@ fn resolve_models(
         let pose = playsrc_studio_model::sample_pose(
             model,
             &playsrc_studio_model::AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: playsrc_studio_model::Float32(0),
                 pose_parameters,
@@ -9552,6 +9561,7 @@ fn compile_static_prop_section(
             let pose = playsrc_studio_model::sample_pose(
                 &model.model,
                 &playsrc_studio_model::AnimationState {
+                    bone_rotations: Vec::new(),
                     base_sequence: 0,
                     cycle: playsrc_studio_model::Float32(0),
                     pose_parameters,
@@ -12415,6 +12425,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         let attachment_pose = playsrc_studio_model::sample_pose(
             &a.model,
             &playsrc_studio_model::AnimationState {
+                bone_rotations: Vec::new(),
                 base_sequence: 0,
                 cycle: playsrc_studio_model::Float32(0),
                 pose_parameters: a
@@ -15277,7 +15288,7 @@ mod tests {
             let path = format!("models/player/items/{class}/{class}_officer.mdl");
             let hat = playsrc_tf2::presentation::build_model(&path, &resources, &hashes, false, playsrc_studio_model::PresentationProfile::World).unwrap();
             let parent = playsrc_tf2::presentation::build_model(&format!("models/player/{class}.mdl"), &resources, &hashes, false, playsrc_studio_model::PresentationProfile::World).unwrap();
-            let sample = |m: &playsrc_studio_model::PresentationModel| playsrc_studio_model::sample_pose(m, &playsrc_studio_model::AnimationState { base_sequence: 0, cycle: playsrc_studio_model::Float32(0), pose_parameters: vec![playsrc_studio_model::Float32(0); m.pose_parameters.len()], layers: Vec::new() }).unwrap();
+            let sample = |m: &playsrc_studio_model::PresentationModel| playsrc_studio_model::sample_pose(m, &playsrc_studio_model::AnimationState { base_sequence: 0, cycle: playsrc_studio_model::Float32(0), pose_parameters: vec![playsrc_studio_model::Float32(0); m.pose_parameters.len()], layers: Vec::new(), bone_rotations: Vec::new() }).unwrap();
             let parent_pose = sample(&parent.model);
             let merged = playsrc_studio_model::merge_model_pose(&parent.model, &parent_pose, &hat.model, &sample(&hat.model)).unwrap();
             assert!(!merged.skinning_matrices.is_empty());
@@ -16058,6 +16069,7 @@ mod tests {
             maximum_health: 200.,
             spy: None,
             loadout: vec![playsrc_tf2::WeaponState {
+                prefire_playback_rate: 1.0,
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,
                 reserve: 20,
@@ -16120,6 +16132,7 @@ mod tests {
                 hitscan: playsrc_tf2::hitscan::State::default(),
                 deploy_multiplier: 1.0,
                 spinup_seconds: 0.75,
+                postfire_until: None,
                 discard_chambered_on_reload: false,
                 generation: 0,
                 critical: playsrc_tf2::critical::WeaponState::default(),
