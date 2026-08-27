@@ -7,7 +7,7 @@ import { buildSourceBundle } from "./source-bundle"
 const [target, ...options] = process.argv.slice(2)
 const match = options.includes("--control-point-match")
 const retainedGraph = options.find(value => value !== "--control-point-match")
-if (!target || options.length > 2 || new Set(options).size !== options.length || (retainedGraph && !/^[0-9a-f]{64}$/.test(retainedGraph))) {
+if (!target || options.length > (match ? 2 : 1) || new Set(options).size !== options.length || (retainedGraph && !/^[0-9a-f]{64}$/.test(retainedGraph))) {
   throw new Error("Usage: bun tools/playsrc/src/verify-map-runtime.ts <target> [retained-graph-sha256] [--control-point-match]")
 }
 const config = await loadLocalConfig()

@@ -319,7 +319,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity())
     }
     if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
-    requireBrowserBudget(remaining(), profile === "skinning-equivalence" ? 80_000 : 30_000)
+    requireBrowserBudget(remaining(), profile === "control-points" && process.env.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : profile === "skinning-equivalence" ? 80_000 : 30_000)
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
       const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
