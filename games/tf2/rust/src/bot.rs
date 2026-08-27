@@ -509,6 +509,9 @@ struct Bot {
     path: Vec<u32>,
     path_index: usize,
     crossing: Option<path::Crossing>,
+    path_crossings: Arc<Vec<path::Crossing>>,
+    nav_area_mark: Option<[f32; 3]>,
+    avoid_at: f32,
     goal: [f32; 3],
     point_action: control_point::Action,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
@@ -1113,6 +1116,9 @@ impl BotWorld {
                     path: Vec::new(),
                     path_index: 0,
                     crossing: None,
+                    path_crossings: Arc::default(),
+                    nav_area_mark: None,
+                    avoid_at: 0.0,
                     goal,
                     point_action: control_point::Action::default(),
                     loadout,
@@ -1305,6 +1311,7 @@ impl BotWorld {
             } else {
                 None
             };
+            path::update_last_known_area(mesh, world, bot).map_err(Error::Movement)?;
             let (objective_kind, goal) = if let Some(supply) = selected_supply {
                 supply
             } else if let Some(frame) = objectives.filter(|o| o.points.is_some()) {
@@ -1337,9 +1344,7 @@ impl BotWorld {
             bot.objective = objective_kind;
             bot.goal = goal;
             if tick >= bot.next_repath_tick || bot.path.is_empty() {
-                let start = mesh
-                    .nearest_area(bot.movement.position)
-                    .map(|area| area.identity);
+                let start = bot.current_area;
                 let goal = mesh.nearest_area(bot.goal).map(|area| area.identity);
                 if let (Some(start), Some(goal)) = (start, goal) {
                     bot.path = mesh
@@ -1374,8 +1379,9 @@ impl BotWorld {
                         )
                         .unwrap_or_default();
                     bot.path_index = 0;
+                    bot.path_crossings = Arc::new(path::compute(world, mesh, &bot.path, bot.movement.position, bot.class).map_err(Error::Movement)?);
                     bot.crossing = None;
-                    bot.current_area = Some(start);
+                    bot.avoid_at = 0.0;
                 }
                 let (minimum, maximum) = match bot.objective {
                     ObjectiveKind::PayloadPush => (0.2, 0.4),
@@ -1392,52 +1398,26 @@ impl BotWorld {
                     tick + ticks(random.random_float(minimum, maximum), self.tick_interval);
             }
             while bot.path_index + 1 < bot.path.len() {
-                let next = mesh
-                    .area(bot.path[bot.path_index + 1])
-                    .ok_or(Error::InvalidEntity)?;
-                let reached = if let Some(crossing) = bot.crossing.as_ref().filter(|crossing| crossing.to == next.identity && crossing.drop_position.is_some()) {
-                    crossing.landed(bot.movement.position)
-                } else { next.contains_xy(bot.movement.position)
-                    && (bot.movement.position[2]
-                        - next.height(bot.movement.position[0], bot.movement.position[1]))
-                    .abs()
-                        <= MAX_JUMP_HEIGHT };
+                let crossing = &bot.path_crossings[bot.path_index];
+                let reached = crossing.reached(bot.movement.position);
                 if reached
                 {
                     bot.path_index += 1;
-                    bot.current_area = Some(next.identity);
                     bot.crossing = None;
                 } else {
                     break;
                 }
             }
             let waypoint = if bot.path_index + 1 < bot.path.len() {
-                let from = mesh
-                    .area(bot.path[bot.path_index])
-                    .ok_or(Error::InvalidEntity)?;
-                let next = mesh
-                    .area(bot.path[bot.path_index + 1])
-                    .ok_or(Error::InvalidEntity)?;
-                let direction = Direction::ALL
-                    .into_iter()
-                    .find(|direction| {
-                        from.connections[*direction as usize].contains(&next.identity)
-                    })
-                    .ok_or(Error::InvalidEntity)?;
-                let portal =
-                    mesh.closest_point_in_portal(from, next, direction, bot.movement.position);
-                if bot.crossing.as_ref().is_none_or(|crossing| crossing.from != from.identity || crossing.to != next.identity) {
-                    bot.crossing = Some(path::Crossing::compute(world, from, next, direction, portal, bot.movement.position, bot.class).map_err(Error::Movement)?);
-                }
-                let center = next.center();
-                bot.crossing.as_ref().and_then(|crossing| crossing.drop_position).unwrap_or([
-                    portal[0] + (center[0] - portal[0]).clamp(-STEP_HEIGHT, STEP_HEIGHT),
-                    portal[1] + (center[1] - portal[1]).clamp(-STEP_HEIGHT, STEP_HEIGHT),
-                    next.height(portal[0], portal[1]),
-                ])
+                let crossing = &bot.path_crossings[bot.path_index];
+                bot.crossing = Some(crossing.clone());
+                crossing.drop_position.unwrap_or(crossing.position)
             } else {
+                bot.crossing = None;
                 bot.goal
             };
+            let jump_height = waypoint[2] - bot.movement.position[2];
+            let waypoint = path::avoid(world, mesh, bot, waypoint, now).map_err(Error::Movement)?;
             let delta = crate::sub(waypoint, bot.movement.position);
             let planar = delta[0].hypot(delta[1]);
             if let Some(threat) = threat {
@@ -1478,7 +1458,7 @@ impl BotWorld {
                             0.0
                         },
                         yaw_degrees: bot.yaw_degrees,
-                        jump: delta[2] >= STEP_HEIGHT && delta[2] < MAX_JUMP_HEIGHT,
+                        jump: bot.crossing.as_ref().is_none_or(|crossing| crossing.drop_position.is_none()) && jump_height >= STEP_HEIGHT && jump_height < MAX_JUMP_HEIGHT,
                         crouch: false,
                     },
                     pitch_degrees: bot.pitch_degrees,
@@ -1771,6 +1751,9 @@ impl BotWorld {
         bot.path.clear();
         bot.path_index = 0;
         bot.crossing = None;
+        bot.path_crossings = Arc::default();
+        bot.nav_area_mark = None;
+        bot.avoid_at = 0.0;
         bot.next_repath_tick = 0;
         Ok(())
     }
@@ -1874,6 +1857,11 @@ impl BotWorld {
 
     pub fn health(&self, identity: u32) -> Option<i32> {
         self.bots.get(&identity).map(|bot| bot.health.current)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn navigation_diagnostics(&self) -> Vec<String> {
+        self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
     }
 
     pub fn select_spawn(
@@ -2616,6 +2604,9 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.path.clear();
     bot.path_index = 0;
     bot.crossing = None;
+    bot.path_crossings = Arc::default();
+    bot.nav_area_mark = None;
+    bot.avoid_at = 0.0;
     bot.active_weapon = crate::default_weapon(bot.class);
     bot.pending_melee = None;
     bot.respawn_tick = None;
@@ -2976,6 +2967,11 @@ mod tests {
         assert_eq!(crossing.drop_position,Some([130.0,50.0,200.0]));
         assert!(!crossing.landed([130.0,50.0,18.0]));
         assert!(crossing.landed([130.0,50.0,17.9]));
+        to.northwest[2]=200.0; to.southeast[2]=200.0; to.northeast_z=200.0; to.southwest_z=200.0;
+        let crossing=path::Crossing::compute(&world,&from,&to,Direction::East,[100.0,50.0,200.0],[50.0,50.0,200.0],PlayerClass::Scout).unwrap();
+        assert_eq!(crossing.drop_position,None);
+        assert!(crossing.reached([124.0,50.0,400.0]));
+        assert!(!crossing.reached([125.0,50.0,200.0]));
     }
 
     #[derive(Clone)]

@@ -16,7 +16,7 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 2 || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && arguments[2] == "--control-point-match") || !digest_identity(&arguments[1])
     {
         return Err(
             "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256>".to_owned(),
@@ -95,6 +95,16 @@ fn main() -> Result<(), String> {
     let resources =
         encode_resource_set(&entries).map_err(|error| format!("resource set: {error:?}"))?;
     drop(entries);
+    if arguments.len() == 3 {
+        let mut frames = Vec::new();
+        let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, |snapshot| {
+            frames.push(serde_json::json!({"tick":snapshot.tick,"state":snapshot.round.state as u8,"winner":snapshot.round.winning_team.map(|team|team as u8),"points":snapshot.control_points.as_ref().map(|points|points.points.iter().map(|p|p.owner as u8).collect::<Vec<_>>()),"bots":snapshot.bots.iter().map(|bot|serde_json::json!({"identity":bot.identity,"position":bot.position,"area":bot.area,"path":bot.remaining_path_areas,"captures":bot.captures})).collect::<Vec<_>>() }));
+        });
+        let output = config.source_cache_dir.join("evidence/map-runtime");
+        fs::create_dir_all(&output).map_err(|error|error.to_string())?;
+        fs::write(output.join(format!("{target}-control-point-match.json")),serde_json::to_vec(&frames).unwrap()).map_err(|error|error.to_string())?;
+        return result;
+    }
     let artifact = playsrc_tf2_wasm::compile_artifact(&bsp, 1, &resources)
         .map_err(|error| format!("native HDR compilation failed: {error}"))?;
     let output = config.source_cache_dir.join("evidence/map-runtime");

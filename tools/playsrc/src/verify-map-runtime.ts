@@ -4,16 +4,18 @@ import { rustEnvironment } from "./setup"
 import { acquireMap } from "./targets"
 import { buildSourceBundle } from "./source-bundle"
 
-const [target, retainedGraph] = process.argv.slice(2)
-if (!target || process.argv.length > 4 || (retainedGraph && !/^[0-9a-f]{64}$/.test(retainedGraph))) {
-  throw new Error("Usage: bun tools/playsrc/src/verify-map-runtime.ts <target> [retained-graph-sha256]")
+const [target, ...options] = process.argv.slice(2)
+const match = options.includes("--control-point-match")
+const retainedGraph = options.find(value => value !== "--control-point-match")
+if (!target || options.length > 2 || new Set(options).size !== options.length || (retainedGraph && !/^[0-9a-f]{64}$/.test(retainedGraph))) {
+  throw new Error("Usage: bun tools/playsrc/src/verify-map-runtime.ts <target> [retained-graph-sha256] [--control-point-match]")
 }
 const config = await loadLocalConfig()
 await acquireMap(config, target)
 const graph = retainedGraph ?? (await buildSourceBundle(config, target)).report.graphDescriptor.sha256
 const child = Bun.spawn([
   path.join(config.sourceCacheDir, "toolchains/rust/cargo/bin", process.platform === "win32" ? "cargo.exe" : "cargo"),
-  "run", "--profile", "source-bundle", "--features", "verify-hdr", "--bin", "playsrc-verify-map-runtime", "--", target, graph,
+  "run", "--profile", "source-bundle", "--features", "verify-hdr", "--bin", "playsrc-verify-map-runtime", "--", target, graph, ...(match ? ["--control-point-match"] : []),
 ], {
   cwd: repositoryRoot,
   env: { ...process.env, ...rustEnvironment(config.sourceCacheDir) },
