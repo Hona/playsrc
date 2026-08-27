@@ -1424,7 +1424,13 @@ unsafe fn compile_map(
             .map_err(|_| 11_u32)?;
             session
                 .configure_navigation(mesh, &runtime.entities)
-                .map_err(|_| 11_u32)?;
+                .map_err(|error| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    eprintln!("TF2 navigation configuration failed: {error:?}");
+                    #[cfg(target_arch = "wasm32")]
+                    let _ = error;
+                    11_u32
+                })?;
         }
         session.set_movement_modifiers(playsrc_tf2::MovementModifiers {
             noclip_allowed: true,
@@ -9080,7 +9086,8 @@ fn compile_static_prop_section(
             .iter()
             .map(|(identity, (_, checksum))| ((*identity).to_owned(), *checksum))
             .collect();
-        let templates = collision_object_templates(canonical, graph, bundle, &checksums)?;
+        let templates = collision_object_templates(canonical, graph, bundle, &checksums)
+            .inspect_err(|_| presentation_failure("static prop collision templates"))?;
         compile_collision_snapshot(
             None,
             collision,
@@ -9101,6 +9108,8 @@ fn compile_static_prop_section(
         let (model_index, _) = *model_indexes.get(identity.as_str()).ok_or(())?;
         let model = &models.get(model_index as usize).ok_or(())?.1;
         if model.illumination_attachment != 0 {
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("entity {} model {identity} requires lighting attachment {}", entity.index, model.illumination_attachment);
             return Err(());
         }
         let vector = |values: [f32; 3]| {
@@ -9123,7 +9132,10 @@ fn compile_static_prop_section(
         .map_err(|_| ())?
         .0
         .map(|value| f32::from_bits(value.0));
-        let mut lighting = model_lighting_world.sample(origin, visibility, collision, &snapshot)?;
+        let mut lighting = model_lighting_world.sample(origin, visibility, collision, &snapshot).inspect_err(|_| {
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("entity {} model {identity} lighting sample {:?} failed", entity.index, origin);
+        })?;
         playsrc_map::apply_model_ambient_boost(
             &mut lighting.ambient_cube,
             &lighting.local_lights,
@@ -9212,8 +9224,8 @@ fn compile_static_prop_section(
             .get(static_prop_artifact::AGGREGATE_PATH)
             .copied()
             .ok_or(())?,
-    )?;
-    let object_indexes = static_prop_artifact::object_indexes(&aggregate)?;
+    ).inspect_err(|_| presentation_failure("static prop aggregate"))?;
+    let object_indexes = static_prop_artifact::object_indexes(&aggregate).inspect_err(|_| presentation_failure("static prop object index"))?;
     let water_materials = environment
         .world
         .water
@@ -9223,7 +9235,7 @@ fn compile_static_prop_section(
         .collect();
     let surface_world =
         playsrc_map::SurfaceLightingWorld::compile(canonical, visibility, water_materials)
-            .map_err(|_| ())?;
+            .map_err(|_| ()).inspect_err(|_| presentation_failure("static prop surface lighting world"))?;
     let sky_area =
         environment
             .world
@@ -9277,7 +9289,7 @@ fn compile_static_prop_section(
     let mut direct_candidates = Vec::new();
     let mut origin_query_identities = BTreeMap::new();
     for prop in &runtime_props {
-        let origin = lighting_origin(prop)?;
+        let origin = lighting_origin(prop).inspect_err(|_| presentation_failure("static prop lighting origin"))?;
         let origin_identity =
             0x4000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?;
         origin_query_identities.insert(prop.source, origin_identity);
@@ -9292,6 +9304,8 @@ fn compile_static_prop_section(
         let origin_leaf = visibility.locate_leaf(origin).map_err(|_| ())?;
         let origin_cluster = visibility.leaves.get(origin_leaf).ok_or(())?.cluster;
         if origin_cluster < 0 {
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("static prop {} lighting origin {:?} has cluster {origin_cluster}", prop.source, origin);
             return Err(());
         }
         for (light_index, light) in canonical.lighting.world_lights.iter().enumerate() {
@@ -9347,6 +9361,8 @@ fn compile_static_prop_section(
             .get(origin_query_identities.get(&prop.source).ok_or(())?)
             .ok_or(())?;
         if origin_trace.trace.start_solid || origin_trace.trace.all_solid {
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("static prop {} lighting origin {:?} is solid", prop.source, origin);
             return Err(());
         }
         let mut ambient_cube = surface_world
@@ -9355,7 +9371,12 @@ fn compile_static_prop_section(
                 &static_prop_artifact::SOURCE_AMBIENT_DIRECTIONS,
                 |_| false,
             )
-            .map_err(|_| ())?;
+            .map_err(|error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                eprintln!("static prop {} ambient cube at {origin:?}: {error:?}", prop.source);
+                #[cfg(target_arch = "wasm32")]
+                let _ = error;
+            })?;
         let mut selected = Vec::<(f32, RuntimeLight)>::new();
         for (_, light_index, identity, direction, ratio) in direct_candidates
             .iter()
@@ -9519,7 +9540,10 @@ fn compile_static_prop_section(
                 & 0x01ff;
             areas.push(area);
         }
-        let ownership = static_prop_artifact::classify_ownership(&areas, sky_area)?;
+        let ownership = static_prop_artifact::classify_ownership(&areas, sky_area).inspect_err(|_| {
+            #[cfg(not(target_arch = "wasm32"))]
+            eprintln!("static prop {} has ambiguous sky ownership: {areas:?} sky={sky_area:?}", prop.source);
+        })?;
         let lod = match &lighting {
             Lighting::Vertex { hdr, .. } => {
                 aggregate.objects[*hdr as usize]
@@ -11619,6 +11643,13 @@ fn encoded_model_authored_texture_length(
     Ok(length)
 }
 
+fn presentation_failure(stage: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("TF2 presentation failed: {stage}");
+    #[cfg(target_arch = "wasm32")]
+    let _ = stage;
+}
+
 fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPresentation, ()> {
     let PresentationInputs {
         canonical,
@@ -11787,7 +11818,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                 resource_hashes,
                 profile,
                 presentation_profile,
-            )?;
+            ).inspect_err(|_| presentation_failure(&id))?;
             Ok((id, artifact))
         })
         .collect::<Result<Vec<_>, ()>>()?;
@@ -11871,7 +11902,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         profile,
         visibility,
         collision,
-    )?;
+    ).inspect_err(|_| presentation_failure("environment"))?;
     let static_props = compile_static_prop_section(
         canonical,
         graph,
@@ -11880,12 +11911,13 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         collision,
         &environment,
         &models,
-    )?;
+    ).inspect_err(|_| presentation_failure("static props"))?;
     phase_finished = playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     metrics[4] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let prepared_model_materials =
-        prepare_model_materials(&models, bundle, decoders, resource_hashes, profile)?;
+        prepare_model_materials(&models, bundle, decoders, resource_hashes, profile)
+            .inspect_err(|_| presentation_failure("model materials"))?;
     let capacity = presentation_capacity(
         &models,
         &directional,
