@@ -8,6 +8,9 @@ test("native admission retains layer-eight alerts above a focused browser", () =
   const cursorLayer = 2147483630, cursor = { ...alert, layer: cursorLayer, owner: "Window Server" }
   expect(admitMacWindow({ screens, cursorLayer, windows: [cursor, alert, browser] }, 100).occluders).toEqual([alert])
   expect(admitMacWindow({ screens, cursorLayer, windows: [cursor, browser] }, 100).cursors).toEqual([cursor])
+  const notice = { ...alert, pid: browser.pid, owner: browser.owner, layer: 999 }
+  expect(admitMacWindow({ screens, cursorLayer, windows: [notice, alert, browser] }, 100).browserOverlays).toEqual([notice])
+  expect(admitMacWindow({ screens, cursorLayer, windows: [notice, alert, browser] }, 100).occluders).toEqual([alert])
   expect(admitMacWindow({ screens, cursorLayer, windows: [browser, alert] }, 100).occluders).toEqual([])
   expect(admitMacWindow({ screens, cursorLayer, windows: [{ ...alert, alpha: 0 }, browser] }, 100).occluders).toEqual([])
   expect(() => admitMacWindow({ screens, cursorLayer, windows: [alert] }, 100)).toThrow("not on screen")

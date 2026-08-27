@@ -841,6 +841,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   sampling = false
   await nativeMonitor
   await checkNativeWindow()
+  if (nativeScreenshot) {
+    const captured = spawnSync("screencapture", ["-x", path.join(directory, `${evidenceLabel}.after.desktop.png`)], { timeout: 5_000 })
+    if (captured.status !== 0) throw new Error("Native post-sample desktop capture failed")
+  }
   profilePhases.enter("trace-drain")
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
