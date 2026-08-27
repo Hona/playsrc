@@ -1,4 +1,5 @@
-type RenderObject = { object: object; onDispose: () => void; dispose(): void }
+type Geometry = { addEventListener(type: string, listener: () => void): void; removeEventListener(type: string, listener: () => void): void }
+type RenderObject = { object: object; geometry: Geometry; onGeometryDispose: () => void; onDispose: () => void; dispose(): void; setGeometry(geometry: Geometry): void }
 type RenderObjectManager = { createRenderObject(...args: any[]): RenderObject }
 type Root = { traverse(visit: (object: object) => void): void }
 
@@ -14,6 +15,13 @@ export function installRenderObjectLifetime(manager: RenderObjectManager) {
     let owned = objects.get(renderObject.object)
     if (!owned) objects.set(renderObject.object, owned = new Set())
     owned.add(renderObject)
+    const setGeometry = renderObject.setGeometry
+    renderObject.setGeometry = function (geometry) {
+      const previous = this.geometry
+      if (previous !== geometry) previous.removeEventListener("dispose", this.onGeometryDispose)
+      setGeometry.call(this, geometry)
+      if (previous !== geometry) geometry.addEventListener("dispose", this.onGeometryDispose)
+    }
     const dispose = renderObject.onDispose
     renderObject.onDispose = () => {
       if (!owned.delete(renderObject)) return
