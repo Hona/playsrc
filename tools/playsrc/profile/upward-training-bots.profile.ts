@@ -332,6 +332,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
 
   const canvas = page.locator("canvas.world-canvas")
   await replay?.ready()
+  await page.bringToFront()
+  await canvas.focus()
+  expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (process.env.PROFILE_UPWARD_TRAINING_INTERACTION === "1" && !exerciseClasses) await canvas.click({ position: { x: 300, y: 250 } })
   const cdp = await context.newCDPSession(page)
