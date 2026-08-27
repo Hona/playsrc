@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, fmt, ops::Range};
 
 mod source_random;
 pub mod smokestack;
+pub mod soundscape;
 mod value;
 mod world;
 pub mod particle_system;

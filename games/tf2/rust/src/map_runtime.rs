@@ -329,6 +329,7 @@ struct Volume {
 #[derive(Clone, Debug)]
 enum VolumeKind {
     Generic,
+    Soundscape { spectator_next: f32, spectator_touching: bool },
     Regenerate {
         enabled: bool,
         team: Option<u8>,
@@ -389,6 +390,8 @@ struct BuildingExclusion {
 #[derive(Clone, Debug)]
 pub struct MapRuntime {
     world: EntityWorld,
+    soundscapes: playsrc_entity::soundscape::Systems,
+    soundscape_player: playsrc_entity::soundscape::Player,
     player: EntityHandle,
     actor_handles: BTreeMap<u32, EntityHandle>,
     source_handles: BTreeMap<u32, EntityHandle>,
@@ -422,6 +425,28 @@ impl MapRuntime {
         self.source_handles.get(&source).and_then(|handle| self.world.entity(*handle)).is_some_and(|entity| entity.render.brush_model.is_some())
     }
 
+    pub fn initialize_soundscapes(&mut self, registry: &playsrc_audio::soundscape::Registry) {
+        self.soundscapes = playsrc_entity::soundscape::Systems::from_world(&self.world, |name| registry.find(name));
+    }
+
+    pub fn soundscape_zones(&self) -> Vec<([f32; 3], f32)> {
+        self.soundscapes.zones().iter().map(|zone| {
+            (self.world.entity(zone.entity).map_or([0.0; 3], |entity| entity.world_transform.origin), zone.radius)
+        }).collect()
+    }
+
+    pub fn soundscape_selection(&self) -> playsrc_entity::soundscape::Selection { self.soundscape_player.selection }
+
+    pub fn update_soundscape(&mut self, ear: [f32; 3], candidates: &[usize],
+        trace: impl FnMut([f32; 3], [f32; 3]) -> playsrc_entity::soundscape::Trace) -> Result<MapPhase, RuntimeFailure> {
+        let mut played = Vec::new();
+        self.soundscapes.update(&self.world, &mut self.soundscape_player, ear, candidates, trace, &mut played);
+        if played.is_empty() { return Ok(MapPhase::default()); }
+        let commands = played.into_iter().map(soundscape_output).collect::<Vec<_>>();
+        let batch = self.world.phase(self.world.current_tick(), &commands)?;
+        self.consume(batch)
+    }
+
     pub fn compile(
         graph: &playsrc_entity::Graph,
         tick_interval: f32,
@@ -446,7 +471,7 @@ impl MapRuntime {
         if let Some(objectives) = &mut objectives {
             objectives.set_model_bounds(&model_bounds);
         }
-        let config = EntityWorldConfig {
+        let mut config = EntityWorldConfig {
             tick_interval,
             load_kind: playsrc_entity::MapLoadKind::MultiplayerNewMap,
             source_identity,
@@ -614,6 +639,7 @@ impl MapRuntime {
             standard_graph.entities.push(proxy);
             &standard_graph
         } else { graph };
+        config.external_classes.extend(playsrc_entity::soundscape::bindings());
         let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
             for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
@@ -767,7 +793,9 @@ impl MapRuntime {
             counts.buttons += u32::from(class(entity, b"func_button"));
             counts.doors += u32::from(class(entity, b"func_door"));
             counts.linear_movers += u32::from(class(entity, b"func_movelinear"));
-            let generic_kind = if class(entity, b"trigger_multiple") {
+            let generic_kind = if class(entity, b"trigger_soundscape") {
+                Some(TriggerKind::Soundscape)
+            } else if class(entity, b"trigger_multiple") {
                 counts.multiple_triggers += 1;
                 Some(TriggerKind::Multiple)
             } else if class(entity, b"trigger_hurt") {
@@ -800,7 +828,7 @@ impl MapRuntime {
                     model,
                     origin,
                     bounds: volume_bounds.get(&model).copied(),
-                    kind: VolumeKind::Generic,
+                    kind: if kind == TriggerKind::Soundscape { VolumeKind::Soundscape { spectator_next: 0.2, spectator_touching: false } } else { VolumeKind::Generic },
                     touching: false,
                 });
                 if kind == TriggerKind::Teleport {
@@ -922,6 +950,8 @@ impl MapRuntime {
         Ok(Self {
             particle_systems,
             smokestacks,
+            soundscapes: playsrc_entity::soundscape::Systems::default(),
+            soundscape_player: playsrc_entity::soundscape::Player::default(),
             world,
             player,
             actor_handles: BTreeMap::new(),
@@ -1412,11 +1442,11 @@ impl MapRuntime {
         self.round_inputs.clear();
         for volume in &mut self.volumes {
             if volume.handle.is_some() { volume.handle = self.source_handles.get(&volume.source).copied(); }
-            volume.touching = false;
+            if !matches!(volume.kind, VolumeKind::Soundscape { .. }) { volume.touching = false; }
             let enabled = definitions.iter().find(|e| e.index == volume.source as usize).is_none_or(|e| !boolean(e, b"StartDisabled", false));
             match &mut volume.kind {
                 VolumeKind::Regenerate { enabled: state, .. } | VolumeKind::RespawnRoom { enabled: state, .. } => *state = enabled,
-                VolumeKind::Generic => {}
+                VolumeKind::Generic | VolumeKind::Soundscape { .. } => {}
             }
         }
         for pickup in &mut self.pickups {
@@ -1747,7 +1777,33 @@ impl MapRuntime {
                 .and_then(|handle| self.world.entity(handle))
                 .map_or(volume.origin, |entity| entity.world_transform.origin);
             let overlap = collision.overlaps_model_hull(volume.model, origin, position, hull)?;
-            match &volume.kind {
+            match &mut volume.kind {
+                VolumeKind::Soundscape { spectator_next, spectator_touching } => {
+                    let handle = volume.handle.expect("soundscape trigger handle");
+                    let Some(entity) = self.world.entity(handle) else { continue; };
+                    let enabled = matches!(&entity.behavior, BehaviorState::Trigger(state) if state.enabled);
+                    let now = tick as f32 * self.tick_interval;
+                    let contact = if player.observer {
+                        if now < *spectator_next { continue; }
+                        *spectator_next = now + 0.2;
+                        let previous = *spectator_touching;
+                        *spectator_touching = overlap;
+                        match (overlap, previous) { (true, false) => Some(ContactKind::Enter), (false, true) => Some(ContactKind::Exit), _ => None }
+                    } else {
+                        let current = overlap && enabled;
+                        let previous = volume.touching;
+                        volume.touching = current;
+                        match (current, previous) { (true, false) => Some(ContactKind::Enter), (false, true) => Some(ContactKind::Exit), _ => None }
+                    };
+                    if let Some(kind) = contact {
+                        let mut played = Vec::new();
+                        self.soundscapes.touch(&self.world, handle, kind == ContactKind::Enter, &mut self.soundscape_player, &mut played);
+                        commands.extend(played.into_iter().map(soundscape_output));
+                        commands.push(WorldCommand::Contact(ContactRecord { trigger: handle, subject: self.player, kind,
+                            external_filter_result: None, producer_sequence: self.next_producer_sequence }));
+                        self.next_producer_sequence += 1;
+                    }
+                }
                 VolumeKind::Regenerate {
                     enabled,
                     team,
@@ -2177,7 +2233,7 @@ impl MapRuntime {
                                     replace: true,
                                 });
                             }
-                            TriggerKind::Multiple => {}
+                            TriggerKind::Multiple | TriggerKind::Soundscape => {}
                         }
                     }
                     RuntimeRequest::BlockDamage { mover, blocker, .. } => {
@@ -2197,6 +2253,7 @@ impl MapRuntime {
                         value,
                         ..
                     } => {
+                        self.soundscapes.input(entity, &input);
                         let source = self.source(entity);
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
@@ -2279,7 +2336,7 @@ impl MapRuntime {
                                         *enabled = !*enabled;
                                     }
                                 }
-                                VolumeKind::Generic => {}
+                                VolumeKind::Generic | VolumeKind::Soundscape { .. } => {}
                             }
                         }
                         if let Some(exclusion) = self
@@ -2386,6 +2443,11 @@ fn class(entity: &playsrc_entity::Entity, expected: &[u8]) -> bool {
         .classname
         .as_deref()
         .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+}
+
+fn soundscape_output(entity: EntityHandle) -> WorldCommand {
+    WorldCommand::EmitOutput { entity, output: b"OnPlay".to_vec(), value: Variant::Void,
+        activator: Some(entity), caller: Some(entity), delay: 0.0 }
 }
 
 fn preserved_on_round_restart(entity: &playsrc_entity::Entity) -> bool {
@@ -2507,6 +2569,30 @@ fn scale(value: [f32; 3], factor: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use playsrc_movement::{Error as MoveError, Trace, Tracer};
+
+    #[test]
+    fn soundscape_touch_delegates_before_base_outputs_and_retains_zone_on_round_restart() {
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "team_control_point_master"}
+            {"classname" "team_control_point" "targetname" "point"}
+            {"classname" "env_soundscape_triggerable" "targetname" "zone" "soundscape" "inside" "OnPlay" "relay,Trigger,,0,-1"}
+            {"classname" "trigger_soundscape" "model" "*1" "soundscape" "zone" "spawnflags" "1" "OnStartTouch" "relay,Trigger,,0,-1"}
+            {"classname" "logic_relay" "targetname" "relay"}
+        "#, Default::default()).unwrap();
+        let mut map = MapRuntime::compile(&graph, 0.015, 1, vec![ModelBounds { model: 1, mins: [-64.0;3], maxs: [64.0;3] }]).unwrap();
+        let mut registry = playsrc_audio::soundscape::Registry::default();
+        registry.append(&playsrc_keyvalues::parse_text(b"inside { dsp 1 }", playsrc_keyvalues::EscapeMode::LiteralBackslash, Default::default()).unwrap().roots);
+        map.initialize_soundscapes(&registry);
+        let phase = map.contact_phase(&AlwaysOverlap, 1, [0.0;3], Hull { mins: [-24.0,-24.0,0.0], maxs: [24.0,24.0,82.0] }, PlayerContactFacts::default(), &[]).unwrap();
+        assert_eq!(map.soundscape_selection().soundscape, 0);
+        let output_names = phase.events.iter().filter(|event| event.kind == EntityEventKind::Output).map(|event| event.name.as_slice()).collect::<Vec<_>>();
+        assert_eq!(output_names[0], b"OnPlay");
+        assert!(output_names.iter().position(|name| *name == b"OnStartTouch").is_some_and(|index| index > 0));
+        let selected = map.soundscape_selection();
+        map.restart_control_point_map(2).unwrap();
+        assert_eq!(map.soundscape_selection(), selected);
+        assert!(map.world.entity(map.soundscapes.zones()[0].entity).is_some());
+    }
 
     #[test]
     fn control_point_round_cleanup_recreates_doors_and_clears_old_io_without_replacing_players() {
