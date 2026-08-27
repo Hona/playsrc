@@ -5837,7 +5837,7 @@ fn encode_snapshot(
     encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 26, MAX)?;
+    u32_field(&mut out, 27, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6567,6 +6567,7 @@ fn encode_snapshot(
     for value in snapshot.view_angle_offset { f32_field(&mut out, value, MAX)?; }
     extend(&mut out, &producer.decapitations.to_le_bytes(), MAX)?;
     extend(&mut out, &producer.revenge_crits.to_le_bytes(), MAX)?;
+    f32_field(&mut out, snapshot.weapon_crosshair_scale, MAX)?;
     Some(out)
 }
 
@@ -16089,6 +16090,7 @@ mod tests {
         };
         let snapshot = playsrc_tf2::Snapshot {
             view_angle_offset: [0.0; 3],
+            weapon_crosshair_scale: 1.0,
             equipped_items: Vec::new(),
             tick: 9,
             class: playsrc_tf2::PlayerClass::Soldier,
@@ -16279,11 +16281,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(&encoded[..8], b"PSSN\x1a\0\0\0");
-        assert_eq!(encoded.len(), 1148);
+        assert_eq!(&encoded[..8], b"PSSN\x1b\0\0\0");
+        assert_eq!(encoded.len(), 1152);
         assert_eq!(&encoded[1124..1140], &[0; 16]);
         assert_eq!(i32::from_le_bytes(encoded[1140..1144].try_into().unwrap()), 800);
         assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 35);
+        assert_eq!(f32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 1.0);
         assert_eq!(&encoded[1008..1012], b"PCPN");
         assert_eq!(&encoded[1020..1028], b"PCTF\x01\0\0\0");
         assert_eq!(&encoded[1056..1064], b"PGRL\x04\0\0\0");

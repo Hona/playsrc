@@ -614,6 +614,7 @@ function compactSnapshot(
     equippedItems: stockItems(overrides.class ?? 3),
     decapitations: 0,
     revengeCrits: 0,
+    weaponCrosshairScale: 1,
     tick,
     class: 3,
     team: 2,
@@ -660,6 +661,13 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     expect(publication.snapshot.player.value.weapons[0]).toMatchObject({ itemDefinition: { kind: "available", value: 900 }, displayName: "Catalog-backed replacement",
       crosshairScript: "scripts/tf_weapon_scattergun.ctx", maximumClip: { kind: "available", value: 2 } })
     expect(() => adaptSessionHud(unavailable("initial"), compactPublication(frame), context)).toThrow("no unique equipped definition")
+  })
+
+  test("projects native weapon crosshair scaling without browser weapon-family math", () => {
+    const frame = compactSnapshot(1n, { weaponCrosshairScale: 1.625 })
+    const publication = adaptSessionHud(unavailable("initial"), compactPublication(frame), context)
+    if (publication.snapshot.player.kind !== "available") throw new Error("missing player")
+    expect(publication.snapshot.player.value.crosshair).toMatchObject({ kind: "available", value: { weaponScale: 1.625 } })
   })
 
   test("reuses the final canonical event-batch snapshot instead of rebuilding its immutable player graph", () => {

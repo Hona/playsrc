@@ -734,6 +734,7 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub weapon_crosshair_scale: f32,
     pub tick: u64,
     pub class: PlayerClass,
     pub team: PlayerTeam,
@@ -2255,7 +2256,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         .resolve();
 
-        if let Some(bots) = &mut self.bots { bots.advance_conditions(); }
+        if let Some(bots) = &mut self.bots { bots.advance_conditions(self.tick as f32 * self.movement_configuration.tick_interval); }
         if self.conditions.contains(Condition::Aiming) {
             if self.class == PlayerClass::Heavy {
                 let aiming_speed = self.equipment_attributes.player("mult_player_aiming_movespeed", 110.0);
@@ -2807,7 +2808,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots.advance_health(self.tick as f32 * self.movement_configuration.tick_interval)
                 .map_err(Error::Bot)?;
         }
-        if !self.movement_stuns.think(self.tick as f32 * self.movement_configuration.tick_interval) { self.conditions.remove(Condition::Stunned); }
+        if self.movement_stuns.active() && !self.movement_stuns.think(self.tick as f32 * self.movement_configuration.tick_interval) { self.conditions.remove(Condition::Stunned); }
         for event in ammo_events {
             events.push(Event::Reloaded {
                 weapon: event.weapon,
@@ -3089,7 +3090,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.map.objectives().map(ctf::World::scores),
             (round.red_score, round.blue_score),
         );
+        let weapon_crosshair_scale = if self.weapon == Some(Weapon::Revolver)
+            && self.equipment_attributes.weapon(Weapon::Revolver, "set_weapon_mode", 0.0).round_ties_even() == 1.0 {
+            hitscan::ambassador_crosshair_scale(self.tick as f32 * self.movement_configuration.tick_interval
+                - self.loadout[&Weapon::Revolver].hitscan.last_accuracy_tick as f32 * self.movement_configuration.tick_interval)
+        } else { 1.0 };
         Ok(Snapshot {
+            weapon_crosshair_scale,
             equipped_items: self.active_equipment.equipped_items(self.class),
             tick: self.tick,
             class: self.class,
@@ -4407,7 +4414,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         for (victim, (amount, position)) in damage {
-            self.apply_actor_damage(
+            let result = self.apply_actor_damage(
                 bot::Damage {
                     source_weapon: self.weapon_source(attack.attacker, attack.weapon),
                     damage_type: bot::weapon_damage_type(attack.weapon).expect("hitscan damage type"),
@@ -4422,6 +4429,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 attack.team,
                 events,
             )?;
+            if let Some(result) = result && let Some(inflictor) = self.bots.as_ref().and_then(|bots| bots.hitscan_target(attack.attacker)) {
+                self.apply_actor_weapon_push(victim, inflictor.center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, None)?;
+            }
         }
         Ok(())
     }
@@ -4947,13 +4957,16 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let vertical = self.equipped_player_attribute(victim, "airblast_vertical_vulnerability_multiplier", 1.0);
         self.bots.as_mut().unwrap().generic_push(victim, PLAYER_IDENTITY, scale(normalized(delta), 400.0), horizontal, vertical).map_err(Error::Bot)?;
         let weapon = Weapon::HandgunScoutPrimary;
-        self.apply_actor_damage(bot::Damage {
+        let result = self.apply_actor_damage(bot::Damage {
             attacker: PLAYER_IDENTITY, victim, weapon, amount: 1.0,
             position: add(self.movement.position, scale(forward, 50.0)), force: scale(forward, 24_000.0),
             damage_type: damage::DamageType::MELEE | damage::DamageType::NEVER_GIB | damage::DamageType::CLUB,
             crit: damage::CritKind::None, range_multiplier: 1.0, custom: damage::CustomDamage::None,
             modifiers: damage::DamageModifiers::default(), killing_weapon: None, source_weapon: self.weapon_source(PLAYER_IDENTITY, weapon),
         }, self.team_selection.local_team(), events)?;
+        if let Some(result) = result {
+            self.apply_actor_weapon_push(victim, target.center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, None)?;
+        }
         events.push(Event::MeleeImpact { weapon, owner: PLAYER_IDENTITY, target: Some(victim), position: add(origin, scale(sub(end, origin), fraction)), damage: 1.0 });
         Ok(true)
     }
@@ -4971,7 +4984,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let now = self.tick as f32 * interval;
         let state = self.loadout[&weapon];
         if weapon == Weapon::SniperRifle { profile.damage = state.charged_damage.max(50.0); }
-        let accuracy_elapsed = self.tick.saturating_sub(state.hitscan.last_accuracy_tick) as f32 * interval;
+        let accuracy_elapsed = now - state.hitscan.last_accuracy_tick as f32 * interval;
         let mut rules = hitscan::BulletRules::resolve(weapon, profile, state.hitscan, accuracy_elapsed, self.conditions.contains(Condition::Disguised),
             |hook, value| self.equipped_weapon_attribute(PLAYER_IDENTITY, weapon, hook, value));
         let source_weapon = self.weapon_source(PLAYER_IDENTITY, weapon);
@@ -5022,7 +5035,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             state.charged_damage = 0.0;
         }
-        let elapsed = self.tick.saturating_sub(state.hitscan.last_fire_tick) as f32 * interval;
+        let elapsed = now - state.hitscan.last_fire_tick as f32 * interval;
         let (forward, right, up) = angle_vectors(pitch, yaw, 0.0);
         let origin = add(self.movement.position, self.movement.view_offset);
         let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
@@ -5161,7 +5174,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .map_or(0, |hit| hit.hitgroup.max(0) as u8);
                 let facts = target.and_then(|identity| self.bots.as_ref()?.hitscan_target(identity));
                 let distance = facts.map_or(distance, |target| length(sub(target.center, attacker_center)));
-                let headshot = hitgroup == 1 && (sniper_state.sniper_headshot_is_critical(
+                let headshot = hitgroup == 1 && (self.conditions.contains(Condition::Zoomed) && sniper_state.sniper_headshot_is_critical(
                     self.tick,
                     self.movement_configuration.tick_interval,
                     self.conditions.contains(Condition::Zoomed),
@@ -5169,7 +5182,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     boosted,
                 ) || rules.headshots && facts.is_some_and(|target| {
                     let delta = sub(target.position, self.movement.position);
-                    hitscan::ambassador_headshot(accuracy_elapsed, true, delta[0]*delta[0] + delta[1]*delta[1])
+                    accuracy_elapsed > 1.0 && (boosted || hitscan::ambassador_headshot(accuracy_elapsed, true, delta[0]*delta[0] + delta[1]*delta[1]))
                 }));
                 let crit = if shot_crit == damage::CritKind::Full || headshot { damage::CritKind::Full }
                     else if facts.is_some_and(|target| rules.airborne_minicrits && target.in_air_due_to_explosion
@@ -5223,7 +5236,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         };
         let mut modifiers = damage::DamageModifiers::default();
         modifiers.critical_falloff = rules.critical_falloff;
-        modifiers.pierces_resists = self.source_weapon_attribute(source_weapon, weapon, "mod_pierce_resists_absorbs", 0.0) != 0.0;
         let push = rules.knockback && !target.knocked_back && !target.push_immune
             && hitscan::knockback_allowed(group.amount, dot(sub(target.center, attacker_center), sub(target.center, attacker_center)), rules.knockback_multiplier);
         let force = if push { hitscan::knockback_impulse(attacker_center, target.center, target.size, group.amount, rules.knockback_multiplier) } else { [0.0; 3] };
@@ -5233,6 +5245,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             attacker: PLAYER_IDENTITY, victim: group.victim, weapon, amount: group.amount, position: group.position,
         }, self.team_selection.local_team(), events)?;
         let Some(result) = result else { return Ok(()); };
+        self.apply_actor_weapon_push(group.victim, attacker_center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, Some(rules))?;
         let now = self.tick as f32 * self.movement_configuration.tick_interval;
         if push {
             let horizontal = self.equipped_player_attribute(group.victim, "airblast_vulnerability_multiplier", 1.0);
@@ -5250,6 +5263,31 @@ impl<W: GameplayWorld + Clone> Session<W> {
             let slow = hitscan::natascha_slow(dot(delta, delta));
             if let Some(bots) = &mut self.bots { bots.stun_movement(group.victim, PLAYER_IDENTITY, now, 0.2, slow, false).map_err(Error::Bot)?; }
         }
+        Ok(())
+    }
+
+    /// Ordinary non-self handheld hits use the inflictor's center and damage
+    /// before alive-only resistance, never the ragdoll damage-force vector.
+    pub(crate) fn apply_actor_weapon_push(&mut self, victim: u32, inflictor_center: [f32; 3], amount: f32, rules: Option<hitscan::BulletRules>) -> Result<(), Error> {
+        if amount == 0.0 || self.round.state() == round::State::Preround { return Ok(()); }
+        let (center, size, class, words) = if victim == PLAYER_IDENTITY {
+            let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+            (add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5)), sub(hull.maxs, hull.mins), self.class, self.conditions.words())
+        } else {
+            let Some(bots) = self.bots.as_ref() else { return Ok(()); };
+            let Some(target) = bots.hitscan_target(victim) else { return Ok(()); };
+            (target.center, target.size, bots.class(victim).unwrap(), bots.conditions(victim).unwrap().words())
+        };
+        let has = |condition: condition::ConditionId| words[usize::from(condition.value() / 32)] & (1 << (condition.value() % 32)) != 0;
+        if [condition::ConditionId::DISGUISED, condition::ConditionId::MEGAHEAL,
+            condition::ConditionId::INVULNERABLE_HIDE_UNLESS_DAMAGED, condition::ConditionId::RUNE_KNOCKOUT].into_iter().any(has) { return Ok(()); }
+        let mut impulse = scale(normalized(sub(center, sub(inflictor_center, [0.0, 0.0, 10.0]))), damage::player_damage_force(size, amount, 6.0));
+        if class == PlayerClass::Heavy { impulse = scale(impulse, 0.5); }
+        let distance = sub(center, inflictor_center);
+        if rules.is_some_and(|rules| rules.knockback && hitscan::knockback_allowed(amount, dot(distance, distance), rules.knockback_multiplier)) && impulse[2] < 0.0 { impulse[2] = 0.0; }
+        impulse = scale(impulse, self.equipped_damage_push_multiplier(victim));
+        if victim == PLAYER_IDENTITY { self.movement.velocity = add(self.movement.velocity, impulse); }
+        else if let Some(bots) = &mut self.bots { bots.apply_damage_impulse(victim, impulse); }
         Ok(())
     }
 
@@ -8369,6 +8407,24 @@ mod tests {
                 .iter()
                 .any(|event| event.definition == SoundDefinition::FistHitWorld)
         );
+    }
+
+    #[test]
+    fn ordinary_bullet_push_uses_damage_magnitude_heavy_scaling_and_preserves_ground() {
+        let mut session = Session::new(MeleeWall, [0.0; 3], MapRuntime::empty(0.015));
+        let ground = Some(playsrc_movement::GroundState { support: Some(1), normal: [0.0, 0.0, 1.0], surface_friction: 1.0 });
+        session.movement.ground = ground;
+        session.apply_actor_weapon_push(PLAYER_IDENTITY, [-100.0, 0.0, 51.0], 40.0, None).unwrap();
+        assert_eq!(session.movement.velocity, [240.0, 0.0, 0.0]);
+        assert_eq!(session.movement.ground, ground);
+        session.class = PlayerClass::Heavy;
+        session.movement.velocity = [0.0; 3];
+        session.apply_actor_weapon_push(PLAYER_IDENTITY, [-100.0, 0.0, 51.0], 40.0, None).unwrap();
+        assert_eq!(session.movement.velocity, [120.0, 0.0, 0.0]);
+        session.conditions.insert(Condition::Disguised);
+        session.apply_actor_weapon_push(PLAYER_IDENTITY, [-100.0, 0.0, 51.0], 40.0, None).unwrap();
+        assert_eq!(session.movement.velocity, [120.0, 0.0, 0.0]);
+        assert_eq!(damage::player_damage_force([48.0, 48.0, 82.0], 200.0, 6.0), 1000.0);
     }
 
     #[test]
