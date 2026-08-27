@@ -15911,6 +15911,10 @@ mod tests {
             maximum_health: 200,
             conditions: [0; 5],
             weapons: vec![playsrc_tf2::weapon::WeaponRuntime {
+                hitscan: playsrc_tf2::hitscan::State::default(),
+                deploy_multiplier: 1.0,
+                spinup_seconds: 0.75,
+                discard_chambered_on_reload: false,
                 critical: playsrc_tf2::critical::WeaponState::default(),
                 resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
                 weapon: playsrc_tf2::Weapon::Original,

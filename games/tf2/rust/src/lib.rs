@@ -23,6 +23,7 @@ pub mod random;
 pub mod round;
 pub mod schema;
 pub mod equipment;
+pub mod hitscan;
 pub mod scoreboard;
 pub mod spy;
 pub mod state;
@@ -515,6 +516,12 @@ impl ConditionSet {
     }
     pub fn set_active_stun_flags(&mut self, flags: Option<u16>) { self.active_stun_flags = flags; }
     pub fn is_control_stunned(&self) -> bool { self.words[0] & (1 << 15) != 0 && self.active_stun_flags.is_some_and(|flags| flags & 2 != 0) }
+    pub fn is_crit_boosted(self) -> bool {
+        condition::all_weapon_crit_boost(|condition| {
+            let value = usize::from(condition.value());
+            self.words[value / 32] & (1 << (value % 32)) != 0
+        })
+    }
     pub fn contains(self, condition: Condition) -> bool {
         let value = condition as usize;
         self.words[value / 32] & (1_u32 << (value % 32)) != 0
@@ -1199,11 +1206,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 blast_impact: matches!(weapon, Weapon::RocketLauncher | Weapon::Original | Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
                 ..Default::default()
             };
-            let profile = weapon::WeaponProfile::configured(weapon).with_attributes(context, |target, hook, input| match target {
+            let mut base_profile = weapon::WeaponProfile::configured(weapon);
+            let discard_chambered = weapon == Weapon::Scattergun && self.equipment_attributes.weapon(weapon, "set_scattergun_no_reload_single", 0.0) == 1.0;
+            if discard_chambered {
+                // Configured c_scout_arms ACT_ITEM2_VM_RELOAD: 50 frames at 30 fps;
+                // DefaultReload finishes 0.2 seconds before the sequence ends.
+                base_profile.reload_start = 49.0 / 30.0 - 0.2;
+                base_profile.reload_round = 0.0;
+            }
+            let profile = base_profile.with_attributes(context, |target, hook, input| match target {
                 weapon::AttributeTarget::Weapon => self.equipment_attributes.weapon(weapon, hook, input),
                 weapon::AttributeTarget::Player => self.equipment_attributes.player(hook, input),
             });
             let mut runtime = WeaponRuntime::full_with_profile(weapon, profile);
+            runtime.discard_chambered_on_reload = discard_chambered;
+            runtime.spinup_seconds = self.equipment_attributes.weapon(weapon, "mult_minigun_spinup_time", 0.75);
             let definition = |items: &[equipment::EquippedItem]| items.iter().find_map(|item| {
                 (equipment::supported_item(item.definition_index).unwrap().implementation
                     == equipment::Implementation::Weapon(weapon)).then_some(item.definition_index)
@@ -2102,7 +2119,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
         if self.conditions.contains(Condition::Aiming) {
             if self.class == PlayerClass::Heavy {
-                movement_policy.maximum_speed = movement_policy.maximum_speed.min(110.0);
+                let aiming_speed = self.equipment_attributes.player("mult_player_aiming_movespeed", 110.0);
+                movement_policy.maximum_speed = movement_policy.maximum_speed.min(aiming_speed);
                 movement_policy.allow_jump = false;
             } else if self.class == PlayerClass::Sniper {
                 movement_policy.maximum_speed = movement_policy.maximum_speed.min(80.0);
@@ -2431,6 +2449,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     .loadout
                     .get_mut(&active_weapon)
                     .expect("active weapon belongs to loadout");
+                if state.profile().reload_round == 0.0 {
+                    state.advance_reload(self.tick, self.movement_configuration.tick_interval, &mut self.activity_events, &mut ammo_events);
+                }
                 state.attack(
                     self.tick,
                     self.movement_configuration.tick_interval,
@@ -3576,11 +3597,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             return;
         };
         let interval = self.movement_configuration.tick_interval;
+        let mut deploy_multiplier = self.equipment_attributes.player("mult_deploy_time", 1.0);
+        deploy_multiplier = self.equipment_attributes.weapon(active_weapon, "mult_single_wep_deploy_time", deploy_multiplier);
+        if self.conditions.contains(Condition::BlastJumping) {
+            deploy_multiplier = self.equipment_attributes.weapon(active_weapon, "mult_rocketjump_deploy_time", deploy_multiplier);
+        }
         let first_primary_tick = {
             let active = self
                 .loadout
                 .get_mut(&active_weapon)
                 .expect("active weapon belongs to loadout");
+            active.deploy_multiplier = deploy_multiplier;
             active.deploy(self.tick, interval);
             active.first_primary_tick
         };

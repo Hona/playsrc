@@ -318,19 +318,7 @@ impl ConditionState {
     }
 
     pub fn is_crit_boosted(&self) -> bool {
-        [
-            ConditionId::CRIT_BOOSTED,
-            ConditionId::CRIT_BOOSTED_PUMPKIN,
-            ConditionId::CRIT_BOOSTED_USER,
-            ConditionId::CRIT_BOOSTED_FIRST_BLOOD,
-            ConditionId::CRIT_BOOSTED_BONUS_TIME,
-            ConditionId::CRIT_BOOSTED_CTF_CAPTURE,
-            ConditionId::CRIT_BOOSTED_ON_KILL,
-            ConditionId::CRIT_BOOSTED_CARD,
-            ConditionId::CRIT_BOOSTED_RUNE_TEMP,
-        ]
-        .into_iter()
-        .any(|condition| self.contains(condition))
+        all_weapon_crit_boost(|condition| self.contains(condition))
     }
 
     pub fn condition_assister(&self) -> Option<u32> {
@@ -391,6 +379,12 @@ impl ConditionState {
             prevented_damage: 0,
         }
     }
+}
+
+pub fn all_weapon_crit_boost(contains: impl FnMut(ConditionId) -> bool) -> bool {
+    [ConditionId::CRIT_BOOSTED, ConditionId::CRIT_BOOSTED_PUMPKIN, ConditionId::CRIT_BOOSTED_USER,
+        ConditionId::CRIT_BOOSTED_FIRST_BLOOD, ConditionId::CRIT_BOOSTED_BONUS_TIME, ConditionId::CRIT_BOOSTED_CTF_CAPTURE,
+        ConditionId::CRIT_BOOSTED_ON_KILL, ConditionId::CRIT_BOOSTED_CARD, ConditionId::CRIT_BOOSTED_RUNE_TEMP].into_iter().any(contains)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
