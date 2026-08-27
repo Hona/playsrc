@@ -270,3 +270,56 @@ fn nested_overrides_restore_suppression_resource_closure_and_depth() {
     assert!(state.loops().is_empty());
     assert!(state.random_layers().is_empty());
 }
+
+#[test]
+fn dsp_requests_are_ordered_and_nested_requests_cannot_change_the_mixer() {
+    // SDK c_soundscape.cpp: StartSubSoundscape, ProcessSoundMixer and
+    // StartNewSoundscape publish requests; they do not implement processing.
+    let content = registry(
+        r#"parent {
+          dsp 1 dsp_player 7 soundmixer outdoor dsp_volume .75
+          playsoundscape { name child }
+          dsp 2
+        }
+        child { dsp 9 dsp_player 10 soundmixer child dsp_volume 0 }
+        reset { soundmixer indoor }
+        "#,
+    );
+    for can_set_mixer in [false, true] {
+        let mut state = Soundscape::default();
+        let mut rng = Draws::default();
+        let mut actions = vec![];
+        state.select(
+            &content,
+            selection(0, 1),
+            Activation {
+                can_set_mixer,
+                ..activation(0.0, false)
+            },
+            &mut rng,
+            &mut actions,
+        );
+        let mut expected = vec![Action::RoomDsp(1), Action::PlayerDsp(7)];
+        if can_set_mixer {
+            expected.push(Action::Mixer(Some(b"outdoor".to_vec())));
+        }
+        expected.extend([Action::DspVolume(Some(0.75)), Action::RoomDsp(2)]);
+        if !can_set_mixer {
+            expected.push(Action::Mixer(None));
+        }
+        assert_eq!(actions, expected);
+        actions.clear();
+        state.select(
+            &content,
+            selection(2, 2),
+            Activation {
+                can_set_mixer: false,
+                ..activation(0.0, false)
+            },
+            &mut rng,
+            &mut actions,
+        );
+        assert_eq!(actions, [Action::DspVolume(None), Action::Mixer(None)]);
+        assert!(rng.0.is_empty());
+    }
+}

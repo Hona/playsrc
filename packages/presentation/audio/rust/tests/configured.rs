@@ -27,7 +27,7 @@ impl Random for NoRandom {
 
 #[test]
 #[ignore = "requires exact configured content bytes; no assets are distributed with tests"]
-fn granary_actual_loops_random_mp3_positions_transition_and_preset_templates() {
+fn granary_actual_loops_random_mp3_positions_and_transition() {
     let bytes = file(
         "soundscapes_granary.txt",
         "13244e5e922df7afaff7993580c791ef4d815e74304cf717d3b3eaeaa18a73b8",
@@ -97,6 +97,11 @@ fn granary_actual_loops_random_mp3_positions_transition_and_preset_templates() {
     assert!(state.random_layers().is_empty());
     assert_eq!(state.loops().len(), 5);
     assert_eq!(state.loops()[4].voice.wave, b"ambient/indoors.wav");
+}
+
+#[test]
+#[ignore = "requires exact configured content bytes; no assets are distributed with tests"]
+fn configured_automatic_preset_template_candidate() {
     let presets = Presets::parse(&file(
         "dsp_presets.txt",
         "5a59d25d656fdabc27ec2da2f0598aa970b962a8b4edd9ff9fe8f3cf407a3c23",
