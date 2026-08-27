@@ -325,6 +325,7 @@ export class SourceAudioWorld {
   readonly #registry: SoundRegistry
   readonly #limits: SourceAudioLimits
   readonly #voices = new Map<number, NeutralVoice>()
+  readonly #spatialInputs = new Map<number, Readonly<{ source: SoundSource; userGain: number }>>()
 
   constructor(registry: SoundRegistry, limits: SourceAudioLimits) {
     if (!positive(limits.maxActiveVoices)) throw error("Capacity", "voice limit must be positive")
@@ -394,13 +395,15 @@ export class SourceAudioWorld {
       dsp: selected.decorators.includes("dry") ? "dry" as const : "room" as const,
       listenerRevision: event.listener.revision,
     })
-    for (const identity of replaced) this.#voices.delete(identity)
+    for (const identity of replaced) this.stop(identity)
     this.#voices.set(voice.identity, voice)
+    this.#spatialInputs.set(voice.identity, Object.freeze({ source: event.source, userGain: event.userGain }))
     return Object.freeze({ voice, replaced: Object.freeze(replaced) })
   }
 
   stop(identity: number): boolean {
     if (!uint(identity)) throw error("MalformedEvent", "voice identity is invalid")
+    this.#spatialInputs.delete(identity)
     return this.#voices.delete(identity)
   }
 
@@ -409,7 +412,7 @@ export class SourceAudioWorld {
     const stopped: number[] = []
     for (const [identity, voice] of this.#voices) {
       if (voice.sourceIdentity === sourceIdentity && (channel === -1 || voice.channel === channel)) {
-        this.#voices.delete(identity)
+        this.stop(identity)
         stopped.push(identity)
       }
     }
@@ -421,7 +424,7 @@ export class SourceAudioWorld {
     const stopped: number[] = []
     for (const [identity, voice] of this.#voices) {
       if (voice.sourceIdentity === sourceIdentity && canonical(voice.definition) === canonical(definition)) {
-        this.#voices.delete(identity)
+        this.stop(identity)
         stopped.push(identity)
       }
     }
@@ -431,11 +434,34 @@ export class SourceAudioWorld {
   reset(): readonly number[] {
     const stopped = [...this.#voices.keys()]
     this.#voices.clear()
+    this.#spatialInputs.clear()
     return Object.freeze(stopped)
   }
 
   voices(): readonly NeutralVoice[] {
     return Object.freeze([...this.#voices.values()])
+  }
+
+  refreshSpatial(listener: Listener, locate: (source: SoundSource) => SoundSource["origin"] | undefined): readonly NeutralVoice[] {
+    if (!validListener(listener)) throw error("MalformedEvent", "sound listener is invalid")
+    const changed: NeutralVoice[] = []
+    for (const [identity, voice] of this.#voices) {
+      const input = this.#spatialInputs.get(identity)!
+      const located = locate(input.source)
+      if (located !== undefined && located !== null && !vector(located)) throw error("MalformedEvent", "sound source position is invalid")
+      let source = input.source
+      if (located !== undefined && (located === null ? source.origin !== null : source.origin === null || located.some((value, axis) => value !== source.origin![axis]))) {
+        source = Object.freeze({ ...source, origin: located })
+        this.#spatialInputs.set(identity, Object.freeze({ ...input, source }))
+      }
+      const spatial = spatialGains(source, listener, voice.soundLevel)
+      const gain = voice.volume * input.userGain * listener.masterGain * listener.categoryGain * (listener.muted ? 0 : 1) * voice.mixerGain
+      const leftGain = gain * spatial.left, rightGain = gain * spatial.right
+      if (leftGain === voice.leftGain && rightGain === voice.rightGain && spatial.sourceDistance === voice.sourceDistance && spatial.distance === voice.distanceGain) continue
+      const next = Object.freeze({ ...voice, leftGain, rightGain, sourceDistance: spatial.sourceDistance, distanceGain: spatial.distance, listenerRevision: listener.revision })
+      this.#voices.set(identity, next); changed.push(next)
+    }
+    return Object.freeze(changed)
   }
 
   #replacement(channel: number, event: StartSound): number[] {

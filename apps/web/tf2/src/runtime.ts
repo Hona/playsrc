@@ -4289,6 +4289,16 @@ export class Tf2Application {
       this.#audio.playNeutral(started.voice)
       this.#audioStarts.push(`${started.voice.definition}:${started.voice.resource}:${started.voice.channel}:${started.voice.soundLevel}`)
     }
+    for (const voice of this.#audioWorld.refreshSpatial(listener, source => {
+      if (source.kind !== "entity") return undefined
+      if (source.sourceClass === "tf_weapon" || source.sourceClass === "player") {
+        const owner = source.sourceClass === "tf_weapon" ? source.ownerIdentity ?? source.identity : source.identity
+        return owner === 1 ? snapshot.position : snapshot.bots.find(bot => bot.identity === owner)?.position
+      }
+      if (source.sourceClass === "team_control_point") return snapshot.controlPoints?.points.find(point => point.identity === source.identity)?.position
+      if (source.sourceClass === "item") return snapshot.pickups.find(pickup => pickup.identity === source.identity)?.origin
+      return undefined
+    })) this.#audio.updateNeutral(voice)
   }
 
   #updateAttachmentTransforms(snapshot: Snapshot, viewmodels: readonly PosedModel[], camera: Camera): void {
@@ -5218,13 +5228,7 @@ export class Tf2Application {
       }).map((request, index) => {
         const bot = posedBots[index]!
         if (bot.class !== 8 || bot.lifecycle !== 1) return request
-        const itemModel = bot.weapon?.identity === 50 ? "models/weapons/c_models/c_revolver/c_revolver.mdl"
-          : bot.weapon?.identity === 51 ? "models/weapons/c_models/c_knife/c_knife.mdl"
-          : bot.weapon?.identity === 52 ? "models/weapons/c_models/c_sapper/c_sapper.mdl" : undefined
-        if (!itemModel) throw new Error(`Authored Spy world weapon selection unavailable: ${bot.weapon?.identity}`)
-        const artifact = this.#artifacts!.models.get(itemModel)
-        if (!artifact) throw new Error(`Authored Spy world weapon unavailable: ${itemModel}`)
-        return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity), itemModel, worldItem: true, itemBodygroups: Object.freeze(artifact.bodygroupCounts.map(() => 0)) })
+        return Object.freeze({ ...request, cloak: snapshot.actorCloaks.find(actor => actor.identity === bot.identity) })
       })
       const equippedBotRequests = botRequests.map((request, index) => Object.freeze({ ...request, actorIdentity: posedBots[index]!.identity, equippedItems: posedBots[index]!.equippedItems }))
       const objectiveRequests=(snapshot.objectives?.flags??[]).flatMap(flag=>{

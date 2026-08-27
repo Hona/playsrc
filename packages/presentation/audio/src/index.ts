@@ -20,6 +20,7 @@ export type PlayRequest = Readonly<{
 type Voice = Readonly<{
   source: AudioBufferSourceNode
   nodes: readonly AudioNode[]
+  stereo?: Readonly<{ left: AudioParam; right: AudioParam }>
 }>
 
 export class AudioError extends Error {
@@ -60,6 +61,7 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
   resume(): Promise<void>
   play(request: PlayRequest): void
   playNeutral(voice: import("./source").NeutralVoice): void
+  updateNeutral(voice: import("./source").NeutralVoice): void
   stop(voice: number): void
   reset(): void
   close(): Promise<void>
@@ -115,8 +117,8 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
     }
   }
 
-  function commit(voiceIdentity: number, source: AudioBufferSourceNode, nodes: readonly AudioNode[], start: () => void): void {
-    const voice = Object.freeze({ source, nodes: Object.freeze([...nodes]) })
+  function commit(voiceIdentity: number, source: AudioBufferSourceNode, nodes: readonly AudioNode[], start: () => void, stereo?: Voice["stereo"]): void {
+    const voice = Object.freeze({ source, nodes: Object.freeze([...nodes]), stereo })
     source.onended = () => {
       if (voices.get(voiceIdentity) !== voice) return
       voices.delete(voiceIdentity)
@@ -211,12 +213,14 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
       }
       requireCapacity(voice.identity)
       let source: AudioBufferSourceNode | undefined
+      let stereo: Voice["stereo"]
       const nodes: AudioNode[] = []
       try {
         source = context.createBufferSource()
         nodes.push(source)
         const left = context.createGain()
         const right = context.createGain()
+        stereo = Object.freeze({ left: left.gain, right: right.gain })
         const merger = context.createChannelMerger(2)
         nodes.push(left, right, merger)
         source.buffer = buffer
@@ -249,7 +253,23 @@ export function createAudioSystem(context: AudioContext, resources: readonly Aud
       }
       if (!source) throw new AudioError("BrowserFailure", "neutral audio graph creation was incomplete")
       const when = Math.max(context.currentTime, voice.startTimeSeconds)
-      commit(voice.identity, source, nodes, () => source!.start(when, voice.offsetSeconds))
+      commit(voice.identity, source, nodes, () => source!.start(when, voice.offsetSeconds), stereo)
+    },
+    updateNeutral(voice): void {
+      requireRunning()
+      if (!Number.isSafeInteger(voice.identity) || voice.identity < 1 || ![voice.leftGain, voice.rightGain].every(value => Number.isFinite(value) && value >= 0)) throw new AudioError("MalformedEvent", "neutral audio update is invalid")
+      const current = voices.get(voice.identity)
+      if (!current) return
+      if (!current.stereo) throw new AudioError("MalformedEvent", "neutral audio update targets a different graph")
+      const now = context.currentTime
+      for (const [parameter, gain] of [[current.stereo.left, voice.leftGain], [current.stereo.right, voice.rightGain]] as const) {
+        parameter.cancelScheduledValues(now)
+        if (voice.envelope) {
+          const progress = Math.max(0, Math.min(1, (now - voice.startTimeSeconds) / voice.envelope.seconds))
+          parameter.setValueAtTime(gain * (voice.envelope.from + (voice.envelope.to - voice.envelope.from) * progress), now)
+          if (progress < 1) parameter.linearRampToValueAtTime(gain * voice.envelope.to, voice.startTimeSeconds + voice.envelope.seconds)
+        } else parameter.setValueAtTime(gain, now)
+      }
     },
     stop,
     reset(): void {

@@ -1032,6 +1032,7 @@ mod tests {
         world.buildings[0].snapshot.health = 150.0;
         world.buildings[0].snapshot.shells = 150;
         let enemy = bot::Snapshot {
+            weapon_definition: None,
             conditions: [0; 5],
             assists: 0,
             equipped_items: Vec::new(),

@@ -16018,6 +16018,7 @@ mod tests {
             maximum_health: 200.,
             spy: None,
             loadout: vec![playsrc_tf2::WeaponState {
+                minigun_state: playsrc_tf2::weapon::MinigunState::Idle,
                 prefire_playback_rate: 1.0,
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,

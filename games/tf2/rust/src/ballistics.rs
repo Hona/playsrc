@@ -1,4 +1,4 @@
-use crate::{Weapon, random::UniformRandomStream};
+use crate::Weapon;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitscanProfile {
@@ -54,37 +54,6 @@ impl HitscanProfile {
             }),
             _ => None,
         }
-    }
-
-    pub fn pellet_direction(
-        self,
-        command_number: u32,
-        pellet: u8,
-        seconds_since_previous_shot: f32,
-        forward: [f32; 3],
-        right: [f32; 3],
-        up: [f32; 3],
-    ) -> [f32; 3] {
-        if pellet == 0 && seconds_since_previous_shot > self.accurate_after_seconds {
-            return forward;
-        }
-
-        let prediction_seed = crate::random::prediction_seed(command_number);
-        let seed = (prediction_seed & 255).wrapping_add(u32::from(pellet)) as i32;
-        let mut random = UniformRandomStream::from_seed(seed).unwrap();
-        let x = random.random_float(-0.5, 0.5) + random.random_float(-0.5, 0.5);
-        let y = random.random_float(-0.5, 0.5) + random.random_float(-0.5, 0.5);
-        let direction = [
-            forward[0] + x * self.spread * right[0] + y * self.spread * up[0],
-            forward[1] + x * self.spread * right[1] + y * self.spread * up[1],
-            forward[2] + x * self.spread * right[2] + y * self.spread * up[2],
-        ];
-        let length = direction
-            .iter()
-            .map(|component| component * component)
-            .sum::<f32>()
-            .sqrt();
-        direction.map(|component| component / length)
     }
 
     pub fn damage_at_distance(self, distance: f32, scattergun: bool) -> f32 {
@@ -144,25 +113,26 @@ mod tests {
 
     #[test]
     fn first_pellet_accuracy_preserves_source_weapon_specific_delay() {
-        let scattergun = HitscanProfile::configured(Weapon::Scattergun).unwrap();
-        let pistol = HitscanProfile::configured(Weapon::Pistol).unwrap();
+        let rules = |weapon| crate::hitscan::BulletRules::resolve(weapon, HitscanProfile::configured(weapon).unwrap(), crate::hitscan::State::default(), 0.0, false, |_, input| input);
+        let scattergun = rules(Weapon::Scattergun);
+        let pistol = rules(Weapon::Pistol);
         let forward = [1.0, 0.0, 0.0];
         let right = [0.0, 1.0, 0.0];
         let up = [0.0, 0.0, 1.0];
         assert_eq!(
-            scattergun.pellet_direction(17, 0, 0.26, forward, right, up),
+            scattergun.direction(17, 0, 0.26, forward, right, up),
             forward
         );
         assert_ne!(
-            scattergun.pellet_direction(17, 1, 0.26, forward, right, up),
+            scattergun.direction(17, 1, 0.26, forward, right, up),
             forward
         );
         assert_ne!(
-            pistol.pellet_direction(17, 0, 1.25, forward, right, up),
+            pistol.direction(17, 0, 1.25, forward, right, up),
             forward
         );
         assert_eq!(
-            pistol.pellet_direction(17, 0, 1.26, forward, right, up),
+            pistol.direction(17, 0, 1.26, forward, right, up),
             forward
         );
     }

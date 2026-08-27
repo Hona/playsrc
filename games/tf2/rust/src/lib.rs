@@ -54,7 +54,7 @@ pub use map_runtime::{
     RegenerateContact, respawn_barrier_collides, regenerate_associated_model,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use playsrc_collision::Hull;
 use playsrc_movement::{
@@ -244,6 +244,7 @@ pub enum ReloadState {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponState {
+    pub minigun_state: weapon::MinigunState,
     pub prefire_playback_rate: f32,
     pub weapon: Weapon,
     pub clip: u16,
@@ -259,6 +260,7 @@ impl WeaponState {
     fn from_runtime(runtime: WeaponRuntime) -> Self {
         let profile = runtime.profile();
         Self {
+            minigun_state: runtime.minigun_state,
             prefire_playback_rate: if runtime.weapon == Weapon::Minigun { 0.75 / runtime.spinup_seconds.max(0.00001) } else { 1.0 },
             weapon: runtime.weapon,
             clip: runtime.clip,
@@ -481,7 +483,7 @@ pub struct ProjectileEvent {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum Condition {
+    pub enum Condition {
     Aiming = 0,
 
     Zoomed = 1,
@@ -506,6 +508,7 @@ pub enum Condition {
     ParachuteActive = 80,
     BlastJumping = 81,
     Plague = 112,
+    KnockedIntoAir = 115,
     Gas = 123,
 }
 
@@ -845,6 +848,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     movement_stuns: hitscan::MovementStuns,
     minigun_audio: minigun_audio::State,
     scattergun_jumped: bool,
+    weapon_knockback: bool,
+    blast_since_movement: bool,
     ammo: class::AmmoLedger,
     movement: MovementState,
     air_dashes: u8,
@@ -906,6 +911,7 @@ pub struct Session<W: GameplayWorld + Clone> {
     scoreboard: scoreboard::State,
     damagers: deathnotice::DamagerHistory,
     posed_player_hitboxes: Vec<PosedPlayerHitbox>,
+    posed_hitbox_tick: Option<u64>,
     respawn_tick: Option<u64>,
     death_tick: Option<u64>,
     buildings: building::World,
@@ -1028,6 +1034,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_stuns: hitscan::MovementStuns::default(),
             minigun_audio: minigun_audio::State::default(),
             scattergun_jumped: false,
+            weapon_knockback: false,
+            blast_since_movement: false,
             ammo: PlayerClass::Soldier.data().maximum_ammo,
             movement: MovementState::from_player(
                 Player {
@@ -1098,6 +1106,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             scoreboard: scoreboard::State::default(),
             damagers: deathnotice::DamagerHistory::default(),
             posed_player_hitboxes: Vec::new(),
+            posed_hitbox_tick: None,
             respawn_tick: None,
             death_tick: None,
             buildings: building::World::new(movement_configuration.tick_interval),
@@ -1757,6 +1766,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn set_posed_player_hitboxes(&mut self, hitboxes: Vec<PosedPlayerHitbox>) {
         self.posed_player_hitboxes = hitboxes;
+        self.posed_hitbox_tick = Some(self.tick);
     }
 
     pub fn medigun(&self) -> &medic::MedigunState {
@@ -2314,6 +2324,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let (move_forward, move_side) = self.movement_stuns.command(self.tick as f32 * self.movement_configuration.tick_interval,
             command.movement.forward, -command.movement.side);
 
+        if self.blast_since_movement && self.movement.velocity[2] > 250.0 { self.conditions.insert(Condition::BlastJumping); }
+        self.blast_since_movement = false;
         let movement_result = step(
             &self.collision,
             self.movement,
@@ -2341,6 +2353,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if self.movement.ground.is_some() {
             self.air_dashes = 0;
             self.scattergun_jumped = false;
+            self.weapon_knockback = false;
+            self.conditions.remove(Condition::KnockedIntoAir);
             self.conditions.remove(Condition::BlastJumping);
         } else if airborne_before_movement
             && self.class == PlayerClass::Scout
@@ -2423,8 +2437,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Vec::new()
         };
         for attack in bot_attacks {
-            self.execute_bot_attack(attack, &mut projectile_events, &mut events)?;
+            self.execute_bot_attack(attack, &mut projectile_events, &mut events, &mut map_phase)?;
         }
+        self.update_bot_minigun_audio();
 
         let bot_snapshots = self
             .bots
@@ -2573,7 +2588,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         {
             self.stop_flame(false);
         }
-        if self.weapon != Some(Weapon::Minigun) || self.lifecycle != PlayerLifecycle::Active || self.health <= 0 { self.stop_minigun_audio(); }
+        if self.weapon != Some(Weapon::Minigun) || self.lifecycle != PlayerLifecycle::Active || self.health <= 0 { self.stop_minigun_audio(PLAYER_IDENTITY); }
         if discontinuity {
             self.contact_reconcile_requests
                 .push(ContactReconcileRequest {
@@ -2634,6 +2649,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                         command.pitch_degrees,
                         command.movement.yaw_degrees,
                         &mut events,
+                        None,
                     )?;
                     map_phase.append(phase);
                 } else if matches!(
@@ -2669,7 +2685,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     )?;
                 }
             }
-            if active_weapon == Weapon::Minigun { self.update_minigun_audio(previous_minigun_state); }
+            if active_weapon == Weapon::Minigun { self.update_minigun_audio(PLAYER_IDENTITY, previous_minigun_state); }
             if active_weapon == Weapon::HandgunScoutPrimary && self.activity_events.iter().any(|event| event.weapon == active_weapon && event.activity == weapon::WeaponActivity::SecondaryAttack) {
                 self.emit_named_weapon_sound(SoundDefinition::HandsPush, true);
             }
@@ -2803,7 +2819,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots.advance_health(self.tick as f32 * self.movement_configuration.tick_interval)
                 .map_err(Error::Bot)?;
         }
-        if self.movement_stuns.active() && !self.movement_stuns.think(self.tick as f32 * self.movement_configuration.tick_interval) { self.conditions.remove(Condition::Stunned); }
+        if self.movement_stuns.active() {
+            if !self.movement_stuns.think(self.tick as f32 * self.movement_configuration.tick_interval) { self.conditions.remove(Condition::Stunned); }
+            self.conditions.set_active_stun_flags(self.movement_stuns.flags());
+        }
         for event in ammo_events {
             events.push(Event::Reloaded {
                 weapon: event.weapon,
@@ -3580,6 +3599,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.decapitations = 0;
             self.movement_stuns = hitscan::MovementStuns::default();
             self.scattergun_jumped = false;
+            self.weapon_knockback = false;
+            self.blast_since_movement = false;
             self.revenge_crits = 0;
             self.critical_history.reset_for_spawn();
             self.spy = (class == PlayerClass::Spy).then(spy::SpyState::default);
@@ -4223,6 +4244,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         attack: bot::Attack,
         projectile_events: &mut Vec<ProjectileEvent>,
         events: &mut Vec<Event>,
+        map_phase: &mut MapPhase,
     ) -> Result<(), Error> {
         if !self
             .bots
@@ -4286,132 +4308,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.emit_entity_weapon_sound(definition, attack.position, attack.attacker);
             return Ok(());
         }
-        let (profile, sound) = if attack.weapon == Weapon::Minigun {
-            (
-                ballistics::HitscanProfile {
-                    pellets: 4,
-                    damage: 9.0 * attack.damage_multiplier,
-                    range: 8192.0,
-                    spread: 0.08 * attack.spread_multiplier,
-                    accurate_after_seconds: f32::MAX,
-                },
-                SoundDefinition::MinigunFire,
-            )
-        } else {
-            let Some(profile) = ballistics::HitscanProfile::configured(attack.weapon) else {
-                return Ok(());
-            };
-            let sound = match attack.weapon {
-                Weapon::Scattergun => SoundDefinition::ScattergunSingle,
-                Weapon::Pistol | Weapon::EngineerPistol => SoundDefinition::PistolSingle,
-                Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
-                    SoundDefinition::ShotgunSingle
-                }
-                Weapon::SniperRifle => SoundDefinition::SniperSingle,
-                Weapon::Smg => SoundDefinition::SmgSingle,
-                Weapon::Revolver => SoundDefinition::RevolverSingle,
-                _ => unreachable!("hitscan profiles own their firing sounds"),
-            };
-            (profile, sound)
-        };
-        self.emit_entity_weapon_sound(sound, attack.position, attack.attacker);
-        let (forward, right, up) = angle_vectors(attack.pitch_degrees, attack.yaw_degrees, 0.0);
-        events.push(Event::HitscanFired {
-            weapon: attack.weapon,
-            pellets: profile.pellets,
-            owner: attack.attacker,
-            origin: attack.eye_position,
-        });
-        let mut damage = BTreeMap::<u32, (f32, [f32; 3])>::new();
-        for pellet in 0..profile.pellets {
-            let direction = profile.pellet_direction(
-                (self.tick as u32).wrapping_add(attack.attacker),
-                pellet,
-                attack.seconds_since_previous_shot,
-                forward,
-                right,
-                up,
-            );
-            let end = add(attack.eye_position, scale(direction, profile.range));
-            let wall = self.collision.trace(
-                attack.eye_position,
-                end,
-                Hull {
-                    mins: [0.0; 3],
-                    maxs: [0.0; 3],
-                },
-                MASK_SOLID,
-            )?;
-            let mut hit = self.bots.as_ref().and_then(|bots| {
-                bots.intersect_enemy(attack.team, attack.eye_position, end, attack.attacker)
-            });
-            if self.lifecycle == PlayerLifecycle::Active
-                && attack.team.is_enemy(self.team_selection.local_team())
-                && let Some(fraction) =
-                    bot::segment_player(attack.eye_position, end, self.movement.position)
-                && hit.is_none_or(|(_, prior, _)| fraction < prior)
-            {
-                hit = Some((
-                    PLAYER_IDENTITY,
-                    fraction,
-                    add(
-                        attack.eye_position,
-                        scale(sub(end, attack.eye_position), fraction),
-                    ),
-                ));
-            }
-            if let Some((identity, fraction, position)) = hit
-                && fraction <= wall.fraction
-            {
-                let points = profile.damage_at_distance(
-                    length(sub(position, attack.eye_position)),
-                    attack.weapon == Weapon::Scattergun,
-                );
-                damage.entry(identity).or_insert((0.0, position)).0 += points;
-                events.push(Event::HitscanImpact {
-                    weapon: attack.weapon,
-                    target: Some(identity),
-                    pellet,
-                    hitgroup: 0,
-                    critical: false,
-                    position,
-                    damage: points,
-                    surface: None,
-                });
-            } else if wall.fraction < 1.0 || wall.start_solid {
-                events.push(Event::HitscanImpact {
-                    weapon: attack.weapon,
-                    target: None,
-                    pellet,
-                    hitgroup: 0,
-                    critical: false,
-                    position: wall.end,
-                    damage: profile.damage,
-                    surface: self
-                        .collision
-                        .impact_surface(attack.eye_position, end, MASK_SOLID)?,
-                });
-            }
-        }
-        for (victim, (amount, position)) in damage {
-            let result = self.apply_actor_damage(
-                bot::Damage {
-                    source_weapon: self.weapon_source(attack.attacker, attack.weapon),
-                    damage_type: bot::weapon_damage_type(attack.weapon).expect("hitscan damage type"),
-                    force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
-                    custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: None,
-                    attacker: attack.attacker,
-                    victim,
-                    weapon: attack.weapon,
-                    amount,
-                    position,
-                },
-                attack.team,
-                events,
-            )?;
-            if let Some(result) = result && let Some(inflictor) = self.bots.as_ref().and_then(|bots| bots.hitscan_target(attack.attacker)) {
-                self.apply_actor_weapon_push(victim, inflictor.center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, None)?;
-            }
+        if ballistics::HitscanProfile::configured(attack.weapon).is_some() {
+            map_phase.append(self.fire_hitscan(attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events, Some(attack))?);
         }
         Ok(())
     }
@@ -4436,6 +4334,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         mut attacker_team: PlayerTeam,
         events: &mut Vec<Event>,
     ) -> Result<Option<damage::DamageResult>, Error> {
+        if input.victim == PLAYER_IDENTITY && input.attacker != input.victim && input.damage_type.contains(damage::DamageType::BLAST) {
+            self.blast_since_movement = true;
+        }
         input.modifiers = self.equipped_damage_modifiers(input.source_weapon, input.victim, input.weapon, input.modifiers);
         let custom = u8::try_from(input.custom.source_code()).map_err(|_| Error::Damage(damage::DamageError::DamageOutOfRange))?;
         let killing_weapon = input.killing_weapon;
@@ -4960,25 +4861,94 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(true)
     }
 
+    fn actor_condition(&self, identity: u32, condition: condition::ConditionId) -> bool {
+        if identity == PLAYER_IDENTITY {
+            self.conditions.words()[usize::from(condition.value() / 32)] & (1 << (condition.value() % 32)) != 0
+        } else { self.bots.as_ref().and_then(|bots| bots.conditions(identity)).is_some_and(|state| state.contains(condition)) }
+    }
+
+    fn hitscan_target(&self, identity: u32) -> Option<hitscan::Target> {
+        if identity != PLAYER_IDENTITY { return self.bots.as_ref()?.hitscan_target(identity); }
+        if self.lifecycle != PlayerLifecycle::Active || self.health <= 0 { return None; }
+        let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+        Some(hitscan::Target { position: self.movement.position,
+            center: add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5)), size: sub(hull.maxs, hull.mins),
+            eye_forward: angle_vectors(self.movement.absolute_view_angles[0], self.movement.absolute_view_angles[1], 0.0).0,
+            in_air_due_to_explosion: self.actor_condition(identity, condition::ConditionId::ROCKETPACK)
+                || self.movement.ground.is_none() && self.movement.water_level == 0 && self.conditions.contains(Condition::BlastJumping),
+            healed: self.conditions.contains(Condition::HealthBuff),
+            push_immune: self.actor_condition(identity, condition::ConditionId::MEGAHEAL) || self.actor_condition(identity, condition::ConditionId::PHASE),
+            knocked_back: self.weapon_knockback,
+        })
+    }
+
+    fn actor_weapon_mut(&mut self, identity: u32, weapon: Weapon) -> Option<&mut WeaponRuntime> {
+        if identity == PLAYER_IDENTITY { self.loadout.get_mut(&weapon) }
+        else { self.bots.as_mut()?.weapon_runtime_mut(identity, weapon) }
+    }
+
+    fn stun_actor_movement(&mut self, victim: u32, attacker: u32, duration: f32, amount: f32, forward_only: bool) -> Result<(), Error> {
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        if victim != PLAYER_IDENTITY {
+            if let Some(bots) = &mut self.bots { bots.stun_movement(victim, attacker, now, duration, amount, forward_only).map_err(Error::Bot)?; }
+        } else if ![condition::ConditionId::PHASE, condition::ConditionId::MEGAHEAL, condition::ConditionId::PASSTIME_INTERCEPTION,
+            condition::ConditionId::INVULNERABLE_HIDE_UNLESS_DAMAGED].into_iter().any(|condition| self.actor_condition(victim, condition)) {
+            self.movement_stuns.add(now, duration, amount, forward_only);
+            self.conditions.insert(Condition::Stunned);
+            self.conditions.set_active_stun_flags(self.movement_stuns.flags());
+        }
+        Ok(())
+    }
+
+    fn scattergun_push_actor(&mut self, victim: u32, attacker: u32, impulse: [f32; 3]) -> Result<(), Error> {
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        let horizontal = self.equipped_player_attribute(victim, "airblast_vulnerability_multiplier", 1.0);
+        let vertical = self.equipped_player_attribute(victim, "airblast_vertical_vulnerability_multiplier", 1.0);
+        if victim != PLAYER_IDENTITY {
+            if let Some(bots) = &mut self.bots { bots.scattergun_push(victim, attacker, now, impulse, horizontal, vertical).map_err(Error::Bot)?; }
+        } else {
+            if !self.actor_condition(victim, condition::ConditionId::RUNE_KNOCKOUT) {
+                let mut force = scale(impulse, horizontal);
+                if self.movement.ground.is_some() { force[2] = force[2].max(268.328_16); }
+                force[2] *= vertical;
+                self.movement.ground = None;
+                self.conditions.insert(Condition::KnockedIntoAir);
+                self.movement.velocity = add(self.movement.velocity, force);
+            }
+            self.stun_actor_movement(victim, attacker, 0.3, 1.0, true)?;
+            self.weapon_knockback = true;
+        }
+        Ok(())
+    }
+
     fn fire_hitscan(
         &mut self,
         weapon: Weapon,
         pitch: f32,
         yaw: f32,
         events: &mut Vec<Event>,
+        bot_attack: Option<bot::Attack>,
     ) -> Result<MapPhase, Error> {
         let mut profile = ballistics::HitscanProfile::configured(weapon)
             .expect("hitscan weapon has a configured profile");
         let interval = self.movement_configuration.tick_interval;
         let now = self.tick as f32 * interval;
-        let state = self.loadout[&weapon];
+        let owner = bot_attack.map_or(PLAYER_IDENTITY, |attack| attack.attacker);
+        let team = bot_attack.map_or(self.team_selection.local_team(), |attack| attack.team);
+        let attacker_position = bot_attack.map_or(self.movement.position, |attack| attack.position);
+        let origin = bot_attack.map_or(add(self.movement.position, self.movement.view_offset), |attack| attack.eye_position);
+        let Some(attacker) = self.hitscan_target(owner) else { return Ok(MapPhase::default()); };
+        let attacker_center = attacker.center;
+        let state = *self.actor_weapon_mut(owner, weapon).ok_or(Error::MissingWeapon { owner, weapon })?;
+        let zoomed = self.actor_condition(owner, condition::ConditionId::ZOOMED);
         if weapon == Weapon::SniperRifle { profile.damage = state.charged_damage.max(50.0); }
         let accuracy_elapsed = now - state.hitscan.last_accuracy_tick as f32 * interval;
-        let mut rules = hitscan::BulletRules::resolve(weapon, profile, state.hitscan, accuracy_elapsed, self.conditions.contains(Condition::Disguised),
-            |hook, value| self.equipped_weapon_attribute(PLAYER_IDENTITY, weapon, hook, value));
-        let source_weapon = self.weapon_source(PLAYER_IDENTITY, weapon);
-        let boosted = self.conditions.is_crit_boosted();
-        let shot_crit = self.check_weapon_critical(PLAYER_IDENTITY, weapon, critical::Shot {
+        let mut rules = hitscan::BulletRules::resolve(weapon, profile, state.hitscan, accuracy_elapsed, self.actor_condition(owner, condition::ConditionId::DISGUISED),
+            |hook, value| self.equipped_weapon_attribute(owner, weapon, hook, value));
+        let source_weapon = self.weapon_source(owner, weapon);
+        let boosted = if owner == PLAYER_IDENTITY { self.conditions.is_crit_boosted() }
+            else { self.bots.as_ref().and_then(|bots| bots.conditions(owner)).is_some_and(condition::ConditionState::is_crit_boosted) };
+        let shot_crit = self.check_weapon_critical(owner, weapon, critical::Shot {
             command_number: self.tick as u32, launcher_identity: weapon as u32,
             kind: if matches!(weapon, Weapon::Minigun | Weapon::Pistol | Weapon::EngineerPistol | Weapon::Smg | Weapon::HandgunScoutPrimary) { damage::WeaponCritKind::RapidFire } else { damage::WeaponCritKind::SingleShot },
             raw_damage: rules.profile.damage, projectiles_per_shot: f32::from(rules.profile.pellets),
@@ -5002,54 +4972,52 @@ impl<W: GameplayWorld + Clone> Session<W> {
             _ => unreachable!("only configured firearms use hitscan profiles"),
         };
         if let Some((single, burst)) = sounds {
-            let (slot, definition) = if shot_crit == damage::CritKind::Full { (audio::WeaponSoundSlot::Burst, burst) } else { (audio::WeaponSoundSlot::Single, single) };
-            self.emit_source_weapon_sound(source_weapon, weapon, slot, definition, self.movement.position);
+            let (slot, definition) = if shot_crit == damage::CritKind::Full { (audio::WeaponSoundSlot::Burst, burst) }
+                else if weapon == Weapon::Minigun { (audio::WeaponSoundSlot::Double, single) } else { (audio::WeaponSoundSlot::Single, single) };
+            self.emit_source_weapon_sound(source_weapon, weapon, slot, definition, attacker_position);
         }
         if weapon == Weapon::Revolver {
-            self.remove_spy_disguise();
+            if owner == PLAYER_IDENTITY { self.remove_spy_disguise(); }
+            else if let Some(bots) = &mut self.bots { bots.remove_disguise(owner, now); }
         }
-        let sniper_state = self
-            .loadout
-            .get(&weapon)
-            .copied()
-            .expect("active hitscan weapon");
+        let sniper_state = state;
         if weapon == Weapon::SniperRifle {
-            let state = self.loadout.get_mut(&weapon).expect("active Sniper rifle");
-            if self.conditions.contains(Condition::Zoomed) {
-                state.unzoom_due_tick = Some(
-                    self.tick + weapon::delay_ticks(0.5, self.movement_configuration.tick_interval),
-                );
+            let unzoom = self.tick + weapon::delay_ticks(0.5, interval);
+            let state = self.actor_weapon_mut(owner, weapon).expect("active Sniper rifle");
+            if zoomed {
+                state.unzoom_due_tick = Some(unzoom);
                 state.rezoom_after_shot = state.reserve > 0;
             }
             state.charged_damage = 0.0;
         }
         let elapsed = now - state.hitscan.last_fire_tick as f32 * interval;
         let (forward, right, up) = angle_vectors(pitch, yaw, 0.0);
-        let origin = add(self.movement.position, self.movement.view_offset);
-        let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
-        let attacker_center = add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5));
         if rules.knockback {
             if self.round.state() == round::State::Preround { return Ok(MapPhase::default()); }
-            if self.movement.ground.is_none() && !self.scattergun_jumped {
+            if owner != PLAYER_IDENTITY {
+                if let Some(bots) = &mut self.bots { bots.scattergun_jump(owner, forward, now).map_err(Error::Bot)?; }
+            } else if self.movement.ground.is_none() && !self.scattergun_jumped {
                 self.scattergun_jumped = true;
                 self.movement.velocity = hitscan::scattergun_jump(self.movement.velocity, forward);
-                self.movement_stuns.add(now, 0.3, 1.0, true);
-                self.conditions.insert(Condition::Stunned);
+                self.stun_actor_movement(owner, owner, 0.3, 1.0, true)?;
             }
         }
-        if weapon == Weapon::Shotgun {
+        if owner == PLAYER_IDENTITY && weapon == Weapon::Shotgun {
             self.shotgun_pellets.clear();
         }
         events.push(Event::HitscanFired {
             weapon,
             pellets: profile.pellets,
-            owner: PLAYER_IDENTITY,
+            owner,
             origin,
         });
         let mut pending: Option<hitscan::DamageGroup> = None;
         let accumulate = matches!(weapon, Weapon::Minigun | Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun);
         let mut accumulated = BTreeMap::<u32, hitscan::DamageGroup>::new();
         let mut phase = MapPhase::default();
+        let current_poses = self.posed_hitbox_tick == Some(self.tick);
+        let attack = hitscan::Attack { owner, team, weapon, source: source_weapon, position: attacker_position, center: attacker_center, rules };
+        let posed_actors: BTreeSet<u32> = if current_poses { self.posed_player_hitboxes.iter().map(|hitbox| hitbox.entity).collect() } else { BTreeSet::new() };
         for pellet in 0..profile.pellets {
             let seed = ((random::prediction_seed(self.tick as u32) & 255) + u32::from(pellet)) as i32;
             let mut direction = forward;
@@ -5062,7 +5030,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     |low, high| self.draw_random_float(context, RandomDecision::BulletSpread, low, high));
                 if context == RandomContext::Authority { direction = sampled; }
             }
-            if weapon == Weapon::Shotgun {
+            if owner == PLAYER_IDENTITY && weapon == Weapon::Shotgun {
                 self.shotgun_pellets.push(pyro::ShotgunPellet {
                     index: pellet,
                     direction,
@@ -5082,7 +5050,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             )?;
             let mut player_hit: Option<playsrc_collision::StudioHitboxTrace> = None;
             for candidate in &self.posed_player_hitboxes {
-                if candidate.team == self.team_selection.local_team() || self.bots.as_ref().is_some_and(|bots| bots.contains(candidate.entity) && !bots.active(candidate.entity)) {
+                if !current_poses || candidate.entity == owner || candidate.team == team || self.bots.as_ref().is_some_and(|bots| bots.contains(candidate.entity) && !bots.active(candidate.entity)) {
                     continue;
                 }
                 let entry = playsrc_collision::StudioHitbox {
@@ -5121,21 +5089,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     player_hit = Some(trace);
                 }
             }
-            let boxed_hit = if player_hit.is_none() {
-                self.bots
-                    .as_ref()
-                    .and_then(|bots| {
-                        bots.intersect_enemy(
-                            self.team_selection.local_team(),
-                            origin,
-                            end,
-                            PLAYER_IDENTITY,
-                        )
-                    })
-                    .filter(|(_, fraction, _)| *fraction <= impact.fraction)
-            } else {
-                None
-            };
+            let mut boxed_hit = self.bots.as_ref().and_then(|bots| bots.intersect_enemy(team, origin, end, owner, |identity| !posed_actors.contains(&identity)))
+                .filter(|(_, fraction, _)| *fraction <= impact.fraction);
+            if owner != PLAYER_IDENTITY && self.lifecycle == PlayerLifecycle::Active && team.is_enemy(self.team_selection.local_team()) && !posed_actors.contains(&PLAYER_IDENTITY) {
+                let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+                if let Some(fraction) = bot::segment_bounds(origin, end, add(self.movement.position, hull.mins), add(self.movement.position, hull.maxs))
+                    && fraction <= impact.fraction && boxed_hit.is_none_or(|(_, previous, _)| fraction < previous) {
+                    boxed_hit = Some((PLAYER_IDENTITY, fraction, add(origin, scale(sub(end, origin), fraction))));
+                }
+            }
+            if let Some((_, fraction, _)) = boxed_hit && player_hit.as_ref().is_some_and(|hit| hit.fraction <= fraction) { boxed_hit = None; }
+            else if boxed_hit.is_some() { player_hit = None; }
             if player_hit.is_some()
                 || boxed_hit.is_some()
                 || impact.fraction < 1.0
@@ -5160,21 +5124,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 let hitgroup = player_hit
                     .as_ref()
                     .map_or(0, |hit| hit.hitgroup.max(0) as u8);
-                let facts = target.and_then(|identity| self.bots.as_ref()?.hitscan_target(identity));
+                let facts = target.and_then(|identity| self.hitscan_target(identity));
                 let distance = facts.map_or(distance, |target| length(sub(target.center, attacker_center)));
-                let headshot = hitgroup == 1 && (self.conditions.contains(Condition::Zoomed) && sniper_state.sniper_headshot_is_critical(
+                let headshot = hitgroup == 1 && (zoomed && sniper_state.sniper_headshot_is_critical(
                     self.tick,
                     self.movement_configuration.tick_interval,
-                    self.conditions.contains(Condition::Zoomed),
+                    zoomed,
                     hitgroup == 1,
                     boosted,
                 ) || rules.headshots && facts.is_some_and(|target| {
-                    let delta = sub(target.position, self.movement.position);
+                    let delta = sub(target.position, attacker_position);
                     accuracy_elapsed > 1.0 && (boosted || hitscan::ambassador_headshot(accuracy_elapsed, true, delta[0]*delta[0] + delta[1]*delta[1]))
                 }));
                 let crit = if shot_crit == damage::CritKind::Full || headshot { damage::CritKind::Full }
                     else if facts.is_some_and(|target| rules.airborne_minicrits && target.in_air_due_to_explosion
-                        || rules.backattack_minicrits && hitscan::backattack(self.movement.position, target.position, target.eye_forward)) { damage::CritKind::Mini }
+                        || rules.backattack_minicrits && hitscan::backattack(attacker_position, target.position, target.eye_forward)) { damage::CritKind::Mini }
                     else { shot_crit };
                 let range_multiplier = if weapon == Weapon::SniperRifle { 1.0 } else { rules.range_multiplier(distance, weapon == Weapon::Scattergun) };
                 let critical = crit == damage::CritKind::Full;
@@ -5185,7 +5149,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 };
                 if let Some(identity) = target {
                     if !accumulate && pending.is_some_and(|group| group.victim != identity) {
-                        self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, pending.take().unwrap(), events, &mut phase)?;
+                        self.apply_bullet_group(attack, pending.take().unwrap(), events, &mut phase)?;
                     }
                     let initial = hitscan::DamageGroup { victim: identity, amount: 0.0, range_multiplier, position, crit,
                         custom: if headshot { damage::CustomDamage::Headshot } else { damage::CustomDamage::None } };
@@ -5210,15 +5174,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 });
             }
         }
-        if let Some(group) = pending { self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, group, events, &mut phase)?; }
-        for group in accumulated.into_values() { self.apply_bullet_group(weapon, source_weapon, rules, attacker_center, group, events, &mut phase)?; }
-        self.loadout.get_mut(&weapon).unwrap().hitscan.fired(self.tick, interval);
+        if let Some(group) = pending { self.apply_bullet_group(attack, group, events, &mut phase)?; }
+        for group in accumulated.into_values() { self.apply_bullet_group(attack, group, events, &mut phase)?; }
+        let tick = self.tick;
+        self.actor_weapon_mut(owner, weapon).unwrap().hitscan.fired(tick, interval);
         Ok(phase)
     }
 
-    fn apply_bullet_group(&mut self, weapon: Weapon, source_weapon: Option<weapon::WeaponSource>, rules: hitscan::BulletRules, attacker_center: [f32; 3], group: hitscan::DamageGroup,
+    fn apply_bullet_group(&mut self, attack: hitscan::Attack, group: hitscan::DamageGroup,
         events: &mut Vec<Event>, phase: &mut MapPhase) -> Result<(), Error> {
-        let Some(target) = self.bots.as_ref().and_then(|bots| bots.hitscan_target(group.victim)) else {
+        let hitscan::Attack { owner, team, weapon, source: source_weapon, position: attacker_position, center: attacker_center, rules } = attack;
+        let Some(target) = self.hitscan_target(group.victim) else {
             if let Ok(damaged) = self.map.damage(self.tick, group.victim) { phase.append(damaged); }
             return Ok(());
         };
@@ -5230,26 +5196,24 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let result = self.apply_actor_damage(bot::Damage {
             source_weapon, damage_type: bot::weapon_damage_type(weapon).unwrap(), force: [0.0; 3],
             crit: group.crit, range_multiplier: group.range_multiplier, custom: group.custom, modifiers, killing_weapon: None,
-            attacker: PLAYER_IDENTITY, victim: group.victim, weapon, amount: group.amount, position: group.position,
-        }, self.team_selection.local_team(), events)?;
+            attacker: owner, victim: group.victim, weapon, amount: group.amount, position: group.position,
+        }, team, events)?;
         let Some(result) = result else { return Ok(()); };
         self.apply_actor_weapon_push(group.victim, attacker_center, result.pre_resistance_base_damage + result.pre_resistance_bonus_damage, Some(rules))?;
-        let now = self.tick as f32 * self.movement_configuration.tick_interval;
         if push {
-            let horizontal = self.equipped_player_attribute(group.victim, "airblast_vulnerability_multiplier", 1.0);
-            let vertical = self.equipped_player_attribute(group.victim, "airblast_vertical_vulnerability_multiplier", 1.0);
-            if let Some(bots) = &mut self.bots { bots.scattergun_push(group.victim, PLAYER_IDENTITY, now, force, horizontal, vertical).map_err(Error::Bot)?; }
+            self.scattergun_push_actor(group.victim, owner, force)?;
         }
         if !result.admitted { return Ok(()); }
         if result.death.is_some() && group.custom == damage::CustomDamage::Headshot
             && source_weapon.and_then(|source| equipment::schema().definition(source.definition_index)).is_some_and(|definition| definition.item_class == "tf_weapon_sniperrifle_decap") {
-            self.decapitations = self.decapitations.saturating_add(1);
+            if owner == PLAYER_IDENTITY { self.decapitations = self.decapitations.saturating_add(1); }
+            else if let Some(bots) = &mut self.bots { bots.add_head(owner); }
         }
         if rules.slow_on_hit != 0.0 && !target.healed
             && self.draw_random_float(RandomContext::Authority, RandomDecision::EnemySpeedOnHit, 0.0, 1.0) < rules.slow_on_hit {
-            let delta = sub(target.position, self.movement.position);
+            let delta = sub(target.position, attacker_position);
             let slow = hitscan::natascha_slow(dot(delta, delta));
-            if let Some(bots) = &mut self.bots { bots.stun_movement(group.victim, PLAYER_IDENTITY, now, 0.2, slow, false).map_err(Error::Bot)?; }
+            self.stun_actor_movement(group.victim, owner, 0.2, slow, false)?;
         }
         Ok(())
     }
@@ -6482,6 +6446,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     request.start,
                     result.end,
                     projectile.presentation.owner_identity,
+                    |_| true,
                 )
             });
             if self.lifecycle == PlayerLifecycle::Active
@@ -7031,6 +6996,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.decapitations = 0;
         self.movement_stuns = hitscan::MovementStuns::default();
         self.scattergun_jumped = false;
+        self.weapon_knockback = false;
+        self.blast_since_movement = false;
         self.revenge_crits = 0;
         self.melee.reset_victim(PLAYER_IDENTITY);
         self.critical_history.reset_for_spawn();
@@ -8503,20 +8470,20 @@ mod tests {
         session.advance(Command { select_class: Some(PlayerClass::Heavy), ..Command::default() }).unwrap();
         session.audio_events.clear(); session.random_draws.clear();
         session.loadout.get_mut(&Weapon::Minigun).unwrap().minigun_state = weapon::MinigunState::Starting;
-        session.update_minigun_audio(weapon::MinigunState::Idle);
+        session.update_minigun_audio(PLAYER_IDENTITY, weapon::MinigunState::Idle);
         assert_eq!(session.audio_events.len(), 1);
         assert_eq!(session.audio_events[0].action, AudioAction::PlayAtPitch(100.0));
         assert_eq!(session.audio_events[0].definition, SoundDefinition::MinigunWindUp);
         assert_eq!(session.random_draws.len(), 3);
         assert!(session.random_draws.iter().all(|draw| draw.context == RandomContext::PredictedPresentation));
-        session.update_minigun_audio(weapon::MinigunState::Starting);
+        session.update_minigun_audio(PLAYER_IDENTITY, weapon::MinigunState::Starting);
         assert_eq!(session.audio_events.len(), 1);
         session.loadout.get_mut(&Weapon::Minigun).unwrap().minigun_state = weapon::MinigunState::Spinning;
-        session.update_minigun_audio(weapon::MinigunState::Starting);
+        session.update_minigun_audio(PLAYER_IDENTITY, weapon::MinigunState::Starting);
         assert_eq!(session.audio_events[1].action, AudioAction::Stop);
         assert_eq!(session.audio_events[1].definition, SoundDefinition::MinigunWindUp);
         assert_eq!(session.audio_events[2].definition, SoundDefinition::MinigunSpin);
-        session.stop_minigun_audio(); session.stop_minigun_audio();
+        session.stop_minigun_audio(PLAYER_IDENTITY); session.stop_minigun_audio(PLAYER_IDENTITY);
         assert_eq!(session.audio_events.len(), 4);
     }
 
