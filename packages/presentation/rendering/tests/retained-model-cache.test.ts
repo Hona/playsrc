@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test"
 import { RetainedModelCache } from "../src/retained-model-cache"
 
+test("HUD, class panel and carried model slots retain independent class/skin state within the bound", () => {
+  const disposed: object[] = []
+  const cache = new RetainedModelCache<object>(32, value => disposed.push(value))
+  const models = new Map<string, object>()
+  for (const slot of ["hud-player", "class-player", "class-weapon"]) {
+    for (let playerClass = 1; playerClass <= 9; playerClass++) {
+      const key = `${slot}:${playerClass}:skin=0`
+      const model = { slot, playerClass, palette: new Float32Array(16), eyes: [playerClass] }
+      models.set(key, model)
+      cache.retain(key, model)
+    }
+  }
+  for (const [key, model] of models) {
+    expect(cache.take(key)).toBe(model)
+    cache.retain(key, model)
+  }
+  expect(disposed).toHaveLength(0)
+  expect(cache.take("hud-player:1:skin=1")).toBeUndefined()
+  cache.clear()
+  expect(new Set(disposed).size).toBe(27)
+  expect(cache.size).toBe(0)
+})
+
 describe("generation-owned retained stock viewmodels", () => {
   test("retains every class and reacquires its exact weapon without disposal", () => {
     const disposed: string[] = []
