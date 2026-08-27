@@ -9,7 +9,7 @@ const camera = { position: [10, 20, 30] as const, yawDegrees: 40, pitchDegrees: 
 function artifacts() {
   const models = new Map<string, ModelArtifact>()
   const add = (model: string, profile: "world" | "viewmodel", skins = 2) => models.set(model, {
-    profile, skinCount: skins, bodygroupCounts: [2, 3], sequences: [{ label: "reference" }],
+    profile, skinCount: skins, bodygroupCounts: [2, 3], sequences: [{ label: "reference" }, ...["PRIMARY", "SECONDARY", "MELEE"].map(role => ({ activity: `ACT_MP_STAND_${role}` }))],
   } as ModelArtifact)
   for (let identity = 1; identity <= 9; identity++) add(tf2ClassPresentation(identity as Tf2Class).model, "world")
   add("models/weapons/c_models/c_bottle/c_bottle.mdl", "viewmodel", 1)
