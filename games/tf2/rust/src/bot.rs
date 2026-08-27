@@ -483,6 +483,7 @@ struct SupplyCache {
 
 #[derive(Clone, Debug)]
 struct Bot {
+    critical_history: crate::critical::PlayerHistory,
     identity: u32,
     spy: Option<crate::spy::SpyState>,
     name: String,
@@ -1081,6 +1082,7 @@ impl BotWorld {
                 identity,
                 Bot {
                     damagers: crate::deathnotice::DamagerHistory::default(),
+                    critical_history: crate::critical::PlayerHistory::default(),
                     identity,
                     name,
                     class,
@@ -1863,6 +1865,27 @@ impl BotWorld {
     pub fn navigation_diagnostics(&self) -> Vec<String> {
         self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
     }
+    pub(crate) fn critical_weapon(&self, identity: u32, weapon: Weapon) -> Option<crate::critical::WeaponState> {
+        Some(self.bots.get(&identity)?.loadout.get(&weapon)?.critical)
+    }
+
+    pub(crate) fn set_critical_weapon(&mut self, identity: u32, weapon: Weapon, state: crate::critical::WeaponState) {
+        self.bots.get_mut(&identity).expect("validated critical owner").loadout.get_mut(&weapon)
+            .expect("validated critical weapon").critical = state;
+    }
+
+    pub(crate) fn critical_history_mut(&mut self, identity: u32) -> Option<&mut crate::critical::PlayerHistory> {
+        Some(&mut self.bots.get_mut(&identity)?.critical_history)
+    }
+
+    pub(crate) fn reset_critical_round_statistics(&mut self) {
+        for bot in self.bots.values_mut() { bot.critical_history.reset_round_statistics(); }
+    }
+
+    pub(crate) fn advance_critical_histories(&mut self, now: f32) -> Result<(), crate::damage::DamageError> {
+        for bot in self.bots.values_mut() { bot.critical_history.advance(now)?; }
+        Ok(())
+    }
 
     pub fn select_spawn(
         &mut self,
@@ -2591,6 +2614,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.health =
         HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
     bot.conditions = ConditionState::default();
+    bot.critical_history.reset_for_spawn();
     bot.spy = (bot.class == PlayerClass::Spy).then(crate::spy::SpyState::default);
     bot.ammo = bot.class.data().maximum_ammo;
     bot.next_regenerate_tick = 0;

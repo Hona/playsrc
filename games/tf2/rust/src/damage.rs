@@ -169,7 +169,7 @@ impl DamageHistory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CritState {
     pub token_bucket: f32,
     pub checks: u32,
@@ -224,23 +224,27 @@ pub struct CritCheckResult {
     pub denied_by_bucket: bool,
 }
 
+fn validate_crit_input(input: CritCheckInput) -> Result<(), DamageError> {
+    if !input.now.is_finite() || !input.raw_damage.is_finite() || input.raw_damage < 0.0
+        || !input.projectiles_per_shot.is_finite() || input.projectiles_per_shot < 0.0
+        || !input.fire_delay.is_finite() || input.fire_delay <= 0.0
+        || !input.chance_multiplier.is_finite() || input.chance_multiplier < 0.0
+        || !input.player_crit_multiplier.is_finite() || input.player_crit_multiplier < 0.0
+        || input.roll.is_some_and(|roll| roll >= RANDOM_RANGE) {
+        Err(DamageError::InvalidCritInput)
+    } else { Ok(()) }
+}
+
 impl CritState {
+    pub fn needs_roll(&self, input: CritCheckInput) -> Result<bool, DamageError> {
+        validate_crit_input(input)?;
+        Ok(input.can_fire_critical && !input.guaranteed_critical && input.random_crits_enabled
+            && !(input.kind == WeaponCritKind::RapidFire
+                && (self.rapid_crit_end_time > input.now || input.now < self.last_rapid_check_time + 1.0)))
+    }
+
     pub fn check(&mut self, input: CritCheckInput) -> Result<CritCheckResult, DamageError> {
-        if !input.now.is_finite()
-            || !input.raw_damage.is_finite()
-            || input.raw_damage < 0.0
-            || !input.projectiles_per_shot.is_finite()
-            || input.projectiles_per_shot < 0.0
-            || !input.fire_delay.is_finite()
-            || input.fire_delay <= 0.0
-            || !input.chance_multiplier.is_finite()
-            || input.chance_multiplier < 0.0
-            || !input.player_crit_multiplier.is_finite()
-            || input.player_crit_multiplier < 0.0
-            || input.roll.is_some_and(|roll| roll >= RANDOM_RANGE)
-        {
-            return Err(DamageError::InvalidCritInput);
-        }
+        validate_crit_input(input)?;
         let bucket_before = self.token_bucket;
         let base_result = |kind, random, roll, threshold, bucket_after, checked| CritCheckResult {
             kind,
@@ -294,7 +298,7 @@ impl CritState {
             ));
         }
 
-        let raw = input.raw_damage * input.projectiles_per_shot.max(1.0);
+        let raw = input.raw_damage * input.projectiles_per_shot;
         self.token_bucket = (self.token_bucket + raw).min(CRIT_BUCKET_CAP);
         let chance = match input.kind {
             WeaponCritKind::SingleShot => {
@@ -338,7 +342,8 @@ impl CritState {
                 / (normalized + self.total_ranged_damage as f32
                     - self.random_ranged_crit_damage as f32);
         }
-        if input.kind != WeaponCritKind::Melee && self.observed_chance > chance + 0.1 {
+        if input.kind != WeaponCritKind::Melee && self.total_ranged_damage > 0
+            && self.observed_chance > chance + 0.1 {
             let mut result = base_result(
                 CritKind::None,
                 true,
