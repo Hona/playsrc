@@ -36,8 +36,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
+  const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
-  const replay = exerciseClasses ? await startGameplayReplayJournal(page, path.join(directory, "compositor-evidence"), evidenceLabel) : undefined
+  const replay = exerciseClasses ? await startGameplayReplayJournal(page, evidenceDirectory, evidenceLabel) : undefined
   retainIncomplete = () => replay?.stop(false) ?? Promise.resolve()
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
@@ -387,11 +388,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
       workerCapture.error = "Worker CPU evidence exceeds its byte bound"
       workerBytes = Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: workerCapture.error }))
     }
-    const workerArtifact = await retainEvidenceBlob(path.join(directory, "compositor-evidence"), workerBytes, "workers.json")
+    const workerArtifact = await retainEvidenceBlob(evidenceDirectory, workerBytes, "workers.json")
     await browserCdp.send("Tracing.end")
     const completion = await traceFinished
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
-    await retainEvidenceBlob(path.join(directory, "compositor-evidence"), raw.bytes, "trace.json.gz")
+    await retainEvidenceBlob(evidenceDirectory, raw.bytes, "trace.json.gz")
     return { workerCapture, workerArtifact, completion, raw }
   }
   let nativeResult: ReturnType<typeof collectNative> | undefined
@@ -654,7 +655,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   const sourceFingerprintAfter = await applicationBuildIdentity()
   profilePhases.enter("trace-analysis-retention")
-  const evidence = await retainCompositorEvidence({ directory: path.join(directory, "compositor-evidence"), raw: raw.bytes,
+  const evidence = await retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
     complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred,
     identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
       sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
