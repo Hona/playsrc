@@ -71,6 +71,7 @@ type WasmExports = Readonly<{
   playsrc_gameplay_replay_length(handle: number): number
   playsrc_gameplay_replay_copy(handle: number, offset: number, pointer: number, capacity: number): number
   playsrc_admission_metrics_length(): number
+  playsrc_admission_metrics_dropped(): number
   playsrc_admission_metrics_copy(pointer: number, capacity: number): number
 }>
 
@@ -98,14 +99,14 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
   admission() {
     if (!wasm || !replayHandle) return null
     const length = wasm.playsrc_admission_metrics_length()
-    if (length > 8192 * 40 || length % 40 !== 0) throw new Error("Admission metrics bound exceeded")
+    if (length > 8192 * 56 || length % 56 !== 0) throw new Error("Admission metrics bound exceeded")
     const pointer = wasm.playsrc_alloc(Math.max(1, length)) >>> 0
     try {
       if (wasm.playsrc_admission_metrics_copy(pointer, length) !== length) throw new Error("Admission metrics copy failed")
       const bytes = new DataView(wasm.memory.buffer, pointer, length)
       const events = []
-      for (let offset = 0; offset < length; offset += 40) events.push({ stage: bytes.getUint32(offset, true), actor: bytes.getUint32(offset + 4, true), tick: Number(bytes.getBigUint64(offset + 8, true)), at: Number(bytes.getBigUint64(offset + 16, true)) / 1e6, heapBytes: Number(bytes.getBigUint64(offset + 24, true)) })
-      return { timeOrigin: performance.timeOrigin, overflow: length === 8192 * 40, events }
+      for (let offset = 0; offset < length; offset += 56) events.push({ stage: bytes.getUint32(offset, true), actor: bytes.getUint32(offset + 4, true), tick: Number(bytes.getBigUint64(offset + 8, true)), at: Number(bytes.getBigUint64(offset + 16, true)) / 1e6, heapBytes: Number(bytes.getBigUint64(offset + 24, true)), allocations: Number(bytes.getBigUint64(offset + 32, true)), allocatedBytes: Number(bytes.getBigUint64(offset + 40, true)), value: Number(bytes.getBigUint64(offset + 48, true)) })
+      return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
   arm() {

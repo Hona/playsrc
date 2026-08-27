@@ -2,33 +2,68 @@ use super::*;
 use playsrc_simulation::MetricsClock;
 
 const MAX_EVENTS: usize = 8192;
-const EVENT_BYTES: usize = 40;
-fn records() -> &'static Mutex<Vec<u8>> {
-    static RECORDS: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
-    RECORDS.get_or_init(|| Mutex::new(Vec::new()))
+const EVENT_BYTES: usize = 56;
+
+struct Recorder {
+    bytes: Vec<u8>,
+    dropped: u32,
+    clock: RuntimeMetricsClock,
+}
+
+impl Recorder {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::with_capacity(MAX_EVENTS * EVENT_BYTES),
+            dropped: 0,
+            clock: RuntimeMetricsClock::new(),
+        }
+    }
+
+    fn append(&mut self, event: playsrc_tf2::admission_metrics::Event, at: u64, live: u64, allocations: (u64, u64)) {
+        if self.bytes.len() == MAX_EVENTS * EVENT_BYTES {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
+        self.bytes.extend_from_slice(&event.stage.to_le_bytes());
+        self.bytes.extend_from_slice(&event.actor.to_le_bytes());
+        for value in [event.tick, at, live, allocations.0, allocations.1, event.value] {
+            self.bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
+fn records() -> &'static Mutex<Option<Recorder>> {
+    static RECORDS: OnceLock<Mutex<Option<Recorder>>> = OnceLock::new();
+    RECORDS.get_or_init(|| Mutex::new(None))
 }
 
 pub(super) fn begin() {
-    *records().lock().expect("admission metrics") = Vec::with_capacity(MAX_EVENTS * EVENT_BYTES);
+    *records().lock().expect("admission metrics") = Some(Recorder::new());
+    memory::track_allocations(true);
     playsrc_tf2::admission_metrics::set_observer(Some(record));
 }
 
+pub(super) fn stop() {
+    playsrc_tf2::admission_metrics::set_observer(None);
+    memory::track_allocations(false);
+}
+
 fn record(event: playsrc_tf2::admission_metrics::Event) {
-    let at = RuntimeMetricsClock::new().monotonic_nanoseconds();
-    let live = memory::live_bytes() as u64;
     let mut records = records().lock().expect("admission metrics");
-    if records.len() == MAX_EVENTS * EVENT_BYTES { return; }
-    records.extend_from_slice(&event.stage.to_le_bytes());
-    records.extend_from_slice(&event.actor.to_le_bytes());
-    records.extend_from_slice(&event.tick.to_le_bytes());
-    records.extend_from_slice(&at.to_le_bytes());
-    records.extend_from_slice(&live.to_le_bytes());
-    records.extend_from_slice(&0_u64.to_le_bytes());
+    let Some(records) = records.as_mut() else { return; };
+    let at = records.clock.monotonic_nanoseconds();
+    let allocations = memory::allocation_totals();
+    records.append(event, at, memory::live_bytes() as u64, (allocations.0 as u64, allocations.1 as u64));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_admission_metrics_length() -> usize {
-    records().lock().expect("admission metrics").len()
+    records().lock().expect("admission metrics").as_ref().map_or(0, |records| records.bytes.len())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_admission_metrics_dropped() -> u32 {
+    records().lock().expect("admission metrics").as_ref().map_or(0, |records| records.dropped)
 }
 
 #[unsafe(no_mangle)]
@@ -36,7 +71,38 @@ pub extern "C" fn playsrc_admission_metrics_length() -> usize {
 /// The caller supplies `capacity` writable bytes in this module's memory.
 pub unsafe extern "C" fn playsrc_admission_metrics_copy(pointer: *mut u8, capacity: usize) -> usize {
     let records = records().lock().expect("admission metrics");
-    if pointer.is_null() || capacity < records.len() { return 0; }
-    unsafe { std::ptr::copy_nonoverlapping(records.as_ptr(), pointer, records.len()); }
-    records.len()
+    let Some(records) = records.as_ref() else { return 0; };
+    if pointer.is_null() || capacity < records.bytes.len() { return 0; }
+    unsafe { std::ptr::copy_nonoverlapping(records.bytes.as_ptr(), pointer, records.bytes.len()); }
+    records.bytes.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn records_exact_timestamps_actor_ticks_counters_and_overflow_without_growth() {
+        let mut records = Recorder::new();
+        let capacity = records.bytes.capacity();
+        for index in 0..MAX_EVENTS + 3 {
+            records.append(playsrc_tf2::admission_metrics::Event { tick: index as u64, stage: 2, actor: 17, value: 4096 }, index as u64 * 5, 9000, (42, 100));
+        }
+        assert_eq!(records.bytes.len(), MAX_EVENTS * EVENT_BYTES);
+        assert_eq!(records.bytes.capacity(), capacity);
+        assert_eq!(records.dropped, 3);
+        for (index, row) in records.bytes.chunks_exact(EVENT_BYTES).enumerate() {
+            assert_eq!(u32::from_le_bytes(row[..4].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(row[4..8].try_into().unwrap()), 17);
+            let values: Vec<_> = row[8..].chunks_exact(8).map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap())).collect();
+            assert_eq!(values, [index as u64, index as u64 * 5, 9000, 42, 100, 4096]);
+        }
+    }
+
+    #[test]
+    fn retained_clock_is_monotonic() {
+        let mut recorder = Recorder::new();
+        let first = recorder.clock.monotonic_nanoseconds();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(recorder.clock.monotonic_nanoseconds() >= first + 1_000_000);
+    }
 }

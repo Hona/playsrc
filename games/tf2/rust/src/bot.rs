@@ -662,6 +662,7 @@ impl BotWorld {
         blue_score: u16,
         random: &mut UniformRandomStream,
     ) -> Result<bool, Error> {
+        crate::admission_metrics::begin_tick(tick);
         let Some(configuration) = self.configuration else {
             return Ok(false);
         };
@@ -3486,6 +3487,55 @@ mod tests {
                     .unwrap()
             );
         }
+    }
+
+    #[test]
+    fn admission_observation_preserves_roster_rng_cadence_and_failed_transaction() {
+        use crate::admission_metrics as metrics;
+        use std::cell::RefCell;
+        thread_local! { static EVENTS: RefCell<Vec<metrics::Event>> = const { RefCell::new(Vec::new()) }; }
+        fn record(event: metrics::Event) { EVENTS.with_borrow_mut(|events| events.push(event)); }
+        struct Reset;
+        impl Drop for Reset { fn drop(&mut self) { metrics::set_observer(None); } }
+        let _reset = Reset;
+        for quota in [15, 23] {
+            let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
+            world.configure(Configuration { quota, maximum_players: 24, mode: QuotaMode::Normal, difficulty: Difficulty::Easy, join_after_player: true, auto_vacate: false, offline_practice: true }).unwrap();
+            let mut expected = world.clone();
+            let mut rng = UniformRandomStream::from_seed(0).unwrap();
+            let mut expected_rng = rng.clone();
+            EVENTS.with_borrow_mut(Vec::clear);
+            for tick in 0..(u64::from(quota) + 2) * 17 {
+                metrics::set_observer(None);
+                let change = expected.maintain_quota(tick, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut expected_rng).unwrap();
+                metrics::set_observer(Some(record));
+                assert_eq!(world.maintain_quota(tick, PlayerTeam::Red, PlayerClass::Soldier, 0, 0, &mut rng).unwrap(), change);
+                assert_eq!(world.snapshots(), expected.snapshots());
+                assert_eq!(rng.state(), expected_rng.state());
+            }
+            let events = EVENTS.with_borrow(|events| events.clone());
+            let requests: Vec<_> = events.iter().filter(|event| event.stage == metrics::REQUEST).collect();
+            assert_eq!(requests.len(), quota as usize);
+            for (index, request) in requests.iter().enumerate() {
+                assert_eq!((request.tick, request.actor), (index as u64 * 17, index as u32 + crate::PLAYER_IDENTITY + 1));
+                let stages: Vec<_> = events.iter().filter(|event| event.actor == request.actor).map(|event| event.stage).collect();
+                assert_eq!(stages, [metrics::REQUEST, metrics::LOADOUT, metrics::NAVIGATION, metrics::CONSTRUCTED]);
+            }
+        }
+        let graph = fixture_graph();
+        let mut session = crate::Session::new(Floor, [190.0, 50.0, 1.0], crate::MapRuntime::compile(&graph, 0.015, 1, Vec::new()).unwrap());
+        session.configure_navigation(fixture_mesh(), &graph).unwrap();
+        session.bots.as_mut().unwrap().spawns[team_index(PlayerTeam::Blue)].clear();
+        let before = session.clone();
+        EVENTS.with_borrow_mut(Vec::clear);
+        let result = session.advance(crate::Command { bot_request: Some(Request { operation: Operation::Add, count: 2, class: Some(PlayerClass::Soldier), team: None, difficulty: Difficulty::Easy }), ..crate::Command::default() });
+        assert!(result.is_err());
+        assert_eq!(session.tick(), before.tick());
+        assert_eq!(session.producer_snapshot(), before.producer_snapshot());
+        assert_eq!(session.random_state(), before.random_state());
+        assert_eq!(session.bot_world().unwrap().snapshots(), before.bot_world().unwrap().snapshots());
+        assert_eq!(session.bot_world().unwrap().next_identity, before.bot_world().unwrap().next_identity);
+        assert!(EVENTS.with_borrow(|events| events.iter().all(|event| event.stage != metrics::ROSTER)));
     }
 
     #[test]

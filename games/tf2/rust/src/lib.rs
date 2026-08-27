@@ -1457,6 +1457,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.payload_constraint_blocked()
     }
 
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
     pub fn advance(&mut self, command: Command) -> Result<Snapshot, Error> {
         self.advance_with_external(command, &[], &[], None)
     }
