@@ -11,6 +11,7 @@ export async function createModelGraphProbe(materialVariants = false) {
   const width = 640, height = 480
   const renderer = new THREE.WebGPURenderer({ antialias: false })
   await renderer.init()
+  if (!renderer.backend.isWebGPUBackend) throw new Error("Model graph evidence requires the actual WebGPU backend")
   renderer.setSize(width, height)
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace
   renderer.toneMapping = THREE.NoToneMapping
