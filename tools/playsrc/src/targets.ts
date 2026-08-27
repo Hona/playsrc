@@ -6,6 +6,7 @@ import type { LocalConfig } from "./config"
 
 type MapTarget = Readonly<{
   logicalPath: string
+  admission: "source" | "integration" | "released"
   mode: string
   navigation: "local" | "content" | null
   download?: DownloadSource

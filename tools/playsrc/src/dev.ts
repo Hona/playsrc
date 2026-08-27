@@ -12,8 +12,8 @@ import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
 import { applicationBuildIdentity, invalidateRustBuildIdentity } from "./build-identity"
 import { createDevelopmentBuildCoherence } from "./development-coherence"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
-import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
-import { TF2_TARGET_NAMES, type Tf2TargetName } from "../../../apps/web/tf2/src/deployment"
+import { tf2MapLoading, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
+import { TF2_DEVELOPMENT_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 
 const APPLICATION_PORT = Number(process.env.PLAYSRC_DEV_PORT ?? "4173")
 if (!Number.isSafeInteger(APPLICATION_PORT) || APPLICATION_PORT < 1024 || APPLICATION_PORT >= 65535) {
@@ -109,7 +109,7 @@ export type DevelopmentOwner = Readonly<{
 export async function startDevelopment(config: LocalConfig, target: string | undefined): Promise<DevelopmentOwner> {
   const started = performance.now()
   const targetIdentity = target ?? "jump_beef"
-  if (!TF2_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
+  if (!TF2_DEVELOPMENT_TARGET_NAMES.includes(targetIdentity as Tf2TargetName)) throw new DevelopmentError("BuildFailed", "development default target is undeclared")
   const maps = [Object.freeze({ name: targetIdentity as Tf2TargetName, map: await acquireMap(config, targetIdentity) })]
   const mapReady = performance.now()
   let wasmMilliseconds = 0
@@ -153,8 +153,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
         dependencyLedger: sourceBundle.report.ledgerDescriptor,
       }),
       loading: Object.freeze({
-        mapPhotoLocations: TF2_MAP_LOADING[name].photoLocations,
-        mapPhoto: TF2_MAP_LOADING[name].photo,
+        mapPhotoLocations: tf2MapLoading(name).photoLocations,
+        mapPhoto: tf2MapLoading(name).photo,
         stampBackground: TF2_STAMP_BACKGROUND,
       }),
     })
@@ -293,7 +293,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
             let preparation: Promise<void> = Promise.resolve()
             server.middlewares.use("/__playsrc/prepare-target", (request, response, next) => {
               const name = request.url?.replace(/^\//u, "").split("?")[0]
-              if (request.method !== "POST" || !TF2_TARGET_NAMES.includes(name as Tf2TargetName)) {
+              if (request.method !== "POST" || !TF2_DEVELOPMENT_TARGET_NAMES.includes(name as Tf2TargetName)) {
                 next()
                 return
               }
@@ -316,8 +316,8 @@ export async function startDevelopment(config: LocalConfig, target: string | und
                       dependencyLedger: sourceBundle.report.ledgerDescriptor,
                     }),
                     loading: Object.freeze({
-                      mapPhotoLocations: TF2_MAP_LOADING[name as Tf2TargetName].photoLocations,
-                      mapPhoto: TF2_MAP_LOADING[name as Tf2TargetName].photo,
+                      mapPhotoLocations: tf2MapLoading(name).photoLocations,
+                      mapPhoto: tf2MapLoading(name).photo,
                       stampBackground: TF2_STAMP_BACKGROUND,
                     }),
                   })
@@ -328,7 +328,7 @@ export async function startDevelopment(config: LocalConfig, target: string | und
                     ...sourceBundle.graph.chunks.map((chunk) => publishFile(config, resourceChunkObject(chunk), path.join(sourceBundle.graphObjectDirectory, chunk.encodedSha256))),
                   ])
                   targets.push(target)
-                  targets.sort((left, right) => TF2_TARGET_NAMES.indexOf(left.target) - TF2_TARGET_NAMES.indexOf(right.target))
+                  targets.sort((left, right) => TF2_DEVELOPMENT_TARGET_NAMES.indexOf(left.target) - TF2_DEVELOPMENT_TARGET_NAMES.indexOf(right.target))
                   catalog = createCatalog()
                   await putObject(config.assetDir, catalog.descriptor, catalog.bytes)
                   process.env.PLAYSRC_BROWSER_CONFIG = browserConfiguration()

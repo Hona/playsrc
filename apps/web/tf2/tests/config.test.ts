@@ -19,6 +19,12 @@ const valid = Object.freeze({
 })
 
 describe("TF2 browser multi-map configuration", () => {
+  test("admits explicitly prepared Viaduct only for local integration", () => {
+    const integration = { ...valid, defaultTarget: "koth_viaduct", targets: [target("koth_viaduct", 1)] }
+    expect(parseBrowserConfiguration(integration, valid.assetOrigin).targets[0]!.target).toBe("koth_viaduct")
+    expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
+  })
+
   test("accepts only the complete bounded target table", () => {
     const configuration = parseBrowserConfiguration(valid, valid.assetOrigin)
     expect(configuration).toEqual(valid)

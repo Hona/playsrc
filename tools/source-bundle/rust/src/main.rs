@@ -2400,6 +2400,10 @@ fn main() -> Result<(), String> {
     {
         return Err("jump_beef configured map photo absence changed".to_owned());
     }
+    let map_photo = format!("materials/vgui/maps/menu_photos_{target}.vmt");
+    if resolver.optional(&map_photo, "tf2-loading-map-photo")?.is_some() {
+        collect_material(&mut resolver, &map_photo, true, SelectionEnvironment::default(), true, "tf2-loading-map-photo")?;
+    }
     for material in &canonical.materials {
         collect_material(
             &mut resolver,
@@ -2542,6 +2546,16 @@ fn main() -> Result<(), String> {
         model_paths.insert(model.to_ascii_lowercase());
     }
     for entity in &graph.entities {
+        if entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"team_control_point")) {
+            for pair in &entity.pairs {
+                if [b"team_model_0".as_slice(), b"team_model_1", b"team_model_2", b"team_model_3"]
+                    .iter().any(|key| pair.key.eq_ignore_ascii_case(key)) && !pair.value.is_empty()
+                {
+                    let model = std::str::from_utf8(&pair.value).map_err(|_| "control point model identity is not UTF-8")?;
+                    model_paths.insert(model.replace('\\', "/").to_ascii_lowercase());
+                }
+            }
+        }
         if let Some(definition) = entity
             .classname
             .as_deref()

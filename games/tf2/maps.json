@@ -1,5 +1,6 @@
 {
   "jump_beef": {
+    "admission": "released",
     "mode": "custom",
     "navigation": null,
     "logicalPath": "maps/jump_beef.bsp",
@@ -13,6 +14,7 @@
     }
   },
   "pl_upward": {
+    "admission": "released",
     "mode": "payload",
     "navigation": "local",
     "logicalPath": "maps/pl_upward.bsp",
@@ -24,6 +26,7 @@
     }
   },
   "cp_badlands": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_badlands.bsp",
@@ -35,6 +38,7 @@
     }
   },
   "cp_granary": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_granary.bsp",
@@ -46,6 +50,7 @@
     }
   },
   "cp_well": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_well.bsp",
@@ -57,6 +62,7 @@
     }
   },
   "cp_freight_final1": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_freight_final1.bsp",
@@ -68,6 +74,7 @@
     }
   },
   "cp_gullywash_final1": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_gullywash_final1.bsp",
@@ -79,6 +86,7 @@
     }
   },
   "cp_process_final": {
+    "admission": "source",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_process_final.bsp",
@@ -90,6 +98,7 @@
     }
   },
   "koth_viaduct": {
+    "admission": "integration",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_viaduct.bsp",
@@ -101,6 +110,7 @@
     }
   },
   "koth_sawmill": {
+    "admission": "source",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_sawmill.bsp",
@@ -112,6 +122,7 @@
     }
   },
   "koth_harvest_final": {
+    "admission": "source",
     "mode": "king-of-the-hill",
     "navigation": "local",
     "logicalPath": "maps/koth_harvest_final.bsp",
@@ -123,6 +134,7 @@
     }
   },
   "koth_lakeside_final": {
+    "admission": "source",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_lakeside_final.bsp",
@@ -134,6 +146,7 @@
     }
   },
   "ctf_2fort": {
+    "admission": "released",
     "mode": "capture-the-flag",
     "navigation": "local",
     "logicalPath": "maps/ctf_2fort.bsp",

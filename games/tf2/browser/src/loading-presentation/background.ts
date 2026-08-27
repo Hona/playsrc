@@ -115,7 +115,37 @@ export const TF2_MAP_LOADING = Object.freeze({
   jump_beef: Object.freeze({ photoLocations: TF2_JUMP_BEEF_MAP_PHOTO_LOCATIONS, photo: null }),
   pl_upward: Object.freeze({ photoLocations: TF2_PL_UPWARD_MAP_PHOTO_LOCATIONS, photo: null }),
   ctf_2fort: Object.freeze({ photoLocations: TF2_CTF_2FORT_MAP_PHOTO_LOCATIONS, photo: TF2_CTF_2FORT_MAP_PHOTO }),
+  koth_viaduct: Object.freeze({
+    photoLocations: Object.freeze([
+      "koth_viaduct-pak:maps/koth_viaduct.bsp!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-00-workshop:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-01-tf2_textures_dir.vpk:tf2_textures_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-02-tf2_sound_vo_english_dir.vpk:tf2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-03-tf2_sound_misc_dir.vpk:tf2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-04-tf2_misc_dir.vpk:tf2_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-05-hl2_textures_dir.vpk:hl2_textures_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-06-hl2_sound_vo_english_dir.vpk:hl2_sound_vo_english_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-07-hl2_sound_misc_dir.vpk:hl2_sound_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-08-hl2_misc_dir.vpk:hl2_misc_dir.vpk!materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-09-tf:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-10-hl2:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+      "game-11-download:materials/vgui/maps/menu_photos_koth_viaduct.vmt",
+    ]),
+    photo: Object.freeze({
+      material: Object.freeze({ logicalPath: "materials/vgui/maps/menu_photos_koth_viaduct.vmt", byteLength: 129, sha256: "2f8dddeef0cff874e22ed4b58909fc5bf44b67fa0da9d55f1cd4956d22751ba4", providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
+      texture: Object.freeze({ logicalPath: "materials/vgui/maps/menu_photos_koth_viaduct.vtf", byteLength: 349784, sha256: "af246c72096fc065b5b5a2c0cd617638f31e783067104315ae7ffde691b1e70a", providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
+    }),
+  }),
 })
+
+export function tf2MapLoading(target: string): Readonly<{
+  photoLocations: readonly string[]
+  photo: Readonly<{ material: Tf2LoadingAsset; texture: Tf2LoadingAsset }> | null
+}> {
+  const descriptor = Object.hasOwn(TF2_MAP_LOADING, target) ? TF2_MAP_LOADING[target as keyof typeof TF2_MAP_LOADING] : undefined
+  if (!descriptor) throw new Error(`Loading presentation is not admitted for ${target}`)
+  return descriptor
+}
 
 export function resolveTf2LoadingBackground(input: Tf2LoadingBackgroundInput): Tf2LoadingBackgroundResult {
   const checked = Object.freeze(input.mapPhotoLookups.map((lookup) => lookup.location))

@@ -108,7 +108,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, parseBrowserConfiguration, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
-import { TF2_TARGET_NAMES, type Tf2TargetName } from "./deployment"
+import { TF2_TARGET_NAMES, type Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, rebasePointerYaw, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
@@ -3307,7 +3307,7 @@ export class Tf2Application {
       return
     }
     if (command === "map" && tokens.length === 1) {
-      if (TF2_TARGET_NAMES.includes(tokens[0] as Tf2TargetName)) {
+      if (TF2_TARGET_NAMES.includes(tokens[0] as Tf2TargetName) || this.#configuration?.targets.some((target) => target.target === tokens[0])) {
         const target = await this.#preparedTarget(tokens[0]!)
         if (this.#view.phase === "Startup") this.#startup?.key("Escape")
         if (this.#gameUi?.state().kind === "failure") {
@@ -3330,7 +3330,7 @@ export class Tf2Application {
   }
 
   async #preparedTarget(identity: string): Promise<BrowserTargetConfiguration> {
-    if (!this.#configuration || !TF2_TARGET_NAMES.includes(identity as Tf2TargetName)) {
+    if (!this.#configuration || (!TF2_TARGET_NAMES.includes(identity as Tf2TargetName) && !this.#configuration.targets.some((target) => target.target === identity))) {
       throw new Error(`Undeclared map request ${identity}`)
     }
     const ready = this.#configuration.targets.find((candidate) => candidate.target === identity)
