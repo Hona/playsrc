@@ -1066,7 +1066,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn restore_equipment(&mut self, bytes: &[u8]) -> Result<(), equipment::EquipmentError> {
         self.equipment = equipment::Equipment::restore(bytes)?;
-        if !self.team_selection.local_team().is_gameplay() { self.apply_equipment(); }
         Ok(())
     }
 
@@ -1186,7 +1185,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             } else if self.weapon.is_none() {
                 self.weapon = default_weapon(self.class);
                 self.apply_equipment();
-                self.ammo = self.class.data().maximum_ammo;
+                self.ammo = self.maximum_ammo();
                 self.health = self.maximum_health();
                 self.deploy_active_weapon();
             }
@@ -3069,7 +3068,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.buildings.reset();
             self.weapon = default_weapon(class);
             self.apply_equipment();
-            self.ammo = class.data().maximum_ammo;
+            self.ammo = self.maximum_ammo();
             self.deploy_active_weapon();
             self.health = self.maximum_health();
             self.conditions.clear();
@@ -10085,6 +10084,25 @@ mod tests {
         ));
         assert_eq!(session.class, PlayerClass::Soldier);
         assert_eq!(session.movement_snapshot_bytes(), before);
+    }
+
+    #[test]
+    fn equipment_restore_does_not_arm_an_unassigned_or_spectating_player() {
+        let mut session = Session::connected(Floor, [0.0; 3], MapRuntime::empty(0.015), team_selection::TeamRules::default());
+        let saved = equipment::Equipment::default().persist();
+        session.restore_equipment(&saved).unwrap();
+        let welcome = session.advance(Command::default()).unwrap();
+        assert_eq!(welcome.weapon, None);
+        assert!(welcome.loadout.is_empty());
+        session.select_team_choice(team_selection::TeamChoice::Spectator).unwrap();
+        session.restore_equipment(&saved).unwrap();
+        let observer = session.advance(Command::default()).unwrap();
+        assert_eq!(observer.weapon, None);
+        assert!(observer.loadout.is_empty());
+        assert_eq!(session.equipment().persist(), saved);
+        let before = session.equipment().clone();
+        assert!(session.restore_equipment(&saved[..10]).is_err());
+        assert_eq!(session.equipment(), &before);
     }
 
     #[test]
