@@ -361,7 +361,7 @@ export type EntityTransform = Readonly<{
 }>
 export type BrushModelDrawState = Readonly<{ sourceIndex:number; model:number; worldPosition:readonly[number,number,number]; worldAngles:readonly[number,number,number]; renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:null|Readonly<{kind:1|2|3;position:1|2|3|4|5;progress:number;requestId:bigint|null;opening:boolean|null}> }>
 export type StudioModelDrawState = Readonly<{sourceIndex:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];draw:boolean}>
-export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[];studioModels:readonly StudioModelDrawState[];studioAnimations:readonly Readonly<{sourceIndex:number;sequence:string;elapsedSeconds:number}>[]}>
+export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[];studioModels:readonly StudioModelDrawState[];studioAnimations:readonly Readonly<{sourceIndex:number;sequence:string;elapsedSeconds:number;bounds:readonly[readonly[number,number,number],readonly[number,number,number]]}>[]}>
 
 export type EntityEvent = Readonly<{
   sequence: bigint
@@ -1240,12 +1240,13 @@ function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: nu
   if (animationCount > studioCount) throw new Tf2CodecError("Studio animation count is invalid")
   const studioAnimations: EntityPresentation["studioAnimations"][number][] = []
   for (let i = 0; i < animationCount; i++) {
-    if (at + 12 > length) throw new Tf2CodecError("Studio animation is truncated")
+    if (at + 36 > length) throw new Tf2CodecError("Studio animation is truncated")
     const sourceIndex = view.getUint32(at, true), elapsedSeconds = view.getFloat32(at + 4, true), size = view.getUint32(at + 8, true)
-    at += 12
-    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0 || size < 1 || size > 2048 || at + size > length || !studioModels.some(model => model.sourceIndex === sourceIndex)) throw new Tf2CodecError("Studio animation is invalid")
+    const minimum = vector(view, at + 12), maximum = vector(view, at + 24)
+    at += 36
+    if (!finite([elapsedSeconds, ...minimum, ...maximum]) || minimum.some((value, axis) => value > maximum[axis]!) || elapsedSeconds < 0 || size < 1 || size > 2048 || at + size > length || !studioModels.some(model => model.sourceIndex === sourceIndex) || studioAnimations.some(animation => animation.sourceIndex === sourceIndex)) throw new Tf2CodecError("Studio animation is invalid")
     const sequence = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(at, at + size)); at += size
-    studioAnimations.push(Object.freeze({ sourceIndex, sequence, elapsedSeconds }))
+    studioAnimations.push(Object.freeze({ sourceIndex, sequence, elapsedSeconds, bounds: Object.freeze([minimum, maximum]) as EntityPresentation["studioAnimations"][number]["bounds"] }))
   }
   if (at !== length) throw new Tf2CodecError("Studio presentation has trailing bytes")
   return Object.freeze({ sourceIdentity: view.getBigUint64(8, true), registryIdentity: view.getBigUint64(16, true),
