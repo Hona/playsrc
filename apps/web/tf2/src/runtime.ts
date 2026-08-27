@@ -2094,6 +2094,7 @@ export class Tf2Application {
         onPreview: preview => {
           const previous = this.#equipmentPreview
           this.#equipmentPreview = preview
+          if (this.#equipmentRoot) delete this.#equipmentRoot.dataset.previewModel
           if (!preview && previous) this.#releaseCosmeticPreviews()
           if (preview && (!previous || previous.class !== preview.class || previous.equippedItems !== preview.equippedItems)) {
             this.#equipmentPreviewReset = true; this.#equipmentPreviewElapsed = 0; this.#equipmentPreviewStarted = this.#frameClock.current
@@ -2229,6 +2230,8 @@ export class Tf2Application {
     this.#equipmentPreviewElapsed = elapsed
     const reset = this.#equipmentPreviewReset; this.#equipmentPreviewReset = false
     const skin = this.#snapshot?.team === 3 ? 1 : 0
+    const equipmentProfile = (globalThis as any).__playsrcProfile
+    const equipmentStarted = equipmentProfile?.captureEquipment ? performance.now() : undefined
     this.#equipmentRenderTask = (async () => {
       const poses = await client.models(generation, encodeModelPoseBatch([{
         identity: 0x3001, model: player.model, itemModel: held?.modelPlayer, worldItem: Boolean(held?.modelPlayer),
@@ -2251,7 +2254,8 @@ export class Tf2Application {
         pose, mergedModels, modelLighting: pose.lighting ?? undefined, eyeStates: pose.eyes,
         particles: poses.flatMap(pose => pose.wearable?.particleBytes.byteLength ? decodeParticleRenderOutput(pose.wearable.particleBytes, artifacts.particleMaterials).items : []),
       }])
-      if (this.#equipmentRoot) this.#equipmentRoot.dataset.previewModel = player.model
+      if (this.#equipmentRoot && this.#equipmentRoot.dataset.previewModel !== player.model) this.#equipmentRoot.dataset.previewModel = player.model
+      if (equipmentStarted !== undefined && equipmentProfile.captureEquipment) equipmentProfile.equipmentFrames.push(performance.now() - equipmentStarted)
       const cosmeticProfile = (globalThis as any).__playsrcProfile
       if (cosmeticProfile?.captureCosmetics) cosmeticProfile.cosmeticPreview = { class: preview.class, model: player.model, time: now,
         wearables: poses.filter(pose => pose.wearable).map(pose => pose.model),
@@ -5313,6 +5317,11 @@ export class Tf2Application {
       if(botPoses.length!==visibleBots.length)throw new Error("TF2 bot player pose output differs from authoritative visible player state")
       if(viewmodel!==undefined&&((snapshot.weapon===11||viewmodel.standalone)?(viewmodelPoses.length!==1||viewmodelPoses[0]?.role!=="hand"):(viewmodelPoses.length!==2||viewmodelPoses.filter(pose=>pose.role==="item").length!==1||viewmodelPoses.filter(pose=>pose.role==="hand").length!==1)))throw new Error(`Viewmodel composition output differs: weapon=${snapshot.weapon}; roles=${viewmodelPoses.map(pose=>pose.role).join(",")}`);const viewmodelPose=viewmodelPoses.find(pose=>pose.role==="hand")
       if(viewmodelPose)this.#viewmodelActivities.add(viewmodelPose.activity)
+      const weaponPoseProfile = (globalThis as any).__playsrcProfile
+      if (weaponPoseProfile?.captureWeaponPoses) {
+        const item = viewmodelPoses.find(pose => pose.role === "item")
+        weaponPoseProfile.weaponPose = item ? { model: item.model, tick: String(snapshot.tick), bones: Array.from(item.boneMatrices) } : null
+      }
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
       const projectileStart=performance.now()
