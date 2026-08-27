@@ -3741,6 +3741,8 @@ export class Tf2Application {
     }
     if (operation) this.#requireOperation(operation)
     this.#predictedEye.reset(this.#snapshot.tick, tf2Camera(this.#snapshot, this.#yaw, this.#pitch).position)
+    await this.#prepareMapEffectPipelines()
+    if (operation) this.#requireOperation(operation)
     this.#resetHudIntegration()
     this.#recordAuthorityBlockers(this.#snapshot)
     this.#crouchHistory = []
@@ -3950,6 +3952,28 @@ export class Tf2Application {
     const value = `${snapshot.tick}:${snapshot.movement.crouchFraction}:${snapshot.movement.viewOffset[2]}`
     if (this.#crouchHistory.at(-1) !== value) this.#crouchHistory.push(value)
     if (this.#crouchHistory.length > 128) this.#crouchHistory.splice(0, this.#crouchHistory.length - 128)
+  }
+
+  async #prepareMapEffectPipelines(): Promise<void> {
+    const renderer = this.#renderer!, client = this.#client!, artifacts = this.#artifacts!, snapshot = this.#snapshot!
+    const generation = this.#generation, camera = tf2Camera(snapshot, this.#yaw, this.#pitch), viewport = this.#viewport()
+    const checkOwner = () => {
+      if (renderer !== this.#renderer || client !== this.#client || artifacts !== this.#artifacts || generation !== this.#generation) throw new Error("Map effect pipeline preparation generation was replaced")
+    }
+    await renderer.prepareParticlePipelines(camera, this.#mainFog(artifacts))
+    checkOwner()
+    const requests = mapPropPipelinePoseRequests(artifacts, snapshot, camera, viewport.width / viewport.height)
+    if (!requests.length) return
+    const byIdentity = new Map(requests.map(value => [value.request.identity, value.request]))
+    const poses = await client.models(generation, encodeModelPoseBatch(requests.map(value => value.request)))
+    checkOwner()
+    await renderer.prepareModelPipelines(poses.map(pose => {
+      const request = byIdentity.get(pose.identity)
+      if (!request?.lighting || !pose.lighting) throw new Error(`Map prop pipeline pose unavailable: ${pose.model}`)
+      return { pass: "world" as const, item: { identity: pose.identity, model: pose.model, skin: request.skin,
+        position: request.lighting.origin, angles: request.lighting.angles, scale: 1, pose, modelLighting: pose.lighting, eyeStates: pose.eyes } }
+    }), camera, this.#mainFog(artifacts))
+    checkOwner()
   }
 
   #recordLockerAnimations(snapshot:Snapshot):void{for(const event of snapshot.regenerateAnimationEvents)this.#lockerAnimations.set(event.associatedModel,Object.freeze({openTick:event.openTick,closeTick:event.closeTick,body:event.body,openAnimation:event.openAnimation,closeAnimation:event.closeAnimation}))}
