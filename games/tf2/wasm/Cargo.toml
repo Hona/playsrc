@@ -13,6 +13,7 @@ threaded = ["dep:wasm-bindgen", "dep:wasm-bindgen-rayon"]
 presentation-bound-diagnostic = []
 
 [dependencies]
+playsrc-wav = { path = "../../../packages/formats/wav/rust" }
 playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }
 playsrc-bsp = { path = "../../../packages/formats/bsp/rust" }
 playsrc-map = { path = "../../../packages/world/map/rust" }

@@ -9,6 +9,7 @@ import {
   Tf2CodecError,
 } from "../src/codec"
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
+import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
   const bytes = new ArrayBuffer(1169)
@@ -245,6 +246,40 @@ class CourseWorker implements WorkerLike {
 }
 
 describe("TF2 canonical gameplay command and snapshot contract", () => {
+  test("Worker snapshot deltas and coalescing retain ordered sound patch starts, destruction and re-press", () => {
+    const frame = (tick: bigint, events: readonly (readonly [number, number, number])[]) => {
+      const base = rosterSnapshot(tick, 0, 0), at = 913
+      const bytes = new Uint8Array(base.length + events.length * 52), view = new DataView(bytes.buffer)
+      bytes.set(base.subarray(0, at)); bytes.set(base.subarray(at), at + events.length * 52)
+      view.setUint32(132, events.length, true)
+      events.forEach(([definition, action, source], ordinal) => {
+        const item = at + ordinal * 52
+        view.setBigUint64(item, tick, true); view.setUint16(item + 8, ordinal, true)
+        bytes.set([1, definition, 1, 1, 0, action], item + 10)
+        view.setUint32(item + 16, source, true); view.setUint32(item + 20, source, true)
+        view.setFloat32(item + 48, action > 1 ? 3.5 : 0, true)
+      })
+      return bytes
+    }
+    const first = frame(7n, [[37, 3, 1], [38, 2, 1], [37, 3, 2], [38, 2, 2]])
+    const second = frame(8n, [[39, 0, 1], [38, 1, 1], [37, 1, 1], [37, 3, 1], [38, 2, 1]])
+    const stream = new SimulationSnapshotStream()
+    const publications = stream.decode(snapshotPacket(1n, [first, second]))
+    const merged = mergePublicationSnapshots(publications.flatMap(publication => publication.eventBatches.map(batch => batch.snapshot)))
+    const requests = tf2Audio(merged)
+    expect(requests.map(request => request.action)).toEqual(["fade-out", "fade-in", "fade-out", "fade-in", "play", "stop", "stop", "fade-out", "fade-in"])
+    expect(requests.map(request => request.source.identity)).toEqual([1, 1, 2, 2, 1, 1, 1, 1, 1])
+    expect(requests[0]!.fadeSeconds).toBe(3.5)
+    expect(new Set(requests.map(request => request.voiceIdentity)).size).toBe(9)
+    for (const invalid of [4, 255]) {
+      const bad = first.slice(); bad[913 + 15] = invalid
+      expect(() => decodeSnapshot(bad.buffer)).toThrow(Tf2CodecError)
+    }
+    const invalidDuration = first.slice()
+    new DataView(invalidDuration.buffer).setFloat32(913 + 48, NaN, true)
+    expect(() => decodeSnapshot(invalidDuration.buffer)).toThrow(Tf2CodecError)
+  })
+
   test("keys derived maps to one authenticated resource root without rehashing shared gameplay sections", async () => {
     const bsp = "1".repeat(64)
     const compiler = "2".repeat(64)

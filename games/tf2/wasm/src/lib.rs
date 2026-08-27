@@ -6462,7 +6462,12 @@ fn encode_audio_event(
             },
             u8::from(event.owner_identity.is_some()),
             event.samples.wave,
-            0,
+            match event.action {
+                playsrc_tf2::AudioAction::Play => 0,
+                playsrc_tf2::AudioAction::Stop => 1,
+                playsrc_tf2::AudioAction::FadeIn(_) => 2,
+                playsrc_tf2::AudioAction::FadeOut(_) => 3,
+            },
         ],
         limit,
     )?;
@@ -6477,7 +6482,15 @@ fn encode_audio_event(
         ]),
         limit,
     )?;
-    u32_field(output, 0, limit)
+    floats(
+        output,
+        [match event.action {
+            playsrc_tf2::AudioAction::FadeIn(seconds)
+            | playsrc_tf2::AudioAction::FadeOut(seconds) => seconds,
+            _ => 0.0,
+        }],
+        limit,
+    )
 }
 
 fn encode_rocket_result(
@@ -10446,7 +10459,7 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
     }
     let mixer = *bundle.get("scripts/soundmixers.txt").ok_or(())?;
     out.extend_from_slice(b"PAUD");
-    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(mixer)));
     out.extend_from_slice(&0.72f32.to_le_bytes());
     out.extend_from_slice(
@@ -10477,6 +10490,20 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>) -
                 .ok_or(())?;
             encode_sound_node(out, node)?;
         }
+    }
+    // These stock sound patches use the authored RIFF cue as their loop start.
+    let patches = [
+        "sound/weapons/flame_thrower_start.wav",
+        "sound/weapons/flame_thrower_loop.wav",
+        "sound/weapons/flame_thrower_end.wav",
+    ];
+    out.extend_from_slice(&(patches.len() as u32).to_le_bytes());
+    for path in patches {
+        let metadata = playsrc_wav::pcm_metadata(bundle.get(path).ok_or(())?).map_err(|_| ())?;
+        pbytes(out, path.as_bytes())?;
+        out.extend_from_slice(&metadata.sample_rate.to_le_bytes());
+        out.extend_from_slice(&metadata.frames.to_le_bytes());
+        out.extend_from_slice(&metadata.cue_frame.unwrap_or(u32::MAX).to_le_bytes());
     }
     Ok(())
 }
@@ -13880,6 +13907,56 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sound_patch_wire_actions_preserve_samples_source_and_order() {
+        use playsrc_tf2::{
+            AudioAction, AudioEvent, AudioEventIdentity, AudioSourceKind, SoundDefinition,
+            SoundSamples,
+        };
+        for (ordinal, action) in [
+            AudioAction::Play,
+            AudioAction::Stop,
+            AudioAction::FadeIn(3.5),
+            AudioAction::FadeOut(3.5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut bytes = Vec::new();
+            super::encode_audio_event(
+                &mut bytes,
+                AudioEvent {
+                    tick: 17,
+                    ordinal: ordinal as u16,
+                    action,
+                    identity: AudioEventIdentity::WeaponSingle,
+                    definition: SoundDefinition::FlameLoop,
+                    source_kind: AudioSourceKind::Entity,
+                    source_identity: 29,
+                    owner_identity: Some(29),
+                    position: [1.0, 2.0, 3.0],
+                    samples: SoundSamples {
+                        volume: 0.25,
+                        pitch: 0.5,
+                        wave: 0,
+                        sound_level: 0.75,
+                    },
+                },
+                52,
+            )
+            .unwrap();
+            assert_eq!(bytes.len(), 52);
+            assert_eq!(bytes[15], ordinal as u8);
+            assert_eq!(bytes[11], 38);
+            assert_eq!(&bytes[16..20], &29u32.to_le_bytes());
+            assert_eq!(&bytes[36..40], &0.25f32.to_le_bytes());
+            assert_eq!(
+                &bytes[48..52],
+                &(if ordinal >= 2 { 3.5f32 } else { 0.0 }).to_le_bytes()
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

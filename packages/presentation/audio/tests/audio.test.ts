@@ -12,7 +12,12 @@ import {
   type StartSound,
 } from "../src"
 
-class Parameter { value = 0 }
+class Parameter {
+  value = 0
+  readonly automation: Array<readonly [string, number, number]> = []
+  setValueAtTime(value: number, when: number): void { this.automation.push(["set", value, when]) }
+  linearRampToValueAtTime(value: number, when: number): void { this.automation.push(["ramp", value, when]) }
+}
 class Node {
   onended: (() => void) | null = null
   buffer?: AudioBuffer
@@ -23,8 +28,9 @@ class Node {
   loopStart = 0
   starts = 0
   stops = 0
+  disconnects = 0
   connect(): this { return this }
-  disconnect(): void {}
+  disconnect(): void { this.disconnects += 1 }
   start(): void { this.starts += 1 }
   stop(): void { this.stops += 1 }
 }
@@ -107,7 +113,63 @@ describe("browser audio graph", () => {
     expect(audio.activeVoices()).toEqual([1])
     audio.stop(1)
     expect(audio.activeVoices()).toEqual([])
-    expect(nodes.every((node) => node.disconnect instanceof Function)).toBe(true)
+    expect(nodes.slice(1).every((node) => node.disconnects === 1)).toBe(true)
+  })
+
+  test("patch destruction stops and disconnects both channels, preserving bot patches and the complete winddown", () => {
+    const nodes: Node[] = [], sources: Node[] = []
+    const make = () => { const node = new Node(); nodes.push(node); return node }
+    const context = {
+      state: "running", currentTime: 2, destination: make(),
+      createBufferSource: () => { const node = make(); sources.push(node); return node },
+      createGain: make, createStereoPanner: make, createChannelSplitter: make, createChannelMerger: make,
+      resume: async () => {}, close: async () => {},
+    } as unknown as AudioContext
+    const entries = [["Fire", "CHAN_STATIC"], ["FireLoop", "CHAN_WEAPON"], ["WindDown", "CHAN_STATIC"]].map(([name, channel]) =>
+      entry(`Weapon_FlameThrower.${name}`, [scalar("channel", channel!), scalar("wave", `)test/${name}.wav`)]))
+    const world = new SourceAudioWorld(new SoundRegistry([{ ...targetDocument, entries }]), { maxActiveVoices: 128 })
+    const audio = createAudioSystem(context, ["Fire", "FireLoop", "WindDown"].map(name => ({
+      identity: `sound/test/${name}.wav`, buffer: { length: 44100, sampleRate: 44100, numberOfChannels: 2, duration: 1 } as AudioBuffer,
+    })))
+    let identity = 0
+    const emit = (name: string, sourceIdentity: number) => {
+      const event = start({ voiceIdentity: ++identity, definition: `Weapon_FlameThrower.${name}`, samples: { volume: 0, pitch: 0, soundLevel: 0, wave: 0 },
+        source: { kind: "entity", identity: sourceIdentity, ownerIdentity: sourceIdentity, origin: [0, 0, 0], radius: 0, sourceClass: "tf_weapon" },
+        resourceLoopStartSeconds: name === "FireLoop" ? 0 : null, scheduledTimeSeconds: 2,
+        ...(name === "WindDown" ? {} : { envelope: { from: name === "Fire" ? 1 : 0, to: name === "Fire" ? 0 : 1, seconds: 3.5 } }),
+      })
+      const result = world.start(event)
+      for (const old of result.replaced) audio.stop(old)
+      audio.playNeutral(result.voice)
+      return result.voice.identity
+    }
+    const botStart = emit("Fire", 2), botLoop = emit("FireLoop", 2)
+    const botSources = sources.slice()
+    for (let repeat = 0; repeat < 10; repeat++) {
+      const localStart = emit("Fire", 1), localLoop = emit("FireLoop", 1)
+      const firing = sources.slice(-2)
+      const winddown = emit("WindDown", 1)
+      const tail = sources.at(-1)!
+      // CHAN_STATIC does not replace the older start. Destruction is explicit,
+      // by sound-patch source + definition, not by new event voice identity.
+      expect(audio.activeVoices()).toEqual([botStart, botLoop, localStart, localLoop, winddown])
+      for (const name of ["FireLoop", "Fire"]) {
+        for (const stopped of world.stopDefinition(1, `Weapon_FlameThrower.${name}`)) audio.stop(stopped)
+      }
+      expect(firing.every(source => source.stops === 1 && source.disconnects === 1)).toBe(true)
+      expect(botSources.every(source => source.stops === 0 && source.disconnects === 0)).toBe(true)
+      expect(tail.stops).toBe(0)
+      expect(audio.activeVoices()).toEqual([botStart, botLoop, winddown])
+      tail.onended!()
+      world.stop(winddown)
+      expect(tail.disconnects).toBe(1)
+      expect(audio.activeVoices()).toEqual([botStart, botLoop])
+      expect(world.voices().filter(voice => voice.loopStartSeconds !== null)).toHaveLength(1)
+    }
+    expect(nodes.some(node => node.gain.automation.some(([kind, value, when]) => kind === "ramp" && value > 0 && when === 5.5))).toBe(true)
+    world.reset(); audio.reset()
+    expect(audio.activeVoices()).toEqual([])
+    expect(sources.every(source => source.disconnects === 1)).toBe(true)
   })
 })
 

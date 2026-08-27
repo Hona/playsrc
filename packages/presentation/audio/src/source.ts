@@ -80,6 +80,7 @@ export type SoundSource = Readonly<{
 }>
 
 export type StartSound = Readonly<{
+  envelope?: Readonly<{ from: number; to: number; seconds: number }>
   voiceIdentity: number
   definition: string
   source: SoundSource
@@ -98,6 +99,7 @@ export type StartSound = Readonly<{
 }>
 
 export type NeutralVoice = Readonly<{
+  envelope?: Readonly<{ from: number; to: number; seconds: number }>
   identity: number
   definition: string
   wave: number
@@ -360,6 +362,7 @@ export class SourceAudioWorld {
     const finalGain = volume * event.userGain * event.listener.masterGain * event.listener.categoryGain
       * (event.listener.muted ? 0 : 1)
     const voice = Object.freeze({
+      ...(event.envelope ? { envelope: event.envelope } : {}),
       identity: event.voiceIdentity,
       definition: definition.identity,
       wave: event.samples.wave,
@@ -398,6 +401,18 @@ export class SourceAudioWorld {
     const stopped: number[] = []
     for (const [identity, voice] of this.#voices) {
       if (voice.sourceIdentity === sourceIdentity && (channel === -1 || voice.channel === channel)) {
+        this.#voices.delete(identity)
+        stopped.push(identity)
+      }
+    }
+    return Object.freeze(stopped)
+  }
+
+  stopDefinition(sourceIdentity: number, definition: string): readonly number[] {
+    if (!uint(sourceIdentity)) throw error("MalformedEvent", "stop source is invalid")
+    const stopped: number[] = []
+    for (const [identity, voice] of this.#voices) {
+      if (voice.sourceIdentity === sourceIdentity && canonical(voice.definition) === canonical(definition)) {
         this.#voices.delete(identity)
         stopped.push(identity)
       }
@@ -620,6 +635,8 @@ function spatialGains(source: SoundSource, listener: Listener, soundLevel: numbe
 }
 
 function validateStart(event: StartSound): void {
+  if (event.envelope && (![event.envelope.from, event.envelope.to].every(value => Number.isFinite(value) && value >= 0 && value <= 1)
+    || !Number.isFinite(event.envelope.seconds) || event.envelope.seconds <= 0)) throw error("MalformedEvent", "sound envelope is invalid")
   if (!event || typeof event.samples !== "object" || event.samples === null
     || !uint(event.voiceIdentity) || !identity(event.definition)
     || !(uint(event.source.identity) || event.source.kind === "world" && event.source.identity === 0)
