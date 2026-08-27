@@ -5312,7 +5312,9 @@ export class Tf2Application {
       const weaponPoseProfile = (globalThis as any).__playsrcProfile
       if (weaponPoseProfile?.captureWeaponPoses) {
         const item = viewmodelPoses.find(pose => pose.role === "item")
-        weaponPoseProfile.weaponPose = item ? { model: item.model, tick: String(snapshot.tick), bones: Array.from(item.boneMatrices) } : null
+        weaponPoseProfile.weaponPose = item ? { model: item.model, definition: currentViewmodelRequest?.itemDefinition,
+          class: snapshot.class, weapon: snapshot.weapon, ammo: snapshot.loadout.find(value => value.weapon === snapshot.weapon),
+          tick: String(snapshot.tick), bones: Array.from(item.boneMatrices) } : null
       }
       this.#updateAttachmentTransforms(snapshot, timelineViewmodelPoses, camera)
       let presentation:ReturnType<ProjectileMapper["map"]>
