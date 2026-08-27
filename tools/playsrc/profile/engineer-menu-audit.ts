@@ -2,7 +2,6 @@ import { writeFile } from "node:fs/promises"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { expect as playwrightExpect, type Page, type Locator } from "@playwright/test"
-import { tf2UiResources } from "@playsrc/game-tf2-browser/ui-resources"
 
 const expect = playwrightExpect.configure({ timeout: 3000 })
 
@@ -29,6 +28,9 @@ export async function auditEngineerMenus(page: Page, root: Locator, directory: s
   await page.locator("[data-vgui-name='SettingsButton']").click()
   await expect(page.locator("main")).toHaveAttribute("data-options-visible", "true")
   const list = page.locator("[data-vgui-name='listpanel_keybindlist']")
+  // Configured row metadata is needed by this post-sample UI audit only, not by
+  // Playwright discovery or the gameplay sampler's Node-side module loading.
+  const { tf2UiResources } = await import("@playsrc/game-tf2-browser/ui-resources")
   const row = tf2UiResources.keyboardActions.findIndex(action => action.binding === "lastinv")
   expect(row).toBeGreaterThanOrEqual(0)
   const target = list.locator(`[data-vgui-item='${row + 1}']`)
