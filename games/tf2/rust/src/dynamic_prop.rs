@@ -7,8 +7,7 @@ struct Sequence {
     name: Vec<u8>,
     activity: Vec<u8>,
     entry_node: i32,
-    cycles_per_second: f32,
-    looping: bool,
+    timing: Result<(f32, bool), ()>,
     bounds: [[f32; 3]; 2],
 }
 
@@ -16,27 +15,28 @@ struct Sequence {
 pub(crate) struct Definition(Vec<Sequence>);
 
 impl Definition {
-    pub fn compile(model: &PresentationModel) -> Result<Self, ()> {
+    pub fn compile(model: &PresentationModel) -> Self {
         let poses = vec![Float32(0); model.pose_parameters.len()];
-        model
+        let sequences = model
             .sequences
             .iter()
             .map(|sequence| {
-                let timing = sequence_timing(model, sequence.index, &poses).map_err(|_| ())?;
-                Ok(Sequence {
+                let timing = sequence_timing(model, sequence.index, &poses)
+                    .map(|timing| (f32::from_bits(timing.cycles_per_second.0), timing.looping))
+                    .map_err(|_| ());
+                Sequence {
                     name: sequence.label.clone(),
                     activity: sequence.activity_name.clone(),
                     entry_node: sequence.entry_node,
-                    cycles_per_second: f32::from_bits(timing.cycles_per_second.0),
-                    looping: timing.looping,
+                    timing,
                     bounds: [
                         sequence.bounds_min.0.map(|value| f32::from_bits(value.0)),
                         sequence.bounds_max.0.map(|value| f32::from_bits(value.0)),
                     ],
-                })
+                }
             })
-            .collect::<Result<Vec<_>, ()>>()
-            .map(Self)
+            .collect();
+        Self(sequences)
     }
 }
 
@@ -100,6 +100,10 @@ impl Animation {
         {
             return Err(());
         }
+        // Source asks for the selected sequence's rate when animation runs,
+        // not for every unrelated sequence when the prop enters the map.
+        // Preserve an unavailable rate as an error when that sequence is used.
+        self.definition.0[sequence].timing?;
         self.sequence = sequence;
         self.cycle = 0.0;
         self.started = now;
@@ -117,7 +121,8 @@ impl Animation {
         }
         self.next_think = None;
         let timing = &self.definition.0[self.sequence];
-        let done = self.cycle >= 0.999 && !timing.looping;
+        let (cycles_per_second, looping) = timing.timing?;
+        let done = self.cycle >= 0.999 && !looping;
         if !done {
             self.next_think = Some(now + 0.1);
         }
@@ -126,8 +131,8 @@ impl Animation {
             return Ok(done);
         }
         self.last_think = now;
-        self.cycle += interval * timing.cycles_per_second;
-        if timing.looping {
+        self.cycle += interval * cycles_per_second;
+        if looping {
             self.cycle -= self.cycle.floor();
         } else {
             self.cycle = self.cycle.clamp(0.0, 1.0);
@@ -156,8 +161,7 @@ mod tests {
                     name: name.to_vec(),
                     activity: Vec::new(),
                     entry_node: 0,
-                    cycles_per_second: 1.0 / 0.3,
-                    looping: false,
+                    timing: Ok((1.0 / 0.3, false)),
                     bounds: [[-128.0, -4.0, -64.0], [128.0, 0.0, 192.0]],
                 })
                 .collect(),
@@ -204,5 +208,17 @@ mod tests {
         definition.0[0].entry_node = 1;
         definition.0[1].entry_node = 2;
         assert!(animation.set(b"open", 0.3).is_err());
+    }
+
+    #[test]
+    fn unrelated_unavailable_sequence_rate_does_not_activate_or_reject_a_fixed_prop() {
+        let mut animation = door();
+        Arc::make_mut(&mut animation.definition).0[2].timing = Err(());
+        assert!(!animation.think(10.0).unwrap());
+        assert!(animation.presentation(1, 10.0).is_none());
+        assert!(animation.set(b"open", 10.0).unwrap());
+        assert!(animation.set(b"close", 10.1).is_err());
+        assert_eq!(animation.sequence, 1);
+        assert!(!animation.think(10.11).unwrap());
     }
 }
