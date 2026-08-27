@@ -201,3 +201,30 @@ test("retirement rejects changed ownership and live lock holders, and never sign
     await rm(directory, { recursive: true, force: true })
   }
 }, 10_000)
+
+test("TERM proof cannot authorize KILL after the live endpoint identity changes", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-owner-reauthenticate-"))
+  const filename = path.join(directory, "owner.json")
+  const lockPath = path.join(directory, "chromium-profile.lock")
+  const child = Bun.spawn([process.execPath, "-e", `
+    const metadata = { schema: "playsrc-profile-owner-v1", pid: process.pid, token: "checked", identity: "source", repository: ${JSON.stringify(directory)}, target: "jump_beef", startup: {} };
+    process.on("SIGTERM", () => { metadata.identity = "changed-after-TERM" });
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(metadata) });
+    console.log(JSON.stringify({ ...metadata, url: server.url.toString() }));
+  `], { stdout: "pipe", stderr: "pipe" })
+  const lock = await acquireHeadedProfileLock(lockPath, "reauthentication-test")
+  try {
+    const reader = child.stdout.getReader()
+    const metadata = JSON.parse(new TextDecoder().decode((await reader.read()).value))
+    reader.releaseLock()
+    await writeFile(filename, JSON.stringify(metadata))
+    await writeFile(`${filename}.lease`, JSON.stringify({ schema: "playsrc-profile-owner-lease-v1", token: metadata.token, expiresAt: Date.now() + 60_000 }))
+    await expect(stopOwner(filename, metadata, 2_500)).rejects.toThrow("retirement incomplete")
+    expect(processIsAlive(child.pid)).toBe(true)
+    expect(await (await fetch(metadata.url)).json()).toMatchObject({ identity: "changed-after-TERM" })
+  } finally {
+    await releaseHeadedProfileLock(lockPath, lock.token)
+    child.kill("SIGKILL"); await child.exited
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 5_000)
