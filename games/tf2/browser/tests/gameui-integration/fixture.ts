@@ -112,6 +112,7 @@ function createResources(): Tf2VguiResources {
         width: image.textures[0]?.width ?? 1,
         height: image.textures[0]?.height ?? 1,
         frames: image.textures[0]?.frames ?? 1,
+        variants: Array.from({ length: image.textures[0]?.frames ?? 1 }, (_, frame) => ({ frame, tint: [255, 255, 255, 255] as const, rotation: 0 as const, browserUrl: "data:image/png;base64,AA==" })),
         hardwareFiltered: false,
       })
     })

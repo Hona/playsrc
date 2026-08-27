@@ -22,6 +22,7 @@ const block = (node: Tf2UiResourceNode, name: string): Tf2UiResourceNode => {
   return value
 }
 const QUALITY_SUFFIX = ["", "_1", "_2", "_Vintage", "_3", "_4", "_Unique", "_Community", "_Developer", "_SelfMade", "_Customized", "_Strange", "_Completed", "_Haunted", "_Collectors", "_PaintkitWeapon"] as const
+const QUALITY_COLOR = ["Normal", "rarity1", "rarity2", "Vintage", "rarity3", "rarity4", "Unique", "Community", "Developer", "SelfMade", "Customized", "Strange", "Completed", "Haunted", "Collectors", "PaintkitWeapon"] as const
 
 export class Tf2EquipmentPresentation {
   readonly #runtime: VguiRuntime
@@ -158,7 +159,19 @@ export class Tf2EquipmentPresentation {
     const image = this.#create(button, "ImagePanel", "ItemIcon", { xpos: scalar(template, "model_xpos") ?? String((Number(scalar(template, "wide")) - width) / 2), ypos: scalar(template, "model_ypos")!, wide: String(width), tall: String(height), image: `../${item.image}`, scaleImage: "1" })
     this.#apply({ kind: "set-panel-state", panel: image, mouseInput: false, keyboardInput: false })
     if (name) {
-      const label = this.#create(button, "CExLabel", "ItemName", { xpos: "0", ypos: scalar(template, "text_ypos")!, wide: "f0", tall: "16", textAlignment: "center", font: "ItemFontNameSmall", labelText: item.name })
+      const text = this.#localize(item.name)
+      const available = Number(scalar(template, "wide")) * this.#viewport.height / 480
+      const large = this.#request.resources.clientScheme.fonts.find(font => font.name === "ItemFontNameLarge")
+      const font = (large?.measure?.(text, null).width ?? Infinity) <= available ? "ItemFontNameLarge" : "ItemFontNameSmall"
+      const label = this.#create(button, "CExLabel", "ItemName", { xpos: "0", ypos: scalar(template, "text_ypos")!, wide: "f0", tall: "16", textAlignment: "center", font,
+        fgcolor: `QualityColor${QUALITY_COLOR[item.item.quality]}`, labelText: item.name, zpos: "2" })
+      this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
+    } else if (this.#state?.classes.some(value => value.items.some(equipped => equipped.itemId === item.item.itemId))) {
+      const authored = block(block(this.#request.resources.panelDocument("resource/ui/econ/itemmodelpanel.res").roots[0]!, "MainContentsContainer"), "equippedlabel")
+      const props = Object.fromEntries(["font", "wide", "tall", "labelText", "textAlignment", "fgcolor", "bgcolor_override", "PaintBackgroundType", "zpos"].map(key => [key, scalar(authored, key)!]))
+      props.xpos = String(Number(scalar(template, "wide")) - Number(props.wide) - Number(scalar(template, "inset_eq_x")))
+      props.ypos = String(Number(scalar(template, "tall")) - Number(props.tall) - Number(scalar(template, "inset_eq_y")))
+      const label = this.#create(button, "CExLabel", "EquippedLabel", props)
       this.#apply({ kind: "set-panel-state", panel: label, mouseInput: false, keyboardInput: false })
     }
   }
