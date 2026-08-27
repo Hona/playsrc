@@ -30,6 +30,7 @@ impl DamagerHistory {
 
 pub fn weapon_name(weapon: Weapon, class: PlayerClass) -> &'static str {
     match weapon {
+        Weapon::HandgunScoutPrimary => "handgun_scout_primary",
         Weapon::RocketLauncher => "tf_projectile_rocket",
         Weapon::Original => "quake_rl",
         Weapon::StickybombLauncher => "tf_projectile_pipe_remote",

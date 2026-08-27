@@ -2553,6 +2553,7 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         Weapon::Scattergun | Weapon::Shotgun | Weapon::HeavyShotgun | Weapon::EngineerShotgun => {
             DamageType::BUCKSHOT | DamageType::USE_DISTANCE
         }
+        Weapon::HandgunScoutPrimary => DamageType::BUCKSHOT | DamageType::BULLET | DamageType::USE_DISTANCE,
         Weapon::Pistol
         | Weapon::Minigun
         | Weapon::Smg

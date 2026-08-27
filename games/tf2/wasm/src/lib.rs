@@ -7363,41 +7363,7 @@ fn team_code(team: playsrc_tf2::PlayerTeam) -> u8 {
     team.source_number()
 }
 fn weapon_code(weapon: playsrc_tf2::Weapon) -> u8 {
-    match weapon {
-        playsrc_tf2::Weapon::RocketLauncher => 1,
-        playsrc_tf2::Weapon::Original => 2,
-        playsrc_tf2::Weapon::StickybombLauncher => 3,
-        playsrc_tf2::Weapon::Scattergun => 4,
-        playsrc_tf2::Weapon::Pistol => 5,
-        playsrc_tf2::Weapon::Bat => 6,
-
-        playsrc_tf2::Weapon::Shotgun => 7,
-        playsrc_tf2::Weapon::Shovel => 8,
-        playsrc_tf2::Weapon::Minigun => 9,
-        playsrc_tf2::Weapon::HeavyShotgun => 10,
-        playsrc_tf2::Weapon::Fists => 11,
-        playsrc_tf2::Weapon::SniperRifle => 12,
-        playsrc_tf2::Weapon::Smg => 13,
-        playsrc_tf2::Weapon::Kukri => 14,
-        playsrc_tf2::Weapon::Bottle => 17,
-        playsrc_tf2::Weapon::GrenadeLauncher => 18,
-        playsrc_tf2::Weapon::EngineerShotgun => 40,
-        playsrc_tf2::Weapon::EngineerPistol => 41,
-        playsrc_tf2::Weapon::Wrench => 42,
-        playsrc_tf2::Weapon::Flamethrower => 15,
-        playsrc_tf2::Weapon::FireAxe => 16,
-        playsrc_tf2::Weapon::Revolver => 50,
-        playsrc_tf2::Weapon::Knife => 51,
-        playsrc_tf2::Weapon::Sapper => 52,
-        playsrc_tf2::Weapon::DisguiseKit => 53,
-        playsrc_tf2::Weapon::InvisibilityWatch => 54,
-        playsrc_tf2::Weapon::BuildPda => 43,
-        playsrc_tf2::Weapon::DestroyPda => 44,
-        playsrc_tf2::Weapon::Toolbox => 45,
-        playsrc_tf2::Weapon::SyringeGun => 19,
-        playsrc_tf2::Weapon::MediGun => 20,
-        playsrc_tf2::Weapon::Bonesaw => 21,
-    }
+    weapon as u8
 }
 fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
     match kind {

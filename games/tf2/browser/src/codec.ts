@@ -10,7 +10,9 @@ const NO_EQUIPPED_ITEMS: readonly Tf2EquippedItem[] = Object.freeze([])
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54 | 60
+export const isTf2Weapon = (value: number): value is Tf2Weapon => Number.isInteger(value)
+  && (value >= 1 && value <= 21 || value >= 40 && value <= 45 || value >= 50 && value <= 54 || value === 60)
 export type Tf2BuildingKind = 0 | 1 | 2
 export type Tf2BuildingMode = 0 | 1
 export type Tf2BuildingObject = Readonly<{ kind: Tf2BuildingKind; mode: Tf2BuildingMode }>
@@ -829,7 +831,7 @@ export function encodeCommand(command: Command): ArrayBuffer {
     throw new Tf2CodecError("command team selector is invalid")
   }
 
-  if (command.selectWeapon !== undefined && (!Number.isInteger(command.selectWeapon) || command.selectWeapon < 1 || command.selectWeapon > 21 && (command.selectWeapon < 40 || command.selectWeapon > 45) && (command.selectWeapon < 50 || command.selectWeapon > 54))) {
+  if (command.selectWeapon !== undefined && !isTf2Weapon(command.selectWeapon)) {
 
     throw new Tf2CodecError("command weapon selector is invalid")
   }
@@ -1605,7 +1607,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   if (
     (tf2Class === undefined || tf2Class < 1 || tf2Class > 9) ||
     (team === undefined || team > 3) ||
-    (weapon === undefined || weapon > 21 && (weapon < 40 || weapon > 45) && (weapon < 50 || weapon > 54)) ||
+    (weapon === undefined || weapon !== 0 && !isTf2Weapon(weapon)) ||
     (team === 0 && lifecycle !== 3) ||
     (team === 1 && lifecycle !== 4) ||
     ((team === 2 || team === 3) && lifecycle !== 1 && lifecycle !== 2) ||
@@ -1675,7 +1677,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       itemWeapon === undefined ||
       itemWeapon < 1 ||
 
-      (itemWeapon > 21 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54)) ||
+      !isTf2Weapon(itemWeapon) ||
 
       reload === undefined ||
       reload > 3 ||
@@ -1964,7 +1966,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const itemWeapon = data[item + 8]
     const activity = data[item + 9]
 
-    if (itemWeapon === undefined || itemWeapon < 1 || itemWeapon > 21 && (itemWeapon < 40 || itemWeapon > 45) && (itemWeapon < 50 || itemWeapon > 54) || activity === undefined || activity < 1 || activity > 7 ||
+    if (itemWeapon === undefined || !isTf2Weapon(itemWeapon) || activity === undefined || activity < 1 || activity > 7 ||
 
       !data.subarray(item + 10, item + 16).every((value) => value === 0)) {
       throw new Tf2CodecError("activity record is invalid")
@@ -2245,7 +2247,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       || objective === undefined || objective < 1 || objective > 10
       || data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0
       || animationRole === undefined || animationRole < 1 || animationRole > 3
-      || weapon === undefined || (weapon > 21 && (weapon < 40 || weapon > 42) && (weapon < 50 || weapon > 54)) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
+      || weapon === undefined || weapon !== 0 && (!isTf2Weapon(weapon) || weapon >= 43 && weapon <= 45) || reload === undefined || reload > 3 || carryingFlag === undefined || carryingFlag > 1
       || health < 0 || maximumHealth < 1 || health > Math.max(maximumHealth, Math.floor(maximumHealth * 1.5 / 5) * 5) || clip > maximumClip || reserve > maximumReserve
       || (weapon === 0 && (reload !== 0 || clip !== 0 || reserve !== 0 || maximumClip !== 0 || maximumReserve !== 0 || nextPrimaryTick !== 0n || nextReloadTick !== 0n))
       || (lifecycle === 1 && respawnTick !== 0xffff_ffff_ffff_ffffn)

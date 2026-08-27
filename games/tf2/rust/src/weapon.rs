@@ -171,6 +171,13 @@ impl WeaponProfile {
 
     pub const fn configured(weapon: Weapon) -> Self {
         match weapon {
+            Weapon::HandgunScoutPrimary => Self {
+                maximum_clip: 4, maximum_reserve: 32, fire_delay: 0.35,
+                // Configured ACT_SECONDARY_VM_RELOAD_2 is 37 frames / 30fps;
+                // DefaultReload uses duration - 0.2 before reload-time attributes.
+                reload_start: 1.0, reload_round: 0.0, maximum_charge: None,
+                center_fire_projectile: false, flip_viewmodel: false,
+            },
             Weapon::RocketLauncher => Self {
                 maximum_clip: 4,
                 maximum_reserve: 20,

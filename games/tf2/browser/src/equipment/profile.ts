@@ -1,8 +1,17 @@
 import type { Tf2WorkerClient } from "../client"
-import type { Tf2Class } from "../codec"
-import type { Tf2EquipmentState } from "./types"
+import type { Tf2Class, Snapshot, Tf2Weapon } from "../codec"
+import type { Tf2EquipmentState, Tf2SupportedItem } from "./types"
 
 const STORAGE_KEY = "playsrc.tf2.local-equipment.v1"
+
+export function equippedWeaponSlots(snapshot: Pick<Snapshot, "class" | "equippedItems">, catalog: readonly Tf2SupportedItem[]): readonly Readonly<{ slot: number; weapon: Tf2Weapon }>[] {
+  return snapshot.equippedItems.flatMap(instance => {
+    const definition = catalog.find(item => item.item.definitionIndex === instance.definitionIndex)
+    const eligibility = definition?.classSlots.find(value => value.class === snapshot.class && value.slot === instance.slot)
+    return eligibility?.weapon !== null && eligibility?.weapon !== undefined && eligibility.selectionSlot !== null
+      ? [{ slot: eligibility.selectionSlot, weapon: eligibility.weapon }] : []
+  }).sort((a, b) => a.slot - b.slot)
+}
 
 /** Browser persistence is an opaque copy; validation and equip decisions stay in Rust. */
 export class Tf2EquipmentProfile {

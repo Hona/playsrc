@@ -1,5 +1,5 @@
 //! Shared bullet and unlock rules from TF2's gun, revolver and shotgun classes.
-use crate::{Weapon, ballistics::HitscanProfile, damage::CritKind, random::{prediction_seed, UniformRandomStream}};
+use crate::{Weapon, ballistics::HitscanProfile, random::{prediction_seed, UniformRandomStream}};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct State {
@@ -67,14 +67,9 @@ impl BulletRules {
         direction.map(|value| value / length)
     }
 
-    pub fn range_multiplier(self, distance: f32, scattergun: bool, crit: CritKind) -> f32 {
-        let normal = self.profile.damage_at_distance(distance, scattergun) / self.profile.damage;
-        match crit {
-            CritKind::None => normal,
-            CritKind::Mini => normal.max(1.0),
-            CritKind::Full if self.critical_falloff => normal.min(1.0),
-            CritKind::Full => 1.0,
-        }
+    pub fn range_multiplier(self, distance: f32, scattergun: bool) -> f32 {
+        if self.profile.damage == 0.0 { return 1.0; }
+        self.profile.damage_at_distance(distance, scattergun) / self.profile.damage
     }
 }
 
@@ -118,9 +113,84 @@ pub fn scattergun_jump(velocity: [f32; 3], eye_forward: [f32; 3]) -> [f32; 3] {
 
 pub fn bazaar_charge_rate(heads: i32) -> f32 { 50.0 + 0.25 * (heads.min(6) - 2) as f32 * 50.0 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MovementStun { expires: f32, amount: f32, forward_only: bool }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MovementStuns {
+    events: Vec<MovementStun>,
+    active: Option<usize>,
+    last_change: f32,
+    lerp_target: f32,
+    needs_fade_out: bool,
+}
+
+impl MovementStuns {
+    pub fn add(&mut self, now: f32, duration: f32, amount: f32, forward_only: bool) {
+        if self.events.len() + 1 >= 250 { return; }
+        let event = MovementStun { expires: now + duration, amount: amount.clamp(0.0, 1.0) * 255.0, forward_only };
+        let previous = self.active.map(|index| self.events[index]);
+        let stronger = previous.is_none_or(|active| event.amount > active.amount);
+        if !stronger && previous.is_some_and(|active| event.expires < active.expires) { return; }
+        let index = self.events.len();
+        self.events.push(event);
+        if stronger { self.active = Some(index); }
+    }
+
+    /// ConditionThink removes one expired active entry, then picks the first strongest.
+    pub fn think(&mut self, now: f32) -> bool {
+        if let Some(index) = self.active && now > self.events[index].expires {
+            self.events.remove(index);
+            self.active = if self.events.is_empty() { None } else {
+                let mut strongest = 0;
+                for index in 1..self.events.len() { if self.events[index].amount > self.events[strongest].amount { strongest = index; } }
+                Some(strongest)
+            };
+        }
+        self.active.is_some()
+    }
+
+    pub fn command(&mut self, now: f32, forward: f32, side: f32) -> (f32, f32) {
+        let active = self.active.map(|index| self.events[index]);
+        let amount = active.filter(|event| event.expires > now).map_or(0.0, |event| event.amount.clamp(0.0, 255.0) * (1.0 / 255.0));
+        if amount != 0.0 {
+            if self.lerp_target != amount { self.last_change = now; self.lerp_target = amount; self.needs_fade_out = true; }
+            return (if active.is_some_and(|event| event.forward_only) { 0.0 } else { forward * (1.0 - amount) }, side * (1.0 - amount));
+        }
+        if self.last_change != 0.0 {
+            if self.needs_fade_out { self.last_change = now; self.needs_fade_out = false; }
+            let fade = (1.0 - (now - self.last_change) / 0.2).clamp(0.0, 1.0);
+            if fade != 0.0 {
+                let multiplier = 1.0 - self.lerp_target * fade;
+                return (if active.is_some_and(|event| event.forward_only) { 0.0 } else { forward * multiplier }, side * multiplier);
+            }
+            self.lerp_target = 0.0; self.last_change = 0.0;
+        }
+        (forward, side)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn movement_stuns_keep_source_priority_expiry_and_fade_order() {
+        let mut stuns = MovementStuns::default();
+        stuns.add(1.0, 0.2, 0.6, false);
+        assert!(stuns.think(1.0));
+        let slowed = stuns.command(1.0, 100.0, 50.0);
+        assert!((slowed.0 - 40.0).abs() < 0.0001);
+        stuns.add(1.05, 0.1, 0.2, false); // weaker and expires first: ignored
+        assert_eq!(stuns.events.len(), 1);
+        stuns.add(1.1, 0.3, 1.0, true);
+        assert_eq!(stuns.command(1.1, 100.0, 50.0), (0.0, 0.0));
+        stuns.think(1.41); // the older expired entry becomes active for this think
+        assert_eq!(stuns.command(1.41, 100.0, 50.0), (0.0, 0.0));
+        assert!(!stuns.think(1.42));
+        let faded = stuns.command(1.51, 100.0, 50.0);
+        assert!((faded.0 - 50.0).abs() < 0.001);
+        assert_eq!(stuns.command(1.7, 100.0, 50.0), (100.0, 50.0));
+    }
     #[test]
     fn authored_special_hit_thresholds_are_strict_and_use_the_correct_distance() {
         assert!(backattack([0.;3], [511.,0.,0.], [1.,0.,0.]));
