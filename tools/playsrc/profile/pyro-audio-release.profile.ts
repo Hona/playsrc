@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { expect, test } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { verifyPyroAudioRelease } from "./pyro-audio-evidence"
 
 test("real Mouse1 Pyro release retires the running WebAudio flame graph", async ({ page }) => {
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "pyro-audio-release", process.env.PROFILE_AUDIO_BASELINE === "1" ? "before" : "after")
@@ -120,7 +121,7 @@ test("real Mouse1 Pyro release retires the running WebAudio flame graph", async 
     const bytes = new Uint8Array(await new Blob(p.chunks).arrayBuffer())
     let binary = ""
     for (const byte of bytes) binary += String.fromCharCode(byte)
-    return { voices: p.voices, edges: p.edges, commands: p.commands, frames: p.frames, startTick: p.startTick, endTick: Number(document.querySelector<HTMLElement>("main")!.dataset.snapshotTick), milliseconds: performance.now() - p.startTime, now: p.context.currentTime, audio: btoa(binary), state: { ...document.querySelector<HTMLElement>("main")!.dataset } }
+    return { voices: p.voices, edges: p.edges, commands: p.commands, frames: p.frames, startTick: p.startTick, endTick: Number(document.querySelector<HTMLElement>("main")!.dataset.snapshotTick), milliseconds: performance.now() - p.startTime, now: p.context.currentTime, sampleRate: p.context.sampleRate, audio: btoa(binary), state: { ...document.querySelector<HTMLElement>("main")!.dataset } }
   })
   const { audio, ...report } = evidence
   await writeFile(path.join(output, "output.webm"), Buffer.from(audio, "base64"))
@@ -128,20 +129,6 @@ test("real Mouse1 Pyro release retires the running WebAudio flame graph", async 
   await page.screenshot({ path: path.join(output, "released.png") })
   expect(report.edges.filter((edge: any) => edge.type === "mouseup").every((edge: any) => edge.trusted)).toBe(true)
   if (process.env.PROFILE_AUDIO_BASELINE !== "1") {
-    const flame = report.voices.filter((voice: any) => Math.abs(voice.duration - 160064 / 44100) < 0.001)
-    expect(flame.length).toBeGreaterThanOrEqual(4)
-    expect(flame.every((voice: any) => (voice.stopped !== null || voice.ended !== null) && voice.disconnected !== null)).toBe(true)
-    const loops = flame.filter((voice: any) => voice.loop)
-    expect(loops).toHaveLength(2)
-    const releases = report.edges.filter((edge: any) => edge.type === "mouseup" && edge.locked)
-    for (let index = 0; index < loops.length; index++) {
-      expect(loops[index].stopped - releases[index].audio).toBeGreaterThanOrEqual(0)
-      expect(loops[index].stopped - releases[index].audio).toBeLessThan(0.15)
-    }
-    const tails = report.voices.filter((voice: any) => Math.abs(voice.duration - 36096 / 44100) < 0.001)
-    expect(tails).toHaveLength(2)
-    expect(tails.every((voice: any) => voice.stopped === null && voice.ended - voice.started >= voice.duration)).toBe(true)
-    expect(report.state.audioStarts).toContain("Weapon_Shotgun.Single")
-    expect(report.voices.filter((voice: any) => voice.loop && voice.stopped === null && voice.ended === null)).toHaveLength(0)
+    verifyPyroAudioRelease(report, report.sampleRate)
   }
 })
