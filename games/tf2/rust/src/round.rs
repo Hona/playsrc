@@ -287,6 +287,7 @@ pub enum Event {
     TimerThreshold { timer: u32, seconds: u16 },
     TimerWarning { timer: u32, seconds: u16 },
     TimerTimeAdded { timer: u32, seconds: i32 },
+    WinningCapper { player: u32 },
     MapRoundWin { entity: u32 },
     OvertimeChanged { active: bool },
     RoundWon { team: PlayerTeam, reason: u8 },
@@ -346,6 +347,7 @@ pub struct Rules {
     rounds_played: u32,
     cap_in_progress_until: f32,
     pending_events: Vec<Event>,
+    most_recent_cappers: Vec<u32>,
     respawn_waves: [Option<f32>; 2],
     original_respawn_waves: [Option<f32>; 2],
 }
@@ -388,6 +390,7 @@ impl Rules {
             rounds_played: 0,
             cap_in_progress_until: 0.0,
             pending_events: Vec::new(),
+            most_recent_cappers: Vec::new(),
             respawn_waves: [None; 2],
             original_respawn_waves: [None; 2],
         })
@@ -436,6 +439,14 @@ impl Rules {
                 .find(|timer| timer.configuration.identity == identity)
                 .expect("KOTH timer")
         }))
+    }
+
+    /// CTFBot::GetTimeLeftToCapture uses the enemy's independent KOTH clock.
+    pub fn bot_capture_time_left(&self) -> [f32; 2] {
+        self.koth_timers().map_or_else(
+            || [self.timer().map_or(0.0, |timer| timer.remaining); 2],
+            |[red, blue]| [blue.remaining, red.remaining],
+        )
     }
 
     pub fn timer_may_expire(&self) -> bool {
@@ -563,6 +574,11 @@ impl Rules {
         std::mem::take(&mut self.pending_events)
     }
 
+    pub fn record_capture(&mut self, cappers: &[u32]) {
+        self.most_recent_cappers.clear();
+        self.most_recent_cappers.extend_from_slice(cappers);
+    }
+
     fn add_timer_seconds(&mut self, identity: u32, seconds: i32) {
         if !matches!(self.state, State::Running | State::TeamWin) {
             return;
@@ -658,6 +674,13 @@ impl Rules {
             timer.pause();
         }
         let mut events = vec![Event::RoundWon { team, reason }];
+        if reason == 1 || reason == WIN_REASON_FLAG_CAPTURE_LIMIT {
+            events.extend(
+                self.most_recent_cappers
+                    .iter()
+                    .map(|player| Event::WinningCapper { player: *player }),
+            );
+        }
         self.transition(State::TeamWin, &mut events);
         self.transition_at = Some(self.now + self.configuration.bonus_seconds.max(5.0));
         Ok(events)
@@ -857,6 +880,7 @@ impl Rules {
     }
 
     fn enter_preround(&mut self, full_reset: bool, events: &mut Vec<Event>) {
+        self.most_recent_cappers.clear();
         self.respawn_waves = self.original_respawn_waves;
         self.winning_team = None;
         self.win_reason = 0;
@@ -991,6 +1015,44 @@ mod tests {
         assert_eq!(
             rules.koth_timers().unwrap().map(|timer| timer.remaining),
             [160.0, 170.0]
+        );
+    }
+
+    #[test]
+    fn bot_capture_urgency_uses_enemy_clock_not_own_or_hud_selected_clock() {
+        let mut rules = koth();
+        rules.apply_input(0, b"SetBlueTimer", 40, 0.0);
+        assert_eq!(rules.bot_capture_time_left(), [40.0, 180.0]);
+        rules.apply_input(99, b"SetBlueKothClockActive", 0, 0.0);
+        rules.advance(1.0, 0.015, facts()).unwrap();
+        assert_eq!(rules.bot_capture_time_left(), [39.0, 180.0]);
+        rules.apply_input(0, b"SetRedTimer", 0, 1.0);
+        assert_eq!(rules.bot_capture_time_left(), [39.0, 0.0]);
+    }
+
+    #[test]
+    fn delayed_koth_victory_keeps_the_actual_capture_player_order_until_round_reset() {
+        let mut rules = koth();
+        rules.record_capture(&[2, 7, 9]);
+        rules.apply_input(99, b"SetRedKothClockActive", 0, 0.0);
+        rules.advance(180.0, 0.015, facts()).unwrap();
+        let won = rules.win(PlayerTeam::Red, 1).unwrap();
+        assert_eq!(
+            won.iter()
+                .filter_map(|event| match event {
+                    Event::WinningCapper { player } => Some(*player),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [2, 7, 9]
+        );
+        rules.restart(false);
+        assert!(
+            !rules
+                .win(PlayerTeam::Blue, 1)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, Event::WinningCapper { .. }))
         );
     }
 

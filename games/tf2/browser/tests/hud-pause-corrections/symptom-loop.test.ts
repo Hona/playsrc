@@ -649,6 +649,9 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     panels = hud.snapshot().vgui.panels
     expect(visible(panels, ["WinPanel"])).toEqual(["WinPanel"])
     expect(panels.find((panel) => panel.name === "WinReasonLabel")?.text).toContain("defended")
+    publish(7n, { state: 5, inSetup: false, winningTeam: 3, winReason: 1, blueScore: 1, events: [{ kind: 17, identity: 1, detail: 0, team: 0, flags: 0, value: 0 }] })
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "WinReasonLabel")?.text).toContain("control points")
+    expect(hud.snapshot().vgui.panels.find(panel => panel.name === "DetailsLabel")?.text).toContain("Winning capture:")
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudMatchStatus", "WaitingForPlayersPanel", "WinPanel"])).toEqual([])
     hud.destroy()
