@@ -3126,6 +3126,13 @@ fn encode_model_pose_part(
     view: Option<&ViewOutput>,
     world: &mut ModelPoseWorld<'_>,
 ) -> Result<(), ()> {
+    let authored_selection = selected;
+    let template_selection = if role == 0 && request.equipped_items.iter().any(|item| item.definition_index == 378) {
+        Some(playsrc_studio_model::select_primitives(model, &vec![0; model.body_parts.len()],
+            playsrc_studio_model::source_skin_family(request.skin as i32, model.skins.len()), request.lod).map_err(|_| ())?)
+    } else { None };
+    let selected = template_selection.as_deref().unwrap_or(selected);
+    if authored_selection.iter().any(|item| !selected.iter().any(|entry| entry.primitive == item.primitive)) { return Err(()); }
     out.extend_from_slice(&request.identity.to_le_bytes());
     if let Some(state) = request.cloak {
         out.extend_from_slice(&[
@@ -3299,7 +3306,7 @@ fn encode_model_pose_part(
         }
     }
     out.extend_from_slice(&u32::try_from(selected.len()).map_err(|_| ())?.to_le_bytes());
-    for (selected_index, selected) in selected.iter().enumerate() {
+    for selected in selected {
         let primitive = model.geometry.get(selected.primitive).ok_or(())?;
         out.extend_from_slice(
             &u32::try_from(selected.primitive)
@@ -3316,7 +3323,8 @@ fn encode_model_pose_part(
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
-        out.extend_from_slice(&[u8::from(selected_index >= opaque_count), 0, 0, 0]);
+        let authored_index = authored_selection.iter().position(|entry| entry.primitive == selected.primitive);
+        out.extend_from_slice(&[u8::from(authored_index.is_some_and(|index| index >= opaque_count)), u8::from(authored_index.is_some()), 0, 0]);
     }
     out.extend_from_slice(
         &u32::try_from(pose.attachments.len())

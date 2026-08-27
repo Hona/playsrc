@@ -303,6 +303,7 @@ export type ModelItem = Readonly<{
       material: number
       vertexCount: number
       translucent:boolean
+      visible?:boolean
     }>[]
   }>
   renderBounds?: readonly [readonly [number, number, number], readonly [number, number, number]]
@@ -4469,6 +4470,7 @@ class RendererOwner implements Renderer {
         && !item.currentFramebufferAvailable && !item.gameProxyValuesAvailable
       for (const [primitiveIndex, primitive] of runtimeModel.primitives.entries()) {
         if (skipUnavailableDiagnosticInputs) break
+        if (item.pose?.primitives[primitiveIndex]?.visible === false) continue
         const materialIdentity = runtimeModel.materials[primitive.material]!.logicalPath.toLowerCase()
         const material = this.#active!.loadRequest.modelMaterials?.get(materialIdentity)
         if (!material) continue
@@ -5052,6 +5054,7 @@ class RendererOwner implements Renderer {
     for (let primitive = 0; primitive < meshes.length; primitive += 1) {
       let object = meshes[primitive]!
       const posed = pose.primitives[primitive]!
+      object.visible = posed.visible !== false
       if (
         posed.material !== object.userData.primitiveMaterial
         || posed.vertexCount !== object.geometry.getAttribute("position").count
@@ -5062,6 +5065,7 @@ class RendererOwner implements Renderer {
           throw new RenderingError("IdentityMismatch", "authored model bone palette differs from its skeleton")
         }
         const skinned = bindSourceModelMesh(authored.geometry, object.material, skeleton)
+        skinned.visible = posed.visible !== false
         skinned.userData = { ...object.userData }
         transferModelBindings(object, skinned)
         const parent = object.parent
