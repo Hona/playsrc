@@ -3753,6 +3753,16 @@ fn admit_world_bit(words: &mut [u64], index: usize) -> Result<bool, ()> {
     Ok(absent)
 }
 
+fn encode_sorted_world_bits(output: &mut Vec<u8>, words: &[u64]) {
+    output.extend_from_slice(&words.iter().map(|word| word.count_ones()).sum::<u32>().to_le_bytes());
+    for (index, mut word) in words.iter().copied().enumerate() {
+        while word != 0 {
+            output.extend_from_slice(&(index as u32 * 64 + word.trailing_zeros()).to_le_bytes());
+            word &= word - 1;
+        }
+    }
+}
+
 fn frustum_world_surfaces(
     world: &playsrc_visibility::World,
     node_cull_modes: &[i8],
@@ -4015,25 +4025,27 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     {
         return 0;
     }
-    let mut visible_surfaces = std::collections::BTreeSet::new();
-    let mut visible_areas = std::collections::BTreeSet::new();
+    // Membership fields in PVIS are ascending sets, distinct from the ordered
+    // draw-surface traversal above. Their Source u16 face and 9-bit area domains
+    // do not need a freshly allocated tree for every main/sky query.
+    let mut visible_surfaces = [0_u64; 1024];
+    let mut visible_areas = [0_u64; 8];
     for leaf in &qualified_leaves {
         let record = &world.leaves[*leaf];
-        visible_areas.insert(usize::from(record.area_and_flags & 0x01ff));
+        let area = usize::from(record.area_and_flags & 0x01ff);
+        visible_areas[area / 64] |= 1_u64 << (area % 64);
         let start = usize::from(record.first_leaf_face);
         let end = start + usize::from(record.leaf_face_count);
-        visible_surfaces.extend(world.leaf_faces[start..end].iter().copied());
-        visible_surfaces.extend(world.leaf_displacements[*leaf].iter().copied());
+        for face in world.leaf_faces[start..end].iter().chain(&world.leaf_displacements[*leaf]) {
+            visible_surfaces[usize::from(*face) / 64] |= 1_u64 << (*face % 64);
+        }
     }
     let mut output = b"PVIS".to_vec();
     output.extend_from_slice(&6u32.to_le_bytes());
     output.extend_from_slice(&view_identity);
     output.extend_from_slice(&world.identity);
     output.extend_from_slice(&[u8::from(view.outside_world), view.sky as u8, 0, 0]);
-    output.extend_from_slice(&(visible_surfaces.len() as u32).to_le_bytes());
-    for face in &visible_surfaces {
-        output.extend_from_slice(&u32::from(*face).to_le_bytes());
-    }
+    encode_sorted_world_bits(&mut output, &visible_surfaces);
     output.extend_from_slice(&(world_surfaces.len() as u32).to_le_bytes());
     for face in &world_surfaces {
         output.extend_from_slice(&u32::from(*face).to_le_bytes());
@@ -4054,14 +4066,7 @@ pub unsafe extern "C" fn playsrc_visibility_query(handle: u32, pointer: *const f
     for leaf in &qualified_leaves {
         output.extend_from_slice(&u32::try_from(*leaf).unwrap_or(u32::MAX).to_le_bytes());
     }
-    output.extend_from_slice(
-        &u32::try_from(visible_areas.len())
-            .unwrap_or(u32::MAX)
-            .to_le_bytes(),
-    );
-    for area in &visible_areas {
-        output.extend_from_slice(&u32::try_from(*area).unwrap_or(u32::MAX).to_le_bytes());
-    }
+    encode_sorted_world_bits(&mut output, &visible_areas);
     output.extend_from_slice(&[
         u8::from(water_plan.visible_water.is_some()),
         u8::from(water_plan.render.cheap),
@@ -14593,6 +14598,34 @@ mod tests {
 
         assert_eq!(visible, [0, 63, 64, u16::MAX, 65]);
         assert!(admit_world_bit(&mut words, usize::from(u16::MAX) + 1).is_err());
+    }
+
+    #[test]
+    fn visible_membership_bitsets_preserve_tree_wire_order_and_domain_edges() {
+        for ids in [
+            vec![],
+            vec![65_535, 64, 63, 0, 511, 512, 65_535, 63],
+            (0..=65_535_u32).rev().chain(0..=65_535).collect(),
+        ] {
+            let mut words = [0_u64; 1024];
+            let mut reference = std::collections::BTreeSet::new();
+            for id in ids {
+                admit_world_bit(&mut words, id as usize).unwrap();
+                reference.insert(id);
+            }
+            let mut expected = (reference.len() as u32).to_le_bytes().to_vec();
+            for id in reference { expected.extend_from_slice(&id.to_le_bytes()); }
+            let mut actual = Vec::with_capacity(expected.len());
+            let capacity = actual.capacity();
+            encode_sorted_world_bits(&mut actual, &words);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.capacity(), capacity);
+        }
+        let mut areas = [0_u64; 8];
+        for id in [511, 0, 63, 64, 511] { admit_world_bit(&mut areas, id).unwrap(); }
+        let mut output = Vec::new();
+        encode_sorted_world_bits(&mut output, &areas);
+        assert_eq!(output, [4_u32, 0, 63, 64, 511].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
     }
 
     #[test]
