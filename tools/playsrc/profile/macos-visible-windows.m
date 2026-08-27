@@ -16,7 +16,8 @@ int main(void) {
       CGRect rect = CGDisplayBounds(display);
       [screens addObject:@{ @"X": @(rect.origin.x), @"Y": @(rect.origin.y), @"Width": @(rect.size.width), @"Height": @(rect.size.height) }];
     }
-    NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"windows": output, @"screens": screens } options:0 error:nil];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@{ @"windows": output, @"screens": screens,
+      @"cursorLayer": @(CGWindowLevelForKey(kCGCursorWindowLevelKey)) } options:0 error:nil];
     if (!json) return 1;
     fwrite(json.bytes, 1, json.length, stdout);
   }
