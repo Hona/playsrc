@@ -8,6 +8,7 @@ pub mod combat;
 pub mod condition;
 pub mod ctf;
 pub mod damage;
+pub mod dynamic_prop;
 pub mod health;
 mod map_runtime;
 pub mod medic;
@@ -76,6 +77,8 @@ pub struct PresentationRevision {
 pub struct EntityPresentationSnapshot {
     pub collision_revision: u64,
     pub entities: playsrc_entity::BrushModelPresentation,
+    pub studio_models: Vec<playsrc_entity::StudioModelDrawState>,
+    pub studio_animations: Vec<dynamic_prop::AnimationPresentation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1249,6 +1252,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             .map
             .brush_model_presentation(expected.entity)
             .map_err(PresentationError::Entity)?;
+        let studio_models = self
+            .map
+            .studio_model_presentation(expected.entity)
+            .map_err(PresentationError::Entity)?;
+        let studio_animations = self.map.studio_animation_presentation();
         let final_collision_revision = self
             .collision
             .collision_snapshot_revision()
@@ -1262,6 +1270,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(EntityPresentationSnapshot {
             collision_revision,
             entities,
+            studio_models,
+            studio_animations,
         })
     }
 

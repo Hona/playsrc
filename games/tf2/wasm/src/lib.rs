@@ -1356,13 +1356,15 @@ unsafe fn compile_map(
             playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
         compile_metrics[8] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
-        let map = playsrc_tf2::MapRuntime::compile(
+        let mut map = playsrc_tf2::MapRuntime::compile(
             &runtime.entities,
             playsrc_movement::Configuration::default().tick_interval,
             u64::from_le_bytes(bsp_sha[..8].try_into().expect("BSP identity prefix")),
             model_bounds,
         )
         .map_err(|_| 5_u32)?;
+        map.install_studio_models(&studio_models)
+            .map_err(|_| 5_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: runtime.entities.entities.iter().any(|entity| {
                 entity
@@ -6140,7 +6142,7 @@ fn encode_entity_presentation(
     const MAX: usize = 8 * 1024 * 1024;
     let e = &snapshot.entities;
     let mut out = b"PEBP".to_vec();
-    u32_field(&mut out, 1, MAX)?;
+    u32_field(&mut out, 2, MAX)?;
     for value in [
         e.source_identity,
         e.registry_identity,
@@ -6245,6 +6247,35 @@ fn encode_entity_presentation(
             MAX,
         )?;
         u32_field(&mut out, positioned, MAX)?;
+    }
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.studio_models.len()).ok()?,
+        MAX,
+    )?;
+    for model in &snapshot.studio_models {
+        u32_field(&mut out, u32::try_from(model.source_index).ok()?, MAX)?;
+        floats(
+            &mut out,
+            model
+                .world_transform
+                .origin
+                .into_iter()
+                .chain(model.world_transform.angles),
+            MAX,
+        )?;
+        u32_field(&mut out, u32::from(model.draw), MAX)?;
+    }
+    u32_field(
+        &mut out,
+        u32::try_from(snapshot.studio_animations.len()).ok()?,
+        MAX,
+    )?;
+    for animation in &snapshot.studio_animations {
+        u32_field(&mut out, animation.source_index, MAX)?;
+        floats(&mut out, [animation.elapsed_seconds], MAX)?;
+        u32_field(&mut out, u32::try_from(animation.sequence.len()).ok()?, MAX)?;
+        extend(&mut out, &animation.sequence, MAX)?;
     }
     Some(out)
 }
@@ -14989,6 +15020,8 @@ mod tests {
         collision_snapshot.extend_from_slice(&0_u32.to_le_bytes());
         let entity_presentation = playsrc_tf2::EntityPresentationSnapshot {
             collision_revision: 9,
+            studio_models: Vec::new(),
+            studio_animations: Vec::new(),
             entities: playsrc_entity::BrushModelPresentation {
                 source_identity: 1,
                 registry_identity: 2,
@@ -15016,9 +15049,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x13\0\0\0");
-        assert_eq!(encoded.len(), 1036);
-        assert_eq!(&encoded[936..944], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[972..980], b"PGRL\x01\0\0\0");
+        assert_eq!(encoded.len(), 1044);
+        assert_eq!(&encoded[944..952], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[980..988], b"PGRL\x01\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER

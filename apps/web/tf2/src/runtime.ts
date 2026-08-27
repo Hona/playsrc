@@ -4385,6 +4385,20 @@ export class Tf2Application {
       const skyGeometry=sky3d?renderer.captureGeometryEvidence(sky3d.camera,"sky3d"):null
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),skyGeometry,geometry:renderer.captureGeometryEvidence(camera)})
     }
+    if (profile && Array.isArray(profile.doorEvidenceTargets) && this.#view.phase === "Ready") {
+      const captures = (profile.doorEvidence ??= []) as Array<{ key: string }>
+      for (const source of profile.doorEvidenceTargets as number[]) {
+        const door = prepared.snapshot.entityPresentation.models.find(model => model.sourceIndex === source)
+        if (!door?.mover || captures.length >= 24) continue
+        const { position, progress } = door.mover
+        if ((position === 2 || position === 4) && (progress < 0.2 || progress > 0.8)) continue
+        const key = `${source}:${position === 1 && captures.some(capture => capture.key === `${source}:3`) ? "closed-after" : position}`
+        if (captures.some(capture => capture.key === key)) continue
+        captures.push(Object.freeze({ key, tick: prepared.snapshot.tick.toString(), camera,
+          player: prepared.snapshot.movement.position, entities: prepared.snapshot.entityPresentation,
+          geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }))
+      }
+    }
     const publishPrepared=prepared.revision!==this.#lastRenderedPreparedRevision
     this.#lastRenderedPreparedRevision=prepared.revision
     this.#lastRenderedViewRevision=viewRevision
@@ -4801,7 +4815,19 @@ export class Tf2Application {
         return Object.freeze({identity:building.identity,model,activity:selected.activity||selected.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:building.team===2||artifact.skinCount<2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(building.position,Object.freeze([0,building.yawDegrees,0]))})
       })
       const placementRequest=snapshot.placement?(()=>{const placement=snapshot.placement!,model=blueprintModel(placement.object),artifact=this.#artifacts!.models.get(model),sequence=artifact?.sequences[0];if(!artifact||!sequence)throw new Error(`Authored TF2 building blueprint unavailable: ${model}`);const elapsed=Number(snapshot.tick)*SIMULATION_SAMPLE_INTERVAL_SECONDS;return Object.freeze({identity:BUILDING_BLUEPRINT_IDENTITY,model,activity:sequence.activity||sequence.label,previousElapsedSeconds:Math.max(0,elapsed-publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS),elapsedSeconds:elapsed,currentTimeSeconds:elapsed,frameTimeSeconds:publication.selectedTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,planarSpeed:0,screenAspectRatio:Math.max(1,viewport.width)/Math.max(1,viewport.height),worldFarPlane:camera.far,skin:snapshot.team===2||artifact.skinCount<2?0:1,lod:0,bodygroups:Object.freeze(artifact.bodygroupCounts.map(()=>0)),lighting:worldModelLighting(placement.position,Object.freeze([0,placement.yawDegrees,0]))})})():undefined
-      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
+      const studioRequests = snapshot.entityPresentation.studioAnimations.flatMap(animation => {
+        if (this.#lockerAnimations.has(animation.sourceIndex)) return []
+        const state = snapshot.entityPresentation.studioModels.find(model => model.sourceIndex === animation.sourceIndex)
+        if (!state?.draw) return []
+        const occurrence = this.#artifacts!.modelOccurrences.find(value => value.entity === animation.sourceIndex)
+        if (!occurrence) throw new Error(`Dynamic prop occurrence unavailable: ${animation.sourceIndex}`)
+        return [Object.freeze({ identity: animation.sourceIndex, model: occurrence.model, activity: animation.sequence,
+          elapsedSeconds: animation.elapsedSeconds, previousElapsedSeconds: Math.max(0, animation.elapsedSeconds - publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS),
+          currentTimeSeconds: Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS, frameTimeSeconds: publication.selectedTicks * SIMULATION_SAMPLE_INTERVAL_SECONDS,
+          planarSpeed: 0, screenAspectRatio: Math.max(1, viewport.width) / Math.max(1, viewport.height), worldFarPlane: camera.far,
+          skin: occurrence.skin, lod: 0, bodygroups: Object.freeze([]), packedBody: occurrence.body, lighting: worldModelLighting(state.worldPosition, state.worldAngles) })]
+      })
+      const modelStart=performance.now(),modelRequests=[...historicalViewmodels,...(currentViewmodelRequest?[currentViewmodelRequest]:[]),...(watchRequest?[watchRequest]:[]),...lockerRequests,...studioRequests,...botRequests,...objectiveRequests,...buildingRequests,...(placementRequest?[placementRequest]:[])]
       const modelRequest=modelRequests.length===0?undefined:(this.#wasmCalls.models++,client.models(generation,encodeModelPoseBatch(modelRequests)))
       const modelOutput=modelRequest===undefined?undefined:await modelRequest
       if(!ownsGeneration())return
@@ -4811,6 +4837,7 @@ export class Tf2Application {
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
+      const studioPoses = modelPoses.filter(pose => studioRequests.some(request => request.identity === pose.identity))
       const watchPose = watchRequest && modelPoses.find(pose => pose.identity === watchRequest!.identity)
       if (watchRequest && (!watchPose || watchPose.role !== "hand" || !watchPose.viewmodel)) throw new Error("Authored Spy offhand watch pose differs")
       const botPoses=modelPoses.filter(pose=>pose.identity>=BOT_MODEL_IDENTITY_BASE&&pose.identity<BOT_MODEL_IDENTITY_BASE+0x10000)
@@ -4887,6 +4914,11 @@ export class Tf2Application {
         models: Object.freeze([
           ...projectileModels(presentation.models),
           ...lockerPoses.map(pose=>{const occurrence=this.#artifacts!.modelOccurrences.find(value=>value.entity===pose.identity)!;return Object.freeze({identity:pose.identity,model:pose.model,position:occurrence.origin,angles:occurrence.angles,scale:1,skin:occurrence.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
+          ...studioPoses.map(pose => {
+            const state = snapshot.entityPresentation.studioModels.find(model => model.sourceIndex === pose.identity)!
+            const occurrence = this.#artifacts!.modelOccurrences.find(value => value.entity === pose.identity)!
+            return Object.freeze({ identity: pose.identity, model: pose.model, position: state.worldPosition, angles: state.worldAngles, scale: 1, skin: occurrence.skin, pose, modelLighting: pose.lighting!, eyeStates: pose.eyes })
+          }),
           ...botPoses.map(pose=>{const bot=snapshot.bots.find(value=>BOT_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!bot)throw new Error("TF2 bot player pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:bot.position,angles:Object.freeze([0,bot.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:bot.team===2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...objectivePoses.map(pose=>{const flag=snapshot.objectives?.flags.find(value=>OBJECTIVE_MODEL_IDENTITY_BASE+value.identity===pose.identity);if(!flag)throw new Error("TF2 intelligence pose identity is unavailable");const carrier=flag.carrier===null?undefined:snapshot.bots.find(bot=>bot.identity===flag.carrier);if(carrier){const carrierPose=botPoses.find(value=>value.identity===BOT_MODEL_IDENTITY_BASE+carrier.identity);const attachment=carrierPose?.attachments.find(value=>value.name.toLowerCase()==="flag");if(!attachment)throw new Error(`Authored TF2 flag attachment unavailable: ${carrier.identity}`);const transform=transformAttachment(attachment.matrix,carrier.position,sourceViewOrientation(0,carrier.yawDegrees));return Object.freeze({identity:pose.identity,model:pose.model,position:transform.position,orientation:transform.orientation,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}return Object.freeze({identity:pose.identity,model:pose.model,position:flag.position,angles:flag.angles,scale:1,skin:flag.skin,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
           ...buildingPoses.map(pose=>{const building=snapshot.buildings.find(value=>value.identity===pose.identity);if(!building)throw new Error("TF2 building pose identity is unavailable");return Object.freeze({identity:pose.identity,model:pose.model,position:building.position,angles:Object.freeze([0,building.yawDegrees,0]) as readonly[number,number,number],scale:1,skin:building.team===2||(this.#artifacts!.models.get(pose.model)?.skinCount??0)<2?0:1,pose,modelLighting:pose.lighting!,eyeStates:pose.eyes})}),
@@ -4917,6 +4949,7 @@ export class Tf2Application {
           })] : []),
         ]),
         brushModels: snapshot.entityPresentation,
+        studioModels: snapshot.entityPresentation.studioModels,
         modelVisibility: new Map(snapshot.pickups.map((pickup) => [pickup.identity, pickup.available])),
         collisionWorldIdentity: snapshot.collisionSnapshot.worldIdentity,
       }) satisfies Omit<Frame,"camera"|"visibility"|"deltaSeconds">

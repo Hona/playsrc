@@ -360,7 +360,8 @@ export type EntityTransform = Readonly<{
   angles: readonly [number, number, number]
 }>
 export type BrushModelDrawState = Readonly<{ sourceIndex:number; model:number; worldPosition:readonly[number,number,number]; worldAngles:readonly[number,number,number]; renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:null|Readonly<{kind:1|2|3;position:1|2|3|4|5;progress:number;requestId:bigint|null;opening:boolean|null}> }>
-export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[]}>
+export type StudioModelDrawState = Readonly<{sourceIndex:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];draw:boolean}>
+export type EntityPresentation=Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly BrushModelDrawState[];studioModels:readonly StudioModelDrawState[];studioAnimations:readonly Readonly<{sourceIndex:number;sequence:string;elapsedSeconds:number}>[]}>
 
 export type EntityEvent = Readonly<{
   sequence: bigint
@@ -1190,10 +1191,11 @@ function decodeMovementTick(bytes: ArrayBuffer, offset: number, length: number):
 }
 function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: number, ranges?: SnapshotRanges, snapshotOffset = 0): EntityPresentation {
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (length < 52 || (length - 52) % 128 !== 0 || new TextDecoder().decode(data.subarray(0, 4)) !== "PEBP" || view.getUint32(4, true) !== 1)
+  if (length < 56 || new TextDecoder().decode(data.subarray(0, 4)) !== "PEBP" || view.getUint32(4, true) !== 2)
     throw new Tf2CodecError("Entity presentation identity is invalid")
   const count = view.getUint32(48, true)
-  if (52 + count * 128 !== length) throw new Tf2CodecError("Entity presentation records do not frame bytes")
+  const studioOffset = 52 + count * 128
+  if (studioOffset + 4 > length) throw new Tf2CodecError("Entity presentation records do not frame bytes")
   const models: BrushModelDrawState[] = []
   let prior = -1
   for (let i = 0; i < count; i++) {
@@ -1217,8 +1219,37 @@ function decodeEntityPresentation(bytes: ArrayBuffer, offset: number, length: nu
     prior = model.sourceIndex
     models.push(model)
   }
+  const studioCount = view.getUint32(studioOffset, true)
+  if (studioCount > 65536 || studioOffset + 8 + studioCount * 32 > length) throw new Tf2CodecError("Studio presentation records do not frame bytes")
+  const studioModels: StudioModelDrawState[] = []
+  prior = -1
+  for (let i = 0; i < studioCount; i++) {
+    const at = studioOffset + 4 + i * 32
+    const decode = (): StudioModelDrawState => {
+      const sourceIndex = view.getUint32(at, true), worldPosition = vector(view, at + 4), worldAngles = vector(view, at + 16), draw = view.getUint32(at + 28, true)
+      if (draw > 1 || !finite([...worldPosition, ...worldAngles])) throw new Tf2CodecError("Studio presentation record is invalid")
+      return Object.freeze({ sourceIndex, worldPosition, worldAngles, draw: draw === 1 })
+    }
+    const model = ranges ? ranges.read("studio", i, snapshotOffset + at, 32, decode) : decode()
+    if (model.sourceIndex <= prior) throw new Tf2CodecError("Studio presentation source order is invalid")
+    prior = model.sourceIndex
+    studioModels.push(model)
+  }
+  let at = studioOffset + 4 + studioCount * 32
+  const animationCount = view.getUint32(at, true); at += 4
+  if (animationCount > studioCount) throw new Tf2CodecError("Studio animation count is invalid")
+  const studioAnimations: EntityPresentation["studioAnimations"][number][] = []
+  for (let i = 0; i < animationCount; i++) {
+    if (at + 12 > length) throw new Tf2CodecError("Studio animation is truncated")
+    const sourceIndex = view.getUint32(at, true), elapsedSeconds = view.getFloat32(at + 4, true), size = view.getUint32(at + 8, true)
+    at += 12
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0 || size < 1 || size > 2048 || at + size > length || !studioModels.some(model => model.sourceIndex === sourceIndex)) throw new Tf2CodecError("Studio animation is invalid")
+    const sequence = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(at, at + size)); at += size
+    studioAnimations.push(Object.freeze({ sourceIndex, sequence, elapsedSeconds }))
+  }
+  if (at !== length) throw new Tf2CodecError("Studio presentation has trailing bytes")
   return Object.freeze({ sourceIdentity: view.getBigUint64(8, true), registryIdentity: view.getBigUint64(16, true),
-    tick: view.getBigUint64(24, true), entityRevision: view.getBigUint64(32, true), collisionRevision: view.getBigUint64(40, true), models: ranges ? ranges.array("brushes", models) : Object.freeze(models) })
+    tick: view.getBigUint64(24, true), entityRevision: view.getBigUint64(32, true), collisionRevision: view.getBigUint64(40, true), models: ranges ? ranges.array("brushes", models) : Object.freeze(models), studioModels: ranges ? ranges.array("studios", studioModels) : Object.freeze(studioModels), studioAnimations: Object.freeze(studioAnimations) })
 }
 
 function decodeObjectives(buffer: ArrayBuffer, offset: number, length: number): Readonly<{ objectives: CaptureObjectives | null; length: number }> {
