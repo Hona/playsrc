@@ -415,15 +415,23 @@ test("profile authored headed Upward offline-practice default roster and actual 
     finally { clearTimeout(timer) }
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
     await retainEvidenceBlob(evidenceDirectory, raw.bytes, "trace.json.gz")
-    const allocation = await allocationCapture.stop()
-    const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
-    const memoryAfter = await captureProcessMemory(processAfter?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
-    return { workerCapture, workerArtifact, completion, raw, mainCapture, collectionErrors, allocation, processAfter, memoryAfter }
+    // Keep the existing setup/collection clock endpoint before heap extraction.
+    const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
+    // Begin extraction without delaying the authored input-release edge. Await
+    // its completion only when binding the already stopped capture to a manifest.
+    const memory = (async () => {
+      const allocation = await allocationCapture.stop()
+      const processAfter = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
+      const memoryAfter = await captureProcessMemory(processAfter?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
+      return { allocation, processAfter, memoryAfter }
+    })()
+    return { workerCapture, workerArtifact, completion, raw, mainCapture, collectionErrors, performanceAfter, memory }
   }
   let nativeResult: ReturnType<typeof collectNative> | undefined
   const finishNative = () => nativeResult ??= collectNative()
   const persistNativeEvidence = async (probes: TraceProbes, details: Record<string, unknown>) => {
-    const { raw, completion, workerArtifact, mainCapture, collectionErrors, allocation, memoryAfter } = await finishNative()
+    const { raw, completion, workerArtifact, mainCapture, collectionErrors, memory } = await finishNative()
+    const { allocation, memoryAfter } = await memory
     const sourceFingerprintAfter = await applicationBuildIdentity().catch(error => `unavailable: ${String(error)}`)
     return retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
       complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture, collectionErrors,
@@ -784,8 +792,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const replayArtifact = await replay?.stop(!interrupted && sample.error === null)
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
-  const { workerCapture, workerArtifact, mainCapture, allocation, processAfter, memoryAfter } = await finishNative()
-  const performanceAfter = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
+  const { workerCapture, workerArtifact, mainCapture, performanceAfter, memory } = await finishNative()
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
   if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
   const joins: TraceJoin[] = []
@@ -817,6 +824,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
   if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
+  const { allocation, processAfter, memoryAfter } = await memory
   const memoryEvidence = await loadAllocationMemoryEvidence(path.join(evidenceDirectory, evidence.artifact.file), evidence)
   if (allocation.errors.length || !allocation.heapBefore || !allocation.heapAfter) throw new Error(`Allocation capture failed; diagnostics retained: ${allocation.errors.join("; ")}`)
   const heapBefore = allocation.heapBefore.value, heapAfter = allocation.heapAfter.value
