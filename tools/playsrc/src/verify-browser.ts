@@ -718,7 +718,7 @@ async function installRocketGpuEvidence(session: string): Promise<void> {
       const captureOutput = event => {
         if (!evidence.armed || event.data?.kind !== 'particles' || !(event.data.output instanceof ArrayBuffer)) return
         const view = new DataView(event.data.output)
-        if (view.byteLength < 40 || view.getUint32(4, true) !== 3) return
+        if (view.byteLength < 40 || view.getUint32(4, true) !== 4) return
         const count = view.getUint32(8, true)
         const materials = new Map()
         for (let index = 0; index < count; index++) {

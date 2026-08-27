@@ -1,5 +1,13 @@
 const DEGREES_TO_RADIANS = Math.PI / 180
 
+/** The Source quad order is clockwise. Three's front faces are counterclockwise. */
+export function writeParticleQuadIndices(indices: Uint16Array | Uint32Array): void {
+  for (let offset = 0, vertex = 0; offset < indices.length; offset += 6, vertex += 4) {
+    indices[offset] = vertex; indices[offset + 1] = vertex + 2; indices[offset + 2] = vertex + 1
+    indices[offset + 3] = vertex; indices[offset + 4] = vertex + 3; indices[offset + 5] = vertex + 2
+  }
+}
+
 export type ParticleQuad = Readonly<{
   primitive: "sprite" | "trail"
   position: readonly [number, number, number]

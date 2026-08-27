@@ -1,5 +1,5 @@
 const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
-const OUTPUT_VERSION = 3
+const OUTPUT_VERSION = 4
 const OUTPUT_HEADER_BYTES = 40
 const OUTPUT_RECORD_BYTES = 436
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -35,6 +35,7 @@ export type ParticleAdapterLimits = Readonly<{
 }>
 
 export type ParticleRenderItem = Readonly<{
+  sky: boolean
   identity: number
   effectIdentity: number
   particleIdentity: number
@@ -177,7 +178,7 @@ export function decodeParticleRenderOutput(
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
     const primitive = bytes[offset + 14]
-    if ((primitive !== 0 && primitive !== 1) || bytes[offset + 15] !== 0) {
+    if ((primitive !== 0 && primitive !== 1) || bytes[offset + 15]! > 1) {
       throw new ParticleAdapterError("MalformedOutput", "particle primitive or reserved byte is invalid")
     }
     const materialIndex = view.getUint32(offset + 32, true)
@@ -263,6 +264,7 @@ export function decodeParticleRenderOutput(
       particleIdentity: view.getUint32(offset + 8, true),
       rendererIndex: view.getUint16(offset + 12, true),
       primitive: primitive === 0 ? "sprite" : "trail",
+      sky: bytes[offset + 15] === 1,
       systemUuid: uuid(bytes, offset + 16),
       material,
       position,

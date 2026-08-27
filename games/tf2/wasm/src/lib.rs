@@ -4,6 +4,7 @@ mod gameplay_replay;
 mod memory;
 mod reply_output;
 mod wearable;
+mod map_particles;
 pub mod static_prop_artifact;
 
 #[cfg(target_arch = "wasm32")]
@@ -569,6 +570,7 @@ struct Slot {
     presentation_bytes: usize,
     coverage: Vec<u8>,
     particles: Option<playsrc_particle::ParticleWorld>,
+    map_particles: Option<(playsrc_particle::ParticleWorld, map_particles::MapParticles)>,
     particle_materials: Vec<String>,
     particle_sheets: BTreeMap<String, playsrc_particle::ParticleMaterial>,
     combat_decals: Option<CombatDecalWorld>,
@@ -1146,7 +1148,7 @@ unsafe fn compile_map(
         compile_metrics[3] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let (particles, particle_materials, particle_sheets, particle_presentation) =
-            compile_particles(&resources, &decoders).map_err(|_| 10_u32)?;
+            compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entity_graph)).map_err(|_| 10_u32)?;
         let static_model_roots = canonical
             .static_props
             .models
@@ -1519,6 +1521,8 @@ unsafe fn compile_map(
             presentation_bytes: cached_presentation.map_or(presentation.len(), <[u8]>::len),
             presentation,
             coverage,
+            map_particles: (!session.map_particle_systems().is_empty())
+                .then(|| (particles.independent(), map_particles::MapParticles::default())),
             particles: Some(particles),
             particle_materials,
             particle_sheets,
@@ -1567,6 +1571,7 @@ unsafe fn compile_map(
             presentation_bytes: 0,
             coverage: Vec::new(),
             particles: None,
+            map_particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -1752,7 +1757,7 @@ pub fn diagnose_presentation_bound(
     let visibility =
         playsrc_map::attach_displacement_visibility(&canonical, &visibility).map_err(|_| 3u32)?;
     let (_, _, _, particle_presentation) =
-        compile_particles(&resources, &decoders).map_err(|_| 10u32)?;
+        compile_particles(&resources, &decoders, &playsrc_tf2::particle_resources::roots(&entities)).map_err(|_| 10u32)?;
     let ((_, models, _, _, _), metrics, mut ledger) = compile_presentation(PresentationInputs {
         canonical: &canonical,
         bsp: &bsp,
@@ -1970,6 +1975,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     };
     slot.wearable_particles.retain_gameplay(slot.latest_game_snapshot.as_ref(), request.to_seconds);
+    let map_systems = slot.session.as_ref().map(|session| session.map_particle_systems()).unwrap_or_default();
     let Some(world) = slot.particles.as_mut() else {
         return 0;
     };
@@ -1989,15 +1995,39 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         events.sort_by(|left, right| left.timestamp_seconds.total_cmp(&right.timestamp_seconds));
         for (order, event) in events.iter_mut().enumerate() { event.source_order = order as u32; }
     }
-    let output = match world.transact_render_output(
-        &events,
-        &slot.wearable_particles.controls.iter().map(|(id, cp)| (*id, cp.clone())).collect::<Vec<_>>(),
-        request,
-        &mut collision,
-        &slot.particle_sheets,
-        &slot.particle_materials,
-        64 * 1024 * 1024,
-    ) {
+    let wearable_controls = slot.wearable_particles.controls.iter().map(|(id, cp)| (*id, cp.clone())).collect::<Vec<_>>();
+    let result = if let Some((map_world, map_state)) = slot.map_particles.as_mut() {
+        let mut candidate = map_state.clone();
+        let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
+            match controller.state { playsrc_map::ControllerState::SkyCamera { area, origin, scale, .. } => Some((area, origin, scale)), _ => None }
+        }));
+        let (map_events, attached) = candidate.prepare(&map_systems, map_world, request, |position| {
+            visibility.locate_leaf(position).ok().and_then(|leaf| visibility.leaves.get(leaf))
+                .is_some_and(|leaf| Some(usize::from(leaf.area_and_flags & 0x1ff)) == sky.map(|sky| sky.0))
+        });
+        let sky_position = sky.map(|(_, origin, scale)| std::array::from_fn(|axis| origin[axis] + request.camera_position[axis] / scale.max(1) as f32));
+        let mut map_collision = ParticleCollision { world: collision.world.clone(), visibility, lighting, lighting_cache: BTreeMap::new() };
+        world.transact(&events, &wearable_controls, request, &mut collision, |game_items, game_bounds| {
+            map_world.transact_views(&map_events, &attached, request,
+                |identity| if candidate.is_sky(identity) { sky_position.expect("sky effect controller") } else { request.camera_position },
+                &mut map_collision, |mut items, map_bounds| {
+                candidate.classify(&mut items);
+                items.extend(game_items);
+                let bounds = match (map_bounds, game_bounds) {
+                    (Some(left), Some(right)) => Some(playsrc_particle::Bounds {
+                        minimum: std::array::from_fn(|axis| left.minimum[axis].min(right.minimum[axis])),
+                        maximum: std::array::from_fn(|axis| left.maximum[axis].max(right.maximum[axis])),
+                    }),
+                    (left, right) => left.or(right),
+                };
+                let items = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)?;
+                playsrc_particle::encode_render_output(&items, bounds, &slot.particle_materials, 64 * 1024 * 1024)
+            })
+        }).inspect(|_| *map_state = candidate)
+    } else {
+        world.transact_render_output(&events, &wearable_controls, request, &mut collision, &slot.particle_sheets, &slot.particle_materials, 64 * 1024 * 1024)
+    };
+    let output = match result {
         Ok(output) => output,
         Err(error) => {
             *SIMULATION_ERROR_DETAIL
@@ -4909,6 +4939,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.presentation_bytes = 0;
     slot.coverage = Vec::new();
     slot.particles = None;
+    slot.map_particles = None;
     slot.particle_materials = Vec::new();
     slot.wearable_particles = wearable::ParticleStates::default();
     slot.particle_sheets = BTreeMap::new();
@@ -14163,22 +14194,10 @@ struct CompiledParticlePresentation {
 fn compile_particles(
     b: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
+    roots: &[&str],
 ) -> Result<CompiledParticles, ()> {
-    let paths = [
-        "particles/rockettrail.pcf",
-        "particles/rocketbackblast.pcf",
-        "particles/stickybomb.pcf",
-        "particles/muzzle_flash.pcf",
-        "particles/explosion.pcf",
-        "particles/flamethrower.pcf",
-        "particles/nailtrails.pcf",
-        "particles/medicgun_beam.pcf",
-        "particles/blood_impact.pcf",
-        "particles/bullet_tracers.pcf",
-        "particles/impact_fx.pcf",
-        "particles/crit.pcf",
-        "particles/item_fx.pcf",
-    ];
+    let paths = std::str::from_utf8(b.get(playsrc_tf2::particle_resources::SOURCE_LIST).ok_or(())?)
+        .map_err(|_| ())?.lines().collect::<Vec<_>>();
     let sources = paths
         .iter()
         .map(|path| {
@@ -14191,61 +14210,7 @@ fn compile_particles(
     let registry =
         playsrc_particle::Registry::from_pcf(&sources, playsrc_particle::RegistryLimits::default())
             .map_err(|_| ())?;
-    let roots = [
-        "rockettrail",
-        "rocketbackblast",
-        "stickybombtrail_red",
-        "stickybombtrail_blue",
-        "stickybomb_pulse_red",
-        "stickybomb_pulse_blue",
-        "muzzle_pipelauncher",
-        "muzzle_scattergun",
-        "muzzle_pistol",
-        "muzzle_shotgun",
-        "blood_impact_red_01",
-        "water_blood_impact_red_01",
-        "blood_spray_red_01",
-        "blood_spray_red_01_far",
-        "bullet_scattergun_tracer01_red",
-        "bullet_scattergun_tracer01_blue",
-        "bullet_scattergun_tracer01_red_crit",
-        "bullet_scattergun_tracer01_blue_crit",
-        "bullet_pistol_tracer01_red",
-        "bullet_pistol_tracer01_blue",
-        "bullet_pistol_tracer01_red_crit",
-        "bullet_pistol_tracer01_blue_crit",
-        "bullet_shotgun_tracer01_red",
-        "bullet_shotgun_tracer01_blue",
-        "bullet_shotgun_tracer01_red_crit",
-        "bullet_shotgun_tracer01_blue_crit",
-        "bullet_tracer01_red",
-        "bullet_tracer01_blue",
-        "bullet_tracer01_red_crit",
-        "bullet_tracer01_blue_crit",
-        "impact_concrete",
-        "impact_wood",
-        "impact_metal",
-        "impact_dirt",
-        "impact_glass",
-        "crit_text",
-        "ExplosionCore_Wall",
-        "ExplosionCore_MidAir",
-        "new_flame",
-        "new_flame_crit_red",
-        "new_flame_crit_blue",
-        "flamethrower_underwater",
-        "pyro_blast",
-        "muzzle_shotgun",
-        "nailtrails_medic_red",
-        "nailtrails_medic_blue",
-        "muzzle_syringe",
-        "medicgun_beam_red",
-        "medicgun_beam_blue",
-        "medicgun_beam_red_invun",
-        "medicgun_beam_blue_invun",
-        "superrare_burning1",
-    ]
-    .map(playsrc_particle::DefinitionLookup::Name);
+    let roots = roots.iter().copied().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
     compile_particle_materials(&registry, &roots, b, decoders)
 }
 
@@ -14262,7 +14227,7 @@ fn compile_particle_materials(
     b: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
 ) -> Result<CompiledParticles, ()> {
-    let materials = registry.target_closure(roots).map_err(|_| ())?.materials;
+    let materials = registry.target_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
     let compiled = materials
         .iter()
         .map(|identity| {
@@ -15112,7 +15077,7 @@ mod tests {
             decode_particle_sheet(metadata)
                 .unwrap_or_else(|_| panic!("particle sheet {identity}: {texture}"));
         }
-        assert!(compile_particles(&resources, &decoders).is_ok());
+        assert!(compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS).is_ok());
     }
 
     #[test]
@@ -15622,6 +15587,7 @@ mod tests {
             presentation_bytes: 3,
             coverage: Vec::new(),
             particles: None,
+            map_particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -15708,6 +15674,7 @@ mod tests {
             presentation_bytes: 0,
             coverage: Vec::new(),
             particles: None,
+            map_particles: None,
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,

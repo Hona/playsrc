@@ -553,6 +553,26 @@ impl CollisionQuery for NoHit {
 }
 
 #[test]
+fn named_particle_definitions_do_not_alias_through_authored_uuids() {
+    let bytes = encode(&[
+        TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1, 2, 3, 4]))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "a", uuid: [1; 16], attributes: vec![("material", TestValue::Text("a.vmt"))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "b", uuid: [1; 16], attributes: vec![("material", TestValue::Text("b.vmt"))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "private", uuid: [1; 16], attributes: vec![("preventNameBasedLookup", TestValue::Bool(true)), ("material", TestValue::Text("id.vmt"))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "a", uuid: [2; 16], attributes: vec![("material", TestValue::Text("replacement.vmt")), ("children", TestValue::Refs(vec![5]))] },
+        TestElement { kind: "DmeParticleChild", name: "empty", uuid: [5; 16], attributes: vec![("child", TestValue::Ref(-1))] },
+    ]);
+    let registry = registry(&bytes);
+    assert_eq!(registry.definition(DefinitionLookup::Name("a")).unwrap().material, "replacement.vmt");
+    assert_eq!(registry.definition(DefinitionLookup::Name("b")).unwrap().material, "b.vmt");
+    assert!(registry.definition(DefinitionLookup::Name("private")).is_none());
+    assert_eq!(registry.definition(DefinitionLookup::Uuid([1; 16])).unwrap().material, "id.vmt");
+    let closure = registry.target_closure(&[DefinitionLookup::Name("a"), DefinitionLookup::Name("b"), DefinitionLookup::Uuid([1; 16])]).unwrap();
+    assert_eq!(closure.definitions, vec![3, 1, 2]);
+    assert_eq!(closure.materials, vec!["b.vmt", "id.vmt", "replacement.vmt"]);
+}
+
+#[test]
 fn parses_registry_and_rejects_malformed_documents_atomically() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
@@ -563,7 +583,7 @@ fn parses_registry_and_rejects_malformed_documents_atomically() {
     let closure = registry
         .target_closure(&[DefinitionLookup::Name("rockettrail")])
         .unwrap();
-    assert_eq!(closure.definitions, vec![[1; 16], [2; 16]]);
+    assert_eq!(closure.definitions, vec![0, 1]);
     assert_eq!(closure.materials.len(), 2);
 
     let mut truncated = bytes.clone();

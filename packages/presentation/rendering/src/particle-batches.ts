@@ -1,4 +1,5 @@
 export type ParticleBatchInput = Readonly<{
+  sky: boolean
   material: string
   blendSource: string
   blendDestination: string
@@ -22,6 +23,7 @@ export function fillParticleBatchRanges(
       && items[end]!.material.toLowerCase() === material
       && items[end]!.blendSource === first.blendSource
       && items[end]!.blendDestination === first.blendDestination
+      && items[end]!.sky === first.sky
     ) end += 1
     const retained = output[count]
     if (retained) {

@@ -952,7 +952,7 @@ export async function verifyTf2Wasm(
   const particleOutput = new Uint8Array(exports.memory.buffer, particleOutputPointer, particleOutputLength).slice()
   const particleOutputView = new DataView(particleOutput.buffer)
   require(new TextDecoder().decode(particleOutput.subarray(0, 4)) === "PSPR" &&
-    particleOutputView.getUint32(4,true)===3&&particleOutputView.getUint32(8,true)>0,
+    particleOutputView.getUint32(4,true)===4&&particleOutputView.getUint32(8,true)>0,
   "configured rockettrail render output identity differs")
   require((particleOutputView.getUint32(40+124,true)&1)!==0,
     "configured rockettrail render output omitted its primary sheet sample")
