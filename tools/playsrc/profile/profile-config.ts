@@ -1,12 +1,13 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test"
+import type { HeadedProfileTarget } from "./profile-target"
 
 const MAX_PROFILE_MILLISECONDS = 175_000
 
 type ProfileConfiguration = Readonly<{
   match: string
-  target?: "jump_beef" | "pl_upward" | "ctf_2fort" | "koth_viaduct"
+  target?: HeadedProfileTarget
   output?: string
   channel?: "msedge"
   preciseMemory?: boolean
