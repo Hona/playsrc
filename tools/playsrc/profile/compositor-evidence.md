@@ -37,6 +37,20 @@ does not rewrite them or infer a missing link. Hash authentication establishes
 content linkage, not a digital signature or independent proof of capture origin.
 Signed timestamps, estimated sampling weights, and unattributed tails are unchanged.
 
+The effective `playsrc-upward-capture-plan-v1` is retained as immutable `plan.json`
+**before admission**, linked by `identity.capturePlan`, and consumed by the capture
+itself. It records scenario, team/cache/roster overrides, interaction precedence,
+class passes, sample duration and whether Worker sampling is required. Ordinary
+unrequested Worker sampling remains optional and explicit, not a zero-CPU result.
+Historical absent plans replay as `null`/`unknown`, including early v2 captures.
+
+`bun tools/playsrc/profile/replay-cpu-profile.ts --compare-workers <before.manifest.json> <after.manifest.json>`
+
+Worker comparisons require matching authenticated plans, requested instrumentation,
+complete evidence and actual active Worker samples. Existing acceptance comparisons
+also reject unknown/different plans and missing requested samples. These guards
+share the headed capture's Worker checks; no absent instrumentation is inferred.
+
 The all-18-edge `class-switch-high-dpi` path also samples the actual gameplay
 Worker through its own CDP target. Its content-addressed `workers.json` artifact
 is linked from the compositor manifest. Replay it without another browser run:

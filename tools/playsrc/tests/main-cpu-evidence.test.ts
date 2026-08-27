@@ -4,8 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import { gzipSync } from "node:zlib"
 import { CPU_PROFILE_LIMITS } from "../profile/cpu-profile-time"
-import { loadCompositorEvidence, loadMainCpuEvidence, retainCompositorEvidence, retainEvidenceBlob, startMainCpuEvidence } from "../profile/compositor-evidence"
-import { replayCpuProfiles } from "../profile/replay-cpu-profile"
+import { loadCompositorEvidence, loadMainCpuEvidence, retainCompositorEvidence, retainEvidenceBlob, retainCapturePlan, startMainCpuEvidence } from "../profile/compositor-evidence"
+import { replayCpuProfiles, compareWorkerCpuProfiles } from "../profile/replay-cpu-profile"
+import { upwardCapturePlan, type UpwardCapturePlan } from "../profile/upward-capture-plan"
+import { assertWorkerInstrumentation } from "../profile/upward-profile-gates"
 import { TRACE_START, TRACE_END } from "../profile/compositor-truth"
 
 const source = { sourceCommit: "1".repeat(40), sourceFingerprint: "2".repeat(64) }
@@ -14,14 +16,19 @@ const identity = { ...source, sourceFingerprintAfter: source.sourceFingerprint, 
 const profile = { startTime: 900100, endTime: 2100100, samples: [1, 1, 1, 1], timeDeltas: [100000, 600000, -400000, 600000],
   nodes: [{ id: 1, callFrame: { functionName: "sample", url: target.url, lineNumber: 0, columnNumber: 0 } }] }
 const events = [{ name: TRACE_START, ts: 1000000, pid: 1, tid: 3 }, { name: TRACE_END, ts: 2000000, pid: 1, tid: 3 },
+  { name: "worker-start", ts: 900000, pid: 1, tid: 4 }, { name: "worker-end", ts: 2100000, pid: 1, tid: 4 },
   { name: "FramePresented", ts: 1000000, pid: 2, tid: 7 }, { name: "FramePresented", ts: 2000000, pid: 2, tid: 7 }]
 const probes = { started: 100, ended: 1100, joins: [], dropped: 0 }
 
-async function fixture(directory: string, options: { profile?: unknown; stopError?: string; hangStop?: boolean; timestamps?: number[]; targetAfter?: typeof target } = {}) {
+async function fixture(directory: string, options: { profile?: unknown; stopError?: string; hangStop?: boolean; timestamps?: number[]; targetAfter?: typeof target;
+  plan?: UpwardCapturePlan | null; workerCaptures?: any[] } = {}) {
+  const plan = options.plan === undefined ? upwardCapturePlan({}) : options.plan
+  const capturePlan = plan ? await retainCapturePlan(directory, plan) : undefined
   const calls: string[] = []
   const timestamps = [...(options.timestamps ?? [0.9, 0.9002, 2.1, 2.1002])]
   let targets = 0
   const cdp = { send: async (method: string) => {
+    if (method === "Profiler.start" && capturePlan) expect(JSON.parse(await readFile(path.join(directory, capturePlan.file), "utf8"))).toEqual(plan)
     calls.push(method)
     if (method === "Target.getTargetInfo") return { targetInfo: { ...(targets++ ? options.targetAfter ?? target : target) } }
     if (method === "Performance.getMetrics") return { metrics: [{ name: "Timestamp", value: timestamps.shift() }] }
@@ -38,9 +45,16 @@ async function fixture(directory: string, options: { profile?: unknown; stopErro
   const mainCpu = await first
   expect(calls.filter(call => call === "Profiler.start")).toHaveLength(1)
   expect(calls.filter(call => call === "Profiler.stop")).toHaveLength(1)
-  const workerCpu = await retainEvidenceBlob(directory, Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures: [], error: null })), "workers.json")
+  const captures = options.workerCaptures ?? []
+  const workerCpu = await retainEvidenceBlob(directory, Buffer.from(JSON.stringify({ schema: "playsrc-worker-cpu-v1", captures, error: null })), "workers.json")
+  const collectionErrors: string[] = []
+  if (plan?.workerCpu === "required") {
+    try { assertWorkerInstrumentation(captures.map(capture => ({ deadlineStopped: capture.deadlineStopped,
+      sampleCount: capture.profile.samples.length, captureComplete: capture.execution.dropped === 0 }))) }
+    catch (error) { collectionErrors.push(String(error)) }
+  }
   const input = { directory, raw: gzipSync(JSON.stringify({ traceEvents: events })), complete: true, dataLossOccurred: false,
-    identity: { ...identity, workerCpu }, probes, mainCpu }
+    identity: { ...identity, workerCpu, target: "pl_upward", entry: "training", ...(capturePlan ? { capturePlan } : {}) }, probes, mainCpu, collectionErrors }
   const saved = await retainCompositorEvidence(input)
   return { mainCpu, saved, input, filename: path.join(directory, saved.artifact.file) }
 }
@@ -167,18 +181,45 @@ describe("main CPU capture -> immutable bytes -> manifest -> offline replay", ()
   }))
 
   test("historical supplied captures stay unlinked and unchanged, never silently upgraded", () => inDirectory(async directory => {
-    const { input } = await fixture(directory)
+    const { input } = await fixture(directory, { plan: null })
     const saved = await retainCompositorEvidence({ ...input, mainCpu: undefined })
     const filename = path.join(directory, saved.artifact.file)
     const before = await readFile(filename)
     const file = path.join(directory, "historical.cpuprofile")
     await writeFile(file, JSON.stringify(profile))
     expect((await replayCpuProfiles(filename)).main).toBeNull()
+    expect((await replayCpuProfiles(filename)).capturePlan).toBeNull()
+    await expect(compareWorkerCpuProfiles(filename, filename)).rejects.toThrow("plan unknown")
     expect((await replayCpuProfiles(filename, file)).main).toMatchObject({ authenticated: false,
       identity: "separately supplied; not linked by compositor manifest", cpu: { estimatedSampledMilliseconds: 800 } })
     expect(await readFile(filename)).toEqual(before)
     expect(await readFile(file, "utf8")).toBe(JSON.stringify(profile))
     await truncate(file, CPU_PROFILE_LIMITS.bytes + 1)
     await expect(replayCpuProfiles(filename, file)).rejects.toThrow("byte bound")
+  }))
+
+  test("effective plans bind optional instrumentation and reject requested empty or mismatched Worker comparisons", () => inDirectory(async directory => {
+    const ordinary = await fixture(directory)
+    expect((await replayCpuProfiles(ordinary.filename)).workerInstrumentation).toEqual({ requested: "not-requested", capturedTargets: 0 })
+    await expect(compareWorkerCpuProfiles(ordinary.filename, ordinary.filename)).rejects.toThrow("requires requested Worker instrumentation")
+    const plan = upwardCapturePlan({ PROFILE_INTEGRATED_ACCEPTANCE: "1" })
+    const absent = await fixture(directory, { plan })
+    expect(absent.saved.manifest.complete).toBe(false)
+    expect(absent.saved.manifest.errors.join(" ")).toContain("actual Worker capture")
+    await expect(compareWorkerCpuProfiles(absent.filename, absent.filename)).rejects.toThrow("actual Worker capture")
+    const worker = { target: { targetId: "worker", type: "worker", url: "gameplay-worker.ts" }, samplingIntervalMicroseconds: 1000,
+      deadlineStopped: false, profile, execution: { timeOrigin: 1000, dropped: 0, tasks: [],
+        clocks: [{ name: "worker-start", before: 0, after: 0 }, { name: "worker-end", before: 1200, after: 1200 }] } }
+    const before = await fixture(directory, { plan, workerCaptures: [worker] })
+    const matching = await fixture(directory, { plan, workerCaptures: [worker] })
+    expect((await compareWorkerCpuProfiles(before.filename, matching.filename)).comparable).toBe(true)
+    const different = await fixture(directory, { plan: upwardCapturePlan({ PROFILE_INTEGRATED_ACCEPTANCE: "1", PROFILE_UPWARD_TRAINING_INTERACTION: "1" }), workerCaptures: [worker] })
+    await expect(compareWorkerCpuProfiles(before.filename, different.filename)).rejects.toThrow("plans differ")
+    const empty = await fixture(directory, { plan, workerCaptures: [{ ...worker, profile: { ...profile, samples: [], timeDeltas: [] } }] })
+    await expect(compareWorkerCpuProfiles(before.filename, empty.filename)).rejects.toThrow("Worker CPU samples")
+    // Hash checks precede interpreting plan settings.
+    const planFile = path.join(directory, before.saved.manifest.identity.capturePlan!.file)
+    await writeFile(planFile, (await readFile(planFile, "utf8")).replace("required", "tampered"))
+    await expect(replayCpuProfiles(before.filename)).rejects.toThrow("plan hash identity")
   }))
 })

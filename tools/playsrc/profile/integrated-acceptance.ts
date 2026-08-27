@@ -1,3 +1,6 @@
+import { assertMatchingCapturePlans } from "./upward-capture-plan"
+import { assertWorkerInstrumentation } from "./upward-profile-gates"
+
 export const ACCEPTANCE_SCENARIOS = Object.freeze({
   "training-dpr1": { profile: "class-switch-high-dpi", dpr: "1" },
   "training-dpr1.25": { profile: "class-switch-high-dpi", dpr: "1.25" },
@@ -30,6 +33,12 @@ export function compareAcceptance(before: any, after: any) {
   })
   const left = keys(before), right = keys(after)
   const mismatches = Object.keys(left).filter(key => JSON.stringify(left[key as keyof typeof left]) !== JSON.stringify(right[key as keyof typeof right]))
+  try { assertMatchingCapturePlans(before.capturePlan, after.capturePlan) } catch { mismatches.push("capturePlan") }
+  for (const report of [before, after]) if (report.capturePlan?.workerCpu === "required") {
+    try { assertWorkerInstrumentation((report.workerIncidents ?? []).map((capture: any) => ({
+      deadlineStopped: capture.deadlineStopped, captureComplete: capture.captureComplete, sampleCount: capture.activeCpu?.sampleCount ?? 0,
+    }))) } catch { mismatches.push("workerInstrumentation") }
+  }
   if (!before.browser.userAgent || !after.browser.userAgent || !before.settings || !after.settings || !before.roster || !after.roster) mismatches.push("missing-comparison-metadata")
   const metrics = (report: any) => ({
     compositorP95: report.compositor.intervals?.p95Milliseconds ?? null,
