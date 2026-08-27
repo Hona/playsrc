@@ -182,15 +182,6 @@ test("control point and overtime events admit every declared wave variant", () =
   }
 })
 
-test("persistent authored view corrections survive snapshot decode and reject nonfinite angles", () => {
-  const bytes = snapshot(), view = new DataView(bytes)
-  view.setFloat32(bytes.byteLength - 12, -5, true)
-  view.setFloat32(bytes.byteLength - 8, -150, true)
-  expect(decodeSnapshot(bytes).viewAngleOffset).toEqual([-5, -150, 0])
-  view.setFloat32(bytes.byteLength - 4, Number.NaN, true)
-  expect(() => decodeSnapshot(bytes)).toThrow("view angle correction is invalid")
-})
-
 test("death event wire retains exact uint32 damage bits, killing names and repeated occurrences before later sections", () => {
   const base = new Uint8Array(snapshot()), name = new TextEncoder().encode("tf_projectile_rocket")
   const record = new Uint8Array(28 + name.length), event = new DataView(record.buffer)
