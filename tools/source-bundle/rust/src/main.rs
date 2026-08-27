@@ -2728,6 +2728,7 @@ fn main() -> Result<(), String> {
     ] {
         model_paths.insert(path.to_owned());
     }
+    model_paths.extend(playsrc_tf2::equipment::stock_weapon_models().map(str::to_owned));
     let mut model_documents = BTreeMap::new();
     for path in model_paths {
         let document = collect_model(&mut resolver, &path)

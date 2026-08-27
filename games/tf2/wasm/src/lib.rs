@@ -6099,6 +6099,10 @@ fn encode_snapshot(
                     playsrc_tf2::weapon::WeaponActivity::ReloadFinish => 5,
                     playsrc_tf2::weapon::WeaponActivity::Idle => 6,
                     playsrc_tf2::weapon::WeaponActivity::SecondaryAttack => 7,
+                    playsrc_tf2::weapon::WeaponActivity::MeleeCritical => 8,
+                    playsrc_tf2::weapon::WeaponActivity::MeleePrimary => 9,
+                    playsrc_tf2::weapon::WeaponActivity::FistLeft => 10,
+                    playsrc_tf2::weapon::WeaponActivity::FistRight => 11,
                 },
                 0,
                 0,
@@ -11787,7 +11791,7 @@ fn load_cached_presentation(
     metrics[0] = phase_finished.saturating_sub(phase_started);
     phase_started = phase_finished;
     let model_headers = cached_presentation_models(presentation).map_err(|_| 2_u32)?;
-    let expected = std::collections::BTreeSet::from([
+    let mut expected = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
@@ -11864,6 +11868,7 @@ fn load_cached_presentation(
         "models/weapons/c_models/c_medigun/c_medigun.mdl".to_owned(),
         "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl".to_owned(),
     ]);
+    expected.extend(playsrc_tf2::equipment::stock_weapon_models().map(str::to_owned));
     let expected = graph
         .entities
         .iter()
@@ -12183,6 +12188,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         }
     }
     roots.extend(additional_model_roots.iter().cloned());
+    roots.extend(playsrc_tf2::equipment::stock_weapon_models().map(str::to_owned));
     let models = roots
         .into_iter()
         .collect::<Vec<_>>()
@@ -12225,7 +12231,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     | "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
                     | "models/weapons/c_models/c_medigun/c_medigun.mdl"
                     | "models/weapons/c_models/c_bonesaw/c_bonesaw.mdl"
-            ) {
+            ) || playsrc_tf2::equipment::stock_weapon_models().any(|model| model == id) {
                 playsrc_studio_model::PresentationProfile::ViewModel
             } else {
                 playsrc_studio_model::PresentationProfile::World

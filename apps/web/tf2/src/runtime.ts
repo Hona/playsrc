@@ -1757,7 +1757,7 @@ export class Tf2Application {
           localOwnerIdentity: 1,
         }),
       )
-      this.#viewmodels = createViewmodelPresenter(this.#artifacts)
+      this.#viewmodels = createViewmodelPresenter(this.#artifacts, this.#equipmentProfile!.state()!.inventory)
       this.#viewmodelClass = undefined
       this.#applyInitialView(this.#loaded)
       finishLoadPhase("presentationSetup")
@@ -3849,7 +3849,7 @@ export class Tf2Application {
         localOwnerIdentity: 1,
       }),
     )
-    this.#viewmodels = createViewmodelPresenter(artifacts)
+    this.#viewmodels = createViewmodelPresenter(artifacts, this.#equipmentProfile!.state()!.inventory)
     this.#viewmodelClass = undefined
     this.#mapIdentity = name
     this.#applyInitialView(staged)
@@ -5079,7 +5079,7 @@ export class Tf2Application {
       const historicalViewmodels: ModelPoseRequest[] = []
       const mapViewmodel = (value: Snapshot) => {
         if (this.#viewmodelClass !== undefined && this.#viewmodelClass !== value.class) {
-          this.#viewmodels = createViewmodelPresenter(this.#artifacts!)
+          this.#viewmodels = createViewmodelPresenter(this.#artifacts!, this.#equipmentProfile!.state()!.inventory)
         }
         this.#viewmodelClass = value.class
         return value.weapon === null || (value.class === 2 && value.weapon === 12 && (value.conditions[0] & 2) !== 0)

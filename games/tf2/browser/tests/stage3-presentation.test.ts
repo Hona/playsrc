@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { sourceHorizontal4By3FovToVertical } from "@playsrc/rendering"
 import {
   createParticleBatchEncoder,
-  createViewmodelPresenter,
+  createViewmodelPresenter as createRuntimeViewmodelPresenter,
   decodeModelPoseOutput,
   encodeModelPoseBatch,
   ProjectilePresentationError,
@@ -14,6 +14,28 @@ import {
 } from "../src/presentation"
 import type { PresentationArtifacts } from "../src/artifacts"
 import type { Snapshot } from "../src/codec"
+import type { Tf2SupportedItem } from "../src/equipment/types"
+
+const genericActivity = (activity: string) => activity.replace(/^ACT_(?:PRIMARY|SECONDARY|MELEE|FISTS|ENGINEER_PDA1|ENGINEER_PDA2|ENGINEER_BLD)_/, "ACT_")
+// These tests provide an inventory projection explicitly; production has no
+// weapon/model fallback. Native tests own role and item-override translation.
+function createViewmodelPresenter(artifacts: PresentationArtifacts, model?: string) {
+  return { map(snapshot: Snapshot) {
+    const weapon = snapshot.weapon!
+    const definition = ({ 1: 18, 3: 20, 4: 13, 5: 23, 6: 0, 7: snapshot.class === 7 ? 12 : 10,
+      8: 6, 9: 15, 10: 11, 11: 5, 12: 14, 13: 16, 14: 3, 15: 21, 16: 2, 17: 1, 18: 19,
+      19: 17, 20: 29, 21: 8, 40: 9, 41: 22, 42: 7, 43: 25, 44: 26, 45: 28 } as Record<number, number>)[weapon]!
+    const melee = [6, 8, 11, 14, 16, 17, 21, 42, 51].includes(weapon)
+    const slot = melee ? 2 : [3, 5, 7, 10, 13, 20, 41, 50].includes(weapon) ? 1 : weapon === 43 ? 5 : weapon === 44 ? 6 : weapon === 45 ? 4 : 0
+    const item = { itemId: definition + 1, definitionIndex: definition, quality: 0, style: 0, slot, attributes: [] }
+    const entry: Tf2SupportedItem = { item, weapon, name: "", displayName: "", description: [], animationSlot: null, extraSounds: [], image: "",
+      modelPlayer: weapon === 11 ? "" : model ?? [...artifacts.models.keys()].find((path) => !path.includes("_arms.mdl"))!,
+      attachToHands: true, animationReplacements: [], soundOverrides: [], deathNoticeIcon: null,
+      classSlots: [{ class: snapshot.class, slot, weapon, selectionSlot: null }] }
+    const activities = snapshot.activities.map((event) => ({ ...event, activity: event.activity === 2 && melee ? weapon === 11 ? 10 as const : 9 as const : event.activity }))
+    return createRuntimeViewmodelPresenter(artifacts, [entry]).map({ ...snapshot, equippedItems: [item], activities })
+  } }
+}
 
 test("encodes one bounded complete PCF phase without per-particle calls", () => {
   const request: ProjectileParticleRequest = Object.freeze({
@@ -395,6 +417,7 @@ test("joins the current team skin to the matching viewmodel template", () => {
     }], [itemIdentity, { identity: itemIdentity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) }]]),
   } as unknown as PresentationArtifacts
   const snapshot = (team: 2 | 3) => ({
+    equippedItems: [],
     class: 3,
     team,
     tick: 1n,
@@ -410,7 +433,7 @@ test("joins the current team skin to the matching viewmodel template", () => {
     ...snapshot(2),
     activities: Object.freeze([{ tick: 1n, weapon: 1, activity: 3 }]),
   } as unknown as Snapshot
-  expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_PRIMARY_RELOAD_START")
+  expect(createViewmodelPresenter(artifacts).map(reloading).request.activity).toBe("ACT_RELOAD_START")
 })
 
 test("composes every Scout stock item with its exact primary, secondary, and melee activities", () => {
@@ -430,11 +453,11 @@ test("composes every Scout stock item with its exact primary, secondary, and mel
   for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
   const artifacts = { models } as unknown as PresentationArtifacts
   for (const [weapon, item, activity] of items) {
-    const snapshot = { class: 1, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 6 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
-    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    const snapshot = { equippedItems: [], class: 1, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 6 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts, item).map(snapshot).request
     expect(request.model).toBe(hands)
     expect(request.itemModel).toBe(item)
-    expect(request.activity).toBe(activity)
+    expect(request.activity).toBe(genericActivity(activity))
   }
 })
 
@@ -455,9 +478,9 @@ test("composes every Demoman stock item with authored primary, secondary, and Bo
   for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
   const artifacts = { models } as unknown as PresentationArtifacts
   for (const [weapon, item, activity, name] of items) {
-    const snapshot = { class: 4, team: 2, tick: 1n, weapon, health: 175, maximumHealth: 175, projectiles: Object.freeze([]), velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 17 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
-    const request = createViewmodelPresenter(artifacts).map(snapshot).request
-    expect(request).toMatchObject({ model: hands, itemModel: item, activity })
+    const snapshot = { equippedItems: [], class: 4, team: 2, tick: 1n, weapon, health: 175, maximumHealth: 175, projectiles: Object.freeze([]), velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 17 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts, item).map(snapshot).request
+    expect(request).toMatchObject({ model: hands, itemModel: item, activity: genericActivity(activity) })
     expect(tf2Hud(snapshot).weaponName).toBe(name)
   }
 })
@@ -472,9 +495,9 @@ test("composes Soldier shotgun and shovel with exact secondary and melee activit
     [8, "models/weapons/c_models/c_shovel/c_shovel.mdl", "ACT_MELEE_VM_HITCENTER"],
   ] as const) {
     models.set(item, { identity: item, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
-    const snapshot = { class: 3, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 8 ? 0 : 5 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
-    expect(createViewmodelPresenter({ models } as unknown as PresentationArtifacts).map(snapshot).request)
-      .toMatchObject({ model: hands, itemModel: item, activity })
+    const snapshot = { equippedItems: [], class: 3, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 8 ? 0 : 5 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]) } as unknown as Snapshot
+    expect(createViewmodelPresenter({ models } as unknown as PresentationArtifacts, item).map(snapshot).request)
+      .toMatchObject({ model: hands, itemModel: item, activity: genericActivity(activity) })
   }
 })
 
@@ -497,15 +520,16 @@ test("composes every Heavy stock weapon with distinct identities and hands-only 
   for (const [weapon, item, activity, name] of items) {
     const snapshot = {
       class: 6, team: 2, tick: 1n, weapon, health: 300, maximumHealth: 300,
+      equippedItems: [],
       velocity: Object.freeze([0, 0, 0]), projectiles: Object.freeze([]),
       loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 10 ? 6 : 0 }]),
       activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]),
     } as unknown as Snapshot
-    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    const request = createViewmodelPresenter(artifacts, item).map(snapshot).request
     expect(request.model).toBe(hands)
     expect(request.itemModel).toBe(item)
     expect(request.handsOnlyViewmodel).toBe(weapon === 11 ? true : undefined)
-    expect(request.activity).toBe(activity)
+    expect(request.activity).toBe(genericActivity(activity))
     expect(tf2Hud(snapshot).weaponName).toBe(name)
   }
 })
@@ -527,12 +551,13 @@ test("composes every Medic stock item without colliding with Heavy or Sniper ide
   for (const [weapon, item, activity, name] of items) {
     const snapshot = {
       class: 5, team: 2, tick: 1n, weapon, health: 150, maximumHealth: 150,
+      equippedItems: [],
       velocity: Object.freeze([0, 0, 0]), projectiles: Object.freeze([]),
       loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 19 ? 40 : 0 }]),
       activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]),
     } as unknown as Snapshot
-    expect(createViewmodelPresenter(artifacts).map(snapshot).request)
-      .toMatchObject({ model: hands, itemModel: item, activity })
+    expect(createViewmodelPresenter(artifacts, item).map(snapshot).request)
+      .toMatchObject({ model: hands, itemModel: item, activity: genericActivity(activity) })
     expect(tf2Hud(snapshot).weaponName).toBe(name)
   }
 })
@@ -551,19 +576,39 @@ test("composes every Engineer stock item with exact primary, secondary, melee, P
     [40, "models/weapons/c_models/c_shotgun/c_shotgun.mdl", "ACT_PRIMARY_VM_PRIMARYATTACK"],
     [41, "models/weapons/c_models/c_pistol/c_pistol.mdl", "ACT_SECONDARY_VM_PRIMARYATTACK"],
     [42, "models/weapons/c_models/c_wrench/c_wrench.mdl", "ACT_MELEE_VM_HITCENTER"],
-    [43, "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl", "ACT_ENGINEER_PDA1_VM_DRAW"],
-    [44, "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl", "ACT_ENGINEER_PDA2_VM_DRAW"],
+    [43, "models/weapons/c_models/c_builder/c_builder.mdl", "ACT_ENGINEER_PDA2_VM_DRAW"],
+    [44, "models/weapons/c_models/c_pda_engineer/c_pda_engineer.mdl", "ACT_ENGINEER_PDA1_VM_DRAW"],
     [45, "models/weapons/c_models/c_toolbox/c_toolbox.mdl", "ACT_ENGINEER_BLD_VM_DRAW"],
   ] as const
   for (const [, identity] of items) models.set(identity, { identity, bodygroupCounts: Object.freeze([]), descriptor, sequences: Object.freeze([]) })
   const artifacts = { models } as unknown as PresentationArtifacts
   for (const [weapon, item, activity] of items) {
-    const snapshot = { class: 9, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon >= 42 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: weapon>=43?1:2 }]) } as unknown as Snapshot
-    const request = createViewmodelPresenter(artifacts).map(snapshot).request
+    const snapshot = { equippedItems: [], class: 9, team: 2, tick: 1n, weapon, velocity: Object.freeze([0, 0, 0]), loadout: Object.freeze([{ weapon, reload: 0, clip: weapon >= 42 ? 0 : 1 }]), activities: Object.freeze([{ tick: 1n, weapon, activity: weapon>=43?1:2 }]) } as unknown as Snapshot
+    const request = createViewmodelPresenter(artifacts, item).map(snapshot).request
     expect(request.model).toBe(hands)
     expect(request.itemModel).toBe(item)
-    expect(request.activity).toBe(activity)
+    expect(request.activity).toBe(genericActivity(activity))
   }
+})
+
+test("catalog admission updates retain held action clocks and leave activity translation to Rust", () => {
+  const hands = "models/weapons/c_models/c_soldier_arms.mdl", model = "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
+  const artifact = (identity: string) => ({ identity, bodygroupCounts: [], descriptor: { kind: "viewmodel" }, sequences: [] })
+  const artifacts = { models: new Map([[hands, artifact(hands)], [model, artifact(model)]]) } as unknown as PresentationArtifacts
+  const item = { itemId: 19, definitionIndex: 18, slot: 0, quality: 0, style: 0, attributes: [] }
+  const entry: Tf2SupportedItem = { item, weapon: 1, name: "", displayName: "", description: [], animationSlot: "ignored-by-presentation", extraSounds: [], image: "", modelPlayer: model,
+    attachToHands: true, animationReplacements: [["ACT_VM_DRAW", "NOT_A_SEQUENCE"]], soundOverrides: [], deathNoticeIcon: null,
+    classSlots: [{ class: 3, slot: 0, weapon: 1, selectionSlot: 0 }] }
+  const snapshot = { tick: 1n, class: 3, team: 2, lifecycle: 1, weapon: 1, equippedItems: [item], velocity: [0, 0, 0],
+    loadout: [{ weapon: 1, reload: 0 }], activities: [{ weapon: 1, tick: 1n, activity: 1 }] } as unknown as Snapshot
+  const presenter = createRuntimeViewmodelPresenter(artifacts, [entry])
+  expect(presenter.map(snapshot).request).toMatchObject({ itemDefinition: 18, activity: "ACT_VM_DRAW", activityStartTick: 1n, allowIdleTransition: true })
+  presenter.updateArtifacts({ ...artifacts, models: new Map([...artifacts.models, ["unrelated.mdl", artifact("unrelated.mdl")]]) } as unknown as PresentationArtifacts)
+  const later = presenter.map({ ...snapshot, tick: 31n, activities: [] }).request
+  expect(later.activityStartTick).toBe(1n)
+  expect(later.activity).toBe("ACT_VM_DRAW")
+  expect(later.elapsedSeconds).toBeCloseTo(0.45)
+  expect(() => createRuntimeViewmodelPresenter(artifacts, []).map(snapshot)).toThrow("active weapon has no equipped catalog definition")
 })
 
 test("starts authored hitscan muzzle systems from exact fire-tick attachment transforms", () => {
