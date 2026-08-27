@@ -41,6 +41,7 @@ import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation, withSourceModelPanelTargetViewport } from "./model-panel"
 import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "./source-model-skinning"
+import { modelNormalEvidence } from "./model-normal-evidence"
 import { modelIntersectsViewFrustum } from "./model-visibility"
 import { sourceHorizontal4By3FovToVertical, sourceViewportDepthRange } from "./source-camera"
 import {
@@ -66,6 +67,7 @@ import {
   sourceEyeIrisNode,
   sourceModelSurfaceNode,
   sourceStaticVertexLightingNode,
+  sourceModelWorldNormal,
   updateSourceModelLightingUniforms,
   updateSourceModelEyeUniforms,
   type SourceModelEyeUniforms,
@@ -835,6 +837,8 @@ export type ModelGeometryEvidence = Readonly<{
     material: string
     modelDepth: number
     worldDepth: number | null
+    worldPosition: readonly number[]
+    worldNormal: readonly number[]
   }>[]
 }>
 
@@ -1084,7 +1088,7 @@ function runtimeStaticLightingNode(
   halfLambert: boolean,
   warp?: THREE.Texture,
 ):any{
-  const normal=TSL.normalWorld.normalize(),cube=Array.from({length:6},(_,side)=>TSL.vec3(...input.runtimeAmbient.subarray(index*18+side*3,index*18+side*3+3) as unknown as [number,number,number]))
+  const normal=sourceModelWorldNormal.normalize(),cube=Array.from({length:6},(_,side)=>TSL.vec3(...input.runtimeAmbient.subarray(index*18+side*3,index*18+side*3+3) as unknown as [number,number,number]))
   let lighting=normal.x.lessThan(0).select(cube[1],cube[0]).mul(normal.x.mul(normal.x)).add(normal.y.lessThan(0).select(cube[3],cube[2]).mul(normal.y.mul(normal.y))).add(normal.z.lessThan(0).select(cube[5],cube[4]).mul(normal.z.mul(normal.z)))
   for(let at=input.runtimeLightOffsets[index]!;at<input.runtimeLightOffsets[index+1]!;at++){
     const light=input.runtimeLights[at]!
@@ -1826,6 +1830,7 @@ class RendererOwner implements Renderer {
           material: String(hit.object.userData.materialIdentity),
           modelDepth: hit.distance,
           worldDepth,
+          ...modelNormalEvidence(hit),
         }))
       }
     }
@@ -1863,6 +1868,7 @@ class RendererOwner implements Renderer {
           material: String(hit.object.userData.materialIdentity),
           modelDepth: hit.distance,
           worldDepth,
+          ...modelNormalEvidence(hit),
         }))
       }
     }
