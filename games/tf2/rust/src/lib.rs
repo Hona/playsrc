@@ -289,6 +289,7 @@ pub struct Command {
     pub select_random_class: bool,
     pub select_team: Option<PlayerTeam>,
     pub select_weapon: Option<Weapon>,
+    pub select_last_weapon: bool,
     pub disguise: Option<spy::Disguise>,
     pub mode_request: Option<Mode>,
     pub activate_entity: Option<u32>,
@@ -818,6 +819,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     pending_team_change: Option<PlayerTeam>,
     pending_control_point_events: Vec<control_point::Event>,
     weapon: Option<Weapon>,
+    last_weapon: Option<Weapon>,
+    secondary_last_weapon: Option<Weapon>,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
     loadout_class: PlayerClass,
     critical_history: critical::PlayerHistory,
@@ -995,6 +998,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             pending_team_change: None,
             pending_control_point_events: Vec::new(),
             weapon: Some(Weapon::RocketLauncher),
+            last_weapon: Some(Weapon::Shotgun),
+            secondary_last_weapon: None,
             loadout,
             loadout_class: PlayerClass::Soldier,
             critical_history: critical::PlayerHistory::default(),
@@ -1242,6 +1247,48 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.weapon = self.active_equipment.weapons(self.class).next();
         }
         self.equipment_attributes.set_active(self.weapon);
+        if !same_class {
+            self.reset_last_weapon();
+        } else {
+            self.last_weapon = self.last_weapon.filter(|weapon| self.loadout.contains_key(weapon)
+                && definition_for_weapon(&old_items, self.class, *weapon) == definition_for_weapon(&new_items, self.class, *weapon));
+            self.secondary_last_weapon = self.secondary_last_weapon.filter(|weapon| self.loadout.contains_key(weapon)
+                && definition_for_weapon(&old_items, self.class, *weapon) == definition_for_weapon(&new_items, self.class, *weapon));
+        }
+    }
+
+    fn weapon_hud(&self, weapon: Weapon) -> Option<&'static equipment::WeaponHud> {
+        let definition = self.active_equipment.weapon_definition(self.class, weapon)?;
+        equipment::presentation(definition)?.class_hud.iter()
+            .find_map(|(class, hud)| (*class == self.class).then_some(hud))
+    }
+
+    fn reset_last_weapon(&mut self) {
+        // Default TF2 spawn last slot is secondary, or melee if unavailable.
+        self.last_weapon = [1, 2].into_iter().find_map(|slot| self.active_equipment.weapons(self.class)
+            .find(|weapon| self.weapon_hud(*weapon).is_some_and(|hud| hud.bucket == slot)));
+        self.secondary_last_weapon = None;
+    }
+
+    fn should_set_last_weapon(&self, weapon: Option<Weapon>) -> bool {
+        match weapon {
+            None => true,
+            // CTFWeaponInvis override; builder uses the configured object's
+            // autoswitchto (zero for all three Engineer objects).
+            Some(Weapon::InvisibilityWatch | Weapon::Toolbox) => false,
+            Some(weapon) => self.weapon_hud(weapon).is_some_and(|hud| hud.allows_auto_switch_to),
+        }
+    }
+
+    fn record_weapon_switch(&mut self, next: Weapon) {
+        // CTFPlayer::Weapon_Switch keeps two last handles so temporary PDAs do
+        // not replace either gameplay weapon when returning from the menu.
+        if self.should_set_last_weapon(self.weapon) {
+            self.secondary_last_weapon = self.last_weapon;
+            self.last_weapon = self.weapon;
+        } else if self.should_set_last_weapon(Some(next)) && Some(next) != self.secondary_last_weapon {
+            std::mem::swap(&mut self.last_weapon, &mut self.secondary_last_weapon);
+        }
     }
 
     pub fn round_snapshot(&self) -> round::Snapshot {
@@ -1326,6 +1373,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             };
             if !team.is_gameplay() {
                 self.weapon = None;
+                self.last_weapon = None;
+                self.secondary_last_weapon = None;
                 self.equipment_attributes.set_active(None);
                 self.loadout.clear();
                 self.health = 0;
@@ -1879,6 +1928,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if matches!(request, building::Request::Build(_))
                 && self.buildings.placement().is_some()
             {
+                self.record_weapon_switch(Weapon::Toolbox);
                 self.weapon = Some(Weapon::Toolbox);
                 self.loadout
                     .entry(Weapon::Toolbox)
@@ -2282,6 +2332,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     &mut self.ammo.metal,
                 )
             {
+                self.record_weapon_switch(Weapon::Wrench);
                 self.weapon = Some(Weapon::Wrench);
                 self.deploy_active_weapon();
                 self.activity_events.push(ActivityEvent {
@@ -3533,7 +3584,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             events.push(Event::Respawned);
         }
-        if let Some(weapon) = command.select_weapon
+        let selected = if command.select_last_weapon { self.last_weapon } else { command.select_weapon };
+        if let Some(weapon) = selected
             && self.loadout.contains_key(&weapon)
             && weapon != Weapon::InvisibilityWatch
             && Some(weapon) != self.weapon
@@ -3554,6 +3606,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 ) {
                     self.pending_melee_tick = None;
                 }
+            }
+            self.record_weapon_switch(weapon);
+            if self.weapon == Some(Weapon::Toolbox) {
+                self.buildings.request(building::Request::Cancel, self.class, self.ammo.metal);
             }
             self.weapon = Some(weapon);
             self.fire_on_empty = false;
@@ -6912,6 +6968,11 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
     }
 }
 
+fn definition_for_weapon(items: &[equipment::EquippedItem], class: PlayerClass, weapon: Weapon) -> Option<u32> {
+    items.iter().find_map(|item| (equipment::supported_item(item.definition_index)
+        .and_then(|item| item.weapon_for_class(class)) == Some(weapon)).then_some(item.definition_index))
+}
+
 fn default_weapon(class: PlayerClass) -> Option<Weapon> {
     class.data().stock_items.iter().find_map(|item| equipment::registered_item(item.definition)?.weapon_for_class(class))
 }
@@ -8472,6 +8533,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn engineer_last_weapon_cancels_both_pdas_without_polluting_weapon_history() {
+        let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(0.015));
+        session.advance(Command { select_class: Some(PlayerClass::Engineer), ..Command::default() }).unwrap();
+        assert_eq!(session.last_weapon, Some(Weapon::EngineerPistol));
+        for menu in [Weapon::BuildPda, Weapon::DestroyPda] {
+            session.advance(Command { select_weapon: Some(Weapon::Wrench), ..Command::default() }).unwrap();
+            session.advance(Command { select_weapon: Some(menu), ..Command::default() }).unwrap();
+            assert_eq!(session.last_weapon, Some(Weapon::Wrench));
+            assert_eq!(session.secondary_last_weapon, Some(Weapon::EngineerShotgun));
+            let snapshot = session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
+            assert_eq!(snapshot.weapon, Some(Weapon::Wrench));
+            assert_eq!(session.last_weapon, Some(Weapon::EngineerShotgun));
+            let snapshot = session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
+            assert_eq!(snapshot.weapon, Some(Weapon::EngineerShotgun));
+        }
+        session.advance(Command { select_weapon: Some(Weapon::BuildPda), ..Command::default() }).unwrap();
+        session.advance(Command { select_weapon: Some(Weapon::DestroyPda), ..Command::default() }).unwrap();
+        assert_eq!(session.last_weapon, Some(Weapon::EngineerShotgun));
+        session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::EngineerShotgun));
+        assert_eq!(session.last_weapon, Some(Weapon::Wrench));
+        session.advance(Command { select_class: Some(PlayerClass::Scout), ..Command::default() }).unwrap();
+        assert_eq!(session.last_weapon, Some(Weapon::Pistol));
+        session.advance(Command { select_last_weapon: true, ..Command::default() }).unwrap();
+        assert_eq!(session.weapon, Some(Weapon::Pistol));
     }
 
     #[test]

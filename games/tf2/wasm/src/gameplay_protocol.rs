@@ -96,7 +96,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         value => (Some(playsrc_tf2::PlayerClass::try_from(value).ok()?), false),
     };
     let select_weapon = match (select >> 8) & 0xff {
-        0 => None,
+        0 | 255 => None,
         1 => Some(playsrc_tf2::Weapon::RocketLauncher),
         2 => Some(playsrc_tf2::Weapon::Original),
         3 => Some(playsrc_tf2::Weapon::StickybombLauncher),
@@ -291,6 +291,7 @@ pub fn decode(bytes: &[u8]) -> Option<AdvanceInput> {
         select_random_class,
         select_team,
         select_weapon,
+        select_last_weapon: (select >> 8) & 0xff == 255,
         disguise,
         mode_request,
         activate_entity: (target != u32::MAX).then_some(target),

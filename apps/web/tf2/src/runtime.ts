@@ -542,7 +542,7 @@ export class Tf2Application {
   #reloadPressed = false
   #dropItem = false
   #selectClass: Tf2Class | 12 | undefined
-  #selectWeapon: Tf2Weapon | undefined
+  #selectWeapon: Tf2Weapon | "last" | undefined
   #disguise: Readonly<{ class: Tf2Class; team: Tf2Team }> | undefined
   #modeRequest: 0 | 1 | undefined
   #botRequest: BotRequest | undefined
@@ -4475,7 +4475,8 @@ export class Tf2Application {
       dropItem: this.#dropItem,
       nextbotStop: this.#nextBotStop,
       selectClass: this.#selectClass,
-      selectWeapon: this.#selectWeapon,
+      selectWeapon: this.#selectWeapon === "last" ? undefined : this.#selectWeapon,
+      selectLastWeapon: this.#selectWeapon === "last",
       disguise: this.#disguise,
       modeRequest: this.#modeRequest,
       bot: this.#botRequest,
@@ -5445,7 +5446,7 @@ export class Tf2Application {
       })
       this.#requiredParticleDisplayFrames.admit(prepared, particleItems.map(item=>item.effectIdentity))
       this.#preparedPresentation=prepared
-      if(snapshot.class===9&&!this.#engineer){if(!this.#uiResources||!this.#presentationRandom)throw new Error("TF2 Engineer presentation resources are unavailable");this.#engineer=initializeTf2EngineerPresentation({root:this.#engineerRoot,resources:this.#uiResources,viewport:this.#viewport(),clock:{nowSeconds:()=>this.#frameClock.current},random:this.#presentationRandom,reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches})}
+      if(snapshot.class===9&&!this.#engineer){if(!this.#uiResources||!this.#presentationRandom)throw new Error("TF2 Engineer presentation resources are unavailable");this.#engineer=initializeTf2EngineerPresentation({root:this.#engineerRoot,resources:this.#uiResources,viewport:this.#viewport(),clock:{nowSeconds:()=>this.#frameClock.current},random:this.#presentationRandom,reducedMotion:matchMedia("(prefers-reduced-motion: reduce)").matches,lookupBinding:action=>this.#bindings.lookupBinding(action)})}
       this.#engineer?.publish(snapshot)
       const hud = this.#hudIntegration?.publish(publication, this.#currentHudContext(snapshot))
       const hudPlayer = hud?.facts.player.kind === "available" ? hud.facts.player.value : null
@@ -5653,6 +5654,8 @@ export class Tf2Application {
     } else if (action === "+showscores") {
       if (this.#buttons.press(identity, action)) this.#setScoreboardVisible(true)
 
+    } else if (action === "lastinv") {
+      this.#selectWeapon = "last"
     } else if (/^slot[1-6]$/.test(action) && this.#snapshot && this.#equipmentProfile?.state()) {
       this.#selectWeapon = equippedWeaponSlots(this.#snapshot, this.#equipmentProfile.state()!.inventory)
         .find(value => value.slot === Number(action.slice(4)) - 1)?.weapon

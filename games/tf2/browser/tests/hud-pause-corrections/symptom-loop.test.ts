@@ -128,7 +128,7 @@ function resources(): Tf2VguiResources {
         : /CCvarSlider/u.test(control.name) ? "Slider"
           : /CLabeledCommandComboBox/u.test(control.name) ? "ComboBox"
             : /CCvar.*CheckButton/u.test(control.name) ? "CheckButton"
-              : /button/iu.test(control.name) ? "Button" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
+              : /button/iu.test(control.name) ? "Button" : /label/iu.test(control.name) ? "Label" : /image|class/iu.test(control.name) ? "ImagePanel" : "EditablePanel",
       element: /button/iu.test(control.name) ? "button" : "div",
       role: null,
       focusable: /button|slider|combo|dialog/iu.test(control.name),
@@ -245,7 +245,10 @@ const contextWithModel = (playerClassUsePlayerModel: boolean): SessionHudContext
 describe("TF2 HUD and pause headed symptom loop", () => {
   test("renders authored Engineer build and destroy menu states from stock resources", () => {
     const root = createRoot(new FakeDocument())
-    const engineer = initializeTf2EngineerPresentation({ root: root as unknown as HTMLElement, resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true, clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 } })
+    let binding: string | null = "q"
+    const configured = resources()
+    const localized = { ...configured, localization: { ...configured.localization, tokens: [{ name: "Hud_Menu_Build_Cancel", value: "Hit [%lastinv%] to Cancel" }] } }
+    const engineer = initializeTf2EngineerPresentation({ root: root as unknown as HTMLElement, resources: localized, viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true, clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, lookupBinding(action) { expect(action).toBe("lastinv"); return binding } })
     const base = { tick: 1n, class: 9, team: 2, lifecycle: 1, weapon: 43, metal: 200, buildings: [] } as never
     engineer.publish(base)
     expect(engineer.menu()).toBe("build")
@@ -256,6 +259,14 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(engineer.menu()).toBe("destroy")
     expect(engineer.select(1)).toEqual({ action: "destroy", object: { kind: 2, mode: 0 } })
     expect(engineer.select(2)).toBeNull()
+    binding = "f8"
+    engineer.publish({ ...base as object, tick: 3n, weapon: 40 } as never)
+    engineer.publish({ ...base as object, tick: 4n } as never)
+    expect(descendants(root).some(element => element.textContent.includes("[f8]"))).toBeTrue()
+    binding = null
+    engineer.publish({ ...base as object, tick: 5n, weapon: 40 } as never)
+    engineer.publish({ ...base as object, tick: 6n } as never)
+    expect(descendants(root).some(element => element.textContent.includes("[< not bound >]"))).toBeTrue()
     engineer.destroy()
   })
 

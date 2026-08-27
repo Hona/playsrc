@@ -136,6 +136,7 @@ export function initializeTf2EngineerPresentation(request: Readonly<{
   clock: Readonly<{ nowSeconds(): number }>
   random: Readonly<{ nextUnit(): number }>
   reducedMotion: boolean
+  lookupBinding(action: string): string | null
 }>): Tf2EngineerPresentation {
   const initialized = initializeVguiRuntime({ runtimeIdentity: "tf2-engineer-buildings", root: request.root,
     rootControl: { control: "EditablePanel", name: "EngineerViewport" }, viewport: request.viewport, limits: LIMITS,
@@ -233,7 +234,12 @@ export function initializeTf2EngineerPresentation(request: Readonly<{
       const next = snapshot.class !== 9 ? null : snapshot.weapon === 43 ? "build" : snapshot.weapon === 44 ? "destroy" : null
       if (menu !== next) {
         if (menu) show(menuPanels.get(menu)!, false)
-        if (next) show(menuPanels.get(next)!, true)
+        if (next) {
+          const parent = menuPanels.get(next)!
+          // CHudMenuEngyBuild/Destroy::SetVisible resolves lastinv on each open.
+          apply(runtime, { kind: "set-dialog-variable", panel: parent, name: "lastinv", value: request.lookupBinding("lastinv") ?? "< not bound >" })
+          show(parent, true)
+        }
         menu = next
         request.root.dataset.engineerMenu = menu ?? "none"
       }

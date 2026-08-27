@@ -491,6 +491,8 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       }
     }
     expect(new DataView(encodeCommand({ ...base, selectClass: 12 })).getUint32(32, true)).toBe(12)
+    expect(new DataView(encodeCommand({ ...base, selectLastWeapon: true })).getUint32(32, true)).toBe(255 << 8)
+    expect(() => encodeCommand({ ...base, selectLastWeapon: true, selectWeapon: 43 })).toThrow("weapon selectors conflict")
     for (const identity of [0, 10, 11, 13, 1.5, Number.NaN]) {
       expect(() => encodeCommand({ ...base, selectClass: identity as 1 })).toThrow("class selector is invalid")
     }

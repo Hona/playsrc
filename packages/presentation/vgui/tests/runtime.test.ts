@@ -151,6 +151,31 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("reuses constructor property families without sharing authored values or runtime registrations", () => {
+    const acceptedProperties = ["customValue"]
+    const registration = { name: "AuthoredButton", baseControl: "CheckButton" as const, element: "button", role: null,
+      focusable: true, animationVariables: [], acceptedProperties }
+    const { runtime } = setup(emptyAnimations, [registration])
+    acceptedProperties[0] = "replacementValue"
+    for (let index = 0; index < 24; index++) {
+      const id = operation(runtime, { kind: "create-panel", parent: 1, control: "AuthoredButton", name: `Card${index}`, properties: [
+        { name: "CUSTOMvalue", value: String(index) }, { name: "WiDe", value: String(30 + index) },
+        { name: "labelText", value: `Card ${index}` }, { name: "textAlignment", value: "west" },
+        { name: "command", value: `select-${index}` }, { name: "selected", value: "1" },
+      ] }).panel!
+      const panel = runtime.snapshot().panels.find(panel => panel.id === id)!
+      expect(panel.bounds.width).toBe(30 + index)
+      expect(panel.text).toBe(`Card ${index}`)
+    }
+    const invalid = runtime.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "Invalid", properties: [{ name: "replacementValue", value: "1" }] })
+    expect(invalid.ok).toBeFalse()
+    if (!invalid.ok) expect(invalid.diagnostic.subject).toBe("AuthoredButton.replacementValue")
+    const replacement = setup(emptyAnimations, [registration]).runtime
+    expect(replacement.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "New", properties: [{ name: "replacementValue", value: "2" }] }).ok).toBeTrue()
+    expect(replacement.apply({ kind: "create-panel", parent: 1, control: "AuthoredButton", name: "Old", properties: [{ name: "customValue", value: "2" }] }).ok).toBeFalse()
+    runtime.destroy()
+    replacement.destroy()
+  })
   test("child lookup is case insensitive, scoped, and immediately follows resource lifecycle", () => {
     const { runtime } = setup()
     runtime.deferPresentation(() => {
