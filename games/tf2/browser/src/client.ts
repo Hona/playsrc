@@ -53,6 +53,8 @@ export type LoadedGame = Readonly<{
   payloadSha256: string
   cache: "hit" | "stored"
   presentation: Uint8Array
+  /** Existing derived presentation identity: map/configuration/compiler + application build. */
+  presentationKey: string
   presentationCache: "hit" | "stored" | "unavailable"
   presentationCacheError: string | null
   persistence: Promise<Readonly<{
@@ -562,6 +564,7 @@ export class Tf2WorkerClient {
         payloadSha256: loaded.payloadSha256,
         cache,
         presentation,
+        presentationKey: pkey,
         presentationCache,
         presentationCacheError: null,
         persistence,
