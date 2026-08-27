@@ -23,7 +23,7 @@ import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
-import { browserFrameProfiler, installNodeBuilderInstrumentation, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
+import { browserFrameProfiler, installNodeBuilderInstrumentation, observeStaticPropUse, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
 export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProfile, type RendererMemoryProfile, type RendererPassProfile } from "./frame-instrumentation"
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
@@ -46,7 +46,7 @@ import { installRenderObjectLifetime } from "./render-object-lifetime"
 import { installGeometryAttributeLifetime } from "./geometry-attribute-lifetime"
 import { installTextureBindingLifetime } from "./texture-binding-lifetime"
 import { disposeDynamicModel } from "./dynamic-model-disposal"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "./model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, bindStaticPropFade, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "./model-lighting-graphs"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
@@ -3651,6 +3651,9 @@ class RendererOwner implements Renderer {
         }
         modelTemplates.set(model.logicalPath, template)
       }
+      // VHV and unlit occurrences share only an exact template/pass material.
+      // Fade is draw data, not graph identity; runtime-lit graphs still capture
+      // their own authored lighting. Opaque batching remains unchanged.
       if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>()
         for(let propIndex=0;propIndex<props.count;propIndex+=1){const modelIdentity=props.models[props.presentationModel[propIndex]!]!,key=modelKey(modelIdentity,props.skin[propIndex]!),template=modelTemplates.get(key);if(!template)throw new RenderingError("MissingInput",`static-prop model ${key} is unavailable`)
           if(props.body[propIndex]!==0)throw new RenderingError("UnsupportedFeature","nonzero static-prop body selection is unavailable")
@@ -3660,7 +3663,8 @@ class RendererOwner implements Renderer {
           let colorIndex=0
           for(const mesh of meshes){if(lightingKind===0){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere;const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true));disposables.add(geometry);mesh.geometry=geometry}
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
-            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=!fading&&(lightingKind===0||unlit)?`${original.uuid}:${unlit?"unlit":"vertex"}`:undefined
+            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=lightingKind===0||unlit?`${original.uuid}:${unlit?"unlit":"vertex"}:${Number(fading)}`:undefined
+            if(fading)bindStaticPropFade(mesh,fadeUniform)
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
             if(!material){
               material=original.clone()
@@ -3669,13 +3673,14 @@ class RendererOwner implements Renderer {
               const halfLambert=Boolean(state?.phong)||state?.halfLambert===true
               const rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?sourceStaticVertexLightingNode():runtimeStaticLightingNode(map,props,propIndex,halfLambert,modelLightingTextures.get(identity.toLowerCase())?.warp)).mul(exposureUniform)
               const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
-              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fadeUniform)),materialState,waterFogUniforms,fading)
+              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fading?modelLightingGraphs.staticFade:fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
               if(fading){material.transparent=true;material.depthWrite=false}
               disposables.add(material)
               if(sharingKey!==undefined)sharedStaticMaterials.set(sharingKey,material)
             }
             mesh.material=material
+            if(fading&&handoffProfile)observeStaticPropUse(mesh,handoffProfile,sceneGeneration,props.source[propIndex]!)
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
           const position=props.transform.subarray(propIndex*6,propIndex*6+3),angles=props.transform.subarray(propIndex*6+3,propIndex*6+6);sourceTransform(instance,position,angles);instance.updateMatrix();instance.matrixAutoUpdate=false;instance.visible=false;instance.userData.staticPropSource=props.source[propIndex]

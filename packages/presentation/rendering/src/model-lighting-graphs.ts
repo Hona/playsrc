@@ -10,6 +10,9 @@ const reference = (path: string, type: string) => TSL.reference(`userData.${path
  * world/resource closure on the same device. It is never a module-global cache;
  * every new draw binds the replacement's primitive values. */
 export class ModelLightingGraphs {
+  // Static VHV/unlit primitives share their material graph. Distance/screen
+  // fade remains an occurrence binding, just like dynamic model lighting.
+  readonly staticFade = reference("sourceStaticFade", "float")
   readonly lighting: SourceModelLightingUniforms = Object.freeze({
     ambientEnabled: reference("sourceLighting.ambientEnabled", "float"),
     cameraPosition: reference("sourceLighting.cameraPosition", "vec3"),
@@ -37,10 +40,14 @@ export class ModelLightingGraphs {
   get size(): number { return this.#graphs.size }
 
   releaseDrawReferences(): void {
-    const references = [this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
+    const references = [this.staticFade, this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
       ...this.lighting.local.flatMap(light => Object.values(light)), ...Object.values(this.eyes)]
     for (const node of references) (node as unknown as { reference: object | null }).reference = null
   }
+}
+
+export function bindStaticPropFade(mesh: THREE.Mesh, fade: ReturnType<typeof TSL.uniform>): void {
+  Object.defineProperty(mesh.userData, "sourceStaticFade", { value: fade, configurable: true })
 }
 
 export function bindModelLighting(mesh: THREE.Mesh, lighting: SourceModelLightingUniforms, eye?: SourceModelEyeUniforms): void {

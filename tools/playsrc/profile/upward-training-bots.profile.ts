@@ -642,7 +642,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       presentationCallbacks: instrumentation.animationCallbacks, worker: instrumentation.worker, input: instrumentation.input, counters: instrumentation.counters, queueWrites: instrumentation.queueWrites,
       simulationPublications: instrumentation.simulation, simulationPublicationsDropped: instrumentation.simulationDropped,
       classSwitches, lifecycle, nodeBuilds: instrumentation.nodeBuilds,
-      pipelinePreparation: { models: instrumentation.modelPreparation, retainedTemplates: instrumentation.counters.retainedModelTemplates ?? 0,
+      pipelinePreparation: { firstStaticPropUses: instrumentation.firstStaticPropUses ?? [], models: instrumentation.modelPreparation, retainedTemplates: instrumentation.counters.retainedModelTemplates ?? 0,
         reusedPreparedModels: instrumentation.counters.reusedPreparedModels ?? 0 },
       dom: { mutations, nodes: document.getElementsByTagName("*").length, hudNodes: hudRoot?.getElementsByTagName("*").length ?? 0,
         panels, rasterImages: document.querySelectorAll("img[data-vgui-raster]").length, rasterCanvases: document.querySelectorAll("canvas[data-vgui-raster]").length,
@@ -1216,5 +1216,29 @@ test("profile authored headed Upward offline-practice default roster and actual 
       })) })
     }
     await writeFile(path.join(directory, `${label}-engineer-ui.json`), JSON.stringify({ menus, performanceSample: false }))
+  }
+  if (process.env.PROFILE_STATIC_PROP_AUDIT === "1") {
+    // This independent pixel/depth fixture runs after the complete gameplay
+    // sample and its trace export, on the same visible page and checked lease.
+    expect(report.nodeBuilds.filter((build: any) => build.material.includes("/models/props_"))).toEqual([])
+    const uses = report.pipelinePreparation.firstStaticPropUses
+    expect(uses.filter((use: any) => use.generation === 2 && use.pass === "main").length).toBeGreaterThan(0)
+    const url = new URL("/static-prop-graph-audit", page.url()).href
+    await page.route(url, route => route.fulfill({ contentType: "text/html", body: `<!doctype html><title>Static prop graph pixel/depth equivalence</title><style>body{margin:0;background:#111;color:white}</style><h3>Independent VHV colors and fades: dedicated vs shared material</h3><script type="module">import {createStaticPropGraphProbe} from '/@fs/${repositoryRoot}/packages/presentation/rendering/tests/fixtures/static-prop-graph-probe.ts';window.probe=await createStaticPropGraphProbe();</script>` }))
+    await page.goto(url)
+    await page.waitForFunction(() => (window as any).probe)
+    const results = []
+    for (let phase = 0; phase < 4; phase++) {
+      const { beforePixels, afterPixels, ...result } = await page.evaluate(phase => (window as any).probe.compare(phase), phase)
+      for (const [side, data] of [["before", beforePixels], ["after", afterPixels]]) await writeFile(path.join(directory, `${label}-static-${phase}-${side}.png`), Buffer.from(data.split(",")[1], "base64"))
+      await checkNativeWindow()
+      results.push(result)
+    }
+    await page.screenshot({ path: path.join(directory, `${label}-static-visible.png`) })
+    const retiredDraws = await page.evaluate(() => (window as any).probe.dispose())
+    await writeFile(path.join(directory, `${label}-static-graphs.json`), JSON.stringify({ results, retiredDraws, nativeAdmission: nativeAdmission.slice(-4), performanceSample: false }, null, 2))
+    expect(results.map(result => [result.builds, result.newPrograms, result.colorMismatches, result.depthMismatches])).toEqual(Array.from({ length: 4 }, () => [0, 0, 0, 0]))
+    expect(retiredDraws).toBe(0)
+    expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
   }
 })

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "../src/model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, bindStaticPropFade, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "../src/model-lighting-graphs"
 import { createSourceModelLightingUniforms, createSourceModelEyeUniforms, sourceModelSurfaceNode } from "../src/source-model-lighting"
 
 test("one graph reads independent lighting and eye values in alternating object order", () => {
@@ -34,15 +34,22 @@ test("a verified graph handoff drops last-draw object references and rebinds wit
   const before = createSourceModelLightingUniforms(), after = createSourceModelLightingUniforms()
   before.ambientEnabled.value = 0; after.ambientEnabled.value = 1
   bindModelLighting(old, before); bindModelLighting(next, after)
+  bindStaticPropFade(old, TSL.uniform(.25)); bindStaticPropFade(next, TSL.uniform(.75))
+  const fade = graphs.staticFade as any
+  fade.updateReference({ object: old }); fade.updateValue()
+  expect(fade.node.value).toBe(.25)
   const node = graphs.lighting.ambientEnabled as any
   node.updateReference({ object: old }); node.updateValue()
   const graph = graphs.get("exact", () => TSL.vec4(1))
   expect(node.reference).toBe(old)
   graphs.releaseDrawReferences()
   expect(node.reference).toBeNull()
+  expect(fade.reference).toBeNull()
   expect(graphs.get("exact", () => { throw new Error("rebuilt graph") })).toBe(graph)
   node.updateReference({ object: next }); node.updateValue()
   expect(node.node.value).toBe(1)
+  fade.updateReference({ object: next }); fade.updateValue()
+  expect(fade.node.value).toBe(.75)
 })
 
 test("graph structure is retained across actor replacement, but isolated across scene/fog/exposure owners", () => {
