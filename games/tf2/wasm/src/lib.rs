@@ -1200,12 +1200,12 @@ unsafe fn compile_map(
         compile_metrics[4] = phase_finished.saturating_sub(phase_started);
         phase_started = phase_finished;
         let (runtime_models, model_occurrences) = resolve_models(
-            &entity_graph,
+            Some(&entity_graph),
             &studio_models,
             &resources,
             &decoders,
             profile,
-            &canonical.static_props,
+            Some(&canonical.static_props),
         )
         .map_err(|_| 8_u32)?;
         memory_metrics[5] = memory::live_bytes();
@@ -2078,12 +2078,14 @@ struct ModelPoseLightingRequest {
     camera_angles: [f32; 3],
 }
 
+mod equipment_models;
+
 struct ModelPoseWorld<'a> {
     metadata: &'a BTreeMap<String, StudioModelLightingMetadata>,
-    lighting: &'a mut playsrc_map::ModelLightingWorld<'static>,
-    visibility: &'a playsrc_visibility::World,
-    collision: &'a playsrc_collision::World,
-    snapshot: &'a playsrc_collision::Snapshot,
+    lighting: Option<&'a mut playsrc_map::ModelLightingWorld<'static>>,
+    visibility: Option<&'a playsrc_visibility::World>,
+    collision: Option<&'a playsrc_collision::World>,
+    snapshot: Option<&'a playsrc_collision::Snapshot>,
     gameplay: Option<&'a playsrc_tf2::Snapshot>,
     cubemaps: &'a [playsrc_map::CubemapSample],
     particle_inputs: Option<wearable::ParticleInputs<'a>>,
@@ -2105,6 +2107,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
     let Ok(requests) = decode_model_requests(bytes) else {
         return 0;
     };
+    if handle == 0 { return u32::from(equipment_models::transact(&requests).is_ok()); }
     let Some((index, generation)) = decode(handle) else {
         return 0;
     };
@@ -2135,10 +2138,10 @@ pub unsafe extern "C" fn playsrc_model_transact(
     wearable_particles.retain(&requests);
     let mut world = ModelPoseWorld {
         metadata: &slot.model_lighting_metadata,
-        lighting,
-        visibility,
-        collision,
-        snapshot: &snapshot,
+        lighting: Some(lighting),
+        visibility: Some(visibility),
+        collision: Some(collision),
+        snapshot: Some(&snapshot),
         gameplay: slot.latest_game_snapshot.as_ref(),
         cubemaps: &environment.world.cubemaps,
         particle_inputs: slot.particles.as_ref().map(|template| wearable::ParticleInputs { template, materials: &slot.particle_sheets, identities: &slot.particle_materials }),
@@ -2162,16 +2165,19 @@ pub unsafe extern "C" fn playsrc_model_transact(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_model_output_length(handle: u32) -> usize {
+    if handle == 0 { return equipment_models::output_length(); }
     with(handle, |slot| slot.model_output.len()).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_model_output_capacity(handle: u32) -> usize {
+    if handle == 0 { return equipment_models::output_capacity(); }
     with(handle, |slot| slot.model_output.capacity()).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_model_output_take(handle: u32) -> *mut u8 {
+    if handle == 0 { return equipment_models::output_take(); }
     let Some((index, generation)) = decode(handle) else {
         return std::ptr::null_mut();
     };
@@ -2201,6 +2207,7 @@ pub unsafe extern "C" fn playsrc_model_output_recycle(
         return;
     }
     let bytes = unsafe { Vec::from_raw_parts(pointer, 0, capacity) };
+    if handle == 0 { equipment_models::recycle(bytes); return; }
     let Some((index, generation)) = decode(handle) else {
         return;
     };
@@ -2222,6 +2229,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
     pointer: *mut u8,
     capacity: usize,
 ) -> usize {
+    if handle == 0 { return unsafe { equipment_models::copy_output(pointer, capacity) }; }
     with(handle, |slot| {
         if capacity < slot.model_output.len() {
             return 0;
@@ -3440,8 +3448,8 @@ fn encode_model_lighting(
     };
     let mut state =
         world
-            .lighting
-            .sample(origin, world.visibility, world.collision, world.snapshot)?;
+            .lighting.as_mut().ok_or(())?
+            .sample(origin, world.visibility.ok_or(())?, world.collision.ok_or(())?, world.snapshot.ok_or(())?)?;
     playsrc_map::apply_model_ambient_boost(
         &mut state.ambient_cube,
         &state.local_lights,
@@ -8800,12 +8808,12 @@ fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<Strin
 }
 
 fn resolve_models(
-    graph: &playsrc_entity::Graph,
+    graph: Option<&playsrc_entity::Graph>,
     studio_models: &BTreeMap<String, Arc<playsrc_studio_model::PresentationModel>>,
     bundle: &BTreeMap<String, &[u8]>,
     decoders: &TextureDecoders<'_>,
     profile: playsrc_map::LightingProfile,
-    static_props: &playsrc_map::StaticProps,
+    static_props: Option<&playsrc_map::StaticProps>,
 ) -> Result<
     (
         Vec<playsrc_map::RuntimeModel>,
@@ -8820,13 +8828,13 @@ fn resolve_models(
     let mut indexes = BTreeMap::new();
     let mut material_cache = BTreeMap::<String, playsrc_map::RuntimeMaterial>::new();
     let mut output_skins = BTreeMap::<Vec<u8>, Vec<i32>>::new();
-    for connection in graph.entities.iter().flat_map(|entity| &entity.connections) {
+    for connection in graph.into_iter().flat_map(|graph| &graph.entities).flat_map(|entity| &entity.connections) {
         if let playsrc_entity::Connection::Parsed { target, input, parameter, .. } = connection {
             if input.eq_ignore_ascii_case(b"Skin") { output_skins.entry(target.to_ascii_lowercase()).or_default().push(playsrc_keyvalues::NumericValue::Bytes(parameter).get_int()); }
         }
     }
     let mut entity_skins = BTreeMap::<String, std::collections::BTreeSet<usize>>::new();
-    for entity in &graph.entities {
+    for entity in graph.into_iter().flat_map(|graph| &graph.entities) {
         if let Some(identity) = authored_entity_model(entity)? {
             let count = studio_models.get(&identity).ok_or(())?.skins.len();
             let family = entity_skins.entry(identity).or_default();
@@ -8885,11 +8893,11 @@ fn resolve_models(
             selected_skins.insert(1);
         }
         if let Some(families) = entity_skins.get(identity) { selected_skins.extend(families); }
-        if graph.entities.iter().any(|entity| entity.classname.as_deref() == Some(b"team_control_point")
-            && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(entity,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes())))) {
+        if graph.is_some_and(|graph| graph.entities.iter().any(|entity| entity.classname.as_deref() == Some(b"team_control_point")
+            && [b"team_model_0".as_slice(),b"team_model_2",b"team_model_3"].into_iter().any(|key| entity_scalar(entity,key).is_some_and(|name| name.eq_ignore_ascii_case(identity.as_bytes()))))) {
             selected_skins.insert(playsrc_studio_model::source_skin_family(2, model.skins.len()));
         }
-        for flag in &graph.entities {
+        for flag in graph.into_iter().flat_map(|graph| &graph.entities) {
             if !flag
                 .classname
                 .as_deref()
@@ -8910,7 +8918,7 @@ fn resolve_models(
             };
             selected_skins.insert(team + 3);
         }
-        for prop in &static_props.occurrences {
+        for (static_props, prop) in static_props.into_iter().flat_map(|props| props.occurrences.iter().map(move |prop| (props, prop))) {
             if static_props
                 .models
                 .get(prop.model)
@@ -9012,7 +9020,7 @@ fn resolve_models(
         }
     }
     let mut occurrences = Vec::new();
-    for entity in &graph.entities {
+    for entity in graph.into_iter().flat_map(|graph| &graph.entities) {
         let Some(identity) = authored_entity_model(entity)? else {
             continue;
         };

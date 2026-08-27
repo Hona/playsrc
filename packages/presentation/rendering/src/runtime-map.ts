@@ -252,6 +252,57 @@ export class RuntimeMapError extends Error {
   }
 }
 
+export function decodeRuntimeModelRegistry(bytes: Uint8Array): readonly RuntimeModel[] {
+  const reader = new Reader(bytes)
+  const models = readModelRegistry(reader, new TextDecoder("utf-8", { fatal: true }), 11)
+  if (reader.offset !== bytes.byteLength) throw new RuntimeMapError("model registry trailing bytes")
+  return Object.freeze(models)
+}
+
+function readModelRegistry(reader: Reader, decoder: TextDecoder, schema: number): RuntimeModel[] {
+  const models: RuntimeModel[] = []
+  for (let count = bounded(reader.u32(), 4096, "runtime model count"); count > 0; count--) {
+    const logicalPath = utf8(reader, decoder, "runtime model path")
+    const materialCount = bounded(reader.u32(), MAX_MATERIALS, "model material count")
+    const materials: RuntimeMaterial[] = []
+    for (let index = 0; index < materialCount; index++) {
+      const materialPath = utf8(reader, decoder, "runtime model material path")
+      materials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, [8, 9, 10, 11].includes(schema)))
+    }
+    const primitives: RuntimeModelPrimitive[] = []
+    for (let count = bounded(reader.u32(), 65536, "model primitive count"); count > 0; count--) {
+      const material = reader.u32(), vertices = bounded(reader.u32(), MAX_VERTICES, "model vertex count"), triangles = bounded(reader.u32(), MAX_TRIANGLES, "model triangle count")
+      if (material >= materialCount) throw new RuntimeMapError("model material index is invalid")
+      const positions = reader.f32Array(vertices * 3), normals = reader.f32Array(vertices * 3)
+      if (schema !== 10 && schema !== 11) throw new RuntimeMapError("authored model skinning contract is unavailable")
+      const bindPositions = reader.f32Array(vertices * 3), bindNormals = reader.f32Array(vertices * 3), bindTangents = reader.f32Array(vertices * 4)
+      const boneIndices = new Uint16Array(vertices * 4)
+      for (let index = 0; index < boneIndices.length; index++) boneIndices[index] = reader.u16()
+      const boneWeights = reader.f32Array(vertices * 4)
+      const bonePalette = new Uint16Array(bounded(reader.u32(), 256, "model bone palette count")), admitted = new Uint8Array(256)
+      for (let index = 0; index < bonePalette.length; index++) {
+        const bone = reader.u16()
+        if (bone > 255 || index > 0 && bone <= bonePalette[index - 1]!) throw new RuntimeMapError("model bone palette is not canonical")
+        bonePalette[index] = bone; admitted[bone] = 1
+      }
+      for (let index = 0; index < boneWeights.length; index++) {
+        if (boneWeights[index]! < 0 || boneWeights[index] !== 0 && admitted[boneIndices[index]!] !== 1) throw new RuntimeMapError("model bone influence is invalid")
+      }
+      const uv = reader.f32Array(vertices * 2), indices = reader.u32Array(triangles * 3)
+      if (indices.some((index) => index >= vertices)) throw new RuntimeMapError("model triangle index is invalid")
+      primitives.push(Object.freeze({ material, positions, normals, bindPositions, bindNormals, bindTangents, boneIndices, boneWeights, bonePalette, uv, indices }))
+    }
+    const palette = [...new Set(primitives.flatMap((primitive) => Array.from(primitive.bonePalette)))].sort((a, b) => a - b)
+    const indices = new Map(palette.map((bone, index) => [bone, index]))
+    for (const primitive of primitives) {
+      for (let index = 0; index < primitive.boneIndices.length; index++) if (primitive.boneWeights[index] !== 0) primitive.boneIndices[index] = indices.get(primitive.boneIndices[index]!)!
+      for (let index = 0; index < primitive.bonePalette.length; index++) primitive.bonePalette[index] = indices.get(primitive.bonePalette[index]!)!
+    }
+    models.push(Object.freeze({ logicalPath, materials: Object.freeze(materials), primitives: Object.freeze(primitives) }))
+  }
+  return models
+}
+
 class Reader {
   readonly bytes: Uint8Array
   readonly view: DataView
@@ -1353,67 +1404,7 @@ export function parseRuntimeMap(input: Uint8Array): RuntimeMap {
     materials[index] = resolvedMaterial(reader, decoder, materials[index]!, schema === 8 || schema === 9 || schema === 10 || schema === 11)
   }
 
-  const models: RuntimeModel[] = []
-  const modelCount = bounded(reader.u32(), 4_096, "runtime model count")
-  for (let modelIndex = 0; modelIndex < modelCount; modelIndex += 1) {
-    const logicalPath = utf8(reader, decoder, "runtime model path")
-    const modelMaterialCount = bounded(reader.u32(), MAX_MATERIALS, "model material count")
-    const modelMaterials: RuntimeMaterial[] = []
-    for (let material = 0; material < modelMaterialCount; material += 1) {
-      const materialPath = utf8(reader, decoder, "runtime model material path")
-      modelMaterials.push(resolvedMaterial(reader, decoder, { logicalPath: materialPath, width: 1, height: 1 }, schema === 8 || schema === 9 || schema === 10 || schema === 11))
-    }
-    const primitiveCount = bounded(reader.u32(), 65_536, "model primitive count")
-    const primitives: RuntimeModelPrimitive[] = []
-    for (let primitive = 0; primitive < primitiveCount; primitive += 1) {
-      const material = reader.u32()
-      const vertices = bounded(reader.u32(), MAX_VERTICES, "model vertex count")
-      const triangles = bounded(reader.u32(), MAX_TRIANGLES, "model triangle count")
-      if (material >= modelMaterialCount) throw new RuntimeMapError("model material index is invalid")
-      const positions = reader.f32Array(vertices * 3)
-      const normals = reader.f32Array(vertices * 3)
-      if (schema !== 10 && schema !== 11) throw new RuntimeMapError("authored model skinning contract is unavailable")
-      const bindPositions = reader.f32Array(vertices * 3)
-      const bindNormals = reader.f32Array(vertices * 3)
-      const bindTangents = reader.f32Array(vertices * 4)
-      const boneIndexBytes = reader.take(vertices * 8)
-      const boneIndices = new Uint16Array(vertices * 4)
-      const boneIndexView = new DataView(boneIndexBytes.buffer, boneIndexBytes.byteOffset, boneIndexBytes.byteLength)
-      for (let index = 0; index < boneIndices.length; index += 1) boneIndices[index] = boneIndexView.getUint16(index * 2, true)
-      const boneWeights = reader.f32Array(vertices * 4)
-      const paletteLength = bounded(reader.u32(), 256, "model bone palette count")
-      const bonePalette = new Uint16Array(paletteLength)
-      const admittedBones = new Uint8Array(256)
-      for (let index = 0; index < paletteLength; index += 1) {
-        bonePalette[index] = reader.u16()
-        if (bonePalette[index]! > 255 || (index > 0 && bonePalette[index]! <= bonePalette[index - 1]!)) {
-          throw new RuntimeMapError("model bone palette is not canonical")
-        }
-        admittedBones[bonePalette[index]!] = 1
-      }
-      for (let vertex = 0; vertex < vertices; vertex += 1) {
-        for (let influence = 0; influence < 4; influence += 1) {
-          const weight = boneWeights[vertex * 4 + influence]!
-          if (weight < 0 || (weight !== 0 && admittedBones[boneIndices[vertex * 4 + influence]!] !== 1)) {
-            throw new RuntimeMapError("model bone influence is invalid")
-          }
-        }
-      }
-      const uv = reader.f32Array(vertices * 2)
-      const indices = reader.u32Array(triangles * 3)
-      if (indices.some((value) => value >= vertices)) throw new RuntimeMapError("model triangle index is invalid")
-      primitives.push(Object.freeze({ material, positions, normals, bindPositions, bindNormals, bindTangents, boneIndices, boneWeights, bonePalette, uv, indices }))
-    }
-    const modelPalette = Uint16Array.from([...new Set(primitives.flatMap((primitive) => Array.from(primitive.bonePalette)))].sort((left, right) => left - right))
-    const paletteIndices = new Map(Array.from(modelPalette, (bone, index) => [bone, index] as const))
-    for (const primitive of primitives) {
-      for (let index = 0; index < primitive.boneIndices.length; index += 1) {
-        if (primitive.boneWeights[index] !== 0) primitive.boneIndices[index] = paletteIndices.get(primitive.boneIndices[index]!)!
-      }
-      for (let index = 0; index < primitive.bonePalette.length; index += 1) primitive.bonePalette[index] = paletteIndices.get(primitive.bonePalette[index]!)!
-    }
-    models.push(Object.freeze({ logicalPath, materials: Object.freeze(modelMaterials), primitives: Object.freeze(primitives) }))
-  }
+  const models = readModelRegistry(reader, decoder, schema)
   const modelOccurrences: RuntimeModelOccurrence[] = []
   const occurrenceCount = bounded(reader.u32(), MAX_SURFACES, "model occurrence count")
   for (let index = 0; index < occurrenceCount; index += 1) {

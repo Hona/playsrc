@@ -61,6 +61,9 @@ type WasmExports = Readonly<{
   playsrc_team_select(handle: number, choice: number): number
   playsrc_equipment_state_copy(handle: number, pointer: number, capacity: number): number
   playsrc_equipment_update(handle: number, pointer: number, length: number): number
+  playsrc_equipment_models_admit(handle: number, definitions: number, count: number, sections: number, sectionCount: number, profile: number): number
+  playsrc_equipment_models_length(): number
+  playsrc_equipment_models_copy(pointer: number, capacity: number): number
   playsrc_jump_configure(handle: number, definition: number, length: number): number
   playsrc_player_set_position(handle: number, x: number, y: number, z: number): number
   playsrc_entity_fire(handle: number, pointer: number, length: number): number
@@ -91,6 +94,7 @@ const resourceSets = new ResourceGenerations((section) => {
   if (section.authoredBacking) wasm!.playsrc_resource_release(section.pointer, section.length)
   else wasm!.playsrc_free(section.pointer, section.length)
 })
+const supplementalGenerations = new Set<number>()
 const modelOutputLeases = new Map<number, { handle: number; pointer: number; capacity: number; slot: number }>()
 const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array.BYTES_PER_ELEMENT))
 const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
@@ -230,6 +234,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_team_select,
         candidate.playsrc_equipment_state_copy,
         candidate.playsrc_equipment_update,
+        candidate.playsrc_equipment_models_admit,
+        candidate.playsrc_equipment_models_length,
+        candidate.playsrc_equipment_models_copy,
         candidate.playsrc_jump_configure,
         candidate.playsrc_player_set_position,
         candidate.playsrc_entity_fire,
@@ -359,7 +366,7 @@ function sectionTable(exports: WasmExports, sections: readonly { pointer: number
 }
 
 function releaseResourceSet(_exports: WasmExports, generation: number): boolean {
-  return resourceSets.release(generation)
+  return resourceSets.release(generation, !supplementalGenerations.delete(generation))
 }
 
 function finalizeResources(request: Extract<WorkerRequest, { kind: "finalize-resources" }>): void {
@@ -950,9 +957,35 @@ function particles(request: Extract<WorkerRequest, { kind: "particles" }>): void
   const outputCopyMilliseconds=performance.now()-outputCopyStarted
   post({ id: request.id, kind: "particles", generation: request.generation, output, timings:{queueMilliseconds:queueMilliseconds(request,started),inputCopyMilliseconds,transactMilliseconds,outputCopyMilliseconds,totalMilliseconds:performance.now()-started} }, [output])
 }
+function admitEquipmentModels(request: Extract<WorkerRequest, { kind: "equipment-models" }>): void {
+  const value = request.generation === 0 && wasm ? { exports: wasm, handle: 0 } : requireActive(request.id, request.generation)
+  if (!value) return
+  const resources = resourceSets.get(request.resourceGeneration)
+  if (!resources?.sha256 || !Array.isArray(request.definitions) || request.definitions.length < 1 || request.definitions.length > 32
+    || request.definitions.some((definition) => !Number.isSafeInteger(definition) || definition < 0 || definition >= 0xffff_ffff) || ![0, 1].includes(request.profile)) { fail(request.id, "MalformedRequest"); return }
+  if (request.resourceGeneration !== active?.generation && request.resourceGeneration !== pending?.generation) supplementalGenerations.add(request.resourceGeneration)
+  const definitions = Uint32Array.from(request.definitions)
+  const pointer = allocateCopy(value.exports, definitions.buffer)
+  const table = sectionTable(value.exports, resources.sections)
+  try {
+    if (value.exports.playsrc_equipment_models_admit(value.handle, pointer, definitions.length, table, resources.sections.length, request.profile) !== 1) { fail(request.id, "TransitionFailed"); return }
+    const length = value.exports.playsrc_equipment_models_length()
+    if (length < 12 || length > 64 * 1024 * 1024) { fail(request.id, "BoundExceeded"); return }
+    const output = value.exports.playsrc_alloc(length) >>> 0
+    try {
+      if (value.exports.playsrc_equipment_models_copy(output, length) !== length) { fail(request.id, "InternalFailure"); return }
+      const payload = new Uint8Array(value.exports.memory.buffer, output, length).slice().buffer
+      post({ id: request.id, kind: "equipment-models", generation: request.generation, payload }, [payload])
+    } finally { value.exports.playsrc_free(output, length) }
+  } finally {
+    value.exports.playsrc_free(table, resources.sections.length * 8)
+    value.exports.playsrc_free(pointer, definitions.byteLength)
+  }
+}
+
 function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const started = performance.now()
-  const value = requireActive(request.id, request.generation)
+  const value = request.generation === 0 && wasm ? { exports: wasm, handle: 0 } : requireActive(request.id, request.generation)
   if (!value) return
   if (modelOutputLeases.size >= 64 || modelOutputLeases.has(request.id)) {
     fail(request.id, "MalformedRequest")
@@ -1096,6 +1129,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
       return teamSelection(request)
     case "equipment":
       return equipment(request)
+    case "equipment-models":
+      return admitEquipmentModels(request)
     case "discard":
       return discard(request)
     case "configure-course":

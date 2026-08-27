@@ -875,6 +875,7 @@ export interface Renderer {
   readonly deviceGeneration: number
   readonly sceneGeneration: number
   loadMap(request: MapLoadRequest): Promise<SceneResult>
+  admitModels(request: ModelAdmissionRequest): Promise<void>
   prepareVisiblePipelines(camera: Camera, leaves: readonly number[]): Promise<void>
   prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void>
   prepareParticlePipelines(camera: Camera, fog?: FogInput): Promise<void>
@@ -1000,6 +1001,94 @@ type ModelLightingTextures = Readonly<{
   ambientOcclusion?: THREE.Texture
   environment?: THREE.CubeTexture
 }>
+
+export type ModelAdmissionRequest = Readonly<{
+  models: RuntimeMap["models"]
+  modelMaterials: ReadonlyMap<string, ModelMaterialInput>
+  authoredTextures: ReadonlyMap<string, AuthoredTextureInput>
+  materialStates: ReadonlyMap<string, MaterialStateInput>
+  modelFacing: NonNullable<MapLoadRequest["modelFacing"]>
+}>
+
+type ModelAssets = Pick<SceneResources, "modelTemplates" | "modelLightingTextures" | "modelPanelLightingGraphs" | "modelPanelMaterialAnimations" | "materialStates" | "disposables" | "textureResidency" | "waterFogUniforms" | "modelCubemap"> & { loadRequest: Pick<MapLoadRequest, "modelMaterials" | "modelFacing" | "authoredTextures"> }
+
+type ModelTemplateContext = Readonly<{
+  request: Pick<MapLoadRequest, "modelMaterials" | "modelFacing">
+  materialStates: ReadonlyMap<string, MaterialStateInput>
+  disposables: OwnedResourceGeneration
+  texture: (identity: string, role: number, kind?: "material" | "model") => Readonly<{ texture: THREE.Texture; input: AuthoredTextureInput }> | undefined
+  cubemap: (identity: string) => THREE.CubeTexture | undefined
+  frames: (input: AuthoredTextureInput, colorSpace: string) => AuthoredTextureFrames
+  modelLightingTextures: Map<string, ModelLightingTextures>
+  modelPanelMaterialAnimations: Map<string, ModelPanelMaterialAnimation[]>
+  modelTemplates: Map<string, THREE.Group>
+  modelBaseSamples: Map<string, any>
+  waterFogUniforms: SourceWaterFogUniforms
+}>
+
+function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplateContext): void {
+  const { request, materialStates, disposables, modelTemplates, modelLightingTextures, modelPanelMaterialAnimations, modelBaseSamples, waterFogUniforms } = context
+  const createModelTexture = context.texture, createModelCubemap = context.cubemap
+  const swizzle = (sample: any, input: AuthoredTextureInput) => input.sourceFormat === 1 ? sample.abgr : input.sourceFormat === 11 ? sample.gbar : input.sourceFormat === 12 ? sample.bgra : input.sourceFormat === 16 ? TSL.vec4(sample.bgr, 1) : sample
+  for (const model of models) {
+    const template = new THREE.Group()
+    for (const [primitiveIndex, primitive] of model.primitives.entries()) {
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute("position", new THREE.BufferAttribute(primitive.positions, 3))
+      geometry.setAttribute("normal", new THREE.BufferAttribute(primitive.normals, 3))
+      geometry.setAttribute("uv", new THREE.BufferAttribute(primitive.uv, 2))
+      geometry.setIndex(new THREE.BufferAttribute(primitive.indices, 1))
+      geometry.computeBoundingSphere(); disposables.add(geometry)
+      const bindGeometry = new THREE.BufferGeometry()
+      bindGeometry.setAttribute("position", new THREE.BufferAttribute(primitive.bindPositions, 3))
+      bindGeometry.setAttribute("normal", new THREE.BufferAttribute(primitive.bindNormals, 3))
+      bindGeometry.setAttribute("tangent", new THREE.BufferAttribute(primitive.bindTangents, 4))
+      bindGeometry.setAttribute("skinIndex", new THREE.BufferAttribute(primitive.boneIndices, 4))
+      bindGeometry.setAttribute("skinWeight", new THREE.BufferAttribute(primitive.boneWeights, 4))
+      bindGeometry.setAttribute("uv", geometry.getAttribute("uv")); bindGeometry.setIndex(geometry.getIndex())
+      bindGeometry.boundingSphere = geometry.boundingSphere; disposables.add(bindGeometry)
+      SOURCE_MODEL_BIND_GEOMETRY.set(geometry, Object.freeze({ geometry: bindGeometry, palette: primitive.bonePalette }))
+      const resolved = model.materials[primitive.material]!, materialState = materialStates.get(resolved.logicalPath.toLowerCase())
+      if (materialState?.noDraw) continue
+      const typed = request.modelMaterials?.get(resolved.logicalPath.toLowerCase())
+      const eye = typed?.shader === "eye-refract" || typed?.shader === "eyes"
+      const baseTexture = eye ? createModelTexture(resolved.logicalPath, 8, "model") : createModelTexture(resolved.logicalPath, 0)
+      if (eye && !baseTexture) throw new RenderingError("MissingInput", `authored Studio eye iris ${resolved.logicalPath} is unavailable`)
+      if (typed && typed.shader !== "unlit-generic" && typed.shader !== "unlit-two-texture") {
+        const warp = createModelTexture(resolved.logicalPath, 6, "model")?.texture
+        const exponent = createModelTexture(resolved.logicalPath, 5, "model")?.texture
+        const iris = eye ? baseTexture?.texture : undefined
+        const ambientOcclusion = typed.shader === "eye-refract" ? createModelTexture(resolved.logicalPath, 10, "model")?.texture : undefined
+        const environment = createModelCubemap(resolved.logicalPath)
+        const normal = typed.state.kind === "vertex-lit-generic" && typed.state.cloak?.enabled ? () => createModelTexture(resolved.logicalPath, 7)?.texture : undefined
+        if (warp || exponent || iris || ambientOcclusion || environment || normal) modelLightingTextures.set(resolved.logicalPath.toLowerCase(), Object.freeze({ warp, exponent, iris, ambientOcclusion, environment, normal }))
+      }
+      const material = new THREE.MeshBasicNodeMaterial({ ...materialOptions(resolved, materialState), side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#skin=")[0]!.toLowerCase())!) })
+      const sampled = baseTexture ? swizzle(TSL.texture(baseTexture.texture, TSL.uv()), baseTexture.input) : undefined
+      const first = selectDiagnosticModelBase(baseTexture !== undefined) === "authored-texture" ? sampled! : TSL.vec4(TSL.color(debugColor(`diagnostic:${resolved.logicalPath}`)), 1)
+      const baseKey = baseTexture && typed?.shader !== "unlit-two-texture" ? `${baseTexture.texture.uuid}:${baseTexture.input.sourceFormat}` : undefined
+      let base = baseKey ? modelBaseSamples.get(baseKey) : undefined
+      if (!base) { base = first; if (baseKey) modelBaseSamples.set(baseKey, base) }
+      if (typed?.shader === "unlit-two-texture") {
+        const second = createModelTexture(resolved.logicalPath, 6)
+        if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
+        const scrollX = TSL.uniform(0, "float"), scrollY = TSL.uniform(0, "float"), frames = context.frames(second.input, THREE.SRGBColorSpace)
+        const consumer = `panel:${model.logicalPath.toLowerCase()}:${resolved.logicalPath.toLowerCase()}`
+        frames.select(0, consumer)
+        const records = modelPanelMaterialAnimations.get(model.logicalPath.toLowerCase()) ?? []
+        records.push({ texture: second.texture, frames, consumer, frameRate: typed.state.secondFrameRate, scrollRate: typed.state.secondScrollRate, scrollAngle: typed.state.secondScrollAngle, scrollX, scrollY, frame: 0 })
+        modelPanelMaterialAnimations.set(model.logicalPath.toLowerCase(), records)
+        base = TSL.vec4(first.rgb.mul(swizzle(TSL.texture(second.texture, TSL.uv().add(TSL.vec2(scrollX, scrollY))), second.input).rgb), 1)
+      }
+      SOURCE_MODEL_BASE_COLOR.set(geometry, base); SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
+      material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms); material.toneMapped = false; disposables.add(material)
+      const mesh = new THREE.Mesh(geometry, material)
+      mesh.userData.primitiveMaterial = primitive.material; mesh.userData.sourcePrimitive = primitiveIndex; mesh.userData.materialIdentity = resolved.logicalPath
+      template.add(mesh)
+    }
+    modelTemplates.set(model.logicalPath, template)
+  }
+}
 
 type SceneResources = {
   map: RuntimeMap
@@ -1555,6 +1644,7 @@ class RendererOwner implements Renderer {
   #restoreBufferNames?: () => void
   #uploadBatch?: WebGpuUploadBatch
   #active?: SceneResources
+  #panelAssets?: ModelAssets
   #renderBusy = false
   #loadOrdinal = 0
   #suspended = false
@@ -2077,6 +2167,67 @@ class RendererOwner implements Renderer {
     }
   }
 
+  async admitModels(request: ModelAdmissionRequest): Promise<void> {
+    this.#requireReady()
+    if (this.#renderBusy) throw new RenderingError("InvalidState", "model admission overlaps rendering")
+    if (request.models.length > 128) throw new RenderingError("BoundExceeded", "model admission count")
+    const active = this.#active
+    const previousPanel = this.#panelAssets
+    const disposables = active?.disposables ?? new OwnedResourceGeneration(this.#deviceGeneration, Math.max(1, this.#sceneGeneration))
+    const residency = active?.textureResidency ?? new SharedTextureResidency<THREE.Texture>(disposables, 4, () => this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
+    const materials = new Map([...active?.loadRequest.modelMaterials ?? [], ...request.modelMaterials])
+    const textures = new Map([...active?.loadRequest.authoredTextures ?? [], ...request.authoredTextures])
+    const states = new Map([...active?.materialStates ?? [], ...request.materialStates])
+    const facing = new Map([...active?.loadRequest.modelFacing ?? [], ...request.modelFacing])
+    const templates = new Map<string, THREE.Group>()
+    const lightingTextures = new Map(active?.modelLightingTextures ?? [])
+    const animations = new Map<string, ModelPanelMaterialAnimation[]>([...active?.modelPanelMaterialAnimations ?? []].map(([key, value]) => [key, [...value]]))
+    const retain = (input: AuthoredTextureInput, space: string, frame = 0) => residency.retain(`${input.sourceSha256}:${input.sourceFormat ?? "rgba"}:${input.scalarEncoding}:${space}:${frame}`, () => textureFromAuthored(input, space, frame, this.textureQuality))
+    const texture = (identity: string, role: number, kind: "material" | "model" = "material") => {
+      const binding = materials.get(identity.toLowerCase())?.bindings.find((value) => value.kind === kind && value.role === role)
+      if (!binding) return undefined
+      const input = textures.get(binding.logicalPath.toLowerCase())
+      if (!input || binding.colorRead === "format-dependent") throw new RenderingError("MissingInput", `model texture ${binding.logicalPath}`)
+      return { input, texture: retain(input, binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace) }
+    }
+    const cubemap = (identity: string) => {
+      const binding = materials.get(identity.toLowerCase())?.bindings.find((value) => value.kind === "material" && value.role === 12)
+      if (!binding) return active?.modelCubemap(identity)
+      const input = textures.get(binding.logicalPath.toLowerCase())
+      if (!input || binding.colorRead === "format-dependent") throw new RenderingError("MissingInput", `model cubemap ${binding.logicalPath}`)
+      const space = binding.colorRead === "srgb" ? THREE.SRGBColorSpace : THREE.NoColorSpace
+      const value = residency.retain(`cubemap:${input.sourceSha256}:${space}`, () => textureFromAuthoredCubemap(input, space))
+      if (!(value instanceof THREE.CubeTexture)) throw new RenderingError("IdentityMismatch", binding.logicalPath)
+      return value
+    }
+    const waterFog = active?.waterFogUniforms ?? createSourceWaterFogUniforms()
+    const models = request.models.filter((model) => !active?.modelTemplates.has(model.logicalPath))
+    try {
+      for (const model of models) {
+        if (!facing.has(model.logicalPath.split("#skin=")[0]!.toLowerCase()) || model.materials.some((material) => !materials.has(material.logicalPath.toLowerCase()) || !states.has(material.logicalPath.toLowerCase()))) throw new RenderingError("MissingInput", `model admission closure ${model.logicalPath}`)
+      }
+      buildModelTemplates(models, { request: { modelMaterials: materials, modelFacing: facing }, materialStates: states, disposables,
+        texture, cubemap, frames: (input, space) => ({ frameCount: input.frameCount, select: (frame, consumer) => {
+          if (!Number.isSafeInteger(frame) || frame < 0 || frame >= input.frameCount) throw new RenderingError("MalformedInput", "model frame")
+          return residency.select(`${input.sourceSha256}:${space}`, frame, consumer, () => textureFromAuthored(input, space, frame, this.textureQuality), input.frameCount)
+        } }), modelLightingTextures: lightingTextures, modelPanelMaterialAnimations: animations, modelTemplates: templates, modelBaseSamples: new Map(), waterFogUniforms: waterFog })
+      if (active) {
+        for (const [key, template] of templates) active.modelTemplates.set(key, template)
+        active.modelLookup = new Map([...active.modelLookup, ...models.map((model) => [model.logicalPath, model] as const)])
+        active.loadRequest = { ...active.loadRequest, modelMaterials: materials, modelFacing: facing, authoredTextures: textures }
+        active.materialStates = states; active.modelLightingTextures = lightingTextures; active.modelPanelMaterialAnimations = animations
+      } else {
+        this.#modelPanelScene.clear()
+        for (const retained of this.#modelPanelInstances.values()) this.#disposeDynamicInstance(retained.instance)
+        this.#modelPanelInstances.clear(); this.#retainedModelPanels.clear(); this.#preparedModelInstances.clear()
+        disposables.activate()
+        this.#panelAssets = { loadRequest: { modelMaterials: materials, modelFacing: facing, authoredTextures: textures }, modelTemplates: templates, modelLightingTextures: lightingTextures,
+          modelPanelLightingGraphs: new ModelLightingGraphs(), modelPanelMaterialAnimations: animations, materialStates: states, disposables, textureResidency: residency, waterFogUniforms: waterFog, modelCubemap: cubemap }
+        if (previousPanel) await previousPanel.disposables.retire(this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
+      }
+    } catch (error) { if (!active) disposables.dispose(); throw error }
+  }
+
   async loadMap(request: MapLoadRequest): Promise<SceneResult> {
     this.#requireReady()
     if(!request.diagnostic)throw new RenderingError("UnsupportedFeature","ordinary rendering requires an explicit WebGPU frame encoder; the current Three.js adapter is diagnostic-only")
@@ -2294,6 +2445,12 @@ class RendererOwner implements Renderer {
       this.#world.updateMatrixWorld(true)
       this.#scene.background = request.diagnostic ? new THREE.Color(0x111820) : null
       this.#active = staged
+      if (this.#panelAssets) {
+        const panel = this.#panelAssets
+        this.#panelAssets = undefined
+        await panel.disposables.retire(this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
+        panel.textureResidency.clear()
+      }
       this.#sceneGeneration += 1
       if (prior) await this.#retire(prior)
       return staged.result
@@ -2315,14 +2472,15 @@ class RendererOwner implements Renderer {
 
   async prepareModelPipelines(models: readonly Readonly<{ item: ModelItem; pass: "panel" | "view" | "world"; unposedPanel?: boolean }>[], camera: Camera, fog?: FogInput): Promise<void> {
     this.#requireReady()
-    if (!this.#active || this.#renderBusy) throw new RenderingError("InvalidState", "model pipeline preparation requires an idle active map")
+    const assets = this.#active ?? this.#panelAssets
+    if (!assets || this.#renderBusy || !this.#active && models.some((model) => model.pass !== "panel")) throw new RenderingError("InvalidState", "model pipeline preparation requires admitted model assets")
     if (models.length + models.filter(model => model.unposedPanel).length > 96) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
     const ordinal = this.#loadOrdinal
-    const owner = this.#active, backend = this.#backend, deviceGeneration = this.#deviceGeneration
+    const owner = assets, backend = this.#backend, deviceGeneration = this.#deviceGeneration
     const checkOwner = () => {
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
-      if (owner !== this.#active || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) {
+      if (owner !== (this.#active ?? this.#panelAssets) || backend !== this.#backend || deviceGeneration !== this.#deviceGeneration) {
         throw new RenderingError("InvalidState", "model pipeline preparation generation was replaced")
       }
     }
@@ -2345,7 +2503,7 @@ class RendererOwner implements Renderer {
         const model = modelKey(item.model, item.skin ?? 0, item.body ?? 0), key = `${pass}:${model}`
         if (keys.has(key)) continue
         keys.add(key)
-        const template = this.#active.modelTemplates.get(model)
+        const template = assets.modelTemplates.get(model)
         if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
         if (unposedPanel) {
           if (pass !== "panel") throw new RenderingError("MalformedInput", "unposed model preparation requires a panel")
@@ -2373,9 +2531,9 @@ class RendererOwner implements Renderer {
           for (const [slot, material] of materials.entries()) Object.assign(material, authoredViewState[index]![slot]!)
         }
         this.#applyDynamicModelLighting(retained, item, pass === "panel" ? {
-          materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
-          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap,
-          exposure: this.#modelPanelExposure, graphs: this.#active.modelPanelLightingGraphs,
+          materials: assets.loadRequest.modelMaterials, states: assets.materialStates,
+          textures: assets.modelLightingTextures, cubemap: assets.modelCubemap,
+          exposure: this.#modelPanelExposure, graphs: assets.modelPanelLightingGraphs,
         } : undefined)
         if (pass === "view") instance.traverse(object => object.layers.set(1))
         ;(pass === "panel" ? panels : pass === "view" ? viewModels : world).add(instance)
@@ -3774,16 +3932,17 @@ class RendererOwner implements Renderer {
   async renderModelPanels(panels: readonly ModelPanelPass[]): Promise<ModelPanelFrameResult> {
     const started = performance.now()
     this.#requireReady()
-    if (!this.#active) throw new RenderingError("InvalidState", "model-panel rendering has no active map")
+    const assets = this.#active ?? this.#panelAssets
+    if (!assets) throw new RenderingError("InvalidState", "model-panel rendering has no admitted assets")
     if (this.#renderBusy) throw new RenderingError("InvalidState", "a render is already in progress")
     if (panels.length < 1 || panels.length > 16) throw new RenderingError("BoundExceeded", "model-panel pass count is invalid")
     this.#renderBusy = true
     const result: { identity: string; model: string; skin: number; primitives: number }[] = []
     const previousAutoClear = this.#backend.autoClear
-    const previousWaterFog = this.#active.waterFogUniforms.enabled.value
+    const previousWaterFog = assets.waterFogUniforms.enabled.value
     const previousClearColor = this.#backend.getClearColor(new THREE.Color()).clone()
     const previousClearAlpha = this.#backend.getClearAlpha()
-    this.#active.waterFogUniforms.enabled.value = 0
+    assets.waterFogUniforms.enabled.value = 0
     try {
       for (const panel of panels) {
         if (!panel.identity || !panel.model || !Number.isSafeInteger(panel.skin) || panel.skin < 0
@@ -3804,7 +3963,7 @@ class RendererOwner implements Renderer {
         if (Math.min(displayWidth, right) <= Math.max(0, left)
           || Math.min(displayHeight, bottom) <= Math.max(0, top)) continue
         const identity = modelKey(panel.model.toLowerCase(), panel.skin)
-        const template = this.#active.modelTemplates.get(identity)
+        const template = assets.modelTemplates.get(identity)
         if (!template) throw new RenderingError("MissingInput", `model-panel model is unavailable: ${identity}`)
         const instanceIdentity = panel.identity
         let retained = this.#modelPanelInstances.get(instanceIdentity)
@@ -3823,7 +3982,7 @@ class RendererOwner implements Renderer {
         }
         if (panel.pose) retained.meshes = this.#applyPose(retained.instance, panel.pose, retained.meshes !== undefined, retained.meshes)
         const presentationTime = panel.presentationTimeSeconds ?? 0
-        for (const animation of this.#active.modelPanelMaterialAnimations.get(identity) ?? []) {
+        for (const animation of assets.modelPanelMaterialAnimations.get(identity) ?? []) {
           if (animation.frameRate !== null && animation.frames.frameCount > 1) {
             const frame = Math.floor(presentationTime * animation.frameRate) % animation.frames.frameCount
             if (frame !== animation.frame) {
@@ -3855,8 +4014,8 @@ class RendererOwner implements Renderer {
         })
         sourceTransform(retained.instance, presentation.origin, panel.angles)
         const panelLighting = {
-          materials: this.#active.loadRequest.modelMaterials, states: this.#active.materialStates,
-          textures: this.#active.modelLightingTextures, cubemap: this.#active.modelCubemap, exposure: this.#modelPanelExposure, graphs: this.#active.modelPanelLightingGraphs,
+          materials: assets.loadRequest.modelMaterials, states: assets.materialStates,
+          textures: assets.modelLightingTextures, cubemap: assets.modelCubemap, exposure: this.#modelPanelExposure, graphs: assets.modelPanelLightingGraphs,
         }
         if (panel.modelLighting) this.#applyDynamicModelLighting(retained, {
           identity: 0, model: panel.model, position: presentation.origin, angles: panel.angles, scale: 1,
@@ -3864,7 +4023,7 @@ class RendererOwner implements Renderer {
         }, panelLighting)
         for (const [index, child] of (panel.mergedModels ?? []).entries()) {
           const key = modelKey(child.model.toLowerCase(), child.skin)
-          const childTemplate = this.#active.modelTemplates.get(key)
+          const childTemplate = assets.modelTemplates.get(key)
           if (!childTemplate) throw new RenderingError("MissingInput", `merged model-panel model is unavailable: ${key}`)
           const instanceKey = `${panel.identity}:merge:${index}`
           let merged = this.#modelPanelInstances.get(instanceKey)
@@ -3916,7 +4075,7 @@ class RendererOwner implements Renderer {
     } finally {
       this.#modelPanelScene.clear()
       this.#waterClipping.add(this.#particles)
-      this.#active.waterFogUniforms.enabled.value = previousWaterFog
+      assets.waterFogUniforms.enabled.value = previousWaterFog
       this.#backend.setClearColor(previousClearColor, previousClearAlpha)
       this.#backend.setScissorTest(false)
       this.#backend.setViewport(0, 0, this.#viewportWidth, this.#viewportHeight)
@@ -5764,6 +5923,11 @@ class RendererOwner implements Renderer {
   }
 
   async dispose(): Promise<void> {
+    if (this.#panelAssets) {
+      this.#panelAssets.disposables.dispose()
+      this.#panelAssets.textureResidency.clear()
+      this.#panelAssets = undefined
+    }
     this.#cloakFramebuffer.dispose()
     if (this.#lifecycle === "Disposed") return
     this.#lifecycle = "Disposed"

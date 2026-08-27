@@ -381,6 +381,8 @@ struct DeclaredSourceRecord {
 }
 
 struct Resolver<'a> {
+    consumer_role: Option<String>,
+    capture: Option<BTreeSet<String>>,
     content: &'a Content,
     bundle: BTreeMap<String, Vec<u8>>,
     packed_sources: BTreeMap<String, ObjectDescriptor>,
@@ -390,6 +392,8 @@ struct Resolver<'a> {
 impl<'a> Resolver<'a> {
     fn new(content: &'a Content) -> Self {
         Self {
+            consumer_role: None,
+            capture: None,
             content,
             bundle: BTreeMap::new(),
             packed_sources: BTreeMap::new(),
@@ -455,6 +459,7 @@ impl<'a> Resolver<'a> {
         fallback: &Content,
     ) -> Result<Vec<u8>, String> {
         let canonical = path.to_ascii_lowercase();
+        if let Some(capture) = &mut self.capture { capture.insert(canonical.clone()); }
         let consumer = consumer.into();
         let bytes = if let Some(bytes) = self.bundle.get(&canonical) {
             let record = self
@@ -540,6 +545,8 @@ impl<'a> Resolver<'a> {
         required: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         let canonical = path.to_ascii_lowercase();
+        if let Some(capture) = &mut self.capture { capture.insert(canonical.clone()); }
+        let consumer = self.consumer_role.as_ref().map_or(consumer.clone(), |role| format!("{role}|{consumer}"));
         if let Some(record) = self.requests.get_mut(&canonical) {
             if required {
                 record.requirement = "required";
@@ -1830,6 +1837,41 @@ fn collect_model(
     }
 }
 
+fn collect_equipment_resources(resolver: &mut Resolver<'_>) -> Result<(), String> {
+    let mut closures = BTreeMap::<String, BTreeSet<String>>::new();
+    for item in playsrc_tf2::equipment::SUPPORTED_ITEMS {
+        let presentation = playsrc_tf2::equipment::presentation(item.definition_index).ok_or("missing supported item presentation")?;
+        let mut roots = BTreeSet::new();
+        if !presentation.model_player.is_empty() { roots.insert(presentation.model_player); }
+        for (class, _) in presentation.class_slots {
+            roots.insert(class.data().model);
+            roots.insert(class.data().hand_model);
+        }
+        resolver.consumer_role = Some(format!("equipment-{}", item.definition_index));
+        for path in roots {
+            if let Some(closure) = closures.get(path) {
+                for dependency in closure {
+                    resolver.requests.get_mut(dependency).ok_or("missing captured equipment dependency")?.consumers.insert(format!("equipment-{}|equipment-model", item.definition_index));
+                }
+                continue;
+            }
+            resolver.capture = Some(BTreeSet::new());
+            let document = collect_model(resolver, path)?;
+            for material in &document.materials {
+                for candidate in &material.candidates {
+                    if resolver.optional(candidate, "equipment-model-material")?.is_some() {
+                        collect_material(resolver, candidate, true, SelectionEnvironment { model: true, ..SelectionEnvironment::default() }, false, "equipment-model-material")?;
+                        break;
+                    }
+                }
+            }
+            closures.insert(path.to_owned(), resolver.capture.take().unwrap());
+        }
+    }
+    resolver.consumer_role = None;
+    Ok(())
+}
+
 fn artifact_equals(path: &Path, bytes: &[u8]) -> Result<bool, String> {
     let metadata = match path.metadata() {
         Ok(metadata) => metadata,
@@ -2710,6 +2752,7 @@ fn main() -> Result<(), String> {
             model_documents.insert(path, document);
         }
     }
+    collect_equipment_resources(&mut resolver)?;
     let static_prop_vhv_aggregate = if canonical.static_props.occurrences.is_empty() {
         None
     } else {
@@ -3701,7 +3744,9 @@ fn main() -> Result<(), String> {
             roles.insert("menu".to_owned());
         }
         for consumer in &request.consumers {
-            if consumer.starts_with("tf2-ui")
+            if let Some((role, _)) = consumer.split_once('|').filter(|(role, _)| role.starts_with("equipment-")) {
+                roles.insert(role.to_owned());
+            } else if consumer.starts_with("tf2-ui")
                 || consumer.starts_with("tf2-gameui")
                 || consumer.starts_with("vgui-")
             {
@@ -3734,6 +3779,9 @@ fn main() -> Result<(), String> {
         });
     }
     let graph_entries = resources.len();
+    if let Some(resource) = resources.iter().find(|resource| !playsrc_asset_graph::valid_resource_identity(resource)) {
+        return Err(format!("resource graph identity is invalid: {} roles={:?}", resource.logical_path, resource.roles));
+    }
     let packed = playsrc_asset_graph::pack(resources)
         .map_err(|error| format!("resource graph packing failed: {error:?}"))?;
     let graph_encoded_bytes = packed

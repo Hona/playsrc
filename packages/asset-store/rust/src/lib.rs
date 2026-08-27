@@ -234,6 +234,10 @@ fn decoded_chunk(resources: &[&Resource]) -> Result<(Vec<u8>, Vec<EntryDescripto
     Ok((output, descriptors))
 }
 
+pub fn valid_resource_identity(resource: &Resource) -> bool {
+    valid_logical_path(&resource.logical_path) && !resource.roles.is_empty() && resource.roles.iter().all(|role| valid_role(role))
+}
+
 pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
     if resources.is_empty() || resources.len() > MAX_GRAPH_ENTRIES {
         return Err(GraphError::BoundExceeded);
@@ -241,10 +245,7 @@ pub fn pack(resources: Vec<Resource>) -> Result<Vec<PackedChunk>, GraphError> {
     let mut identities = BTreeSet::new();
     let mut groups = BTreeMap::<(Vec<String>, String, u8, String), Vec<Resource>>::new();
     for resource in resources {
-        if !valid_logical_path(&resource.logical_path)
-            || resource.roles.is_empty()
-            || resource.roles.iter().any(|role| !valid_role(role))
-        {
+        if !valid_resource_identity(&resource) {
             return Err(GraphError::MalformedIdentity);
         }
         if !identities.insert(resource.logical_path.clone()) {

@@ -97,9 +97,9 @@ export class ResourceGenerations {
     return true
   }
 
-  release(generation: number): boolean {
+  release(generation: number, retire = true): boolean {
     if (!Number.isSafeInteger(generation) || generation < 1 || generation > 0xffff_ffff) return false
-    this.#retiredThrough = Math.max(this.#retiredThrough, generation)
+    if (retire) this.#retiredThrough = Math.max(this.#retiredThrough, generation)
     const value = this.get(generation)
     if (!value) return false
     this.#residency = undefined
