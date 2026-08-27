@@ -372,6 +372,7 @@ pub struct MapRuntime {
     team_spawns: [Option<[f32; 3]>; 2],
     teleports: BTreeMap<EntityHandle, TeleportLink>,
     movers: BTreeMap<EntityHandle, ActiveMover>,
+    prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     round_configuration: crate::round::Configuration,
@@ -838,6 +839,7 @@ impl MapRuntime {
             team_spawns,
             teleports,
             movers: BTreeMap::new(),
+            prop_animations: BTreeMap::new(),
             game_filters,
             objectives,
             round_configuration,
@@ -1160,6 +1162,64 @@ impl MapRuntime {
         self.world.revision()
     }
 
+    pub(crate) fn studio_model_presentation(
+        &self,
+        expected_revision: u64,
+    ) -> Result<Vec<playsrc_entity::StudioModelDrawState>, RuntimeFailure> {
+        self.world.studio_model_presentation(expected_revision)
+    }
+
+    pub fn install_studio_models(
+        &mut self,
+        models: &BTreeMap<String, std::sync::Arc<playsrc_studio_model::PresentationModel>>,
+    ) -> Result<(), RuntimeFailure> {
+        let mut definitions = BTreeMap::new();
+        for handle in self.source_handles.values().copied() {
+            let Some(entity) = self.world.entity(handle) else {
+                continue;
+            };
+            let BehaviorState::DynamicProp(_) = &entity.behavior else {
+                continue;
+            };
+            let Some(path) = field(&entity.definition, b"model") else {
+                continue;
+            };
+            let Some(model) = models.get(&String::from_utf8_lossy(path).to_lowercase()) else {
+                continue;
+            };
+            let definition = if let Some(definition) = definitions.get(&model.identity) {
+                std::sync::Arc::clone(definition)
+            } else {
+                let definition = std::sync::Arc::new(
+                    crate::dynamic_prop::Definition::compile(model)
+                        .map_err(|_| invalid(entity.source_index))?,
+                );
+                definitions.insert(model.identity.clone(), definition.clone());
+                definition
+            };
+            // Leave the admitted authored occurrence alone until Entity emits
+            // an animation request. Publication must not activate unrelated
+            // map models or add per-frame pose work for fixed occurrences.
+            self.prop_animations
+                .insert(handle, crate::dynamic_prop::Animation::new(definition));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn studio_animation_presentation(
+        &self,
+    ) -> Vec<crate::dynamic_prop::AnimationPresentation> {
+        let now = self.world.current_tick() as f32 * self.tick_interval;
+        self.prop_animations
+            .iter()
+            .filter_map(|(handle, animation)| {
+                self.world
+                    .entity(*handle)
+                    .and_then(|entity| animation.presentation(entity.source_index as u32, now))
+            })
+            .collect()
+    }
+
     pub(crate) fn brush_model_presentation(
         &self,
         expected_revision: u64,
@@ -1321,6 +1381,14 @@ impl MapRuntime {
     ) -> Result<MapPhase, MapError> {
         self.last_player_position = input.player_position;
         let mut commands = Vec::new();
+        for (handle, animation) in &mut self.prop_animations {
+            if animation
+                .think(input.tick as f32 * self.tick_interval)
+                .map_err(|_| invalid(usize::from(handle.slot)))?
+            {
+                commands.push(WorldCommand::DynamicPropAnimationCompleted { entity: *handle });
+            }
+        }
         if let Some(source) = input.activate_entity {
             let handle = self
                 .source_handle(source)
@@ -1850,8 +1918,33 @@ impl MapRuntime {
                             name: Vec::new(),
                         })
                     }
-                    RuntimeRequest::ExternalInput { entity, input, .. } => {
+                    RuntimeRequest::ExternalInput {
+                        entity,
+                        input,
+                        value,
+                        ..
+                    } => {
                         let source = self.source(entity);
+                        if input.eq_ignore_ascii_case(b"SetAnimation") {
+                            if let (Some(animation), Variant::String(name)) =
+                                (self.prop_animations.get_mut(&entity), &value)
+                            {
+                                let accepted = animation
+                                    .set(
+                                        name,
+                                        self.world.current_tick() as f32 * self.tick_interval,
+                                    )
+                                    .map_err(|_| invalid(source as usize))?;
+                                let acknowledged = self.world.phase(
+                                    self.world.current_tick(),
+                                    &[WorldCommand::DynamicPropAnimationStarted {
+                                        entity,
+                                        accepted,
+                                    }],
+                                )?;
+                                output.append(self.consume(acknowledged)?);
+                            }
+                        }
                         if let Some(objectives) = &mut self.objectives {
                             if objectives.flag(source).is_some() {
                                 if input.eq_ignore_ascii_case(b"Enable") {
@@ -2910,7 +3003,8 @@ mod tests {
     #[test]
     fn presentation_tracks_mover_progress_block_reversal_and_completion() {
         let graph = playsrc_entity::parse(
-            br#"{"classname" "func_door" "targetname" "door" "model" "*1" "movedir" "0 0 0" "wait" "1"}"#,
+            br#"{"classname" "func_door" "targetname" "door" "model" "*1" "movedir" "0 0 0" "wait" "1"}
+            {"classname" "prop_dynamic" "parentname" "door" "origin" "1 2 3" "model" "models/door.mdl"}"#,
             playsrc_entity::Limits::default(),
         )
         .unwrap();
@@ -2952,6 +3046,13 @@ mod tests {
         let mover = progress.models[0].mover.as_ref().unwrap();
         assert_eq!(f32::from_bits(mover.progress_bits), 0.5);
         assert_eq!(progress.models[0].world_transform.origin, [5.0, 0.0, 0.0]);
+        assert_eq!(
+            map.studio_model_presentation(map.entity_revision())
+                .unwrap()[0]
+                .world_transform
+                .origin,
+            [6.0, 2.0, 3.0]
+        );
 
         let blocked = map
             .apply_mover_results(
@@ -2991,6 +3092,15 @@ mod tests {
         assert_eq!(mover.request_id, None);
         assert_eq!(mover.position, playsrc_entity::MoverPosition::Closed);
         assert_eq!(f32::from_bits(mover.progress_bits), 0.0);
+        assert_eq!(
+            map.studio_model_presentation(map.entity_revision())
+                .unwrap()[0]
+                .world_transform
+                .origin,
+            [1.0, 2.0, 3.0]
+        );
+        let retriggered = map.input(4, 0, b"Open", Variant::Void).unwrap();
+        assert_ne!(retriggered.mover_requests[0].request_id, request.request_id);
     }
 
     #[test]

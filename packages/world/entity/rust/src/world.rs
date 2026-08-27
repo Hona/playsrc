@@ -1038,6 +1038,13 @@ pub struct BrushModelDrawState {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct StudioModelDrawState {
+    pub source_index: usize,
+    pub world_transform: Transform,
+    pub draw: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BrushModelPresentation {
     pub source_identity: u64,
     pub registry_identity: u64,
@@ -1191,6 +1198,37 @@ impl EntityWorld {
             revision: self.state.revision,
             models,
         })
+    }
+
+    pub fn studio_model_presentation(
+        &self,
+        expected_revision: u64,
+    ) -> Result<Vec<StudioModelDrawState>, RuntimeFailure> {
+        if expected_revision != self.state.revision {
+            return Err(failure(
+                RuntimeFailureCode::RevisionMismatch,
+                None,
+                usize::try_from(self.state.revision).unwrap_or(usize::MAX),
+                usize::try_from(expected_revision).unwrap_or(usize::MAX),
+            ));
+        }
+        let mut models = Vec::new();
+        for handle in &self.state.creation_order {
+            let Some(entity) = self.entity(*handle) else {
+                continue;
+            };
+            if !matches!(entity.behavior, BehaviorState::DynamicProp(_)) {
+                continue;
+            }
+            models.push(StudioModelDrawState {
+                source_index: entity.source_index,
+                world_transform: entity.world_transform,
+                draw: entity.render.mode != RENDER_MODE_NONE
+                    && entity.render.effects & EF_NODRAW == 0,
+            });
+        }
+        models.sort_by_key(|model| model.source_index);
+        Ok(models)
     }
 
     pub fn entity(&self, handle: EntityHandle) -> Option<&RuntimeEntity> {

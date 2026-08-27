@@ -12,7 +12,7 @@ import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1169)
+  const bytes = new ArrayBuffer(1177)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -34,7 +34,7 @@ function snapshot(): ArrayBuffer {
   view.setUint32(124, 2, true)
   view.setUint32(144, 52, true)
   view.setUint32(148, 296, true)
-  view.setUint32(152,52,true);view.setUint32(156,12,true)
+  view.setUint32(152,60,true);view.setUint32(156,12,true)
 
   view.setUint32(160, 0x101, true)
   data.set([0x50, 0x4d, 0x4f, 0x56], 180)
@@ -112,8 +112,8 @@ function snapshot(): ArrayBuffer {
   at += 52
   data.set([0x50, 0x4d, 0x54, 0x4b], at)
   view.setUint32(at + 4, 1, true)
-  at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,1,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)
-  at += 52
+  at+=12;data.set([0x50,0x45,0x42,0x50],at);view.setUint32(at+4,2,true);view.setBigUint64(at+8,1n,true);view.setBigUint64(at+16,2n,true);view.setBigUint64(at+24,7n,true);view.setBigUint64(at+32,1n,true);view.setBigUint64(at+40,7n,true)
+  at += 60
   view.setUint32(at, 0, true)
   at += 4
   data.set(new TextEncoder().encode("PCTF"), at)
@@ -140,11 +140,48 @@ function snapshot(): ArrayBuffer {
 }
 function simulationOutput(){const state=new Uint8Array(snapshot()),output=new ArrayBuffer(80+state.length),data=new Uint8Array(output),view=new DataView(output);data.set(new TextEncoder().encode("PSIM"));view.setUint32(4,3,true);view.setUint32(8,1,true);view.setBigUint64(16,1n,true);view.setBigUint64(24,1n,true);view.setBigUint64(32,1n,true);view.setUint32(40,1,true);view.setUint32(48,state.length,true);view.setUint32(52,1,true);const at=56;view.setBigUint64(at,1n,true);view.setUint32(at+8,state.length,true);view.setUint32(at+12,state.length,true);data.set(state,at+24);return output}
 
+test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
+  const source = new Uint8Array(snapshot())
+  const insert = 1033
+  const states = [320, 360, 444, 400, 400, 420, 320].map(z => {
+    const bytes = new Uint8Array(source.length + 32)
+    bytes.set(source.subarray(0, insert))
+    bytes.set(source.subarray(insert), insert + 32)
+    const view = new DataView(bytes.buffer)
+    view.setUint32(152, 92, true)
+    view.setUint32(insert - 4, 1, true)
+    view.setUint32(insert, 784, true)
+    ;[886, 1440, z, 0, 90, 0].forEach((value, i) => view.setFloat32(insert + 4 + i * 4, value, true))
+    view.setUint32(insert + 28, 1, true)
+    return bytes
+  })
+  for (const [index, bytes] of states.entries()) {
+    const state = decodeSnapshot(bytes).entityPresentation
+    expect(state.studioModels).toEqual([{ sourceIndex: 784, worldPosition: [886, 1440, [320, 360, 444, 400, 400, 420, 320][index]], worldAngles: [0, 90, 0], draw: true }])
+    expect(state.collisionRevision).toBe(7n)
+    expect(state.studioAnimations).toEqual([])
+  }
+  const malformed = states[0]!.slice()
+  new DataView(malformed.buffer).setFloat32(insert + 4, NaN, true)
+  expect(() => decodeSnapshot(malformed)).toThrow("Studio presentation record is invalid")
+  const stream = new SimulationSnapshotStream()
+  const first = states[0]!, next = states[1]!.slice(), unchanged = next.slice()
+  new DataView(next.buffer).setBigUint64(8, 8n, true)
+  new DataView(unchanged.buffer).setBigUint64(8, 9n, true)
+  const a = stream.decode(snapshotPacket(1n, [first]))[0]!.snapshot.entityPresentation
+  const b = stream.decode(snapshotPacket(2n, [next], first))[0]!.snapshot.entityPresentation
+  const c = stream.decode(snapshotPacket(3n, [unchanged], next))[0]!.snapshot.entityPresentation
+  expect(a.studioModels[0]!.worldPosition[2]).toBe(320)
+  expect(b.studioModels[0]!.worldPosition[2]).toBe(360)
+  expect(b.studioModels[0]).not.toBe(a.studioModels[0])
+  expect(c.studioModels).toBe(b.studioModels)
+})
+
 // Large canonical records, not a model of game rules. Every optimized result is
 // compared with the unchanged full snapshot decoder, including ordered events.
 function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   const original = new Uint8Array(snapshot())
-  const objective = original.length - 136, brushHeader = objective - 56
+  const objective = original.length - 136, brushHeader = objective - 64
   const insert = brushes * 128, botBytes = roster * 128, names = Array.from({ length: roster }, (_, i) => new TextEncoder().encode(`bot-${i}`))
   const scoreboardBytes = names.reduce((sum, name) => sum + 29 + name.length, 0)
   const bytes = new Uint8Array(original.length + insert + botBytes + scoreboardBytes)
@@ -157,7 +194,7 @@ function rosterSnapshot(tick: bigint, roster = 31, brushes = 512): Uint8Array {
   view.setBigUint64(424, tick, true) // projectile event
   view.setBigUint64(532, tick, true) // entity event sequence
   view.setBigUint64(593, tick, true) // weapon activity
-  view.setUint32(152, 52 + insert, true)
+  view.setUint32(152, 60 + insert, true)
   view.setBigUint64(brushHeader + 24, tick, true)
   view.setUint32(brushHeader + 48, brushes, true)
   for (let i = 0; i < brushes; i++) {
@@ -876,10 +913,10 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       expect(() => stream.decode(snapshotPacket(2n, [malformed], first))).toThrow()
     }
     const reordered = second.slice(), reorderedView = new DataView(reordered.buffer)
-    reorderedView.setUint32(1033 + 128, 1, true)
+    reorderedView.setUint32(1041 + 128, 1, true)
     expect(() => stream.decode(snapshotPacket(2n, [reordered], first))).toThrow()
     const mismatchedClass = second.slice()
-    mismatchedClass[1033 + 128 + 4] = 6
+    mismatchedClass[1041 + 128 + 4] = 6
     expect(() => stream.decode(snapshotPacket(2n, [mismatchedClass], first))).toThrow("scoreboard roster")
     const third = rosterSnapshot(9n, 31, 1)
     new DataView(third.buffer).setFloat32(20, NaN, true)
@@ -894,7 +931,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
   test("identical objective events are retained once for each exact tick, not deduplicated with state", () => {
     const withObjective = (tick: bigint) => {
-      const base = rosterSnapshot(tick, 31, 1), at = 1033 + 128 + 31 * 128
+      const base = rosterSnapshot(tick, 31, 1), at = 1041 + 128 + 31 * 128
       const bytes = new Uint8Array(base.length + 48), view = new DataView(bytes.buffer)
       bytes.set(base.subarray(0, at + 12)); bytes.set(base.subarray(at + 12), at + 60)
       bytes[at + 8] = 1; view.setUint32(at + 32, 1, true)

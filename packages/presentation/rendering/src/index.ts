@@ -27,6 +27,7 @@ import { createParticleQuadWriter } from "./particle-geometry"
 import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
+import { applyMapModelTransform } from "./map-model-transform"
 import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu-frame-presentation"
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
@@ -400,6 +401,7 @@ export type Frame = Readonly<{
   fog?:FogInput
   sky3d?:Readonly<{camera:Camera;visibility:VisibilityFrame;fog:FogInput}>
   brushModels?:Readonly<{sourceIdentity:bigint;registryIdentity:bigint;tick:bigint;entityRevision:bigint;collisionRevision:bigint;models:readonly Readonly<{sourceIndex:number;model:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];renderMode:number;color:readonly[number,number,number,number];renderFx:number;effects:number;draw:boolean;mover:unknown}>[]}>
+  studioModels?: readonly Readonly<{sourceIndex:number;worldPosition:readonly[number,number,number];worldAngles:readonly[number,number,number];draw:boolean}>[]
   collisionWorldIdentity?: string
 }>
 
@@ -1491,6 +1493,7 @@ class RendererOwner implements Renderer {
     particles:Frame["particles"]
     models:Frame["models"]
     brushModels:Frame["brushModels"]
+    studioModels:Frame["studioModels"]
     viewModelDepthRange:readonly[number,number]|undefined
   }>
   #worldVisibilitySurfaces?: Uint32Array
@@ -1715,6 +1718,7 @@ class RendererOwner implements Renderer {
       if (prop.ownership === selectedOwnership) addProp(prop.object, "static-prop", prop.source)
     }
     if (ownership === "main") {
+      for (const [identity, retained] of this.#dynamicBrushInstances) addProp(retained.instance, "dynamic-prop", identity)
       for (const [identity, object] of this.#active.modelOccurrenceInstances) addProp(object, "dynamic-prop", identity)
       for (const [identity, retained] of this.#dynamicModelInstances) addProp(retained.instance, "dynamic-prop", identity)
     }
@@ -3220,6 +3224,7 @@ class RendererOwner implements Renderer {
         instance.userData.entity = occurrence.entity
         const m = occurrenceMatrices.get(occurrence.entity)!.matrix
         instance.matrix.set(m[0]!, m[1]!, m[2]!, m[3]!, m[4]!, m[5]!, m[6]!, m[7]!, m[8]!, m[9]!, m[10]!, m[11]!, 0, 0, 0, 1)
+        instance.matrix.decompose(instance.position, instance.quaternion, instance.scale)
         instance.matrixAutoUpdate = false
         const inputs = modelDrawInputs.get(occurrence.entity)
         if (inputs) {
@@ -4680,8 +4685,11 @@ class RendererOwner implements Renderer {
     if (meshes.length !== pose.primitives.length) {
       throw new RenderingError("IdentityMismatch", "posed model primitive count differs")
     }
+    // Authored camera/logic models can contain no drawable geometry or bones.
+    // They have no skinning work; do not manufacture a bone or reject the map.
+    if (meshes.length === 0 && pose.boneMatrices.length === 0) return meshes
     if (pose.boneMatrices.length % 12 !== 0 || pose.boneMatrices.length === 0 || pose.boneMatrices.length > 256 * 12) {
-      throw new RenderingError("MalformedInput", "authored model bone matrices are invalid")
+      throw new RenderingError("MalformedInput", `authored model bone matrices are invalid: ${pose.model}:${pose.identity} meshes=${meshes.length} matrices=${pose.boneMatrices.length}`)
     }
     let skeleton = instance.userData.sourceSkeleton as THREE.Skeleton | undefined
     if (!skeleton) {
@@ -4943,7 +4951,7 @@ class RendererOwner implements Renderer {
       }
     }
     const prior = this.#stagedDynamic
-    if (prior && prior.particles === frame.particles && prior.models === frame.models && prior.brushModels === frame.brushModels) {
+    if (prior && prior.particles === frame.particles && prior.models === frame.models && prior.brushModels === frame.brushModels && prior.studioModels === frame.studioModels) {
       this.#stageParticleBatches(frame.particles ?? [], frame.camera, factor)
       if (this.#viewCamera.far !== frame.camera.far) {
         this.#viewCamera.far = frame.camera.far
@@ -5058,10 +5066,31 @@ class RendererOwner implements Renderer {
       this.#retainedViewModels.retain(`${identity}:${retained.model}`, retained)
       this.#viewModelInstances.delete(identity)
     }
+    // A map occurrence is not a static prop. Its Entity transform includes
+    // parent motion, including invisible brush pushers. Update the existing
+    // occurrence rather than leaving a second copy at the authored origin.
+    for (const item of frame.studioModels ?? []) {
+      const dynamic = this.#dynamicModelInstances.get(item.sourceIndex)?.instance
+      const occurrence = this.#active!.modelOccurrenceInstances.get(item.sourceIndex)
+      const instance = dynamic ?? occurrence
+      if (!instance) continue
+      if (dynamic && occurrence) dynamic.scale.copy(occurrence.scale)
+      applyMapModelTransform(instance, item)
+      if (dynamic && occurrence) occurrence.visible = false
+    }
+    if (frame.studioModels !== prior?.studioModels) {
+      const live = new Set(frame.studioModels?.map(model => model.sourceIndex))
+      for (const removed of prior?.studioModels ?? []) {
+        if (live.has(removed.sourceIndex)) continue
+        const instance = this.#active!.modelOccurrenceInstances.get(removed.sourceIndex)
+        if (instance) instance.visible = false
+      }
+    }
     this.#stagedDynamic = Object.freeze({
       particles: frame.particles,
       models: frame.models,
       brushModels: frame.brushModels,
+      studioModels: frame.studioModels,
       viewModelDepthRange,
     })
     return viewModelDepthRange
