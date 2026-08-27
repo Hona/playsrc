@@ -699,6 +699,7 @@ export class Tf2Application {
       this.#publishOperationWatchdog()
     }
     if (enteredFailure) {
+      console.error(`TF2 application failed: ${this.#view.detail}`)
       this.#output(`FATAL: ${this.#view.detail}`)
       if (this.#console && !this.#view.consoleVisible) this.toggleConsole()
     }

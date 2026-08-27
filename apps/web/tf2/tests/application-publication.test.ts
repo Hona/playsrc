@@ -30,7 +30,8 @@ function fixture() {
   const canvas = new Element()
   canvas.attributes.set("aria-hidden", "true")
   const loadingLabel = { textContent: "" }
-  const publication = new ApplicationPublication({ root, canvas, loadingLabel })
+  const failureLabel = { textContent: "" }
+  const publication = new ApplicationPublication({ root, canvas, loadingLabel, failureLabel })
   const startup: ApplicationView = Object.freeze({
     phase: "Startup",
     detail: "Preparing exact startup media",
@@ -43,10 +44,17 @@ function fixture() {
     bootstrapLoading: true,
     bootstrapProgress: 0,
   })
-  return { publication, root, canvas, loadingLabel, startup }
+  return { publication, root, canvas, loadingLabel, failureLabel, startup }
 }
 
 describe("TF2 incremental application publication", () => {
+  test("publishes a bootstrap failure without depending on unavailable VGUI resources", () => {
+    const value=fixture()
+    value.publication.publish({...value.startup,phase:'Failed',gameUi:'failure',detail:'Application generation upgrade did not converge'})
+    expect(value.failureLabel.textContent).toBe('Application generation upgrade did not converge')
+    value.publication.publish(value.startup)
+    expect(value.failureLabel.textContent).toBe('')
+  })
   test("publishes exact initial lifecycle, zero-valued observations, and startup accessibility", () => {
     const value = fixture()
     value.publication.publish(value.startup)

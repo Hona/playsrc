@@ -8,6 +8,9 @@ import { applicationBuildIdentity } from "./build-identity"
 import { readTf2Release } from "./tf2-release"
 import { parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
+import type { BrowserConfiguration } from "../../../apps/web/tf2/src/config"
+import { readBundledGeneration } from "../../../apps/web/tf2/generation-plugin"
+import { assertWasmBindings, captureWasmBindings } from "./wasm-bindings"
 
 const APP_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2")
 const DIST_DIRECTORY = path.join(APP_DIRECTORY, "dist", "cloudflare")
@@ -23,21 +26,26 @@ export class DeploymentError extends Error {
 export async function buildStaticSite(target: string | undefined, approvedRelease = false): Promise<string> {
   const sourceRelease = await readTf2Release(target)
   const applicationBuild = await applicationBuildIdentity()
+  const bindingsDirectory = path.join(repositoryRoot, "games/tf2/browser/src/wasm-generated")
+  const compiledWasm = await readFile(path.join(bindingsDirectory, "tf2_wasm_bg.wasm"))
+  const compiledDescriptor: ObjectDescriptor = {
+    kind: "derived-object", mediaType: "application/octet-stream", byteLength: String(compiledWasm.byteLength),
+    sha256: new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex"),
+  }
+  if (approvedRelease) await assertWasmBindings(bindingsDirectory, sourceRelease.wasmBindings)
+  const release = approvedRelease ? sourceRelease : parseTf2Release({ ...sourceRelease,
+    objects: { ...sourceRelease.objects, wasm: compiledDescriptor },
+    wasmBindings: await captureWasmBindings(bindingsDirectory, compiledDescriptor),
+  })
+  const configuration = createDeployedBrowserConfiguration(release, applicationBuild)
   await rm(DIST_DIRECTORY, { recursive: true, force: true })
   const child = Bun.spawn([process.execPath, "run", "build"], {
     cwd: APP_DIRECTORY,
-    env: { ...process.env, PLAYSRC_APPLICATION_BUILD: applicationBuild, PLAYSRC_BROWSER_CONFIG: undefined },
+    env: { ...process.env, PLAYSRC_APPLICATION_BUILD: undefined, PLAYSRC_BROWSER_CONFIG: JSON.stringify(configuration) },
     stdout: "inherit",
     stderr: "inherit",
   })
   if (await child.exited !== 0) throw new DeploymentError("TF2 static application build failed")
-  const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
-  // Local candidates use their new compiler output; production uses the approved CAS artifact.
-  const release = approvedRelease ? sourceRelease : parseTf2Release({ ...sourceRelease, objects: { ...sourceRelease.objects, wasm: {
-    kind: "derived-object", mediaType: "application/octet-stream", byteLength: String(compiledWasm.byteLength),
-    sha256: new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex"),
-  } } })
-  const configuration = createDeployedBrowserConfiguration(release, applicationBuild)
   await Promise.all([
     copyFile(path.join(repositoryRoot, "apps", "web", "index.html"), path.join(DIST_DIRECTORY, "index.html")),
     copyFile(path.join(repositoryRoot, "apps", "web", "404.html"), path.join(DIST_DIRECTORY, "404.html")),
@@ -53,11 +61,11 @@ export async function buildStaticSite(target: string | undefined, approvedReleas
       release,
     }, null, 2)}\n`),
   ])
-  await verifyStaticTree(applicationBuild)
+  await verifyStaticTree(configuration)
   return applicationBuild
 }
 
-async function verifyStaticTree(applicationBuild: string): Promise<void> {
+async function verifyStaticTree(configuration: BrowserConfiguration): Promise<void> {
   for (const relative of ["index.html", "404.html", "_headers", "release.json", "tf2/index.html", "tf2/playsrc-config.json"]) {
     const metadata = await stat(path.join(DIST_DIRECTORY, relative))
     if (!metadata.isFile() || metadata.size < 1) throw new DeploymentError(`static deployment file ${relative} is unavailable`)
@@ -68,9 +76,10 @@ async function verifyStaticTree(applicationBuild: string): Promise<void> {
   }
   for (const prefix of ["index-", "gameplay-worker-"]) {
     const matches = entries.filter((entry) => entry.startsWith(prefix) && entry.endsWith(".js"))
-    if (matches.length !== 1 || !(await readFile(path.join(DIST_DIRECTORY, "tf2", "assets", matches[0]!), "utf8")).includes(applicationBuild)) {
+    if (matches.length !== 1) {
       throw new DeploymentError(`TF2 ${prefix.slice(0, -1)} bundle application generation differs`)
     }
+    assertStaticBundleGeneration(await readFile(path.join(DIST_DIRECTORY, "tf2", "assets", matches[0]!), "utf8"), configuration)
   }
 }
 
@@ -96,7 +105,7 @@ async function verifyRemoteObjects(target: string | undefined): Promise<void> {
         return bytes
       }
       const approvedWasm = await readObject(release.objects.wasm)
-      const compiledWasm = await readFile(path.join(repositoryRoot, "games", "tf2", "browser", "src", "wasm-generated", "tf2_wasm_bg.wasm"))
+      const compiledWasm = await readFile(path.join(repositoryRoot, "games/tf2/browser/src/wasm-generated/tf2_wasm_bg.wasm"))
       assertReleaseWasmInterface(compiledWasm, approvedWasm)
       const catalogBytes = await readObject(release.objects.catalog)
       const catalog = parseResourceCatalogBytes(catalogBytes)
@@ -186,6 +195,13 @@ export async function deployCloudflare(target: string | undefined): Promise<void
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
   await waitForDeployment(target, applicationBuild)
   console.log(JSON.stringify({ target, applicationBuild, url: `${TF2_APPLICATION_ORIGIN}/tf2` }))
+}
+
+export function assertStaticBundleGeneration(source: string, configuration: BrowserConfiguration): void {
+  const generation = readBundledGeneration(source)
+  const expected = Object.fromEntries(configuration.targets.map(target => [target.target, target.objects.resources.sha256]))
+  if (generation.applicationBuild !== configuration.applicationBuild || generation.wasmSha256 !== configuration.wasm.sha256
+    || JSON.stringify(generation.resourceRoots) !== JSON.stringify(expected)) throw new DeploymentError("Static bundle/configuration generation differs")
 }
 
 export function assertReleaseWasmInterface(compiled: Uint8Array, approved: Uint8Array): void {

@@ -7,7 +7,7 @@ import { TF2_TARGET_NAMES, tf2MapBsp, type Tf2TargetName } from "@playsrc/game-t
 
 const HASH = /^[0-9a-f]{64}$/
 
-export const TF2_RELEASE_SCHEMA = "playsrc-tf2-release-v2" as const
+export const TF2_RELEASE_SCHEMA = "playsrc-tf2-release-v3" as const
 export const TF2_APPLICATION_ORIGIN = "https://playsrc.online"
 export const TF2_ASSET_ORIGIN = "https://assets.playsrc.online"
 
@@ -25,13 +25,30 @@ export type Tf2Release = Readonly<{
   schema: typeof TF2_RELEASE_SCHEMA
   defaultTarget: Tf2TargetName
   objects: Readonly<{ wasm: ObjectDescriptor; catalog: ObjectDescriptor }>
+  wasmBindings: readonly WasmBindingFile[]
   targets: readonly Tf2ReleaseTarget[]
 }>
+
+export type WasmBindingFile = Readonly<{ name: string; byteLength: string; sha256: string }>
+
+export function parseWasmBindings(value: unknown): readonly WasmBindingFile[] {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 32) throw new Error("WASM binding closure is malformed")
+  const files = value.map((file, index) => {
+    if (!record(file) || Object.keys(file).sort().join("\0") !== "byteLength\0name\0sha256"
+      || typeof file.name !== "string" || !/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.js$/.test(file.name)
+      || typeof file.byteLength !== "string" || !/^[1-9]\d*$/.test(file.byteLength)
+      || !Number.isSafeInteger(Number(file.byteLength)) || Number(file.byteLength) > 1048576
+      || !HASH.test(file.sha256 as string) || index > 0 && value[index - 1].name >= file.name) throw new Error("WASM binding file is malformed")
+    return Object.freeze({ name: file.name, byteLength: file.byteLength, sha256: file.sha256 as string })
+  })
+  if (!files.some(file => file.name === "tf2_wasm.js") || !files.some(file => /^snippets\/wasm-bindgen-rayon-[0-9a-f]+\/src\/workerHelpers\.js$/.test(file.name))) throw new Error("WASM binding closure is incomplete")
+  return Object.freeze(files)
+}
 
 export function parseTf2Release(value: unknown): Tf2Release {
   if (
     !record(value)
-    || Object.keys(value).sort().join("\0") !== "defaultTarget\0objects\0schema\0targets"
+    || Object.keys(value).sort().join("\0") !== "defaultTarget\0objects\0schema\0targets\0wasmBindings"
     || value.schema !== TF2_RELEASE_SCHEMA
     || !TF2_TARGET_NAMES.includes(value.defaultTarget as Tf2TargetName)
     || !record(value.objects)
@@ -82,6 +99,7 @@ export function parseTf2Release(value: unknown): Tf2Release {
     schema: TF2_RELEASE_SCHEMA,
     defaultTarget: value.defaultTarget as Tf2TargetName,
     objects,
+    wasmBindings: parseWasmBindings(value.wasmBindings),
     targets: Object.freeze(targets),
   })
 }

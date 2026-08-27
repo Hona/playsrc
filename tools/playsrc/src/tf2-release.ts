@@ -10,6 +10,7 @@ import { repositoryRoot } from "./config"
 import { buildSourceBundle } from "./source-bundle"
 import { acquireMap } from "./targets"
 import { buildTf2Wasm } from "./tf2-wasm-build"
+import { captureWasmBindings } from "./wasm-bindings"
 
 const RELEASE_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2", "releases")
 const RELEASE_PATH = path.join(RELEASE_DIRECTORY, "current.json")
@@ -60,6 +61,7 @@ export async function prepareTf2Release(config: LocalConfig, target: string | un
   await writeFile(catalogArtifactPath, catalogBytes)
   const release = parseTf2Release({
     schema: TF2_RELEASE_SCHEMA,
+    wasmBindings: await captureWasmBindings(path.dirname(wasmPath), descriptor("derived-object", "application/octet-stream", wasmBytes)),
     defaultTarget: "jump_beef",
     objects: {
       wasm: descriptor("derived-object", "application/octet-stream", wasmBytes),
