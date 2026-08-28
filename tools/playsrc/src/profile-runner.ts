@@ -11,6 +11,7 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as i
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
+import { replaceProfileLeaseFile } from "./profile-lease-rename"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -140,7 +141,7 @@ async function writeLease(metadataPath: string, token: string, milliseconds: num
   const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporary, `${JSON.stringify({ schema: "playsrc-profile-owner-lease-v1", token, expiresAt: Date.now() + milliseconds })}\n`)
-    await rename(temporary, destination)
+    await replaceProfileLeaseFile(temporary, destination)
   } finally {
     await rm(temporary, { force: true })
   }
