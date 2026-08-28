@@ -158,7 +158,10 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     }, 1000)
     loadingControl.boundary("map-request")
     await command("map pl_upward")
-    await expect(page.locator("main")).toHaveAttribute("data-team-selection-models", /(?=.*reddoor:[^|]+:\d+:\d+)(?=.*bluedoor:[^|]+:\d+:\d+)/, { timeout: 40_000 })
+    // Admission may exceed40s on a new configured build. Retain its complete
+    // time/pressure rather than truncating the load before trusted input. The
+    // outer175s run cap and matched loading nonregression gate still apply.
+    await expect(page.locator("main")).toHaveAttribute("data-team-selection-models", /(?=.*reddoor:[^|]+:\d+:\d+)(?=.*bluedoor:[^|]+:\d+:\d+)/, { timeout: 75_000 })
     loadingControl.boundary("team-models")
     clearInterval(loadingTimer)
     await loadingObservation
@@ -268,7 +271,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     sampling = false
     await captureLoop?.catch(() => {})
     const partialCpu = captureCpu ? await cdp.send("Profiler.stop").catch(() => undefined) : undefined
-    if (!measurementRetained && activeStartedEpoch !== undefined) {
+    if (!measurementRetained) {
       if (partialCpu) await writeFile(path.join(directory, "selection-partial.cpuprofile"), JSON.stringify(partialCpu.profile))
       const partial = await page.evaluate(async () => {
         const root = globalThis as any, profile = root.__playsrcProfile, frames = root.__playsrcFrameProfiler
@@ -278,9 +281,12 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
         return { inputs: profile?.selectionInputs ?? [], owners: profile?.selectionOwners ?? [], memorySamples: profile?.selectionMemory ?? [],
           frames: frames?.completedFrames ?? [], worker: frames?.worker ?? [], gpuOperations: frames?.gpuOperations ?? [],
           shaders: frames?.shaders ?? [], adapters: frames?.adapters ?? [], devices: frames?.devices ?? [], losses: frames?.losses ?? [],
-          gpuOperationsDropped: frames?.gpuOperationsDropped ?? 0, longTasks: frames?.longTasks ?? [], longAnimationFrames: frames?.longAnimationFrames ?? [] }
+          gpuOperationsDropped: frames?.gpuOperationsDropped ?? 0, longTasks: frames?.longTasks ?? [], longAnimationFrames: frames?.longAnimationFrames ?? [],
+          loadingIdentity: profile?.selectionLoading, startupSpans: profile?.startupSpans,
+          loading: document.querySelector<HTMLElement>("main")?.dataset.loadPerformance,
+          application: { phase: document.querySelector<HTMLElement>("main")?.dataset.phase, detail: document.querySelector<HTMLElement>("main")?.dataset.detail } }
       }).catch(error => ({ unavailable: String(error) }))
-      await writeFile(path.join(directory, "selection-partial.json"), JSON.stringify({ status: "failed-incomplete", startedEpoch: activeStartedEpoch,
+      await writeFile(path.join(directory, "selection-partial.json"), JSON.stringify({ status: "failed-incomplete", startedEpoch: activeStartedEpoch ?? null,
         endedEpoch: Date.now(), references, partial, cpu: partialCpu ? summarizeCpuProfile(partialCpu.profile) : null,
         boundary: "Any missing next visible frame is right-censored, never a zero-latency or successful transition" }, null, 2))
     }
