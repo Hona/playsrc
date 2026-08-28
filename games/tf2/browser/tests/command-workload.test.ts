@@ -30,3 +30,35 @@ test("rejects wrong acknowledgement, malformed phase and cancellation without pu
   player.close()
   await expect(player.next(0n)).rejects.toThrow("closed")
 })
+
+test("startup mutation uses its real acknowledgement exactly once before the first observe", async () => {
+  const input = plan(), events: unknown[] = []
+  const mutation = { kind: 4 as const, hex: "02000000" }
+  const source = { ...input, observes: input.observes.map((entry, i) => ({ ...entry, mutations: i === 0 ? [mutation] : [] })) }
+  const response = { kind: "team-selection", generation: 3, id: 17 } as any
+  const player = new CommandWorkloadPlayer(source, 3, async request => { events.push(request); return response }, () => 5000)
+  expect(await player.redirect({ kind: "team-selection", generation: 3, choice: "red" })).toBe(response)
+  await player.next(0n)
+  expect(events).toEqual([{ kind: "team-selection", generation: 3, choice: "red" }])
+  expect(() => player.redirect({ kind: "team-selection", generation: 3, choice: "red" })).toThrow("differs")
+  const foreign = { kind: "team-selection" as const, generation: 4, choice: "blue" as const }
+  expect(player.redirect(foreign)).toBe(foreign)
+})
+
+test("closing during a deadline wait releases no additional command or mutation", async () => {
+  let now = 5000, sends = 0
+  const player = new CommandWorkloadPlayer(plan(), 1, async () => { sends++; return {} as any }, () => now,
+    async ms => { now += ms; player.close() })
+  await player.next(0n)
+  await expect(player.next(1n)).rejects.toThrow("cancelled")
+  expect(player.receipt.cursor).toBe(1)
+  expect(sends).toBe(0)
+})
+
+test("presentation groups cannot omit or repeat selected host ticks", () => {
+  const group = { atSeconds: 100, firstHostTick: "1", lastHostTick: "2", selectedTicks: 2 }
+  expect(() => validateWorkload({ ...plan(), presentations: [group] })).not.toThrow()
+  expect(() => validateWorkload({ ...plan(), presentations: [group, { ...group, atSeconds: 101 }] })).toThrow("coverage")
+  expect(() => validateWorkload({ ...plan(), presentations: [{ ...group, selectedTicks: 1 }] })).toThrow("coverage")
+  expect(() => validateWorkload({ ...plan(), presentations: [] })).toThrow("count")
+})
