@@ -11,6 +11,7 @@ export function installParticleAliasEvidence() {
   let display = false, inside = false
   const clones: THREE.Texture[] = [], meshes: THREE.Mesh[] = [], swaps: { current: any; next: any; image: THREE.Texture; separate: THREE.Texture }[] = []
   const materialNames: string[] = []
+  const occluders: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicNodeMaterial>[] = []
   const pixels = installSkinningEvidence(draw => {
     for (const swap of swaps) { swap.current.value = swap.separate; swap.next.value = swap.separate }
     try { draw() } finally { for (const swap of swaps) { swap.current.value = swap.image; swap.next.value = swap.image } }
@@ -25,7 +26,9 @@ export function installParticleAliasEvidence() {
     owner = this
     if (display && grid && camera) {
       inside = true
-      try { render.call(this, grid, camera) } finally { inside = false }
+      const autoClear = this.autoClear
+      this.autoClear = true
+      try { render.call(this, grid, camera) } finally { inside = false; this.autoClear = autoClear }
     }
     return value
   }
@@ -53,6 +56,9 @@ export function installParticleAliasEvidence() {
         if ((entry.material as any).userData.sourceParticleDepth) entry.depth.capture(renderer, view, false)
       }
       meshes.push(mesh); materialNames.push(entry.name); grid.add(mesh)
+      const occluder = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1, 2.8), new THREE.MeshBasicNodeMaterial({ color: 0x304050 }))
+      occluder.position.set((meshes.length - 1) % 7 * 2.8 - 8.4, -0.2, meshes.length <= 7 ? 2 : -2)
+      occluders.push(occluder); grid.add(occluder)
       if (index > 0) {
         const separate = entry.image.clone(); separate.needsUpdate = true; clones.push(separate)
         swaps.push({ current: entry.current, next: entry.next, image: entry.image, separate })
@@ -81,13 +87,18 @@ export function installParticleAliasEvidence() {
     async capture(phase: number) {
       prepare(); setPhase(phase); display = true
       const result = await pixels.capture(`particle-alias-${phase}`, "*", true)
+      const backend = owner!.backend as any
+      const separateBackings = swaps.map(swap => ({ separate: backend.get(swap.separate).texture !== backend.get(swap.image).texture,
+        initialized: !!backend.get(swap.separate).texture && !!backend.get(swap.image).texture }))
+      if (separateBackings.some(value => !value.separate || !value.initialized)) throw new Error("Reference did not bind independent live GPU images")
       return { performanceSample: false, fixture: "actual authored alias materials; Source quad/appearance writers with distinct legal UV/blend inputs", phase,
-        materials: materialNames, groups: 6, separateReferenceImages: clones.length, result }
+        materials: materialNames, groups: 6, separateReferenceImages: clones.length, separateBackings, occluders: occluders.length, result }
     },
     hide() { display = false },
     dispose() {
       display = false; THREE.WebGPURenderer.prototype.render = render; pixels.dispose()
       for (const mesh of meshes) mesh.geometry.dispose()
+      for (const mesh of occluders) { mesh.geometry.dispose(); mesh.material.dispose() }
       for (const texture of clones) texture.dispose()
       entries.clear(); owner = undefined; grid = undefined; camera = undefined
     },
