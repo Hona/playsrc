@@ -24,10 +24,10 @@ if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepar
 function OwnedRunner([string]$ownerFile) {
  if(!(Test-Path -LiteralPath $ownerFile)){return $null}
  $identity=Get-Content -Raw -LiteralPath $ownerFile|ConvertFrom-Json
- if(!$identity.childPid){return $null}
- try {$process=[System.Diagnostics.Process]::GetProcessById([int]$identity.childPid)}catch [ArgumentException]{return $null}
+ if(!$identity.pid){return $null}
+ try {$process=[System.Diagnostics.Process]::GetProcessById([int]$identity.pid)}catch [ArgumentException]{return $null}
  try {$null=$process.Handle;$created=([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}catch [InvalidOperationException]{return $null}
- if(!$identity.childStartedEpoch -or $created -ne $identity.childStartedEpoch){throw 'Owned launcher process identity changed; refusing a PID-only wait'}
+ if(!$identity.startedEpoch -or $created -ne $identity.startedEpoch){throw 'Owned launcher process identity changed; refusing a PID-only wait'}
  return $process
 }
 if ($Action -eq 'Wait') {
@@ -184,31 +184,10 @@ if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
 $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile) " + (($extra | ForEach-Object { Quote $_ }) -join ' ') }
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
-$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-$arguments=@($bun,$root,$log,'tools/playsrc/src/local-job.ts','run',$Job)
-if($Action -eq 'Build'){$arguments+=@('build',$Target)}
-elseif($Action -eq 'BuildStage'){$arguments+=@('build-stage',$Stage);if($Stage -eq 'resources'){$arguments+=$Target}}
-else{$arguments+=@('--ready','profile',$Profile);if($Grep){$arguments+=@('--grep',$Grep)};if($FreshBrowser){$arguments+='--fresh-browser'}}
-$requestFile="$log.request.txt"
-[IO.File]::WriteAllLines($requestFile,@($arguments|ForEach-Object{[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_))}),[Text.UTF8Encoding]::new($false))
-$requestHash=(Get-FileHash -LiteralPath $requestFile -Algorithm SHA256).Hash.ToLowerInvariant()
-$source=Join-Path $PSScriptRoot 'windows-job-launcher.cs'
-$sourceHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
-$launcherDirectory=Join-Path $config.sourceCacheDir 'toolchains/profile-launcher'
-$launcher=Join-Path $launcherDirectory "$sourceHash.exe"
-if(!(Test-Path -LiteralPath $launcher)) {
- New-Item -ItemType Directory -Force -Path $launcherDirectory | Out-Null
- $temporary=Join-Path $launcherDirectory "$sourceHash-$token.exe"
- try {Add-Type -Path $source -OutputAssembly $temporary -OutputType WindowsApplication; if(!(Test-Path -LiteralPath $launcher)){Move-Item -LiteralPath $temporary -Destination $launcher}}
- finally {Remove-Item -LiteralPath $temporary -ErrorAction SilentlyContinue}
-}
-# Record this launch even if bootstrap fails before the normal CLI starts.
 New-Item -ItemType File -Path $log | Out-Null
-$binary=[IO.File]::ReadAllBytes($launcher);$pe=[BitConverter]::ToInt32($binary,60)
-if($pe -lt 0 -or $pe+94 -gt $binary.Length -or [BitConverter]::ToUInt32($binary,$pe) -ne 17744 -or [BitConverter]::ToUInt16($binary,$pe+92) -ne 2){throw 'Owned launcher is not a GUI-subsystem PE image'}
-@{privacy='private-native-owner';job=$Job;task=$name;requestSha256=$requestHash;sourceSha256=$sourceHash;launcherSha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash.ToLowerInvariant();launcherBytes=$binary.Length;subsystem=2;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress|Set-Content -LiteralPath "$log.metadata.json"
-$taskAction = New-ScheduledTaskAction -Execute $launcher -Argument "`"$requestFile`" $requestHash" -WorkingDirectory $root
+$taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 # Task Scheduler defaults to 7 (BELOW_NORMAL/background), unlike an ordinary
 # interactive launch. 5 is NORMAL, not an above-normal/realtime benchmark boost.
