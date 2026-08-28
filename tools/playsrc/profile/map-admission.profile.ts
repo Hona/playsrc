@@ -44,7 +44,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const record=await native.read(desktop);nativeRecords.push(record);requireMacPageAdmission(record)
   }
   const worldScreenshot=async(path:string)=>{
-    await checkNative();const bytes=await page.locator("canvas.world-canvas").screenshot({path});await checkNative();return bytes
+    await waitNativeReady();const bytes=await page.locator("canvas.world-canvas").screenshot({path});await checkNative();return bytes
   }
   const waitNativeReady=async()=>{
     if(!native)return
@@ -118,7 +118,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   }
   const capture = async (label: string) => {
     await closeConsole()
-    await checkNative()
+    await waitNativeReady()
     const selected = ++revision
     await page.evaluate(revision => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = revision }, selected)
     await page.waitForFunction(revision => (globalThis as any).__playsrcProfile.geometryEvidence?.revision === revision, selected)
@@ -433,10 +433,12 @@ test("configured map native traversal, objective roster, visible geometry and ca
   // insert an admission/readback delay after setpos and outside its timing.
   if(await main.getAttribute("data-console-visible")!=="true")await page.keyboard.press("Backquote")
   await waitNativeReady()
-  const cpu=process.env.PROFILE_MAP_CPU==="1"?await page.context().newCDPSession(page):null
+  const captureOnly=process.env.PROFILE_MAP_CAPTURE_ONLY==="1"
+  const cpu=!captureOnly&&process.env.PROFILE_MAP_CPU==="1"?await page.context().newCDPSession(page):null
   if(cpu){await cpu.send("Profiler.enable");await cpu.send("Profiler.start")}
   await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
   await closeConsole()
+  if(!captureOnly){
   const sample = await sampleWindow()
   if(cpu){const result=await cpu.send("Profiler.stop");await writeFile(testInfo.outputPath(`${target}-main.cpuprofile`),JSON.stringify(result.profile));await cpu.detach()}
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
@@ -449,47 +451,53 @@ test("configured map native traversal, objective roster, visible geometry and ca
   // pipeline hitch cannot hide an independent gameplay admission failure.
   expect.soft(sample.ticks / sample.seconds).toBeGreaterThan(63)
   if(process.env.PROFILE_MAP_CPU==="1")return
+  }else{
+    await writeFile(testInfo.outputPath(`${target}-capture-only.json`),json({target,spawnChecks,performanceSample:false}))
+  }
   await capture("objective")
-  // Exercise a real bot capture, not a point-owner input or a local-player cap.
-  // This happens after the unchanged cadence window; the seeded bots still run
-  // their own objective AI and must enter the actual authored capture brush.
-  const botCapture = await page.evaluate(() => {
+  await page.waitForFunction(()=> (globalThis as any).__playsrcProfile.controlPoints.points.some((point:any)=>!point.locked
+    &&((point.owner!==2&&point.mayCapture[0])||(point.owner!==3&&point.mayCapture[1]))),undefined,{timeout:5000})
+  // An explicitly uncontested objective fixture, after the balanced-roster
+  // timing window. Keep 15 real bots/AI; never force ownership or player credit.
+  const priorRoster=await page.evaluate(()=>({camera:(globalThis as any).__playsrcProfile.player.camera,bots:(globalThis as any).__playsrcProfile.bots}))
+  const home = (spawnChecks[0] as any).player.position
+  await command(`setpos ${home.join(" ")}`)
+  await command("tf_bot_kick all");await expect(main).toHaveAttribute("data-bot-count","0")
+  const capturePlan=await page.evaluate(()=>{
+    const points=(globalThis as any).__playsrcProfile.controlPoints.points
+    const point=points.find((point:any)=>!point.locked&&((point.owner!==2&&point.mayCapture[0])||(point.owner!==3&&point.mayCapture[1])))
+    if(!point)throw new Error("No capturable authored point remains for bot acceptance")
+    return {point,team:point.owner!==2&&point.mayCapture[0]?2:3}
+  })
+  await command(`tf_bot_add 15 ${capturePlan.team===2?"red":"blue"} scout normal`)
+  await expect(main).toHaveAttribute("data-bot-count","15")
+  await page.waitForFunction(team=>(globalThis as any).__playsrcProfile.bots.length===15&&(globalThis as any).__playsrcProfile.bots.every((bot:any)=>bot.team===team),capturePlan.team)
+  const botCapture = await page.evaluate(({point,team}) => {
     const profile = (globalThis as any).__playsrcProfile
-    const point = profile.controlPoints.points.find((point: any) => !point.locked
-      && ((point.owner !== 2 && point.mayCapture[0]) || (point.owner !== 3 && point.mayCapture[1])))
-    if (!point) throw new Error("No capturable authored point remains for bot acceptance")
-    const team = point.owner !== 2 && point.mayCapture[0] ? 2 : 3
     const roster = JSON.parse(document.querySelector<HTMLElement>("main")!.dataset.scoreboardProbe!).players
     const candidates=profile.bots.filter((bot:any)=>bot.team===team&&bot.health>0&&[1,3,4,6,7].includes(bot.class))
       .sort((a:any,b:any)=>Number(b.class===1)-Number(a.class===1)).slice(0,3)
-    return { point, team, camera: profile.player.camera,
-      resetBots:profile.bots.filter((bot:any)=>!candidates.some((candidate:any)=>candidate.identity===bot.identity)).map((bot:any)=>({identity:bot.identity,team:bot.team,position:bot.position,name:roster.find((player:any)=>player.identity===bot.identity).name})),
+    return { point, team,fixture:"uncontested-15-bot-capture",
+      captureBaseline:profile.bots.filter((bot:any)=>bot.team===team).map((bot:any)=>({identity:bot.identity,captures:bot.captures})),
       bots: candidates
         .map((bot: any) => ({ identity: bot.identity, captures: bot.captures, position: bot.position,
           name: roster.find((player: any) => player.identity === bot.identity).name })) }
-  })
+  },capturePlan)
   expect(botCapture.bots.length).toBeGreaterThan(0)
-  const home = (spawnChecks[0] as any).player.position
-  await command(`setpos ${home.join(" ")}`)
-  // Keep the full roster and AI alive, but avoid turning the capture proof into
-  // an unbounded contested fight. Both team homes are observed authored spawns.
-  for(const bot of botCapture.resetBots){
-    const spawn=(spawnChecks as any[]).find(check=>check.player.team===bot.team).player.position
-    await command(`bot_teleport ${JSON.stringify(bot.name)} ${spawn.join(" ")} 0 90 0`)
-  }
   for (const bot of botCapture.bots) await command(`bot_teleport ${JSON.stringify(bot.name)} ${botCapture.point.position[0]} ${botCapture.point.position[1]} ${botCapture.point.position[2] + 8} 0 90 0`)
   await closeConsole()
-  await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, botCapture.camera)
+  await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, priorRoster.camera)
   const botPath = testInfo.outputPath(`${target}-bot-capture-state.json`)
-  await writeFile(botPath, json(botCapture))
+  const captureTimeout=Math.min(45_000,Math.max(20_000,Math.ceil(botCapture.point.captureTimes[botCapture.team-2]*1000)+2000))
+  await writeFile(botPath, json({...botCapture,priorRoster}))
   let captureFailure:unknown
-  try{await page.waitForFunction(({ point, team, bots }) => {
+  try{await page.waitForFunction(({ point, team, captureBaseline }) => {
     const profile = (globalThis as any).__playsrcProfile
     return profile.controlPoints.points.find((candidate: any) => candidate.identity === point.identity)?.owner === team
-      && bots.some((before: any) => profile.bots.some((bot: any) => bot.identity === before.identity && bot.captures > before.captures))
-  }, botCapture, { timeout: 20_000 })}catch(error){captureFailure=error}
+      && captureBaseline.some((before: any) => profile.bots.some((bot: any) => bot.identity === before.identity && bot.captures > before.captures))
+  }, botCapture, { timeout: captureTimeout })}catch(error){captureFailure=error}
   const captured = await page.evaluate(() => ({ points: (globalThis as any).__playsrcProfile.controlPoints, bots: (globalThis as any).__playsrcProfile.bots }))
-  await writeFile(botPath, json({ ...botCapture, captured }))
+  await writeFile(botPath, json({ ...botCapture,priorRoster,captured }))
   if(captureFailure)throw captureFailure
   await capture("bot-capture")
   await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
