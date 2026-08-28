@@ -10,6 +10,7 @@ function Read-OwnedUI([long]$windowId,[uint32]$processId) {
  $queue=New-Object 'System.Collections.Generic.Queue[object]'
  $queue.Enqueue(@{element=$root;depth=0})
  $rows=New-Object 'System.Collections.Generic.List[object]'
+ $depthLimited=$false
  while ($queue.Count -gt 0 -and $rows.Count -lt 48 -and $clock.ElapsedMilliseconds -lt 1500) {
   $item=$queue.Dequeue();$element=$item.element;$current=$element.Current
   if ($current.ProcessId -ne $processId) { continue }
@@ -23,9 +24,9 @@ function Read-OwnedUI([long]$windowId,[uint32]$processId) {
    while ($child -and $count -lt 24 -and $queue.Count -lt 48 -and $clock.ElapsedMilliseconds -lt 1500) {
     $queue.Enqueue(@{element=$child;depth=$item.depth+1});$child=$walker.GetNextSibling($child);$count++
    }
-  }
+  } else {$depthLimited=$true}
  }
- return @{windowId=$windowId;processId=$processId;milliseconds=$clock.ElapsedMilliseconds;truncated=($queue.Count -gt 0);elements=$rows.ToArray()}
+ return @{windowId=$windowId;processId=$processId;milliseconds=$clock.ElapsedMilliseconds;truncated=($queue.Count -gt 0 -or $depthLimited);elements=$rows.ToArray()}
 }
 `
 
