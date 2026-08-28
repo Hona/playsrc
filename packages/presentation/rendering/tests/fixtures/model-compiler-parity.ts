@@ -11,12 +11,14 @@ import { createSourceWaterFogUniforms } from "../../src/source-water"
 import { installRenderObjectLifetime } from "../../src/render-object-lifetime"
 import { installWebGpuBufferNames } from "../../src/webgpu-buffer-names"
 import { bindSourceModelMesh, createSourceModelSkeleton } from "../../src/source-model-skinning"
+import { verifyPipelinePreparation } from "./pipeline-preparation"
 
 const require = (condition: unknown, message: string) => { if (!condition) throw new Error(message) }
 const equal = (left: unknown, right: unknown, message: string) => require(JSON.stringify(left) === JSON.stringify(right), message)
 
 export function createCompilerParityOwner() {
   const renderer = new THREE.WebGPURenderer({ canvas: { width: 1, height: 1, style: {}, addEventListener() {} } as any })
+  renderer.backend.renderer = renderer
   renderer.hasFeature = () => false
   let builds = 0
   const backend = { createNodeBuilder: (mesh: THREE.Mesh) => { builds++; return new THREE.WGSLNodeBuilder(mesh, renderer) } }
@@ -24,7 +26,10 @@ export function createCompilerParityOwner() {
   const nodes = new NodeManager(renderer, backend), manager = new RenderObjects(renderer, nodes, {}, { delete() {} }, { deleteForRender() {} }, {})
   const lifetime = installRenderObjectLifetime(manager)
   const graphs = new Map<string, ModelLightingGraphs>(), scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(), lights = TSL.lights([])
-  const contexts = { panel: { id: 1 }, world: { id: 2 }, view: { id: 3 } }
+  const target = new THREE.Texture()
+  renderer.backend.get(target).format = "rgba16float"
+  const context = { textures: [target], sampleCount: 1, depth: true, depthTexture: null, stencil: false }
+  const contexts = { panel: { ...context, id: 1 }, world: { ...context, id: 2 }, view: { ...context, id: 3 } }
   const root = new THREE.Group(), frame = new NodeFrame()
   const retained: any[] = [], records: any[] = []
   const programs = new Map<any, string>(), groups = new Map<any, any>()
@@ -47,6 +52,10 @@ export function createCompilerParityOwner() {
     records,
     get builds() { return builds },
     get programs() { return programs.size },
+    async verifyPreparation() {
+      return verifyPipelinePreparation(retained.map(({ mesh, pass }) =>
+        manager.get(mesh, mesh.material, scene, camera, lights, contexts[pass as keyof typeof contexts], null)), renderer.backend)
+    },
     admit(label: string, geometry: THREE.BufferGeometry, pass: keyof typeof contexts, input: ModelMaterialGraphInput, pose: any, skinned: boolean) {
       let graph = graphs.get(pass)
       if (!graph) graphs.set(pass, graph = new ModelLightingGraphs())
