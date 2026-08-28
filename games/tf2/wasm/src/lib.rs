@@ -6719,9 +6719,13 @@ fn encode_snapshot(
     u32_field(&mut out, u32::from(extensions.soundscape.position_bits), MAX)?;
     for position in extensions.soundscape.positions { floats(&mut out, position, MAX)?; }
     out.reserve_exact(extensions.collision_snapshot.len());
-    // One owned buffer, one exact-size growth, one in-place suffix move. Splice
-    // consumes the exact-size iterator before any immutable lease is published.
-    drop(out.splice(collision_offset..collision_offset, extensions.collision_snapshot.iter().copied()));
+    // Keep the large borrowed section on the bulk-copy path. Vec::splice fills
+    // its gap through Iterator::next, which costs a per-byte loop in WASM.
+    let end = out.len();
+    let collision_end = collision_offset + extensions.collision_snapshot.len();
+    out.resize(end + extensions.collision_snapshot.len(), 0);
+    out.copy_within(collision_offset..end, collision_end);
+    out[collision_offset..collision_end].copy_from_slice(extensions.collision_snapshot);
     Some(out)
 }
 
