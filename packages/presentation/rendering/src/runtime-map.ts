@@ -888,12 +888,13 @@ function parseHdrProfile(
     const sourceBytes = reader.sized().slice()
     const identity = logicalPath.toLowerCase()
     if (
-      !knownShader(shader) || (features & ~0x3f) !== 0 || textureRole < 1 || textureRole > 5
+      !knownShader(shader) || (features & ~0x3f) !== 0 || !knownTextureRole(textureRole) || textureRole === 255
       || width < 1 || height < 1 || width > MAX_ATLAS_DIMENSION || height > MAX_ATLAS_DIMENSION
-      || !materialIdentities.add(identity)
+      || materialIdentities.has(identity)
     ) {
       throw new RuntimeMapError("profile material record is invalid")
     }
+    materialIdentities.add(identity)
     const material = Object.freeze({
       logicalPath,
       shader,
