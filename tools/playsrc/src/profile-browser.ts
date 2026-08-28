@@ -7,6 +7,7 @@ import path from "node:path"
 import { repositoryRoot } from "./config"
 import { fileFingerprint } from "./file-fingerprint"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive } from "./profile-lock"
+import { replaceProfileLeaseFile } from "./profile-lease-rename"
 
 type BrowserOwner = { token: string; pid: number; browserPid: number; arguments: string[]; endpoint: string; identity: string; executable: string; executableSha256: string }
 export type BrowserLaunch = { channel?: string; args?: string[] }

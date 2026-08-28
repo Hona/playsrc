@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test"
 import { replaceProfileLeaseFile } from "../src/profile-lease-rename"
 
+test("both development and browser lease writers retain the bounded atomic replacement contract", async () => {
+  for (const name of ["profile-runner.ts", "profile-browser.ts"]) {
+    const source = await Bun.file(new URL(`../src/${name}`, import.meta.url)).text()
+    expect(source).toContain('from "./profile-lease-rename"')
+    expect(source).toContain("await replaceProfileLeaseFile(")
+  }
+})
+
 test("a Windows reader collision retries only the same atomic lease replacement", async () => {
   let now = 0, calls = 0
   const error = Object.assign(new Error("reader sharing violation"), { code: "EPERM" })
