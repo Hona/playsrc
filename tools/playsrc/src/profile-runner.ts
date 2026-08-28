@@ -63,7 +63,7 @@ const PROFILES = Object.freeze({
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
   "upward-outdoors": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_UPWARD_OUTDOORS: "1" } },
   "upward-training-bots": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots" }, minimumRemainingMilliseconds: environment => environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? 120_000 : environment.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1" ? 90_000 : 60_000 },
-  "class-switch-high-dpi": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_UPWARD_CLASS_SWITCH: "1" } },
+  "class-switch-high-dpi": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_UPWARD_CLASS_SWITCH: "1", PROFILE_SAMPLE_SECONDS: "10" } },
   "particle-combat": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_PARTICLE_COMBAT: "1" } },
   "sky-coherence": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SKY_COHERENCE: "1" } },
   "2fort": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1" } },
