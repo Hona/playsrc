@@ -5,7 +5,7 @@ import { parseResourceGraphBytes } from "@playsrc/asset-store/graph"
 import { loadLocalConfig } from "./config"
 const sha = process.argv[2]
 if (!sha || !/^[a-f0-9]{64}$/.test(sha)) throw new Error("Expected exact graph SHA")
-const config = await loadLocalConfig(), pathname = objectPath(config.assetDir, sha)
+const config = await loadLocalConfig(), pathname = process.argv[3] ?? objectPath(config.assetDir, sha)
 let bytes: Buffer
 try { bytes = await readFile(pathname) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; console.log(JSON.stringify({ graph: sha, present: false })); process.exit(0) }
 if (createHash("sha256").update(bytes).digest("hex") !== sha) throw new Error("Graph hash differs")
