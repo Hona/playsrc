@@ -105,7 +105,7 @@ while (($line=[Console]::ReadLine()) -ne $null) {
    $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
    $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui;action=$action}
  } catch {$result=@{id=$request.id;error=($_|Out-String)}}
- [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
+  [Console]::WriteLine(($result|ConvertTo-Json -Depth 12 -Compress))
 }
 `
   // Win32 command lines are bounded. Keep this owned helper in configured
@@ -127,7 +127,7 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       const end=text.indexOf("\n"),line=text.slice(0,end).trim();text=text.slice(end+1)
       if(!line)continue
       let result:any
-      try{result=JSON.parse(line)}catch{fail(new Error("Malformed native startup probe response"));continue}
+      try{result=JSON.parse(line)}catch{fail(new Error(`Malformed native startup probe response: ${line.slice(0,1024)}; stderr=${diagnostics}`));continue}
       if(!result.id)continue // initial read-only WTS readiness record
       const entry=pending.get(result.id);if(!entry)continue
       pending.delete(result.id);clearTimeout(entry.timer)
