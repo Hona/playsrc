@@ -142,7 +142,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
       await writeFile(testInfo.outputPath("rocket-visible-steam.json"),json({exposedChanged,pixels:48000}))
       expect(exposedChanged,"unoccluded rocket steam must remain visible").toBeGreaterThan(16)
     }
-    expect(errors).toEqual([]);return
+    expect(errors).toEqual([])
+    if(process.env.PROFILE_MAP_FULL!=="1")return
+    await command("ent_fire particle_rocketsteam* Start");await closeConsole()
+    await page.evaluate(()=>{delete (globalThis as any).__playsrcProfile.displacementCameraOverride})
   }
   if(process.env.PROFILE_MAP_SPOTLIGHT==="1"){
     const beam=facts.legacyVisuals.find((entity:any)=>entity.classname==="point_spotlight"&&Math.hypot(...entity.end.map((v:number,i:number)=>v-entity.position[i]))>1)
