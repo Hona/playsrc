@@ -18,10 +18,12 @@ function fixture(serialized = false, traceOwners = false) {
       this.mipLevelCount = descriptor.mipLevelCount ?? 1; this.sampleCount = descriptor.sampleCount ?? 1
     }
     destroy() { calls.destroy++; if (failure === "destroy") throw error; return "destroyed" }
+    createView() { return {} }
   }
   class GPUDevice { createTexture(descriptor: any) { calls.create++; if (failure === "create") throw error; return new GPUTexture(descriptor) } }
   class GPUQueue { writeTexture(..._args: any[]) { calls.write++; if (failure === "write") throw error; return "written" } }
-  const host = { GPUTexture, GPUDevice, GPUQueue }
+  class GPUCommandEncoder { beginRenderPass(_descriptor: any) { return {} } }
+  const host = { GPUTexture, GPUDevice, GPUQueue, GPUCommandEncoder }
   const install = serialized ? new Function(`return (${installGpuTextureAccounting.toString()})`)() as typeof installGpuTextureAccounting : installGpuTextureAccounting
   const state = install(host, traceOwners), device = new GPUDevice(), queue = new GPUQueue()
   return { state, device, queue, calls, error, host, fail: (value: typeof failure) => { failure = value } }
@@ -40,6 +42,19 @@ test("opt-in owner records join native creation, uploads and retirement without 
   expect(owners.records[0]).toMatchObject({ owner: "authored:normal:frame=0", bytes: 64, width: 4, height: 4, mips: 1, samples: 1 })
   expect(owners.records[1].bytes).toBe(state.writeTextureSourceBytes)
   reconcile(state)
+})
+
+test("water attachment use joins the actual native view and does not label other render targets as water", () => {
+  const { device, host } = fixture(true, true), encoder = new host.GPUCommandEncoder()
+  const unused = device.createTexture({ label: "playsrc-water-refraction-1", size: [1280, 720], format: "rgba8unorm" })
+  unused.createView(); unused.destroy()
+  const admitted = device.createTexture({ label: "playsrc-water-refraction-1", size: [1280, 720], format: "rgba8unorm" })
+  const other = device.createTexture({ label: "other", size: [1280, 720], format: "rgba8unorm" })
+  encoder.beginRenderPass({ colorAttachments: [{ view: admitted.createView(), loadOp: "clear", storeOp: "store" }, { view: other.createView() }] })
+  const records = (host as any).__playsrcTextureOwners.records
+  expect(records.filter((record: any) => record.kind === "attachment")).toEqual([
+    expect.objectContaining({ id: 2, owner: "playsrc-water-refraction-1", loadOp: "clear", storeOp: "store" }),
+  ])
 })
 
 function reconcile(state: ReturnType<typeof installGpuTextureAccounting>) {
