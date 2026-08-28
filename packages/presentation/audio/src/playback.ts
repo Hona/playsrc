@@ -84,7 +84,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
   const metrics = { paintCalls: 0, extraPaintCalls: 0, paintedFrames: 0, paintMilliseconds: 0, maximumPaintMilliseconds: 0 }
   const lifecycle: Record<string, unknown>[] = []
   let lastPaint: number | undefined
-  let nextExtraUpdate = 0
+  let writtenFrames = 0
   const record = (event: string, fields: Record<string, unknown> = {}) => {
     if (diagnostics && lifecycle.length < 256) lifecycle.push({ event, wallTime: performance.now(), audioTime: context.currentTime, epoch, pending, ready, contextState: context.state, ...fields })
   }
@@ -172,7 +172,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
   }
   function paint(): void {
     if ((Atomics.load(control, 6) >>> 0) !== epoch) return
-    const read = Atomics.load(control, 0) >>> 0, write = Atomics.load(control, 1) >>> 0, available = (write - read) >>> 0
+    const read = Atomics.load(control, 0) >>> 0, write = writtenFrames, available = (write - read) >>> 0
     if (available > CAPACITY) throw new AudioError("BrowserFailure", "Audio ring ownership differs")
     const frames = Math.max(0, AHEAD - available) & ~3
     if (frames === 0) return
@@ -185,7 +185,8 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     const first = Math.min(count, samples.length - offset)
     samples.set(pcm.subarray(0, first), offset)
     if (first < count) samples.set(pcm.subarray(first), 0)
-    Atomics.store(control, 1, (write + frames) | 0); Atomics.store(control, 4, 1)
+    writtenFrames = (write + frames) >>> 0
+    Atomics.store(control, 1, writtenFrames | 0); Atomics.store(control, 4, 1)
     if (diagnostics) {
       const now = context.currentTime
       if (lastPaint === undefined || now - lastPaint > 0.08) record("paint-gap", { previousAudioTime: lastPaint, read, write, frames, previousAvailable: available, activeVoices: wasm.playsrc_audio_voice_count() })
@@ -193,7 +194,6 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     }
     const duration = performance.now() - started
     metrics.paintCalls++; metrics.paintedFrames += frames; metrics.paintMilliseconds += duration; metrics.maximumPaintMilliseconds = Math.max(metrics.maximumPaintMilliseconds, duration)
-    nextExtraUpdate = performance.now() + 90
   }
   output.port.onmessage = ({ data }) => {
     if (data.deviceGap) { record("device-gap", data.deviceGap); return }
@@ -277,7 +277,11 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
       if (!closed && ready && context.state === "running") paint()
     },
     extraUpdate() {
-      if (performance.now() >= nextExtraUpdate && !closed && ready && context.state === "running") {
+      // A single browser draw/upload can outlast the last ten percent of the
+      // buffer. Refill from the real consumer cursor at each owned checkpoint,
+      // never a wall-clock timer measured after the previous paint completed.
+      // The paint horizon, simulation clock and published PCM remain unchanged.
+      if (!closed && ready && context.state === "running") {
         const before = metrics.paintCalls
         paint()
         metrics.extraPaintCalls += Number(metrics.paintCalls !== before)
