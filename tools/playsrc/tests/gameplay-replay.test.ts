@@ -4,7 +4,20 @@ import path from "node:path"
 import { parseGameplayReplay, startGameplayReplayJournal } from "../profile/gameplay-replay"
 import { drainTraceStream } from "../profile/compositor-evidence"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
-import { verifyReplayHash } from "../profile/replay-gameplay"
+import { parseReplayArguments, verifyReplayHash } from "../profile/replay-gameplay"
+
+test("offline replay accepts only explicit map/root selections and unambiguous options", () => {
+  const identity = "a".repeat(64), resourceRoot = "b".repeat(64)
+  expect(parseReplayArguments([identity])).toEqual({ identity, baseline: undefined, resourceRoot: undefined,
+    target: "pl_upward", ticksOnly: false, displacement: false })
+  expect(parseReplayArguments([identity, "--target=ctf_2fort", `--resource-root=${resourceRoot}`, "--baseline-wasm=before.wasm", "--ticks", "--displacement"]))
+    .toEqual({ identity, baseline: "before.wasm", resourceRoot, target: "ctf_2fort", ticksOnly: true, displacement: true })
+  for (const options of [["--target=other"], ["--resource-root=bad"], ["--baseline-wasm="],
+    ["--target=pl_upward", "--target=ctf_2fort"], ["--ticks", "--ticks"],
+    [`--resource-root=${resourceRoot}`, `--resource-root=${identity}`]]) {
+    expect(() => parseReplayArguments([identity, ...options])).toThrow()
+  }
+})
 
 test("historical replay stays strict and explicit two-build comparisons report historical mismatches", () => {
   expect(verifyReplayHash("a", "a", "tick:1")).toBe(false)
