@@ -171,6 +171,17 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_ROUTE_VIEWS){
+    const views=JSON.parse(process.env.PROFILE_MAP_ROUTE_VIEWS) as number[][]
+    expect(views.length).toBeLessThanOrEqual(8)
+    for(const [index,view]of views.entries()){
+      expect(view).toHaveLength(5);expect(view.every(Number.isFinite)).toBe(true)
+      await command(`setpos ${view.slice(0,3).join(" ")}`)
+      await command(`setang ${view[4]} ${view[3]} 0`)
+      await closeConsole();await capture(`route-${index}`)
+    }
+    return
+  }
   if(process.env.PROFILE_MAP_LIFECYCLE==="1"){
     const replacement=process.env.PROFILE_MAP_REPLACEMENT??"koth_viaduct"
     expect(replacement).not.toBe(target);tf2MapBsp(replacement)
