@@ -532,13 +532,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
           instrumentation: diagnosticCpu ? "CPU diagnosis only: main/Worker samplers plus native display marks; not ordinary acceptance" : "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
         probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.missedPublications } })
       const compositor = summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined)
+      const gpuCapture = gpuEngines ? await gpuEngines.finished : undefined
       await writeFile(path.join(directory, "delivery-presentation.json"), JSON.stringify({ evidence: evidence.artifact, complete: evidence.manifest.complete, compositor,
         nativeDelivery: evidence.analysis, processes: { before: processBefore, after: processAfter, started: processBoundaryStarted, ended: processBoundaryEnded,
           scope: "Unprorated process CPU counters bracket sampling and boundary readback; not active-only CPU or GPU device time" },
         memory: { before: memoryBefore, after: memoryAfter, scope: "Boundary process residency/commit, not active peaks or deduplicated physical RAM" },
-        gpuEngines: gpuEngines ? { ...await gpuEngines.finished, scope: gpuEngines.scope, startedEpoch: sample.startedEpoch, endedEpoch: sample.endedEpoch } : null }, null, 2))
+        gpuEngines: gpuEngines ? { ...gpuCapture, scope: gpuEngines.scope, startedEpoch: sample.startedEpoch, endedEpoch: sample.endedEpoch } : null }, null, 2))
       expect(evidence.manifest.complete).toBe(true)
       expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
+      if (gpuCapture) {
+        expect(gpuCapture.error).toBeNull()
+        expect(gpuCapture.samples.filter(entry => [0, 1].includes(entry.status)).length).toBeGreaterThan(1)
+      }
       await diagnosticCdp?.detach()
       await presentationCdp.detach()
     }
