@@ -1834,17 +1834,21 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     pub fn apply_mover_results(&mut self, results: &[MoverResult]) -> Result<MapPhase, Error> {
-        let mut candidate = self.clone();
-        let mut phase = candidate.map.apply_mover_results(candidate.tick, results)?;
-        candidate.pending_control_point_events.append(&mut phase.control_point_events);
-        candidate.movement.position = add(candidate.movement.position, phase.carry);
-        candidate.mover_requests.retain(|request| {
+        // Map processing can fail after removing completed movers or consuming
+        // entity outputs. Keep that entire rollback owner, but do not checkpoint
+        // unrelated bots, equipment and projectiles for each ordered record.
+        // All Session publication below is infallible and follows map success.
+        let mut map = self.map.clone();
+        let mut phase = map.apply_mover_results(self.tick, results)?;
+        self.map = map;
+        self.pending_control_point_events.append(&mut phase.control_point_events);
+        self.movement.position = add(self.movement.position, phase.carry);
+        self.mover_requests.retain(|request| {
             !results.iter().any(|result| {
                 result.request_id == request.request_id && result.kind == MoverResultKind::Completed
             })
         });
-        merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
-        *self = candidate;
+        merge_mover_requests(&mut self.mover_requests, &phase.mover_requests);
         Ok(phase)
     }
 
