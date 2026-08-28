@@ -1,4 +1,5 @@
 import { summarizeFrameTimes } from "./profile-window"
+import { deliveryTimeline } from "./frame-delivery"
 
 export type ChromiumTraceEvent = Readonly<{ name?: string; ts?: number; dur?: number; pid?: number; tid?: number; cat?: string; args?: Record<string, any> }>
 
@@ -62,17 +63,22 @@ export function summarizeActivePresentationSilence(events: readonly ChromiumTrac
 export function summarizeCompositorTruth(events: readonly ChromiumTraceEvent[], elapsedMilliseconds: number, window?: Readonly<{ startedMicroseconds: number; endedMicroseconds: number }>) {
   if (!Number.isFinite(elapsedMilliseconds) || elapsedMilliseconds <= 0) throw new Error("Compositor sampling duration must be positive")
   if (window && (!Number.isFinite(window.startedMicroseconds) || !Number.isFinite(window.endedMicroseconds) || window.endedMicroseconds < window.startedMicroseconds)) throw new Error("Compositor sampling window is invalid")
-  const sampled = events.filter(event => Number.isFinite(event.ts) && (!window || event.ts! >= window.startedMicroseconds && event.ts! <= window.endedMicroseconds))
-  const eventName = chromiumPresentationEventName(sampled)
+  const sampled = events.filter(event => Number.isFinite(event.ts) && (!window || event.ts! >= window.startedMicroseconds && event.ts! < window.endedMicroseconds))
+  const eventName = chromiumPresentationEventName(sampled) ?? chromiumPresentationEventName(events)
   const presentations = eventName ? sampled.filter(event => event.name === eventName) : []
+  const ambiguous = new Set(presentations.map(event => `${event.pid}:${event.tid}`)).size > 1
   const timestamps = [...new Set(presentations.map(event => event.ts!))].sort((left, right) => left - right)
   const intervals = timestamps.slice(1).map((timestamp, index) => (timestamp - timestamps[index]!) / 1_000)
   return Object.freeze({
-    evidence: timestamps.length ? "chromium-compositor-presentation-trace" as const : "unavailable" as const,
-    presentedFrames: timestamps.length || null,
-    presentedFramesPerSecond: timestamps.length ? Number((timestamps.length / elapsedMilliseconds * 1_000).toFixed(3)) : null,
-    intervals: timestamps.length > 1 ? summarizeFrameTimes(intervals) : null,
-    eventNames: [...new Set(presentations.map(event => event.name!))].sort(),
+    evidence: ambiguous ? "ambiguous-compositor-streams" as const : eventName ? "chromium-compositor-presentation-trace" as const : "unavailable" as const,
+    presentedFrames: eventName && !ambiguous ? timestamps.length : null,
+    presentedFramesPerSecond: eventName && !ambiguous ? Number((timestamps.length / elapsedMilliseconds * 1_000).toFixed(3)) : null,
+    streams: window && eventName ? [...new Set(events.filter(event => event.name === eventName).map(event => `${event.pid}:${event.tid}`))].map(stream => ({
+      stream, delivery: deliveryTimeline(window.startedMicroseconds / 1000, window.endedMicroseconds / 1000,
+        [...new Set(events.filter(event => event.name === eventName && `${event.pid}:${event.tid}` === stream && Number.isFinite(event.ts)).map(event => event.ts! / 1000))].sort((left, right) => left - right)),
+    })) : [],
+    intervals: timestamps.length > 1 && !ambiguous ? summarizeFrameTimes(intervals) : null,
+    eventNames: eventName ? [eventName] : [],
     traceEvents: events.length,
   })
 }

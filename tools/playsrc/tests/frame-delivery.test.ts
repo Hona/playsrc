@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { deliveryTimeline, installDeliveryObserver, retainedDeliveryAttribution } from "../profile/frame-delivery"
+import { compareDeliveryEvidence, deliveryTimeline, installDeliveryObserver, retainedDeliveryAttribution, summarizeDeliveryMeasurement } from "../profile/frame-delivery"
 
 test("delivery keeps empty seconds and start/end stalls rather than reporting only surviving intervals", () => {
   const value = deliveryTimeline(0, 6000, [2100, 2200, 2300])
@@ -7,8 +7,33 @@ test("delivery keeps empty seconds and start/end stalls rather than reporting on
   expect(value.initialGap).toBe(2100)
   expect(value.terminalGap).toBe(3700)
   expect(value.maximumGapIncludingBoundaries).toBe(3700)
+  expect(value.quarterSecondBuckets).toHaveLength(24)
+  expect(value.statisticsIncludingBoundaries.over500Milliseconds).toBe(2)
+  expect(value.statisticsIncludingBoundaries.over1000Milliseconds).toBe(2)
   expect(deliveryTimeline(10, 6010, []).gapsIncludingBoundaries).toEqual([6000])
   expect(deliveryTimeline(0, 1001, [0, 1000, 1001]).buckets.map(bucket => bucket.count)).toEqual([1, 1])
+})
+
+test("paired evidence rejects a changed source, resolution, quality, camera or active roster", () => {
+  const commit = "a".repeat(40), fingerprint = "b".repeat(64)
+  const sample = { started: 0, ended: 6000, firstFrame: 0, lastFrame: 1, frames: [{ at: 400, frame: 1 }], raf: [10, 20],
+    before: { tick: 10, bots: 15, botProbe: "2:3:5" }, after: { tick: 20, bots: 15 }, lifecycle: [], missedPublications: 0 }
+  const nativeAdmission = [{ native: { desktop: { state: 0, flags: 1, protocol: 0, processSessionId: 3, consoleSessionId: 3 },
+    foreground: 12, windows: [{ id: 12, visible: true, minimized: false }] } }]
+  const ordinary = { mode: "ordinary", applicationCommit: commit, sourceFingerprint: fingerprint, sample, nativeAdmission }
+  const traced = { ...ordinary, mode: "traced" }
+  const boundary = { applicationCommit: commit, sourceFingerprint: fingerprint, browserVersion: "browser", capturePlan: { interaction: "forward-movement" },
+    configuration: { assetOrigin: "http://127.0.0.1:4000", renderLevel: 0 }, boundary: { viewport: { width: 1280, height: 720, dpr: 1 },
+      userAgent: "browser", storage: {}, state: { cameraPosition: "1,2,3" }, instrumentation: { app: false, frame: false } } }
+  const traceBoundary = { ...boundary, boundary: { ...boundary.boundary, instrumentation: { app: true, frame: true } } }
+  expect(compareDeliveryEvidence(ordinary, boundary, traced, traceBoundary).ordinary.completed.zeroBuckets).toBe(5)
+  for (const changed of [
+    { ...traceBoundary, applicationCommit: "c".repeat(40) },
+    { ...traceBoundary, configuration: { ...traceBoundary.configuration, renderLevel: 1 } },
+    { ...traceBoundary, boundary: { ...traceBoundary.boundary, viewport: { width: 640, height: 480, dpr: 1 } } },
+    { ...traceBoundary, boundary: { ...traceBoundary.boundary, state: { cameraPosition: "4,5,6" } } },
+  ]) expect(() => compareDeliveryEvidence(ordinary, boundary, traced, changed)).toThrow()
+  expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, botProbe: "2:3:9" } } }, traceBoundary)).toThrow("roster")
 })
 
 test("passive observer counts unchanged RAF surfaces separately and detects missed publications", () => {
@@ -35,10 +60,21 @@ test("fast RAF and cheap render work cannot turn a Worker-bound stale surface in
     frames: [400, 800, 1200].map(at => ({ at })), presentationCallbacks: Array.from({ length: 600 }, (_, index) => index * 10),
     worker: [{ kind: "observe", started: 0, finished: 5900, timings: { transactMilliseconds: 5800 } },
       { kind: "observe", started: 5950, finished: 6100, timings: { transactMilliseconds: 150 } }] },
-  { compositor: { presentedFrames: 3 }, frameWork: { p50Milliseconds: 6.625 } })
+  { compositor: { presentedFrames: 3 }, renderWork: { p50Milliseconds: 6.625 } })
   expect(result.completed.perSecond).toBe(0.5)
   expect(result.raf.perSecond).toBe(100)
   expect(result.observe.transactMilliseconds).toBe(5800)
   expect(result.completed.terminalGap).toBe(4800)
-  expect(result.compositor.presentedFrames).toBe(3)
+  expect(result.compositor).toEqual({ presentedFrames: 3 })
+})
+
+test("the report producer labels model preparation and render submission as separate elapsed phases", () => {
+  const value = summarizeDeliveryMeasurement({ started: 0, ended: 6000, presentationCallbacks: [10, 20], frames: [
+    { at: 400, detail: { models: 140, total: 6.625 } }, { at: 900, detail: { models: 150, total: 8 } },
+  ] })
+  expect(value.modelPreparationLatency.total).toBe(290)
+  expect(value.renderSubmissionElapsed.maximumMilliseconds).toBe(8)
+  expect(value.delivery.completed.maximumGapIncludingBoundaries).toBe(5100)
+  expect(value).not.toHaveProperty("botWork")
+  expect(value).not.toHaveProperty("frameWork")
 })

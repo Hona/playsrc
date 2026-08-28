@@ -78,9 +78,16 @@ export function assertWindowsIdle(state: WindowsDesktopState): void {
 export async function queryWindowsDesktop(timeout = 10_000): Promise<WindowsDesktopState> {
   if (process.platform !== "win32") throw new Error("Windows desktop evidence must be collected on the Windows host")
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 10_000) throw new Error("Windows desktop query deadline is invalid")
-  const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(WINDOWS_DESKTOP_QUERY, "utf16le").toString("base64")], { encoding: "utf8", timeout, maxBuffer: 64 * 1024, windowsHide: true })
+  const { stdout } = await consoleQueryDeadline(promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(WINDOWS_DESKTOP_QUERY, "utf16le").toString("base64")], { encoding: "utf8", timeout, maxBuffer: 64 * 1024, windowsHide: true }), timeout)
   return parseWindowsDesktopState(stdout)
+}
+
+export async function consoleQueryDeadline<T>(query: Promise<T>, timeout: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try { return await Promise.race([query, new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Windows console query exceeded its admission deadline")), timeout)
+  })]) } finally { clearTimeout(timer) }
 }
 
 export async function requireWindowsProfileConsole(remaining = 10_000): Promise<WindowsDesktopState | null> {

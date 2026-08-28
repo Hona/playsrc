@@ -310,6 +310,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   let lock: Awaited<ReturnType<typeof acquireHeadedProfileLock>> | undefined
   const observations: LockObservation[] = []
   let identity: string | null = null
+  let harnessIdentity: string | null = null
   let configuredIdentity: string | null = null
   let generatedIdentity: string | null = null
   let currentPhase = "queue"
@@ -373,6 +374,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     progress = setInterval(() => console.error(`[performance] ${profile} phase=${currentPhase} total=${Date.now() - started}ms queued=${lock!.milliseconds}ms remaining=${remaining()}ms`), 10_000)
     const identityStarted = Date.now()
     identity = await measure("source-identity", () => applicationBuildIdentity(root))
+    harnessIdentity = path.resolve(root) === path.resolve(repositoryRoot) ? identity : await applicationBuildIdentity(repositoryRoot)
     configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target, root))
     sourceIdentityMilliseconds = Date.now() - identityStarted
     const ownerIdentity = createHash("sha256").update(identity).update(configuredIdentity).update(process.env.PLAYSRC_DEV_PORT ?? "4173").digest("hex")
@@ -428,6 +430,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         PLAYSRC_PROFILE_PROCESS_STARTED: String(browserStarted),
         PLAYSRC_PROFILE_RUN_DIRECTORY: runDirectory,
         PLAYSRC_PROFILE_SOURCE_FINGERPRINT: identity!,
+        PLAYSRC_PROFILE_HARNESS_FINGERPRINT: harnessIdentity!,
         PLAYSRC_PROFILE_BROWSER_ENDPOINT: browser?.endpoint ?? process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT,
         PLAYSRC_PROFILE_DEADLINE: String(started + MAX_RUN_MILLISECONDS),
       },
@@ -445,6 +448,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     const verificationStarted = Date.now()
     if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
       || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity(root)) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
+    if (path.resolve(root) !== path.resolve(repositoryRoot) && harnessIdentity !== await applicationBuildIdentity(repositoryRoot)) throw new Error("Profiler harness changed during the command")
     sourceVerificationMilliseconds = Date.now() - verificationStarted
     outcome = exitCode === 0 ? "passed" : "failed"
   } catch (error) {
@@ -486,9 +490,10 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
           schema: "playsrc-browser-profile-run-v4",
           runId,
           profile,
-          command: ["bun", "tools/playsrc/src/profile-runner.ts", ...arguments_],
+          command: ["bun", path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
           repository: root,
           harnessRepository: repositoryRoot,
+          harnessFingerprint: harnessIdentity,
           sourceFingerprint: identity,
           configuredIdentity,
           generatedIdentity,

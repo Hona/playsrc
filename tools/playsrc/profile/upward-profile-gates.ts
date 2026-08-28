@@ -16,6 +16,7 @@ export function assertUpwardProfile(report: any, policy: {
   assert.equal(report.teams.red + report.teams.blue, policy.playerCount, "team population")
   assert(report.completedFrames > 0, "no completed frames")
   assert(report.elapsedMilliseconds >= 5000, "active sample duration")
+  assert(report.elapsedMilliseconds <= 10000, "active sample exceeds ten seconds")
   assert(report.pixels.nonBlack > 20_000, "visible pixels missing")
   if (policy.classes) {
     assert.equal(report.classSwitches.inputGuard?.unplanned?.length, 0, "unplanned native class input; input is observed, never suppressed")
