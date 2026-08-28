@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Build','Status','Result','Logs','Doctor','Wait')][string]$Action = 'Run',
+  [ValidateSet('Run','Build','Status','Result','Logs','Doctor','Wait','Artifacts')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Target,
@@ -34,6 +34,7 @@ if ($Action -eq 'Doctor') {
   exit $LASTEXITCODE
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build') {
+  $tasks = if ($Action -eq 'Status') { @(Get-ScheduledTask -TaskName 'playsrc-local-job-*' -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
   $launchFile = $null
   $launchText = $null
@@ -41,7 +42,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
     $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
     $launchText = Get-Content -Raw -LiteralPath $launchFile
-    if ($Action -ne 'Result') { $taskState = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue | Select-Object TaskName,State }
+    $taskState = $tasks | Where-Object TaskName -eq $Task | Select-Object TaskName,State
   }
   $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
   if ($launchFile -and $latestRun -and $latestRun.CreationTimeUtc -lt (Get-Item -LiteralPath $launchFile).CreationTimeUtc) { $latestRun = $null }
@@ -56,6 +57,24 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
   }
   if ($Action -eq 'Result') {
     @{result=$result;launchError=$(if (!$result) { $launchText } else { $null })} | ConvertTo-Json -Depth 8 -Compress
+    exit 0
+  }
+  if ($Action -eq 'Artifacts') {
+    if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
+    $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
+    $commandLog = Join-Path $result.run 'command.log'
+    if (Test-Path $commandLog) {
+      $files += @{name='job/command.log';path=$commandLog}
+      $report = Select-String -LiteralPath $commandLog -Pattern 'report=(.+command\.json)$' | Select-Object -Last 1
+      if ($report) {
+        $profileDirectory = Split-Path $report.Matches[0].Groups[1].Value
+        if (![IO.Path]::GetFullPath($profileDirectory).StartsWith([IO.Path]::GetFullPath($config.sourceCacheDir), [StringComparison]::OrdinalIgnoreCase)) { throw 'Profiler report is outside the configured cache' }
+        foreach ($artifact in Get-ChildItem -LiteralPath $profileDirectory -File | Where-Object { $_.Extension -in '.json','.png' -and $_.Length -le 16MB } | Select-Object -First 64) {
+          $files += @{name="profile/$($artifact.Name)";path=$artifact.FullName}
+        }
+      }
+    }
+    @{run=(Split-Path $result.run -Leaf);files=$files} | ConvertTo-Json -Depth 4 -Compress
     exit 0
   }
   if ($Action -eq 'Logs') {
@@ -73,7 +92,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
     if (!$running -and !$processes.Count) {
       foreach ($launch in Get-ChildItem -Path "$directory/*-launch.log") {
         if ($launch.BaseName -match '^([a-f0-9-]{36})-launch$') {
-          $completed = Get-ScheduledTask -TaskName "playsrc-local-job-$($Matches[1])" -ErrorAction SilentlyContinue
+          $completed = $tasks | Where-Object TaskName -eq "playsrc-local-job-$($Matches[1])"
           if ($completed -and $completed.State -eq 'Ready') { Unregister-ScheduledTask -TaskName $completed.TaskName -Confirm:$false }
         }
       }
