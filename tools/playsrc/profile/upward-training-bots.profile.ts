@@ -867,7 +867,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   profilePhases.enter("trace-analysis-retention")
   const evidence = await retainNativeEvidence(
     { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
-    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact, nativeAdmission, replacement })
+    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact, nativeAdmission: nativeRecords(), replacement })
   const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
@@ -954,7 +954,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return [name, summarizeDistribution(events.map(event => event.dur! / 1_000))]
   }))
   const report = {
-    nativeAdmission, replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
+    nativeAdmission: nativeRecords(), replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
     schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
@@ -1215,13 +1215,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
       const { beforePixels, afterPixels, ...result } = await page.evaluate(phase => (window as any).probe.compare(phase), phase)
       for (const [side, data] of [["before", beforePixels], ["after", afterPixels]]) await writeFile(path.join(directory, `${label}-static-${phase}-${side}.png`), Buffer.from(data.split(",")[1], "base64"))
       await checkNativeWindow(nativeReader ? path.join(directory, `${label}-static-${phase}.desktop.png`) : undefined)
-      await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+      await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
       if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
       results.push(result)
     }
     await page.screenshot({ path: path.join(directory, `${label}-static-visible.png`) })
     const retiredDraws = await page.evaluate(() => (window as any).probe.dispose())
-    await writeFile(path.join(directory, `${label}-static-graphs.json`), JSON.stringify({ results, retiredDraws, nativeAdmission: nativeAdmission.slice(-4), performanceSample: false }, null, 2))
+    await writeFile(path.join(directory, `${label}-static-graphs.json`), JSON.stringify({ results, retiredDraws, nativeAdmission: nativeRecords().slice(-4), performanceSample: false }, null, 2))
     expect(results.map(result => [result.builds, result.newPrograms, result.colorMismatches, result.depthMismatches])).toEqual(Array.from({ length: 4 }, () => [0, 0, 0, 0]))
     expect(retiredDraws).toBe(0)
     expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
