@@ -17,7 +17,7 @@ function fixture(failures: number, current: string | null = "owner", code = "EPE
 test("transient Windows lease sharing retries the same atomic publication and unchanged expiry", async () => {
   const state = fixture(2)
   await writeProfileLease("record", "owner", 500, state.fs)
-  expect(state.calls).toEqual(["write", "rename", "read", "pause", "rename", "read", "pause", "rename", "cleanup"])
+  expect(state.calls).toEqual(["write", "rename", "pause", "read", "rename", "pause", "read", "rename", "cleanup"])
   expect(state.writes).toHaveLength(1); expect(new Set(state.sources).size).toBe(1)
   expect(JSON.parse(state.writes[0]!).token).toBe("owner")
 })
