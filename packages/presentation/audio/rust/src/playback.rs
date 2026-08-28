@@ -236,7 +236,7 @@ pub struct Playback {
     trace_count: usize,
     filters: [[output::Frame; 2]; 3],
     buses: [Vec<output::Frame>; 3],
-    output: Vec<i16>,
+    output: Vec<f32>,
     environment_starts: u32,
     mp3_frames: u64,
 }
@@ -341,7 +341,7 @@ impl Playback {
     pub fn active_count(&self) -> usize {
         self.voices.iter().flatten().count()
     }
-    pub fn painted(&self) -> &[i16] {
+    pub fn painted(&self) -> &[f32] {
         &self.output
     }
     pub fn environment_starts(&self) -> u32 {
@@ -783,7 +783,7 @@ impl Playback {
         }
     }
 
-    pub fn paint(&mut self, frames: usize, random: &mut impl Random) -> Result<&[i16], Error> {
+    pub fn paint(&mut self, frames: usize, random: &mut impl Random) -> Result<&[f32], Error> {
         if frames == 0 || frames > 8192 || !frames.is_multiple_of(4) {
             return Err(Error::Malformed("paint frame count"));
         }
@@ -811,13 +811,8 @@ impl Playback {
         if let Some(preset) = self.presets.0.get(controls.player as usize) {
             self.player.select(controls.player, preset.clone())?;
         }
-        let room_off = if controls.room == 1 {
-            self.automatic.is_off()
-        } else {
-            self.regular.is_off()
-        };
         self.output.clear();
-        self.output.resize(frames * 2, 0);
+        self.output.resize(frames * 2, 0.0);
         let mut mixable = [false; 128];
         for (index, slot) in self.voices.iter_mut().enumerate() {
             let Some(voice) = slot else {
@@ -845,6 +840,11 @@ impl Playback {
         });
         for base in (0..frames).step_by(QUANTUM) {
             let count = (frames - base).min(QUANTUM);
+            let room_off = if controls.room == 1 {
+                self.automatic.is_off()
+            } else {
+                self.regular.is_off()
+            };
             for bus in &mut self.buses {
                 bus[..count].fill([0; 2]);
             }
@@ -870,7 +870,7 @@ impl Playback {
                     let distance = voice.source_distance;
                     for frame in 0..count_at_rate {
                         let sample = voice.sample();
-                        let volume = voice.volumes.map(|value| value.clamp(0.0, 255.0) as u8);
+                        let volume = voice.volumes;
                         let (wet, facing) = output::split_volume(
                             volume,
                             voice.send.gain(distance),
@@ -879,7 +879,10 @@ impl Playback {
                         );
                         let mut contributed = false;
                         for (bus, volumes) in if voice.dry {
-                            [(2, volume), (2, [0; 2])]
+                            [
+                                (2, volume.map(|value| value.clamp(0.0, 255.0))),
+                                (2, [0.0; 2]),
+                            ]
                         } else {
                             [(0, wet), (1, facing)]
                         } {
@@ -940,12 +943,10 @@ impl Playback {
             self.player.process(&mut self.buses[1][..count], random);
             for frame in 0..count {
                 for channel in 0..2 {
-                    let clipped = self.buses[1][frame][channel]
-                        .wrapping_add(self.buses[2][frame][channel])
-                        .clamp(-32768, 32767);
-                    self.output[(base + frame) * 2 + channel] =
-                        (clipped.wrapping_mul((controls.master_volume * 256.0) as i32) >> 8)
-                            .clamp(-32768, 32767) as i16;
+                    self.output[(base + frame) * 2 + channel] = output::device_sample(
+                        self.buses[1][frame][channel].wrapping_add(self.buses[2][frame][channel]),
+                        controls.master_volume,
+                    );
                 }
             }
         }

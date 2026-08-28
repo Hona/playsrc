@@ -26,6 +26,55 @@ impl Random for NoRandom {
 }
 
 #[test]
+#[ignore = "requires exact configured DSP presets; no game assets are distributed"]
+fn configured_water_response_matches_the_complete_ordered_draw_trace() {
+    let presets = Presets::parse(&file(
+        "dsp_presets.txt",
+        "5a59d25d656fdabc27ec2da2f0598aa970b962a8b4edd9ff9fe8f3cf407a3c23",
+    ))
+    .unwrap();
+    struct Draws(std::vec::IntoIter<[i32; 3]>);
+    impl Random for Draws {
+        fn float(&mut self, _: f32, _: f32) -> f32 {
+            panic!("unexpected float draw")
+        }
+        fn integer(&mut self, low: i32, high: i32) -> i32 {
+            let [a, b, value] = self.0.next().expect("missing draw");
+            assert_eq!((a, b), (low, high));
+            value
+        }
+    }
+    let mut draws = Draws(
+        vec![
+            [2160, 2601, 2582],
+            [2646, 3087, 3073],
+            [2160, 2601, 2579],
+            [2646, 3087, 2789],
+            [2160, 2601, 2515],
+            [2646, 3087, 3072],
+            [2160, 2601, 2470],
+            [2646, 3087, 2664],
+            [2160, 2601, 2215],
+        ]
+        .into_iter(),
+    );
+    let mut processor = playsrc_audio::dsp::PresetProcessor::new(&presets.0[14]).unwrap();
+    let mut signature = Sha256::new();
+    for frame in 0..44100 {
+        signature.update(
+            processor
+                .sample(if frame == 0 { 16384 } else { 0 }, &mut draws)
+                .to_le_bytes(),
+        );
+    }
+    assert!(draws.0.next().is_none());
+    assert_eq!(
+        format!("{:x}", signature.finalize()),
+        "c640c03a7b51b7bbafa068f7c96f5fe06171f376af309f71485d19bf33a9f0f1"
+    );
+}
+
+#[test]
 #[ignore = "requires exact configured content bytes; no assets are distributed with tests"]
 fn granary_actual_loops_random_mp3_positions_and_transition() {
     let bytes = file(

@@ -33,7 +33,7 @@ test("the device preserves interleaved PCM, wraps counters and records only its 
   expect(Atomics.load(d.control, 0)).toBe(16)
   expect(Atomics.load(d.control, 3)).toBe(96)
   expect(d.messages[0].startRead).toBe(first)
-  expect([...new Int16Array(d.messages[0].capture)]).toEqual(Array.from({ length: 32 }, (_, index) => [index, index === 0 ? 0 : -index]).flat())
+  expect([...new Float32Array(d.messages[0].capture)]).toEqual(Array.from({ length: 32 }, (_, index) => [index / 32768, -index / 32768]).flat())
 })
 
 test("an inactive device neither consumes queued samples nor counts underruns, and captures reject map replacement", () => {
@@ -55,7 +55,7 @@ test("capture reports device gaps explicitly instead of losing the PCM on underr
   d.render()
   expect(d.messages[0].underruns).toBe(96)
   expect([...new Uint32Array(d.messages[0].gaps, 0, d.messages[0].gapCount)]).toEqual([32, 96])
-  expect([...new Int16Array(d.messages[0].capture).subarray(64)]).toEqual(new Array(192).fill(0))
+  expect([...new Float32Array(d.messages[0].capture).subarray(64)]).toEqual(new Array(192).fill(0))
 })
 
 test("the consumer acknowledges map retirement before queued storage is reusable", () => {
@@ -97,5 +97,17 @@ test("capture cancellation and late requests cannot cross the capture owner", ()
   d.render()
   expect(d.messages).toHaveLength(1)
   expect(d.messages[0].captureId).toBe(2)
-  expect([...new Int16Array(d.messages[0].capture)]).toEqual(new Array(256).fill(8192))
+  expect([...new Float32Array(d.messages[0].capture)]).toEqual(new Array(256).fill(0.25))
+})
+
+test("the device and its capture retain fractional PCM and signed-zero bits", () => {
+  const d = device()
+  const values = new Float32Array([Math.fround(123.456 / 32768), -0, Math.fround(-321.789 / 32768), 0.5])
+  d.samples.set(values); Atomics.store(d.control, 1, 128); Atomics.store(d.control, 4, 1)
+  d.processor.port.onmessage({ data: { captureId: 7, captureFrames: 2 } })
+  const [left, right] = d.render()
+  expect(left![0]).toBe(values[0]!)
+  expect(Object.is(right![0], -0)).toBe(true)
+  expect([...new Uint32Array(d.messages[0].capture)]).toEqual([...new Uint32Array(values.buffer)])
+  expect(d.messages[0].underruns).toBe(0)
 })

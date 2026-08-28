@@ -491,7 +491,7 @@ pub extern "C" fn playsrc_audio_active_count() -> usize {
     active.len()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn playsrc_audio_pcm_data() -> *const i16 {
+pub extern "C" fn playsrc_audio_pcm_data() -> *const f32 {
     state()
         .lock()
         .expect("audio instance")
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(playsrc_audio_paint(4), 1);
         assert_eq!(
             state().lock().unwrap().playback.as_ref().unwrap().painted(),
-            &[0; 8]
+            &[0.0; 8]
         );
         let mut reply = wire::SceneReply {
             world: [8; 32],
@@ -764,7 +764,8 @@ mod tests {
         assert_eq!(playsrc_audio_paint(4), 1);
         assert_eq!(
             state().lock().unwrap().playback.as_ref().unwrap().painted(),
-            &[992, 992, 1984, 1984, 2976, 2976, 0, 0]
+            &[992.0, 992.0, 1984.0, 1984.0, 2976.0, 2976.0, 0.0, 0.0]
+                .map(|sample| sample / 32768.0)
         );
 
         assert_eq!(playsrc_audio_stage(), 1);
