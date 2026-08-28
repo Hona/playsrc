@@ -5,20 +5,28 @@ import { summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { spawnSync } from "node:child_process"
+import { macPageAdmission,requireMacPageAdmission,type MacPageAdmission } from "./macos-page-admission"
 import { tf2MapBsp, tf2MapMode } from "@playsrc/game-tf2-browser/maps"
 import { loadLocalConfig } from "../src/config"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 
 const json = (value: unknown) => JSON.stringify(value, (_, value) => typeof value === "bigint" ? value.toString() : value)
+let closeNative:(()=>Promise<void>)|undefined
+let nativeRecords:MacPageAdmission[]=[]
+let nativeMonitoring=false,nativeFailure:unknown,nativeMonitor:Promise<void>|undefined
 
 test.afterEach(async ({ page }, testInfo) => {
+  nativeMonitoring=false;await nativeMonitor
+  await writeFile(testInfo.outputPath("native-admission.json"),json(nativeRecords))
+  await closeNative?.();closeNative=undefined
+  if(nativeFailure&&testInfo.status===testInfo.expectedStatus)throw nativeFailure
   if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return
   const evidence = await page.evaluate(() => ({ failure: (globalThis as any).__playsrcProfile?.failure,
     legacyVisuals: (globalThis as any).__playsrcProfile?.legacyVisualEvidence,
     legacyViews:(globalThis as any).__playsrcProfile?.legacyVisualViews,
     frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
     simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
+    counters:(globalThis as any).__playsrcFrameProfiler?.counters,nodeBuilds:(globalThis as any).__playsrcFrameProfiler?.nodeBuilds,
     dataset: { ...document.querySelector<HTMLElement>("main")?.dataset } })).catch(() => null)
   await writeFile(testInfo.outputPath("map-failure.json"), json(evidence))
 })
@@ -26,10 +34,20 @@ test.afterEach(async ({ page }, testInfo) => {
 test("configured map native traversal, objective roster, visible geometry and cadence", async ({ page }, testInfo) => {
   const target = headedProfileTarget(process.env, "cp_badlands")
   const config = await loadLocalConfig()
+  const native=await macPageAdmission(page,config.sourceCacheDir)
+  closeNative=native?.close;nativeRecords=[];nativeFailure=undefined;nativeMonitor=undefined
+  const checkNative=async(desktop?:string)=>{
+    if(!native)return
+    const record=await native.read(desktop);nativeRecords.push(record);requireMacPageAdmission(record)
+  }
+  const worldScreenshot=async(path:string)=>{
+    await checkNative();const bytes=await page.locator("canvas.world-canvas").screenshot({path});await checkNative();return bytes
+  }
   const facts = JSON.parse(await readFile(path.join(config.sourceCacheDir, "evidence/map-runtime", `${target}.facts.json`), "utf8"))
   expect(facts.bspSha256).toBe(tf2MapBsp(target).sha256)
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   await page.addInitScript(installBrowserFrameProfiler)
+  if(process.env.PROFILE_MAP_PIPELINE_PROBE==="1")await page.addInitScript(()=>{(globalThis as any).__playsrcFrameProfiler.nodeKeyMaterial="materials/models/weapons/c_models/c_minigun/c_minigun.vmt"})
   const main = page.locator("main")
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
@@ -39,6 +57,32 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await entry.fill(value); await entry.press("Enter")
   }
   const closeConsole = async () => { if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote") }
+  const sampleWindow=async()=>{
+    nativeMonitoring=true;nativeFailure=undefined
+    nativeMonitor=(async()=>{
+      while(nativeMonitoring&&native&&nativeRecords.length<400){
+        await new Promise(resolve=>setTimeout(resolve,500))
+        if(!nativeMonitoring)break
+        try{await checkNative()}catch(error){nativeFailure=error;break}
+      }
+    })()
+    try{return await page.evaluate(async()=>{
+    const root=document.querySelector<HTMLElement>("main")!,profile=(globalThis as any).__playsrcProfile,profiler=(globalThis as any).__playsrcFrameProfiler
+    profiler.completedFrames.length=0;profiler.active=true
+    const start=performance.now(),tick=Number(root.dataset.snapshotTick)
+    const before=profile.bots.map((bot:any)=>({identity:bot.identity,area:bot.area,position:bot.position}))
+    const frames:number[]=[];let previous:number|undefined,firstRafTimestamp:number|undefined,firstRafObserved:number|undefined
+    // A RAF timestamp can precede an evaluate() that ran during that frame.
+    // Retain the real first callback wait, then only RAF-to-RAF intervals.
+    await new Promise<void>(resolve=>{const frame=(now:number)=>{
+      if(previous===undefined){firstRafTimestamp=now;firstRafObserved=performance.now();frames.push(firstRafObserved-start)}else frames.push(now-previous)
+      previous=now;if(now-start>=5000)resolve();else requestAnimationFrame(frame)
+    };requestAnimationFrame(frame)})
+    profiler.active=false
+    return {seconds:(performance.now()-start)/1000,ticks:Number(root.dataset.snapshotTick)-tick,frames,sampleStarted:start,firstRafTimestamp,firstRafObserved,before,bots:profile.bots,points:profile.controlPoints.points,
+      completedFrames:profiler.completedFrames,counters:profiler.counters,nodeBuilds:profiler.nodeBuilds,nodeKeys:profiler.nodeKeys,simulation:profiler.simulation,memoryAssets:profile.memoryAssets,failures:profile.failure,longTasks:profiler.longTasks,round:profile.round}
+    })}finally{nativeMonitoring=false;await nativeMonitor;await checkNative();if(nativeFailure)throw nativeFailure}
+  }
   let revision = 0
   const spawnChecks: unknown[] = []
   const waitPlayer = async (field: "team" | "class", value: number) => {
@@ -61,6 +105,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   }
   const capture = async (label: string) => {
     await closeConsole()
+    await checkNative()
     const selected = ++revision
     await page.evaluate(revision => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = revision }, selected)
     await page.waitForFunction(revision => (globalThis as any).__playsrcProfile.geometryEvidence?.revision === revision, selected)
@@ -69,11 +114,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await page.screenshot({ path: imagePath })
     if (process.platform === "darwin" && label === "spawn") {
       const desktopPath = testInfo.outputPath(`${target}-spawn-desktop.png`)
-      const desktop = spawnSync("/usr/sbin/screencapture", ["-x", desktopPath])
-      if (desktop.status !== 0) throw new Error("Native visible desktop capture failed")
+      await checkNative(desktopPath)
       await testInfo.attach("native-desktop", { path: desktopPath, contentType: "image/png" })
     }
-    const image = decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({ path: testInfo.outputPath(`${target}-${label}-world.png`) }))
+    const image = decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-${label}-world.png`)))
     const depth = geometry.geometry.samples.filter((sample: any) => sample.family !== null && Number.isFinite(sample.depth) && sample.depth > 0).map((sample: any) => {
       const x = Math.max(0, Math.min(image.width - 1, Math.round((sample.x + 1) * image.width / 2)))
       const y = Math.max(0, Math.min(image.height - 1, Math.round((1 - sample.y) * image.height / 2)))
@@ -87,13 +131,39 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await testInfo.attach(label, { path: imagePath, contentType: "image/png" })
     await testInfo.attach(`${label}-depth`, { path: dataPath, contentType: "application/json" })
   }
-  await page.goto("/")
   await page.bringToFront()
+  if(native){
+    const deadline=Date.now()+20_000
+    let announced=false
+    for(;;){
+      const record=await native.read()
+      if(!announced&&record.linkage){console.error(`[native-window] browser=${record.page?.browserPid} window=${record.linkage.nativeWindowId}`);announced=true}
+      await writeFile(testInfo.outputPath("native-window-pending.json"),json(record))
+      try{requireMacPageAdmission(record);nativeRecords.push(record);break}
+      catch(error){if(Date.now()>=deadline){nativeRecords.push(record);throw error}}
+      await page.waitForTimeout(250)
+    }
+  }
+  await page.goto("/")
   await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
   await command(`map ${target}`)
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_PIPELINE_PROBE==="1"){
+    // Rendering diagnosis only: retain real setup/rules/cadence, but seed real
+    // bots into the cold view rather than waiting for them to walk there.
+    await command("tf_bot_quota 15");await closeConsole();await expect(main).toHaveAttribute("data-bot-count","15")
+    const state=await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;return {point:p.controlPoints.points.find((point:any)=>point.owner===0),bots:p.bots}})
+    expect(state.point).toBeTruthy()
+    for(const [index,bot]of state.bots.entries())await command(`bot_teleport ${bot.identity} ${state.point.position[0]+(index%5-2)*40} ${state.point.position[1]+(Math.floor(index/5)-1)*40} ${state.point.position[2]+8}`)
+    await checkNative()
+    await command(`setpos ${state.point.position[0]} ${state.point.position[1]} ${state.point.position[2]+8}`);await closeConsole()
+    const sample=await sampleWindow()
+    await writeFile(testInfo.outputPath(`${target}-pipeline-probe-performance.json`),json({phase:"pipeline-probe-only-not-map-admission",...sample,frames:summarizeFrameTimes(sample.frames)}))
+    expect.soft(sample.ticks/sample.seconds).toBeGreaterThan(63)
+    await capture("pipeline-probe");expect(errors).toEqual([]);return
+  }
   if(process.env.PROFILE_MAP_ROCKET_SMOKE==="1"){
     expect(target).toBe("cp_granary")
     const cameras=[
@@ -159,10 +229,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await writeFile(testInfo.outputPath(`${target}-spotlight-camera.json`),json({beam,camera}))
     await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.filter((quad:any)=>quad.source===source).length===2,beam.identity,{timeout:10000})
     const state=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
-    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-spotlight-on.png`)}))
+    const before=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-spotlight-on.png`)))
     await command("ent_fire beam Kill");await closeConsole()
     await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),beam.identity)
-    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-spotlight-off.png`)}))
+    const after=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-spotlight-off.png`)))
     let changed=0
     for(let y=Math.floor(before.height/2)-96;y<before.height/2+96;y++)for(let x=Math.floor(before.width/2)-96;x<before.width/2+96;x++){
       const at=(y*before.width+x)*before.channels;if([0,1,2].some(c=>before.pixels[at+c]!==after.pixels[at+c]))changed++
@@ -181,10 +251,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await command("ent_fire env_sun TurnOn");await closeConsole()
     await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.filter((quad:any)=>quad.source===source).length===2,sun.identity,{timeout:10000})
     const state=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
-    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-sun-on.png`)}))
+    const before=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-sun-on.png`)))
     await command("ent_fire env_sun TurnOff");await closeConsole()
     await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),sun.identity)
-    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-sun-off.png`)}))
+    const after=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-sun-off.png`)))
     let changed=0
     for(let y=Math.floor(before.height/2)-96;y<before.height/2+96;y++)for(let x=Math.floor(before.width/2)-96;x<before.width/2+96;x++){
       const at=(y*before.width+x)*before.channels;if([0,1,2].some(c=>before.pixels[at+c]!==after.pixels[at+c]))changed++
@@ -239,10 +309,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
       expect(found,"an actual raster-visible view of the authored sprite").toBe(true)
     }else await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.some((quad: any)=>quad.source===source),glow.identity,{timeout:10000})
     const beforeState=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
-    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-${probe}-on.png`)}))
+    const before=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-legacy-${probe}-on.png`)))
     await command(spriteProbe?`ent_fire ${selector} HideSprite`:'ent_fire env_lightglow Color "0 0 0"');await closeConsole()
     await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),glow.identity,{timeout:5000})
-    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-${probe}-off.png`)}))
+    const after=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-legacy-${probe}-off.png`)))
     let changed=0
     for(let y=Math.floor(before.height/2)-64;y<before.height/2+64;y++)for(let x=Math.floor(before.width/2)-64;x<before.width/2+64;x++){
       const at=(y*before.width+x)*before.channels
@@ -329,8 +399,11 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-bot-count", "15")
   await capture("spawn")
   const before = await page.evaluate(() => (globalThis as any).__playsrcProfile.player)
-  await page.locator("canvas.world-canvas").click({ force: true })
-  await expect(main).toHaveAttribute("data-pointer-locked", "true")
+  for(let attempt=0;attempt<2;attempt++){
+    await page.bringToFront();await page.locator("canvas.world-canvas").click({force:true})
+    try{await expect(main).toHaveAttribute("data-pointer-locked","true",{timeout:1500});break}
+    catch(error){if(attempt===1)throw error}
+  }
   await page.keyboard.down("w"); await page.waitForTimeout(1000); await page.keyboard.up("w")
   const after = await page.evaluate(() => (globalThis as any).__playsrcProfile.player)
   const yaw = before.camera.yawDegrees * Math.PI / 180
@@ -343,26 +416,12 @@ test("configured map native traversal, objective roster, visible geometry and ca
   expect(points).toHaveLength(tf2MapMode(target) === "king-of-the-hill" ? 1 : 5)
   if (tf2MapMode(target) === "king-of-the-hill") await command("ent_fire team_control_point SetUnlockTime 1")
   const point = points.find((point: any) => point.owner === 0) ?? points[Math.floor(points.length / 2)]
+  await checkNative()
   const cpu=process.env.PROFILE_MAP_CPU==="1"?await page.context().newCDPSession(page):null
   if(cpu){await cpu.send("Profiler.enable");await cpu.send("Profiler.start")}
   await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
   await closeConsole()
-  const sample = await page.evaluate(async () => {
-    const root = document.querySelector<HTMLElement>("main")!, profile = (globalThis as any).__playsrcProfile
-    const profiler = (globalThis as any).__playsrcFrameProfiler
-    profiler.completedFrames.length = 0; profiler.active = true
-    const start = performance.now(), tick = Number(root.dataset.snapshotTick)
-    const before = profile.bots.map((bot: any) => ({ identity: bot.identity, area: bot.area, position: bot.position }))
-    const frames: number[] = []; let previous = start
-    await new Promise<void>(resolve => {
-      const frame = (now: number) => { frames.push(now - previous); previous = now; if (now - start >= 5000) resolve(); else requestAnimationFrame(frame) }
-      requestAnimationFrame(frame)
-    })
-    profiler.active = false
-    return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points,
-      completedFrames: profiler.completedFrames, counters: profiler.counters, nodeBuilds: profiler.nodeBuilds,
-      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure,longTasks:profiler.longTasks,round:profile.round }
-  })
+  const sample = await sampleWindow()
   if(cpu){const result=await cpu.send("Profiler.stop");await writeFile(testInfo.outputPath(`${target}-main.cpuprofile`),JSON.stringify(result.profile));await cpu.detach()}
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
   await writeFile(resultPath, json({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
