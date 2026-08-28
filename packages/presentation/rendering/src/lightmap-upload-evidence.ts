@@ -57,7 +57,7 @@ export function installLightmapUploadEvidence() {
   return {
     register(values: WorldLightmapTextures) { textures = values; registeredIds = values.map(value => value!.id) },
     async capture() {
-      const parity = await pixels.capture("world-lightmap", "", true) as object
+      const parity = await pixels.capture("world-lightmap", "*", true) as object
       if (!reading.length) throw new Error("No authored world draw")
       const planes = await Promise.all(reading)
       return { performanceSample: false, oracle: "unconditional canonical lightmap upload", registeredIds, referenceUploadBytes, planes, parity }
