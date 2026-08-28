@@ -62,6 +62,7 @@
     "packages/presentation/rendering": {
       "name": "@playsrc/rendering",
       "dependencies": {
+        "@playsrc/particle": "workspace:*",
         "three": "0.185.1",
       },
     },
