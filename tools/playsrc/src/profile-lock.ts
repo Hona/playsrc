@@ -22,6 +22,24 @@ export class ProfileQueueTimeout extends Error {
   }
 }
 
+export type ProfileLockDelegation = Readonly<{ token: string; pid: number; startedAt: number; milliseconds: number; observation: LockObservation }>
+
+/** A non-console local-job owner holds the same checked lock across console
+ * creation AND retirement. Its normal profiler child borrows, never releases,
+ * that ownership. Invalid delegation is an error, not a second lock path. */
+export async function delegatedHeadedProfileLock(lockPath: string, encoded: string | undefined, repository: string, profile: string): Promise<ProfileLockDelegation | undefined> {
+  if(encoded===undefined)return undefined
+  if(encoded.length>16384)throw new Error("Profile lock delegation exceeds its bound")
+  const value=JSON.parse(encoded) as ProfileLockDelegation
+  const holder=await readTicket(lockPath)
+  if(!value||typeof value.token!=="string"||!Number.isSafeInteger(value.pid)||value.pid<1||!Number.isSafeInteger(value.startedAt)
+    ||value.startedAt>Date.now()||Date.now()-value.startedAt>180000||!Number.isSafeInteger(value.milliseconds)||value.milliseconds<0
+    ||!value.observation||!holder||holder.token!==value.token||holder.pid!==value.pid||holder.profile!==profile||typeof holder.repository!=="string"||path.resolve(holder.repository)!==path.resolve(repository)||!processIsAlive(value.pid)) {
+    throw new Error("Profile lock delegation is not owned by the live local-job parent")
+  }
+  return value
+}
+
 async function readTicket(filename: string): Promise<Ticket | null> {
   try {
     const value = JSON.parse(await readFile(filename, "utf8")) as Ticket

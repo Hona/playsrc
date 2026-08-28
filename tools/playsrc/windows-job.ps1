@@ -77,8 +77,9 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
     }
     if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
-    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){$files+=@{name='job/bootstrap.log';path="$launchFile.bootstrap.log"}}
     if($launchFile -and (Test-Path -LiteralPath "$launchFile.metadata.json")){$files+=@{name='job/launch-metadata.json';path="$launchFile.metadata.json"}}
+    $consoleOwner=Join-Path $result.run 'console-owner.json';if(Test-Path -LiteralPath $consoleOwner){$files+=@{name='job/console-owner.json';path=$consoleOwner}}
+    $consoleLock=Join-Path $result.run 'console-lock.json';if(Test-Path -LiteralPath $consoleLock){$files+=@{name='job/console-lock.json';path=$consoleLock}}
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}
@@ -165,6 +166,13 @@ $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Acti
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
 $command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+$arguments=@($bun,$root,$log,'tools/playsrc/src/local-job.ts','run',$Job)
+if($Action -eq 'Build'){$arguments+=@('build',$Target)}
+elseif($Action -eq 'BuildStage'){$arguments+=@('build-stage',$Stage);if($Stage -eq 'resources'){$arguments+=$Target}}
+else{$arguments+=@('--ready','profile',$Profile);if($Grep){$arguments+=@('--grep',$Grep)};if($FreshBrowser){$arguments+='--fresh-browser'}}
+$requestFile="$log.request.txt"
+[IO.File]::WriteAllLines($requestFile,@($arguments|ForEach-Object{[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_))}),[Text.UTF8Encoding]::new($false))
+$requestHash=(Get-FileHash -LiteralPath $requestFile -Algorithm SHA256).Hash.ToLowerInvariant()
 $source=Join-Path $PSScriptRoot 'windows-job-launcher.cs'
 $sourceHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
 $launcherDirectory=Join-Path $config.sourceCacheDir 'toolchains/profile-launcher'
@@ -179,8 +187,8 @@ if(!(Test-Path -LiteralPath $launcher)) {
 New-Item -ItemType File -Path $log | Out-Null
 $binary=[IO.File]::ReadAllBytes($launcher);$pe=[BitConverter]::ToInt32($binary,60)
 if($pe -lt 0 -or $pe+94 -gt $binary.Length -or [BitConverter]::ToUInt32($binary,$pe) -ne 17744 -or [BitConverter]::ToUInt16($binary,$pe+92) -ne 2){throw 'Owned launcher is not a GUI-subsystem PE image'}
-@{privacy='private-native-owner';job=$Job;task=$name;sourceSha256=$sourceHash;launcherSha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash.ToLowerInvariant();launcherBytes=$binary.Length;subsystem=2;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress|Set-Content -LiteralPath "$log.metadata.json"
-$taskAction = New-ScheduledTaskAction -Execute $launcher -Argument "$encoded `"$log.bootstrap.log`"" -WorkingDirectory $root
+@{privacy='private-native-owner';job=$Job;task=$name;requestSha256=$requestHash;sourceSha256=$sourceHash;launcherSha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash.ToLowerInvariant();launcherBytes=$binary.Length;subsystem=2;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress|Set-Content -LiteralPath "$log.metadata.json"
+$taskAction = New-ScheduledTaskAction -Execute $launcher -Argument "`"$requestFile`" $requestHash" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 # Task Scheduler defaults to 7 (BELOW_NORMAL/background), unlike an ordinary
 # interactive launch. 5 is NORMAL, not an above-normal/realtime benchmark boost.
