@@ -18,10 +18,10 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention"].contains(&arguments[2].as_str()) || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention"].contains(&arguments[2].as_str()) || arguments.len() == 5 && arguments[2] == "--control-point-crossing" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
-            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --payload-retention]".to_owned(),
+            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --control-point-crossing from to | --payload-retention]".to_owned(),
         );
     }
     let target = &arguments[0];
@@ -102,14 +102,16 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::json!({"target": target, "graphSha256": arguments[1], "bspSha256": hash, "profiles": profiles}));
         return Ok(());
     }
-    if arguments.len() == 3 {
+    if arguments.len() == 3 || arguments.get(2).is_some_and(|value|value=="--control-point-crossing") {
+        let crossing=if arguments.len()==5{Some((arguments[3].parse::<u32>().map_err(|_|"invalid from area")?,arguments[4].parse::<u32>().map_err(|_|"invalid to area")?))}else{None};
         let mut frames = Vec::new();
-        let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, |snapshot| {
-            frames.push(serde_json::json!({"tick":snapshot.tick,"state":snapshot.round.state as u8,"winner":snapshot.round.winning_team.map(|team|team as u8),"points":snapshot.control_points.as_ref().map(|points|points.points.iter().map(|p|p.owner as u8).collect::<Vec<_>>()),"bots":snapshot.bots.iter().map(|bot|serde_json::json!({"identity":bot.identity,"position":bot.position,"area":bot.area,"path":bot.remaining_path_areas,"captures":bot.captures})).collect::<Vec<_>>() }));
+        let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, crossing, |snapshot| {
+            frames.push(serde_json::json!({"tick":snapshot.tick,"state":snapshot.round.state as u8,"winner":snapshot.round.winning_team.map(|team|team as u8),"points":snapshot.control_points.as_ref().map(|points|points.points.iter().map(|p|p.owner as u8).collect::<Vec<_>>()),"bots":snapshot.bots.iter().map(|bot|serde_json::json!({"identity":bot.identity,"position":bot.position,"velocity":bot.velocity,"yaw":bot.yaw_degrees,"area":bot.area,"path":bot.remaining_path_areas,"captures":bot.captures})).collect::<Vec<_>>() }));
         });
         let output = config.source_cache_dir.join("evidence/map-runtime");
         fs::create_dir_all(&output).map_err(|error|error.to_string())?;
-        fs::write(output.join(format!("{target}-control-point-match.json")),serde_json::to_vec(&frames).unwrap()).map_err(|error|error.to_string())?;
+        let suffix=crossing.map_or_else(||"match".to_owned(),|(from,to)|format!("crossing-{from}-{to}"));
+        fs::write(output.join(format!("{target}-control-point-{suffix}.json")),serde_json::to_vec(&frames).unwrap()).map_err(|error|error.to_string())?;
         return result;
     }
     let section = playsrc_tf2_wasm::ResourceSection { pointer: resources.as_ptr(), length: resources.len() };

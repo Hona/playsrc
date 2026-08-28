@@ -64,7 +64,9 @@ impl Crossing {
             modifiers: MovementModifiers::default(),
         }
         .resolve();
-        let width = policy.standing_hull.maxs[0] - policy.standing_hull.mins[0];
+        // Path::ComputePathDetails uses a five-unit safety inflation for both
+        // the clearance hull and the maximum ledge push distance.
+        let width = policy.standing_hull.maxs[0] - policy.standing_hull.mins[0] + 5.0;
         let hull = Hull {
             mins: [-width / 2.0, -width / 2.0, STEP_HEIGHT],
             maxs: [width / 2.0, width / 2.0, policy.crouched_hull.maxs[2]],
@@ -116,6 +118,14 @@ pub(super) fn compute<W: GameplayWorld>(
     class: PlayerClass,
 ) -> Result<Vec<Crossing>, playsrc_movement::Error> {
     let mut crossings = Vec::with_capacity(route.len().saturating_sub(1));
+    if let Some(first)=route.first().and_then(|identity|mesh.area(*identity)){
+        let height=first.height(position[0],position[1]);
+        let contains=first.contains_xy(position)&&height-STEP_HEIGHT<=position[2]
+            &&!mesh.areas_at(position).any(|area|area.identity!=first.identity&&area.contains_xy(position)&&{
+                let other=area.height(position[0],position[1]);other<=position[2]&&other>height
+            });
+        if !contains{position=first.center();}
+    }
     for edge in route.windows(2) {
         let from = mesh.area(edge[0]).expect("path area");
         let to = mesh.area(edge[1]).expect("path area");

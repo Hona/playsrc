@@ -9,15 +9,18 @@ import { macPageAdmission,requireMacPageAdmission,type MacPageAdmission } from "
 import { tf2MapBsp, tf2MapMode } from "@playsrc/game-tf2-browser/maps"
 import { loadLocalConfig } from "../src/config"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import {startGameplayReplayJournal} from "./gameplay-replay"
 
 const json = (value: unknown) => JSON.stringify(value, (_, value) => typeof value === "bigint" ? value.toString() : value)
 let closeNative:(()=>Promise<void>)|undefined
 let nativeRecords:MacPageAdmission[]=[]
 let nativeWaitRecords:MacPageAdmission[]=[]
 let nativeMonitoring=false,nativeFailure:unknown,nativeMonitor:Promise<void>|undefined
+let replayJournal:Awaited<ReturnType<typeof startGameplayReplayJournal>>|undefined
 
 test.afterEach(async ({ page }, testInfo) => {
   nativeMonitoring=false;await nativeMonitor
+  if(replayJournal){await replayJournal.stop();replayJournal=undefined}
   await writeFile(testInfo.outputPath("native-admission.json"),json(nativeRecords))
   await writeFile(testInfo.outputPath("native-admission-waits.json"),json(nativeWaitRecords))
   await closeNative?.();closeNative=undefined
@@ -38,6 +41,7 @@ test.afterEach(async ({ page }, testInfo) => {
 test("configured map native traversal, objective roster, visible geometry and cadence", async ({ page }, testInfo) => {
   const target = headedProfileTarget(process.env, "cp_badlands")
   const config = await loadLocalConfig()
+  if(process.env.PROFILE_MAP_REPLAY==="1")replayJournal=await startGameplayReplayJournal(page,testInfo.outputPath("gameplay-replay"),target)
   const native=await macPageAdmission(page,config.sourceCacheDir)
   closeNative=native?.close;nativeRecords=[];nativeWaitRecords=[];nativeFailure=undefined;nativeMonitor=undefined
   const checkNative=async(desktop?:string)=>{
@@ -171,6 +175,51 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_AUTONOMOUS==="1"){
+    await replayJournal?.ready()
+    if(replayJournal)await writeFile(testInfo.outputPath("replay-content.json"),json(await page.evaluate(()=>(globalThis as any).__playsrcProfile.applicationGeneration)))
+    expect(target).toBe("cp_granary")
+    await command("joinclass soldier")
+    await command("tf_bot_add 15 red scout normal");await closeConsole()
+    await expect(main).toHaveAttribute("data-bot-count","15")
+    await page.locator("canvas.world-canvas").click({force:true})
+    await page.waitForFunction(()=>{const p=(globalThis as any).__playsrcProfile;return p.round?.state===4&&!p.round.inSetup&&!p.round.waitingForPlayers},undefined,{timeout:45000})
+    const middle=await page.evaluate(()=>(globalThis as any).__playsrcProfile.controlPoints.points.find((point:any)=>point.owner===0)?.identity)
+    expect(middle).toBeDefined()
+    const started=Date.now(),history:any[]=[],entered=new Set<number>()
+    let escaped:number|undefined,sampled=false,captured=false,lowerCaptured=false
+    while(Date.now()-started<105000){
+      const state=await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;return {tick:Number(document.querySelector<HTMLElement>("main")!.dataset.snapshotTick),round:p.round,points:p.controlPoints,bots:p.bots,camera:p.player.camera,audio:p.audio?.stats()}})
+      history.push(state)
+      for(const bot of state.bots){
+        if(bot.area===6129)entered.add(bot.identity)
+        if(entered.has(bot.identity)&&[6137,6138,1223].includes(bot.area)&&escaped===undefined)escaped=bot.identity
+      }
+      if(entered.size&&!sampled){
+        const bot=state.bots.find((bot:any)=>entered.has(bot.identity))
+        await page.evaluate(({camera,position})=>{(globalThis as any).__playsrcProfile.displacementCameraOverride={...camera,position:[position[0]-96,position[1]-128,position[2]+112],yawDegrees:53.130102,pitchDegrees:30}}, {camera:state.camera,position:bot.position})
+        await capture("autonomous-upper-crossing")
+        await replayJournal?.mark(0)
+        const sample=await sampleWindow();await replayJournal?.mark(1);await writeFile(testInfo.outputPath("autonomous-cadence.json"),json({...sample,frames:summarizeFrameTimes(sample.frames)}))
+        expect.soft(sample.ticks/sample.seconds).toBeGreaterThan(63);expect.soft(sample.audioAfter?.underrunFrames).toBe(0)
+        sampled=true
+      }
+      if(escaped!==undefined&&!lowerCaptured){
+        const bot=state.bots.find((bot:any)=>bot.identity===escaped)
+        await page.evaluate(({camera,position})=>{(globalThis as any).__playsrcProfile.displacementCameraOverride={...camera,position:[position[0]-64,position[1]-96,position[2]+96],yawDegrees:56.309932,pitchDegrees:30}}, {camera:state.camera,position:bot.position})
+        await capture("autonomous-lower-crossing");lowerCaptured=true
+      }
+      if(escaped!==undefined&&state.bots.some((bot:any)=>bot.captures>0)&&state.points.points.some((point:any)=>point.owner===2&&point.identity===middle)){captured=true;break}
+      await page.waitForTimeout(100)
+    }
+    const result={target,fixture:"normal-spawn-15-red-scouts-crossing-and-capture",entered:[...entered],escaped,captured,history}
+    await writeFile(testInfo.outputPath("autonomous-route-capture.json"),json(result))
+    expect(escaped,"a bot must physically leave the upper crossing for the lower authored route").toBeDefined()
+    expect(captured,"walking bots must capture authored mid after leaving the blocked route").toBe(true)
+    await capture("autonomous-mid-captured")
+    await page.evaluate(()=>{delete (globalThis as any).__playsrcProfile.displacementCameraOverride})
+    return
+  }
   if(process.env.PROFILE_MAP_ROUTE_VIEWS){
     const views=JSON.parse(process.env.PROFILE_MAP_ROUTE_VIEWS) as number[][]
     expect(views.length).toBeLessThanOrEqual(8)

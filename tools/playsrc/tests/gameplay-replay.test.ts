@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import path from "node:path"
-import { bindReplayGeneration, parseGameplayReplay, startGameplayReplayJournal, startGameplayReplayLifecycle, validateReplayLifecycle } from "../profile/gameplay-replay"
+import { bindReplayGeneration, parseGameplayReplay, startGameplayReplayJournal, startGameplayReplayLifecycle, validateReplayLifecycle,replayTickCommand,replayWorkClockBytes } from "../profile/gameplay-replay"
 import { drainTraceStream } from "../profile/compositor-evidence"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
 import { parseReplayArguments, replayMutation, verifyReplayCheckpoint, verifyReplayHash } from "../profile/replay-gameplay"
@@ -55,16 +55,18 @@ function record(kind: number, bytes: Buffer) {
   header.writeUInt32LE(bytes.length + 8); header.writeUInt32LE(kind, 4)
   return Buffer.concat([header, bytes])
 }
-function fixture() {
-  const header = Buffer.alloc(88); header.write("PGRP"); header.writeUInt32LE(2, 4); header.writeBigUInt64LE(1n, 80)
+function fixture(version=4,clocks:readonly number[]=[]) {
+  const header = Buffer.alloc(version>=3?780:88); header.write("PGRP"); header.writeUInt32LE(version, 4); header.writeBigUInt64LE(1n, 80)
+  if(version>=3)header.write("TFEQ\x01\0\0\0",88,"latin1")
   const observe = Buffer.alloc(108); observe.writeDoubleLE(2); observe.writeUInt32LE(84, 20)
-  const tick = Buffer.alloc(136); tick.writeBigUInt64LE(1n); tick.writeUInt32LE(84, 48)
+  const tick = Buffer.alloc(version===4?140+clocks.length*8:136); tick.writeBigUInt64LE(1n); tick.writeUInt32LE(84, 48)
+  if(version===4){tick.writeUInt32LE(clocks.length,52);clocks.forEach((value,index)=>tick.writeDoubleLE(value,140+index*8))}
   const one = Buffer.from([1, 0, 0, 0])
   return Buffer.concat([header, record(7, Buffer.alloc(4)), record(1, observe), record(2, tick), record(3, Buffer.alloc(32)), record(7, one), record(8, one)])
 }
 
 test("v3 mutations have disjoint wire operations; historical ambiguous records fail closed", () => {
-  const old = fixture(), header = Buffer.alloc(780)
+  const old = fixture(2), header = Buffer.alloc(780)
   old.copy(header, 0, 0, 88); header.writeUInt32LE(3, 4); header.write("TFEQ\x01\0\0\0", 88, "latin1")
   const position = Buffer.alloc(12); position.writeFloatLE(-12.5); position.writeFloatLE(3, 4); position.writeFloatLE(96, 8)
   const course = Buffer.alloc(52); course.write("PJMP"); course.writeUInt32LE(1, 4)
@@ -103,15 +105,28 @@ test("v3 mutations have disjoint wire operations; historical ambiguous records f
 test("authoritative replay retains full merged commands and rejects incomplete/order-corrupt evidence", () => {
   const bytes = fixture()
   expect(parseGameplayReplay(bytes).complete).toBe(true)
-  expect(parseGameplayReplay(bytes).records.filter(record => record.kind === 2)[0]!.bytes.subarray(52).length).toBe(84)
+  expect(replayTickCommand(parseGameplayReplay(bytes).records.filter(record => record.kind === 2)[0]!.bytes,4).length).toBe(84)
   expect(() => parseGameplayReplay(bytes.subarray(0, -1))).toThrow("Partial")
   expect(parseGameplayReplay(bytes.subarray(0, -1), false).complete).toBe(false)
   const failed = Buffer.from(bytes); failed.writeUInt32LE(0, failed.length - 4)
   expect(() => parseGameplayReplay(failed)).toThrow("incomplete")
   const badHeader = Buffer.from(bytes); badHeader.writeBigUInt64LE(1n, 72)
   expect(() => parseGameplayReplay(badHeader)).toThrow("checkpoint")
-  const badOrder = Buffer.concat([bytes.subarray(0, 88), record(2, Buffer.alloc(136))])
+  const badOrder = Buffer.concat([bytes.subarray(0, 780), record(2, Buffer.alloc(140))])
   expect(() => parseGameplayReplay(badOrder)).toThrow("tick order")
+})
+test("work clocks are explicit finite monotonic inputs, not wall time resampled during replay",()=>{
+  const parsed=parseGameplayReplay(fixture(4,[10,10.25,10.25,26]))
+  const clocks=replayWorkClockBytes(parsed.records,parsed.version)
+  expect(clocks.length).toBe(32);expect(clocks.readDoubleLE(24)).toBe(26)
+  for(const values of [[-1],[NaN],[Infinity],[10,9]])expect(()=>parseGameplayReplay(fixture(4,values))).toThrow("work clock")
+  for(const version of [2,3]){const old=parseGameplayReplay(fixture(version));expect(replayTickCommand(old.records.find(record=>record.kind===2)!.bytes,old.version)).toHaveLength(84);expect(()=>replayWorkClockBytes(old.records,old.version)).toThrow("work-clock")}
+})
+test("equipment, position, entity inputs and sample marks have distinct journal operations",()=>{
+  const bytes=fixture(),input=Buffer.concat([Buffer.alloc(4),Buffer.from("a\0b\0")])
+  const journal=Buffer.concat([bytes.subarray(0,780),record(5,Buffer.alloc(12)),record(9,Buffer.from([1,3,0,18,0,0,0])),record(10,input),bytes.subarray(780)])
+  expect(parseGameplayReplay(journal).records.slice(0,3).map(record=>record.kind)).toEqual([5,9,10])
+  expect(()=>parseGameplayReplay(Buffer.concat([bytes.subarray(0,780),record(10,Buffer.alloc(7)),bytes.subarray(780)]))).toThrow("mutation")
 })
 test("streaming trace persistence preserves partial bytes when CDP draining fails", async () => {
   const persisted: Buffer[] = []
@@ -201,7 +216,7 @@ test("requested warm reload authenticates two distinct Worker journals and prese
   const listeners = new Set<(worker: any) => void>()
   const page = { on(_event: string, fn: (worker: any) => void) { listeners.add(fn) }, off(_event: string, fn: (worker: any) => void) { listeners.delete(fn) } }
   const full = fixture()
-  const setup = Buffer.concat([full.subarray(0, 88), ...parseGameplayReplay(full).records.filter(record => record.kind !== 7).map(value => record(value.kind, value.bytes))])
+  const setup = Buffer.concat([full.subarray(0, 780), ...parseGameplayReplay(full).records.filter(record => record.kind !== 7).map(value => record(value.kind, value.bytes))])
   const identity = { target: "pl_upward", resourceRoot: "a".repeat(64), bsp: "0".repeat(64), mapGeneration: 1, contentBuild: "24245096" }
   function worker(bytes: Buffer) {
     let closed: (() => void) | undefined

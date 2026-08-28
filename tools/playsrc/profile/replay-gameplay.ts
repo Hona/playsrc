@@ -7,7 +7,7 @@ import { loadLocalConfig } from "../src/config"
 import { acquireMap } from "../src/targets"
 import { buildCollisionReplay } from "../src/collision-replay-build"
 import { summarizeDistribution } from "./gameui-profile"
-import { parseGameplayReplay, REPLAY_BYTES, validateReplayLifecycle, validateReplayMutation, type ReplayRecord } from "./gameplay-replay"
+import { parseGameplayReplay, REPLAY_BYTES, validateReplayLifecycle, validateReplayMutation, type ReplayRecord,replayTickCommand,replayWorkClockBytes } from "./gameplay-replay"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "../../../games/tf2/browser/src/admission-metrics"
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
@@ -160,6 +160,12 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
     const compileStarted = performance.now()
     const handle = e.playsrc_compile_map(bspPointer, bsp.length, checkpoint.profile, table, sections.length, digest, 1)
     require(e.playsrc_result_error(handle) === 0, `Replay checkpoint construction failed: ${e.playsrc_result_error(handle)}`)
+    const usesWorkClock=typeof e.playsrc_gameplay_replay_clock_input==="function"
+    if(usesWorkClock){
+      const clockBytes=replayWorkClockBytes(replay.records,replay.version),clockPointer=copy(clockBytes.length?clockBytes:new Uint8Array(1))
+      require(e.playsrc_gameplay_replay_clock_input(handle,clockPointer,clockBytes.length)===1,"Replay work-clock inputs rejected")
+      e.playsrc_free(clockPointer,Math.max(1,clockBytes.length))
+    }else require(replay.version<4,"Replay binary cannot consume recorded work clocks")
     e.playsrc_result_release(handle)
     e.playsrc_presentation_release(handle)
     const compileMilliseconds = performance.now() - compileStarted
@@ -202,10 +208,10 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
         }
       } else if (record.kind === 2) {
         verifiedTicks++
-        if (data.readUInt32LE(52 + 28) & 8) expectedAttackTick = data.readBigUInt64LE(0)
+        if (replayTickCommand(data,replay.version).readUInt32LE(28) & 8) expectedAttackTick = data.readBigUInt64LE(0)
         if (active) activeTicks++
         if (ticksOnly) {
-          const command = data.subarray(52), pointer = copy(command)
+          const command = replayTickCommand(data,replay.version), pointer = copy(command)
           e.playsrc_collision_replay_reset()
           const began = performance.now()
           require(e.playsrc_game_advance(handle, pointer, command.length, 1) === 1, `Replay authoritative tick ${index} failed`)
@@ -231,6 +237,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
         replayMutation(e, handle, record); mutations++
       }
     }
+    if(usesWorkClock)require(e.playsrc_gameplay_replay_clock_remaining(handle)===0,"Replay work-clock consumption differs")
     require(e.playsrc_gameplay_replay_stop(handle) === 1, "Replay owner journal failed")
     const replayLength = e.playsrc_gameplay_replay_length(handle), replayPointer = e.playsrc_alloc(replayLength) >>> 0
     require(e.playsrc_gameplay_replay_copy(handle, 0, replayPointer, replayLength) === replayLength, "Replay journal copy failed")
