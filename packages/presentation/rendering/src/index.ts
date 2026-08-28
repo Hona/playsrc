@@ -1904,6 +1904,7 @@ class RendererOwner implements Renderer {
     const samples = [] as GeometryEvidence["samples"][number][]
     for (const y of [-0.8, -0.4, 0, 0.4, 0.8]) {
       for (const x of [-0.8, -0.4, 0, 0.4, 0.8]) {
+        this.#serviceAudio?.()
         raycaster.setFromCamera(new THREE.Vector2(x, y), this.#camera)
         const intersection = raycaster.intersectObjects(meshes, false)[0]
         if (!intersection || intersection.faceIndex === undefined) {
@@ -2734,7 +2735,7 @@ class RendererOwner implements Renderer {
     const waterTargets=this.#waterPreparationTargets(scene)
     const visibleLeaves = new Set(leaves)
     const eligibleProps = new Set(scene.staticPropInstances.filter(prop =>
-      prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
+      leaves === undefined || prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
     ))
     const eligibleGroups = new Set([...eligibleProps].map(prop => prop.object))
     const eligibleSources = new Set([...eligibleProps].map(prop => prop.source))
@@ -2751,7 +2752,7 @@ class RendererOwner implements Renderer {
     const visibility = prepareReachablePipelineVisibility(
       scene.group,
       scene.waterMeshes.map(water => water.mesh),
-      [...(leaves ? [] : [scene.mainStaticProps, scene.skyStaticProps, scene.mainModelOccurrences])],
+      [],
       mesh => {
         const sources = batchSources.get(mesh)
         if (sources) return sources.some(source => eligibleSources.has(source))
