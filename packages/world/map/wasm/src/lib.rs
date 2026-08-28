@@ -72,6 +72,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             bsp_sha,
             profile,
             playsrc_map::RuntimeAssembly {
+                retain_payload: true,
                 compiler_identity: "playsrc-map-runtime-2",
                 configuration_sha256: Sha256::digest(configuration).into(),
                 materials: &[],

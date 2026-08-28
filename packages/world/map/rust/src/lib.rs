@@ -13,6 +13,7 @@ pub use area_portals::compile_area_portal_state;
 mod model_lighting;
 mod static_props;
 mod surface_lighting;
+mod serialization;
 pub use model_lighting::*;
 pub use static_props::{StaticPropModel, StaticPropOccurrence, StaticProps};
 pub use surface_lighting::*;
@@ -120,6 +121,8 @@ pub struct RuntimeDescriptor {
     pub configuration_sha256: [u8; 32],
     pub payload_sha256: [u8; 32],
     pub derived_sha256: [u8; 32],
+    pub payload_bytes: usize,
+    /// Empty only when assembly requested identity-only serialization.
     pub payload: Vec<u8>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,6 +200,9 @@ pub struct RuntimeModelOccurrence {
     pub angles: [f32; 3],
 }
 pub struct RuntimeAssembly<'a> {
+    /// Hash every serialized byte in either mode. Cache-hit callers need the
+    /// independent identity, but must not retain an unused second payload.
+    pub retain_payload: bool,
     pub compiler_identity: &'a str,
     pub configuration_sha256: [u8; 32],
     pub materials: &'a [RuntimeMaterial],
@@ -614,6 +620,7 @@ pub fn assemble_prepared_runtime(
     assembly: RuntimeAssembly<'_>,
 ) -> Result<Runtime, Error> {
     let RuntimeAssembly {
+        retain_payload,
         compiler_identity,
         configuration_sha256,
         materials: resolved_materials,
@@ -730,8 +737,24 @@ pub fn assemble_prepared_runtime(
         models: runtime_models,
         occurrences: model_occurrences,
     };
-    let payload = serialize(&serialization)?;
-    let payload_sha256 = Sha256::digest(&payload).into();
+    let schema = runtime_schema(&map, resolved_materials, runtime_models);
+    let payload_bytes = serialized_length(&serialization, schema)?;
+    if payload_bytes > 512 * 1024 * 1024 {
+        return Err(error(ErrorCode::BoundExceeded, None));
+    }
+    let (payload, payload_sha256) = if retain_payload {
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(payload_bytes)
+            .map_err(|_| error(ErrorCode::BoundExceeded, None))?;
+        serialize(&serialization, schema, payload_bytes, &mut payload)?;
+        let hash = Sha256::digest(&payload).into();
+        (payload, hash)
+    } else {
+        let mut sink = serialization::HashSink::new();
+        serialize(&serialization, schema, payload_bytes, &mut sink)?;
+        (Vec::new(), sink.finish())
+    };
     let derived_sha256 = derived_identity(&serialization, payload_sha256);
     let descriptor = RuntimeDescriptor {
         schema: 1,
@@ -740,6 +763,7 @@ pub fn assemble_prepared_runtime(
         configuration_sha256,
         payload_sha256,
         derived_sha256,
+        payload_bytes,
         payload,
     };
     Ok(Runtime {
@@ -750,20 +774,17 @@ pub fn assemble_prepared_runtime(
         descriptor,
     })
 }
-fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
+fn serialize(
+    context: &SerializationContext<'_>,
+    schema: u32,
+    expected: usize,
+    mut out: &mut impl serialization::ByteSink,
+) -> Result<(), Error> {
     let map = context.map;
     let entities = context.entities;
     let materials = context.materials;
     let models = context.models;
     let occurrences = context.occurrences;
-    let schema = runtime_schema(map, materials, models);
-    let expected = serialized_length(context, schema)?;
-    if expected > 512 * 1024 * 1024 {
-        return Err(error(ErrorCode::BoundExceeded, None));
-    }
-    let mut out = Vec::new();
-    out.try_reserve_exact(expected)
-        .map_err(|_| error(ErrorCode::BoundExceeded, None))?;
     out.extend_from_slice(b"PSMP");
     u32v(&mut out, schema);
     u32v(&mut out, map.bsp_version as u32);
@@ -891,7 +912,7 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
         }
     }
     if !models.is_empty() || map.lighting_profile == LightingProfile::Hdr {
-        serialize_model_registry(&mut out, models, matches!(schema, 8 | 9 | 10 | 11));
+        model_registry(&mut out, models, matches!(schema, 8 | 9 | 10 | 11));
         u32v(&mut out, occurrences.len() as u32);
         for occurrence in occurrences {
             u32v(&mut out, occurrence.entity as u32);
@@ -910,12 +931,20 @@ fn serialize(context: &SerializationContext<'_>) -> Result<Vec<u8>, Error> {
     if out.len() != expected {
         return Err(error(ErrorCode::InvalidRange, None));
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Authored model geometry shared by map admission and incremental model-only
 /// admission. This does not construct a map, collision world, or game session.
 pub fn serialize_model_registry(out: &mut Vec<u8>, models: &[RuntimeModel], modern_materials: bool) {
+    model_registry(out, models, modern_materials);
+}
+
+fn model_registry(
+    out: &mut impl serialization::ByteSink,
+    models: &[RuntimeModel],
+    modern_materials: bool,
+) {
     u32v(out, models.len() as u32);
     for model in models {
         bytesv(out, model.logical_path.as_bytes());
@@ -1147,7 +1176,7 @@ fn add_hdr_length(
     Ok(())
 }
 
-fn materialv(out: &mut Vec<u8>, material: &RuntimeMaterial, include_detail: bool) {
+fn materialv(out: &mut impl serialization::ByteSink, material: &RuntimeMaterial, include_detail: bool) {
     out.push(material.shader);
     out.push(material.features);
     out.push(u8::from(material.base_texture.is_some()));
@@ -1188,7 +1217,7 @@ fn lighting_sample_count(samples: &LightingSamples) -> usize {
         LightingSamples::LinearRgb32(samples) => samples.len(),
     }
 }
-fn serialize_hdr(out: &mut Vec<u8>, context: &SerializationContext<'_>) {
+fn serialize_hdr(out: &mut impl serialization::ByteSink, context: &SerializationContext<'_>) {
     let map = context.map;
     let profile_materials = context.profile_materials;
     let inputs = context.inputs;
@@ -1416,16 +1445,16 @@ fn derived_identity(context: &SerializationContext<'_>, payload_sha256: [u8; 32]
     digest.update(payload_sha256);
     digest.finalize().into()
 }
-fn u32v(o: &mut Vec<u8>, v: u32) {
+fn u32v(o: &mut impl serialization::ByteSink, v: u32) {
     o.extend_from_slice(&v.to_le_bytes())
 }
-fn i32v(o: &mut Vec<u8>, v: i32) {
+fn i32v(o: &mut impl serialization::ByteSink, v: i32) {
     o.extend_from_slice(&v.to_le_bytes())
 }
-fn f32v(o: &mut Vec<u8>, v: f32) {
+fn f32v(o: &mut impl serialization::ByteSink, v: f32) {
     u32v(o, v.to_bits())
 }
-fn bytesv(o: &mut Vec<u8>, v: &[u8]) {
+fn bytesv(o: &mut impl serialization::ByteSink, v: &[u8]) {
     u32v(o, v.len() as u32);
     o.extend_from_slice(v)
 }
@@ -1955,6 +1984,34 @@ mod tests {
             length.records(usize::MAX, 2).unwrap_err().code,
             ErrorCode::BoundExceeded
         );
+    }
+
+    #[test]
+    fn model_serialization_sinks_preserve_binary32_and_integer_planes() {
+        use serialization::ByteSink;
+        let vectors = vec![[f32::from_bits(0x8000_0000), f32::from_bits(0x0000_0001), f32::from_bits(0x7fc0_1234)]; 4097];
+        let models = [RuntimeModel {
+            logical_path: "models/test.mdl".into(),
+            materials: vec![],
+            primitives: vec![RuntimeModelPrimitive {
+                material: 0, positions: vectors.clone(), normals: vectors.clone(),
+                bind_positions: vectors.clone(), bind_normals: vectors,
+                bind_tangents: vec![[0.0, -0.0, 1.0, -1.0]; 4097],
+                bone_indices: vec![[0, 255, 256, u16::MAX]; 4097],
+                bone_weights: vec![[0.0, 0.25, 0.5, 0.25]; 4097],
+                bone_palette: vec![0, 255, 256, u16::MAX],
+                uv: vec![[0.0, -0.0]; 4097], triangles: vec![[0, 1, 4096]],
+            }],
+        }];
+        for modern in [false, true] {
+            let mut bytes = Vec::new();
+            serialize_model_registry(&mut bytes, &models, modern);
+            assert!(bytes.windows(4).any(|value| value == 0x7fc0_1234_u32.to_le_bytes()));
+            let mut sink = serialization::HashSink::new();
+            model_registry(&mut sink, &models, modern);
+            assert_eq!(sink.len(), bytes.len());
+            assert_eq!(sink.finish(), <[u8; 32]>::from(Sha256::digest(bytes)));
+        }
     }
 
     #[test]

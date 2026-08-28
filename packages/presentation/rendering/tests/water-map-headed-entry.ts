@@ -22,7 +22,7 @@ type Exports = Readonly<{
   playsrc_resource_length(): number
   playsrc_resource_take(): number
   playsrc_resource_release(pointer: number, length: number): number
-  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, retainPayload: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -92,7 +92,7 @@ new DataView(exports.memory.buffer, configSections, 8).setUint32(0, configPointe
 new DataView(exports.memory.buffer, configSections, 8).setUint32(4, resources.byteLength, true)
 const configHash = exports.playsrc_alloc(32)
 new Uint8Array(exports.memory.buffer, configHash, 32).set(new Uint8Array(await crypto.subtle.digest("SHA-256", resources)))
-const handle = exports.playsrc_compile_map(bspPointer, bsp.byteLength, 1, configSections, 1, configHash)
+const handle = exports.playsrc_compile_map(bspPointer, bsp.byteLength, 1, configSections, 1, configHash, 1)
 exports.playsrc_free(configSections, 8)
 exports.playsrc_free(configHash, 32)
 exports.playsrc_free(bspPointer, bsp.byteLength)

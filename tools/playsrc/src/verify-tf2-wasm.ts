@@ -53,7 +53,7 @@ type Exports = Readonly<{
   playsrc_resource_take(): number
   playsrc_resource_release(pointer: number, length: number): number
   playsrc_free(pointer: number, length: number): void
-  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, retainPayload: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
@@ -450,6 +450,7 @@ export async function verifyTf2Wasm(
       sections.table,
       1,
       sections.hash,
+      1,
     )
     exports.playsrc_free(source, bspBytes.byteLength)
     exports.playsrc_free(sections.table, 8)
@@ -487,6 +488,7 @@ export async function verifyTf2Wasm(
       sections.table,
       1,
       sections.hash,
+      1,
     )
     exports.playsrc_free(source, sourceBytes.byteLength)
     exports.playsrc_free(sections.table, 8)
@@ -612,6 +614,7 @@ export async function verifyTf2Wasm(
     dependencySections.table,
     1,
     dependencySections.hash,
+    1,
   )
   exports.playsrc_free(bspPointer, bspBytes.byteLength)
   exports.playsrc_free(dependencySections.table, 8)

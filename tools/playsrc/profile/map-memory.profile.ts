@@ -1,4 +1,5 @@
 import { closeSync, openSync, writeSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import path from "node:path"
@@ -10,6 +11,7 @@ import { chooseTf2Team } from "./team-selection-evidence"
 import { loadLocalConfig } from "../src/config"
 import { macosProcessMemorySampler } from "./process-memory-macos"
 import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { mapMemoryReply } from "./map-memory-reply"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -143,7 +145,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
              resourceBytes: owned?.resourceBytes ?? null,
              resourceReferencedBytes: owned?.resourceReferencedBytes ?? null,
              sharedResourceBytes: owned?.sharedResourceBytes ?? null,
-              resourceSections: /^(?:resources|loaded|activated|discarded|shutdown|initialized|failed)/.test(response.kind) ? owned?.resourceSections ?? null : undefined,
+              resourceSections: /^(?:resources|loaded|activated|discarded|shutdown|initialized|failure)/.test(response.kind) ? owned?.resourceSections ?? null : undefined,
             heapBytes: globalThis.performance?.memory?.usedJSHeapSize ?? null,
            };
          }
@@ -153,10 +155,14 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await route.fulfill({ response, body: `${prefix}\n${source}` })
   })
 
-  await page.addInitScript(() => {
+  await page.addInitScript((memoryReplySource) => {
+    const memoryReply = new Function(`return (${memoryReplySource})`)() as typeof mapMemoryReply
     const state = {
       transfers: [] as Record<string, unknown>[],
       worker: [] as Record<string, unknown>[],
+      requests: [] as Record<string, unknown>[],
+      hashes: [] as Record<string, unknown>[],
+      inputEvents: [] as Record<string, unknown>[],
       gpu: {
         bufferBytes: 0,
         peakBufferBytes: 0,
@@ -188,6 +194,27 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     }
     ;(globalThis as any).__playsrcMemoryProfile = state
     ;(globalThis as any).__playsrcProfile = {}
+    for (const kind of ["keydown", "keyup"]) addEventListener(kind, (event) => {
+      if ((event as KeyboardEvent).code === "KeyW") state.inputEvents.push({ kind, at: performance.now(), trusted: event.isTrusted })
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (...args) => {
+      const record: Record<string, unknown> = { url: args[0] instanceof Request ? args[0].url : String(args[0]), started: performance.now() }
+      state.requests.push(record)
+      try {
+        const response = await originalFetch(...args)
+        record.bytes = Number(response.headers.get("content-length") ?? 0)
+        record.status = response.status
+        return response
+      } finally { record.finished = performance.now() }
+    }
+    const originalDigest = SubtleCrypto.prototype.digest
+    SubtleCrypto.prototype.digest = async function (algorithm, data) {
+      const record = { started: performance.now(), bytes: data.byteLength, finished: 0 }
+      state.hashes.push(record)
+      try { return await originalDigest.call(this, algorithm, data) }
+      finally { record.finished = performance.now() }
+    }
     const buffers = (value: unknown, seen = new Set<unknown>()): ArrayBuffer[] => {
       if (!value || typeof value !== "object" || seen.has(value)) return []
       seen.add(value)
@@ -199,21 +226,28 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     class ProfiledWorker extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
-        let resourceSections: unknown = null
+        let ownership: unknown = null
         const previous = (this as any).__playsrcProfileReply?.bind(this)
         ;(this as any).__playsrcProfileReply = (response: any) => {
           previous?.(response)
           const event = { data: response }
           const entries = buffers(event.data)
           const memory = event.data?.__playsrcProfileMemory
-          if (memory?.resourceSections !== undefined) resourceSections = memory.resourceSections
-          state.worker.push({
+          if (memory?.resourceSections !== undefined) ownership = memory
+          const record: Record<string, unknown> = {
             at: performance.now(),
             kind: event.data?.kind ?? "unknown",
             bytes: entries.reduce((total, entry) => total + entry.byteLength, 0),
-            memory: memory ? { ...memory, resourceSections } : null,
+            memory: memoryReply(event.data, ownership),
+            payloadSha256: event.data?.kind === "loaded" ? event.data.payloadSha256 : undefined,
             timings: event.data?.kind === "loaded" ? event.data.timings : undefined,
-          })
+          }
+          state.worker.push(record)
+          if (event.data?.kind === "loaded" && event.data.presentation instanceof ArrayBuffer) {
+            void originalDigest.call(crypto.subtle, "SHA-256", event.data.presentation).then(digest => {
+              record.presentationSha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("")
+            })
+          }
         }
       }
       override postMessage(message: any, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
@@ -373,7 +407,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       queuedWrite(receiver, bytes)
       return result
     })
-  })
+  }, mapMemoryReply.toString())
 
   const maps: Record<string, unknown>[] = []
   try {
@@ -528,7 +562,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         if (image.pixels[offset]! + image.pixels[offset + 1]! + image.pixels[offset + 2]! > 16) visible += 1
       }
       expect(visible).toBeGreaterThan(image.width * image.height / 8)
-      await writeFile(path.join(output, `${identity}-${index + 1}-${process.env.PROFILE_MEMORY_LABEL ?? "current"}.png`), capture)
+      const capturePath = path.join(output, `${identity}-${index + 1}-${process.env.PROFILE_MEMORY_LABEL ?? "current"}.png`)
+      await writeFile(capturePath, capture)
       const observed = await page.evaluate((started) => {
         const main = document.querySelector<HTMLElement>("main")!
         const profile = (globalThis as any).__playsrcMemoryProfile
@@ -542,6 +577,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
            transfers: profile.transfers.filter((record: any) => record.at >= started),
            worker: profile.worker.filter((record: any) => record.at >= started),
           indexedDb: profile.indexedDb,
+          requests: profile.requests.filter((record: any) => record.started >= started),
+          hashes: profile.hashes.filter((record: any) => record.started >= started),
+          startupSpans: ((globalThis as any).__playsrcProfile.startupSpans ?? []).filter((record: any) => record.started >= started),
           longTasks: profile.longTasks,
            garbageCollections: profile.garbageCollections,
            mountedFontFaces: document.fonts.size,
@@ -580,7 +618,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
       pageCdp.on("Tracing.dataCollected", collectTrace)
       await pageCdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
-      const frames = await page.evaluate(async (minimumMilliseconds) => {
+      const frameSample = page.evaluate(async (minimumMilliseconds) => {
         const root = document.querySelector<HTMLElement>("main")!
         const first = Number(root.dataset.snapshotTick)
         const start = performance.now()
@@ -609,6 +647,27 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           maximumFrameMilliseconds: ordered.at(-1) ?? 0,
         }
       }, sampleWindows[index]! * 1_000)
+      const input: Record<string, unknown>[] = []
+      if (process.env.PROFILE_MEMORY_INPUT === "1") {
+        await page.locator("canvas.world-canvas").focus()
+        for (let trial = 0; trial < 3; trial++) {
+          try {
+            for (const kind of ["keydown", "keyup"] as const) {
+              if (kind === "keydown") await page.keyboard.down("w")
+              else await page.keyboard.up("w")
+              await page.waitForFunction((down) => {
+                const speed = Number(document.querySelector<HTMLElement>("main")?.dataset.wishSpeed)
+                return down ? speed > 0 : speed === 0
+              }, kind === "keydown", { timeout: 5_000, polling: 5 })
+              input.push(await page.evaluate((kind) => {
+                const event = (globalThis as any).__playsrcMemoryProfile.inputEvents.findLast((entry: any) => entry.kind === kind)
+                return { ...event, observed: performance.now(), milliseconds: performance.now() - event.at }
+              }, kind))
+            }
+          } finally { await page.keyboard.up("w") }
+        }
+      }
+      const frames = await frameSample
       const traced = new Promise<void>((resolve) => pageCdp.once("Tracing.tracingComplete", () => resolve()))
       await pageCdp.send("Tracing.end")
       await traced
@@ -626,6 +685,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         owners: observed.owners,
         compileAllocatorPhases: ["inputs", "bsp-parsed", "canonical-collision-pvs", "materials", "presentation", "runtime-models", "canonical-serialized", "collision-decals", "game-session", "allocator-high-water", "bsp-released", "static-models-released"]
           .map((phase, index) => ({ phase, liveBytes: observed.load?.client?.wasmCompileOwnerBytes?.[index] ?? null })),
+        serializedMapRetainedBytes: observed.load?.client?.wasmCompileOwnerBytes?.[12] ?? null,
         generation: observed.generation,
         playerClass: observed.playerClass,
         bots,
@@ -680,6 +740,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         },
         gpu: observed.gpu,
         indexedDb: observed.indexedDb,
+        requests: observed.requests,
+        hashes: observed.hashes,
+        startupSpans: observed.startupSpans,
          responsiveness: {
           longTasks: observed.longTasks.length,
           maximumLongTaskMilliseconds: Math.max(0, ...observed.longTasks),
@@ -701,6 +764,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           nearestDepth: Math.min(...worldDepth.map((entry: any) => entry.depth)),
         },
         pixels: { width: image.width, height: image.height, visible },
+        screenshot: { path: capturePath, byteLength: capture.byteLength, sha256: createHash("sha256").update(capture).digest("hex") },
+        input,
         simulation: { ...frames, hz: Number(simulationHz.toFixed(2)) },
         compositor,
         tracedGarbageCollection: traceEvents.filter((event) => /(?:MajorGC|MinorGC|V8\.GC)/u.test(event.name ?? "") && event.dur !== undefined)
