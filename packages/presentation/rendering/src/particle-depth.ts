@@ -64,6 +64,7 @@ export class SourceParticleDepth {
 
   #create(key: object | null): THREE.FramebufferTexture {
     const texture = new THREE.FramebufferTexture(1, 1)
+    texture.name = key === null ? "particle-depth:compile" : "particle-depth:framebuffer"
     texture.internalFormat = "rgba8unorm" as any
     texture.minFilter = texture.magFilter = THREE.NearestFilter
     texture.colorSpace = THREE.NoColorSpace

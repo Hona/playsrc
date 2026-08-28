@@ -1,7 +1,7 @@
 /** Serializable, opt-in API lifecycle accounting. No GPU object is retained by
  * a counter. Returned texture objects are not evidence of physical residency:
  * validation, implicit GC, device loss and driver retirement are not measured. */
-export function installGpuTextureAccounting(host: any = globalThis) {
+export function installGpuTextureAccounting(host: any = globalThis, traceOwners = false) {
   if (host.__playsrcGpuTextureAccounting) return host.__playsrcGpuTextureAccounting as ReturnType<typeof totalState>
   type FormatTotal = { textures: number; knownBytes: number; unknownByteTextures: number }
   const total = () => ({ textures: 0, knownBytes: 0, unknownByteTextures: 0,
@@ -11,7 +11,15 @@ export function installGpuTextureAccounting(host: any = globalThis) {
     live: total(), created: total(), destroyedTextures: 0, peakKnownBytes: 0,
     writeTextureCalls: 0, writeTextureSourceBytes: 0 })
   const state = totalState()
-  const allocations = new WeakMap<object, { format: string; bytes: number | null; compressed: boolean }>()
+  const allocations = new WeakMap<object, { format: string; bytes: number | null; compressed: boolean; id: number; owner: string }>()
+  const owners = { records: [] as any[], dropped: 0 }
+  if (traceOwners) host.__playsrcTextureOwners = owners
+  let ordinal = 0
+  const recordOwner = (record: object) => {
+    if (!traceOwners) return
+    if (owners.records.length < 16384) owners.records.push({ at: performance.now(), ...record })
+    else owners.dropped++
+  }
   // WebGPU texel block sizes. Opaque depth formats are intentionally unknown,
   // not guessed from a nominal depth precision or the host's allocation size.
   // https://www.w3.org/TR/webgpu/#texture-format-caps
@@ -56,21 +64,25 @@ export function installGpuTextureAccounting(host: any = globalThis) {
       bytes! += Math.ceil(width / layout[0]) * Math.ceil(height / layout[1]) * layout[2] * depth * texture.sampleCount
     }
     if (bytes !== null && (!Number.isSafeInteger(bytes) || bytes < 0)) bytes = null
-    const record = { format, bytes, compressed: layout !== undefined && layout[0] > 1 }
+    const record = { format, bytes, compressed: layout !== undefined && layout[0] > 1, id: ++ordinal, owner: texture.label || "unlabelled" }
     allocations.set(texture, record)
     add(state.live, record, 1); add(state.created, record, 1)
     state.peakKnownBytes = Math.max(state.peakKnownBytes, state.live.knownBytes)
+    recordOwner({ kind: "create", ...record, width: texture.width, height: texture.height, depth: texture.depthOrArrayLayers,
+      mips: texture.mipLevelCount, samples: texture.sampleCount, usage: texture.usage })
     return texture
   } })
   Object.defineProperty(host.GPUTexture.prototype, "destroy", { configurable: true, writable: true, value(this: any, ...args: any[]) {
     const value = destroy.apply(this, args)
     const record = allocations.get(this)
-    if (record) { allocations.delete(this); add(state.live, record, -1); state.destroyedTextures++ }
+    if (record) { allocations.delete(this); add(state.live, record, -1); state.destroyedTextures++; recordOwner({ kind: "destroy", ...record }) }
     return value
   } })
   Object.defineProperty(host.GPUQueue.prototype, "writeTexture", { configurable: true, writable: true, value(this: any, ...args: any[]) {
     const value = write.apply(this, args)
     state.writeTextureCalls++; state.writeTextureSourceBytes += args[1].byteLength
+    const record = allocations.get(args[0].texture)
+    recordOwner({ kind: "upload", id: record?.id ?? null, bytes: args[1].byteLength })
     return value
   } })
   Object.defineProperty(host, "__playsrcGpuTextureAccounting", { value: state, configurable: true })

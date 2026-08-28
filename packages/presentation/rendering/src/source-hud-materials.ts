@@ -37,6 +37,7 @@ export class SourceHudMaterials {
 
   constructor(readonly quality?: Readonly<{ mipOffset: number; trilinear: boolean; anisotropy: number }>) {
     this.#camera.position.z = 1
+    this.#framebuffer.name = "hud-materials:framebuffer"
     this.#framebuffer.minFilter = this.#framebuffer.magFilter = THREE.LinearFilter
     // The opaque canvas presents RenderOutput's RGB but discards its alpha.
     // Resolve that displayed RGB back to linear before VGUI blends into it.
@@ -82,6 +83,7 @@ export class SourceHudMaterials {
       const base = images[0]!
       const value = "data" in base ? new THREE.DataTexture(base.data, base.width, base.height, THREE.RGBAFormat, THREE.UnsignedByteType) : new THREE.Texture(base)
       if (images.length > 1) value.mipmaps = images
+      value.name = `hud-materials:input=${this.#textures.length}`
       value.flipY = false
       value.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace
       value.wrapS = source.clampS ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping
