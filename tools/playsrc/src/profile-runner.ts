@@ -54,6 +54,7 @@ const PROFILES = Object.freeze({
   "cold-map": { config: "playwright.cold-map-profile.config.ts", target: "jump_beef" },
   "three-map-load": { config: "playwright.three-map-load.config.ts", target: "jump_beef" },
   "map-memory": { config: "playwright.map-memory-profile.config.ts", target: "jump_beef" },
+  "lightmap-replacement": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "lightmap-replacement" }, minimumRemainingMilliseconds: 85_000 },
   "map-sanity": { config: "playwright.map-sanity-profile.config.ts", target: "jump_beef" },
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
   "upward-outdoors": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_UPWARD_OUTDOORS: "1" } },
