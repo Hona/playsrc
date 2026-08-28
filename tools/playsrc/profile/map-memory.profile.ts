@@ -17,6 +17,7 @@ import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
 import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
+import { instrumentParticleAliasSource } from "./particle-alias-route"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -87,6 +88,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const sampleWindows = divideProfileWindow(sampleSeconds, targets.length)
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
   const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
+  const aliasPixels = process.env.PROFILE_MEMORY_ALIAS_PIXELS === "1"
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
   let permissionResolved = false
@@ -168,7 +170,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
 
   if (lightmapAudit) await page.route(/\/packages\/presentation\/rendering\/src\/index\.ts(?:\?|$)/u, async route => {
     const response = await route.fetch()
-    await route.fulfill({ response, body: instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1") })
+    let source = instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1")
+    if (aliasPixels) source = instrumentParticleAliasSource(source, false)
+    await route.fulfill({ response, body: source })
   })
 
   await page.route(/gameplay-worker\.ts(?:\?|$)/u, async (route) => {
@@ -423,6 +427,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     if (lightmapAudit && !inputDiagnostic) await page.bringToFront()
     await native()
     if (ownedUiDiagnostic) { await diagnoseUi("main-menu"); return }
+    if (aliasPixels) await page.evaluate(async url => {
+      const module = await import(/* @vite-ignore */ url)
+      ;(globalThis as any).__playsrcParticleAliasEvidence = module.installParticleAliasEvidence()
+    }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/particle-alias-evidence.ts`)
     if (lightmapAudit) await page.evaluate(async url => {
       const module = await import(/* @vite-ignore */ url)
       ;(globalThis as any).__playsrcLightmapEvidence = module.installLightmapUploadEvidence()
@@ -566,6 +574,28 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       await native()
       await sample()
       const heap = await pageCdp.send("Runtime.getHeapUsage")
+      if (aliasPixels) {
+        const records: unknown[] = []
+        try {
+          for (const phase of [0, 1]) {
+            await native()
+            const record: any = await page.evaluate(async phase => Promise.race([
+              (globalThis as any).__playsrcParticleAliasEvidence.capture(phase),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Alias pixel capture exceeded 15 seconds")), 15_000)),
+            ]), phase)
+            records.push(record)
+            await writeFile(path.join(output, "particle-alias-pixels.json"), JSON.stringify(records, null, 2))
+            for (const plane of record.result.planes) {
+              expect(plane.mismatches).toBe(0)
+              expect(plane.identicalDrawOrder).toBe(true)
+            }
+            expect(record.result.planes.find((plane: any) => plane.plane === "color").actorPixels).toBeGreaterThan(100)
+            await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, `particle-alias-pixels-${phase}.png`) })
+            await native()
+          }
+        } finally { await page.evaluate(() => (globalThis as any).__playsrcParticleAliasEvidence.dispose()) }
+        return
+      }
       const revision = index + 1
       await page.evaluate((value) => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = value }, revision)
       await page.waitForFunction(({ revision, identity }) => {
