@@ -37,11 +37,11 @@ test("each shader feature, sampler interpretation and fragment contract invalida
     { ...phong, exponent: -1 }, { ...phong, exponentFactor: 100 }, { ...phong, rim: null },
     { ...phong, rim: { ...phong.rim, exponentTextureAlphaMask: true } },
   ]) expect(modelMaterialGraphKey({ ...input, state: { ...input.state, phong: state } })).not.toBe(key)
-  expect(modelMaterialGraphKey({ ...input, state: { ...input.state, halfLambert: true } })).not.toBe(key)
+  expect(modelMaterialGraphKey({ ...input, state: { halfLambert: true } })).not.toBe(modelMaterialGraphKey({ ...input, state: { halfLambert: false } }))
   expect(modelMaterialGraphKey({ ...input, shader: "eyes", state: { ...input.state, dilation: .5 } })).not.toBe(key)
   expect(modelMaterialGraphKey({ ...input, textures: { warp: new THREE.Texture() } })).not.toBe(key)
   expect(modelMaterialGraphKey({ ...input, baseTexture: { ...input.baseTexture!, sourceFormat: 12 } })).not.toBe(key)
-  expect(modelMaterialGraphKey({ ...input, fragment: { alphaModulation: .5 } as any })).not.toBe(key)
+  expect(modelMaterialGraphKey({ ...input, fragment: { alphaModulation: .5, blendEnabled: true, alphaOwnership: { opacity: true } } as any })).not.toBe(key)
 })
 
 test("scene/device graph owners and failed construction cannot share or publish a partial graph", () => {

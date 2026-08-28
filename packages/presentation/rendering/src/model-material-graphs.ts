@@ -4,6 +4,7 @@ import type { MaterialStateInput } from "./index"
 import { ModelLightingGraphs, bindModelTexture, modelBaseTextureShape, modelEnvironmentShape, perObjectModelTextures, type ModelTextureBindingName } from "./model-lighting-graphs"
 import { sourceEyeIrisNode, sourceModelSurfaceNode, type SourceModelPhongState } from "./source-model-lighting"
 import { sourceFragmentColor } from "./source-fragment-color"
+import { sourceFragmentUsesAlpha } from "./material-state"
 import type { SourceWaterFogUniforms } from "./source-water"
 
 export type ModelMaterialGraphInput = Readonly<{
@@ -32,11 +33,19 @@ export function modelMaterialGraphKey(input: ModelMaterialGraphInput): string {
   const roles = [input.shader === "eyes" || input.shader === "eye-refract" ? undefined : baseTexture?.texture,
     textures?.warp, textures?.exponent, textures?.iris, textures?.ambientOcclusion, environment?.texture]
   const aliases = roles.map(texture => texture ? roles.indexOf(texture) : -1)
-  return JSON.stringify([input.shader, { ...state, phong: state.phong ? {
+  // Only inputs read by sourceModelSurfaceNode/sourceFragmentColor belong to
+  // this graph. Depth/cull/fog policy stays on the material/render object; UV
+  // wrapping stays on its rebound sampler. Repeating those values here creates
+  // different node trees for an identical program and identical bind layout.
+  const fragment = input.fragment
+  return JSON.stringify([input.shader, { halfLambert: state.phong ? true : state.halfLambert,
+    dilation: state.dilation, ambientOcclusionColor: state.ambientOcclusionColor, glossiness: state.glossiness,
+    phong: state.phong ? {
     maskSource: state.phong.maskSource, invertMask: state.phong.invertMask, albedoTint: state.phong.albedoTint,
     textureExponent: state.phong.exponent < 0, factorExponent: state.phong.exponentFactor !== 0,
     rim: state.phong.rim ? { exponentTextureAlphaMask: state.phong.rim.exponentTextureAlphaMask } : null,
-  } : null }, input.fragment,
+  } : null }, { alpha: fragment?.alphaModulation ?? 1, usesAlpha: sourceFragmentUsesAlpha(fragment),
+    waterFog: Boolean(input.waterFog) && !fragment?.blendEnabled, discard: fragment?.fragmentDiscard },
   input.shader === "eyes" || input.shader === "eye-refract" ? "iris" : baseTexture ? modelBaseTextureShape(baseTexture.texture, baseTexture.sourceFormat) : input.base.uuid,
   ...[textures?.warp, textures?.exponent, textures?.iris, textures?.ambientOcclusion].map(texture => texture ? modelBaseTextureShape(texture, 0) : "none"),
   modelEnvironmentShape(environment?.texture), environment?.tint, environment?.scale, aliases])
