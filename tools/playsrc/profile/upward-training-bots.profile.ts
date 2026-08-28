@@ -29,6 +29,8 @@ import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./sn
 import { macPageAdmission, requireMacPageAdmission, type MacPageAdmission } from "./macos-page-admission"
 import { auditEngineerMenus } from "./engineer-menu-audit"
 import { auditSpriteOrientation } from "./sprite-orientation-audit"
+import { startupNativeReader } from "./native-startup"
+import { requireStartupNative } from "./static-startup-gate"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -46,13 +48,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
   const nativeReader = await macPageAdmission(page, sourceCacheDir)
-  closeNativeAdmission = nativeReader?.close
+  const windowsReader = process.platform === "win32" ? await startupNativeReader(page, sourceCacheDir) : null
+  closeNativeAdmission = async () => { await nativeReader?.close(); await windowsReader?.close() }
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
   const nativeAdmission: MacPageAdmission[] = []
+  const nativeRecords = () => windowsReader?.records ?? nativeAdmission
   const checkNativeWindow = async (desktopScreenshot?: string) => {
     if (nativeReader) nativeAdmission.push(await nativeReader.read(desktopScreenshot))
+    if (windowsReader) {
+      requireStartupNative(await windowsReader.read())
+    }
   }
   const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
@@ -68,37 +75,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
     performance.setResourceTimingBufferSize(4096)
     ;(globalThis as any).__playsrcProfile = {}
   })
-  let localProductionBundle = false
-  if (process.env.PLAYSRC_PROFILE_LOCAL_PRODUCTION_BUNDLE === "1") {
-    if (process.env.PLAYSRC_PROFILE_ORIGIN !== "https://playsrc.online") {
-      throw new Error("local production bundle requires the exact deployed application and immutable asset origins")
-    }
-    const root = path.join(repositoryRoot, "apps", "web", "tf2")
-    const { build } = await import("vite")
-    await build({ root, configFile: path.join(root, "vite.config.ts"), logLevel: "error" })
-    const output = path.join(root, "dist", "cloudflare", "tf2")
-    const html = await readFile(path.join(output, "index.html"), "utf8")
-    const javascript = /src="\/tf2\/assets\/(index-[^"]+\.js)"/u.exec(html)?.[1]
-    const stylesheet = /href="\/tf2\/assets\/(index-[^"]+\.css)"/u.exec(html)?.[1]
-    if (!javascript || !stylesheet) throw new Error("local production-equivalent application bundle is incomplete")
-    await page.route("https://playsrc.online/tf2/assets/**", async (route) => {
-      const requested = path.basename(new URL(route.request().url()).pathname)
-      const name = /^index-[^/]+\.js$/u.test(requested) ? javascript
-        : /^index-[^/]+\.css$/u.test(requested) ? stylesheet
-        : requested
-      const file = path.join(output, "assets", name)
-      let body: Buffer
-      try { body = await readFile(file) }
-      catch { throw new Error(`local production-equivalent application asset is absent: ${requested}`) }
-      await route.fulfill({
-        status: 200,
-        body,
-        contentType: name.endsWith(".css") ? "text/css" : "text/javascript",
-        headers: { "cross-origin-embedder-policy": "require-corp", "cross-origin-opener-policy": "same-origin" },
-      })
-    })
-    localProductionBundle = true
-  }
   const network = {
     requests: 0, failed: 0, responseBytes: 0, maximumInflight: 0, duplicateImmutableRequests: 0,
     immutableRequests: 0, immutableBytes: 0, maximumImmutableInflight: 0, wireBytes: 0,
@@ -155,7 +131,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })
   const networkCdp = await context.newCDPSession(page)
   await networkCdp.send("Network.enable")
-  if (localProductionBundle) await networkCdp.send("Network.setCacheDisabled", { cacheDisabled: false })
   networkCdp.on("Network.loadingFinished", ({ encodedDataLength }) => { network.wireBytes += encodedDataLength })
   networkCdp.on("Network.requestServedFromCache", () => { network.cacheHits += 1 })
   const root = page.locator("main")
@@ -324,11 +299,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await loadPractice("cold")
   // Establish the actual Page -> CDP window -> native drawing window before
   // warm navigation/replacement/resize, not while the new window is animating.
-  if (nativeReader) {
+  if (nativeReader || windowsReader) {
     await page.bringToFront()
     await checkNativeWindow()
-    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
-    requireMacPageAdmission(nativeAdmission[0]!)
+    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
+    if (nativeReader) requireMacPageAdmission(nativeAdmission[0]!)
   }
   if (capturePlan.warmReload) await loadPractice("warm")
   const replacement: Array<Record<string, unknown>> = []
@@ -404,12 +379,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const nativeScreenshot = nativeReader ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
   if (!nativeReader && process.env.PROFILE_NATIVE_SCREENSHOT === "1") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
   await checkNativeWindow(nativeScreenshot ?? undefined)
-  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
   if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
   if (process.env.PROFILE_ENGINEER_UI_ONLY === "1") {
     await auditEngineerMenus(page, root, directory, label, combatCommand)
     await checkNativeWindow(nativeReader ? path.join(directory, `${label}-ui-after.desktop.png`) : undefined)
-    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+    await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
     if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
     if (process.env.PROFILE_PARTICLE_ORIENTATION_AUDIT === "1") {
       await auditSpriteOrientation(page, directory, label, async file => {
@@ -500,7 +475,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
         sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
         gpu: system?.gpu ?? null, availableCategories, origin: new URL(page.url()).origin,
-        localProductionBundle, label, headed: true, target, entry, launch, interrupted, workerCpu: workerArtifact, capturePlan: capturePlanArtifact,
+        label, headed: true, target, entry, launch, interrupted, workerCpu: workerArtifact, capturePlan: capturePlanArtifact,
         nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex"), ...details }, probes })
   }
   let retained: ReturnType<typeof persistNativeEvidence> | undefined
@@ -847,21 +822,23 @@ test("profile authored headed Upward offline-practice default roster and actual 
     }
   })() : Promise.resolve()
   let sampling = true
+  let nativeFailure: string | null = null
   const nativeMonitor = (async () => {
-    while (sampling && nativeReader) {
+    while (sampling && (nativeReader || windowsReader)) {
       await new Promise(resolve => setTimeout(resolve, 500))
       if (!sampling) break
-      await checkNativeWindow()
+      try { await checkNativeWindow() } catch (error) { nativeFailure = String(error); break }
       if (nativeAdmission.at(-1)?.error) break
-      if (nativeAdmission.length >= 32) break
+      if (nativeRecords().length >= 32) break
     }
   })()
   const sample = await Promise.all([measurementPromise.finally(() => { sampling = false }), exercise(), interaction, combatActions])
     .then(values => ({ measurement: values[0], error: null }), error => ({ measurement: null, error: String(error) }))
   sampling = false
   await nativeMonitor
+  sample.error ??= nativeFailure
   await checkNativeWindow(nativeScreenshot ? path.join(directory, `${evidenceLabel}.after.desktop.png`) : undefined)
-  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeAdmission))
+  await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
   profilePhases.enter("trace-drain")
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
@@ -1000,7 +977,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
     settings: await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality)),
-    browser: { platform: await page.evaluate(() => navigator.platform), userAgent: await page.evaluate(() => navigator.userAgent), controllerPlatform: process.platform, origin: new URL(page.url()).origin, localProductionBundle, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
+    browser: { platform: await page.evaluate(() => navigator.platform), userAgent: await page.evaluate(() => navigator.userAgent), controllerPlatform: process.platform, origin: new URL(page.url()).origin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
     firstPlayableBoundary: "application-completed-frame-not-compositor",
     frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
     presentationDom: {
