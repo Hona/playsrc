@@ -43,6 +43,9 @@ async function verifiedWorkload(captureFile: string) {
   const probes = JSON.parse(gunzipSync(probeBytes, { maxOutputLength: 32 * 1024 * 1024 }).toString())
   require(probes.dropped === 0, "Workload phase contains dropped evidence")
   const observes = projectObserves(replay.records)
+  require(replay.version === 4, "Workload requires recorded NextBot work-clock inputs")
+  const workClockHex = Buffer.concat(replay.records.filter(record => record.kind === 2)
+    .map(record => record.bytes.subarray(56 + record.bytes.readUInt32LE(48)))).toString("hex")
   const lastTick = replay.records.filter(record => record.kind === 2).at(-1)!.bytes.readBigUInt64LE(0)
   require(Array.isArray(capture.identity.presentationInputs), "Missing presentation input history")
   const presentations = capture.identity.presentationInputs.filter((entry: any) => BigInt(entry.lastHostTick) <= lastTick)
@@ -60,7 +63,8 @@ async function verifiedWorkload(captureFile: string) {
   require(observes.at(-1)!.nowSeconds * 1000 - plan.sampleEnded >= 4000, "Recorded workload lacks an authenticated retention tail; author a new workload without modifying this one")
   return { schema: "playsrc-command-workload-v1", captureFile, captureSha256: hash(bytes), journalFile: path.join(directory, manifest.file),
     journalBytes: journal.bytes, headerHex: raw.subarray(0, replay.headerBytes).toString("hex"), applicationGeneration: entry.applicationGeneration,
-    initialState: capture.identity.workloadState, entropyHex: entropy.toString("hex"), plan }
+    initialState: capture.identity.workloadState, entropyHex: entropy.toString("hex"),
+    workClock: { hex: workClockHex, endedAt: observes.at(-1)!.nowSeconds }, plan }
 }
 export async function prepareCommandWorkload(captureFile: string, destination: string) {
   const result = await verifiedWorkload(captureFile)

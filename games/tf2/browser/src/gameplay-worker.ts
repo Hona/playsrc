@@ -86,6 +86,8 @@ type WasmExports = Readonly<{
   playsrc_map_particle_entropy_length(handle: number): number
   playsrc_map_particle_entropy_copy(handle: number, pointer: number, length: number): number
   playsrc_map_particle_entropy_restore(handle: number, pointer: number, length: number): number
+  playsrc_gameplay_replay_clock_input(handle: number, pointer: number, length: number): number
+  playsrc_gameplay_replay_clock_finish(handle: number): number
   playsrc_gameplay_replay_mark(handle: number, mark: number): number
   playsrc_gameplay_replay_stop(handle: number): number
   playsrc_gameplay_replay_length(handle: number): number
@@ -119,6 +121,7 @@ let replayArmed = 0
 let replayMapOrdinal = 0
 let replayHandle: number | undefined
 let replayEntropy: Uint8Array | undefined
+let replayWorkClock: { bytes: Uint8Array; endedAt: number } | undefined
 let replayCheckpoint: { configurationSha256: string; configurationBytes: number; profile: number; generation: number } | undefined
 Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
   stopAdmission() {
@@ -136,10 +139,14 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
-  arm(mapOrdinal: number, entropyHex?: string) {
+  arm(mapOrdinal: number, entropyHex?: string, workClock?: { hex: string; endedAt: number }) {
     if (active || pending || replayArmed) throw new Error("Replay must be armed before map construction")
     if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
     replayArmed = mapOrdinal
+    if (workClock !== undefined) {
+      if (!/^(?:[0-9a-f]{16})*$/.test(workClock.hex) || workClock.hex.length > 8 * 1024 * 1024 || !Number.isFinite(workClock.endedAt) || workClock.endedAt < 0) throw new Error("Invalid recorded work-clock inputs")
+      replayWorkClock = { bytes: Uint8Array.from(workClock.hex.match(/../g) ?? [], value => parseInt(value, 16)), endedAt: workClock.endedAt }
+    }
     if (entropyHex !== undefined) {
       if (!/^(?:[0-9a-f]{2})+$/.test(entropyHex) || entropyHex.length > 8 * 1024 * 1024) throw new Error("Invalid recorded entropy bytes")
       replayEntropy = Uint8Array.from(entropyHex.match(/../g)!, value => parseInt(value, 16))
@@ -289,6 +296,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_map_particle_entropy_length,
         candidate.playsrc_map_particle_entropy_copy,
         candidate.playsrc_map_particle_entropy_restore,
+        candidate.playsrc_gameplay_replay_clock_input,
+        candidate.playsrc_gameplay_replay_clock_finish,
         candidate.playsrc_equipment_state_copy,
         candidate.playsrc_equipment_update,
         candidate.playsrc_equipment_models_admit,
@@ -658,6 +667,13 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
         if (exports.playsrc_map_particle_entropy_restore(candidate, pointer, replayEntropy.length) !== 1) throw new Error("Recorded map entropy rejected")
       } finally { exports.playsrc_free(pointer, replayEntropy.length) }
     }
+    if (replayWorkClock) {
+      const pointer = exports.playsrc_alloc(Math.max(1, replayWorkClock.bytes.length)) >>> 0
+      try {
+        new Uint8Array(exports.memory.buffer, pointer, replayWorkClock.bytes.length).set(replayWorkClock.bytes)
+        if (exports.playsrc_gameplay_replay_clock_input(candidate, pointer, replayWorkClock.bytes.length) !== 1) throw new Error("Recorded work-clock inputs rejected")
+      } finally { exports.playsrc_free(pointer, Math.max(1, replayWorkClock.bytes.length)) }
+    }
     replayHandle = candidate
     replayCheckpoint = { configurationSha256: request.configurationSha256, configurationBytes: request.configurationBytes, profile: request.profile, generation: request.generation }
   }
@@ -969,6 +985,10 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   if (result !== 1) {
     const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length)>>>0:0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length).slice()):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
     return
+  }
+  if (replayHandle === value.handle && replayWorkClock && request.nowSeconds >= replayWorkClock.endedAt) {
+    if (request.nowSeconds !== replayWorkClock.endedAt || value.exports.playsrc_gameplay_replay_clock_finish(value.handle) !== 1) throw new Error("Recorded work-clock handoff differs")
+    replayWorkClock = undefined
   }
   const length = value.exports.playsrc_simulation_output_length(value.handle)
   if (!Number.isSafeInteger(length) || length < 16 || length > MAX_MESSAGE_BYTES) {
