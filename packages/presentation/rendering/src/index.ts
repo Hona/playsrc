@@ -2780,8 +2780,9 @@ class RendererOwner implements Renderer {
       // their original order. Independent native pipelines need not each hold
       // the entire preparation owner while they compile; all still settle
       // before visibility is restored or this preparation can publish Ready.
-      await withBoundedPipelineCompilation((this.#backend as any)._pipelines, () =>
-        prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene)), 2)
+      const compile = () => prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene))
+      if (leaves) await withBoundedPipelineCompilation((this.#backend as any)._pipelines, compile, 2)
+      else await compile()
       this.#checkAbort(signal, ordinal)
       const profile = browserFrameProfiler()
       if (profile) {
