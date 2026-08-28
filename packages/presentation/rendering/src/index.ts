@@ -1366,7 +1366,7 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, compressedFormat, THREE.UnsignedByteType)
   texture.mipmaps = mipmaps
-  texture.name = `authored:${input.logicalPath}:frame=${frame}:${colorSpace}`
+  texture.name = `authored:${input.logicalPath}:frame=${frame}/${input.frameCount}:${colorSpace}`
   texture.colorSpace = colorSpace
   const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
   texture.wrapS = wrap(input.sampling.wrapS)
@@ -1401,7 +1401,7 @@ function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: str
     const texture=new THREE.DataTexture(data(plane),plane.width,plane.height,THREE.RGBAFormat,componentType);texture.colorSpace=colorSpace;texture.flipY=false;texture.generateMipmaps=false;texture.needsUpdate=true;return texture
   }))})
   const base=level(0),texture=new THREE.CubeTexture([...base.images] as any)
-  texture.name = `cubemap:${input.logicalPath}:frame=${frame}:${colorSpace}`
+  texture.name = `cubemap:${input.logicalPath}:frame=${frame}/${input.frameCount}:${colorSpace}`
   texture.mipmaps=Array.from({length:input.mipCount-1},(_,index)=>level(index+1)) as any
   texture.colorSpace=colorSpace;texture.type=componentType;texture.format=THREE.RGBAFormat;texture.flipY=false;texture.generateMipmaps=false;texture.minFilter=[THREE.NearestFilter,THREE.LinearFilter,THREE.LinearMipmapNearestFilter,THREE.LinearMipmapLinearFilter,THREE.LinearMipmapLinearFilter][input.sampling.minFilter]??THREE.LinearFilter;texture.magFilter=input.sampling.magFilter===0?THREE.NearestFilter:THREE.LinearFilter;texture.anisotropy=input.sampling.anisotropyLevel;texture.needsUpdate=true
   return texture
