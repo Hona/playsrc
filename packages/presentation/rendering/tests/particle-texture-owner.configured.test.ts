@@ -21,9 +21,14 @@ configured("offline compiler executes real Three binding/texture ownership witho
 
 configured("actual particle preparation retires cold flame mips, first required binding reuploads, warm preparation preserves live backing", async () => {
   const config = await loadLocalConfig(), directory = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/texture-replacement/offline")
-  const records = (await Bun.file(path.join(directory, "texture-inputs.json")).json()).records
+  const inputs = await Bun.file(path.join(directory, "texture-inputs.json")).json(), records = inputs.records
   const record = records.find((entry: any) => entry.logicalPath === "materials/particle/flamethrowerfire/flamethrowerfire128.vtf")
   expect(record.sourceSha256).toBe("0f121335470533adaab1ee96f3bfd7da65ab2de8026d90288d551eb7dc6ab61d")
+  const effect = inputs.particleDefinitions.find((entry: any) => entry.definition === "manmelter_vacuum_flames")
+  expect(effect).toMatchObject({ material: "materials/particle/flamethrowerfire/flamethrowerfire128.vmt",
+    materialSha256: "160182c6e71d5cc26190f740ffc4ff30538eedbcb50b3ac343712b9c76e6e15d", pcf: "particles/drg_pyro.pcf", renderers: ["render_animated_sprites"] })
+  expect(effect.textures).toEqual([{ role: "Base", path: "materials/particle/flameThrowerFire/flamethrowerfire128.vtf", colorRead: "Srgb" }])
+  expect(inputs.particleDefinitions.find((entry: any) => entry.definition === "drg_manmelter_vacuum_flames").children.some((entry: any) => entry.definition === effect.definition)).toBe(true)
   const bytes = new Uint8Array(await Bun.file(record.dataPath).arrayBuffer())
   expect(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")).toBe(record.dataSha256)
   const input = { ...record, planes: record.planes.map((plane: any) => ({ ...plane, rgba: bytes.subarray(plane.offset, plane.offset + plane.length) })) }
@@ -59,7 +64,7 @@ configured("actual particle preparation retires cold flame mips, first required 
   expect(device.allocations.every((record: any) => record.destroyed)).toBe(true)
   await Bun.write(path.join(directory, "flame-lifecycle.json"), JSON.stringify({ schema: "playsrc-offline-owner-lifecycle-v1",
     interpretation: "Production JS texture factory/preparation/disposal and Three texture manager/queue writer; native device/compiler boundary recorded, not executed. No browser, pixels, physical residency or FPS claim.",
-    sourceSha256: loaded.sourceSha256, input: { path: record.logicalPath, sourceSha256: record.sourceSha256, bytes: record.sourceBytes }, stages,
+    sourceSha256: loaded.sourceSha256, effect, input: { path: record.logicalPath, sourceSha256: record.sourceSha256, bytes: record.sourceBytes }, stages,
     allocations: device.allocations, writes: device.writes }, null, 2) + "\n")
 })
 
