@@ -8,5 +8,6 @@ test("particle alias evidence registers the real normalized material owner and c
   expect(candidate).toContain("globalThis.__playsrcParticleAliasEvidence?.register")
   expect(candidate).toContain("particleTextureAlias(candidate, textures.values())")
   expect(instrumentParticleAliasSource(compiled, true)).not.toContain("particleTextureAlias(candidate, textures.values())")
+  expect(instrumentParticleAliasSource(compiled, true, false)).not.toContain("__playsrcParticleAliasEvidence")
   expect(() => instrumentParticleAliasSource("", false)).toThrow("owner route differs")
 })
