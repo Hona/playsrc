@@ -65,7 +65,8 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
   }
   if ($Action -eq 'Result') {
-    @{result=$result;launchError=$(if (!$result) { $launchText } else { $null })} | ConvertTo-Json -Depth 8 -Compress
+    $bootstrap=if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Get-Content -Raw -LiteralPath "$launchFile.bootstrap.log"}else{$null}
+    @{result=$result;launchError=$(if (!$result) { "$launchText$bootstrap" } else { $null })} | ConvertTo-Json -Depth 8 -Compress
     exit 0
   }
   if ($Action -eq 'Artifacts') {
@@ -76,6 +77,8 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
     }
     if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){$files+=@{name='job/bootstrap.log';path="$launchFile.bootstrap.log"}}
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.metadata.json")){$files+=@{name='job/launch-metadata.json';path="$launchFile.metadata.json"}}
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}
@@ -106,6 +109,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     exit 0
   }
   if ($Action -eq 'Logs') {
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Get-Content -LiteralPath "$launchFile.bootstrap.log" -Tail 20}
     if ($launchText) { Write-Output $launchText }
     if ($latest) { Get-Content -LiteralPath $latest.FullName -Tail 80 }
     if ($latest) {
@@ -161,7 +165,22 @@ $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Acti
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
 $command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-$taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
+$source=Join-Path $PSScriptRoot 'windows-job-launcher.cs'
+$sourceHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+$launcherDirectory=Join-Path $config.sourceCacheDir 'toolchains/profile-launcher'
+$launcher=Join-Path $launcherDirectory "$sourceHash.exe"
+if(!(Test-Path -LiteralPath $launcher)) {
+ New-Item -ItemType Directory -Force -Path $launcherDirectory | Out-Null
+ $temporary=Join-Path $launcherDirectory "$sourceHash-$token.exe"
+ try {Add-Type -Path $source -OutputAssembly $temporary -OutputType WindowsApplication; if(!(Test-Path -LiteralPath $launcher)){Move-Item -LiteralPath $temporary -Destination $launcher}}
+ finally {Remove-Item -LiteralPath $temporary -ErrorAction SilentlyContinue}
+}
+# Record this launch even if bootstrap fails before the normal CLI starts.
+New-Item -ItemType File -Path $log | Out-Null
+$binary=[IO.File]::ReadAllBytes($launcher);$pe=[BitConverter]::ToInt32($binary,60)
+if($pe -lt 0 -or $pe+94 -gt $binary.Length -or [BitConverter]::ToUInt32($binary,$pe) -ne 17744 -or [BitConverter]::ToUInt16($binary,$pe+92) -ne 2){throw 'Owned launcher is not a GUI-subsystem PE image'}
+@{privacy='private-native-owner';job=$Job;task=$name;sourceSha256=$sourceHash;launcherSha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash.ToLowerInvariant();launcherBytes=$binary.Length;subsystem=2;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress|Set-Content -LiteralPath "$log.metadata.json"
+$taskAction = New-ScheduledTaskAction -Execute $launcher -Argument "$encoded `"$log.bootstrap.log`"" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 # Task Scheduler defaults to 7 (BELOW_NORMAL/background), unlike an ordinary
 # interactive launch. 5 is NORMAL, not an above-normal/realtime benchmark boost.
