@@ -148,7 +148,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     try {
       const snapshot = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
       const processes = await residentProcesses(snapshot.processInfo, macosSampler, windowsSampler, hostSamples).catch(error => {
-        samplerFailure = String(error); throw error
+        samplerFailure ??= String(error); throw error
       })
       const [js, browserState] = await Promise.all([
         pageCdp.send("Runtime.getHeapUsage"),

@@ -40,11 +40,12 @@ export function windowsProcessMemory(cacheDir: string) {
   const startedEpoch = Date.now()
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", filename], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
   let next = 0, text = "", stderr = "", closed = false
+  let terminalError: Error | undefined
   const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
   const fail = (error: Error) => { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(error) }; pending.clear() }
   child.stderr.on("data", value => { stderr = (stderr + value).slice(-2048) })
-  child.on("error", fail)
-  child.on("exit", () => { closed = true; fail(new Error(`Numeric-PID telemetry exited: ${stderr}`)) })
+  child.on("error", error => { terminalError ??= error; fail(error) })
+  child.on("exit", (code, signal) => { closed = true; terminalError ??= new Error(`Numeric-PID telemetry exited (code=${code}, signal=${signal}): ${stderr}`); fail(terminalError) })
   child.stdout.on("data", value => {
     text += value
     while (text.includes("\n")) {
@@ -61,9 +62,10 @@ export function windowsProcessMemory(cacheDir: string) {
   return {
     receipt,
     read(ids: readonly number[]): Promise<any> {
-      if (closed || ids.length < 1 || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id < 1 || id > 0x7fffffff)) return Promise.reject(new Error("Invalid numeric-PID telemetry request"))
+      if (closed) return Promise.reject(terminalError ?? new Error("Numeric-PID telemetry closed"))
+      if (ids.length < 1 || ids.length > 64 || ids.some(id => !Number.isSafeInteger(id) || id < 1 || id > 0x7fffffff)) return Promise.reject(new Error("Invalid numeric-PID telemetry request"))
       return new Promise((resolve, reject) => {
-        const id = ++next, timer = setTimeout(() => { pending.delete(id); reject(new Error("Numeric-PID telemetry exceeded two seconds")); child.kill() }, 2000)
+        const id = ++next, timer = setTimeout(() => { pending.delete(id); terminalError ??= new Error("Numeric-PID telemetry exceeded two seconds"); reject(terminalError); child.kill() }, 2000)
         pending.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, ids }) + "\n")
       })
     },
