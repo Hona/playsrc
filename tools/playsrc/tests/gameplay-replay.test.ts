@@ -240,6 +240,16 @@ test("requested warm reload authenticates two distinct Worker journals and prese
     expect(() => bindReplayGeneration(manifest.generations[0].journal, { ...identity, mapGeneration: 2 }, identity.bsp)).toThrow("identity mismatch")
     expect(() => parseGameplayReplay(setup)).toThrow("incomplete")
     expect(parseGameplayReplay(setup, true, 0).complete).toBe(true)
+    const unclosed = await startGameplayReplayLifecycle(page as any, directory, "unclosed", true)
+    const predecessor = worker(setup); for (const fn of listeners) fn(predecessor)
+    await unclosed.beforeReload(identity)
+    for (const fn of listeners) fn(worker(full))
+    await expect(unclosed.ready()).rejects.toThrow("did not close")
+    const rejected = await unclosed.stop(identity)
+    expect(rejected.lifecycle.complete).toBe(false)
+    const incomplete = JSON.parse(await readFile(path.join(directory, rejected.lifecycle.file), "utf8"))
+    expect(incomplete.generations).toHaveLength(2)
+    expect(() => validateReplayLifecycle(incomplete)).toThrow("Incomplete replay lifecycle")
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
 

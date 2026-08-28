@@ -234,8 +234,10 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
       result = (async () => {
         const artifact = await retain(installed, complete, ordinal === 1 && warmReload ? 0 : 2)
         const manifest = { schema: "playsrc-gameplay-replay-lifecycle-v1", requestedWorkers: warmReload ? 2 : 1,
-          complete: complete && artifact.complete && generations.length === (warmReload ? 2 : 1), generations }
-        validateReplayLifecycle(manifest, false)
+          complete: complete && artifact.complete && generations.every(entry => entry.journal.complete)
+            && generations.length === (warmReload ? 2 : 1)
+            && (!previous || previous.owner() !== journal.owner() && previous.closedAt() !== null && previous.closedAt()! >= transitionAt!), generations }
+        validateReplayLifecycle(manifest, manifest.complete)
         const bytes = Buffer.from(JSON.stringify(manifest)), sha256 = createHash("sha256").update(bytes).digest("hex")
         const file = `${sha256}.replay-lifecycle.json`
         await writeFile(path.join(directory, file), bytes, { flag: "wx" })
