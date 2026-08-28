@@ -17,10 +17,14 @@ export async function auditEngineerMenus(page: Page, root: Locator, directory: s
     await page.screenshot({ path: file })
     const native = path.join(directory, `${label}-engineer-${menu}.desktop.png`)
     if (process.platform === "darwin" && spawnSync("screencapture", ["-x", native], { timeout: 5000 }).status !== 0) throw new Error("Engineer desktop capture failed")
-    menus.push({ menu, file, native, controls: await page.locator(".engineer-layer").evaluate(element => ({
+    const controls = await page.locator(".engineer-layer").evaluate(element => ({
       panels: element.querySelectorAll("[data-vgui-panel]").length, rasters: element.querySelectorAll("canvas[data-vgui-raster]").length,
       visibleText: (element as HTMLElement).innerText,
-    })) })
+    }))
+    menus.push({ menu, file, native, controls })
+    await retain()
+    expect(controls.panels).toBe(316)
+    expect(controls.rasters).toBe(62)
   }
   await retain()
   if (process.env.PROFILE_ENGINEER_BINDING_AUDIT !== "1") return
