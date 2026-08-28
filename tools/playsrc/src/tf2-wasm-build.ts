@@ -118,14 +118,21 @@ export async function restoreThreadedBuild(config: Pick<LocalConfig, "sourceCach
   return path.join(output, "tf2_wasm_bg.wasm")
 }
 
+export async function resolveCargoExecutable(cargo: string, environment: Record<string, string | undefined>): Promise<string> {
+  // Configured toolchains already name an exact file. Do not ask a PATH/PATHEXT
+  // search to rediscover it (Windows SSH and interactive shells differ there).
+  const executable = path.isAbsolute(cargo) ? cargo : Bun.which(cargo, { PATH: environment.PATH ?? environment.Path })
+  if (!executable || !(await stat(executable).catch(() => null))?.isFile()) throw new Tf2WasmBuildError("The pinned Cargo executable is unavailable")
+  return executable
+}
+
 export async function buildThreadedTf2Wasm(
   cargo: string,
   wasmBindgen: string,
   environment: Record<string, string | undefined>,
 ): Promise<string> {
   const buildEnvironment = { ...process.env, ...environment }
-  const executable = Bun.which(cargo, { PATH: buildEnvironment.PATH })
-  if (!executable) throw new Tf2WasmBuildError("The pinned Cargo executable is unavailable")
+  const executable = await resolveCargoExecutable(cargo, buildEnvironment)
   const rustc = path.join(path.dirname(executable), process.platform === "win32" ? "rustc.exe" : "rustc")
   const compiler = Bun.spawn([rustc, `+${toolchains.rust.threadedToolchain}`, "--print", "sysroot"], {
     cwd: repositoryRoot, env: buildEnvironment, stdout: "pipe", stderr: "inherit",

@@ -67,6 +67,7 @@ ordinary profiler evidence stays in its normal configured cache directory.
 Exit failures and source/configuration changes fail the job. Overlapping runs
 in one checkout are rejected. A forcibly interrupted job leaves its `running`
 marker for inspection; do not remove it until its processes have stopped.
-The session bridge removes its own task on normal completion; a forced task
+The next status read removes the recorded completed task from the launching
+account; the deliberately unelevated task does not unregister itself. A forced
 termination may require removing that exact returned task name after inspection.
 Do not delete another job's task, locks, browser profiles or user processes.

@@ -30,7 +30,12 @@ if ($Action -ne 'Run') {
     }
   } else {
     $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*")) } | Select-Object ProcessId,ParentProcessId,Name)
-    @{job=$Job;task=$taskState;running=(Test-Path (Join-Path $directory 'running'));processes=$processes;log=$latest.FullName;result=$result} | ConvertTo-Json -Depth 8 -Compress
+    $running = Test-Path (Join-Path $directory 'running')
+    # Retire from the launching account, not the deliberately unelevated task.
+    # Never remove a queued/running task or another job's recorded task name.
+    if ($taskState -and $taskState.State -eq 'Ready' -and !$running -and !$processes.Count) { Unregister-ScheduledTask -TaskName $Task -Confirm:$false }
+    $summary = if ($result) { $result | Select-Object commit,outcome,startedAt,finishedAt,run } else { $null }
+    @{job=$Job;task=$taskState;running=$running;processes=$processes;log=$latest.FullName;result=$summary} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
 }
@@ -40,7 +45,7 @@ $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
-$command = "`$ErrorActionPreference='Stop'; try { Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --ready profile $(Quote $Profile) *> $(Quote $log); exit `$LASTEXITCODE } finally { Unregister-ScheduledTask -TaskName $(Quote $name) -Confirm:`$false }"
+$command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --ready profile $(Quote $Profile) *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
