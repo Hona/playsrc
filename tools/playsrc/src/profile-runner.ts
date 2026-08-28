@@ -246,11 +246,13 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
   const token = randomUUID()
   await writeLease(metadataPath, token, MAX_RUN_MILLISECONDS)
   const logPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", `profile-owner-${token}.log`)
+  console.error(`[performance] development build log=${logPath}`)
   const log = openSync(logPath, "a")
   const child = spawn(process.execPath, [path.join(repositoryRoot, "tools", "playsrc", "src", "profile-owner.ts"), target], {
     cwd: repositoryRoot,
     env: { ...process.env, PLAYSRC_PROFILE_SOURCE_IDENTITY: identity, PLAYSRC_PROFILE_OWNER_TOKEN: token, PLAYSRC_PROFILE_OWNER_PATH: metadataPath },
-    detached: true,
+    detached: process.platform !== "win32",
+    windowsHide: true,
     stdio: ["ignore", log, log],
   })
   closeSync(log)
@@ -401,7 +403,8 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     ]
     child = spawn(command[0]!, command.slice(1), {
       cwd: repositoryRoot,
-      detached: true,
+      detached: process.platform !== "win32",
+      windowsHide: true,
       env: {
         ...process.env,
         ...environment,
