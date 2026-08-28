@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Build','BuildStage','Status','Result','Logs','Doctor','Wait','Artifacts')][string]$Action = 'Run',
+  [ValidateSet('Run','Build','BuildStage','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Grep = '',
@@ -38,7 +38,7 @@ if ($Action -eq 'Doctor') {
   exit $LASTEXITCODE
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
-  $tasks = if ($Action -eq 'Status') { @(Get-ScheduledTask -TaskName 'playsrc-local-job-*' -ErrorAction SilentlyContinue) } else { @() }
+  $tasks = if ($Action -in 'Status','Recover') { @(Get-ScheduledTask -TaskName 'playsrc-local-job-*' -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
   $launchFile = $null
   $launchText = $null
@@ -95,6 +95,13 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   } else {
     $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job))) } | Select-Object ProcessId,ParentProcessId,Name)
     $running = Test-Path (Join-Path $directory 'running')
+    if ($Action -eq 'Recover') {
+      if (!$Task -or !$selectedTask -or $selectedTask.State -ne 'Ready' -or !$taskInfo.LastTaskResult -or $processes.Count -or !$running -or $result) { throw 'Recovery requires this recorded failed task, no live job processes, and no completed result' }
+      $record = @{task=$Task;taskInfo=$taskInfo;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();runningRecord=(Get-Content -Raw (Join-Path $directory 'running'));outcome='interrupted-before-result'}
+      $record | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $directory "$Task-recovery.json")
+      Remove-Item -LiteralPath (Join-Path $directory 'running')
+      $running = $false
+    }
     # Retire from the launching account, not the deliberately unelevated task.
     # Never remove a queued/running task or another job's recorded task name.
     if (!$running -and !$processes.Count) {

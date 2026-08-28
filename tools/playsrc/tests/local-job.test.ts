@@ -11,6 +11,19 @@ test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", as
   await expect(resolveCargoExecutable(path.join(path.dirname(process.execPath), "missing-pinned-cargo.exe"), process.env)).rejects.toThrow("pinned Cargo")
 })
 
+test("Playwright config arguments reach a Bun script without becoming Bun configuration", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-args-"))
+  try {
+    const script = path.join(directory, "probe.ts"), configuration = path.join(directory, "playwright.config.ts")
+    await writeFile(configuration, "export default {}")
+    await writeFile(script, 'console.log("entered");const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:()=>new Response(null)});await server.stop(true);console.log(JSON.stringify(process.argv.slice(2)))')
+    const child = Bun.spawn([process.execPath, script, `--config=${configuration}`, "--project=ordinary"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+    const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect({ exit, error }).toEqual({ exit: 0, error: "" })
+    expect(output).toContain(JSON.stringify([`--config=${configuration}`, "--project=ordinary"]))
+  } finally { await rm(directory, { recursive: true, force: true }) }
+}, 10_000)
+
 test("both development ports can be rebound immediately by a separate native Bun process", async () => {
   for (let attempt = 0; attempt < 8; attempt++) {
     const port = await availableDevelopmentPort()
