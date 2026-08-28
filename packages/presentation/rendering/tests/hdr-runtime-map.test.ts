@@ -7,6 +7,25 @@ import {
 import { hdrFixture } from "./hdr-fixture"
 
 describe("schema-7 HDR runtime map", () => {
+  test("retains an authored UnlitGeneric base-texture sky in an HDR world", async () => {
+    const fixture=hdrFixture()
+    fixture.bytes[fixture.profileReservedOffset-3]=2
+    fixture.bytes[fixture.profileReservedOffset-1]=0
+    const map=parseRuntimeMap(fixture.bytes)
+    await validateRuntimeMapHashes(map)
+    if(map.lighting.profile!=="hdr")throw new Error("expected HDR")
+    expect(map.lighting.descriptor.profileMaterials[0]).toMatchObject({shader:2,textureRole:0})
+    for(const role of [6,255]){
+      const invalid=fixture.bytes.slice();invalid[fixture.profileReservedOffset-1]=role
+      expect(()=>parseRuntimeMap(invalid)).toThrow("profile material")
+    }
+    const start=fixture.profileReservedOffset-3-4-new TextEncoder().encode("materials/skybox/test_hdrrt.vmt").byteLength
+    const end=fixture.profileTextureHashOffset+32+4+80
+    const duplicate=new Uint8Array(fixture.bytes.length+end-start)
+    duplicate.set(fixture.bytes.subarray(0,end));duplicate.set(fixture.bytes.subarray(start,end),end);duplicate.set(fixture.bytes.subarray(end),end+end-start)
+    new DataView(duplicate.buffer).setUint32(start-4,2,true)
+    expect(()=>parseRuntimeMap(duplicate)).toThrow("profile material")
+  })
   test("validates the complete descriptor and preserves raw radiance above one", async () => {
     const map = parseRuntimeMap(hdrFixture().bytes)
     await validateRuntimeMapHashes(map)
