@@ -11,6 +11,8 @@ use playsrc_nav::{Area, Direction, Mesh, PathScratch};
 mod control_point;
 #[path = "bot_path.rs"]
 mod path;
+#[path = "bot_locomotion.rs"]
+mod locomotion;
 
 use crate::{
     GameplayWorld, MovementModifiers, MovementPolicy, PlayerClass, PlayerLifecycle, PlayerTeam,
@@ -586,6 +588,8 @@ struct Bot {
     path_crossings: Arc<Vec<path::Crossing>>,
     nav_area_mark: Option<[f32; 3]>,
     avoid_at: f32,
+    locomotion_command: MoveCommand,
+    stuck: locomotion::Monitor,
     goal: [f32; 3],
     point_action: control_point::Action,
     loadout: BTreeMap<Weapon, WeaponRuntime>,
@@ -608,6 +612,7 @@ struct Bot {
 
 #[derive(Clone, Debug)]
 pub struct BotWorld {
+    scheduler: locomotion::Scheduler,
     mesh: Arc<Mesh>,
     spawns: [Vec<Spawn>; 2],
     scenario: Scenario,
@@ -636,6 +641,7 @@ pub enum Error {
     Limit,
     Movement(playsrc_movement::Error),
     Damage,
+    InvalidWorkClock,
 }
 
 impl BotWorld {
@@ -761,6 +767,7 @@ impl BotWorld {
             navigation_recompute_at: None,
             had_bots: false,
             bots: BTreeMap::new(),
+            scheduler: locomotion::Scheduler::default(),
             next_identity: crate::PLAYER_IDENTITY + 1,
             next_name: None,
             tick_interval,
@@ -945,6 +952,7 @@ impl BotWorld {
                 tick,
                 self.tick_interval,
             );
+            self.scheduler.reset(bot.identity);
         }
         Ok(())
     }
@@ -1291,6 +1299,8 @@ impl BotWorld {
                     path_crossings: Arc::default(),
                     nav_area_mark: None,
                     avoid_at: 0.0,
+                    locomotion_command: MoveCommand::default(),
+                    stuck: locomotion::Monitor::default(),
                     goal,
                     point_action: control_point::Action::default(),
                     loadout,
@@ -1343,6 +1353,7 @@ impl BotWorld {
         let mut supply_cache = SupplyCache::default();
         let mut activities = Vec::<ActivityEvent>::new();
         let mut ammo = Vec::<AmmoEvent>::new();
+        self.scheduler.prepare(tick,self.tick_interval,self.bots.values().map(|bot|(bot.identity,bot.lifecycle==PlayerLifecycle::Active)));
         let mesh = &self.mesh;
         let scenario = &mut self.scenario;
         let spawns = &self.spawns;
@@ -1359,10 +1370,14 @@ impl BotWorld {
                         )
                         .map_err(|_| Error::Limit)? as usize };
                     respawn_bot(bot, candidates[choice], mesh, tick, self.tick_interval);
+                    self.scheduler.reset(bot.identity);
                 }
                 continue;
             }
-            let maintenance_due = tick >= bot.next_target_tick;
+            let think_due=self.scheduler.begin(bot.identity,tick);
+            let think_started=if think_due{world.bot_update_milliseconds()/1000.0}else{0.0};
+            if !think_started.is_finite()||think_started<0.0{return Err(Error::InvalidWorkClock);}
+            let maintenance_due = think_due&&tick >= bot.next_target_tick;
             if maintenance_due {
                 bot.next_target_tick = tick + ticks(TARGET_SELECTION_INTERVAL, self.tick_interval);
                 let mut visible = [None; MAX_BOTS + 1];
@@ -1397,6 +1412,12 @@ impl BotWorld {
             let threat = bot
                 .target
                 .and_then(|identity| actors.get(identity).filter(|actor| actor.alive));
+            let mut policy = bot_movement_policy(bot);
+            if let Some(winner) = self.round_winner.filter(|team| team.is_gameplay()) { policy.maximum_speed *= if winner == bot.team { 1.1 } else { 0.9 }; }
+            if think_due {
+            let stuck_event=bot.stuck.update(now,bot.movement.position,policy.maximum_speed);
+            let stuck_left=stuck_event.then(||random.random_int(0,100).expect("bounded stuck side")<50);
+            if stuck_event&&bot.objective==ObjectiveKind::CapturePoint{bot.next_repath_tick=0;bot.stuck.clear(now,bot.movement.position);}
             select_weapon(bot, threat, tick, self.tick_interval);
             let authoritative =
                 objectives.and_then(|o| o.flags).and_then(|world| world.bot_objective(bot.identity, bot.team));
@@ -1575,34 +1596,32 @@ impl BotWorld {
                 let toward = crate::sub(aim_point(world, bot, threat), bot_eye(bot));
                 bot.yaw_degrees = toward[1].atan2(toward[0]).to_degrees();
                 bot.pitch_degrees = (-toward[2]).atan2(toward[0].hypot(toward[1])).to_degrees();
-            } else if planar > 0.0 {
+            } else if planar > 0.0 && bot.movement.ground.is_some() {
+                // PathFollower only calls FaceTowards on the ground. Retaining
+                // the facing while airborne preserves a stuck-recovery jump.
                 bot.yaw_degrees = delta[1].atan2(delta[0]).to_degrees();
                 bot.pitch_degrees = 0.0;
             }
-            let mut policy = bot_movement_policy(bot);
-            if let Some(winner) = self.round_winner.filter(|team| team.is_gameplay()) { policy.maximum_speed *= if winner == bot.team { 1.1 } else { 0.9 }; }
             let should_move = planar > 5.0 && !(matches!(scenario, Scenario::ControlPoints { .. }) && objectives.is_some_and(|o| o.in_setup));
+            if should_move{bot.stuck.request_move(now);}
             let move_yaw = if planar > 0.0 {
                 delta[1].atan2(delta[0])
             } else {
                 bot.yaw_degrees.to_radians()
             };
             let relative = move_yaw - bot.yaw_degrees.to_radians();
-            let (forward, side) = bot.movement_stuns.command(now,
-                if should_move { policy.maximum_speed * relative.cos() } else { 0.0 },
-                if should_move { policy.maximum_speed * relative.sin() } else { 0.0 });
+            let (forward,side)=locomotion::approach(relative,should_move,stuck_left,policy.maximum_speed);
+            bot.locomotion_command=MoveCommand{forward,side,yaw_degrees:bot.yaw_degrees,jump:stuck_event||bot.crossing.as_ref().is_none_or(|crossing|crossing.drop_position.is_none())&&jump_height>=STEP_HEIGHT&&jump_height<MAX_JUMP_HEIGHT,crouch:false};
+            if !self.scheduler.finish(world.bot_update_milliseconds()/1000.0-think_started){return Err(Error::InvalidWorkClock);}
+            }
+            let mut command=bot.locomotion_command;
+            (command.forward,command.side)=bot.movement_stuns.command(now,command.forward,command.side);
             let movement = step(
                 world,
                 bot.movement,
                 StepInput {
                     command_number: u32::try_from(tick).unwrap_or(u32::MAX),
-                    command: MoveCommand {
-                        forward,
-                        side,
-                        yaw_degrees: bot.yaw_degrees,
-                        jump: bot.crossing.as_ref().is_none_or(|crossing| crossing.drop_position.is_none()) && jump_height >= STEP_HEIGHT && jump_height < MAX_JUMP_HEIGHT,
-                        crouch: false,
-                    },
+                    command,
                     pitch_degrees: bot.pitch_degrees,
                     up: 0.0,
                     speed_button: false,
@@ -1988,6 +2007,7 @@ impl BotWorld {
         bot.path_crossings = Arc::default();
         bot.nav_area_mark = None;
         bot.avoid_at = 0.0;
+        bot.locomotion_command=MoveCommand::default();bot.stuck=locomotion::Monitor::default();
         bot.next_repath_tick = 0;
         Ok(())
     }
@@ -2076,7 +2096,7 @@ impl BotWorld {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn navigation_diagnostics(&self) -> Vec<String> {
-        self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
+        self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.identity,a.northwest,a.southeast,a.northeast_z,a.southwest_z,a.attributes,a.game_attributes,&a.connections)).collect::<Vec<_>>())).collect()
     }
     pub(crate) fn position(&self, identity: u32) -> Option<[f32; 3]> { self.bots.get(&identity).map(|bot| bot.movement.position) }
     pub(crate) fn take_health(&mut self, identity: u32, amount: f32, multiplier: f32) -> Result<i32, Error> {
@@ -3088,6 +3108,7 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
     bot.path_crossings = Arc::default();
     bot.nav_area_mark = None;
     bot.avoid_at = 0.0;
+    bot.locomotion_command=MoveCommand::default();bot.stuck=locomotion::Monitor::default();
     apply_bot_equipment(bot);
     bot.health.current = bot.health.maximum;
     bot.ammo = bot_maximum_ammo(bot);
@@ -3431,11 +3452,46 @@ mod tests {
     use playsrc_movement::{Error as MoveError, Trace, Tracer};
 
     #[test]
+    fn stuck_buttons_survive_between_behavior_updates_while_physics_advances_every_tick(){
+        let mut world=BotWorld::new(fixture_mesh(),&fixture_graph(),&Floor,0.015,None).unwrap();
+        let mut random=UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request{operation:Operation::Add,count:1,class:Some(PlayerClass::Scout),team:Some(PlayerTeam::Red),difficulty:Difficulty::Normal},PlayerTeam::Blue,PlayerClass::Soldier,&mut random).unwrap();
+        let bot=world.bots.values_mut().next().unwrap();
+        bot.stuck.clear(-5.0,bot.movement.position);bot.stuck.request_move(0.0);
+        world.advance(&Floor,0,human_far(),&[],&mut random,None).unwrap();
+        let bot=world.bots.values().next().unwrap();let command=bot.locomotion_command;
+        assert!(command.jump);assert_ne!(command.side,0.0);assert_eq!(world.scheduler.last_update(bot.identity),0);
+        let mut position=bot.movement.position;
+        for tick in 1..7{
+            world.advance(&Floor,tick,human_far(),&[],&mut random,None).unwrap();
+            let bot=world.bots.values().next().unwrap();
+            assert_eq!(bot.locomotion_command,command);assert_eq!(world.scheduler.last_update(bot.identity),0);
+            assert_ne!(bot.movement.position,position,"movement still runs on every 15ms tick");position=bot.movement.position;
+        }
+        world.advance(&Floor,7,human_far(),&[],&mut random,None).unwrap();
+        assert_eq!(world.scheduler.last_update(world.bots.values().next().unwrap().identity),7);
+    }
+
+    #[test]
+    fn path_facing_does_not_snap_an_airborne_bot_toward_its_waypoint(){
+        let mut world=BotWorld::new(fixture_mesh(),&fixture_graph(),&Floor,0.015,None).unwrap();
+        let mut random=UniformRandomStream::from_seed(7).unwrap();
+        world.apply(Request{operation:Operation::Add,count:1,class:Some(PlayerClass::Scout),team:Some(PlayerTeam::Blue),difficulty:Difficulty::Normal},PlayerTeam::Red,PlayerClass::Soldier,&mut random).unwrap();
+        let bot=world.bots.values_mut().next().unwrap();
+        bot.movement.position[2]=100.0;bot.movement.ground=None;bot.yaw_degrees=90.0;
+        world.advance(&Floor,0,human_far(),&[],&mut random,None).unwrap();
+        let bot=world.bots.values().next().unwrap();
+        assert!(bot.movement.ground.is_none());assert_eq!(bot.yaw_degrees,90.0);
+        assert_eq!(bot.locomotion_command.yaw_degrees,90.0);
+    }
+
+    #[test]
     fn drop_crossings_trace_the_full_hull_beyond_the_ledge_and_wait_for_landing() {
         struct Ledge(std::cell::RefCell<Vec<f32>>);
         impl Tracer for Ledge {
             fn trace(&self, start:[f32;3], end:[f32;3], hull:Hull, mask:u32)->Result<Trace,MoveError> {
                 if hull.mins[2] == STEP_HEIGHT {
+                    assert_eq!(hull.mins[0],-26.5,"Path::ComputePathDetails inflates the player's hull width by five units");
                     self.0.borrow_mut().push(start[0]);
                     if start[0] + hull.mins[0] < 100.0 {
                         return Ok(Trace { fraction:0.0,start_solid:true,all_solid:false,end:start,normal:None,hit:Some(0),contents:1 });
@@ -3460,6 +3516,17 @@ mod tests {
         assert_eq!(crossing.drop_position,None);
         assert!(crossing.reached([124.0,50.0,400.0]));
         assert!(!crossing.reached([125.0,50.0,200.0]));
+    }
+
+    #[test]
+    fn path_details_start_at_area_center_when_last_known_area_does_not_contain_feet(){
+        let mesh=fixture_mesh();
+        for feet in [[50.0,-100.0,0.0],[50.0,80.0,-50.0]]{
+            let crossings=path::compute(&Floor,&mesh,&[1,2],feet,PlayerClass::Scout).unwrap();
+            assert_eq!(crossings[0].position,[100.0,50.0,0.0]);
+        }
+        let crossings=path::compute(&Floor,&mesh,&[1,2],[50.0,80.0,0.0],PlayerClass::Scout).unwrap();
+        assert_eq!(crossings[0].position,[100.0,75.0,0.0]);
     }
 
     #[derive(Clone)]
@@ -4741,6 +4808,8 @@ mod tests {
         world
             .advance(&Floor, 1, human_far(), &supplies, &mut random, None)
             .unwrap();
+        assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetHealth);
+        for tick in 2..=7 { world.advance(&Floor,tick,human_far(),&supplies,&mut random,None).unwrap(); }
         assert_eq!(world.snapshots()[0].objective, ObjectiveKind::GetAmmo);
         let ammo = crate::pickup::map_pickup_definition(b"item_ammopack_small").unwrap();
         assert!(world.grant_pickup(2, ammo).unwrap() >= 4);

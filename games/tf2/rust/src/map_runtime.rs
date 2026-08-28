@@ -60,6 +60,9 @@ pub struct CombatPlayerFacts {
 }
 
 pub trait GameplayWorld: Tracer {
+    /// Host monotonic work clock for NextBot's frame budget. Deterministic
+    /// fixture worlds report zero work; runtime adapters supply real elapsed time.
+    fn bot_update_milliseconds(&self)->f64{0.0}
     fn has_player_hitbox_models(&self) -> bool { false }
 
     fn pose_player_hitboxes(&self, _actors: &[crate::PlayerHitboxPose], _tick: u64, _interval: f32) -> Result<Vec<crate::PosedPlayerHitbox>, MoveError> {

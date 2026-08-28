@@ -22,14 +22,23 @@ export function validateReplayMutation(kind: number, data: Buffer) {
   }
   if (!valid) throw new Error("Invalid gameplay mutation")
 }
+export function replayTickCommand(data:Buffer,version:number):Buffer{
+  if(![2,3,4].includes(version))throw new Error("Unknown replay command version")
+  const offset=version===4?56:52;return data.subarray(offset,offset+data.readUInt32LE(48))
+}
+export function replayWorkClockBytes(records:readonly ReplayRecord[],version:number):Buffer{
+  if(version!==4)throw new Error("Replay does not contain work-clock inputs")
+  return Buffer.concat(records.filter(record=>record.kind===2).map(record=>record.bytes.subarray(56+record.bytes.readUInt32LE(48))))
+}
 export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expectedMarks: 0 | 2 = 2) {
-  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || ![2, 3].includes(bytes.readUInt32LE(4))
+  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || ![2,3,4].includes(bytes.readUInt32LE(4))
     || bytes.readBigUInt64LE(72) !== 0n || bytes.readBigUInt64LE(80) !== 1n) throw new Error("Replay initial checkpoint is invalid")
-  const version = bytes.readUInt32LE(4), headerBytes = version === 3 ? 780 : 88
-  if (bytes.length < headerBytes || (version === 3 && !bytes.subarray(88, 96).equals(Buffer.from("TFEQ\x01\0\0\0")))) throw new Error("Replay equipment checkpoint is invalid")
-  const initialEquipment = version === 3 ? bytes.subarray(88, headerBytes) : undefined
+  const version = bytes.readUInt32LE(4), headerBytes = version >= 3 ? 780 : 88
+  if (bytes.length < headerBytes || (version >= 3 && !bytes.subarray(88, 96).equals(Buffer.from("TFEQ\x01\0\0\0")))) throw new Error("Replay equipment checkpoint is invalid")
+  const initialEquipment = version >= 3 ? bytes.subarray(88, headerBytes) : undefined
   const records: ReplayRecord[] = []
   let at = headerBytes, observing = false, complete = false, tick = -1n, marks = 0
+  let lastClock=0
   while (at < bytes.length) {
     if (at + 8 > bytes.length) { if (!requireComplete) break; throw new Error("Partial replay record") }
     const length = bytes.readUInt32LE(at), kind = bytes.readUInt32LE(at + 4)
@@ -44,7 +53,11 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expec
       if (observing || data.length < 108 || data.readUInt32LE(20) + 24 !== data.length || !Number.isFinite(data.readDoubleLE(0)) || data.readUInt32LE(8) > 1) throw new Error("Invalid admitted observe command")
       observing = true
     } else if (kind === 2) {
-      if (!observing || data.length < 136 || data.readUInt32LE(48) + 52 !== data.length || data.readBigUInt64LE(0) <= tick) throw new Error("Invalid authoritative tick order")
+      const commandOffset=version===4?56:52
+      if (!observing || data.length < commandOffset+84 || data.readUInt32LE(48)<84 || data.readBigUInt64LE(0) <= tick) throw new Error("Invalid authoritative tick order")
+      const clocks=version===4?data.readUInt32LE(52):0
+      if(clocks>4096||data.readUInt32LE(48)+commandOffset+clocks*8!==data.length)throw new Error("Invalid authoritative tick order")
+      for(let offset=commandOffset+data.readUInt32LE(48);offset<data.length;offset+=8){const value=data.readDoubleLE(offset);if(!Number.isFinite(value)||value<lastClock)throw new Error("Invalid replay work clock");lastClock=value}
       tick = data.readBigUInt64LE(0)
     } else if (kind === 3) {
       if (!observing || data.length !== 32) throw new Error("Invalid observe publication")

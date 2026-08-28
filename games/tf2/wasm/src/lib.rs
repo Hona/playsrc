@@ -379,6 +379,13 @@ impl playsrc_movement::Tracer for SharedWorld {
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn bot_update_milliseconds(&self)->f64{
+        #[cfg(target_arch="wasm32")]
+        let actual=unsafe{monotonic_milliseconds()};
+        #[cfg(not(target_arch="wasm32"))]
+        let actual={static ORIGIN:OnceLock<std::time::Instant>=OnceLock::new();ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()*1000.0};
+        gameplay_replay::work_clock(actual)
+    }
     fn has_player_hitbox_models(&self) -> bool { true }
 
     fn pose_player_hitboxes(&self, actors: &[playsrc_tf2::PlayerHitboxPose], tick: u64, interval: f32) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, playsrc_movement::Error> {
@@ -1734,7 +1741,7 @@ pub struct CompiledArtifact {
 /// Bounded native acceptance through the same compiled-map transaction used by
 /// the browser. This does not replace headed presentation or timing evidence.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
+pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], crossing:Option<(u32,u32)>, mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
     let section = ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let hash: [u8; 32] = Sha256::digest(resources).into();
     let handle = unsafe { playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, hash.as_ptr(), 1) };
@@ -1747,11 +1754,25 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         command[4..8].copy_from_slice(&9_u32.to_le_bytes());
         command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
         command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
-        command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
+        let bot_add_tick=std::env::var("PLAYSRC_NATIVE_BOT_ADD_TICK").ok().map(|value|value.parse::<u32>().map_err(|_|"invalid bot command tick")).transpose()?.unwrap_or(1);
+        if !(1..=4096).contains(&bot_add_tick){return Err("bot command tick outside fixture bound".into());}
         let mut budget_ticks=12_000_u32;
         let mut advanced=0;
+        let mut entered=std::collections::BTreeSet::new();
+        let trace_range=std::env::var("PLAYSRC_NATIVE_MATCH_TRACE_RANGE").ok().map(|value|{
+            let (start,end)=value.split_once(':').ok_or("invalid trace range")?;
+            let start=start.parse::<u32>().map_err(|_|"invalid trace start")?;
+            let end=end.parse::<u32>().map_err(|_|"invalid trace end")?;
+            if start>=end||end-start>512{return Err("invalid trace bounds");}Ok((start,end))
+        }).transpose()?;
         while advanced<budget_ticks {
-            let steps=if advanced==0 {1}else{64.min(budget_ticks-advanced)};
+            let mut steps=if advanced==0 {1}else{64.min(budget_ticks-advanced)};
+            if crossing.is_some(){steps=1;}
+            if advanced+1==bot_add_tick{steps=1;command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());}
+            else if advanced+1<bot_add_tick{steps=steps.min(bot_add_tick-1-advanced);}
+            if let Some((start,end))=trace_range{
+                if advanced<start{steps=steps.min(start-advanced);}else if advanced<end{steps=1;}
+            }
             if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), steps) } == 0 {
                 let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").clone();
                 return Err(format!("gameplay transaction failed: {}{detail}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
@@ -1766,8 +1787,16 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
                 budget_ticks+=(seconds/0.015).ceil() as u32;
             }
             advanced+=steps;
-            observe(snapshot);
-            if snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
+            if let Some((from,to))=crossing{
+                if snapshot.round.state==playsrc_tf2::round::State::Running&&!snapshot.round.in_setup&&!snapshot.round.waiting_for_players{
+                    for bot in &snapshot.bots{
+                        if bot.area==Some(from){entered.insert(bot.identity);}
+                        if bot.area==Some(to)&&entered.contains(&bot.identity){observe(snapshot);return Ok(());}
+                    }
+                }else{entered.clear();}
+            }
+            if crossing.is_none()||advanced%64==0{observe(snapshot);}
+            if crossing.is_none()&&snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
         }
         let values = slots().lock().expect("TF2 slots");
         let paths = values[index].session.as_ref().and_then(|session| session.bot_world()).map_or_else(Vec::new, |bots|bots.navigation_diagnostics());
@@ -5278,7 +5307,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify one complete version-4 gameplay transaction in this module's memory.
+/// `pointer` must identify one complete version-9 gameplay transaction in this module's memory.
 pub unsafe extern "C" fn playsrc_game_advance(
     handle: u32,
     pointer: *const u8,
@@ -5318,6 +5347,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let Some(session) = slot.session.as_ref() else {
         fail!(6);
     };
+    let _game_scope=gameplay_replay::game_scope(handle);
     playsrc_tf2::admission_metrics::begin_tick(session.tick());
     playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::TRANSACTION, 0);
     let mut candidate = session.clone();
@@ -5694,6 +5724,25 @@ pub unsafe extern "C" fn playsrc_game_advance(
     slot.error = 0;
     collision_transaction.committed = true;
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_game_advance_error() -> u32 {
+    GAME_ADVANCE_ERROR.load(Ordering::Relaxed)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_game_advance_error_length()->usize{
+    GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").len()
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify `capacity` writable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_game_advance_error_copy(pointer:*mut u8,capacity:usize)->usize{
+    let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail");
+    if pointer.is_null()||capacity<detail.len(){return 0;}
+    unsafe{std::ptr::copy_nonoverlapping(detail.as_ptr(),pointer,detail.len());}detail.len()
 }
 
 fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {

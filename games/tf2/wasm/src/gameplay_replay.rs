@@ -16,6 +16,53 @@ pub(super) enum Mutation {
     EntityInput = 10,
 }
 static ACTIVE: AtomicU32 = AtomicU32::new(0);
+static CURRENT_GAME: AtomicU32 = AtomicU32::new(0);
+static CLOCK_OWNER: AtomicU32 = AtomicU32::new(0);
+
+struct ClockInput { handle:u32, values:Vec<f64>, cursor:usize }
+fn clock_input()->&'static Mutex<Option<ClockInput>>{
+    static VALUE:OnceLock<Mutex<Option<ClockInput>>>=OnceLock::new();VALUE.get_or_init(||Mutex::new(None))
+}
+pub(super) struct GameScope(u32);
+pub(super) fn game_scope(handle:u32)->GameScope{GameScope(CURRENT_GAME.swap(handle,Ordering::Relaxed))}
+impl Drop for GameScope{fn drop(&mut self){CURRENT_GAME.store(self.0,Ordering::Relaxed);}}
+
+/// A replay supplies the recorded work-clock inputs, not a different simulation
+/// cadence or a synthetic performance measurement clock.
+pub(super) fn work_clock(actual:f64)->f64{
+    let handle=CURRENT_GAME.load(Ordering::Relaxed);
+    let value=if handle!=0&&CLOCK_OWNER.load(Ordering::Relaxed)==handle{
+        let mut input=clock_input().lock().expect("replay clock");
+        let input=input.as_mut().expect("replay clock owner");
+        let value=input.values.get(input.cursor).copied().unwrap_or(f64::NAN);
+        input.cursor=input.cursor.saturating_add(1);value
+    }else{actual};
+    if handle!=0&&ACTIVE.load(Ordering::Relaxed)==handle{
+        let mut entry=journal().lock().expect("gameplay replay");
+        if let Some(entry)=entry.as_mut().filter(|entry|entry.handle==handle&&entry.clock_collecting){
+            if entry.clock_samples.len()==4096||!value.is_finite()||value<0.0{entry.overflow=true;}
+            else{entry.clock_samples.push(value);}
+        }
+    }
+    value
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` identifies `length` readable bytes containing little-endian f64
+/// work-clock inputs from an authenticated replay. No caller view is retained.
+pub unsafe extern "C" fn playsrc_gameplay_replay_clock_input(handle:u32,pointer:*const u8,length:usize)->u32{
+    if pointer.is_null()||length>MAX_BYTES||length%8!=0||CLOCK_OWNER.load(Ordering::Relaxed)!=0
+        ||with(handle,|slot|slot.session.as_ref().is_some_and(|session|session.tick()==0)).unwrap_or(false)==false{return 0;}
+    let values=unsafe{std::slice::from_raw_parts(pointer,length)}.chunks_exact(8).map(|bytes|f64::from_le_bytes(bytes.try_into().unwrap())).collect::<Vec<_>>();
+    if values.iter().any(|value|!value.is_finite()||*value<0.0)||values.windows(2).any(|pair|pair[1]<pair[0]){return 0;}
+    *clock_input().lock().expect("replay clock")=Some(ClockInput{handle,values,cursor:0});CLOCK_OWNER.store(handle,Ordering::Relaxed);1
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_gameplay_replay_clock_remaining(handle:u32)->u32{
+    clock_input().lock().expect("replay clock").as_ref().filter(|input|input.handle==handle)
+        .map_or(u32::MAX,|input|input.values.len().checked_sub(input.cursor).map_or(u32::MAX,|remaining|remaining as u32))
+}
 
 struct Journal {
     handle: u32,
@@ -24,6 +71,8 @@ struct Journal {
     overflow: bool,
     observing: bool,
     last_attack: Option<AttackAdmission>,
+    clock_samples:Vec<f64>,
+    clock_collecting:bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct AttackAdmission {
@@ -114,6 +163,7 @@ pub(super) fn published(handle: u32, output: &[u8]) {
 }
 pub(super) fn tick_started(handle: u32) -> Option<(RuntimeMetricsClock, u64)> {
     (ACTIVE.load(Ordering::Relaxed) == handle).then(|| {
+        if let Some(entry)=journal().lock().expect("gameplay replay").as_mut(){entry.clock_samples.clear();entry.clock_collecting=true;}
         let mut clock = RuntimeMetricsClock::new();
         let now = clock.monotonic_nanoseconds();
         (clock, now)
@@ -128,6 +178,8 @@ pub(super) fn tick(
 ) {
     if let Some((mut clock, started)) = started {
         let elapsed = clock.monotonic_nanoseconds().saturating_sub(started);
+        let samples=journal().lock().expect("gameplay replay").as_mut().map_or_else(Vec::new,|entry|{entry.clock_collecting=false;std::mem::take(&mut entry.clock_samples)});
+        let clock_bytes=samples.iter().flat_map(|value|value.to_le_bytes()).collect::<Vec<_>>();
         append_record(
             handle,
             2,
@@ -136,7 +188,9 @@ pub(super) fn tick(
                 &elapsed.to_le_bytes(),
                 &Sha256::digest(output),
                 &(command.len() as u32).to_le_bytes(),
+                &(samples.len() as u32).to_le_bytes(),
                 command,
+                &clock_bytes,
             ],
             attack_admission(host_tick, command, output),
         );
@@ -192,7 +246,7 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
         }
         let mut bytes = Vec::with_capacity(1024);
         bytes.extend_from_slice(b"PGRP");
-        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
         bytes.extend_from_slice(&slot.bsp_hash);
         bytes.extend_from_slice(&slot.collision.as_ref()?.identity);
         bytes.extend_from_slice(&0_u64.to_le_bytes());
@@ -212,6 +266,7 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
         overflow: false,
         observing: false,
         last_attack: None,
+        clock_samples:Vec::new(),clock_collecting:false,
     });
     ACTIVE.store(handle, Ordering::Relaxed);
     admission_metrics::begin();
@@ -282,6 +337,7 @@ pub unsafe extern "C" fn playsrc_gameplay_replay_copy(
     count
 }
 pub(super) fn dispose(handle: u32) {
+    if CLOCK_OWNER.load(Ordering::Relaxed)==handle{*clock_input().lock().expect("replay clock")=None;CLOCK_OWNER.store(0,Ordering::Relaxed);}
     if ACTIVE.load(Ordering::Relaxed) == handle {
         playsrc_gameplay_replay_stop(handle);
     }
@@ -318,6 +374,23 @@ pub extern "C" fn playsrc_collision_replay_counter(index: u32) -> f64 {
 
 #[cfg(test)]
 pub(super) mod tests {
+    #[test]
+    fn playback_clock_consumes_owned_inputs_without_replacing_the_metrics_clock(){
+        use super::*;
+        let _metrics=memory::TEST_METRICS.lock().expect("test metrics");
+        let _slots=slots().lock().expect("slots");
+        let handle=u32::MAX-1;
+        *clock_input().lock().unwrap()=Some(ClockInput{handle,values:vec![10.0,10.25,27.0],cursor:0});
+        CLOCK_OWNER.store(handle,Ordering::Relaxed);
+        {
+            let _scope=game_scope(handle);
+            assert_eq!(work_clock(900.0),10.0);assert_eq!(work_clock(1.0),10.25);
+            assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),1);
+            assert_eq!(work_clock(0.0),27.0);assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),0);
+            assert!(work_clock(800.0).is_nan());assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),u32::MAX);
+        }
+        assert_eq!(work_clock(42.0),42.0);dispose(handle);assert_eq!(CLOCK_OWNER.load(Ordering::Relaxed),0);
+    }
     use super::*;
 
     pub(crate) fn assert_mutations(handle: u32) {
@@ -410,7 +483,7 @@ pub(super) mod tests {
         assert_eq!(playsrc_gameplay_replay_stop(handle), 1);
         let value = journal().lock().unwrap();
         let bytes = &value.as_ref().unwrap().bytes;
-        assert_eq!(&bytes[..8], b"PGRP\x03\0\0\0");
+        assert_eq!(&bytes[..8], b"PGRP\x04\0\0\0");
         let mut offset = 780;
         let mut kinds = Vec::new();
         while offset < bytes.len() {
@@ -461,6 +534,7 @@ pub(super) mod tests {
                 overflow: false,
                 observing: false,
                 last_attack: None,
+                clock_samples:Vec::new(),clock_collecting:false,
             });
             ACTIVE.store(handle, Ordering::Relaxed);
         };
