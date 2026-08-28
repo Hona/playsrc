@@ -10,7 +10,7 @@ import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equip
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 })
 
 test("authored backpack native equip and browser restart persistence", async ({ page }) => {
-  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX === "1")
+  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX === "1" || process.env.PLAYSRC_EQUIPMENT_LIFECYCLE === "1")
   test.setTimeout(100_000)
   const local = await loadLocalConfig(), directory = path.join(local.sourceCacheDir, "profiles/equipment")
   await mkdir(directory, { recursive: true })
@@ -148,11 +148,11 @@ test("authored backpack native equip and browser restart persistence", async ({ 
 })
 
 test("twelve hitscan items admit their models, native firing and authored audio", async ({ page }) => {
-  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX !== "1")
+  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX !== "1" || process.env.PLAYSRC_EQUIPMENT_LIFECYCLE === "1")
   test.setTimeout(140_000)
   const subset = process.env.PLAYSRC_HITSCAN_ITEMS?.split(",").map(Number)
   const combat = process.env.PLAYSRC_HITSCAN_COMBAT === "1"
-  const directory = path.join((await loadLocalConfig()).sourceCacheDir, subset ? "profiles/equipment/hitscan-targeted" : "profiles/equipment/hitscan")
+  const directory = path.join((await loadLocalConfig()).sourceCacheDir, subset ? `profiles/equipment/hitscan-${subset.join("-")}` : "profiles/equipment/hitscan")
   await mkdir(directory, { recursive: true })
   const errors: string[] = [], records: unknown[] = []
   page.on("pageerror", error => { errors.push(error.message); console.error(error.message) })
@@ -317,4 +317,63 @@ test("twelve hitscan items admit their models, native firing and authored audio"
   }
   expect(errors).toEqual([])
   await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ platform: process.platform, requested, complete: true, records, errors }, null, 2))
+})
+
+test("remember active and last weapon settings survive real death and browser persistence", async ({ page }) => {
+  test.skip(process.env.PLAYSRC_EQUIPMENT_LIFECYCLE !== "1")
+  test.setTimeout(140_000)
+  const directory = path.join((await loadLocalConfig()).sourceCacheDir, "profiles/equipment/weapon-lifecycle")
+  await mkdir(directory, { recursive: true })
+  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureMelee: true } })
+  const main = page.locator("main"), records: unknown[] = []
+  const state = () => page.evaluate(() => (globalThis as any).__playsrcProfile.melee as { tick: string; weapon: number; health: number; lifecycle: number })
+  const command = async (text: string) => {
+    if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+    await page.locator("[aria-label='Console command']").fill(text); await page.keyboard.press("Enter")
+    if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  }
+  await page.goto("/", { waitUntil: "domcontentloaded" })
+  await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
+  await command("map pl_upward")
+  await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 45_000 })
+  await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+  await page.locator(".class-selection-layer [data-vgui-name='scout']").click()
+  await expect(main).toHaveAttribute("data-phase", "Ready")
+  await command("tf_bot_quota 0")
+  await expect.poll(() => page.evaluate(() => { const round = (globalThis as any).__playsrcProfile.round; return !round.waitingForPlayers && round.state === 4 }), { timeout: 40_000 }).toBe(true)
+  for (const remember of [false, true]) {
+    await command("nb_stop 1")
+    await command("tf_bot_kick all")
+    await command("tf_bot_add 1 heavy blue easy")
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.bots.length)).toBe(1)
+    const botName = await page.evaluate(() => (globalThis as any).__playsrcProfile.combat.scores.find((player: any) => player.identity !== 1).name)
+    await command(`tf_remember_activeweapon ${Number(remember)}`)
+    await command(`tf_remember_lastswitched ${Number(remember)}`)
+    await page.keyboard.press("Digit3")
+    await expect.poll(async () => (await state()).weapon).toBe(6)
+    await page.keyboard.press("Digit2")
+    await expect.poll(async () => (await state()).weapon).toBe(5)
+    await page.screenshot({ path: path.join(directory, `${remember}-before-death.png`) })
+    await command("setpos -2528 -1360 17")
+    await command(`bot_teleport "${botName}" -2480 -1360 17 0 180 0`)
+    await command("nb_stop 0")
+    await expect.poll(async () => (await state()).lifecycle, { timeout: 20_000, intervals: [50, 100] }).toBe(2)
+    const dead = await state()
+    await command("nb_stop 1")
+    await expect.poll(async () => (await state()).lifecycle, { timeout: 30_000 }).toBe(1)
+    expect((await state()).weapon).toBe(remember ? 5 : 4)
+    await page.screenshot({ path: path.join(directory, `${remember}-respawn.png`) })
+    await page.keyboard.press("KeyQ")
+    await expect.poll(async () => (await state()).weapon).toBe(remember ? 6 : 5)
+    records.push({ remember, dead, afterLastInv: await state() })
+  }
+  await page.reload({ waitUntil: "domcontentloaded" })
+  await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
+  await page.keyboard.press("Backquote")
+  for (const name of ["tf_remember_activeweapon", "tf_remember_lastswitched"]) {
+    await page.locator("[aria-label='Console command']").fill(name); await page.keyboard.press("Enter")
+    await expect(page.locator("[aria-label='Console output']")).toContainText(`"${name}" = "1"`)
+  }
+  await page.screenshot({ path: path.join(directory, "restored-preferences.png") })
+  await writeFile(path.join(directory, "lifecycle.json"), JSON.stringify({ records, persisted: true }, null, 2))
 })
