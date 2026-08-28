@@ -57,6 +57,7 @@ const PROFILES = Object.freeze({
   "cold-map": { config: "playwright.cold-map-profile.config.ts", target: "jump_beef" },
   "three-map-load": { config: "playwright.three-map-load.config.ts", target: "jump_beef" },
   "map-memory": { config: "playwright.map-memory-profile.config.ts", target: "jump_beef" },
+  "owned-browser-ui": { config: "playwright.owned-browser-ui.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 45_000 },
   "particle-alias-admission": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_TARGET: "pl_upward", PROFILE_MEMORY_LABEL: "particle-alias-admission", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_INPUT_DIAGNOSTIC: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "5" }, minimumRemainingMilliseconds: 100_000 },
   "lightmap-replacement": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "lightmap-replacement", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
   "lightmap-replacement-reference": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "lightmap-reference", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_LIGHTMAP_REFERENCE: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
