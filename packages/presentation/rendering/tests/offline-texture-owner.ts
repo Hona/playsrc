@@ -4,7 +4,12 @@ import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
 
 /** No browser or GPU. Expose the unchanged production owner solely in an
  * offline test bundle; replace only its native compilation/device boundary. */
-export async function loadOfflineTextureOwner() {
+let loadedOwner: ReturnType<typeof buildOfflineTextureOwner> | undefined
+export function loadOfflineTextureOwner() {
+  return loadedOwner ??= buildOfflineTextureOwner()
+}
+
+async function buildOfflineTextureOwner() {
   const config = await loadLocalConfig()
   const directory = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/texture-replacement/offline")
   await mkdir(directory, { recursive: true })
@@ -53,6 +58,7 @@ export async function loadOfflineTextureOwner() {
     plugins: [{ name: "offline-owner-access-only", setup(builder) {
       builder.onLoad({ filter: /\/rendering\/src\/index\.ts$/ }, () => ({ loader: "ts", contents: source.replace(declaration, addition) + `
         export { textureFromAuthored, textureFromAuthoredCubemap };
+        export { modelKey as offlineModelKey };
         export const OfflineThree = THREE;
         export { SharedTextureResidency, OwnedResourceGeneration };
         export { default as OfflineTextures } from "three/src/renderers/common/Textures.js";
