@@ -52,7 +52,7 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   const equal = (left: unknown, right: unknown, name: string) => {
     if (JSON.stringify(left) !== JSON.stringify(right)) throw new Error(`Delivery comparison ${name} differs`)
   }
-  if (ordinary.mode !== "ordinary" || traced.mode !== "traced") throw new Error("Expected ordinary/traced observations")
+  if (ordinary.mode !== "ordinary" || !["traced", "presentation"].includes(traced.mode)) throw new Error("Expected ordinary/traced or presentation observations")
   if (!/^[a-f0-9]{40}$/.test(ordinary.applicationCommit) || !/^[a-f0-9]{64}$/.test(ordinary.sourceFingerprint)) throw new Error("Missing comparison source identity")
   for (const [run, boundary] of [[ordinary, ordinaryBoundary], [traced, tracedBoundary]]) {
     equal(run.applicationCommit, boundary.applicationCommit, "boundary commit")
@@ -73,7 +73,7 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   }
   equal(configuration(ordinaryBoundary.configuration), configuration(tracedBoundary.configuration), "configuration/content/quality")
   equal(ordinaryBoundary.boundary.instrumentation, { app: false, frame: false }, "ordinary instrumentation")
-  equal(tracedBoundary.boundary.instrumentation, { app: true, frame: true }, "traced instrumentation")
+  equal(tracedBoundary.boundary.instrumentation, traced.mode === "presentation" ? { app: false, frame: false } : { app: true, frame: true }, "traced instrumentation")
   const roster = (value: string) => {
     const actors = value.split("|").map(bot => bot.split(":").slice(0, 3).join(":"))
     if (actors.length !== 15 || new Set(actors.map(actor => actor.split(":")[0])).size !== 15) throw new Error("Incomplete active bot roster")

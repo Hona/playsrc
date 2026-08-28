@@ -27,6 +27,9 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
       userAgent: "browser", storage: {}, state: { cameraPosition: "1,2,3", cameraYaw: "0" }, instrumentation: { app: false, frame: false } } }
   const traceBoundary = { ...boundary, boundary: { ...boundary.boundary, instrumentation: { app: true, frame: true } } }
   expect(compareDeliveryEvidence(ordinary, boundary, traced, traceBoundary).ordinary.completed.zeroBuckets).toBe(5)
+  const presentation = { ...traced, mode: "presentation" }
+  expect(compareDeliveryEvidence(ordinary, boundary, presentation, boundary).traced.completed.count).toBe(1)
+  expect(() => compareDeliveryEvidence(ordinary, boundary, presentation, traceBoundary)).toThrow("instrumentation")
   for (const changed of [
     { ...traceBoundary, applicationCommit: "c".repeat(40) },
     { ...traceBoundary, configuration: { ...traceBoundary.configuration, renderLevel: 1 } },
