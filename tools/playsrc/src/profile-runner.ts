@@ -110,12 +110,13 @@ type OwnerMetadata = Readonly<{
 
 type OwnerState = Readonly<{ metadata: OwnerMetadata; reused: boolean; milliseconds: number }>
 
-export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ profile: HeadedProfile; fresh: boolean; playwright: readonly string[] }> {
+export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ profile: HeadedProfile; fresh: boolean; freshBrowser?: true; playwright: readonly string[] }> {
   const [profile, ...options] = arguments_
   if (!profile || !Object.hasOwn(PROFILES, profile)) {
     throw new Error(`Usage: bun run profile:<${Object.keys(PROFILES).join("|")}> [--fresh] [Playwright options]`)
   }
   let fresh = false
+  let freshBrowser = false
   const playwright: string[] = []
   for (let index = 0; index < options.length; index++) {
     const option = options[index]!
@@ -126,10 +127,11 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
   }
   for (const option of options) {
     if (option === "--fresh") fresh = true
+    else if (option === "--fresh-browser") freshBrowser = true
     else if (option === "--headless") throw new Error("headed TF2 profiles never accept headless browser execution")
     else if (option !== "--headed") playwright.push(option)
   }
-  return Object.freeze({ profile: profile as HeadedProfile, fresh, playwright: Object.freeze(playwright) })
+  return Object.freeze({ profile: profile as HeadedProfile, fresh, ...(freshBrowser ? { freshBrowser: true as const } : {}), playwright: Object.freeze(playwright) })
 }
 
 async function writeLease(metadataPath: string, token: string, milliseconds: number): Promise<void> {
@@ -285,7 +287,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
 
 export async function runHeadedProfile(arguments_: readonly string[]): Promise<number> {
   const started = Date.now()
-  const { profile, fresh, playwright } = parseHeadedProfile(arguments_)
+  const { profile, fresh, freshBrowser, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()
   const config = await loadLocalConfig()
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
@@ -383,7 +385,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
         return { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) }
       })
       checkBrowserBudget()
-      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token))
+      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token, freshBrowser))
       browserOwnerMilliseconds = Date.now() - began
     }
     heartbeat = setInterval(() => {

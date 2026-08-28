@@ -62,7 +62,7 @@ export async function acquireBrowserRetirementLock(filename: string, token: stri
   finally { clearInterval(handoff) }
 }
 
-export async function prepareProfileBrowser(filename: string, launch: BrowserLaunch, remaining: () => number, lockToken?: string): Promise<BrowserOwner & { reused: boolean }> {
+export async function prepareProfileBrowser(filename: string, launch: BrowserLaunch, remaining: () => number, lockToken?: string, fresh = false): Promise<BrowserOwner & { reused: boolean }> {
   const identity = await browserLaunchIdentity(launch)
   let previous: BrowserOwner | undefined
   try { previous = JSON.parse(await readFile(filename, "utf8")) } catch (error) {
@@ -70,7 +70,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   }
   if (previous && processIsAlive(previous.pid)) {
     const lease = await optionalJson(`${filename}.lease`)
-    if (lease?.token === previous.token && lease.expiresAt > Date.now() + 1_000
+    if (!fresh && lease?.token === previous.token && lease.expiresAt > Date.now() + 1_000
       && previous.identity === identity && await fileFingerprint(previous.executable) === previous.executableSha256) {
       await browserLease(filename, previous.token, remaining())
       return { ...previous, reused: true }

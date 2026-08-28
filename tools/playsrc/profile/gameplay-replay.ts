@@ -21,7 +21,7 @@ export function validateReplayMutation(kind: number, data: Buffer) {
   }
   if (!valid) throw new Error("Invalid gameplay mutation")
 }
-export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
+export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expectedMarks: 0 | 2 = 2) {
   if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || ![2, 3].includes(bytes.readUInt32LE(4))
     || bytes.readBigUInt64LE(72) !== 0n || bytes.readBigUInt64LE(80) !== 1n) throw new Error("Replay initial checkpoint is invalid")
   const version = bytes.readUInt32LE(4), headerBytes = version === 3 ? 780 : 88
@@ -61,19 +61,19 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
     records.push({ kind, bytes: data })
     at += length
   }
-  if (requireComplete && (!complete || observing || marks !== 2)) throw new Error("Replay is incomplete")
+  if (requireComplete && (!complete || observing || marks !== expectedMarks)) throw new Error("Replay is incomplete")
   return { version, headerBytes, initialEquipment, bspSha256: bytes.subarray(8, 40).toString("hex"), worldSha256: bytes.subarray(40, 72).toString("hex"), records, complete, marks }
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1) {
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2) {
   if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
   const progress = path.join(directory, `${label}.replay-progress.json`)
   await writeFile(partial, Buffer.alloc(0), { flag: "wx" })
   let worker: Worker | undefined, offset = 0, failure: string | null = null, checkpoint: ReplayCheckpoint | undefined
-  let pending = Promise.resolve(), stopped = false
+  let pending = Promise.resolve(), stopped = false, closedAt: number | null = null
   const persistStatus = () => writeFile(progress, JSON.stringify({ schema: "playsrc-gameplay-replay-progress-v1", complete: false, bytes: offset, checkpoint, error: failure }))
   await persistStatus()
   const capture = async (stop = false) => {
@@ -101,6 +101,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     if (!value.url().includes("gameplay-worker")) return
     if (worker) { failure = "Replay gameplay owner changed"; return }
     worker = value
+    value.on?.("close", () => { closedAt = Date.now() })
     pending = value.evaluate(async ({ mapOrdinal }) => {
       const deadline = performance.now() + 5000
       while (!(globalThis as any).__playsrcGameplayReplay && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
@@ -117,6 +118,8 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
   }
   let result: Promise<any> | undefined
   return {
+    owner: () => worker,
+    closedAt: () => closedAt,
     async ready() {
       // Initial WASM compilation is synchronous and can legitimately outlast a
       // short diagnostic RPC. Keep the owner journal in Rust until Ready; do
@@ -139,17 +142,17 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       result = (async () => {
       stopped = true
       if (timer) clearInterval(timer)
-      page.off("worker", attach)
-      await pending
-      await capture(true)
+       await pending
+       await capture(true)
+       page.off("worker", attach)
       const bytes = await readFile(partial)
-      if (complete && !failure) { try { parseGameplayReplay(bytes) } catch (error) { failure = String(error) } }
+       if (complete && !failure) { try { parseGameplayReplay(bytes, true, expectedMarks) } catch (error) { failure = String(error) } }
       const sha256 = createHash("sha256").update(bytes).digest("hex")
       const file = `${sha256}.replay.bin`
       await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
         if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
       })
-       const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, error: failure }
+        const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, error: failure }
       const manifestBytes = Buffer.from(JSON.stringify(manifest))
       const manifestFile = `${createHash("sha256").update(manifestBytes).digest("hex")}.replay.json`
       await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" })
@@ -158,5 +161,84 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       })()
       return result
     },
+  }
+}
+
+export type ReplayInstalledIdentity = { target: string; resourceRoot: string; bsp: string; mapGeneration: number; contentBuild: string }
+export function bindReplayGeneration(journal: any, installed: ReplayInstalledIdentity, bsp: string) {
+  if (!journal.complete || !journal.checkpoint || !installed || !["pl_upward", "ctf_2fort"].includes(installed.target)
+    || !/^[0-9a-f]{64}$/.test(installed.resourceRoot) || installed.bsp !== bsp || !/^\d+$/.test(installed.contentBuild)
+    || installed.mapGeneration !== journal.checkpoint.generation) throw new Error("Replay generation/resource identity mismatch")
+  return { target: installed.target, resourceRoot: installed.resourceRoot, bsp: installed.bsp,
+    mapGeneration: installed.mapGeneration, contentBuild: installed.contentBuild }
+}
+
+/** Explicit requested navigation boundaries, never automatic replacement recovery.
+ * Setup journals end before navigation is requested; they do not claim teardown
+ * coverage. Each new Worker must close its predecessor and authenticate anew. */
+export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1) {
+  if (warmReload && mapOrdinal !== 1) throw new Error("Warm-reload replay requires the initial map of each Worker")
+  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2)
+  let ordinal = 1, previous: typeof journal | undefined, transitionAt: number | undefined
+  let stopped = false
+  const generations: any[] = []
+  const retain = async (installed: ReplayInstalledIdentity, complete: boolean, expectedMarks: 0 | 2) => {
+    const artifact = await journal.stop(complete)
+    const bytes = await readFile(path.join(directory, artifact.file))
+    const parsed = complete ? parseGameplayReplay(bytes, true, expectedMarks) : undefined
+    const identity = complete ? bindReplayGeneration(artifact, installed, parsed!.bspSha256) : installed
+    const entry = { workerOrdinal: ordinal, mapOrdinal, scope: expectedMarks === 0 ? "checkpoint-to-pre-navigation" : "checkpoint-through-sample",
+      applicationGeneration: identity, journal: artifact,
+      ...(previous ? { transition: { requestedAt: transitionAt, previousClosedAt: previous.closedAt() } } : {}) }
+    generations.push(entry)
+    return artifact
+  }
+  let result: Promise<any> | undefined
+  return {
+    async beforeReload(installed: ReplayInstalledIdentity) {
+      if (!warmReload || ordinal !== 1 || stopped) throw new Error("Unexpected replay navigation")
+      await journal.ready()
+      await retain(installed, true, 0)
+      previous = journal
+      transitionAt = Date.now()
+      ordinal = 2
+      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal)
+    },
+    async ready() {
+      if (ordinal !== (warmReload ? 2 : 1)) throw new Error("Requested replay navigation missing")
+      await journal.ready()
+      if (previous && (previous.owner() === journal.owner() || previous.closedAt() === null)) throw new Error("Replay predecessor Worker did not close")
+    },
+    mark: (mark: number) => journal.mark(mark),
+    stop(installed: ReplayInstalledIdentity, complete = true) {
+      if (result) return result
+      stopped = true
+      result = (async () => {
+        const artifact = await retain(installed, complete, ordinal === 1 && warmReload ? 0 : 2)
+        const manifest = { schema: "playsrc-gameplay-replay-lifecycle-v1", requestedWorkers: warmReload ? 2 : 1,
+          complete: complete && artifact.complete && generations.length === (warmReload ? 2 : 1), generations }
+        validateReplayLifecycle(manifest, false)
+        const bytes = Buffer.from(JSON.stringify(manifest)), sha256 = createHash("sha256").update(bytes).digest("hex")
+        const file = `${sha256}.replay-lifecycle.json`
+        await writeFile(path.join(directory, file), bytes, { flag: "wx" })
+        return { artifact, lifecycle: { file, sha256, bytes: bytes.length, complete: manifest.complete } }
+      })()
+      return result
+    },
+  }
+}
+
+export function validateReplayLifecycle(value: any, requireComplete = true) {
+  if (value?.schema !== "playsrc-gameplay-replay-lifecycle-v1" || ![1, 2].includes(value.requestedWorkers)
+    || !Array.isArray(value.generations) || value.generations.length > value.requestedWorkers
+    || (requireComplete && (!value.complete || value.generations.length !== value.requestedWorkers))) throw new Error("Incomplete replay lifecycle")
+  for (const [index, entry] of value.generations.entries()) {
+    const marks = index === value.requestedWorkers - 1 ? 2 : 0
+    if (entry.workerOrdinal !== index + 1 || !Number.isSafeInteger(entry.mapOrdinal) || entry.mapOrdinal < 1
+      || entry.journal?.expectedMarks !== marks || entry.journal?.mapOrdinal !== entry.mapOrdinal
+      || entry.scope !== (marks === 0 ? "checkpoint-to-pre-navigation" : "checkpoint-through-sample")
+      || (index === 0 ? entry.transition !== undefined : requireComplete && (!Number.isSafeInteger(entry.transition?.requestedAt)
+        || !Number.isSafeInteger(entry.transition?.previousClosedAt) || entry.transition.previousClosedAt < entry.transition.requestedAt))) throw new Error("Invalid replay generation order")
+    if (requireComplete) bindReplayGeneration(entry.journal, entry.applicationGeneration, entry.applicationGeneration?.bsp)
   }
 }

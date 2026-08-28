@@ -24,6 +24,7 @@ describe("bounded headed profile orchestration", () => {
     expect(parseHeadedProfile(["gameplay", "--headed"])).toEqual({ profile: "gameplay", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["map-memory", "--headed"])).toEqual({ profile: "map-memory", fresh: false, playwright: [] })
     expect(parseHeadedProfile(["2fort", "--fresh"])).toEqual({ profile: "2fort", fresh: true, playwright: [] })
+    expect(parseHeadedProfile(["2fort", "--fresh-browser"])).toEqual({ profile: "2fort", fresh: false, freshBrowser: true, playwright: [] })
     expect(parseHeadedProfile(["2fort-bots", "--fresh", "--output", "/evidence"])).toEqual({
       profile: "2fort-bots",
       fresh: true,
@@ -266,6 +267,8 @@ describe("bounded headed profile orchestration", () => {
       executableSha256: await fileFingerprint(executable), identity: await browserLaunchIdentity(launch) }))
     await browserLease(filename, "leased", 10_000)
     expect(await prepareProfileBrowser(filename, launch, () => 5_000)).toMatchObject({ reused: true, token: "leased", endpoint: "ws://owned" })
+    await expect(prepareProfileBrowser(filename, launch, () => 0, "exclusive-runner", true)).rejects.toThrow("still retiring")
+    expect(JSON.parse(await readFile(`${filename}.lease`, "utf8"))).toMatchObject({ token: "leased", closeUnderLockToken: "exclusive-runner" })
   })
 
   test("restores exact generated builds without sharing mutable worktree inodes", async () => {

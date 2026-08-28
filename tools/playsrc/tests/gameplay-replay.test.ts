@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import path from "node:path"
-import { parseGameplayReplay, startGameplayReplayJournal } from "../profile/gameplay-replay"
+import { bindReplayGeneration, parseGameplayReplay, startGameplayReplayJournal, startGameplayReplayLifecycle, validateReplayLifecycle } from "../profile/gameplay-replay"
 import { drainTraceStream } from "../profile/compositor-evidence"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
 import { parseReplayArguments, replayMutation, verifyReplayCheckpoint, verifyReplayHash } from "../profile/replay-gameplay"
@@ -193,5 +193,70 @@ test("failed incremental reads can retain a final recovered prefix but never pas
     const retained = await journal.stop()
     expect(retained.complete).toBe(false)
     expect((await readFile(path.join(directory, retained.file))).equals(bytes)).toBe(true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test("requested warm reload authenticates two distinct Worker journals and preserves navigation order", async () => {
+  const directory = await mkdtemp(path.join(process.cwd(), ".replay-test-"))
+  const listeners = new Set<(worker: any) => void>()
+  const page = { on(_event: string, fn: (worker: any) => void) { listeners.add(fn) }, off(_event: string, fn: (worker: any) => void) { listeners.delete(fn) } }
+  const full = fixture()
+  const setup = Buffer.concat([full.subarray(0, 88), ...parseGameplayReplay(full).records.filter(record => record.kind !== 7).map(value => record(value.kind, value.bytes))])
+  const identity = { target: "pl_upward", resourceRoot: "a".repeat(64), bsp: "0".repeat(64), mapGeneration: 1, contentBuild: "24245096" }
+  function worker(bytes: Buffer) {
+    let closed: (() => void) | undefined
+    return { url: () => "http://local/gameplay-worker.ts", on(_event: string, fn: () => void) { closed = fn }, close() { closed!() },
+      async evaluate(_fn: unknown, args: any) {
+        if (!args || args.mapOrdinal || typeof args === "number") return
+        return { checkpoint: { configurationSha256: "b".repeat(64), configurationBytes: 12, profile: 1, generation: 1 },
+          mapOrdinal: 1, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
+      } }
+  }
+  try {
+    const capture = await startGameplayReplayLifecycle(page as any, directory, "warm", true)
+    const cold = worker(setup); for (const fn of listeners) fn(cold)
+    await expect(capture.ready()).rejects.toThrow("navigation missing")
+    await capture.beforeReload(identity)
+    cold.close()
+    const warm = worker(full); for (const fn of listeners) fn(warm)
+    await capture.ready(); await capture.mark(0); await capture.mark(1)
+    const result = await capture.stop(identity)
+    expect(await capture.stop(identity)).toBe(result)
+    const manifest = JSON.parse(await readFile(path.join(directory, result.lifecycle.file), "utf8"))
+    validateReplayLifecycle(manifest)
+    expect(manifest.generations.map((entry: any) => [entry.workerOrdinal, entry.journal.expectedMarks, entry.scope])).toEqual([
+      [1, 0, "checkpoint-to-pre-navigation"], [2, 2, "checkpoint-through-sample"],
+    ])
+    expect(manifest.generations[0].journal.sha256).not.toBe(manifest.generations[1].journal.sha256)
+    expect(manifest.generations.every((entry: any) => entry.applicationGeneration.resourceRoot === identity.resourceRoot)).toBe(true)
+    const broken = structuredClone(manifest); broken.generations.reverse()
+    expect(() => validateReplayLifecycle(broken)).toThrow("generation order")
+    broken.generations.reverse(); broken.generations[1].transition.previousClosedAt = 0
+    expect(() => validateReplayLifecycle(broken)).toThrow("generation order")
+    const wrongRoot = { ...identity, resourceRoot: "not-a-root" }
+    expect(() => bindReplayGeneration(manifest.generations[0].journal, wrongRoot, identity.bsp)).toThrow("identity mismatch")
+    expect(() => bindReplayGeneration(manifest.generations[0].journal, { ...identity, mapGeneration: 2 }, identity.bsp)).toThrow("identity mismatch")
+    expect(() => parseGameplayReplay(setup)).toThrow("incomplete")
+    expect(parseGameplayReplay(setup, true, 0).complete).toBe(true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test("unexpected replacement remains a failure and keeps the recoverable journal", async () => {
+  const directory = await mkdtemp(path.join(process.cwd(), ".replay-test-"))
+  let attach: ((worker: any) => void) | undefined
+  const page = { on(_event: string, fn: typeof attach) { attach = fn }, off() {} }
+  const bytes = fixture()
+  const worker = () => ({ url: () => "http://local/gameplay-worker.ts", async evaluate(_fn: unknown, args: any) {
+    if (!args || args.mapOrdinal) return
+    return { checkpoint: { configurationSha256: "a".repeat(64), configurationBytes: 12, profile: 1, generation: 1 }, mapOrdinal: 1,
+      offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
+  } })
+  try {
+    const journal = await startGameplayReplayJournal(page as any, directory, "unexpected")
+    attach!(worker()); attach!(worker())
+    await expect(journal.ready()).rejects.toThrow("owner changed")
+    const result = await journal.stop(false)
+    expect(result.complete).toBe(false); expect(result.error).toContain("owner changed")
+    expect((await readFile(path.join(directory, result.file))).equals(bytes)).toBe(true)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
