@@ -17,6 +17,14 @@ export type ParticleAppearanceArrays = Readonly<{
 
 export type ParticleAttributeUpdate = { start: number; end: number }
 
+export function writeParticleCenters(array: Float32Array, offset: number, position: readonly [number, number, number], orientation: number): void {
+  const x = position[0], y = position[1], z = position[2]
+  for (let vertex = 0; vertex < 4; vertex++) {
+    const at = offset + vertex * 4
+    array[at] = x; array[at + 1] = y; array[at + 2] = z; array[at + 3] = orientation
+  }
+}
+
 export function createParticleAttributeUpdates(): ParticleAttributeUpdate[] {
   return Array.from({ length: 4 }, () => ({ start: Number.POSITIVE_INFINITY, end: 0 }))
 }
