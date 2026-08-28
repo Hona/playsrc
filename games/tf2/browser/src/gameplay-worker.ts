@@ -36,6 +36,8 @@ type WasmExports = Readonly<{
   playsrc_model_cache_count(handle: number, index: number): number
   playsrc_result_length(handle: number): number
   playsrc_result_error(handle: number): number
+  playsrc_presentation_failure_length(): number
+  playsrc_presentation_failure_copy(pointer: number, length: number): number
   playsrc_result_copy(handle: number, pointer: number, capacity: number): number
   playsrc_result_take(handle: number): number
   playsrc_result_release(handle: number): number
@@ -606,9 +608,14 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   if (request.presentation) exports.playsrc_free(presentationPointer, request.presentation.byteLength)
   const error = exports.playsrc_result_error(candidate)
   if (error !== 0) {
+    const length = exports.playsrc_presentation_failure_length()
+    const pointer = length ? exports.playsrc_alloc(length) >>> 0 : 0
+    const copied = length ? exports.playsrc_presentation_failure_copy(pointer, length) : 0
+    const reason = copied === length && length ? new TextDecoder().decode(new Uint8Array(exports.memory.buffer, pointer, length).slice()) : undefined
+    if (pointer) exports.playsrc_free(pointer, length)
     exports.playsrc_dispose(candidate)
     releaseResourceSet(exports, request.generation)
-    fail(request.id, "CompileFailed", error)
+    fail(request.id, "CompileFailed", error, reason)
     return
   }
   replayMapOrdinal++
