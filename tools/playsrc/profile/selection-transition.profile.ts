@@ -27,9 +27,10 @@ test("selection material color depth and draw ownership parity", async ({ page, 
   }
   try {
     if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Native material comparison requires genuine idle")
-    // Explicit local fixture route, never an application/production override.
-    const url = new URL("/selection-material-parity", baseURL).href
-    await page.route(url, route => route.fulfill({ contentType: "text/html", body: `<!doctype html><title>Selection material native color/depth parity</title><style>body{margin:0;background:#111;color:white}</style><h3>Dedicated and shared model bindings: exact color/depth</h3><script type="module">import {createModelGraphProbe} from '/@fs/${repositoryRoot.replaceAll("\\", "/")}/packages/presentation/rendering/tests/fixtures/model-graph-probe.ts';window.probe=await createModelGraphProbe(false,true);</script>` }))
+    // Use a real loopback response. A fulfilled/intercepted document has no
+    // network address-space provenance and can provoke native LNA permission
+    // UI for its own local modules. Do not grant/suppress that permission.
+    const url = new URL(`/@fs/${repositoryRoot.replaceAll("\\", "/")}/packages/presentation/rendering/tests/fixtures/model-graph-parity.html`, baseURL).href
     await page.goto(url)
     await page.waitForFunction(() => (window as any).probe)
     await check("model-before")
