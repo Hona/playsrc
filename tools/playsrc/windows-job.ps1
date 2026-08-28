@@ -18,7 +18,10 @@ if ($Action -eq 'Doctor') {
   $cargo = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo/bin/cargo.exe'
   $env:CARGO_HOME = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo'
   $env:RUSTUP_HOME = Join-Path $config.sourceCacheDir 'toolchains/rust/rustup'
-  @{cargo=$cargo;exists=(Test-Path -LiteralPath $cargo);pathExt=$env:PATHEXT;version=(& $cargo --version)} | ConvertTo-Json -Compress
+  $item = Get-Item -LiteralPath $cargo
+  $header = [IO.File]::ReadAllBytes($cargo)[0..15]
+  @{cargo=$cargo;length=$item.Length;linkType=$item.LinkType;target=$item.Target;header=$header;pathExt=$env:PATHEXT} | ConvertTo-Json -Compress
+  try { & $cargo --version } catch { Write-Output $_.Exception.Message }
   $probe = 'const p=process.argv[1]; const fs=require("node:fs"), cp=require("node:child_process"); console.log(JSON.stringify({pathKeys:Object.keys(process.env).filter(k=>k.toLowerCase()==="path"),PATHEXT:process.env.PATHEXT,stat:fs.statSync(p).isFile(),which:Bun.which(p)})); try {console.log(cp.execFileSync(p,["--version"],{encoding:"utf8"}))} catch(e){console.log(String(e))}; try {console.log(Bun.spawnSync([p,"--version"]).stdout.toString())} catch(e){console.log(String(e))}'
   & $bun -e $probe $cargo
   exit $LASTEXITCODE
