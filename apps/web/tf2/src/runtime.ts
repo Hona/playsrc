@@ -4791,7 +4791,21 @@ export class Tf2Application {
     const cosmeticDepthRevision = profile?.cosmeticDepthRevision
     const captureCosmeticDepth = Number.isSafeInteger(cosmeticDepthRevision) && cosmeticDepthRevision !== (profile?.cosmeticDepthCapture as { revision?: number } | undefined)?.revision
     if (captureCosmeticDepth) renderer.requestParticleDepthEvidence()
-    const rendered=await renderer.render({
+    if(profile?.captureFrameAdmission) {
+      const counts={effects:prepared.frame.effects.length,shadows:prepared.frame.shadows?.length??0,models:models?.length??0,particles:particles?.length??0,brushes:prepared.frame.brushModels?.models.length??0}
+      const total=Object.values(counts).reduce((sum,count)=>sum+count,0)
+      const old=profile.frameAdmission as {total:number;generation:number}|undefined
+      if(!old||generation!==old.generation||total>old.total) {
+        const materials=new Map<string,{count:number;minimumAge:number;maximumAge:number}>()
+        for(const item of particles??[]) {
+          const entry=materials.get(item.material)??{count:0,minimumAge:Infinity,maximumAge:-Infinity}
+          entry.count++;entry.minimumAge=Math.min(entry.minimumAge,item.ageSeconds);entry.maximumAge=Math.max(entry.maximumAge,item.ageSeconds);materials.set(item.material,entry)
+        }
+        profile.frameAdmission={generation,total,counts,tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,deltaTicks,camera,materials:[...materials].sort((a,b)=>b[1].count-a[1].count).slice(0,32)}
+      }
+    }
+    let rendered
+    try { rendered=await renderer.render({
       ...prepared.frame,
       particles,
       clientFrame: clientFrame.clientFrame,
@@ -4804,7 +4818,14 @@ export class Tf2Application {
       fog:this.#artifacts?this.#mainFog(this.#artifacts):undefined,
       sky3d,
       deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
-    })
+    }) } catch (error) {
+      throw new Error(`${String(error)}; frame producer=${JSON.stringify({
+        generation,currentGeneration:this.#generation,closed:this.#closed,paused:this.#paused,sameRenderer:renderer===this.#renderer,
+        snapshotTick:prepared.snapshot.tick.toString(),lastRenderedTick:this.#lastRenderedTick?.toString(),selectedTicks:prepared.publication.selectedTicks,deltaTicks,
+        viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,
+        presented:{...presentedCamera.revisions,tick:presentedCamera.revisions.tick.toString()},roundState:prepared.snapshot.round.state,inSetup:prepared.snapshot.round.inSetup,waiting:prepared.snapshot.round.waitingForPlayers,peak:profile?.frameAdmission,
+      })}`,{cause:error})
+    }
     clientFrame.accept()
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     if (captureHudPixels && profile) profile.hudPixelEvidence = { revision: hudPixelRevision, before: rendered.beforeHudCapture, after: rendered.capture }

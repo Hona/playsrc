@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Static material native color/depth parity</title>
+<style>body{margin:0;background:#111;color:white}</style>
+<h3>Exact-plane VHV graphs: color, depth and per-draw fade</h3>
+<script type="module">
+  import { createParticleGraphProbe } from "./particle-graph-probe.ts"
+  window.probe = await createParticleGraphProbe(true)
+</script>
+</html>

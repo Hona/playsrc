@@ -74,3 +74,13 @@ test("ordinary rendering never acquires async preparation work", async () => {
   })
   expect(calls).toEqual([undefined, null])
 })
+
+test("world preparation admits two native jobs without a third descriptor allocation", async () => {
+  let live=0,maximum=0
+  const manager={getForRender(_object:unknown,promises?:Promise<unknown>[]|null){maximum=Math.max(maximum,++live);promises!.push(new Promise<void>(resolve=>setTimeout(()=>{live--;resolve()},0)))}}
+  await withBoundedPipelineCompilation(manager,async()=>{
+    for(let index=0;index<8;index++){const promises:Promise<unknown>[]=[];manager.getForRender({},promises);await Promise.all(promises)}
+  },2)
+  expect(maximum).toBe(2);expect(live).toBe(0)
+  await expect(withBoundedPipelineCompilation(manager,async()=>{},0)).rejects.toThrow("capacity")
+})

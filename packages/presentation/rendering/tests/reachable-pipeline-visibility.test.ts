@@ -45,4 +45,19 @@ describe("reachable Source map pipeline preparation", () => {
     expect(retained.visible).toBe(true)
     expect(prop.visible).toBe(true)
   })
+
+  test("compiler reuse cannot merge distinct template resource admission", () => {
+    const root=new THREE.Group(),geometry=new THREE.BoxGeometry(),first=new THREE.MeshBasicNodeMaterial(),second=first.clone()
+    first.userData.sourcePreparationIdentity=first.uuid
+    second.userData.sourcePreparationIdentity=second.uuid
+    expect(first.customProgramCacheKey()).toBe(second.customProgramCacheKey())
+    const meshes=[new THREE.Mesh(geometry,first),new THREE.Mesh(geometry.clone(),second),new THREE.Mesh(geometry,first.clone())]
+    root.add(...meshes)
+    const staged=prepareReachablePipelineVisibility(root)
+    expect(staged.variants).toBe(2)
+    expect(meshes.map(mesh=>mesh.visible)).toEqual([true,true,false])
+    staged.restore()
+    expect(meshes.every(mesh=>mesh.visible)).toBe(true)
+    geometry.dispose();meshes[1]!.geometry.dispose();for(const mesh of meshes)mesh.material.dispose()
+  })
 })

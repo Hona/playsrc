@@ -65,6 +65,7 @@ export async function prepareModelCompilerParity(config: LocalConfig, target: st
     }
     const decodedPoses = poses.map(bytes => decodeModelPoseOutput(bytes))
     for (const pose of decodedPoses.flat()) roots.add(pose.model)
+    for (const model of artifacts.staticProps.models) roots.add(model)
     const geometry = runtime.models.filter(model => roots.has(model.logicalPath.split("#skin=")[0]!))
     require(roots.size > 9 && geometry.length > 18, "actual class/team geometry coverage")
     const materialNames = new Set(geometry.flatMap(model => model.materials.map(material => material.logicalPath.toLowerCase())))
@@ -77,7 +78,7 @@ export async function prepareModelCompilerParity(config: LocalConfig, target: st
       textures: [...artifacts.authoredTextures].filter(([name]) => textureNames.has(name)).map(([name, texture]) => [name, { ...texture,
         planes: texture.planes.map(({ rgba, ...plane }) => ({ ...plane, byteLength: rgba.byteLength, sha256: digest(rgba) })),
       }]),
-       requests: passes, poses: decodedPoses, roots: [...roots].sort(),
+       requests: passes, poses: decodedPoses, roots: [...roots].sort(), staticProps: artifacts.staticProps,
        particles: artifacts.particleTextures.map(texture => ({ ...texture,
          planes: texture.planes.map(({ rgba, ...plane }) => ({ ...plane, byteLength: rgba.byteLength, sha256: digest(rgba) })),
          state: artifacts.materialStates.get(texture.material.toLowerCase()),
