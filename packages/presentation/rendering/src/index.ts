@@ -1027,7 +1027,7 @@ export type ModelAdmissionRequest = Readonly<{
   particleTextures?: MapLoadRequest["particleTextures"]
 }>
 
-type ModelAssets = Pick<SceneResources, "modelTemplates" | "modelLightingTextures" | "modelPanelLightingGraphs" | "modelPanelMaterialAnimations" | "materialStates" | "disposables" | "textureResidency" | "waterFogUniforms" | "modelCubemap" | "particleTextures" | "particleBatchMaterials" | "particleDepth" | "particlePipelineMeshes"> & { loadRequest: Pick<MapLoadRequest, "modelMaterials" | "modelFacing" | "authoredTextures"> }
+type ModelAssets = Pick<SceneResources, "modelTemplates" | "modelPipelineKeys" | "modelLightingTextures" | "modelPanelLightingGraphs" | "modelPanelMaterialAnimations" | "materialStates" | "disposables" | "textureResidency" | "waterFogUniforms" | "modelCubemap" | "particleTextures" | "particleBatchMaterials" | "particleDepth" | "particlePipelineMeshes"> & { loadRequest: Pick<MapLoadRequest, "modelMaterials" | "modelFacing" | "authoredTextures"> }
 
 type ModelTemplateContext = Readonly<{
   request: Pick<MapLoadRequest, "modelMaterials" | "modelFacing">
@@ -2298,6 +2298,7 @@ class RendererOwner implements Renderer {
         this.#modelPanelInstances.clear(); this.#retainedModelPanels.clear(); this.#preparedModelInstances.clear()
         disposables.activate()
         this.#panelAssets = { loadRequest: { modelMaterials: materials, modelFacing: facing, authoredTextures: textures }, modelTemplates: templates, modelLightingTextures: lightingTextures,
+          modelPipelineKeys: new Set(),
           modelPanelLightingGraphs: new ModelLightingGraphs(), modelPanelMaterialAnimations: animations, materialStates: states, disposables, textureResidency: residency, waterFogUniforms: waterFog, modelCubemap: cubemap,
           particleTextures, particleBatchMaterials, particleDepth, particlePipelineMeshes }
         if (previousPanel) await previousPanel.disposables.retire(this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve())
