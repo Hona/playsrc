@@ -77,7 +77,11 @@ export async function prepareModelCompilerParity(config: LocalConfig, target: st
       textures: [...artifacts.authoredTextures].filter(([name]) => textureNames.has(name)).map(([name, texture]) => [name, { ...texture,
         planes: texture.planes.map(({ rgba, ...plane }) => ({ ...plane, byteLength: rgba.byteLength, sha256: digest(rgba) })),
       }]),
-      requests: passes, poses: decodedPoses, roots: [...roots].sort() }
+       requests: passes, poses: decodedPoses, roots: [...roots].sort(),
+       particles: artifacts.particleTextures.map(texture => ({ ...texture,
+         planes: texture.planes.map(({ rgba, ...plane }) => ({ ...plane, byteLength: rgba.byteLength, sha256: digest(rgba) })),
+         state: artifacts.materialStates.get(texture.material.toLowerCase()),
+       })) }
     const arrays: Uint8Array[] = []
     let arenaLength = 0
     const metadata = JSON.stringify(fixture, (_, value) => {

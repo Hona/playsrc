@@ -1,7 +1,8 @@
 import * as THREE from "three/webgpu"
 import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
-import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
+import type { SpriteCardInput } from "./sprite-card"
+import { ParticleMaterialGraphs, bindParticleTexture } from "./particle-material-graphs"
 import { SourceParticleDepth } from "./particle-depth"
 import { CombatDecals,type CombatDecalInput } from "./combat-decals"
 import { ProjectedMarkMaterials } from "./projected-mark-materials"
@@ -5255,6 +5256,7 @@ class RendererOwner implements Renderer {
   #buildParticleMaterials(inputs: NonNullable<MapLoadRequest["particleTextures"]>, states: ReadonlyMap<string, MaterialStateInput>, disposables: OwnedResourceGeneration,
     waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.Texture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group, exposure: any, hdr: boolean): void {
     const depthNode = depth.sample()
+    const graphs = new ParticleMaterialGraphs()
     for (const texture of inputs) {
       const state = states.get(texture.material.toLowerCase())
       if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
@@ -5267,38 +5269,19 @@ class RendererOwner implements Renderer {
       textures.set(texture.material.toLowerCase(), value)
       const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0 }, state))
       disposables.add(material); applyParticleDepthState(material, state)
-      const current = TSL.texture(value, TSL.uv()), next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
-      const blend = TSL.attribute("particleSheetBlend", "float"), color = TSL.attribute("particleColor", "vec4")
-      const sampled = texture.spriteCard?.blendFrames === false ? current : current.mul(TSL.float(1).sub(blend)).add(next.mul(blend))
-      const sprite = texture.spriteCard ? spriteCardNodes(texture.spriteCard, sampled, color, depthNode) : null
-      if (sprite) { material.positionNode = sprite.position; material.forceSinglePass = true }
+      const graph = graphs.get(material, { texture: value, state, spriteCard: texture.spriteCard, additive,
+        waterFog, depth: depthNode, exposure, hdr, fog: this.#viewFogUniforms })
+      if (graph.position) { material.positionNode = graph.position; material.forceSinglePass = true }
       material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
-      material.colorNode = sourceFragmentColor(sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state, waterFog)
-      if (additive) {
-        material.forceSinglePass=true
-        const tint = TSL.vec3(...additive.color.map(value => additive.srgb ? Math.pow(value, 2.2) : value) as [number, number, number])
-        let rgb = current.rgb.mul(tint), alpha = current.a.mul(state.alphaModulation)
-        if (additive.vertexColor) { rgb = rgb.mul(additive.srgb ? color.rgb.pow(2.2) : color.rgb); alpha = alpha.mul(color.a) }
-        if (hdr) rgb = rgb.mul(additive.srgb ? Math.pow(additive.hdrColorScale, 2.2) : additive.hdrColorScale)
-        rgb = rgb.mul(additive.srgb ? exposure : exposure.pow(1 / 2.2))
-        const fog = this.#viewFogUniforms
-        const fogFactor = TSL.positionView.z.negate().sub(fog.start).div(fog.end.sub(fog.start)).clamp(0, fog.maximumDensity)
-        if (state.fog !== 2) {
-          const waterFraction = waterFog.waterHeight.sub(TSL.positionWorld.z).div(waterFog.eyeHeight.sub(TSL.positionWorld.z)).clamp(0, 1)
-          const waterDepth = waterFraction.mul(TSL.clipSpace.z).mul(waterFog.inverseFogRange).clamp(0, 1)
-          const factor = waterFog.enabled.greaterThan(0).select(waterDepth, fog.enabled.greaterThan(0).select(fogFactor, 0))
-          rgb = rgb.mul(TSL.float(1).sub(factor))
-        }
-        material.colorNode = TSL.vec4(additive.srgb ? rgb : rgb.max(0).pow(2.2), alpha)
-        material.fog = false
-      }
+      material.colorNode = graph.color
+      if (additive) { material.fog = false; material.forceSinglePass = true }
       material.toneMapped = false; material.name = `particle:${texture.material.toLowerCase()}`
       material.blending = THREE.CustomBlending; material.transparent = true
       materials.set(key, material)
       const geometry = this.#createParticleBatchGeometry(1); disposables.add(geometry)
       for (const side of particlePreparationSides(material)) {
         const prepared = side === material.side ? material : material.clone()
-        if (prepared !== material) { prepared.side = side; disposables.add(prepared) }
+        if (prepared !== material) { prepared.side = side; bindParticleTexture(prepared, value); disposables.add(prepared) }
         const mesh = new THREE.Mesh(geometry, prepared); mesh.frustumCulled = false; pipelines.add(mesh)
       }
     }
