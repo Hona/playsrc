@@ -16,10 +16,11 @@ export function requireNativeDesktopPixels(value: NativeDesktopPixels | undefine
   return value
 }
 
-const WINDOWS_INPUT = String.raw`
+export const WINDOWS_INPUT = String.raw`
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class StartupWindow {
  [StructLayout(LayoutKind.Sequential)] public struct Rect {public int Left,Top,Right,Bottom;}
  [StructLayout(LayoutKind.Sequential)] struct Input {public uint Size,Time;}
@@ -30,15 +31,26 @@ public static class StartupWindow {
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect rect);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr window,StringBuilder text,int count);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
  [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback,IntPtr data);
  delegate bool Callback(IntPtr window,IntPtr data);
  public static uint Idle() {var input=new Input{Size=8};if(!GetLastInputInfo(ref input))throw new Exception("Last-input readback unavailable");return unchecked((uint)Environment.TickCount-input.Time);}
- public static IntPtr[] Windows(uint pid) {var result=new System.Collections.Generic.List<IntPtr>();EnumWindows((window,data)=>{uint owner;GetWindowThreadProcessId(window,out owner);if(owner==pid&&IsWindowVisible(window))result.Add(window);return true;},IntPtr.Zero);return result.ToArray();}
+  public static IntPtr[] Windows(uint pid) {var result=new System.Collections.Generic.List<IntPtr>();EnumWindows((window,data)=>{uint owner;GetWindowThreadProcessId(window,out owner);if(owner==pid&&IsWindowVisible(window))result.Add(window);return true;},IntPtr.Zero);return result.ToArray();}
+  public static object Owner(IntPtr window) {
+   uint pid,ownerPid,rootPid;GetWindowThreadProcessId(window,out pid);
+   var owner=GetWindow(window,4);var root=GetAncestor(window,3);
+   GetWindowThreadProcessId(owner,out ownerPid);GetWindowThreadProcessId(root,out rootPid);
+   var name=new StringBuilder(256);GetClassNameW(window,name,name.Capacity);
+   string processName=null;try{processName=System.Diagnostics.Process.GetProcessById((int)pid).ProcessName;}catch{}
+   return new {windowId=window.ToInt64(),processId=pid,processName=processName,windowClass=name.ToString(),ownerWindowId=owner.ToInt64(),ownerProcessId=ownerPid,rootOwnerWindowId=root.ToInt64(),rootOwnerProcessId=rootPid};
+  }
 }
 '@
 `
 
-let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number}):Promise<any>;close():void}|undefined
+let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number):Promise<any>;close():void}|undefined
 
 function openWindowsProbe() {
   const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+String.raw`
@@ -50,6 +62,14 @@ while (($line=[Console]::ReadLine()) -ne $null) {
   $desktop=@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session)}
   $windows=@(foreach($hwnd in [StartupWindow]::Windows([uint32]$request.pid)) {$rect=New-Object StartupWindow+Rect;if(-not [StartupWindow]::GetWindowRect($hwnd,[ref]$rect)){throw 'Window bounds unavailable'};@{id=$hwnd.ToInt64();bounds=$rect;visible=[StartupWindow]::IsWindowVisible($hwnd);minimized=[StartupWindow]::IsIconic($hwnd)}})
    $foreground=[StartupWindow]::GetForegroundWindow().ToInt64()
+   $foregroundEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+   $foregroundOwner=$null;$foregroundParent=$null
+   if ($request.pid -gt 0) {
+    $foregroundOwner=[StartupWindow]::Owner([IntPtr]$foreground)
+    if (($request.expectedWindow -and $foreground -ne $request.expectedWindow) -or $foregroundOwner.processId -ne $request.pid) {
+     try {$parent=Get-CimInstance Win32_Process -Filter "ProcessId=$($foregroundOwner.processId)" -OperationTimeoutSec 1; $foregroundParent=@{processId=$foregroundOwner.processId;parentProcessId=$parent.ParentProcessId}} catch {$foregroundParent=@{error='foreground process parent unavailable'}}
+    }
+   }
    $pixels=$null
    if ($request.capture) {
     if ($info.State -ne 0 -or $info.Flags -ne 1 -or $desktop.protocol -ne 0 -or $session -ne $desktop.processSessionId) {throw 'Native pixel console is not active and unlocked'}
@@ -70,7 +90,8 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     if ([StartupWindow]::GetForegroundWindow().ToInt64() -ne $foreground) {throw 'Native foreground changed during pixel capture'}
     $pixels=@{path=[string]$request.capture;bounds=@{X=$x;Y=$y;Width=$w;Height=$h};startedEpoch=$start;endedEpoch=$end}
    }
-   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=[StartupWindow]::Idle();foreground=$foreground;windows=$windows;pixels=$pixels}
+   $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels}
  } catch {$result=@{id=$request.id;error=($_|Out-String)}}
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
 }
@@ -94,13 +115,17 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       result.error?entry.reject(new Error(result.error)):entry.resolve(result)
     }
   })
-  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number})=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
 }
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
 
-async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow)
+export function windowsForegroundMatches(native: { foreground: number; foregroundAfter: number }, windowId: number, focused: boolean): boolean {
+  return native.foreground === windowId && native.foregroundAfter === windowId && focused
+}
+
+async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -144,7 +169,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const boundsIdentity=JSON.stringify(facts.bounds)
       if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
       establishedBounds=boundsIdentity
-       const native = await windowsSnapshot(browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined)
+       const native = await windowsSnapshot(browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined,established)
        if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
@@ -152,9 +177,9 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
        records.push(record)
       if (matches.length !== 1 || established !== undefined && established !== matches[0].id) throw new Error("Static startup page/native window linkage changed or is ambiguous")
       const window = matches[0]; established = window.id
-       const documentState = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus() }))
-       record.documentState = documentState
-      return { at: Date.now(), physical: true, unlocked: true, foreground: native.foreground === window.id && documentState.focused,
+      const documentState = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus() }))
+      record.documentState = documentState
+      return { at: Date.now(), physical: true, unlocked: true, foreground: windowsForegroundMatches(native, window.id, documentState.focused),
         visible: window.visible && documentState.visible, minimized: window.minimized, idleMilliseconds: native.idleMilliseconds,
          browserPid, windowId: window.id, targetId: targetInfo.targetId, ...(native.pixels ? { pixels: native.pixels } : {}) }
     },
