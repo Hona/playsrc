@@ -21,7 +21,7 @@ let owner: Awaited<ReturnType<typeof startDevelopment>> | undefined
 let finished = false
 let monitor: ReturnType<typeof setInterval> | undefined
 
-const stop = async (): Promise<void> => {
+const stop = async (exitCode: 0 | 1 = 0): Promise<void> => {
   if (finished) return
   finished = true
   if (monitor) clearInterval(monitor)
@@ -48,12 +48,12 @@ const stop = async (): Promise<void> => {
   } finally { clearTimeout(deadline) }
   // close() may resolve while a dependency still owns a referenced watcher or
   // worker. This dedicated lease owner is finished, not a reusable application.
-  process.exit(0)
+  process.exit(exitCode)
 }
 
 const fail = (error: unknown): void => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error))
-  void stop().finally(() => { process.exit(1) })
+  void stop(1).finally(() => { process.exit(1) })
 }
 
 process.once("SIGINT", () => { void stop().catch(fail) })
@@ -99,6 +99,8 @@ try {
     console.error(`playsrc headed profile owner ready target=${target} milliseconds=${owner.startup.totalMilliseconds}`)
   }
 } catch (error) {
-  await stop().catch((cleanup) => console.error(cleanup instanceof Error ? cleanup.message : String(cleanup)))
-  throw error
+  // stop exits this dedicated process. Retain the actual startup error before
+  // cleanup, rather than exiting successfully and leaving an empty owner log.
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error))
+  await stop(1).catch((cleanup) => { console.error(cleanup instanceof Error ? cleanup.message : String(cleanup)); process.exit(1) })
 }

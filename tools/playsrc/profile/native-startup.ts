@@ -6,6 +6,16 @@ import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admissio
 import type { StartupNativeAdmission } from "./static-startup-gate"
 import os from "node:os"
 
+export type NativeDesktopPixels = Readonly<{ path: string; bounds: Readonly<{ X: number; Y: number; Width: number; Height: number }>; startedEpoch: number; endedEpoch: number }>
+
+export function requireNativeDesktopPixels(value: NativeDesktopPixels | undefined, expectedPath: string): NativeDesktopPixels {
+  if (!value || value.path !== expectedPath || !value.bounds
+    || ![value.startedEpoch, value.endedEpoch, value.bounds.X, value.bounds.Y, value.bounds.Width, value.bounds.Height].every(Number.isSafeInteger)
+    || value.startedEpoch < 0 || value.endedEpoch < value.startedEpoch || value.endedEpoch - value.startedEpoch > 5000
+    || value.bounds.Width <= 0 || value.bounds.Height <= 0 || value.bounds.Width * value.bounds.Height > 33554432) throw new Error("Native desktop pixel receipt is invalid")
+  return value
+}
+
 const WINDOWS_INPUT = String.raw`
 Add-Type -TypeDefinition @'
 using System;
@@ -18,7 +28,8 @@ public static class StartupWindow {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
- [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect rect);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect rect);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
  [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback,IntPtr data);
  delegate bool Callback(IntPtr window,IntPtr data);
  public static uint Idle() {var input=new Input{Size=8};if(!GetLastInputInfo(ref input))throw new Exception("Last-input readback unavailable");return unchecked((uint)Environment.TickCount-input.Time);}
@@ -27,17 +38,39 @@ public static class StartupWindow {
 '@
 `
 
-let windowsProbe: {read(pid:number):Promise<any>;close():void}|undefined
+let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number}):Promise<any>;close():void}|undefined
 
 function openWindowsProbe() {
   const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+String.raw`
+Add-Type -AssemblyName System.Drawing
 while (($line=[Console]::ReadLine()) -ne $null) {
  try {
   $request=$line|ConvertFrom-Json
   $session=[ProfileConsole]::WTSGetActiveConsoleSessionId();$info=[ProfileConsole]::Query($session)
   $desktop=@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session)}
   $windows=@(foreach($hwnd in [StartupWindow]::Windows([uint32]$request.pid)) {$rect=New-Object StartupWindow+Rect;if(-not [StartupWindow]::GetWindowRect($hwnd,[ref]$rect)){throw 'Window bounds unavailable'};@{id=$hwnd.ToInt64();bounds=$rect;visible=[StartupWindow]::IsWindowVisible($hwnd);minimized=[StartupWindow]::IsIconic($hwnd)}})
-  $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=[StartupWindow]::Idle();foreground=[StartupWindow]::GetForegroundWindow().ToInt64();windows=$windows}
+   $foreground=[StartupWindow]::GetForegroundWindow().ToInt64()
+   $pixels=$null
+   if ($request.capture) {
+    if ($info.State -ne 0 -or $info.Flags -ne 1 -or $desktop.protocol -ne 0 -or $session -ne $desktop.processSessionId) {throw 'Native pixel console is not active and unlocked'}
+    if (@($windows | Where-Object {$_.id -eq $foreground -and $_.visible -and !$_.minimized}).Count -ne 1) {throw 'Native pixel target is not foreground'}
+    $x=[StartupWindow]::GetSystemMetrics(76);$y=[StartupWindow]::GetSystemMetrics(77);$w=[StartupWindow]::GetSystemMetrics(78);$h=[StartupWindow]::GetSystemMetrics(79)
+    if ($request.captureWindow) {
+     $expected=$request.captureWindow
+     $matches=@($windows | Where-Object {$_.bounds.Left -eq $expected.left -and $_.bounds.Top -eq $expected.top -and ($_.bounds.Right-$_.bounds.Left) -eq $expected.width -and ($_.bounds.Bottom-$_.bounds.Top) -eq $expected.height})
+     if ($matches.Count -ne 1 -or $matches[0].id -ne $foreground) {throw 'Pixel scope is not the complete foreground measured window'}
+     $x=$matches[0].bounds.Left;$y=$matches[0].bounds.Top;$w=$matches[0].bounds.Right-$x;$h=$matches[0].bounds.Bottom-$y
+    }
+    if ($w -le 0 -or $h -le 0 -or $w*$h -gt 33554432) {throw 'Native pixel desktop bounds invalid'}
+    $start=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $bitmap=New-Object System.Drawing.Bitmap($w,$h,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
+    try {$graphics.CopyFromScreen($x,$y,0,0,$bitmap.Size);$bitmap.Save([string]$request.capture,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$graphics.Dispose();$bitmap.Dispose()}
+    $end=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if ([StartupWindow]::GetForegroundWindow().ToInt64() -ne $foreground) {throw 'Native foreground changed during pixel capture'}
+    $pixels=@{path=[string]$request.capture;bounds=@{X=$x;Y=$y;Width=$w;Height=$h};startedEpoch=$start;endedEpoch=$end}
+   }
+   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=[StartupWindow]::Idle();foreground=$foreground;windows=$windows;pixels=$pixels}
  } catch {$result=@{id=$request.id;error=($_|Out-String)}}
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
 }
@@ -61,13 +94,13 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       result.error?entry.reject(new Error(result.error)):entry.resolve(result)
     }
   })
-  return {read:(pid:number)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number})=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
 }
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
 
-async function windowsSnapshot(browserPid = 0) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid)
+async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -93,7 +126,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
   const records: any[] = []
   return {
     records,
-    async read(desktopScreenshot?: string): Promise<StartupNativeAdmission> {
+    async read(desktopScreenshot?: string, pixelScope: "desktop" | "window" = "desktop"): Promise<StartupNativeAdmission & { pixels?: NativeDesktopPixels }> {
       if (mac) {
         const record = await mac.read(desktopScreenshot); records.push(record); requireMacPageAdmission(record)
         const bounds=JSON.stringify(record.page!.bounds)
@@ -111,7 +144,8 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const boundsIdentity=JSON.stringify(facts.bounds)
       if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
       establishedBounds=boundsIdentity
-      const native = await windowsSnapshot(browserPid)
+       const native = await windowsSnapshot(browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined)
+       if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
       records.push({ at: Date.now(), facts, native, targetId: targetInfo.targetId })
@@ -120,7 +154,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const documentState = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus() }))
       return { at: Date.now(), physical: true, unlocked: true, foreground: native.foreground === window.id && documentState.focused,
         visible: window.visible && documentState.visible, minimized: window.minimized, idleMilliseconds: native.idleMilliseconds,
-        browserPid, windowId: window.id, targetId: targetInfo.targetId }
+         browserPid, windowId: window.id, targetId: targetInfo.targetId, ...(native.pixels ? { pixels: native.pixels } : {}) }
     },
     async close() { closeStartupNativeProbe();await Promise.all([mac?.close(), pageCdp.detach(), browserCdp.detach()]) },
   }

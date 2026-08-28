@@ -4,6 +4,7 @@ param(
   [ValidateSet('Run','Build','BuildStage','Status','Result','Logs','Doctor','Wait','Artifacts')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
+  [string]$Grep = '',
   [string]$Target,
   [ValidateSet('wasm','producer','resources')][string]$Stage,
   [string]$Task,
@@ -108,6 +109,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
 if ($Action -eq 'Run') {
   if (!$Ready) { throw 'Pass -Ready only for a freshly approved hands-off window' }
   if ($Profile -notmatch '^[a-z0-9-]+$') { throw 'Expected a normal profile name' }
+  if ($Grep.Length -gt 512 -or $Grep.Contains([char]0)) {throw 'Profile selection exceeds its bound'}
 } elseif ($Action -eq 'BuildStage') {
   if (!$Stage -or ($Stage -eq 'resources' -and $Target -notmatch '^[a-z0-9_]+$') -or ($Stage -ne 'resources' -and $Target)) { throw 'Expected wasm | producer | resources with a local build target' }
 } elseif ($Target -notmatch '^[a-z0-9_]+$') { throw 'Expected a local build target' }
@@ -115,7 +117,7 @@ $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
-$arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile)" }
+$arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile)" + $(if ($Grep) { " --grep $(Quote $Grep)" } else { '' }) }
 $command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root

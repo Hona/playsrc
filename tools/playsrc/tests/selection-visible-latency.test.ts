@@ -1,0 +1,38 @@
+import { expect, test } from "bun:test"
+import { selectionVisibleLatency } from "../profile/selection-visible-latency"
+import { nativeSelectionRect } from "../profile/selection-transition-analysis"
+
+test("full desktop and full window pixel receipts address the same authored glyph without cropping admission", () => {
+  const window = { left: 10, top: 10, width: 1296, height: 808 }
+  const facts = { screenX: 10, screenY: 10, outerWidth: 1296, outerHeight: 808, innerWidth: 1280, innerHeight: 720,
+    bounds: { x: 114, y: 618, width: 75, height: 27 } }
+  const desktop = nativeSelectionRect({ width: 6000, height: 1440 }, { X: -2560, Y: 0, Width: 6000, Height: 1440 }, window, facts)
+  const scoped = nativeSelectionRect({ width: 1296, height: 808 }, { X: 10, Y: 10, Width: 1296, Height: 808 }, window, facts)
+  expect(desktop).toEqual({ x: 2692, y: 708, width: 75, height: 27, scale: 1 })
+  expect(scoped).toEqual({ x: 122, y: 698, width: 75, height: 27, scale: 1 })
+  expect(() => nativeSelectionRect({ width: 1200, height: 720 }, { X: 10, Y: 10, Width: 1200, Height: 720 }, window, facts)).toThrow("entire measured window")
+})
+
+test("selection latency counts changed native pixels, not publication or repeated surfaces", () => {
+  const result = selectionVisibleLatency(100, 1000, [
+    { startedEpoch: 0, endedEpoch: 90, matches: false },
+    { startedEpoch: 110, endedEpoch: 120, matches: false },
+    { startedEpoch: 700, endedEpoch: 710, matches: false },
+    { startedEpoch: 800, endedEpoch: 810, matches: true },
+  ])
+  expect(result.lowerMilliseconds).toBe(600)
+  expect(result.upperMilliseconds).toBe(710)
+  expect(result.captureGapBounds.maximumMilliseconds).toBe(600)
+  expect(result.endCensored).toBe(false)
+  expect(result.captureGapBounds.over1000Milliseconds).toBe(0)
+})
+
+test("frozen, empty and zero-latency native boundaries cannot be filtered out", () => {
+  expect(selectionVisibleLatency(100, 5100, []).censoredMilliseconds).toBe(5000)
+  const frozen = selectionVisibleLatency(100, 5100, [{ startedEpoch: 200, endedEpoch: 300, matches: false }])
+  expect(frozen.upperMilliseconds).toBeNull()
+  expect(frozen.endCensored).toBe(true)
+  expect(frozen.startCensored).toBe(true)
+  expect(selectionVisibleLatency(100, 100, [{ startedEpoch: 100, endedEpoch: 100, matches: true }]).upperMilliseconds).toBe(0)
+  expect(() => selectionVisibleLatency(100, 5100, [{ startedEpoch: 200, endedEpoch: 199, matches: false }])).toThrow("unordered")
+})

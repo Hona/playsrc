@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import NodeFrame from "three/src/nodes/core/NodeFrame.js"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, bindStaticPropFade, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "../src/model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelTexture, bindStaticPropFade, modelEnvironmentShape, perObjectModelTextures, transferModelBindings } from "../src/model-lighting-graphs"
 import { createSourceModelLightingUniforms, createSourceModelEyeUniforms, sourceModelSurfaceNode } from "../src/source-model-lighting"
 
 test("one graph reads independent lighting and eye values in alternating object order", () => {
@@ -83,7 +83,7 @@ test("graph structure is retained across actor replacement, but isolated across 
 test("posing an already lit occurrence transfers bindings only to its replacement mesh", () => {
   const original = new THREE.Mesh(), skinned = new THREE.SkinnedMesh()
   const lighting = createSourceModelLightingUniforms(), eye = createSourceModelEyeUniforms(), environment = new THREE.CubeTexture()
-  bindModelLighting(original, lighting, eye); bindModelEnvironment(original, environment)
+  bindModelLighting(original, lighting, eye); bindModelTexture(original, "sourceEnvironment", environment)
   skinned.userData = { ...original.userData }
   transferModelBindings(original, skinned)
   expect(skinned.userData.sourceLighting).toBe(lighting)
@@ -97,13 +97,13 @@ test("local cubemap changes are per-object bindings, not new graph identities", 
   const first = new THREE.CubeTexture(), second = new THREE.CubeTexture()
   expect(modelEnvironmentShape(first)).toBe(modelEnvironmentShape(second))
   const node = TSL.cubeTexture(first)
-  expect(perObjectModelEnvironment(node, node)).not.toBe(node)
+  expect(perObjectModelTextures(node, [{ name: "sourceEnvironment", node }])).not.toBe(node)
   const a = new THREE.Mesh(), b = new THREE.Mesh()
-  bindModelEnvironment(a, first); bindModelEnvironment(b, second)
+  bindModelTexture(a, "sourceEnvironment", first); bindModelTexture(b, "sourceEnvironment", second)
   for (const [object, texture] of [[a, first], [b, second], [a, first]] as const) {
     expect(object.userData.sourceEnvironment).toBe(texture)
   }
-  bindModelEnvironment(a, second)
+  bindModelTexture(a, "sourceEnvironment", second)
   expect(a.userData.sourceEnvironment).toBe(second)
   expect(a.clone().userData).toEqual({})
   second.colorSpace = THREE.SRGBColorSpace
