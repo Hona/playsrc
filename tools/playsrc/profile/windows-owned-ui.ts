@@ -2,6 +2,7 @@
 export const WINDOWS_OWNED_UI = String.raw`
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
 function Read-UIBounds($rect) {
  if ($rect.IsEmpty) {return $null}
  foreach ($value in @($rect.X,$rect.Y,$rect.Width,$rect.Height)) {
