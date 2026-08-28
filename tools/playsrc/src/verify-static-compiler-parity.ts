@@ -38,7 +38,7 @@ for(let index=0;index<props.count;index++){
       texture.type=layout.type;texture.format=layout.format;texture.colorSpace=binding.colorRead==="srgb"?THREE.SRGBColorSpace:THREE.NoColorSpace;texture.flipY=false;owned.push(texture)
       base=swizzleModelTexture(TSL.texture(texture,TSL.uv()),input.sourceFormat);samples.set(sampleKey,base)}
     const geometry=new THREE.BufferGeometry();geometry.setAttribute("position",new THREE.BufferAttribute(primitive.positions,3));geometry.setAttribute("normal",new THREE.BufferAttribute(primitive.normals,3));geometry.setAttribute("uv",new THREE.BufferAttribute(primitive.uv,2));geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true));geometry.setIndex(new THREE.BufferAttribute(primitive.indices,1));geometries.push(geometry)
-    owner.admit(label,`${key}:${primitiveIndex}`,geometry,base,state,material.shader==="unlit-generic",(props.flags[index]&1)!==0,headers.get(modelName).descriptor.frontFace==="clockwise"?THREE.BackSide:THREE.FrontSide)
+    owner.admit(label,`${key}:${primitiveIndex}`,identity,geometry,base,state,material.shader==="unlit-generic",(props.flags[index]&1)!==0,headers.get(modelName).descriptor.frontFace==="clockwise"?THREE.BackSide:THREE.FrontSide)
   }
 }
 const result=owner.finish();require(result.draws>0,"No actual VHV draws")

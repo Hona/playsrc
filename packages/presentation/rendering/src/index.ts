@@ -3645,10 +3645,10 @@ class RendererOwner implements Renderer {
                }))
              }
            }
-           const material = new THREE.MeshBasicNodeMaterial({
+          const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#")[0]!.toLowerCase())!),
-           })
+          })
            let sampled=baseTexture?TSL.texture(baseTexture.texture,TSL.uv()):undefined
            if(sampled&&baseTexture?.input.sourceFormat===1)sampled=sampled.abgr
            else if(sampled&&baseTexture?.input.sourceFormat===11)sampled=sampled.gbar
