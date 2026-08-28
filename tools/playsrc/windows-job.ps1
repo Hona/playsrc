@@ -21,7 +21,7 @@ $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
 if ($Action -eq 'Wait') {
-  $runner = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*" }
+  $runner = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job) }
   foreach ($process in $runner) { Wait-Process -Id $process.ProcessId -Timeout 175 -ErrorAction SilentlyContinue }
   $Action = 'Status'
 }
@@ -46,7 +46,9 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
     $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
     $launchText = Get-Content -Raw -LiteralPath $launchFile
-    $taskState = $tasks | Where-Object TaskName -eq $Task | Select-Object TaskName,State
+    $selectedTask = $tasks | Where-Object TaskName -eq $Task
+    $taskState = $selectedTask | Select-Object TaskName,State
+    $taskInfo = if ($selectedTask) { Get-ScheduledTaskInfo -TaskName $Task | Select-Object LastRunTime,LastTaskResult } else { $null }
   }
   $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
   if ($launchFile -and $latestRun -and $latestRun.CreationTimeUtc -lt (Get-Item -LiteralPath $launchFile).CreationTimeUtc) { $latestRun = $null }
@@ -91,7 +93,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if ($build) { Get-Content -LiteralPath $build.Matches[0].Groups[1].Value -Tail 30 }
     }
   } else {
-    $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*")) } | Select-Object ProcessId,ParentProcessId,Name)
+    $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job))) } | Select-Object ProcessId,ParentProcessId,Name)
     $running = Test-Path (Join-Path $directory 'running')
     # Retire from the launching account, not the deliberately unelevated task.
     # Never remove a queued/running task or another job's recorded task name.
@@ -104,7 +106,8 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       }
     }
     $summary = if ($result) { $result | Select-Object commit,outcome,startedAt,finishedAt,run } else { $null }
-    @{job=$Job;task=$taskState;running=$running;processes=$processes;log=$latest.FullName;launchLog=$launchFile;launchError=$(if (!$result) { $launchText } else { $null });result=$summary} | ConvertTo-Json -Depth 8 -Compress
+    $marker = if ($running) { Get-Item (Join-Path $directory 'running') | Select-Object CreationTimeUtc,Length } else { $null }
+    @{job=$Job;task=$taskState;taskInfo=$taskInfo;running=$running;marker=$marker;latestRun=$latestRun.FullName;processes=$processes;log=$latest.FullName;launchLog=$launchFile;launchError=$(if (!$result) { $launchText } else { $null });result=$summary} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
 }
