@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
 import type { ProfileProcess } from "./process-memory"
 
 export type GpuEngineSample = { at: string; timestamp100ns: string; instance: string; pid: number; percent: number; status: number }
@@ -25,10 +26,9 @@ export async function startGpuEngineCapture(processes: readonly ProfileProcess[]
     || !Number.isInteger(seconds) || seconds < 5 || seconds > 10) throw new Error("Invalid GPU engine capture bounds")
   const ids = processes.filter(process => process.type === "GPU").map(process => process.id)
   if (!ids.length) throw new Error("No authenticated browser GPU process")
-  const counters = ids.map(id => `'\\GPU Engine(pid_${id}_*)\\Utilization Percentage'`).join(",")
   // The first sample establishes PDH's counter baseline before gameplay starts.
-  const script = `$ErrorActionPreference='Stop';$ids=@(${ids.join(",")});$rows=@();$first=$true;Get-Counter -Counter @(${counters}) -SampleInterval 1 -MaxSamples ${seconds + 2} | ForEach-Object { $set=$_;if($first){[Console]::Out.WriteLine('READY');$first=$false};foreach($s in $set.CounterSamples){if($s.InstanceName -match '^pid_([0-9]+)_' -and $ids -contains [int]$Matches[1]){$rows += [pscustomobject]@{at=$s.Timestamp.ToUniversalTime().ToString('o');timestamp100ns=[string]$s.Timestamp100NS;instance=$s.InstanceName;pid=[int]$Matches[1];percent=$s.CookedValue;status=$s.Status}} };ConvertTo-Json -InputObject @($rows) -Compress`
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+  const script = fileURLToPath(new URL("./process-gpu.ps1", import.meta.url))
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script, "-ProcessIds", ids.join(","), "-Seconds", String(seconds)], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
   let output = "", errors = "", readyResolve!: () => void, readyReject!: (error: Error) => void
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject })
   const deadline = setTimeout(() => child.kill(), (seconds + 6) * 1000)
@@ -42,6 +42,7 @@ export async function startGpuEngineCapture(processes: readonly ProfileProcess[]
     child.on("error", error => { readyReject(error); clearTimeout(deadline); resolve({ samples: [], error: String(error) }) })
     child.on("exit", code => {
       clearTimeout(deadline)
+      if (!/^READY\r?\n/.test(output)) readyReject(new Error(errors || "GPU reader exited without its baseline sample"))
       if (code !== 0) { readyReject(new Error(errors || `GPU counter reader exited ${code}`)); resolve({ samples: [], error: errors || `GPU counter reader exited ${code}` }); return }
       try { const samples = decodeGpuEngineSamples(output.replace(/^READY\r?\n/, ""), processes); resolve({ samples, error: samples.length ? null : "No owned GPU engine counters" }) }
       catch (error) { readyReject(error as Error); resolve({ samples: [], error: String(error) }) }
