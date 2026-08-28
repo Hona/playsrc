@@ -10,11 +10,13 @@ import { installNodeWorkerHost } from "../profile/node-worker-host.mjs"
 import { parseGameplayReplay } from "../profile/gameplay-replay"
 import { decodeAdmissionMetrics, MAX_ADMISSION_EVENTS, ADMISSION_EVENT_BYTES } from "../../../games/tf2/browser/src/admission-metrics"
 import { summarizeObserveStages } from "../profile/observe-stages"
+import { Session } from "node:inspector/promises"
 
 // Explicit content experiment, NOT historical replay or visible acceptance.
 // The strict replay verifier remains separate and unchanged. These commands
 // keep their original times; a changed graph necessarily defines a new world.
 const [source, capturePath, graphIdentity] = process.argv.slice(2)
+const instrument = process.argv[5] === "--stages"
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 function require(value: unknown, message: string): asserts value { if (!value) throw new Error(message) }
 require(source && capturePath && /^[a-f0-9]{64}$/.test(graphIdentity ?? ""), "Expected closure, capture and explicit diagnostic graph")
@@ -62,9 +64,21 @@ try {
   const handle = e.playsrc_compile_map(bspPointer, bsp.length, manifest.checkpoint.profile, table, sections.length, digest, 1)
   require(e.playsrc_result_error(handle) === 0, `Map compile failed: ${e.playsrc_result_error(handle)}`)
   e.playsrc_result_release(handle); e.playsrc_presentation_release(handle)
+  const profiler = instrument ? new Session() : undefined
+  if (profiler) {
+    require(e.playsrc_gameplay_replay_begin(handle) === 1, "Diagnostic journal could not begin")
+    profiler.connect()
+    await profiler.post("Profiler.enable")
+    await profiler.post("Profiler.start")
+  }
+  let cpuProfile: unknown
   const observations = [], publications = [], started = performance.now(), cpu = process.cpuUsage()
   let active = false
   for (const [index, record] of replay.records.entries()) {
+    if (profiler && !cpuProfile && performance.now() - started >= 5000) {
+      cpuProfile = await profiler.post("Profiler.stop")
+      profiler.disconnect()
+    }
     const data = record.bytes
     if (record.kind === 7) active = data.readUInt32LE(0) === 0
     else if (record.kind === 1) {
@@ -81,9 +95,12 @@ try {
       const pointer = copy(data)
       require(e[record.kind === 5 ? "playsrc_equipment_update" : "playsrc_jump_configure"](handle, pointer, data.length) === 1, "Mutation failed")
       e.playsrc_free(pointer, data.length)
-    } else require(record.kind === 2 || record.kind === 3, "Unsupported journal command")
+    } else if (record.kind === 8) require(data.readUInt32LE(0) === 1, "Incomplete journal footer")
+    else require(record.kind === 2 || record.kind === 3, `Unsupported journal command ${record.kind}`)
   }
   const milliseconds = performance.now() - started, cpuMicroseconds = process.cpuUsage(cpu)
+  if (profiler && !cpuProfile) { cpuProfile = await profiler.post("Profiler.stop"); profiler.disconnect() }
+  if (instrument) require(e.playsrc_gameplay_replay_stop(handle) === 1, "Diagnostic journal incomplete")
   const length = e.playsrc_admission_metrics_length()
   require(length <= MAX_ADMISSION_EVENTS * ADMISSION_EVENT_BYTES, "Admission bound exceeded")
   const pointer = e.playsrc_alloc(Math.max(1, length)) >>> 0
@@ -92,7 +109,8 @@ try {
   const result = { schema: "playsrc-observe-content-experiment-v1", visibleAcceptance: false, historicalReplayAcceptance: false,
     graphIdentity, historicalGraphIdentity: capture.identity.applicationGeneration.resourceRoot, commandJournal: link.sha256,
     configurationBytes, configurationSha256, generatedClosure: runtime.manifest, engine: process.versions,
-    milliseconds, cpuMicroseconds, observations, publications, admission: { events, dropped: e.playsrc_admission_metrics_dropped() }, stages: summarizeObserveStages(events) }
+    milliseconds, cpuMicroseconds, instrument, observations, publications, admission: { events, dropped: e.playsrc_admission_metrics_dropped() }, stages: summarizeObserveStages(events) }
+  if (cpuProfile) await writeFile(path.join(directory, "cpu.json"), JSON.stringify(cpuProfile))
   await writeFile(path.join(directory, "result.json"), JSON.stringify(result))
   console.log(JSON.stringify({ directory, milliseconds, cpuMicroseconds, stages: result.stages.phases.map(({ name, wall }) => ({ name, wall })) }, null, 2))
 } finally { clearTimeout(deadline); await runtime.close(); restore(); await releaseHeadedProfileLock(lockPath, lock.token) }
