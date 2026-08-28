@@ -88,8 +88,17 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
   const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
+  const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
-  const native = async () => { if (nativeReader) requireStartupNative(await nativeReader.read()) }
+  const diagnoseUi = async (stage: string) => {
+    if (!nativeReader) throw new Error("Owned UI diagnostic reader is unavailable")
+    const record = await nativeReader.diagnoseOwnedWindow(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-${stage}.png`))
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-${stage}.json`), JSON.stringify({ diagnosticOnly: true, record }, null, 2))
+  }
+  const native = async () => { if (nativeReader) {
+    const value = await nativeReader.read()
+    try { requireStartupNative(value) } catch (error) { if (ownedUiDiagnostic) await diagnoseUi("guard-failure"); throw error }
+  } }
   if (inputDiagnostic) guardStartupInput(page, native)
   if (process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1") await page.addInitScript(() => {
     const state = { events: [] as object[], dropped: 0 }
@@ -403,6 +412,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
     if (lightmapAudit && !inputDiagnostic) await page.bringToFront()
     await native()
+    if (ownedUiDiagnostic) { await diagnoseUi("main-menu"); return }
     if (lightmapAudit) await page.evaluate(async url => {
       const module = await import(/* @vite-ignore */ url)
       ;(globalThis as any).__playsrcLightmapEvidence = module.installLightmapUploadEvidence()
