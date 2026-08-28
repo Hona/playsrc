@@ -15,6 +15,7 @@ export function borrowWorldLightmapTextures(lightmap: RuntimeLightmap, source: W
   if (image.data !== lightmap.flat || image.width !== lightmap.width || image.height !== lightmap.height
     || texture.type !== THREE.FloatType || texture.format !== THREE.RGBAFormat || texture.colorSpace !== THREE.NoColorSpace
     || texture.channel !== 1 || texture.flipY || texture.generateMipmaps || texture.mipmaps.length
+    || texture.anisotropy !== 1 || texture.premultiplyAlpha || texture.unpackAlignment !== 1 || texture.internalFormat !== null
     || texture.minFilter !== THREE.NearestFilter || texture.magFilter !== THREE.NearestFilter
     || texture.wrapS !== THREE.ClampToEdgeWrapping || texture.wrapT !== THREE.ClampToEdgeWrapping) return
   return source
