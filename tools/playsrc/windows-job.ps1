@@ -21,9 +21,25 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
+function OwnedRunner([string]$ownerFile) {
+ if(!(Test-Path -LiteralPath $ownerFile)){return $null}
+ $identity=Get-Content -Raw -LiteralPath $ownerFile|ConvertFrom-Json
+ if(!$identity.childPid){return $null}
+ try {$process=[System.Diagnostics.Process]::GetProcessById([int]$identity.childPid)}catch [ArgumentException]{return $null}
+ try {$null=$process.Handle;$created=([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}catch [InvalidOperationException]{return $null}
+ if(!$identity.childStartedEpoch -or $created -ne $identity.childStartedEpoch){throw 'Owned launcher process identity changed; refusing a PID-only wait'}
+ return $process
+}
 if ($Action -eq 'Wait') {
-  $runner = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job) }
-  foreach ($process in $runner) { Wait-Process -Id $process.ProcessId -Timeout 175 -ErrorAction SilentlyContinue }
+  if($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$'){throw 'Wait requires this job current recorded task'}
+  $launch=Join-Path $directory "$($Matches[1])-launch.log"
+  if(!(Test-Path -LiteralPath $launch)){throw 'Task is not recorded for this job'}
+  $deadline=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+175000
+  $ownerFile=[IO.Path]::ChangeExtension($launch,'owner.json')
+  while(!(Test-Path -LiteralPath $ownerFile) -and (Get-Item -LiteralPath $launch).Length -eq 0 -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 100}
+  $runner=OwnedRunner $ownerFile
+  if($runner -and !$runner.WaitForExit([int][Math]::Max(1,$deadline-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()))){throw 'Owned job wait exceeded175seconds'}
+  if($runner){$runner.Dispose()}
   $Action = 'Status'
 }
 if ($Action -eq 'Doctor') {
@@ -39,7 +55,7 @@ if ($Action -eq 'Doctor') {
   exit $LASTEXITCODE
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
-  $tasks = if ($Action -in 'Status','Recover') { @(Get-ScheduledTask -TaskName 'playsrc-local-job-*' -ErrorAction SilentlyContinue) } else { @() }
+  $tasks = if ($Action -in 'Status','Recover' -and $Task) { @(Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
   $launchFile = $null
   $launchText = $null
@@ -77,6 +93,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
     }
     if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){$files+=@{name='job/bootstrap.log';path="$launchFile.bootstrap.log"}}
     if($launchFile -and (Test-Path -LiteralPath "$launchFile.metadata.json")){$files+=@{name='job/launch-metadata.json';path="$launchFile.metadata.json"}}
     $consoleOwner=Join-Path $result.run 'console-owner.json';if(Test-Path -LiteralPath $consoleOwner){$files+=@{name='job/console-owner.json';path=$consoleOwner}}
     $consoleLock=Join-Path $result.run 'console-lock.json';if(Test-Path -LiteralPath $consoleLock){$files+=@{name='job/console-lock.json';path=$consoleLock}}
@@ -118,7 +135,10 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if ($build) { Get-Content -LiteralPath $build.Matches[0].Groups[1].Value -Tail 30 }
     }
   } else {
-    $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job))) } | Select-Object ProcessId,ParentProcessId,Name)
+    $owned=if($launchFile){OwnedRunner ([IO.Path]::ChangeExtension($launchFile,'owner.json'))}else{$null}
+    $processes=@(if($owned -and !$owned.HasExited){@{ProcessId=$owned.Id;role='owned-local-job'}})
+    if($owned){$owned.Dispose()}
+    if($Action -eq 'Recover'){$processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*local-job.ts*' -and $_.CommandLine.Contains($Job))) } | Select-Object ProcessId,ParentProcessId,Name)}
     $running = Test-Path (Join-Path $directory 'running')
     if ($Action -eq 'Recover') {
       if (!$Task -or !$selectedTask -or $selectedTask.State -ne 'Ready' -or !$taskInfo.LastTaskResult -or $processes.Count -or !$running -or $result) { throw 'Recovery requires this recorded failed task, no live job processes, and no completed result' }

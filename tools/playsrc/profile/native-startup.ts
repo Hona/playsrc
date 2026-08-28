@@ -83,7 +83,7 @@ function ForegroundReceipt {
 $self=[System.Diagnostics.Process]::GetCurrentProcess()
 $helper=@{pid=$self.Id;sessionId=$self.SessionId;startedEpoch=([DateTimeOffset]$self.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}
 while (($line=[Console]::ReadLine()) -ne $null) {
- $request=$null;$before=$null;$after=$null;$start=$null;$end=$null;$desktop=$null
+ $request=$null;$before=$null;$after=$null;$start=$null;$end=$null;$desktop=$null;$windows=@()
  $received=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
  try {
   $request=$line|ConvertFrom-Json
@@ -139,8 +139,8 @@ while (($line=[Console]::ReadLine()) -ne $null) {
    if($null -eq $after){try {$after=ForegroundReceipt} catch {}}
    $result=@{id=$request.id;error=$failure}
  }
- $result.receipt=@{schema='playsrc-native-capture-receipt-v1';privacy='private-native-owner';receivedEpoch=$received;finishedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();sequence=$request.id;browserPid=$request.pid;helper=$helper;before=$before;after=$after;captureStartedEpoch=$start;captureEndedEpoch=$end;desktop=$desktop}
-  [Console]::WriteLine(($result|ConvertTo-Json -Depth 12 -Compress))
+ $result.receipt=@{schema='playsrc-native-capture-receipt-v1';privacy='private-native-owner';receivedEpoch=$received;finishedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();sequence=$request.id;browserPid=$request.pid;helper=$helper;before=$before;after=$after;windows=$windows;captureStartedEpoch=$start;captureEndedEpoch=$end;desktop=$desktop}
+ [Console]::WriteLine(($result|ConvertTo-Json -Depth 12 -Compress))
 }
 `
   // Win32 command lines are bounded. Keep this owned helper in configured

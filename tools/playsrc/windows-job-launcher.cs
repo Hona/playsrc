@@ -31,29 +31,29 @@ public static class PlaysrcJobLauncher {
    string directory=Path.GetDirectoryName(args[0]);
    if(!String.Equals(Path.GetFileName(directory),request[5],StringComparison.OrdinalIgnoreCase)||!String.Equals(Path.Combine(directory,"checkout"),request[1],StringComparison.OrdinalIgnoreCase))return 2;
   } catch {return 2;}
-  using(var log=new StreamWriter(new FileStream(request[2],FileMode.Create,FileAccess.Write,FileShare.Read))) {
+  using(var log=new StreamWriter(new FileStream(request[2],FileMode.Create,FileAccess.Write,FileShare.Read)))
+  using(var errors=new StreamWriter(new FileStream(request[2]+".bootstrap.log",FileMode.CreateNew,FileAccess.Write,FileShare.Read))) {
    object gate=new object();bool closed=false;
    var arguments=new StringBuilder();for(int i=3;i<request.Length;i++){if(i>3)arguments.Append(' ');arguments.Append(Quote(request[i]));}
    var start=new ProcessStartInfo(request[0],arguments.ToString());start.WorkingDirectory=request[1];
    start.UseShellExecute=false;start.CreateNoWindow=true;start.RedirectStandardOutput=true;start.RedirectStandardError=true;
    using(var child=new Process()) {
     child.StartInfo=start;var stdoutDone=new ManualResetEventSlim(false);var stderrDone=new ManualResetEventSlim(false);
-    DataReceivedEventHandler output=(sender,e)=>{if(e.Data!=null)lock(gate){if(!closed){log.WriteLine(e.Data);log.Flush();}}};
-    child.OutputDataReceived+=(sender,e)=>{output(sender,e);if(e.Data==null)stdoutDone.Set();};
-    child.ErrorDataReceived+=(sender,e)=>{output(sender,e);if(e.Data==null)stderrDone.Set();};
+    child.OutputDataReceived+=(sender,e)=>{if(e.Data==null)stdoutDone.Set();else lock(gate){if(!closed){log.WriteLine(e.Data);log.Flush();}}};
+    child.ErrorDataReceived+=(sender,e)=>{if(e.Data==null)stderrDone.Set();else lock(gate){if(!closed){errors.WriteLine(e.Data);errors.Flush();}}};
     try {
      if(!child.Start())return 1;
      var self=Process.GetCurrentProcess();
-     File.WriteAllText(Path.ChangeExtension(request[2],"owner.json"),"{\"privacy\":\"private-native-owner\",\"pid\":"+self.Id+",\"childPid\":"+child.Id+",\"sessionId\":"+self.SessionId+",\"consoleWindow\":"+GetConsoleWindow().ToInt64()+",\"createNoWindow\":true,\"at\":"+DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()+"}");
+     File.WriteAllText(Path.ChangeExtension(request[2],"owner.json"),"{\"privacy\":\"private-native-owner\",\"pid\":"+self.Id+",\"childPid\":"+child.Id+",\"childStartedEpoch\":"+new DateTimeOffset(child.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()+",\"sessionId\":"+self.SessionId+",\"consoleWindow\":"+GetConsoleWindow().ToInt64()+",\"createNoWindow\":true,\"at\":"+DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()+"}");
      child.BeginOutputReadLine();child.BeginErrorReadLine();
      if(!child.WaitForExit(175000)) {
       if(!child.HasExited){var stop=new ProcessStartInfo("taskkill.exe","/PID "+child.Id+" /T /F");stop.UseShellExecute=false;stop.CreateNoWindow=true;using(var kill=Process.Start(stop)){kill.WaitForExit(1000);}}
-      child.WaitForExit(1000);lock(gate){log.WriteLine("Owned scheduled command exceeded its175second limit");}return 124;
+      child.WaitForExit(1000);lock(gate){errors.WriteLine("Owned scheduled command exceeded its175second limit");}return 124;
      }
-     if(!stdoutDone.Wait(500)||!stderrDone.Wait(500)){lock(gate){log.WriteLine("Owned bootstrap output did not close after process exit");}return 1;}
+     if(!stdoutDone.Wait(500)||!stderrDone.Wait(500)){lock(gate){errors.WriteLine("Owned bootstrap output did not close after process exit");}return 1;}
      return child.ExitCode;
-    } catch(Exception error){lock(gate){log.WriteLine(error.Message);}return 1;}
-    finally{lock(gate){closed=true;log.Flush();}}
+    } catch(Exception error){lock(gate){errors.WriteLine(error.Message);}return 1;}
+    finally{lock(gate){closed=true;log.Flush();errors.Flush();}}
    }
   }
  }
