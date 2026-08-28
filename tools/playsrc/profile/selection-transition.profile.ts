@@ -65,6 +65,14 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   const windows = process.platform === "win32" ? await startupNativeReader(page, sourceCacheDir) : undefined
   if (!native && !windows) throw new Error("Native selection pixel sampling requires a configured macOS or Windows desktop")
   const captures: any[] = [], references: any[] = [], errors: string[] = []
+  const loadingAdmissions: unknown[] = []
+  let loadingTimer: ReturnType<typeof setInterval> | undefined, loadingObservation: Promise<void> | undefined, loadingAdmissionFailure: unknown
+  const admitLoading = async () => {
+    const record = windows ? await windows.read() : await native!.read()
+    loadingAdmissions.push(record)
+    if (windows) requireStartupNative(record as Awaited<ReturnType<typeof windows.read>>)
+    else requireMacPageAdmission(record as Awaited<ReturnType<NonNullable<typeof native>["read"]>>)
+  }
   page.on("pageerror", error => errors.push(error.message))
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => {
@@ -140,10 +148,21 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   try {
     await page.goto("/", { waitUntil: "domcontentloaded" })
     await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu")
+    // Previously only selection itself had native admission. Verify the
+    // pre-selection load too: a foreground handoff during fetch/compile must
+    // not be attributed to this renderer optimization.
+    await admitLoading()
+    loadingTimer = setInterval(() => {
+      if (loadingObservation || loadingAdmissionFailure) return
+      loadingObservation = admitLoading().catch(error => { loadingAdmissionFailure = error }).finally(() => { loadingObservation = undefined })
+    }, 1000)
     loadingControl.boundary("map-request")
     await command("map pl_upward")
     await expect(page.locator("main")).toHaveAttribute("data-team-selection-models", /(?=.*reddoor:[^|]+:\d+:\d+)(?=.*bluedoor:[^|]+:\d+:\d+)/, { timeout: 40_000 })
     loadingControl.boundary("team-models")
+    clearInterval(loadingTimer)
+    await loadingObservation
+    if (loadingAdmissionFailure) throw loadingAdmissionFailure
     if (warm) {
       await page.locator(`.team-selection-layer [data-vgui-name='${team === "red" ? "teambutton0" : "teambutton1"}']`).click()
       await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "true")
@@ -236,6 +255,10 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     // acceptance requires the matched before/after comparison; the former
     // arbitrary250ms default was not an SDK or user-supplied timing contract.
   } finally {
+    clearInterval(loadingTimer)
+    await loadingObservation
+    await writeFile(path.join(directory, "selection-loading-admission.json"), JSON.stringify({ records: loadingAdmissions,
+      failure: loadingAdmissionFailure ? String(loadingAdmissionFailure) : null }))
     await writeFile(path.join(directory, "selection-loading-control.json"), JSON.stringify(loadingControl.stop()))
     sampling = false
     await captureLoop?.catch(() => {})
