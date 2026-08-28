@@ -1953,6 +1953,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.payload_constraint_blocked()
     }
 
+    pub fn entity_world_transform(&self, identity: u32) -> Option<playsrc_entity::Transform> {
+        self.map.entity_world_transform(identity)
+    }
+
+    pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
+        self.map.entity_descends_from(identity, ancestor)
+    }
+
     pub fn tick(&self) -> u64 {
         self.tick
     }

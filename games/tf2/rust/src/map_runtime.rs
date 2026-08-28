@@ -1402,8 +1402,8 @@ impl MapRuntime {
         let removed = self.world.phase(tick, &removals)?;
         let mut result = self.consume(removed)?;
         self.world.clear_event_queue();
-        let spawns: Vec<_> = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().map(WorldCommand::Spawn).collect();
-        let spawned = self.world.phase(tick, &spawns)?;
+        let spawns = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().collect();
+        let spawned = self.world.phase(tick, &[WorldCommand::SpawnMapEntities(spawns)])?;
         self.source_handles.clear();
         for handle in self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)) {
             if let Some(entity) = self.world.entity(handle) { self.source_handles.insert(entity.source_index as u32, handle); }
@@ -1940,6 +1940,21 @@ impl MapRuntime {
                 })
             })
             .collect()
+    }
+
+    pub fn entity_world_transform(&self, identity: u32) -> Option<Transform> {
+        self.world.entity(*self.source_handles.get(&identity)?).map(|entity| entity.world_transform)
+    }
+
+    pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
+        let Some(handle) = self.source_handles.get(&identity) else { return false; };
+        let Some(ancestor) = self.source_handles.get(&ancestor) else { return false; };
+        let mut parent = self.world.entity(*handle).and_then(|entity| entity.parent);
+        while let Some(handle) = parent {
+            if handle == *ancestor { return true; }
+            parent = self.world.entity(handle).and_then(|entity| entity.parent);
+        }
+        false
     }
 
     fn consume(&mut self, batch: TransitionBatch) -> Result<MapPhase, RuntimeFailure> {
@@ -2501,6 +2516,7 @@ mod tests {
             {"classname" "info_target" "targetname" "preserved" "origin" "1 2 3"}
             {"classname" "func_door" "targetname" "door" "model" "*1" "origin" "10 0 0" "movedir" "0 0 0" "speed" "100"}
             {"classname" "logic_relay" "targetname" "old_relay" "OnTrigger" "door,Open,,0,-1"}
+            {"classname" "prop_dynamic" "targetname" "gate_model" "parentname" "door" "model" "models/gate.mdl" "origin" "12 0 0"}
         "#, playsrc_entity::Limits::default()).unwrap();
         let mut map = MapRuntime::compile(&graph, 0.015, 7, vec![ModelBounds { model: 1, mins: [-8.0;3], maxs: [8.0;3] }]).unwrap();
         let door = map.source_handle(3).unwrap();
@@ -2513,6 +2529,14 @@ mod tests {
         assert_eq!(map.source_handle(2), Some(preserved));
         assert_eq!(map.player, player);
         assert_eq!(map.world.entity(map.source_handle(3).unwrap()).unwrap().world_transform.origin, [10.0,0.0,0.0]);
+        let child = map.world.entity(map.source_handle(5).unwrap()).unwrap();
+        assert_eq!(child.parent, map.source_handle(3), "round recreation must resolve the authored hierarchy again");
+        assert_eq!(child.world_transform.origin, [12.0,0.0,0.0]);
+        map.world.phase(3, &[WorldCommand::SetWorldTransform { entity: map.source_handle(3).unwrap(), transform: Transform { origin: [74.0,0.0,0.0], angles: [0.0;3] } }]).unwrap();
+        assert_eq!(map.entity_world_transform(5).unwrap().origin, [76.0,0.0,0.0]);
+        map.restart_control_point_map(4).unwrap();
+        assert_eq!(map.world.entity(map.source_handle(5).unwrap()).unwrap().parent, map.source_handle(3));
+        assert_eq!(map.entity_world_transform(5).unwrap().origin, [12.0,0.0,0.0]);
         let later = map.world.phase(600, &[]).unwrap();
         assert!(!later.records.iter().any(|record| matches!(&record.transition, Transition::Output { output, .. } if output == b"OnTrigger")));
     }
