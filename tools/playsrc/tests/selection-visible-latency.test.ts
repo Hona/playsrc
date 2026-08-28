@@ -1,7 +1,18 @@
 import { expect, test } from "bun:test"
 import { selectionVisibleLatency } from "../profile/selection-visible-latency"
 import { nativeSelectionRect } from "../profile/selection-transition-analysis"
-import { compareSelectionIntervals } from "../profile/selection-comparison"
+import { compareSelectionIntervals, selectionLoadingInputs, selectionLoadingPressure } from "../profile/selection-comparison"
+
+test("loading controls require exact input and completed transfer evidence, not equal byte counts alone", () => {
+  const measurement = { evidence: { loadingIdentity: [{ kind: "request", objects: { bsp: { sha256: "a" } }, wasm: { sha256: "b" }, renderLevel: 0 },
+    { kind: "resource-input", sha256: "c", byteLength: 100 }] } }
+  const control = { requests: [{ path: `/objects/sha256/${"a".repeat(64)}`, finished: 10, encodedBytes: 100, diskCache: false }],
+    pressure: [{ epoch: 0, cpus: [{ user: 0, sys: 0, idle: 0 }] }, { epoch: 1000, freeBytes: 100, totalBytes: 1000, cpus: [{ user: 10, sys: 10, idle: 80 }] }] }
+  expect(selectionLoadingInputs(measurement, control).transfers[0].encodedBytes).toBe(100)
+  expect(selectionLoadingPressure(control)[0]!.busyFraction).toBe(.2)
+  expect(() => selectionLoadingInputs({ evidence: {} }, control)).toThrow("not retained")
+  expect(() => selectionLoadingInputs(measurement, { requests: [{ ...control.requests[0], finished: undefined }] })).toThrow("incomplete")
+})
 
 test("matched selection acceptance rejects censored and measurably slower transitions without hiding overlap", () => {
   const before = [{ scene: "class", input: "team", lowerMilliseconds: 2000, upperMilliseconds: 2100, endCensored: false },
