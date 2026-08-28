@@ -30,7 +30,7 @@ import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./sn
 import { macPageAdmission, requireMacPageAdmission, awaitMacBrowserOverlay, type MacPageAdmission } from "./macos-page-admission"
 import { auditEngineerMenus } from "./engineer-menu-audit"
 import { auditSpriteOrientation } from "./sprite-orientation-audit"
-import { startupNativeReader } from "./native-startup"
+import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { auditDrawPlaneParity } from "./draw-plane-parity"
 
@@ -49,6 +49,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
+  // This workflow already owns the checked machine-wide lock. Admit genuine
+  // physical-console idle before any gameplay input, also on the local desktop.
+  if (process.platform === "darwin") {
+    const idleMilliseconds = await startupConsoleIdle(sourceCacheDir)
+    console.log(`PLAYSRC_NATIVE_IDLE ${JSON.stringify({ at: Date.now(), idleMilliseconds })}`)
+    if (!Number.isFinite(idleMilliseconds) || idleMilliseconds < 2000) throw new Error("Gameplay profiling requires two seconds of genuine physical-console idle")
+  }
   const nativeReader = await macPageAdmission(page, sourceCacheDir)
   const windowsReader = process.platform === "win32" ? await startupNativeReader(page, sourceCacheDir) : null
   closeNativeAdmission = async () => { await nativeReader?.close(); await windowsReader?.close() }
