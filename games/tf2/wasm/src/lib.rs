@@ -16716,7 +16716,8 @@ mod tests {
         eprintln!("snapshot encoding: bytes={} {metrics:?} sha256={:x}", encoded.len(), Sha256::digest(&encoded));
         assert!(metrics.requests <= 10 && metrics.bytes <= 5368, "snapshot encoder retains redundant staging/growth");
         assert_eq!(metrics.live, 1280);
-        let expected_hash = format!("{:x}", Sha256::digest(&encoded));
+        let expected_hash = "ab86a94b607e9d76a9d778e01818e0358658eee5f3f2f19131573c69fffa5aeb";
+        assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
         assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
         assert_eq!(encoded.len(), 1264);
         assert_eq!(&encoded[1128..1144], &[0; 16]);
