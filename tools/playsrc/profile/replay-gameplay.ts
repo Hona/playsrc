@@ -22,13 +22,17 @@ export function verifyReplayHash(actual: string, recorded: string, key: string, 
 // This is a CPU/WASM replay, not a hidden browser or a presentation benchmark.
 // Build the opt-in collision-replay WASM feature; ordinary game builds contain
 // neither the direct-sweep selector nor its per-plane diagnostics.
-export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string) {
+export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string, configuredResourceRoot?: string) {
   const started = performance.now()
   const captureBytes = await readFile(manifestPath)
   require(path.basename(manifestPath) === `${hash(captureBytes)}.manifest.json`, "Capture manifest hash mismatch")
   const capture = JSON.parse(captureBytes.toString())
   const linked = capture.identity?.gameplayReplay
-  const graphIdentity = capture.identity?.applicationGeneration?.resourceRoot
+  const capturedResourceRoot = capture.identity?.applicationGeneration?.resourceRoot
+  // An explicit configured root is authenticated below against the recorded
+  // resource-section digest/size, BSP, initial world and complete transcript.
+  // Never discover another graph or silently repair historical capture identity.
+  const graphIdentity = configuredResourceRoot ?? capturedResourceRoot
   require(["playsrc-compositor-evidence-v1", "playsrc-compositor-evidence-v2", "playsrc-compositor-evidence-v3"].includes(capture.schema) && linked?.complete && /^[0-9a-f]{64}\.replay\.json$/u.test(linked.manifestFile)
     && /^[0-9a-f]{64}$/u.test(graphIdentity), "Replay must be linked to the recorded compiled content root")
   const manifestBytes = await readFile(path.join(path.dirname(manifestPath), linked.manifestFile))
@@ -63,6 +67,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     const loaded = await WebAssembly.instantiate(reference && baseline ? baseline : wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })
     const e = loaded.instance.exports as Record<string, any>
     require(typeof e.playsrc_collision_replay_mode === "function", "Replay requires the collision-replay diagnostic build")
+    const initialLiveBytes = e.playsrc_memory_bytes(0) >>> 0
     const copy = (bytes: Uint8Array) => {
       const pointer = e.playsrc_alloc(bytes.length) >>> 0
       new Uint8Array(e.memory.buffer, pointer, bytes.length).set(bytes)
@@ -218,27 +223,41 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
         admission = { dropped: e.playsrc_admission_metrics_dropped(), events: decodeAdmissionMetrics(new DataView(e.memory.buffer, pointer, length)) }
       } finally { e.playsrc_free(pointer, Math.max(1, length)) }
     }
-    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, verifiedAttackPublications, activeTicks, mutations, historicalHashMismatches, admission,
+    const ownership = { initialLiveBytes, beforeDisposeLiveBytes: e.playsrc_memory_bytes(0) >>> 0,
+      highWaterBytes: e.playsrc_memory_bytes(1) >>> 0, afterHandleDisposeLiveBytes: 0, afterInputReleaseLiveBytes: 0,
+      scope: "WASM allocator logical live/high-water bytes, including compile/setup and retained diagnostic owners; not exclusive process RSS or active-only peaks" }
+    passes.push({ mode: reference ? (baseline ? "supplied-baseline-build" : displacement ? "direct-displacement-reference" : "lazy-direct-sweep-reference") : "retained-candidate", compileMilliseconds, verifiedTicks, verifiedObserves, verifiedAttackPublications, activeTicks, mutations, historicalHashMismatches, admission, ownership,
       cpuMicroseconds: process.cpuUsage(cpuStarted), rssBefore, rssAfter: process.memoryUsage().rss,
       tickMilliseconds: summarizeDistribution(tickTimes), observeMilliseconds: summarizeDistribution(observations.map(value => value.milliseconds)), observations,
       counters: counterTotals,
       authoritativeTickGroups: groups, liveBytes: e.playsrc_memory_bytes(0) >>> 0, linearBytes: e.memory.buffer.byteLength })
     e.playsrc_dispose(handle)
+    ownership.afterHandleDisposeLiveBytes = e.playsrc_memory_bytes(0) >>> 0
     for (const section of sections) e.playsrc_resource_release(section.pointer, section.length)
     e.playsrc_free(table, sectionBytes.length); e.playsrc_free(digest, 32); e.playsrc_free(bspPointer, bsp.length)
+    ownership.afterInputReleaseLiveBytes = e.playsrc_memory_bytes(0) >>> 0
   }
   return { schema: "playsrc-gameplay-replay-comparison-v1", historicalIncident: false, replaySha256: manifest.sha256, wasmSha256: hash(wasm), ticksOnly,
+    resourceIdentity: { capturedResourceRoot, configuredResourceRoot: configuredResourceRoot ?? null, verifiedResourceRoot: graphIdentity, target: graph.target },
     comparison: baseline ? "two-builds-on-recorded-commands" : "recorded-publications", baselineWasmSha256: baseline ? hash(baseline) : null,
     counterNames: ["snapshotQueries", "hierarchyNodes", "objectCandidates", "convexSweeps", "clipPlanes", "vertexProjections", "displacementNodes", "displacementTriangles", "displacementSweeps", "displacementEdgeProjections", "displacementIntervalHits"], passes, totalMilliseconds: performance.now() - started }
 }
 
-if (import.meta.main) {
-  const [identity, ...modes] = process.argv.slice(2)
-  if (!identity || !/^[0-9a-f]{64}$/u.test(identity) || modes.some(mode => mode !== "--ticks" && mode !== "--displacement" && !mode.startsWith("--baseline-wasm="))) throw new Error("Usage: bun run replay:gameplay <compositor-manifest-sha256> [--ticks] [--displacement] [--baseline-wasm=<path>]")
+export function parseReplayArguments(arguments_: readonly string[]) {
+  const [identity, ...modes] = arguments_
+  if (!identity || !/^[0-9a-f]{64}$/u.test(identity) || modes.some(mode => mode !== "--ticks" && mode !== "--displacement" && !mode.startsWith("--baseline-wasm=") && !/^--resource-root=[0-9a-f]{64}$/u.test(mode) && mode !== "--target=ctf_2fort" && mode !== "--target=pl_upward")) throw new Error("Usage: bun run replay:gameplay <compositor-manifest-sha256> [--ticks] [--displacement] [--baseline-wasm=<path>] [--target=pl_upward|ctf_2fort] [--resource-root=<configured-sha256>]")
+  require(new Set(modes.map(mode => mode.split("=", 1)[0])).size === modes.length, "Duplicate replay option")
   const baseline = modes.find(mode => mode.startsWith("--baseline-wasm="))?.slice("--baseline-wasm=".length)
   require(baseline === undefined || baseline.length > 0, "Baseline WASM path is empty")
+  const resourceRoot = modes.find(mode => mode.startsWith("--resource-root="))?.slice("--resource-root=".length)
+  return { identity, baseline, resourceRoot, target: modes.includes("--target=ctf_2fort") ? "ctf_2fort" : "pl_upward",
+    ticksOnly: modes.includes("--ticks"), displacement: modes.includes("--displacement") }
+}
+
+if (import.meta.main) {
+  const { identity, baseline, resourceRoot, target, ticksOnly, displacement } = parseReplayArguments(process.argv.slice(2))
   const config = await loadLocalConfig()
-  const manifest = path.join(config.sourceCacheDir, "profiles", "upward-training-bots", "compositor-evidence", `${identity}.manifest.json`)
+  const manifest = path.join(config.sourceCacheDir, "profiles", target === "ctf_2fort" ? "2fort-startup" : "upward-training-bots", "compositor-evidence", `${identity}.manifest.json`)
   const wasm = await buildCollisionReplay(config)
-  console.log(JSON.stringify(await replayGameplay(manifest, wasm, modes.includes("--ticks"), modes.includes("--displacement"), baseline), null, 2))
+  console.log(JSON.stringify(await replayGameplay(manifest, wasm, ticksOnly, displacement, baseline, resourceRoot), null, 2))
 }

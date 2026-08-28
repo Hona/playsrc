@@ -113,7 +113,14 @@ fn fixture(extra_pairs: usize) -> EntityWorld {
     .0
 }
 
-fn run(extra_pairs: usize) -> (Metrics, Metrics, Metrics) {
+#[derive(Clone, Copy, Debug, Default)]
+struct PhaseTotals {
+    requests: usize,
+    bytes: usize,
+    maximum_extra_live_bytes: isize,
+}
+
+fn run(extra_pairs: usize) -> (PhaseTotals, Metrics, Metrics) {
     let mut world = fixture(extra_pairs);
     let subject = world.resolve(b"subject", None, None, None)[0];
     let zone = world.resolve(b"zone", None, None, None)[0];
@@ -121,7 +128,7 @@ fn run(extra_pairs: usize) -> (Metrics, Metrics, Metrics) {
     let definition: &Entity = &world.entity(zone).unwrap().definition;
     let (_, copy) = measure(|| black_box(definition.clone()));
     let (_, runtime_copy) = measure(|| black_box(world.entity(zone).unwrap().clone()));
-    let mut total = Metrics::default();
+    let mut total = PhaseTotals::default();
     for tick in 1..=120 {
         let checkpoint = world.snapshot().unwrap();
         let commands = [
@@ -153,7 +160,7 @@ fn run(extra_pairs: usize) -> (Metrics, Metrics, Metrics) {
         let (batch, m) = measure(|| world.phase(tick, &commands).unwrap());
         total.requests += m.requests;
         total.bytes += m.bytes;
-        total.peak = total.peak.max(m.peak);
+        total.maximum_extra_live_bytes = total.maximum_extra_live_bytes.max(m.peak);
         let after = world.snapshot().unwrap();
         // Complete bytes, transitions and rollback, with the original snapshot
         // retained while contact and mover state detach from it.
@@ -194,7 +201,7 @@ fn checkpoint_mutation_cost_is_independent_of_authored_definition_size() {
     assert_eq!(large_lifetime.live, 0, "all fixture ownership released");
     assert_eq!(small.requests, large.requests);
     assert_eq!(small.bytes, large.bytes);
-    assert_eq!(small.peak, large.peak);
+    assert_eq!(small.maximum_extra_live_bytes, large.maximum_extra_live_bytes);
     assert_eq!(small_runtime.requests, large_runtime.requests);
     assert_eq!(small_runtime.bytes, large_runtime.bytes);
 }
