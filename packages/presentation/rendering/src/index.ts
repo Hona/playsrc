@@ -2647,7 +2647,7 @@ class RendererOwner implements Renderer {
           checkOwner()
         }
         this.#setSceneFog(this.#fog(fog))
-        if (world.children.length) await prepareWorldViewPipelines(backend,world,this.#camera,this.#scene,world,this.#waterPreparationTargets())
+        if (world.children.length) await prepareWorldViewPipelines(backend,world,this.#camera,this.#scene,world,this.#waterPreparationTargets(),this.#waterPreparationFogs())
       })
       checkOwner()
       for (const { key, retained } of staged) {
@@ -2693,7 +2693,7 @@ class RendererOwner implements Renderer {
         await this.#particleVisibility.prepare()
         const clipping=createWorldClipGroup(this.#waterClipPlane)
         clipping.add(owner.particlePipelineMeshes)
-        try{if (owner.particlePipelineMeshes.children.length) await prepareWorldViewPipelines(backend,clipping,this.#camera,this.#scene,clipping,this.#waterPreparationTargets())}
+        try{if (owner.particlePipelineMeshes.children.length) await prepareWorldViewPipelines(backend,clipping,this.#camera,this.#scene,clipping,this.#waterPreparationTargets(),this.#waterPreparationFogs())}
         finally{clipping.remove(owner.particlePipelineMeshes)}
         if("legacyVisuals" in owner&&owner.legacyVisuals?.length)await owner.legacyVisuals[0]!.prepareMaterials(backend,this.#camera,this.#scene,this.#waterClipPlane,this.#waterPreparationTargets())
       })
@@ -2728,6 +2728,12 @@ class RendererOwner implements Renderer {
 
   #waterPreparationTargets(scene=this.#active):THREE.RenderTarget[]{
     return scene?[scene.reflectionTarget,scene.refractionTarget].filter((target):target is THREE.RenderTarget=>target!==null):[]
+  }
+
+  #waterPreparationFogs(scene=this.#active):(THREE.Fog|null)[]{
+    // Height-fog refraction uses the Source fragment uniforms and disables
+    // Three fog. Ordinary underwater views use the authored Water fog object.
+    return scene&&this.#waterPreparationTargets(scene).length?[null,...[...scene.waterMaterials.values()].map(water=>water.fog)]:[]
   }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
@@ -2765,7 +2771,7 @@ class RendererOwner implements Renderer {
     )
     const started = performance.now()
     try {
-      await prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets)
+      await prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene))
       this.#checkAbort(signal, ordinal)
       const profile = browserFrameProfiler()
       if (profile) {
