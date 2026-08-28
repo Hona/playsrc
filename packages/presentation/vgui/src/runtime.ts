@@ -3464,6 +3464,28 @@ class SourceVguiRuntime implements VguiRuntime {
     return { x, y, width: panel.bounds.width, height }
   }
 
+  private comboItemAt(panel:PanelState,y:number):number{
+    const rowHeight=Math.max(1,Number(panel.properties.get("itemheight")??20))
+    // The popup is a browser scroller. Source's child-panel coordinates already
+    // include the menu scroll; convert the displayed row before hit selection.
+    return Math.floor((y-this.comboPopupRect(panel).y+(panel.chromeElements.get("combo-popup")?.scrollTop??0))/rowHeight)
+  }
+
+  private scrollCombo(panel:PanelState,top:number):void{
+    const popup=panel.chromeElements.get("combo-popup")
+    if(!popup)return
+    const rowHeight=Math.max(1,Number(panel.properties.get("itemheight")??20))
+    popup.scrollTop=Math.max(0,Math.min(top,panel.items.length*rowHeight-this.comboPopupRect(panel).height))
+  }
+
+  private revealComboItem(panel:PanelState):void{
+    const popup=panel.chromeElements.get("combo-popup"),index=panel.activeIndex
+    if(!popup||index===null)return
+    const rowHeight=Math.max(1,Number(panel.properties.get("itemheight")??20)),top=index*rowHeight,height=this.comboPopupRect(panel).height
+    if(top<popup.scrollTop)this.scrollCombo(panel,top)
+    else if(top+rowHeight>popup.scrollTop+height)this.scrollCombo(panel,top+rowHeight-height)
+  }
+
   private pointerMove(x: number, y: number, pointerId: number): void {
     if (![x, y].every(finite) || !safeInteger(pointerId) || pointerId < 0) throw new RuntimeFault("MalformedValue", "pointer-move")
     this.pointerX = Math.trunc(x)
@@ -3681,9 +3703,8 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     if (sameName(message.name, "CursorMoved") && sameName(sourceControl, "ComboBox") && panel.properties.get("expanded") === "1") {
       const popup = this.comboPopupRect(panel)
-      const rowHeight = Math.max(1, Number(panel.properties.get("itemheight") ?? 20))
       if (inside(popup, this.pointerX, this.pointerY)) {
-        const index = Math.floor((this.pointerY - popup.y) / rowHeight)
+        const index = this.comboItemAt(panel,this.pointerY)
         panel.highlightedIndex = index >= 0 && index < panel.items.length && panel.items[index].enabled ? index : null
       }
       return
@@ -3698,7 +3719,10 @@ class SourceVguiRuntime implements VguiRuntime {
     }
     if (sameName(message.name, "MouseWheeled")) {
       const delta = Number(message.fields.delta ?? 0)
-      if (sameName(sourceControl, "ScrollableEditablePanel") || sameName(sourceControl, "SectionedListPanel")) {
+      if(sameName(sourceControl,"ComboBox")&&panel.properties.get("expanded")==="1"){
+        const rowHeight=Math.max(1,Number(panel.properties.get("itemheight")??20))
+        this.scrollCombo(panel,(panel.chromeElements.get("combo-popup")?.scrollTop??0)-delta*rowHeight)
+      }else if (sameName(sourceControl, "ScrollableEditablePanel") || sameName(sourceControl, "SectionedListPanel")) {
         const scrollName = sameName(sourceControl, "ScrollableEditablePanel") ? "VerticalScrollBar" : "SectionedScrollBar"
         const scroll = panel.children.map((id) => this.requirePanel(id)).find((child) => child.name === scrollName)
         if (scroll) this.setControlValue(scroll, scroll.value - delta * (sameName(sourceControl, "ScrollableEditablePanel") ? 50 : 60), true)
@@ -3865,11 +3889,12 @@ class SourceVguiRuntime implements VguiRuntime {
         const expanded = panel.properties.get("expanded") !== "1"
         panel.properties.set("expanded", expanded ? "1" : "0")
         panel.highlightedIndex = expanded ? panel.activeIndex : null
+        if(expanded)this.revealComboItem(panel)
         this.requestedFocus = panel.id
         return
       }
       const index = sameName(control, "ComboBox")
-        ? Math.floor((this.pointerY - this.comboPopupRect(panel).y) / rowHeight)
+        ? this.comboItemAt(panel,this.pointerY)
         : Math.floor(localY / rowHeight)
       if (index >= 0 && index < panel.items.length && panel.items[index].enabled) {
         panel.highlightedIndex = index
@@ -4323,6 +4348,7 @@ class SourceVguiRuntime implements VguiRuntime {
     else if (key === "Home") panel.activeIndex = this.nextEnabledItem(panel, -1, 1)
     else if (key === "End") panel.activeIndex = this.nextEnabledItem(panel, panel.items.length, -1)
     else if (key === "Enter" && panel.activeIndex !== null) this.activateItem(panel, panel.activeIndex)
+    if(combo&&["ArrowDown","ArrowUp","Home","End"].includes(key))this.revealComboItem(panel)
   }
 
   private changeActiveItem(panel: PanelState, direction: -1 | 1): void {

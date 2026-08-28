@@ -44,19 +44,21 @@ describe("TF2 browser multi-map configuration", () => {
     }
   })
 
-  test("admits explicitly prepared Viaduct only for local integration", () => {
+  test("local preparation exposes admitted maps while a published configuration exposes only its supplied targets", () => {
     const integration = { ...valid, defaultTarget: "koth_viaduct", targets: [target("koth_viaduct", 1)] }
     const configuration = parseBrowserConfiguration(integration, valid.assetOrigin)
     expect(configuration.targets[0]!.target).toBe("koth_viaduct")
     expect(tf2SelectableMapNames(configuration, valid.assetOrigin)).toContain("koth_viaduct")
-    expect(tf2SelectableMapNames(configuration, valid.assetOrigin)).not.toContain("cp_badlands")
-    expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
+    expect(tf2SelectableMapNames(configuration, valid.assetOrigin)).toContain("cp_badlands")
+    const published=parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")
+    expect(tf2SelectableMapNames(published,"https://playsrc.online")).toEqual(["koth_viaduct"])
   })
 
-  test("admits explicitly prepared Badlands only for local integration", () => {
+  test("Badlands gameplay admission does not advertise targets absent from its resource catalog", () => {
     const integration = { ...valid, defaultTarget: "cp_badlands", targets: [target("cp_badlands", 1)] }
     expect(parseBrowserConfiguration(integration, valid.assetOrigin).targets[0]!.target).toBe("cp_badlands")
-    expect(() => parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")).toThrow(BrowserConfigurationError)
+    const published=parseBrowserConfiguration({ ...integration, assetOrigin: "https://assets.playsrc.online" }, "https://playsrc.online")
+    expect(tf2SelectableMapNames(published,"https://playsrc.online")).toEqual(["cp_badlands"])
   })
 
   test("accepts only the complete bounded target table", () => {

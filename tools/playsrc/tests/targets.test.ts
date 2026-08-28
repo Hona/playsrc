@@ -4,8 +4,10 @@ import maps from "../../../games/tf2/maps.json"
 import { TF2_TARGET_NAMES, TF2_DEVELOPMENT_TARGET_NAMES, tf2MapBsp } from "@playsrc/game-tf2-browser/maps"
 
 describe("map target registry", () => {
-  test("separates released targets from explicit integration admission", () => {
-    expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort", "cp_dustbowl", "cp_gorge"])
+  test("admits verified local targets without treating admission as publication", () => {
+    expect(TF2_TARGET_NAMES).toEqual(["jump_beef", "pl_upward", "ctf_2fort", "cp_dustbowl", "cp_gorge",
+      "cp_badlands","cp_granary","cp_well","cp_freight_final1","cp_gullywash_final1","cp_process_final",
+      "koth_viaduct","koth_sawmill","koth_harvest_final","koth_lakeside_final"])
     expect(TF2_DEVELOPMENT_TARGET_NAMES.slice(0, 3)).toEqual(["jump_beef", "pl_upward", "ctf_2fort"])
     for (const [name, map] of Object.entries(maps)) {
       expect(TF2_DEVELOPMENT_TARGET_NAMES.includes(name as keyof typeof maps)).toBe(map.admission !== "source")
