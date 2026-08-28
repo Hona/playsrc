@@ -48,13 +48,7 @@ export async function createSpriteOrientationProbe() {
       geometry.getAttribute("particleCenterOrientation").needsUpdate = true
       renderer.render(scene, camera)
       await renderer.backend.device.queue.onSubmittedWorkDone()
-      // Read back real visible canvas pixels, never a synthesized image.
-      const copy = document.createElement("canvas")
-      copy.width = 640; copy.height = 480
-      const context = copy.getContext("2d")!
-      context.drawImage(renderer.domElement, 0, 0)
-      const center = [...context.getImageData(320, 240, 1, 1).data]
-      return { distance, yawRadians, center, pixels: copy.toDataURL("image/png") }
+      return { distance, yawRadians }
     },
     destroy() { geometry.dispose(); material.dispose(); renderer.dispose(); renderer.domElement.remove() },
   }
