@@ -541,6 +541,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const observed = await page.evaluate((started) => {
         const main = document.querySelector<HTMLElement>("main")!
         const profile = (globalThis as any).__playsrcMemoryProfile
+        const textureOwners = (globalThis as any).__playsrcTextureOwners
+        if (textureOwners) textureOwners.records.push({ kind: "snapshot", at: performance.now(), generation: Number(main.dataset.generation),
+          counters: structuredClone(profile.gpu.textureAllocation) })
         return {
           generation: Number(main.dataset.generation),
           tick: Number(main.dataset.snapshotTick),
