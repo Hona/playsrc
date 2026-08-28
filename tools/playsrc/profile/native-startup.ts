@@ -9,6 +9,17 @@ import path from "node:path"
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { WINDOWS_OWNED_UI, WINDOWS_LOCAL_PERMISSION, ownedDiagnosticWindow, assertOwnedEphemeralBrowser } from "./windows-owned-ui"
+import { mkdir, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+
+export class NativeStartupProbeError extends Error {
+  constructor(message: string, readonly receipt: unknown) { super(message) }
+}
+
+export function nativeProbeResponse(result: any): any {
+  if (result.error) throw new NativeStartupProbeError(String(result.error), result.receipt ?? null)
+  return result
+}
 
 export type NativeDesktopPixels = Readonly<{ path: string; bounds: Readonly<{ X: number; Y: number; Width: number; Height: number }>; startedEpoch: number; endedEpoch: number }>
 
@@ -38,6 +49,7 @@ public static class StartupWindow {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr window,StringBuilder text,int count);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
+  public static string WindowClass(IntPtr window) {var text=new StringBuilder(256);return GetClassNameW(window,text,text.Capacity)>0?text.ToString():null;}
  [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback,IntPtr data);
  delegate bool Callback(IntPtr window,IntPtr data);
  public static uint Idle() {var input=new Input{Size=8};if(!GetLastInputInfo(ref input))throw new Exception("Last-input readback unavailable");return unchecked((uint)Environment.TickCount-input.Time);}
@@ -59,13 +71,26 @@ let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;t
 function openWindowsProbe(cacheDir: string) {
   const script = "[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+WINDOWS_LOCAL_PERMISSION+String.raw`
 Add-Type -AssemblyName System.Drawing
+function ForegroundReceipt {
+ $begin=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+ $handle=[StartupWindow]::GetForegroundWindow();[uint32]$owner=0
+ $thread=[StartupWindow]::GetWindowThreadProcessId($handle,[ref]$owner)
+ $class=[StartupWindow]::WindowClass($handle);$idle=[StartupWindow]::Idle()
+ $name=$null;$born=$null;$ownerFault=$null
+ if($owner -ne 0) {try {$process=[System.Diagnostics.Process]::GetProcessById([int]$owner);$name=$process.ProcessName;$born=([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();$process.Dispose()} catch {$ownerFault=$_.Exception.Message}}
+ @{startedEpoch=$begin;endedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();handle=$handle.ToInt64();ownerPid=$owner;threadId=$thread;windowClass=$class;idleMilliseconds=$idle;processName=$name;processStartedEpoch=$born;ownerFault=$ownerFault}
+}
+$self=[System.Diagnostics.Process]::GetCurrentProcess()
+$helper=@{pid=$self.Id;sessionId=$self.SessionId;startedEpoch=([DateTimeOffset]$self.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}
 while (($line=[Console]::ReadLine()) -ne $null) {
+ $request=$null;$before=$null;$after=$null;$start=$null;$end=$null;$desktop=$null
+ $received=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
  try {
   $request=$line|ConvertFrom-Json
   $session=[ProfileConsole]::WTSGetActiveConsoleSessionId();$info=[ProfileConsole]::Query($session)
   $desktop=@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session)}
   $windows=@(foreach($hwnd in [StartupWindow]::Windows([uint32]$request.pid)) {$rect=New-Object StartupWindow+Rect;if(-not [StartupWindow]::GetWindowRect($hwnd,[ref]$rect)){throw 'Window bounds unavailable'};@{id=$hwnd.ToInt64();bounds=$rect;visible=[StartupWindow]::IsWindowVisible($hwnd);minimized=[StartupWindow]::IsIconic($hwnd)}})
-   $foreground=[StartupWindow]::GetForegroundWindow().ToInt64()
+   $before=ForegroundReceipt;$foreground=$before.handle
    $foregroundEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
    $foregroundOwner=$null;$foregroundParent=$null
    if ($request.pid -gt 0) {
@@ -93,7 +118,8 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
     try {$graphics.CopyFromScreen($x,$y,0,0,$bitmap.Size);$bitmap.Save([string]$request.capture,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$graphics.Dispose();$bitmap.Dispose()}
     $end=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-    if ([StartupWindow]::GetForegroundWindow().ToInt64() -ne $foreground) {throw 'Native foreground changed during pixel capture'}
+    $after=ForegroundReceipt
+    if ($after.handle -ne $foreground) {throw 'Native foreground changed during pixel capture'}
     $pixels=@{path=[string]$request.capture;bounds=@{X=$x;Y=$y;Width=$w;Height=$h};startedEpoch=$start;endedEpoch=$end}
    }
    $ui=$null;$action=$null
@@ -106,8 +132,14 @@ while (($line=[Console]::ReadLine()) -ne $null) {
      }
    }
    $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+   if($null -eq $after){$after=ForegroundReceipt}
    $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui;action=$action}
- } catch {$result=@{id=$request.id;error=($_|Out-String)}}
+ } catch {
+   $failure=$_.Exception.Message
+   if($null -eq $after){try {$after=ForegroundReceipt} catch {}}
+   $result=@{id=$request.id;error=$failure}
+ }
+ $result.receipt=@{schema='playsrc-native-capture-receipt-v1';privacy='private-native-owner';receivedEpoch=$received;finishedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();sequence=$request.id;browserPid=$request.pid;helper=$helper;before=$before;after=$after;captureStartedEpoch=$start;captureEndedEpoch=$end;desktop=$desktop}
   [Console]::WriteLine(($result|ConvertTo-Json -Depth 12 -Compress))
 }
 `
@@ -118,6 +150,7 @@ while (($line=[Console]::ReadLine()) -ne $null) {
   mkdirSync(path.dirname(scriptPath), { recursive: true })
   try { writeFileSync(scriptPath, scriptBytes, { encoding: "utf8", flag: "wx" }) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST" || readFileSync(scriptPath, "utf8") !== scriptBytes) throw error }
+  const helperSpawnedEpoch=Date.now()
   const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-File",scriptPath],{windowsHide:true,stdio:["pipe","pipe","pipe"]})
   let next=0,text="",diagnostics=""
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
@@ -134,7 +167,8 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       if(!result.id)continue // initial read-only WTS readiness record
       const entry=pending.get(result.id);if(!entry)continue
       pending.delete(result.id);clearTimeout(entry.timer)
-      result.error?entry.reject(new Error(result.error)):entry.resolve(result)
+      result.receipt={...result.receipt,controller:{pid:process.pid,parentPid:process.ppid,helperPid:child.pid,helperSpawnedEpoch},receivedByControllerEpoch:Date.now()}
+      try {entry.resolve(nativeProbeResponse(result))} catch(error){entry.reject(error as Error)}
     }
   })
   return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean,permissionOrigin?:string)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
@@ -147,7 +181,17 @@ export function windowsForegroundMatches(native: { foreground: number; foregroun
 }
 
 async function windowsSnapshot(cacheDir: string, browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean, permissionOrigin?: string) {
-  const result=await (windowsProbe??=openWindowsProbe(cacheDir)).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin)
+  let result
+  try {result=await (windowsProbe??=openWindowsProbe(cacheDir)).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin)} catch(error) {
+    if(error instanceof NativeStartupProbeError) {
+      const directory=path.join(cacheDir,"evidence","tf2-browser-performance","native-startup-failures")
+      await mkdir(directory,{recursive:true})
+      const file=path.join(directory,`${randomUUID()}.json`)
+      await writeFile(file,JSON.stringify({error:error.message,receipt:error.receipt},null,2),{flag:"wx"})
+      error.message+=`; private receipt=${file}`
+    }
+    throw error
+  }
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -225,7 +269,11 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const boundsIdentity=JSON.stringify(facts.bounds)
       if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
       establishedBounds=boundsIdentity
-       const native = await windowsSnapshot(cacheDir,browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined,established)
+       let native
+       try {native = await windowsSnapshot(cacheDir,browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined,established)} catch(error) {
+         if(error instanceof NativeStartupProbeError) records.push({at:Date.now(),facts,targetId:targetInfo.targetId,failure:error.receipt})
+         throw error
+       }
        if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
