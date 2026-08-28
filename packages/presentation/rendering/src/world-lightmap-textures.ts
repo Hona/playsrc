@@ -5,6 +5,21 @@ import { OwnedResourceGeneration } from "./resource-generation"
 
 export type WorldLightmapTextures = readonly [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?]
 
+/** Borrow only the private, immutable LDR plane of an admitted exact source.
+ * Style-addressable planes always get independent staging textures: a live
+ * style update must not change a candidate while its pipelines are preparing.
+ * No hashing, sample copying, cross-map cache, or early ownership transfer. */
+export function borrowWorldLightmapTextures(lightmap: RuntimeLightmap, source: WorldLightmapTextures | undefined): WorldLightmapTextures | undefined {
+  if (lightmap.profile !== "ldr" || lightmap.directional || !source || source.length !== 1) return
+  const texture = source[0], image = texture.image
+  if (image.data !== lightmap.flat || image.width !== lightmap.width || image.height !== lightmap.height
+    || texture.type !== THREE.FloatType || texture.format !== THREE.RGBAFormat || texture.colorSpace !== THREE.NoColorSpace
+    || texture.channel !== 1 || texture.flipY || texture.generateMipmaps || texture.mipmaps.length
+    || texture.minFilter !== THREE.NearestFilter || texture.magFilter !== THREE.NearestFilter
+    || texture.wrapS !== THREE.ClampToEdgeWrapping || texture.wrapT !== THREE.ClampToEdgeWrapping) return
+  return source
+}
+
 export function createWorldLightmapTextures(lightmap: RuntimeLightmap, generation: OwnedResourceGeneration): WorldLightmapTextures {
   return [lightmap.flat, ...(lightmap.directional ?? [])].map(plane => {
     const texture = new THREE.DataTexture(plane, lightmap.width, lightmap.height, THREE.RGBAFormat, THREE.FloatType)
