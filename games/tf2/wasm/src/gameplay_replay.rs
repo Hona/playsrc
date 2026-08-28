@@ -64,6 +64,17 @@ pub extern "C" fn playsrc_gameplay_replay_clock_remaining(handle:u32)->u32{
         .map_or(u32::MAX,|input|input.values.len().checked_sub(input.cursor).map_or(u32::MAX,|remaining|remaining as u32))
 }
 
+/// Release only an exactly consumed finite input program; performance clocks
+/// and the simulation clock were never substituted by this owner.
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_gameplay_replay_clock_finish(handle: u32) -> u32 {
+    let mut input = clock_input().lock().expect("replay clock");
+    if CLOCK_OWNER.load(Ordering::Relaxed) != handle || !input.as_ref().is_some_and(|input| input.handle == handle && input.cursor == input.values.len()) { return 0; }
+    *input = None;
+    CLOCK_OWNER.store(0, Ordering::Relaxed);
+    1
+}
+
 struct Journal {
     handle: u32,
     bytes: Vec<u8>,
@@ -426,12 +437,20 @@ pub(super) mod tests {
         let handle=u32::MAX-1;
         *clock_input().lock().unwrap()=Some(ClockInput{handle,values:vec![10.0,10.25,27.0],cursor:0});
         CLOCK_OWNER.store(handle,Ordering::Relaxed);
+        assert_eq!(playsrc_gameplay_replay_clock_finish(handle), 0);
         {
             let _scope=game_scope(handle);
             assert_eq!(work_clock(900.0),10.0);assert_eq!(work_clock(1.0),10.25);
             assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),1);
             assert_eq!(work_clock(0.0),27.0);assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),0);
             assert!(work_clock(800.0).is_nan());assert_eq!(playsrc_gameplay_replay_clock_remaining(handle),u32::MAX);
+            assert_eq!(playsrc_gameplay_replay_clock_finish(handle), 0);
+            *clock_input().lock().unwrap() = Some(ClockInput { handle, values: vec![31.0], cursor: 0 });
+            assert_eq!(work_clock(900.0), 31.0);
+            assert_eq!(playsrc_gameplay_replay_clock_finish(handle - 1), 0);
+            assert_eq!(playsrc_gameplay_replay_clock_finish(handle), 1);
+            assert_eq!(work_clock(900.0), 900.0);
+            assert_eq!(playsrc_gameplay_replay_clock_finish(handle), 0);
         }
         assert_eq!(work_clock(42.0),42.0);dispose(handle);assert_eq!(CLOCK_OWNER.load(Ordering::Relaxed),0);
     }

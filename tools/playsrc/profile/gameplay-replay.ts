@@ -80,7 +80,7 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expec
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2, retainAdmission = false, entropyHex?: string) {
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2, retainAdmission = false, entropyHex?: string, workClock?: { hex: string; endedAt: number }) {
   if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
@@ -142,11 +142,11 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     if (worker) { failure = "Replay gameplay owner changed"; return }
     worker = value
     value.on?.("close", () => { closedAt = Date.now() })
-    pending = value.evaluate(async ({ mapOrdinal, entropyHex }) => {
+    pending = value.evaluate(async ({ mapOrdinal, entropyHex, workClock }) => {
       const deadline = performance.now() + 5000
       while (!(globalThis as any).__playsrcGameplayReplay && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
-      ;(globalThis as any).__playsrcGameplayReplay.arm(mapOrdinal, entropyHex)
-    }, { mapOrdinal, entropyHex }).catch(error => { failure = String(error) })
+      ;(globalThis as any).__playsrcGameplayReplay.arm(mapOrdinal, entropyHex, workClock)
+    }, { mapOrdinal, entropyHex, workClock }).catch(error => { failure = String(error) })
   }
   page.on("worker", attach)
   let busy = false
@@ -218,9 +218,9 @@ export function bindReplayGeneration(journal: any, installed: ReplayInstalledIde
 /** Explicit requested navigation boundaries, never automatic replacement recovery.
  * Setup journals end before navigation is requested; they do not claim teardown
  * coverage. Each new Worker must close its predecessor and authenticate anew. */
-export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1, entropyHex?: string) {
+export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1, entropyHex?: string, workClock?: { hex: string; endedAt: number }) {
   if (warmReload && mapOrdinal !== 1) throw new Error("Warm-reload replay requires the initial map of each Worker")
-  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2, true, warmReload ? undefined : entropyHex)
+  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2, true, warmReload ? undefined : entropyHex, warmReload ? undefined : workClock)
   let ordinal = 1, previous: typeof journal | undefined, transitionAt: number | undefined
   let stopped = false
   const generations: any[] = []
@@ -244,7 +244,7 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
       previous = journal
       transitionAt = Date.now()
       ordinal = 2
-      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal, 2, true, entropyHex)
+      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal, 2, true, entropyHex, workClock)
     },
     async ready() {
       if (ordinal !== (warmReload ? 2 : 1)) throw new Error("Requested replay navigation missing")
