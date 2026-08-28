@@ -108,8 +108,9 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
   require(hash(graphBytes) === graphIdentity, "Captured resource graph hash mismatch")
   const graph = parseResourceGraph(JSON.parse(graphBytes.toString("utf8")))
   require(graph.target === "pl_upward" || graph.target === "ctf_2fort", "Captured graph is not a supported local bot map")
-  const map = await acquireMap(config, graph.target)
-  const bsp = await readFile(path.join(config.sourceCacheDir, map.decoded.cachePath))
+  const bsp = exactRuntime
+    ? await readFile(path.join(config.sourceCacheDir, "objects/sha256", replay.bspSha256.slice(0, 2), replay.bspSha256))
+    : await readFile(path.join(config.sourceCacheDir, (await acquireMap(config, graph.target)).decoded.cachePath))
   require(hash(bsp) === replay.bspSha256, "Configured BSP differs from replay checkpoint")
   const wasm = await readFile(wasmPath)
   require(wasm.length <= 64 * 1024 * 1024, "Replay WASM bound exceeded")
