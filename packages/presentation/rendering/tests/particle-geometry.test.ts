@@ -40,6 +40,20 @@ const base: ParticleQuad = {
 }
 
 describe("allocation-free Source Particle geometry", () => {
+  test("Z-aligned sprite cards retain world Z, particle yaw, and shader near-camera tint", () => {
+    const positions = new Float32Array(12)
+    const write = createParticleQuadWriter({ position: [0, 0, 0], yawDegrees: 43, pitchDegrees: 70 })
+    const item: ParticleQuad = { ...base, position: [10, 0, 0], radius: 2, rollRadians: 0, yawRadians: 0, orientationType: 1, materialShader: "sprite-card" }
+    expect(write(item, positions, 0)).toBe(1)
+    expect([...positions]).toEqual([10, -2, -2, 10, 2, -2, 10, 2, 2, 10, -2, 2])
+    write({ ...item, yawRadians: Math.PI / 2 }, positions, 0)
+    expect(positions[0]).toBeCloseTo(8)
+    expect(positions[1]).toBeCloseTo(0)
+    expect(write({ ...item, position: [1.5, 0, 0] }, positions, 0)).toBe(0.5)
+    expect(write({ ...item, position: [1, 0, 0] }, positions, 0)).toBe(0)
+    expect([...positions]).toEqual([1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0])
+  })
+
   test("one-sided sprites and trails face their actual pass camera without disabling culling", () => {
     const indices = new Uint16Array(6)
     writeParticleQuadIndices(indices)

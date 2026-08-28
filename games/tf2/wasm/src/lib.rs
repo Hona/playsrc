@@ -14331,7 +14331,9 @@ fn compile_particle_materials(
     decoders: &TextureDecoders<'_>,
     legacy_materials: &[String],
 ) -> Result<CompiledParticles, ()> {
-    let mut materials = registry.target_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
+    // Precache is dependency admission, not execution. ParticleWorld validates
+    // an effect's operator closure transactionally when that effect starts.
+    let mut materials = registry.dependency_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
     materials.extend_from_slice(legacy_materials);
     materials.sort();
     materials.dedup();
@@ -14343,15 +14345,15 @@ fn compile_particle_materials(
                 &material_path,
                 b,
                 playsrc_material::SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..Default::default() },
-            )?;
-            let (selected, _bytes, metadata) = selected_texture(&material, decoders)?;
+            ).map_err(|_| eprintln!("Particle material semantics: {material_path}"))?;
+            let (selected, _bytes, metadata) = selected_texture(&material, decoders).map_err(|_| eprintln!("Particle base texture: {material_path}"))?;
             let texture_path = selected
                 .logical_path
                 .as_ref()
                 .ok_or(())?
                 .to_ascii_lowercase();
             let hashes = BTreeMap::from([(texture_path.clone(), <[u8; 32]>::from(Sha256::digest(b.get(&texture_path).ok_or(())?)))]);
-            let texture = model_authored_texture(&texture_path, decoders, &hashes, true)?;
+            let texture = model_authored_texture(&texture_path, decoders, &hashes, true).map_err(|_| eprintln!("Particle mip texture: {texture_path}"))?;
             let state = playsrc_material::static_state(
                 &material,
                 playsrc_material::TextureAlphaFacts {
@@ -15136,6 +15138,45 @@ mod tests {
             },
             0
         );
+    }
+
+    #[test]
+    #[ignore = "requires the configured particle registry resource graph"]
+    fn configured_game_particle_registry_is_executable() {
+        let graph = std::env::var("PLAYSRC_PYRO_GRAPH").unwrap();
+        let bytes = playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
+        let resources = bundle(&bytes).unwrap();
+        let paths = std::str::from_utf8(resources[playsrc_tf2::particle_resources::SOURCE_LIST]).unwrap();
+        let sources = paths.lines().map(|path| playsrc_particle::PcfSource { logical_path: path, bytes: resources[path] }).collect::<Vec<_>>();
+        let registry = playsrc_particle::Registry::from_pcf(&sources, playsrc_particle::RegistryLimits::default()).unwrap();
+        let roots = playsrc_tf2::particle_resources::GAME_SYSTEMS.iter().copied().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
+        registry.target_closure(&roots).unwrap();
+        if resources.keys().any(|path| path.starts_with("materials/")) {
+            compile_particle_materials(&registry, &roots, &resources, &TextureDecoders::new(&resources), &[]).unwrap();
+        }
+        if let Ok(path) = std::env::var("PLAYSRC_PARTICLE_BSP") {
+            let bsp_bytes = std::fs::read(path).unwrap();
+            let bsp = playsrc_bsp::parse(&bsp_bytes, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).unwrap();
+            let graph = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default()).unwrap();
+            let roots = playsrc_tf2::particle_resources::roots(&graph);
+            let legacy = smokestack_materials(&graph).unwrap();
+            let (mut world, _, _, _) = compile_particles(&resources, &TextureDecoders::new(&resources), &roots, &legacy).unwrap();
+            use playsrc_particle::{AdvanceRequest, ControlPoint, Event, EventCommand};
+            struct NoQueries;
+            impl playsrc_particle::CollisionQuery for NoQueries {
+                fn trace_batch(&mut self, _: &[playsrc_particle::TraceRequest]) -> Result<Vec<playsrc_particle::CollisionResult>, playsrc_particle::Error> { panic!("unexpected cart-light collision query") }
+            }
+            let create = Event { identity: 1, timestamp_seconds: 0.0, source_order: 0, command: EventCommand::Create {
+                effect_identity: 1, definition: "cart_flashinglight".into(), seed: 1, owner_identity: None,
+                control_points: vec![ControlPoint { index: 0, position: [10.0, 0.0, 0.0], previous_position: [10.0, 0.0, 0.0],
+                    orientation: [0.0,0.0,0.0,1.0], velocity: [0.0;3], radius: 0.0, density: 0.0, duration: 0.0, parent: None, object_identity: None }] } };
+            let request = |from_seconds, to_seconds| AdvanceRequest { from_seconds, to_seconds, maximum_step_seconds: 0.015, camera_position: [0.0;3] };
+            let (first, _) = world.advance(&[create], request(0.0, 0.015), &mut NoQueries).unwrap();
+            let (second, _) = world.advance(&[], request(0.015, 0.03), &mut NoQueries).unwrap();
+            assert!(!first.is_empty());
+            assert_eq!(first[0].orientation_type, 1);
+            assert!((second[0].yaw_radians - first[0].yaw_radians - 0.015 * std::f32::consts::TAU * std::f32::consts::PI / 3.0).abs() < 0.00001);
+        }
     }
 
     #[test]
