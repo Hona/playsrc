@@ -15293,6 +15293,23 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an exact configured map resource set and BSP"]
+    fn configured_map_particle_admission() {
+        let bsp = std::fs::read(std::env::var("PLAYSRC_PARTICLE_BSP").expect("configured BSP path")).unwrap();
+        let bsp = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, Default::default()).unwrap();
+        let entities = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), Default::default()).unwrap();
+        let bytes = std::fs::read(std::env::var("PLAYSRC_PARTICLE_RESOURCE_SET").expect("configured resource set path")).unwrap();
+        let resources = bundle(&bytes).unwrap();
+        let paths = std::str::from_utf8(resources[playsrc_tf2::particle_resources::SOURCE_LIST]).unwrap();
+        let sources = paths.lines().map(|path| playsrc_particle::PcfSource { logical_path: path, bytes: resources[path] }).collect::<Vec<_>>();
+        let registry = playsrc_particle::Registry::from_pcf(&sources, Default::default()).unwrap();
+        let roots = playsrc_tf2::particle_resources::roots(&entities);
+        registry.target_closure(&roots.iter().copied().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>()).unwrap();
+        let decoders = TextureDecoders::new(&resources);
+        assert!(compile_particles(&resources, &decoders, &roots, &smokestack_materials(&entities).unwrap()).is_ok());
+    }
+
+    #[test]
     #[ignore = "requires the configured TF2 graph with Team Captain and item_fx"]
     fn configured_burning_flames_models_lifetimes_and_independent_effects() {
         use playsrc_particle::{AdvanceRequest, ControlPoint, Event, EventCommand};

@@ -1,4 +1,5 @@
 mod definition;
+mod control_point_light;
 mod dmx;
 mod sheet;
 mod source_noise;

@@ -5207,7 +5207,7 @@ class RendererOwner implements Renderer {
     if (this.#uploadEvidence) this.#uploadEvidence.particleGeometries += 1
     const geometry=new THREE.BufferGeometry(),dynamic=(array:Float32Array,size:number)=>new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage),indices=capacity*4>0xffff?new Uint32Array(capacity*6):new Uint16Array(capacity*6)
     writeParticleQuadIndices(indices)
-    geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("particleCenter",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
+    geometry.setAttribute("position",dynamic(new Float32Array(capacity*12),3));geometry.setAttribute("particleCenterOrientation",dynamic(new Float32Array(capacity*16),4));geometry.setAttribute("uv",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleUvNext",dynamic(new Float32Array(capacity*8),2));geometry.setAttribute("particleSheetBlend",dynamic(new Float32Array(capacity*4),1));geometry.setAttribute("particleColor",dynamic(new Float32Array(capacity*16),4));geometry.setIndex(new THREE.BufferAttribute(indices,1));return geometry
   }
 
   #updateParticleBatchGeometry(
@@ -5218,7 +5218,7 @@ class RendererOwner implements Renderer {
     camera: Camera,
   ): void {
     const positions = (geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array
-    const centers = (geometry.getAttribute("particleCenter") as THREE.BufferAttribute).array as Float32Array
+    const centers = (geometry.getAttribute("particleCenterOrientation") as THREE.BufferAttribute).array as Float32Array
     const uv = (geometry.getAttribute("uv") as THREE.BufferAttribute).array as Float32Array
     const uvNext = (geometry.getAttribute("particleUvNext") as THREE.BufferAttribute).array as Float32Array
     const sheetBlend = (geometry.getAttribute("particleSheetBlend") as THREE.BufferAttribute).array as Float32Array
@@ -5229,14 +5229,18 @@ class RendererOwner implements Renderer {
     const arrays = { uv, uvNext, sheetBlend, colors }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
-      for (let vertex = 0; vertex < 4; vertex++) centers.set(item.position, index * 12 + vertex * 3)
+      for (let vertex = 0; vertex < 4; vertex++) {
+        const offset = index * 16 + vertex * 4
+        centers.set(item.position, offset)
+        centers[offset + 3] = item.orientationType
+      }
       const orientationTint = writeParticleQuad(item, positions, index * 12)
       writeParticleAppearance(item, arrays, index, updates, orientationTint)
     }
     const vertices = (end - start) * 4
-    const centerAttribute = geometry.getAttribute("particleCenter") as THREE.BufferAttribute
-    centerAttribute.clearUpdateRanges(); centerAttribute.addUpdateRange(0, vertices * 3); centerAttribute.needsUpdate = true
-    if (this.#uploadEvidence) { this.#uploadEvidence.particleUploadBytes += vertices * 12; this.#uploadEvidence.particleFullUploadBytes += vertices * 12; this.#uploadEvidence.particleUploadWrites++ }
+    const centerAttribute = geometry.getAttribute("particleCenterOrientation") as THREE.BufferAttribute
+    centerAttribute.clearUpdateRanges(); centerAttribute.addUpdateRange(0, vertices * 4); centerAttribute.needsUpdate = true
+    if (this.#uploadEvidence) { this.#uploadEvidence.particleUploadBytes += vertices * 16; this.#uploadEvidence.particleFullUploadBytes += vertices * 16; this.#uploadEvidence.particleUploadWrites++ }
     for (const [index, name] of (["position", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const).entries()) {
       const update = index > 0 ? updates[index - 1]! : undefined
       if (update && update.end === 0) continue

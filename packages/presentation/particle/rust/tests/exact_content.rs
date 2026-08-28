@@ -7,6 +7,16 @@ use playsrc_particle::{
     RegistryLimits, SheetFrame, SheetSequence, StopMode, TraceRequest, WorldLimits,
     encode_render_output, resolve_render_output,
 };
+
+#[test]
+#[ignore = "requires an exact configured PCF"]
+fn configured_cart_flashinglight_admission() {
+    let bytes = fs::read(std::env::var("PLAYSRC_PARTICLE_PCF").expect("configured PCF path")).unwrap();
+    let registry = Registry::from_pcf(&[PcfSource { logical_path: "particles/flag_particles.pcf", bytes: &bytes }], Default::default()).unwrap();
+    let root = DefinitionLookup::Name("cart_flashinglight");
+    eprintln!("cart material: {}", registry.definition(root.clone()).unwrap().material);
+    registry.target_closure(&[root]).unwrap();
+}
 fn configured_bundle() -> Vec<u8> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
