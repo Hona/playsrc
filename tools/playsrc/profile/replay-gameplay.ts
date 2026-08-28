@@ -46,11 +46,15 @@ export function verifyReplayCheckpoint(checkpoint: any, installed: any, bspSha25
 // This is a CPU/WASM replay, not a hidden browser or a presentation benchmark.
 // Build the opt-in collision-replay WASM feature; ordinary game builds contain
 // neither the direct-sweep selector nor its per-plane diagnostics.
-export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string, configuredResourceRoot?: string) {
-  return replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, configuredResourceRoot, undefined, performance.now())
+type ExactReplayRuntime = { instantiate(bytes: Uint8Array, pass: number): Promise<Record<string, any>>; close(): Promise<void> }
+export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string, configuredResourceRoot?: string, exactRuntime?: ExactReplayRuntime) {
+  let instance = 0
+  const runtime = exactRuntime ? { ...exactRuntime, instantiate: (bytes: Uint8Array) => exactRuntime.instantiate(bytes, instance++) } : undefined
+  try { return await replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, configuredResourceRoot, undefined, performance.now(), runtime) }
+  finally { await exactRuntime?.close() }
 }
 async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnly: boolean, displacement: boolean,
-  baselineWasmPath: string | undefined, configuredResourceRoot: string | undefined, generation: any, deadlineStart: number): Promise<any> {
+  baselineWasmPath: string | undefined, configuredResourceRoot: string | undefined, generation: any, deadlineStart: number, exactRuntime?: ExactReplayRuntime): Promise<any> {
   const started = performance.now()
   const captureBytes = await readFile(manifestPath)
   require(path.basename(manifestPath) === `${hash(captureBytes)}.manifest.json`, "Capture manifest hash mismatch")
@@ -70,7 +74,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
     for (const entry of lifecycle.generations) {
       require(performance.now() - deadlineStart < 170_000, "Replay lifecycle exceeded its bounded deadline")
       generations.push({ workerOrdinal: entry.workerOrdinal, scope: entry.scope, applicationGeneration: entry.applicationGeneration,
-        comparison: await replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, undefined, entry, deadlineStart) })
+        comparison: await replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, undefined, entry, deadlineStart, exactRuntime) })
     }
     return { schema: "playsrc-gameplay-replay-lifecycle-comparison-v1", lifecycleSha256: lifecycleLink.sha256, generations, totalMilliseconds: performance.now() - started }
   }
@@ -117,9 +121,9 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
   const baselineHashes = new Map<string, string>()
   const passes = []
   for (const reference of [true, false]) {
-    const loaded = await WebAssembly.instantiate(reference && baseline ? baseline : wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })
-    const e = loaded.instance.exports as Record<string, any>
-    require(typeof e.playsrc_collision_replay_mode === "function", "Replay requires the collision-replay diagnostic build")
+    const e = exactRuntime ? await exactRuntime.instantiate(reference && baseline ? baseline : wasm, passes.length)
+      : (await WebAssembly.instantiate(reference && baseline ? baseline : wasm, { playsrc_metrics: { monotonic_milliseconds: () => performance.now() } })).instance.exports as Record<string, any>
+    if (!exactRuntime) require(typeof e.playsrc_collision_replay_mode === "function", "Replay requires the collision-replay diagnostic build")
     const initialLiveBytes = e.playsrc_memory_bytes(0) >>> 0
     if (replay.initialEquipment) replayMutation(e, 0, { kind: 9, bytes: Buffer.concat([Buffer.from([0]), replay.initialEquipment]) })
     const copy = (bytes: Uint8Array) => {
@@ -156,7 +160,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
     const table = copy(sectionBytes), digest = e.playsrc_alloc(32) >>> 0, bspPointer = copy(bsp)
     require(e.playsrc_resource_sections_hash(table, sections.length, digest) === checkpoint.configurationBytes
       && Buffer.from(new Uint8Array(e.memory.buffer, digest, 32)).toString("hex") === checkpoint.configurationSha256, "Configured resource set differs from recorded checkpoint")
-    require(e.playsrc_collision_replay_mode(reference && !baseline ? (displacement ? 2 : 1) : 0) === 1, "Replay selector failed")
+    if (!exactRuntime) require(e.playsrc_collision_replay_mode(reference && !baseline ? (displacement ? 2 : 1) : 0) === 1, "Replay selector failed")
     const compileStarted = performance.now()
     const handle = e.playsrc_compile_map(bspPointer, bsp.length, checkpoint.profile, table, sections.length, digest, 1)
     require(e.playsrc_result_error(handle) === 0, `Replay checkpoint construction failed: ${e.playsrc_result_error(handle)}`)
@@ -178,7 +182,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
     }
     const cpuStarted = process.cpuUsage(), rssBefore = process.memoryUsage().rss
     const observations: Array<{ milliseconds: number; ticks: number; counters: number[] }> = []
-    const counterTotals = Array(11).fill(0)
+    const counterTotals = Array(exactRuntime ? 0 : 11).fill(0)
     const captureCounters = () => Array.from({ length: counterTotals.length }, (_, index) => {
       const count = e.playsrc_collision_replay_counter(index)
       counterTotals[index] += count
@@ -194,7 +198,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
         e.playsrc_gameplay_replay_mark(handle, data.readUInt32LE(0))
       } else if (record.kind === 1 && !ticksOnly) {
         const command = data.subarray(24), pointer = copy(command)
-        e.playsrc_collision_replay_reset()
+        if (!exactRuntime) e.playsrc_collision_replay_reset()
         const began = performance.now()
         const success = e.playsrc_simulation_observe(handle, data.readDoubleLE(0), pointer, command.length, data.readUInt32LE(8), data.readBigUInt64LE(12))
         const milliseconds = performance.now() - began
@@ -212,7 +216,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
         if (active) activeTicks++
         if (ticksOnly) {
           const command = replayTickCommand(data,replay.version), pointer = copy(command)
-          e.playsrc_collision_replay_reset()
+          if (!exactRuntime) e.playsrc_collision_replay_reset()
           const began = performance.now()
           require(e.playsrc_game_advance(handle, pointer, command.length, 1) === 1, `Replay authoritative tick ${index} failed`)
           const elapsed = performance.now() - began
@@ -288,6 +292,7 @@ async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnl
     ownership.afterInputReleaseLiveBytes = e.playsrc_memory_bytes(0) >>> 0
   }
   return { schema: "playsrc-gameplay-replay-comparison-v1", historicalIncident: false, replaySha256: manifest.sha256, wasmSha256: hash(wasm), ticksOnly,
+    execution: exactRuntime ? "exact-threaded-artifact" : "collision-replay-diagnostic", diagnosticCollisionCountersAvailable: !exactRuntime,
     resourceIdentity: { capturedResourceRoot, configuredResourceRoot: configuredResourceRoot ?? null, verifiedResourceRoot: graphIdentity, target: graph.target },
     comparison: baseline ? "two-builds-on-recorded-commands" : "recorded-publications", baselineWasmSha256: baseline ? hash(baseline) : null,
     counterNames: ["snapshotQueries", "hierarchyNodes", "objectCandidates", "convexSweeps", "clipPlanes", "vertexProjections", "displacementNodes", "displacementTriangles", "displacementSweeps", "displacementEdgeProjections", "displacementIntervalHits"], passes, totalMilliseconds: performance.now() - started }
