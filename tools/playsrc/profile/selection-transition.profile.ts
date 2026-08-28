@@ -84,6 +84,9 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   let captureLoop: Promise<void> | undefined
   let activeStartedEpoch: number | undefined
   let measurementRetained = false
+  // Sampled CPU attribution is a separate diagnostic mode. V8 stack sampling
+  // must not silently become the application's input-to-visible wall clock.
+  const captureCpu = process.env.PLAYSRC_SELECTION_CPU === "1"
   const captureWithCua = process.platform === "darwin" && process.env.PLAYSRC_SELECTION_CAPTURE === "cua"
   const session = path.basename(directory)
   const cua = async (name: string, input: Record<string, unknown>) => JSON.parse((await promisify(execFile)("cua-driver", ["call", name, JSON.stringify(input)], { timeout: 2000, maxBuffer: 1024 * 1024 })).stdout)
@@ -150,7 +153,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     await capture()
     const heapBefore = await cdp.send("Runtime.getHeapUsage")
     const residentBefore = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
-    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 100 }); await cdp.send("Profiler.start")
+    if (captureCpu) { await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 100 }); await cdp.send("Profiler.start") }
     const startedEpoch = Date.now()
     activeStartedEpoch = startedEpoch
     await page.evaluate(() => { const root = globalThis as any; root.__playsrcProfile.selectionSampling = true; root.__playsrcFrameProfiler.active = true
@@ -192,19 +195,22 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     await loop
     sampling = false
     const endedEpoch = Date.now()
-    const { profile } = await cdp.send("Profiler.stop")
-    await writeFile(path.join(directory, "selection.cpuprofile"), JSON.stringify(profile))
-    const evidence = await page.evaluate(() => { const root = globalThis as any; root.__playsrcProfile.selectionSampling = false; root.__playsrcFrameProfiler.active = false
+    const sampledCpu = captureCpu ? await cdp.send("Profiler.stop") : undefined
+    if (sampledCpu) await writeFile(path.join(directory, "selection.cpuprofile"), JSON.stringify(sampledCpu.profile))
+    const evidence = await page.evaluate(async () => { const root = globalThis as any; root.__playsrcProfile.selectionSampling = false; root.__playsrcFrameProfiler.active = false
+      await root.__playsrcFrameProfiler.flushShaderHashes()
       return { inputs: root.__playsrcProfile.selectionInputs, owners: root.__playsrcProfile.selectionOwners, dropped: root.__playsrcProfile.selectionOwnersDropped ?? 0,
         frames: root.__playsrcFrameProfiler.completedFrames, worker: root.__playsrcFrameProfiler.worker, gpu: root.__playsrcFrameProfiler.counters,
         gpuOperations: root.__playsrcFrameProfiler.gpuOperations, gpuOperationsDropped: root.__playsrcFrameProfiler.gpuOperationsDropped,
+        shaders: root.__playsrcFrameProfiler.shaders, adapters: root.__playsrcFrameProfiler.adapters, devices: root.__playsrcFrameProfiler.devices, losses: root.__playsrcFrameProfiler.losses,
         modelPreparation: root.__playsrcFrameProfiler.modelPreparation, longTasks: root.__playsrcFrameProfiler.longTasks, longAnimationFrames: root.__playsrcFrameProfiler.longAnimationFrames,
         memorySamples: root.__playsrcProfile.selectionMemory,
         loading: document.querySelector<HTMLElement>("main")!.dataset.loadPerformanceProbe } })
     const heapAfter = await cdp.send("Runtime.getHeapUsage")
     const residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
     await capture()
-    await writeFile(path.join(directory, "selection-measurement.json"), JSON.stringify({ team, identity, warm, startedEpoch, endedEpoch, references, evidence, heapBefore, heapAfter, residentBefore, residentAfter, cpu: summarizeCpuProfile(profile) }, null, 2))
+    await writeFile(path.join(directory, "selection-measurement.json"), JSON.stringify({ team, identity, warm, startedEpoch, endedEpoch, references, evidence, heapBefore, heapAfter, residentBefore, residentAfter,
+      cpuAttributionEnabled: captureCpu, cpu: sampledCpu ? summarizeCpuProfile(sampledCpu.profile) : null }, null, 2))
     measurementRetained = true
     expect(endedEpoch - startedEpoch).toBeGreaterThanOrEqual(5000)
     expect(endedEpoch - startedEpoch).toBeLessThanOrEqual(10000)
@@ -219,15 +225,17 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   } finally {
     sampling = false
     await captureLoop?.catch(() => {})
-    const partialCpu = await cdp.send("Profiler.stop").catch(() => undefined)
+    const partialCpu = captureCpu ? await cdp.send("Profiler.stop").catch(() => undefined) : undefined
     if (!measurementRetained && activeStartedEpoch !== undefined) {
       if (partialCpu) await writeFile(path.join(directory, "selection-partial.cpuprofile"), JSON.stringify(partialCpu.profile))
-      const partial = await page.evaluate(() => {
+      const partial = await page.evaluate(async () => {
         const root = globalThis as any, profile = root.__playsrcProfile, frames = root.__playsrcFrameProfiler
         if (profile) profile.selectionSampling = false
         if (frames) frames.active = false
+        await frames?.flushShaderHashes()
         return { inputs: profile?.selectionInputs ?? [], owners: profile?.selectionOwners ?? [], memorySamples: profile?.selectionMemory ?? [],
           frames: frames?.completedFrames ?? [], worker: frames?.worker ?? [], gpuOperations: frames?.gpuOperations ?? [],
+          shaders: frames?.shaders ?? [], adapters: frames?.adapters ?? [], devices: frames?.devices ?? [], losses: frames?.losses ?? [],
           gpuOperationsDropped: frames?.gpuOperationsDropped ?? 0, longTasks: frames?.longTasks ?? [], longAnimationFrames: frames?.longAnimationFrames ?? [] }
       }).catch(error => ({ unavailable: String(error) }))
       await writeFile(path.join(directory, "selection-partial.json"), JSON.stringify({ status: "failed-incomplete", startedEpoch: activeStartedEpoch,

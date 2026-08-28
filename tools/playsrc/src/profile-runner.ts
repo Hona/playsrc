@@ -82,6 +82,7 @@ const PROFILES = Object.freeze({
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
   "selection-transition": { config: "playwright.selection-transition.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 60_000 },
+  "selection-transition-cpu": { config: "playwright.selection-transition.config.ts", target: "pl_upward", environment: { PLAYSRC_SELECTION_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
