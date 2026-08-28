@@ -5,6 +5,9 @@ import { macWindowReader } from "./macos-visible-windows"
 import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admission"
 import type { StartupNativeAdmission } from "./static-startup-gate"
 import os from "node:os"
+import path from "node:path"
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { WINDOWS_OWNED_UI, WINDOWS_LOCAL_PERMISSION, ownedDiagnosticWindow, assertOwnedEphemeralBrowser } from "./windows-owned-ui"
 
 export type NativeDesktopPixels = Readonly<{ path: string; bounds: Readonly<{ X: number; Y: number; Width: number; Height: number }>; startedEpoch: number; endedEpoch: number }>
@@ -53,8 +56,8 @@ public static class StartupWindow {
 
 let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean,permissionOrigin?:string):Promise<any>;close():void}|undefined
 
-function openWindowsProbe() {
-  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+WINDOWS_LOCAL_PERMISSION+String.raw`
+function openWindowsProbe(cacheDir: string) {
+  const script = "[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+WINDOWS_LOCAL_PERMISSION+String.raw`
 Add-Type -AssemblyName System.Drawing
 while (($line=[Console]::ReadLine()) -ne $null) {
  try {
@@ -105,7 +108,14 @@ while (($line=[Console]::ReadLine()) -ne $null) {
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
 }
 `
-  const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")],{windowsHide:true,stdio:["pipe","pipe","pipe"]})
+  // Win32 command lines are bounded. Keep this owned helper in configured
+  // cache storage, not a growing base64 command or a security-policy override.
+  const scriptPath = path.join(cacheDir, "profile-tools", `native-startup-${createHash("sha256").update(script).digest("hex")}.ps1`)
+  const scriptBytes = "\uFEFF" + script
+  mkdirSync(path.dirname(scriptPath), { recursive: true })
+  try { writeFileSync(scriptPath, scriptBytes, { encoding: "utf8", flag: "wx" }) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST" || readFileSync(scriptPath, "utf8") !== scriptBytes) throw error }
+  const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-File",scriptPath],{windowsHide:true,stdio:["pipe","pipe","pipe"]})
   let next=0,text="",diagnostics=""
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   child.stderr.on("data",value=>{diagnostics=(diagnostics+value).slice(-4096)})
@@ -133,14 +143,14 @@ export function windowsForegroundMatches(native: { foreground: number; foregroun
   return native.foreground === windowId && native.foregroundAfter === windowId && focused
 }
 
-async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean, permissionOrigin?: string) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin)
+async function windowsSnapshot(cacheDir: string, browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean, permissionOrigin?: string) {
+  const result=await (windowsProbe??=openWindowsProbe(cacheDir)).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
 
 export async function startupConsoleIdle(cacheDir: string) {
-  if (process.platform === "win32") return (await windowsSnapshot()).idleMilliseconds as number
+  if (process.platform === "win32") return (await windowsSnapshot(cacheDir)).idleMilliseconds as number
   const reader = await macWindowReader(cacheDir)
   if (!reader) throw new Error("Static startup requires a supported physical desktop")
   const snapshot = await reader(), console = snapshot.console
@@ -164,7 +174,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       if (process.platform !== "win32") throw new Error("Owned UI diagnosis requires Windows")
       const { targetInfo } = await pageCdp.send("Target.getTargetInfo")
       const before = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
-      const native = await windowsSnapshot(browserPid, capture, before.bounds as any, established, true)
+      const native = await windowsSnapshot(cacheDir, browserPid, capture, before.bounds as any, established, true)
       const after = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
       const record = { at: Date.now(), purpose: "private-owned-ui-diagnosis-not-admission", browserPid, targetId: targetInfo.targetId, before, after, native }
       records.push(record)
@@ -182,10 +192,10 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const { targetInfo } = await pageCdp.send("Target.getTargetInfo")
       const facts = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
       // Read-only identity checks happen before the explicit action request.
-      const before = await windowsSnapshot(browserPid)
+      const before = await windowsSnapshot(cacheDir, browserPid)
       const mainWindowId = ownedDiagnosticWindow(before, facts.bounds as any, browserPid)
       if (before.foreground === mainWindowId) throw new Error("No owned permission window to resolve")
-      const native = await windowsSnapshot(browserPid, captureBefore, facts.bounds as any, mainWindowId, true, origin)
+      const native = await windowsSnapshot(cacheDir, browserPid, captureBefore, facts.bounds as any, mainWindowId, true, origin)
       const record = { at: Date.now(), purpose: "normal-owned-loopback-permission-control", browserPid, targetId: targetInfo.targetId, facts, before, native, ephemeralProfile: command.arguments.find((value: string) => value.startsWith("--user-data-dir=")) }
       records.push(record)
       if (native.action?.action !== "normal-visible-Allow") throw new Error("Permission control was not invoked")
@@ -209,7 +219,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const boundsIdentity=JSON.stringify(facts.bounds)
       if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
       establishedBounds=boundsIdentity
-       const native = await windowsSnapshot(browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined,established)
+       const native = await windowsSnapshot(cacheDir,browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined,established)
        if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
