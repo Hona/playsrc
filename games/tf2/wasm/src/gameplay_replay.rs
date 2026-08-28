@@ -7,6 +7,14 @@ use playsrc_simulation::MetricsClock;
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RECORDS: usize = 16_384;
+#[derive(Clone, Copy)]
+pub(super) enum Mutation {
+    Team = 4,
+    Position = 5,
+    Course = 6,
+    Equipment = 9,
+    EntityInput = 10,
+}
 static ACTIVE: AtomicU32 = AtomicU32::new(0);
 
 struct Journal {
@@ -156,8 +164,15 @@ pub extern "C" fn playsrc_gameplay_replay_attack_player(handle: u32) -> u32 {
         .and_then(|value| value.last_attack)
         .map_or(0, |attack| attack.player)
 }
-pub(super) fn mutation(handle: u32, kind: u32, bytes: &[u8]) {
-    append(handle, kind, &[bytes]);
+pub(super) fn mutation(handle: u32, kind: Mutation, bytes: &[u8]) {
+    append(handle, kind as u32, &[bytes]);
+}
+
+// Local equipment updates affect every live map, even when called with handle
+// zero. Record them against the active journal's generation, not that API handle.
+pub(super) fn local_equipment_mutation(bytes: &[u8]) {
+    let handle = ACTIVE.load(Ordering::Relaxed);
+    if handle != 0 { mutation(handle, Mutation::Equipment, bytes); }
 }
 
 #[unsafe(no_mangle)]
@@ -175,12 +190,16 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
         if session.producer_snapshot().tick != 0 || slot.collision_revision != 1 {
             return None;
         }
-        let mut bytes = b"PGRP".to_vec();
-        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        let mut bytes = Vec::with_capacity(1024);
+        bytes.extend_from_slice(b"PGRP");
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
         bytes.extend_from_slice(&slot.bsp_hash);
         bytes.extend_from_slice(&slot.collision.as_ref()?.identity);
         bytes.extend_from_slice(&0_u64.to_le_bytes());
         bytes.extend_from_slice(&slot.collision_revision.to_le_bytes());
+        // Persisted local loadout is independent of the authenticated resource
+        // graph and must be restored before reconstructing the compiled session.
+        bytes.extend_from_slice(&local_equipment().lock().expect("local equipment").persist());
         Some(bytes)
     })
     .flatten() else {
@@ -298,8 +317,112 @@ pub extern "C" fn playsrc_collision_replay_counter(index: u32) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    pub(crate) fn assert_mutations(handle: u32) {
+        let _metrics = memory::TEST_METRICS.lock().expect("test metrics");
+        let initial_equipment = local_equipment().lock().unwrap().persist();
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "0 0 0"}
+            {"classname" "func_movelinear" "targetname" "door" "MoveDistance" "32" "speed" "50"}
+            {"classname" "trigger_multiple" "targetname" "start" "model" "*1" "spawnflags" "1"}
+            {"classname" "trigger_multiple" "targetname" "end" "model" "*2" "spawnflags" "1"}
+            {"classname" "team_train_watcher" "train" "cart" "start_node" "first"}
+            {"classname" "func_tracktrain" "targetname" "cart" "origin" "50 50 1"}
+            {"classname" "path_track" "targetname" "first" "target" "second" "origin" "50 50 1"}
+            {"classname" "path_track" "targetname" "second" "origin" "80 50 1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        let map = playsrc_tf2::MapRuntime::compile(&graph, 0.015, 1, vec![
+            playsrc_entity::ModelBounds { model: 1, mins: [-24.0; 3], maxs: [24.0; 3] },
+            playsrc_entity::ModelBounds { model: 2, mins: [100.0; 3], maxs: [124.0; 3] },
+        ]).unwrap();
+        let world = Arc::new(playsrc_collision::World::empty());
+        let collision = playsrc_collision::Snapshot::compile(&world, 1, vec![], playsrc_collision::SnapshotLimits::default()).unwrap();
+        let shared = SharedWorld::new(world.clone(), collision, BTreeMap::new());
+        let (index, _) = decode(handle).unwrap();
+        {
+            let mut slots = slots().lock().unwrap();
+            slots[index].collision = Some(world);
+            slots[index].collision_revision = 1;
+            slots[index].session = Some(playsrc_tf2::Session::new(shared.clone(), [0.0; 3], map));
+        }
+        assert_eq!(playsrc_gameplay_replay_begin(handle), 1);
+        assert_eq!(&journal().lock().unwrap().as_ref().unwrap().bytes[88..780], initial_equipment);
+        assert_eq!(playsrc_gameplay_replay_mark(handle, 0), 1);
+        assert_eq!(playsrc_team_select(handle, 2), 1);
+        assert_eq!(playsrc_player_set_position(handle, 12.5, -3.0, 96.0), 1);
+        let equip = [1, 3, 0, 18, 0, 0, 0];
+        assert_eq!(unsafe { playsrc_equipment_update(0, equip.as_ptr(), equip.len()) }, 1);
+        let mut restore = vec![0]; restore.extend_from_slice(&initial_equipment);
+        assert_eq!(unsafe { playsrc_equipment_update(handle, restore.as_ptr(), restore.len()) }, 1);
+        let mut entity = vec![0; 4]; entity.extend_from_slice(b"door\0Open\0");
+        assert_eq!(unsafe { playsrc_entity_fire(handle, entity.as_ptr(), entity.len()) }, 1);
+        let mut course = b"PJMP\x01\0\0\0".to_vec();
+        course.extend_from_slice(&1_u64.to_le_bytes()); course.extend_from_slice(&[9; 32]); course.extend_from_slice(&2_u32.to_le_bytes());
+        for (zone, trigger, kind) in [(1_u32, 2_u32, 1_u8), (2, 3, 3)] {
+            course.extend_from_slice(&zone.to_le_bytes()); course.extend_from_slice(&trigger.to_le_bytes());
+            course.extend_from_slice(&[kind, 0, 0, 0]); course.extend_from_slice(&1_u32.to_le_bytes());
+        }
+        assert_eq!(unsafe { playsrc_jump_configure(handle, course.as_ptr(), course.len()) }, 1);
+        let before = playsrc_gameplay_replay_length(handle);
+        // Stale generation, malformed mutations and mismatched BSP never enter
+        // the journal or mutate the current generation's checkpoint.
+        let stale = handle - (1 << 16);
+        assert_eq!(playsrc_player_set_position(stale, 1.0, 2.0, 3.0), 0);
+        assert_eq!(playsrc_player_set_position(handle, f32::NAN, 2.0, 3.0), 0);
+        assert_eq!(unsafe { playsrc_equipment_update(stale, equip.as_ptr(), equip.len()) }, 0);
+        assert_eq!(unsafe { playsrc_entity_fire(stale, entity.as_ptr(), entity.len()) }, 0);
+        course[16] ^= 1;
+        assert_eq!(unsafe { playsrc_jump_configure(handle, course.as_ptr(), course.len()) }, 0);
+        assert_eq!(playsrc_gameplay_replay_length(handle), before);
+        // Exercise the bot-only equipment entry point too. This synthetic
+        // mutation-hook test is not a replay transcript acceptance sample.
+        let mut nav = Vec::new();
+        for value in [playsrc_nav::MAGIC, 16, 2, 128] { nav.extend_from_slice(&value.to_le_bytes()); }
+        nav.push(1); nav.extend_from_slice(&0_u16.to_le_bytes()); nav.push(1); nav.extend_from_slice(&1_u32.to_le_bytes());
+        nav.extend_from_slice(&1_u32.to_le_bytes()); nav.extend_from_slice(&0_u32.to_le_bytes());
+        for value in [0_f32, 0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 0.0] { nav.extend_from_slice(&value.to_le_bytes()); }
+        nav.extend_from_slice(&[0; 16]); nav.push(0); nav.extend_from_slice(&[0; 4 + 2 + 8 + 8 + 16 + 8 + 4 + 4]);
+        let mesh = playsrc_nav::parse(&nav, playsrc_nav::Profile::TeamFortress2, Some(128), playsrc_nav::Limits::default()).unwrap();
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "info_player_teamspawn" "TeamNum" "2" "origin" "0 0 0"}
+            {"classname" "team_train_watcher" "train" "cart" "start_node" "first"}
+            {"classname" "func_tracktrain" "targetname" "cart" "origin" "50 50 1"}
+            {"classname" "path_track" "targetname" "first" "target" "second" "origin" "50 50 1"}
+            {"classname" "path_track" "targetname" "second" "origin" "80 50 1"}
+        "#, playsrc_entity::Limits::default()).unwrap();
+        let identity = {
+            let mut slots = slots().lock().unwrap();
+            let map = playsrc_tf2::MapRuntime::compile(&graph, 0.015, 1, vec![]).unwrap();
+            slots[index].session = Some(playsrc_tf2::Session::new(shared, [0.0; 3], map));
+            let session = slots[index].session.as_mut().unwrap();
+            session.configure_navigation(mesh, &graph).unwrap();
+            session.advance(playsrc_tf2::Command { bot_request: Some(playsrc_tf2::bot::Request {
+                operation: playsrc_tf2::bot::Operation::Add, count: 1,
+                class: Some(playsrc_tf2::PlayerClass::Soldier), team: Some(playsrc_tf2::PlayerTeam::Red),
+                difficulty: playsrc_tf2::bot::Difficulty::Easy,
+            }), ..playsrc_tf2::Command::default() }).unwrap().bots[0].identity
+        };
+        let mut bot_equip = vec![2]; bot_equip.extend_from_slice(&identity.to_le_bytes()); bot_equip.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(unsafe { playsrc_equipment_update(handle, bot_equip.as_ptr(), bot_equip.len()) }, 1);
+        assert_eq!(playsrc_gameplay_replay_mark(handle, 1), 1);
+        assert_eq!(playsrc_gameplay_replay_stop(handle), 1);
+        let value = journal().lock().unwrap();
+        let bytes = &value.as_ref().unwrap().bytes;
+        assert_eq!(&bytes[..8], b"PGRP\x03\0\0\0");
+        let mut offset = 780;
+        let mut kinds = Vec::new();
+        while offset < bytes.len() {
+            let length = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            kinds.push(u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()));
+            offset += length;
+        }
+        assert_eq!(kinds, [7, 4, 5, 9, 9, 10, 6, 9, 7, 8]);
+        assert_eq!(offset, bytes.len());
+        drop(value);
+        dispose(handle);
+    }
     #[test]
     fn attack_admission_is_an_actual_tick_command_not_a_weapon_shot_claim() {
         let mut command = [0_u8; 84];

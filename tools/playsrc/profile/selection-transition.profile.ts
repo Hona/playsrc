@@ -12,6 +12,7 @@ import { requireStartupNative } from "./static-startup-gate"
 import { summarizeCpuProfile } from "./gameui-profile"
 import { captureProcessMemory } from "./process-memory"
 import { analyzeNativeSelectionPixels } from "./selection-transition-analysis"
+import { selectionLoadingControl } from "./selection-loading-control"
 
 const classes = ["scout", "sniper", "soldier", "demoman", "medic", "heavyweapons", "pyro", "spy", "engineer"] as const
 
@@ -59,6 +60,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   if (!directory) throw new Error("Use the checked selection-transition profile runner")
   await mkdir(directory, { recursive: true })
   const cdp = await context.newCDPSession(page), browser = await context.browser()!.newBrowserCDPSession()
+  const loadingControl = await selectionLoadingControl(cdp)
   const native = await macPageAdmission(page, sourceCacheDir)
   const windows = process.platform === "win32" ? await startupNativeReader(page, sourceCacheDir) : undefined
   if (!native && !windows) throw new Error("Native selection pixel sampling requires a configured macOS or Windows desktop")
@@ -138,8 +140,10 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   try {
     await page.goto("/", { waitUntil: "domcontentloaded" })
     await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu")
+    loadingControl.boundary("map-request")
     await command("map pl_upward")
     await expect(page.locator("main")).toHaveAttribute("data-team-selection-models", /(?=.*reddoor:[^|]+:\d+:\d+)(?=.*bluedoor:[^|]+:\d+:\d+)/, { timeout: 40_000 })
+    loadingControl.boundary("team-models")
     if (warm) {
       await page.locator(`.team-selection-layer [data-vgui-name='${team === "red" ? "teambutton0" : "teambutton1"}']`).click()
       await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "true")
@@ -207,6 +211,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
         shaders: root.__playsrcFrameProfiler.shaders, adapters: root.__playsrcFrameProfiler.adapters, devices: root.__playsrcFrameProfiler.devices, losses: root.__playsrcFrameProfiler.losses,
         modelPreparation: root.__playsrcFrameProfiler.modelPreparation, longTasks: root.__playsrcFrameProfiler.longTasks, longAnimationFrames: root.__playsrcFrameProfiler.longAnimationFrames,
         memorySamples: root.__playsrcProfile.selectionMemory,
+        loadingIdentity: root.__playsrcProfile.selectionLoading, startupSpans: root.__playsrcProfile.startupSpans,
         loading: document.querySelector<HTMLElement>("main")!.dataset.loadPerformance } })
     const heapAfter = await cdp.send("Runtime.getHeapUsage")
     const residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
@@ -231,6 +236,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     // acceptance requires the matched before/after comparison; the former
     // arbitrary250ms default was not an SDK or user-supplied timing contract.
   } finally {
+    await writeFile(path.join(directory, "selection-loading-control.json"), JSON.stringify(loadingControl.stop()))
     sampling = false
     await captureLoop?.catch(() => {})
     const partialCpu = captureCpu ? await cdp.send("Profiler.stop").catch(() => undefined) : undefined

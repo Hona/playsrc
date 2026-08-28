@@ -7,11 +7,27 @@ import { loadLocalConfig } from "../src/config"
 import { acquireMap } from "../src/targets"
 import { buildCollisionReplay } from "../src/collision-replay-build"
 import { summarizeDistribution } from "./gameui-profile"
-import { parseGameplayReplay, REPLAY_BYTES } from "./gameplay-replay"
+import { parseGameplayReplay, REPLAY_BYTES, validateReplayLifecycle, validateReplayMutation, type ReplayRecord } from "./gameplay-replay"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "../../../games/tf2/browser/src/admission-metrics"
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 function require(value: unknown, message: string): asserts value { if (!value) throw new Error(message) }
+
+export function replayMutation(e: Record<string, any>, handle: number, record: ReplayRecord) {
+  const { kind, bytes: data } = record
+  validateReplayMutation(kind, data)
+  if (kind === 4) require(e.playsrc_team_select(handle, data.readUInt32LE(0)) === 1, "Replay team mutation failed")
+  else if (kind === 5) require(e.playsrc_player_set_position(handle, data.readFloatLE(0), data.readFloatLE(4), data.readFloatLE(8)) === 1, "Replay position mutation failed")
+  else {
+    const name = kind === 6 ? "playsrc_jump_configure" : kind === 9 ? "playsrc_equipment_update" : "playsrc_entity_fire"
+    const pointer = e.playsrc_alloc(data.length) >>> 0
+    require(pointer !== 0, "Replay mutation allocation failed")
+    try {
+      new Uint8Array(e.memory.buffer, pointer, data.length).set(data)
+      require(e[name](handle, pointer, data.length) === 1, `Replay mutation ${kind} failed`)
+    } finally { e.playsrc_free(pointer, data.length) }
+  }
+}
 
 export function verifyReplayHash(actual: string, recorded: string, key: string, baselineHashes?: Map<string, string>, collectBaseline = false) {
   if (baselineHashes && collectBaseline) baselineHashes.set(key, actual)
@@ -19,16 +35,48 @@ export function verifyReplayHash(actual: string, recorded: string, key: string, 
   return actual !== recorded
 }
 
+export function verifyReplayCheckpoint(checkpoint: any, installed: any, bspSha256: string) {
+  require(checkpoint && /^[0-9a-f]{64}$/u.test(checkpoint.configurationSha256) && [0, 1].includes(checkpoint.profile)
+    && Number.isSafeInteger(checkpoint.generation) && checkpoint.generation > 0
+    && Number.isSafeInteger(checkpoint.configurationBytes) && checkpoint.configurationBytes > 0, "Replay content checkpoint invalid")
+  require(installed?.mapGeneration === undefined || installed.mapGeneration === checkpoint.generation, "Replay map generation differs from installed resource identity")
+  require(installed?.bsp === undefined || installed.bsp === bspSha256, "Replay BSP differs from installed resource identity")
+}
+
 // This is a CPU/WASM replay, not a hidden browser or a presentation benchmark.
 // Build the opt-in collision-replay WASM feature; ordinary game builds contain
 // neither the direct-sweep selector nor its per-plane diagnostics.
 export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string, configuredResourceRoot?: string) {
+  return replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, configuredResourceRoot, undefined, performance.now())
+}
+async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnly: boolean, displacement: boolean,
+  baselineWasmPath: string | undefined, configuredResourceRoot: string | undefined, generation: any, deadlineStart: number): Promise<any> {
   const started = performance.now()
   const captureBytes = await readFile(manifestPath)
   require(path.basename(manifestPath) === `${hash(captureBytes)}.manifest.json`, "Capture manifest hash mismatch")
   const capture = JSON.parse(captureBytes.toString())
-  const linked = capture.identity?.gameplayReplay
-  const capturedResourceRoot = capture.identity?.applicationGeneration?.resourceRoot
+  const lifecycleLink = capture.identity?.gameplayReplayLifecycle
+  if (lifecycleLink && !generation) {
+    require(!configuredResourceRoot && lifecycleLink.complete && /^[0-9a-f]{64}\.replay-lifecycle\.json$/.test(lifecycleLink.file), "Invalid replay lifecycle linkage")
+    const bytes = await readFile(path.join(path.dirname(manifestPath), lifecycleLink.file))
+    require(bytes.length === lifecycleLink.bytes && hash(bytes) === lifecycleLink.sha256 && lifecycleLink.file === `${hash(bytes)}.replay-lifecycle.json`, "Replay lifecycle identity changed")
+    const lifecycle = JSON.parse(bytes.toString())
+    validateReplayLifecycle(lifecycle)
+    const last = lifecycle.generations.at(-1)
+    require(last.journal.sha256 === capture.identity.gameplayReplay?.sha256
+      && last.applicationGeneration.resourceRoot === capture.identity.applicationGeneration?.resourceRoot
+      && last.applicationGeneration.mapGeneration === capture.identity.applicationGeneration?.mapGeneration, "Measured replay differs from the final lifecycle generation")
+    const generations = []
+    for (const entry of lifecycle.generations) {
+      require(performance.now() - deadlineStart < 170_000, "Replay lifecycle exceeded its bounded deadline")
+      generations.push({ workerOrdinal: entry.workerOrdinal, scope: entry.scope, applicationGeneration: entry.applicationGeneration,
+        comparison: await replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, undefined, entry, deadlineStart) })
+    }
+    return { schema: "playsrc-gameplay-replay-lifecycle-comparison-v1", lifecycleSha256: lifecycleLink.sha256, generations, totalMilliseconds: performance.now() - started }
+  }
+  const linked = generation?.journal ?? capture.identity?.gameplayReplay
+  const installed = generation?.applicationGeneration ?? capture.identity?.applicationGeneration
+  const capturedResourceRoot = installed?.resourceRoot
   // An explicit configured root is authenticated below against the recorded
   // resource-section digest/size, BSP, initial world and complete transcript.
   // Never discover another graph or silently repair historical capture identity.
@@ -41,11 +89,16 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   require(manifest.schema === "playsrc-gameplay-replay-v1" && manifest.complete && /^[0-9a-f]{64}$/u.test(manifest.sha256) && manifest.bytes <= REPLAY_BYTES
     && manifest.file === `${manifest.sha256}.replay.bin`, "Replay manifest is incomplete or invalid")
   require(manifest.sha256 === linked.sha256 && manifest.bytes === linked.bytes, "Capture/replay linkage changed")
+  require(manifest.mapOrdinal === linked.mapOrdinal && (manifest.expectedMarks ?? 2) === (linked.expectedMarks ?? 2)
+    && JSON.stringify(manifest.checkpoint) === JSON.stringify(linked.checkpoint), "Replay checkpoint linkage changed")
   const bytes = await readFile(path.join(path.dirname(manifestPath), manifest.file))
   require(bytes.length === manifest.bytes && hash(bytes) === manifest.sha256, "Replay journal hash mismatch")
-  const replay = parseGameplayReplay(bytes)
+  const expectedMarks = manifest.expectedMarks ?? 2
+  require(expectedMarks === 0 || expectedMarks === 2, "Invalid replay boundary contract")
+  require(expectedMarks === 2 || generation?.scope === "checkpoint-to-pre-navigation", "Setup journal requires its authenticated lifecycle")
+  const replay = parseGameplayReplay(bytes, true, expectedMarks)
   const checkpoint = manifest.checkpoint
-  require(checkpoint && /^[0-9a-f]{64}$/u.test(checkpoint.configurationSha256) && [0, 1].includes(checkpoint.profile), "Replay content checkpoint invalid")
+  verifyReplayCheckpoint(checkpoint, installed, replay.bspSha256)
   const config = await loadLocalConfig()
   const graphBytes = await readFile(objectPath(config.assetDir, graphIdentity))
   require(hash(graphBytes) === graphIdentity, "Captured resource graph hash mismatch")
@@ -68,6 +121,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     const e = loaded.instance.exports as Record<string, any>
     require(typeof e.playsrc_collision_replay_mode === "function", "Replay requires the collision-replay diagnostic build")
     const initialLiveBytes = e.playsrc_memory_bytes(0) >>> 0
+    if (replay.initialEquipment) replayMutation(e, 0, { kind: 9, bytes: Buffer.concat([Buffer.from([0]), replay.initialEquipment]) })
     const copy = (bytes: Uint8Array) => {
       const pointer = e.playsrc_alloc(bytes.length) >>> 0
       new Uint8Array(e.memory.buffer, pointer, bytes.length).set(bytes)
@@ -127,7 +181,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     const tickTimes: number[] = [], groups: Array<{ ticks: number; milliseconds: number }> = []
     let groupTicks = 0, groupMilliseconds = 0, groupIndex = 0
     for (const [index, record] of replay.records.entries()) {
-      require(performance.now() - started < 170_000, "Offline replay exceeded its bounded deadline")
+      require(performance.now() - deadlineStart < 170_000, "Offline replay exceeded its bounded deadline")
       const data = record.bytes
       if (record.kind === 7) {
         active = data.readUInt32LE(0) === 0
@@ -173,23 +227,8 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
           verifiedAttackPublications++
         }
         verifiedObserves++
-      } else if (record.kind === 4) {
-        require(e.playsrc_team_select(handle, data.readUInt32LE(0)) === 1, "Replay team mutation failed"); mutations++
-      } else if (record.kind === 5) {
-        const pointer = e.playsrc_alloc(data.length)
-        new Uint8Array(e.memory.buffer, pointer, data.length).set(data)
-        require(e.playsrc_equipment_update(handle, pointer, data.length) === 1, "Replay equipment mutation failed")
-        e.playsrc_free(pointer, data.length); mutations++
-      } else if (record.kind === 5) {
-        require(e.playsrc_player_set_position(handle, data.readFloatLE(0), data.readFloatLE(4), data.readFloatLE(8)) === 1, "Replay position mutation failed"); mutations++
-      } else if (record.kind === 6) {
-        const pointer = copy(data)
-        require(e.playsrc_jump_configure(handle, pointer, data.length) === 1, "Replay course mutation failed")
-        e.playsrc_free(pointer, data.length); mutations++
-      } else if (record.kind === 7) {
-        const pointer = copy(data)
-        require(e.playsrc_entity_fire(handle, pointer, data.length) === 1, "Replay entity input failed")
-        e.playsrc_free(pointer, data.length); mutations++
+      } else if ([4, 5, 6, 9, 10].includes(record.kind)) {
+        replayMutation(e, handle, record); mutations++
       }
     }
     require(e.playsrc_gameplay_replay_stop(handle) === 1, "Replay owner journal failed")
@@ -197,12 +236,16 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     require(e.playsrc_gameplay_replay_copy(handle, 0, replayPointer, replayLength) === replayLength, "Replay journal copy failed")
     const actual = Buffer.from(new Uint8Array(e.memory.buffer, replayPointer, replayLength))
     e.playsrc_free(replayPointer, replayLength)
-    require(actual.subarray(0, 88).equals(bytes.subarray(0, 88)), "Reconstructed initial checkpoint differs")
+    // The v3 journal adds a loadout checkpoint. V2 bytes remain immutable and
+    // their ambiguous mutation kinds are rejected by the parser above.
+    const reconstructed = parseGameplayReplay(actual, !ticksOnly, expectedMarks)
+    require(actual.subarray(0, 4).equals(bytes.subarray(0, 4)) && actual.subarray(8, 88).equals(bytes.subarray(8, 88))
+      && (!replay.initialEquipment || reconstructed.initialEquipment?.equals(replay.initialEquipment)), "Reconstructed initial checkpoint differs")
     if (!ticksOnly) {
       let active = false
       const recordedTicks = replay.records.filter(record => record.kind === 2)
       let tick = 0
-      for (const record of parseGameplayReplay(actual).records) {
+      for (const record of reconstructed.records) {
         if (record.kind === 7) active = record.bytes.readUInt32LE(0) === 0
         if (record.kind === 2) {
           const expected = recordedTicks[tick++]?.bytes
