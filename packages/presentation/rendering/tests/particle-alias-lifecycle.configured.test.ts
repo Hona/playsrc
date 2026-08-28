@@ -30,9 +30,20 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_PARTICLE_ALIAS !== "1")("exact particle 
     const scene = owner.offlineBuildScene(device.renderer, map, payload, request.payloadSha256, request); owner.offlineAdmitScene(scene)
     const values = [...scene.particleTextures.values()] as any[], unique = [...new Set(values)]
     const materials = [...scene.particleBatchMaterials].map(([key, material]: any) => ({ key, side: material.side, blendSrc: material.blendSrc, blendDst: material.blendDst,
-      alphaTest: material.alphaTest, depthTest: material.depthTest, depthWrite: material.depthWrite, forceSinglePass: material.forceSinglePass }))
+      blendSrcAlpha: material.blendSrcAlpha, blendDstAlpha: material.blendDstAlpha, blendEquation: material.blendEquation, blendEquationAlpha: material.blendEquationAlpha,
+      alphaTest: material.alphaTest, depthTest: material.depthTest, depthWrite: material.depthWrite, depthFunc: material.depthFunc,
+      colorWrite: material.colorWrite, transparent: material.transparent, alphaToCoverage: material.alphaToCoverage,
+      premultipliedAlpha: material.premultipliedAlpha, toneMapped: material.toneMapped, forceSinglePass: material.forceSinglePass }))
     const aliases = [...scene.particleTextures].map(([material, texture]: any) => ({ material, name: texture.name, textureId: texture.id,
       mips: texture.mipmaps.map((mip: any) => ({ width: mip.width, height: mip.height, sha256: new Bun.CryptoHasher("sha256").update(mip.data).digest("hex") })) }))
+    const pipelineOrder = scene.particlePipelineMeshes.children.map((mesh: any) => ({ material: mesh.material.name, side: mesh.material.side,
+      attributes: Object.entries(mesh.geometry.attributes).map(([name, attribute]: any) => [name, attribute.itemSize, attribute.array.constructor.name]),
+      indices: mesh.geometry.index.count }))
+    const soft = aliases.filter((entry: any) => entry.name.includes("effects/softglow.vtf"))
+    const a = scene.particlePipelineMeshes.children.find((mesh: any) => mesh.material.name === `particle:${soft[0].material}`)!.geometry
+    const b = scene.particlePipelineMeshes.children.find((mesh: any) => mesh.material.name === `particle:${soft[1].material}`)!.geometry
+    a.getAttribute("uv").setXY(0, .25, .75); a.getAttribute("particleSheetBlend").setX(0, .5)
+    expect(b.getAttribute("uv").getX(0)).toBe(0); expect(b.getAttribute("particleSheetBlend").getX(0)).toBe(0)
     const camera = { position: [0,0,0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: 75, near: 1, far: 32768 }
     device.phase("cold-preparation"); await owner.prepareParticlePipelines(camera)
     const cold = device.allocations.filter((record: any) => record.label?.startsWith("authored:")), firstWrites = device.writes.filter((write: any) => cold.some((allocation: any) => allocation.id === write.id))
@@ -69,7 +80,7 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_PARTICLE_ALIAS !== "1")("exact particle 
     expect(liveBytes).toBe(0)
     results.push({ mode: index ? "candidate" : "reference", sourceSha256: loaded.sourceSha256, logicalMaterials: values.length,
       uniqueImages: unique.length, coldCreated: cold.length, coldUploadBytes: firstWrites.reduce((sum: number, write: any) => sum + write.bytes, 0),
-      coldLiveAfterPreparation: 0, liveAfterFirstBinding: 1, liveAfterCancellation: 1, terminalLive: 0, phases, materials, aliases, programs, allocations: device.allocations })
+      coldLiveAfterPreparation: 0, liveAfterFirstBinding: 1, liveAfterCancellation: 1, terminalLive: 0, phases, materials, pipelineOrder, aliases, programs, allocations: device.allocations })
   }
   const [reference, candidate] = results
   expect(reference.logicalMaterials).toBe(42); expect(candidate.logicalMaterials).toBe(42)
@@ -77,6 +88,7 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_PARTICLE_ALIAS !== "1")("exact particle 
   expect(reference.coldCreated).toBe(42); expect(candidate.coldCreated).toBe(34)
   expect(reference.coldUploadBytes).toBe(3336920); expect(candidate.coldUploadBytes).toBe(2916208)
   expect(candidate.materials).toEqual(reference.materials)
+  expect(candidate.pipelineOrder).toEqual(reference.pipelineOrder)
   expect(candidate.aliases.map(({ textureId, ...value }: any) => value)).toEqual(reference.aliases.map(({ textureId, ...value }: any) => value))
   expect(candidate.programs).toEqual(reference.programs)
   expect(reference.phases["cold-preparation"].peakBytes).toBe(3336920)
