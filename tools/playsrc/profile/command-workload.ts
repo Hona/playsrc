@@ -55,6 +55,7 @@ async function verifiedWorkload(captureFile: string) {
   require(Array.isArray(plan.clientFrames) && plan.clientFrames.length > 0, "Missing authenticated client-frame clock inputs")
   new RecordedClientRenderFrames(plan.clientFrames)
   require(capture.identity.workloadState?.frame?.models?.length > 0, "Missing authenticated initial model/scene state")
+  require(capture.identity.workloadState?.frame?.scene?.surfaces, "Missing current renderer scene inputs")
   require(capture.identity.workloadState.frame.models.some((model: any) => model.viewModel === true && model.pose?.viewmodel?.phase === "draw"), "Workload does not begin in the declared equipped-primary draw phase")
   require(observes.at(-1)!.nowSeconds * 1000 - plan.sampleEnded >= 4000, "Recorded workload lacks an authenticated retention tail; author a new workload without modifying this one")
   return { schema: "playsrc-command-workload-v1", captureFile, captureSha256: hash(bytes), journalFile: path.join(directory, manifest.file),

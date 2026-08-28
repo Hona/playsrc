@@ -4978,6 +4978,8 @@ export class Tf2Application {
         leaves: visibility.leaves.length, props: rendered.visibleMainStaticPropSources.length,
         skySurfaces: rendered.sky3dPass?.skySurfaces ?? 0, skyProps: rendered.sky3dPass?.skyProps ?? 0,
         mainVisibilityIdentity: visibility.cacheIdentity, skyVisibilityIdentity: sky3d?.visibility.cacheIdentity ?? null,
+        sceneInputs: { legacyVisuals, effects: prepared.frame.effects, shadows: prepared.frame.shadows,
+          brushModels: prepared.frame.brushModels, surfaces: visibility.drawSurfaces, staticProps: rendered.visibleMainStaticPropSources },
         modelInputs: models?.map(model => ({ ...model, pose: model.pose ? { ...model.pose,
           boneMatrices: Array.from(new Uint8Array(model.pose.boneMatrices.buffer, model.pose.boneMatrices.byteOffset, model.pose.boneMatrices.byteLength)),
           flex: model.pose.flex?.map(flex => ({ primitive: flex.primitive, indices: Array.from(flex.indices), positions: Array.from(flex.positions), normals: Array.from(flex.normals) })),
