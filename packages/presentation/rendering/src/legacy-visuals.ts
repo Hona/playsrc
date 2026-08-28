@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import { SourcePixelVisibility } from "./pixel-visibility"
+import { createWorldClipGroup, prepareWorldViewPipelines } from "./world-pipeline-preparation"
 import { sourceWaterFogFragment,type SourceViewFogUniforms,type SourceWaterFogUniforms } from "./source-water"
 
 export type LegacyVisualProgram=Readonly<{srgb:boolean;vertexRgb:boolean;vertexAlpha:boolean;vertexGamma:boolean;gammaExposure:boolean;worldRenderable:boolean;modulation:readonly[number,number,number,number]}>
@@ -93,11 +94,11 @@ export class LegacyVisuals {
   }
 
   async prepare(): Promise<void> { await Promise.all([this.#counter.prepare(1,"r8unorm"), this.#counter.prepare(4,"r8unorm")]) }
-  async prepareMaterials(renderer:THREE.WebGPURenderer,camera:THREE.Camera,world:THREE.Scene):Promise<void>{
-    const geometry=quadGeometry(),group=new THREE.Group()
+  async prepareMaterials(renderer:THREE.WebGPURenderer,camera:THREE.Camera,world:THREE.Scene,plane=new THREE.Plane(),waterTargets:readonly THREE.RenderTarget[]=[]):Promise<void>{
+    const geometry=quadGeometry(),group=createWorldClipGroup(plane)
     for(const material of this.#materials.flat()){const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;group.add(mesh)}
     try{
-      if(group.children.length){await renderer.compileAsync(group,camera,world);await renderer.compileAsync(group,camera,this.noDepth);await renderer.compileAsync(group,camera,this.group)}
+      if(group.children.length){await prepareWorldViewPipelines(renderer,group,camera,world,group,waterTargets);await prepareWorldViewPipelines(renderer,group,camera,this.noDepth,group,waterTargets);group.enabled=false;await renderer.compileAsync(group,camera,this.group)}
     }finally{group.clear();geometry.dispose()}
   }
   feedback(): readonly PixelVisibilityFeedback[] { return this.#feedback.consume() }
