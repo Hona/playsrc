@@ -11,6 +11,7 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as i
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
+import { replaceProfileLeaseFile } from "./profile-lease-rename"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -81,6 +82,7 @@ const PROFILES = Object.freeze({
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
   "selection-transition": { config: "playwright.selection-transition.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 60_000 },
+  "selection-transition-cpu": { config: "playwright.selection-transition.config.ts", target: "pl_upward", environment: { PLAYSRC_SELECTION_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
@@ -138,7 +140,7 @@ async function writeLease(metadataPath: string, token: string, milliseconds: num
   const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporary, `${JSON.stringify({ schema: "playsrc-profile-owner-lease-v1", token, expiresAt: Date.now() + milliseconds })}\n`)
-    await rename(temporary, destination)
+    await replaceProfileLeaseFile(temporary, destination)
   } finally {
     await rm(temporary, { force: true })
   }
