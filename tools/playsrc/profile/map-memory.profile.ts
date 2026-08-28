@@ -20,6 +20,7 @@ import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
+const helperProcesses: { pid?: number; startedEpoch: number; endedEpoch?: number; command: string }[] = []
 
 type BrowserProcess = Readonly<{ type: string; id: number; cpuTime: number }>
 type ProcessMemory = Readonly<{ id: number; type: string; residentBytes: number; privateBytes: number | null }>
@@ -40,7 +41,13 @@ async function residentProcesses(processes: readonly BrowserProcess[], macosSamp
   const command = macosSampler ? [macosSampler, ...identities.map(String)] : process.platform === "win32"
     ? ["powershell", "-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`]
     : ["ps", "-o", "pid=,rss=", "-p", identities.join(",")]
-  const { stdout: output } = await executeFile(command[0]!, command.slice(1), { timeout: 2_000 })
+  // This is a non-GUI telemetry helper, not the headed browser. A console
+  // window from each sample can itself change native foreground ownership.
+  const pending = executeFile(command[0]!, command.slice(1), { timeout: 2_000, windowsHide: true })
+  const receipt = { pid: (pending as typeof pending & { child?: { pid?: number } }).child?.pid, startedEpoch: Date.now(), endedEpoch: undefined as number | undefined, command: "process-memory-sampler" }
+  if (process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1" && helperProcesses.length < 512) helperProcesses.push(receipt)
+  let output: string
+  try { output = (await pending).stdout } finally { receipt.endedEpoch = Date.now() }
   if (!output.trim()) return []
   const types = new Map(processes.map((entry) => [entry.id, entry.type]))
   if (process.platform === "win32") {
@@ -80,8 +87,20 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const sampleWindows = divideProfileWindow(sampleSeconds, targets.length)
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
   const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
+  const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
   const native = async () => { if (nativeReader) requireStartupNative(await nativeReader.read()) }
+  if (process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1") await page.addInitScript(() => {
+    const state = { events: [] as object[], dropped: 0 }
+    ;(globalThis as any).__playsrcInputDiagnosis = state
+    for (const kind of ["keydown", "keyup", "pointerdown", "pointerup", "pointermove", "wheel", "focus", "blur", "visibilitychange"]) addEventListener(kind, event => {
+      const key = event as KeyboardEvent, pointer = event as PointerEvent
+      const record = { kind, epoch: performance.timeOrigin + performance.now(), trusted: event.isTrusted,
+        code: key.code, clientX: pointer.clientX, clientY: pointer.clientY, button: pointer.button,
+        visible: document.visibilityState, focused: document.hasFocus() }
+      if (state.events.length < 512) state.events.push(record); else state.dropped++
+    }, { capture: true, passive: true })
+  })
   const macosSampler = await macosProcessMemorySampler((await loadLocalConfig()).sourceCacheDir)
   await mkdir(output, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
@@ -380,7 +399,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     const root = page.locator("main")
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
-    if (lightmapAudit) await page.bringToFront()
+    if (lightmapAudit && !inputDiagnostic) await page.bringToFront()
     await native()
     if (lightmapAudit) await page.evaluate(async url => {
       const module = await import(/* @vite-ignore */ url)
@@ -427,7 +446,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const timelineStart = timeline.length
       await sample()
       const before = await pageCdp.send("Runtime.getHeapUsage")
-      await page.bringToFront()
+      if (inputDiagnostic) await native()
+      else await page.bringToFront()
       await page.keyboard.press("Backquote")
       const command = page.locator("[aria-label='Console command']")
       await expect(command).toBeVisible()
@@ -467,10 +487,12 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           || main?.dataset.phase === "Ready" && (main.dataset.detail?.includes(expected) ?? false)
       }, identity, { timeout: 600_000, polling: 25 })
       if (await root.getAttribute("data-team-selection-visible") === "true") {
+        if (inputDiagnostic) await native()
         if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
-        await chooseTf2Team(page, "red")
+        await chooseTf2Team(page, "red", inputDiagnostic ? native : undefined)
       }
       if (await root.getAttribute("data-class-selection-visible") === "true") {
+        if (inputDiagnostic) await native()
         if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
         await page.keyboard.press("Digit2")
       }
@@ -648,6 +670,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         for (let trial = 0; trial < 3; trial++) {
           try {
             for (const kind of ["keydown", "keyup"] as const) {
+              if (inputDiagnostic) await native()
               if (kind === "keydown") await page.keyboard.down("w")
               else await page.keyboard.up("w")
               await page.waitForFunction((down) => {
@@ -866,6 +889,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       lightmapTeardown,
       lightmapReference: process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1",
       nativeAdmission: nativeReader?.records,
+      inputDiagnosis: process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1" ? { helpers: helperProcesses,
+        page: await page.evaluate(() => (globalThis as any).__playsrcInputDiagnosis) } : undefined,
       timeline,
       allocations: [...allocations].sort((left, right) => right[1] - left[1]).slice(0, 30)
         .map(([identity, bytes]) => ({ identity, bytes })),
@@ -889,7 +914,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         owners: (globalThis as any).__playsrcProfile?.mapResidency,
       }
     }).catch(() => null)
-    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline, nativeAdmission: nativeReader?.records }, null, 2)}\n`)
+    const inputDiagnosis = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1" ? { helpers: helperProcesses,
+      page: await page.evaluate(() => (globalThis as any).__playsrcInputDiagnosis).catch(() => null) } : undefined
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline, nativeAdmission: nativeReader?.records, inputDiagnosis }, null, 2)}\n`)
     console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { phase: failure.application.phase, generation: failure.application.generation, detail: failure.application.detail, console: failure.console, command: failure.command })}`)
     throw error
   } finally {

@@ -74,9 +74,10 @@ export async function captureTf2TeamSelection(page: Page): Promise<Tf2TeamSelect
   return Object.freeze(evidence)
 }
 
-export async function chooseTf2Team(page: Page, team: "red" | "blue"): Promise<void> {
+export async function chooseTf2Team(page: Page, team: "red" | "blue", admit?: () => Promise<void>): Promise<void> {
   const button = page.locator(`.team-selection-layer [data-vgui-name='${team === "red" ? "teambutton1" : "teambutton0"}']`)
   await expect(button).toBeVisible()
+  await admit?.()
   await button.click()
   await expect(page.locator("main")).toHaveAttribute("data-team-selection-visible", "false")
   await expect(page.locator("main")).toHaveAttribute("data-team-selection-local", team === "red" ? "2" : "3")
@@ -92,6 +93,7 @@ export async function chooseTf2Team(page: Page, team: "red" | "blue"): Promise<v
     }
   }, team === "red" ? 2 : 3, { timeout: 60_000 })
   if (await page.locator("main").getAttribute("data-class-selection-visible") === "true") {
+    await admit?.()
     await page.keyboard.press("Digit2")
     await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
   }
