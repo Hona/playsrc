@@ -33,6 +33,7 @@ const PROFILES = Object.freeze({
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" } },
   "macos-window-identity": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "macos-window-identity" } },
+  "sprite-orientation": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "sprite-orientation" } },
   smokestack: { config: "playwright.profile.config.ts", target: "koth_lakeside_final", environment: { PROFILE_SCENARIOS: "smokestack" }, minimumRemainingMilliseconds: 100_000 },
   "pixel-visibility": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "pixel-visibility" } },
   // Full acceptance measured 60.182s, plus 1.579s observed browser preparation and
