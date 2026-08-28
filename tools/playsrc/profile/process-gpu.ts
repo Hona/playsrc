@@ -32,7 +32,7 @@ export async function startGpuEngineCapture(processes: readonly ProfileProcess[]
   let output = "", errors = "", readyResolve!: () => void, readyReject!: (error: Error) => void
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject })
   const deadline = setTimeout(() => child.kill(), (seconds + 6) * 1000)
-  const finished = new Promise<{ samples: GpuEngineSample[]; error: string | null }>(resolve => {
+  const finished = new Promise<{ samples: GpuEngineSample[]; error: string | null; raw?: string }>(resolve => {
     child.stdout.on("data", chunk => {
       output += chunk.toString()
       if (output.startsWith("READY\r\n") || output.startsWith("READY\n")) readyResolve()
@@ -45,7 +45,7 @@ export async function startGpuEngineCapture(processes: readonly ProfileProcess[]
       if (!/^READY\r?\n/.test(output)) readyReject(new Error(errors || "GPU reader exited without its baseline sample"))
       if (code !== 0) { readyReject(new Error(errors || `GPU counter reader exited ${code}`)); resolve({ samples: [], error: errors || `GPU counter reader exited ${code}` }); return }
       try { const samples = decodeGpuEngineSamples(output.replace(/^READY\r?\n/, ""), processes); resolve({ samples, error: samples.length ? null : "No owned GPU engine counters" }) }
-      catch (error) { readyReject(error as Error); resolve({ samples: [], error: String(error) }) }
+      catch (error) { readyReject(error as Error); resolve({ samples: [], error: String(error), raw: output }) }
     })
   })
   await ready
