@@ -12,6 +12,7 @@ import { loadLocalConfig } from "../src/config"
 import { macosProcessMemorySampler } from "./process-memory-macos"
 import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { mapMemoryReply } from "./map-memory-reply"
+import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -155,8 +156,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await route.fulfill({ response, body: `${prefix}\n${source}` })
   })
 
-  await page.addInitScript((memoryReplySource) => {
+  await page.addInitScript(({ memoryReplySource, textureAccountingSource }) => {
     const memoryReply = new Function(`return (${memoryReplySource})`)() as typeof mapMemoryReply
+    const textureAccounting = new Function(`return (${textureAccountingSource})`)() as typeof installGpuTextureAccounting
     const state = {
       transfers: [] as Record<string, unknown>[],
       worker: [] as Record<string, unknown>[],
@@ -166,21 +168,15 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       gpu: {
         bufferBytes: 0,
         peakBufferBytes: 0,
-        textureBytes: 0,
-        peakTextureBytes: 0,
-        compressedTextureBytes: 0,
-        compressedTextures: 0,
+        textureAllocation: textureAccounting(),
         uploadedBufferBytes: 0,
-        uploadedTextureBytes: 0,
         stagingBytes: 0,
         peakStagingBytes: 0,
         destroyedBuffers: 0,
-        destroyedTextures: 0,
         queuedWriteBytes: 0,
         peakQueuedWriteBytes: 0,
         pendingSubmissions: 0,
         peakPendingSubmissions: 0,
-        formats: {} as Record<string, number>,
       },
       indexedDb: {
         objectReads: 0,
@@ -293,25 +289,6 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }).observe({ type, buffered: true })
     }
 
-    const gpuTextureBytes = (descriptor: any): number => {
-      const size = typeof descriptor.size === "number" ? [descriptor.size, 1, 1]
-        : Array.isArray(descriptor.size) ? descriptor.size
-          : [descriptor.size.width, descriptor.size.height ?? 1, descriptor.size.depthOrArrayLayers ?? 1]
-      const compressed = descriptor.format.startsWith("bc")
-      const block = compressed ? (descriptor.format.startsWith("bc1") || descriptor.format.startsWith("bc4") ? 8 : 16) : 0
-      const scalar = descriptor.format.includes("rgba32") ? 16
-        : descriptor.format.includes("rgba16") || descriptor.format.includes("rg32") ? 8
-          : descriptor.format.includes("r8") && !descriptor.format.includes("rg8") ? 1
-            : descriptor.format.includes("rg8") || descriptor.format.includes("r16") ? 2 : 4
-      let bytes = 0
-      for (let mip = 0; mip < (descriptor.mipLevelCount ?? 1); mip += 1) {
-        const width = Math.max(1, Math.floor(Number(size[0] ?? 1) / 2 ** mip))
-        const height = Math.max(1, Math.floor(Number(size[1] ?? 1) / 2 ** mip))
-        bytes += (compressed ? Math.ceil(width / 4) * Math.ceil(height / 4) * block : width * height * scalar)
-          * Number(size[2] ?? 1) * (descriptor.sampleCount ?? 1)
-      }
-      return bytes
-    }
     const instrument = (owner: any, name: string, wrap: (original: Function, receiver: any, arguments_: any[]) => unknown): void => {
       if (!owner?.prototype || typeof owner.prototype[name] !== "function") return
       const original = owner.prototype[name]
@@ -351,29 +328,6 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
       return result
     })
-    instrument((globalThis as any).GPUDevice, "createTexture", (original, receiver, arguments_) => {
-      const descriptor = arguments_[0]
-      const result = original.apply(receiver, arguments_)
-      const bytes = gpuTextureBytes(descriptor)
-      state.gpu.textureBytes += bytes
-      state.gpu.peakTextureBytes = Math.max(state.gpu.peakTextureBytes, state.gpu.textureBytes)
-      state.gpu.formats[descriptor.format] = (state.gpu.formats[descriptor.format] ?? 0) + 1
-      if (descriptor.format.startsWith("bc")) {
-        state.gpu.compressedTextures += 1
-        state.gpu.compressedTextureBytes += bytes
-      }
-      let destroyed = false
-      const destroy = result.destroy
-      result.destroy = function () {
-        if (!destroyed) {
-          destroyed = true
-          state.gpu.textureBytes -= bytes
-          state.gpu.destroyedTextures += 1
-        }
-        return destroy.call(this)
-      }
-      return result
-    })
     const unsentWrites = new WeakMap<object, number>()
     const queuedWrite = (queue: object, bytes: number) => {
       unsentWrites.set(queue, (unsentWrites.get(queue) ?? 0) + bytes)
@@ -403,11 +357,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const value = arguments_[1]
       const result = original.apply(receiver, arguments_)
       const bytes = Number(value?.byteLength ?? 0)
-      state.gpu.uploadedTextureBytes += bytes
       queuedWrite(receiver, bytes)
       return result
     })
-  }, mapMemoryReply.toString())
+  }, { memoryReplySource: mapMemoryReply.toString(), textureAccountingSource: installGpuTextureAccounting.toString() })
 
   const maps: Record<string, unknown>[] = []
   try {
@@ -465,7 +418,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       const browserStarted = await page.evaluate(() => {
         const gpu = (globalThis as any).__playsrcMemoryProfile.gpu
         gpu.peakBufferBytes = gpu.bufferBytes
-        gpu.peakTextureBytes = gpu.textureBytes
+        gpu.textureAllocation.peakKnownBytes = gpu.textureAllocation.live.knownBytes
         gpu.peakStagingBytes = gpu.stagingBytes
         gpu.peakQueuedWriteBytes = gpu.queuedWriteBytes
         gpu.peakPendingSubmissions = gpu.pendingSubmissions
@@ -823,12 +776,12 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       }
     }
     const report = {
-      schema: "playsrc-headed-three-map-memory-v1",
+      schema: "playsrc-headed-three-map-memory-v2",
       headed: true,
       startupMovie: "skipped",
       requestedActiveSeconds: sampleSeconds,
       totalWallMilliseconds: performance.now() - wallStarted,
-      memoryAttribution: "OS resident/private pages are per process; phase-aligned owner ranges, allocator totals, mapped GPU bytes and outstanding queue writes are separate logical counters, not additive private-page estimates",
+      memoryAttribution: "OS counters are per process and resident sums may double-count shared mappings. Windows private commit differs from macOS private resident pages. Owner ranges, allocator totals, GPU API object sizes, mapped staging and outstanding write input spans are separate counters, not additive physical residency estimates. Texture unknownByteTextures has no inferred byte size; created and writeTexture counters are cumulative.",
       platform: process.platform,
       architecture: process.arch,
       gpu: system.gpu ?? null,

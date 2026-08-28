@@ -33,6 +33,23 @@ This uses normal `bun dev jump_beef --prepare-only`: build, verify local server
 readiness, close. It opens no browser. Cold compiler work does not need to consume
 the gameplay capture window.
 
+If a cold combined build exceeds the command budget, prepare one owner at a time
+instead of repeatedly starting the whole build:
+
+```sh
+bun tools/playsrc/src/local-job.ts run <job-id> build-stage producer
+bun tools/playsrc/src/local-job.ts run <job-id> build-stage wasm
+bun tools/playsrc/src/local-job.ts run <job-id> build-stage resources jump_beef
+bun tools/playsrc/src/local-job.ts run <job-id> build jump_beef
+```
+
+Each stage has the same 175-second job deadline, retains the normal verified
+build outputs, and checks build identity before/after. It opens no listener or
+browser. The final normal build still verifies/publishes the complete closure;
+no stage is a Ready boundary. Do not run stages concurrently or steal Cargo locks.
+The console bridge also accepts `-Action BuildStage -Stage wasm` (or `producer`,
+or `resources -Target jump_beef`) with the same job ID.
+
 When SSH cannot traverse the user's configured toolchain mount, run the same
 build through `windows-job.ps1 -Action Build -Job <job-id> -Target jump_beef`.
 It uses the existing unelevated user session, opens no browser and changes no
