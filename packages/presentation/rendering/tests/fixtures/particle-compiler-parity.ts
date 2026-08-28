@@ -50,7 +50,7 @@ export function verifyParticleCompilerParity(inputs: readonly any[], hdr: boolea
       const options = { transparent: true, side: input.state.cull === 1 ? THREE.DoubleSide : THREE.FrontSide,
         depthTest: input.state.depthTest, depthWrite: input.state.depthWrite, fog: !input.additiveSprite && input.state.fog !== 2 }
       const template = new THREE.MeshBasicNodeMaterial(options)
-      template.forceSinglePass = Boolean(input.spriteCard)
+      template.forceSinglePass = Boolean(input.spriteCard || input.additiveSprite)
       const graphInput = { texture, state: input.state, spriteCard: input.spriteCard, additive: input.additiveSprite, waterFog, depth, exposure, hdr, fog }
       for (const side of particlePreparationSides(template)) {
         const material = template.clone(); material.side = side; material.toneMapped = false
