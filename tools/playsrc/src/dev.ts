@@ -407,11 +407,11 @@ export async function startDevelopment(config: LocalConfig, target: string | und
   }
 }
 
-export async function runDevelopment(config: LocalConfig, target: string | undefined): Promise<void> {
+export async function runDevelopment(config: LocalConfig, target: string | undefined, prepareOnly = false): Promise<void> {
   const started = performance.now()
   const owner = await startDevelopment(config, target)
   console.error(`playsrc dev ready target=${target ?? ""} milliseconds=${Math.round(performance.now() - started)} processMilliseconds=${Math.round(process.uptime() * 1_000)} stages=${JSON.stringify(owner.startup)}`)
   console.log(owner.url)
-  await owner.waitForInterrupt()
-  await owner.close()
+  try { if (!prepareOnly) await owner.waitForInterrupt() }
+  finally { await owner.close() }
 }

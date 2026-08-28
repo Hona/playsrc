@@ -52,8 +52,9 @@ async function main(): Promise<number> {
       }
     }
     if (command === "dev") {
+      if (argument !== undefined && argument !== "--prepare-only") throw new Error("dev accepts only a target and --prepare-only")
       const { runDevelopment } = await import("./dev")
-      await runDevelopment(config, target)
+      await runDevelopment(config, target, argument === "--prepare-only")
       return 0
     }
     if (command === "release") {
