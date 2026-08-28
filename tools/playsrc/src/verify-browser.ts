@@ -848,12 +848,12 @@ async function completeStartup(
     const state = await agent(["--session", session, "eval", "(()=>{const main=document.querySelector('main');return{body:document.body.innerText.slice(0,500),main:!!main,startupState:main?.dataset.startupState??null,phase:main?.dataset.phase??null,detail:main?.dataset.detail??null}})()"]).catch((probe) => `probe failed: ${String(probe)}`)
     throw new BrowserEvidenceError(`${String(error)}; startup state: ${state}`)
   }
-  const hidden = parseJson<{ state: string; hidden: boolean; inert: boolean; ariaHidden: string | null; focused: boolean; time: number; muted: boolean; mutedFallback: boolean; movie: number[]; viewport: number[] }>(await agent([
+  const hidden = parseJson<{ state: string; hidden: boolean; inert: boolean; ariaHidden: string | null; focused: boolean; time: number; muted: boolean; movie: number[]; viewport: number[] }>(await agent([
     "--session", session, "eval",
-    "(()=>{const main=document.querySelector('main'),root=document.querySelector('.gameui-layer'),video=document.querySelector('.startup-movie'),r=video.getBoundingClientRect();return{state:main.dataset.startupState,hidden:root.hidden,inert:root.inert,ariaHidden:root.getAttribute('aria-hidden'),focused:root.contains(document.activeElement),time:video.currentTime,muted:video.muted,mutedFallback:main.dataset.startupMutedFallback==='true',movie:[r.x,r.y,r.width,r.height],viewport:[innerWidth,innerHeight]}})()",
+    "(()=>{const main=document.querySelector('main'),root=document.querySelector('.gameui-layer'),video=document.querySelector('.startup-movie'),r=video.getBoundingClientRect();return{state:main.dataset.startupState,hidden:root.hidden,inert:root.inert,ariaHidden:root.getAttribute('aria-hidden'),focused:root.contains(document.activeElement),time:video.currentTime,muted:video.muted,movie:[r.x,r.y,r.width,r.height],viewport:[innerWidth,innerHeight]}})()",
   ]))
-  const startupAdmission = (hidden.state === "AwaitingGesture" && hidden.time === 0 && !hidden.muted && !hidden.mutedFallback)
-    || (hidden.state === "Playing" && hidden.time >= 0 && hidden.time < 1 && hidden.muted && hidden.mutedFallback)
+  const startupAdmission = (hidden.state === "AwaitingGesture" && hidden.time === 0 && !hidden.muted)
+    || (hidden.state === "Playing" && hidden.time >= 0 && hidden.time < 1 && !hidden.muted)
   require(hidden.hidden && hidden.inert && hidden.ariaHidden === "true" && !hidden.focused && startupAdmission
     && JSON.stringify(hidden.movie) === JSON.stringify([0, 0, ...hidden.viewport]),
     `hidden Main Menu or startup media admission differs: ${JSON.stringify(hidden)}`)
@@ -863,7 +863,7 @@ async function completeStartup(
     await agent(["--session", session, "wait", "--fn", "document.querySelector('main').dataset.phase==='MainMenu'&&document.querySelector('main').dataset.startupState==='Skipped'", "--timeout", "300000"])
     return Object.freeze({ first })
   }
-  await agent(["--session", session, "click", ".startup-movie"])
+  if (hidden.state === "AwaitingGesture") await agent(["--session", session, "click", ".startup-gesture button"])
   await agent(["--session", session, "wait", "100"])
   const admission = parseJson<{ state: string; phase: string; paused: boolean; time: number; readyState: number; error: number | null; detail: string; gestures: number }>(await agent([
     "--session", session, "eval",

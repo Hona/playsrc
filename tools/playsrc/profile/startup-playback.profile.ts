@@ -34,9 +34,10 @@ test("plays the configured startup movie and loads jump_beef", async ({ page }, 
   await page.waitForFunction(() => {
     const main = document.querySelector<HTMLElement>("main")
     const video = document.querySelector<HTMLVideoElement>(".startup-movie")
-    return main?.dataset.startupState === "Failed" || (main?.dataset.startupState === "Playing" && video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA && !video.paused)
+    return main?.dataset.startupState === "Failed" || main?.dataset.startupState === "AwaitingGesture" || (main?.dataset.startupState === "Playing" && video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA && !video.paused)
   }, undefined, { timeout: 300_000, polling: 50 })
   expect(await main.getAttribute("data-startup-state")).not.toBe("Failed")
+  if (await main.getAttribute("data-startup-state") === "AwaitingGesture") await page.getByRole("button", { name: "Play intro", exact: true }).click()
   await expect(main).toHaveAttribute("data-startup-state", "Playing")
   await expect(plaque).toBeHidden()
   const progress = await page.evaluate(() => (window as typeof window & { __playsrcBootstrapProgress: number[] }).__playsrcBootstrapProgress)

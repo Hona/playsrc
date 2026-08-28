@@ -7,6 +7,10 @@ on:
         description: Patch release version, beginning with 0.0.1, without the v prefix
         required: true
         type: string
+      startup_receipt:
+        description: JSON receipt from the exact approved static package's headed cold and warm-upgrade movie/menu/playable-frame gate
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -121,6 +125,7 @@ jobs:
       - name: Deploy production
         run: bun run infra:deploy
         env:
+          PLAYSRC_STATIC_STARTUP_RECEIPT: ${{ inputs.startup_receipt }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -54,6 +54,8 @@
     "profile:map-memory": "bun tools/playsrc/src/profile-runner.ts map-memory",
     "profile:startup": "bun tools/playsrc/profile/dev-startup.profile.ts",
     "profile:startup-browser": "bun tools/playsrc/src/profile-runner.ts startup-browser",
+    "prepare:static-startup": "bun tools/playsrc/src/prepare-static-startup.ts",
+    "profile:static-startup": "bun tools/playsrc/src/run-static-startup.ts",
     "test": "bun test",
     "test:rust": "bun tools/playsrc/src/test-rust.ts"
   },

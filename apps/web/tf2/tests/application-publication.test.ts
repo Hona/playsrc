@@ -50,7 +50,7 @@ function fixture() {
 describe("TF2 incremental application publication", () => {
   test("publishes a bootstrap failure without depending on unavailable VGUI resources", () => {
     const value=fixture()
-    value.publication.publish({...value.startup,phase:'Failed',gameUi:'failure',detail:'Application generation upgrade did not converge'})
+    value.publication.publish({...value.startup,phase:'Failed',bootFailure:true,gameUi:'failure',detail:'Application generation upgrade did not converge'})
     expect(value.failureLabel.textContent).toBe('Application generation upgrade did not converge')
     value.publication.publish(value.startup)
     expect(value.failureLabel.textContent).toBe('')
@@ -62,7 +62,7 @@ describe("TF2 incremental application publication", () => {
       "data-phase": "Startup",
       "data-bootstrap-loading": "true",
       "data-bootstrap-progress": "0",
-      "data-startup-muted-fallback": "false",
+      "data-boot-failure": "false",
       "data-detail": "Preparing exact startup media",
       "data-gameui": "main-menu",
       "data-gameplay-initialized": "false",

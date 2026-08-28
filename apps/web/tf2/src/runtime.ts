@@ -114,6 +114,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
+import { playStartupVideo } from "./startup-playback"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
@@ -321,7 +322,7 @@ export type ApplicationView = Readonly<{
   menuPreparation?: string
   bootstrapLoading?: boolean
   bootstrapProgress?: number
-  startupMutedFallback?: boolean
+  bootFailure?: boolean
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
@@ -478,7 +479,6 @@ export class Tf2Application {
   #menuPresentationDestroyed = false
   #menuRevealed = false
   #startupGestures = 0
-  #startupMutedFallback = false
   #bootstrapExpectedObjects = new Set<string>()
   #bootstrapObjectProgress = new Map<string, Readonly<{ loaded: number; total: number }>>()
   readonly #gameUiRequestTasks = new Set<number>()
@@ -1362,17 +1362,9 @@ export class Tf2Application {
     }
     return Object.freeze({
       play: async () => {
-        try { return await startPlayback() }
-        catch (error) {
-          if (error instanceof DOMException && error.name === "NotAllowedError") {
-            video.muted = true
-            this.#startupMutedFallback = true
-            this.#set({ startupMutedFallback: true })
-            this.#output("STATUS: Startup autoplay continued muted until the first interaction.", true)
-            return startPlayback()
-          }
-          throw error
-        }
+        const result = await playStartupVideo(video)
+        admitted = result === "started"
+        return result
       },
       admitGesture: startPlayback,
       skip: () => video.pause(),
@@ -1384,8 +1376,6 @@ export class Tf2Application {
         if (destroyed) return
         destroyed = true
         admitted = false
-        this.#startupMutedFallback = false
-        this.#set({ startupMutedFallback: false })
         video.pause()
         video.removeEventListener("ended", completed)
         video.removeEventListener("error", failed)
@@ -1572,7 +1562,6 @@ export class Tf2Application {
 
   readonly #startupKey = (event: KeyboardEvent): void => {
     const state = this.#startup?.state().kind
-    this.#unmuteStartup()
     if (event.code === "Escape" && (state === "Playing" || state === "AwaitingGesture")) {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -1585,35 +1574,24 @@ export class Tf2Application {
       this.#startup?.gesture()
     }
   }
-  readonly #startupPointer = (): void => this.#unmuteStartup()
   readonly #startupVisibility = (): void => this.#startup?.visibility(!document.hidden)
   #installStartupListeners(): void {
     window.addEventListener("keydown", this.#startupKey, true)
-    window.addEventListener("pointerdown", this.#startupPointer, true)
     document.addEventListener("visibilitychange", this.#startupVisibility)
   }
   #removeStartupListeners(): void {
     window.removeEventListener("keydown", this.#startupKey, true)
-    window.removeEventListener("pointerdown", this.#startupPointer, true)
     document.removeEventListener("visibilitychange", this.#startupVisibility)
   }
   #startupState(state: Tf2StartupState): void {
     if (state.kind === "Completed" || state.kind === "Skipped" || state.kind === "Failed" || state.kind === "Destroyed") this.#removeStartupListeners()
     const bootstrapLoading = !["Playing", "AwaitingGesture", "Completed", "Skipped", "Failed", "Destroyed"].includes(state.kind)
-    if (state.kind === "Failed") this.#set({ phase: "Failed", gameUi: "failure", startupState: state.kind, bootstrapLoading, detail: `${state.stage}: ${state.reason}` })
+    if (state.kind === "Failed") this.#set({ phase: "Failed", gameUi: "failure", bootFailure: true, startupState: state.kind, bootstrapLoading, detail: `${state.stage}: ${state.reason}` })
     else if (state.kind !== "Completed" && state.kind !== "Skipped" && state.kind !== "Destroyed") this.#set({ phase: "Startup", startupState: state.kind, bootstrapLoading, detail: state.kind })
     else this.#set({ startupState: state.kind, bootstrapLoading })
   }
 
-  #unmuteStartup(): void {
-    if (!this.#startupMutedFallback || this.#startup?.state().kind !== "Playing") return
-    this.#startupVideo.muted = false
-    this.#startupMutedFallback = false
-    this.#set({ startupMutedFallback: false })
-  }
-
   admitStartupGesture(): void {
-    this.#unmuteStartup()
     if (this.#startup?.state().kind !== "AwaitingGesture") return
     this.#startupGestures += 1
     this.#set({ startupGestures: this.#startupGestures })
@@ -1621,7 +1599,6 @@ export class Tf2Application {
   }
 
   startupKey(code: string): void {
-    this.#unmuteStartup()
     if (code === "Escape") this.#startup?.key("Escape")
   }
 
@@ -1695,7 +1672,7 @@ export class Tf2Application {
         } catch (failure) { error = failure }
       }
       await this.#release()
-      this.#set({ phase: "Failed", gameUi: "failure", detail: error instanceof Error ? error.message : "Application startup failed" })
+      this.#set({ phase: "Failed", gameUi: "failure", bootFailure: true, detail: error instanceof Error ? error.message : "Application startup failed" })
     }
   }
 

@@ -7,7 +7,8 @@ import { promisify } from "node:util"
 
 export type Bounds = Readonly<{ X: number; Y: number; Width: number; Height: number }>
 type Window = Readonly<{ id: number; pid: number; owner: string; layer: number; alpha: number; bounds: Bounds }>
-export type MacWindowSnapshot = Readonly<{ windows: readonly Window[]; screens: readonly Bounds[]; cursorLayer: number }>
+export type MacWindowSnapshot = Readonly<{ windows: readonly Window[]; screens: readonly Bounds[]; cursorLayer: number;
+  console?: Readonly<{ onConsole: boolean; loginDone: boolean; locked: boolean; idleMilliseconds: number }> }>
 export type PageWindowFacts = Readonly<{ browserPid: number; targetId: string; cdpWindowId: number; bounds: Bounds; windowState: string; url: string }>
 export type PageWindowLinkage = Readonly<{ browserPid: number; targetId: string; cdpWindowId: number; nativeWindowId: number }>
 

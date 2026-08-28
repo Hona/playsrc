@@ -36,6 +36,14 @@ async function ensureLocalObject(root: string, expected: ObjectDescriptor, pathn
 
 export async function prepareTf2Release(config: LocalConfig, target: string | undefined): Promise<Tf2ReleaseArtifact> {
   if (target !== undefined) throw new Tf2ReleaseError("the current TF2 release does not accept a target argument")
+  const artifact = await buildTf2ReleaseCandidate(config)
+  const catalog = artifact.files.get(artifact.release.objects.catalog.sha256)!
+  await writeTf2Release(artifact.release, await readFile(catalog.pathname))
+  return artifact
+}
+
+/** Prepare local candidate bytes without changing the approved release pointer. */
+export async function buildTf2ReleaseCandidate(config: LocalConfig): Promise<Tf2ReleaseArtifact> {
   const wasm = buildTf2Wasm(config)
   const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
   const prepared = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; map: Awaited<ReturnType<typeof acquireMap>>; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
@@ -92,7 +100,6 @@ export async function prepareTf2Release(config: LocalConfig, target: string | un
     }
   }
   await Promise.all([...files.values()].map(({ descriptor: expected, pathname }) => ensureLocalObject(config.assetDir, expected, pathname)))
-  await writeTf2Release(release, catalogBytes)
   return Object.freeze({ release, files })
 }
 
