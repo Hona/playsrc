@@ -1649,7 +1649,13 @@ export class Tf2Application {
     const loadStarted=performance.now()
     let loadPhase=loadStarted
     const loadTimings:Record<string,number>={}
-    const finishLoadPhase=(name:string):void=>{const now=performance.now();loadTimings[name]=now-loadPhase;loadPhase=now}
+    const loadingControl = (globalThis as typeof globalThis & { __playsrcProfile?: { selectionLoading?: unknown[]; captureSelectionTransitions?: boolean } }).__playsrcProfile
+    const loadingRecords = loadingControl?.captureSelectionTransitions ? (loadingControl.selectionLoading ??= []) : undefined
+    loadingRecords?.push({ kind: "request", at: loadStarted, epoch: performance.timeOrigin + loadStarted,
+      target: target.target, contentBuild: target.contentBuild, objects: target.objects,
+      wasm: this.#configuration?.wasm, renderLevel: this.#renderLevel })
+    const finishLoadPhase=(name:string):void=>{const now=performance.now();loadTimings[name]=now-loadPhase;
+      loadingRecords?.push({ kind: name, started: loadPhase, ended: now });loadPhase=now}
     const operation = this.#nextOperation()
     const signal = operation.signal
     try {
@@ -1679,6 +1685,7 @@ export class Tf2Application {
       this.#requireOperation(operation)
       if (!resources) throw new Error("Gameplay resource configuration is unavailable")
       this.#dependencies = resources
+      loadingRecords?.push({ kind: "resource-input", sha256: resources.sha256, byteLength: resources.byteLength })
       finishLoadPhase("fetch")
       this.#advanceLoading("building-resource-index")
       await this.#ensureResourceRuntime(signal)

@@ -8,7 +8,8 @@ import { sourceTextureLayout } from "../../../packages/presentation/rendering/sr
 const digest = (bytes: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
 const require = (value: unknown, message: string) => { if (!value) throw new Error(message) }
 
-export async function verifyModelCompilerParity(file: string) {
+export async function verifyModelCompilerParity(file: string, labelIncludes?: string) {
+  if (labelIncludes !== undefined && (!labelIncludes.length || labelIncludes.length > 256)) throw new Error("Expected a nonempty exact label substring")
   const bytes = await readFile(file), encoded = JSON.parse(bytes.toString())
   require(path.basename(file) === `${digest(bytes)}.json`, "Compiler fixture metadata digest differs")
   require(encoded.fixture.schema === "playsrc-model-compiler-parity-input-v1" && encoded.fixture.contentBuild === "24245096", "Compiler fixture identity differs")
@@ -72,7 +73,8 @@ export async function verifyModelCompilerParity(file: string) {
           for (let primitive = 0; primitive < model.primitives.length; primitive++) {
             const source = model.primitives[primitive], material = materials.get(model.materials[source.material].logicalPath.toLowerCase())
             const state = states.get(material.identity)
-            const label = `${team + 2}:${entry.pass}:${key}:${primitive}:${material.identity}`
+             const label = `${team + 2}:${entry.pass}:${key}:${primitive}:${material.identity}`
+             if (labelIncludes !== undefined && !label.includes(labelIncludes)) continue
             current = label
             if (!["vertex-lit-generic", "eyes", "eye-refract"].includes(material.shader) || state.noDraw) {
               if (generation === 0) excluded.push({ label, shader: material.shader, reason: state.noDraw ? "authored-no-draw" : "unchanged-unlit/refract-owner" })
@@ -133,7 +135,8 @@ export async function verifyModelCompilerParity(file: string) {
     await writeFile(path.join(path.dirname(file), "compiler-replacement-failure.json"), JSON.stringify(differences, null, 2))
     throw new Error(`Replacement/device-owner programs differ:${differences.length}`)
   }
-  const report = { input: path.basename(file), provenance: fixture.provenance, contentBuild: fixture.contentBuild,
+  require(summaries[0].draws > 0, "No actual model draws matched the requested control")
+  const report = { input: path.basename(file), labelIncludes: labelIncludes ?? null, provenance: fixture.provenance, contentBuild: fixture.contentBuild,
     profile: fixture.profile, counts, excluded, summaries, milliseconds: performance.now() - started, pixelsVerified: false }
   const output = path.join(path.dirname(file), `${digest(JSON.stringify(report))}.compiler-parity.json`)
   await writeFile(output, JSON.stringify(report, null, 2))
@@ -141,7 +144,7 @@ export async function verifyModelCompilerParity(file: string) {
 }
 
 if (import.meta.main) {
-  const [file] = process.argv.slice(2), local = await loadLocalConfig()
-  require(file && path.resolve(file).startsWith(path.resolve(local.sourceCacheDir) + path.sep) && process.argv.length === 3, "Usage: verify-model-compiler-parity.ts <configured-cache fixture.json>")
-  console.log(JSON.stringify(await verifyModelCompilerParity(file!)))
+  const [file, labelIncludes] = process.argv.slice(2), local = await loadLocalConfig()
+  require(file && path.resolve(file).startsWith(path.resolve(local.sourceCacheDir) + path.sep) && [3, 4].includes(process.argv.length), "Usage: verify-model-compiler-parity.ts <configured-cache fixture.json> [exact-label-substring]")
+  console.log(JSON.stringify(await verifyModelCompilerParity(file!, labelIncludes)))
 }
