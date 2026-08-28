@@ -27,6 +27,7 @@ test.afterEach(async ({ page }, testInfo) => {
     legacyVisuals: (globalThis as any).__playsrcProfile?.legacyVisualEvidence,
     legacyViews:(globalThis as any).__playsrcProfile?.legacyVisualViews,
     geometry:(globalThis as any).__playsrcProfile?.geometryEvidence,
+    console:document.querySelector<HTMLElement>("[aria-label='Console output']")?.innerText,
     frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
     simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
     counters:(globalThis as any).__playsrcFrameProfiler?.counters,nodeBuilds:(globalThis as any).__playsrcFrameProfiler?.nodeBuilds,
@@ -157,12 +158,68 @@ test("configured map native traversal, objective roster, visible geometry and ca
       await page.waitForTimeout(250)
     }
   }
+  if(process.env.PROFILE_MAP_LIFECYCLE==="1"){
+    const prepared=await page.request.post(`/__playsrc/prepare-target/${process.env.PROFILE_MAP_REPLACEMENT??"koth_viaduct"}`)
+    expect(prepared.status()).toBe(200)
+  }
   await page.goto("/")
   await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
   await command(`map ${target}`)
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_LIFECYCLE==="1"){
+    const replacement=process.env.PROFILE_MAP_REPLACEMENT??"koth_viaduct"
+    expect(replacement).not.toBe(target);tf2MapBsp(replacement)
+    const records:any[]=[]
+    const state=async(label:string)=>{
+      await capture(label)
+      const data=await page.evaluate(()=>({generation:Number(document.querySelector<HTMLElement>("main")!.dataset.generation),cache:document.querySelector<HTMLElement>("main")!.dataset.cache,
+        geometry:(globalThis as any).__playsrcProfile.geometryEvidence,memory:(globalThis as any).__playsrcProfile.memoryAssets,quality:(globalThis as any).__playsrcProfile.videoQuality,heap:(performance as any).memory?.usedJSHeapSize}))
+      const worker=await Promise.all(page.workers().filter(worker=>worker.url().includes("gameplay-worker")).map(worker=>worker.evaluate(()=>(globalThis as any).__playsrcWorkerMemory)))
+      records.push({label,...data,worker});await writeFile(testInfo.outputPath("map-generation-lifecycle.json"),json(records));return data
+    }
+    const initial=await state("generation-initial")
+    await page.keyboard.press("Escape")
+    await expect(main).toHaveAttribute("data-gameui","pause")
+    await page.locator('[data-vgui-name="DisconnectButton"]').click()
+    await expect(main).toHaveAttribute("data-phase","MainMenu")
+    const prepared=await page.request.post(`/__playsrc/prepare-target/${replacement}`)
+    expect(prepared.status()).toBe(200)
+    const configuration=await prepared.json()
+    const replacementBsp=configuration.targets.find((candidate:any)=>candidate.target===replacement)?.objects.bsp.sha256
+    expect(replacementBsp).toMatch(/^[0-9a-f]{64}$/)
+    let release!:()=>void,entered!:()=>void,settled!:()=>void,preparationFailure:unknown
+    const held=new Promise<void>(resolve=>release=resolve),started=new Promise<void>(resolve=>entered=resolve),finished=new Promise<void>(resolve=>settled=resolve)
+    const route=`**/${replacementBsp}`
+    await page.route(route,async request=>{
+      try{const response=await request.fetch();expect(response.status()).toBe(200);entered();await held;await request.fulfill({response}).catch(()=>{})}
+      catch(error){preparationFailure=error;entered()}
+      finally{settled()}
+    })
+    try{
+      await command(`map ${replacement}`)
+      await Promise.race([started,page.waitForTimeout(20000).then(()=>{throw new Error("Replacement BSP request did not reach the cancellation barrier")})])
+      if(preparationFailure)throw preparationFailure
+      await expect(main).toHaveAttribute("data-gameui","loading")
+      if(await main.getAttribute("data-console-visible")==="true")await closeConsole()
+      await page.getByRole("button",{name:"Cancel",exact:true}).click()
+      await expect(main).toHaveAttribute("data-phase","MainMenu",{timeout:10000})
+      release();await finished
+      await expect(main).toHaveAttribute("data-team-selection-visible","false")
+      records.push({label:"cancelled-bsp-acquisition",phase:await main.getAttribute("data-phase")})
+    }finally{release();await page.unroute(route)}
+    for(const [index,next]of [target,replacement,target].entries()){
+      const began=performance.now();await command(`map ${next}`)
+      await expect(main).toHaveAttribute("data-team-selection-visible","true",{timeout:60000})
+      await closeConsole();await chooseTf2Team(page,"red");await expect(main).toHaveAttribute("data-phase","Ready",{timeout:30000})
+      const current=await state(`generation-${index+1}`)
+      expect(current.geometry.target).toBe(next);expect(current.generation).toBeGreaterThan(initial.generation)
+      records.at(-1).loadMilliseconds=performance.now()-began
+      if(next===target)for(const field of ["resourceBytes","mapBytes","modelCount","staticProps","textures","planeBytes","particleBytes"])expect(current.memory[field]).toBe(initial.memory[field])
+    }
+    await writeFile(testInfo.outputPath("map-generation-lifecycle.json"),json(records));expect(errors).toEqual([]);return
+  }
   if(process.env.PROFILE_MAP_PIPELINE_PROBE==="1"){
     // Rendering diagnosis only: retain real setup/rules/cadence, but seed real
     // bots into the cold view rather than waiting for them to walk there.

@@ -223,7 +223,6 @@ struct Tf2GameUiBackgroundVariant {
 struct MapTarget {
     logical_path: String,
     pak_provider: String,
-    admission: String,
     mode: String,
     navigation: Option<String>,
     download: Option<Download>,
@@ -2191,7 +2190,7 @@ fn main() -> Result<(), String> {
         &fs::read(root.join("games/tf2/content-build.json")).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let mut tf2_ui = load_tf2_ui_manifest(&root, &contract.content_build)?;
+    let tf2_ui = load_tf2_ui_manifest(&root, &contract.content_build)?;
     let config: LocalConfigFile = serde_json::from_slice(
         &fs::read(root.join("playsrc.local.json")).map_err(|error| error.to_string())?,
     )
@@ -2203,20 +2202,9 @@ fn main() -> Result<(), String> {
     let map_target = maps
         .get(&target)
         .ok_or_else(|| "target is not declared".to_owned())?;
-    let map_image_admitted = |identity: &str| {
-        maps.get(identity).is_some_and(|map| identity == target || map.admission == "playable")
-    };
-    tf2_ui.images.retain(|image| {
-        image.configured_value.strip_prefix("maps/menu_photos_")
-            .or_else(|| image.configured_value.strip_prefix("training/screenshots/"))
-            .is_none_or(map_image_admitted)
-    });
-    tf2_ui.dependencies.retain(|dependency| {
-        dependency.logical_path.strip_prefix("materials/vgui/maps/menu_photos_")
-            .or_else(|| dependency.logical_path.strip_prefix("materials/vgui/training/screenshots/"))
-            .and_then(|name| name.strip_suffix(".vmt").or_else(|| name.strip_suffix(".vtf")))
-            .is_none_or(map_image_admitted)
-    });
+    // The menu survives map replacement. Its authenticated image registry must
+    // not depend on which map happened to supply the initial resource graph.
+    // Map selection/admission remains a browser catalog decision.
     if map_target.logical_path != format!("maps/{target}.bsp")
         || map_target.download.is_some() == map_target.installed.is_some()
         || map_target.download.as_ref().is_some_and(|download| {
