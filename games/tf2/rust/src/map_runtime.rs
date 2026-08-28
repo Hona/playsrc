@@ -915,7 +915,7 @@ impl MapRuntime {
                     && (attached(first, b"prop_physics")
                         || attached(first, b"prop_physics_override"))
         });
-        let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.clone())).collect()));
+        let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.as_ref().clone())).collect()));
         let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
         let mut smokestacks = playsrc_entity::smokestack::Systems::default();
         smokestacks.synchronize(&world).map_err(|_| invalid(0))?;

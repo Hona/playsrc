@@ -621,7 +621,9 @@ pub struct RuntimeEntity {
     pub outputs: Vec<OutputActionState>,
     pub malformed_outputs: Vec<(usize, ConnectionError)>,
     pub fields: Vec<TypedFieldState>,
-    pub definition: Entity,
+    // Installed authored data is read-only. Runtime fields/outputs detach with
+    // the entity; template prototypes remain owned and are fixed up before spawn.
+    pub definition: Arc<Entity>,
     pub behavior: BehaviorState,
     pub render: EntityRenderState,
 }
@@ -1556,7 +1558,7 @@ impl EntityWorld {
             outputs,
             malformed_outputs,
             fields,
-            definition,
+            definition: Arc::new(definition),
             behavior,
             render,
         };
