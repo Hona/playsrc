@@ -82,7 +82,9 @@ export class Tf2HudDamagePresentation {
       indicator.element.style.top = `${viewport.height / 2 - radius * Math.cos(rotation) - height / 2}px`
       indicator.element.style.width = `${width}px`
       indicator.element.style.height = `${height}px`
-      indicator.element.style.transform = `rotate(${rotation}rad)`
+      // TF2 DrawDamageIndicator rotates both UV axes by -flRotation in
+      // screen coordinates, about the quad centre (not the radial origin).
+      indicator.element.style.transform = `rotate(${-rotation}rad)`
       const progress = elapsed / indicator.lifetime
       indicator.element.style.opacity = String(progress <= 0.7 ? 1 : 1 - (progress - 0.7) / 0.3)
     }

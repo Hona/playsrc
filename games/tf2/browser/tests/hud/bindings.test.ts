@@ -1114,6 +1114,20 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     expect(() => bindTf2Hud(stale)).toThrow("ammo event weapon is absent")
   })
 
+  test("keeps the Rust damage event's world origin, signed Z bits and coalesced order", () => {
+    const previous = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)).facts
+    const origin = [-1239.03125, 1862.5, -258.03125]
+    const zBits = new Uint32Array(Float32Array.of(origin[2]!).buffer)[0]!
+    const damaged = compactSnapshot(2n, { health: 150, events: [
+      { kind: 6, detail: 1, subject: zBits, auxiliary: 0, values: [25, 175, origin[0]!, origin[1]!] },
+      { kind: 6, detail: 1, subject: zBits, auxiliary: 0, values: [25, 150, origin[0]!, origin[1]!] },
+    ] })
+    const binding = bindTf2Hud(adaptSessionHud(availablePrevious(previous), compactPublication(damaged), context))
+    expect(binding.commands.filter(command => command.kind === "damage-indicator")).toEqual([0, 1].map(ordinal => ({
+      kind: "damage-indicator", tick: 2n, ordinal, scale: 25, lifetimeSeconds: 1.25, direction: origin,
+    })))
+  })
+
   test("marks unavailable compact damage direction and preserves death ordering", () => {
     const initial = adaptSessionHud(unavailable("initial"), compactPublication(compactSnapshot(1n)), context)
     const prior = bindTf2Hud(initial).facts
