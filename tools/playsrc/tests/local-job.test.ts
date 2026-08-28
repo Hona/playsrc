@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
 import { localJobCommand, localJobEnvironment, prepareLocalJob, runLocalJob, validateRevision } from "../src/local-job"
@@ -46,6 +47,10 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     await writeFile(path.join(source, ".gitignore"), "playsrc.local.json\nnode_modules/\n")
     await writeFile(path.join(source, "pass.test.ts"), 'import {test,expect} from "bun:test"; test("native command",()=>expect(2+2).toBe(4))')
     await writeFile(path.join(source, "fail.test.ts"), 'import {test,expect} from "bun:test"; test("real failure",()=>expect(2+2).toBe(5))')
+    if (process.platform === "win32") {
+      await mkdir(path.join(source, "tools", "playsrc"), { recursive: true })
+      await cp(path.resolve(import.meta.dir, "../windows-job.ps1"), path.join(source, "tools", "playsrc", "windows-job.ps1"))
+    }
     const install = Bun.spawnSync([process.execPath, "install"], { cwd: source })
     expect(install.exitCode).toBe(0)
     git(["add", "."]); git(["commit", "-m", "fixture"])
@@ -64,6 +69,15 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     const passed = await runLocalJob(job.id, ["test", "pass.test.ts"], false, source)
     expect(passed.outcome).toBe("passed")
     expect(JSON.parse(await readFile(path.join(passed.run, "result.json"), "utf8")).commit).toBe(commit)
+    if (process.platform === "win32") {
+      const token = randomUUID()
+      await writeFile(path.join(job.directory, `${token}-launch.log`), "Error: rejected before a command started")
+      const status = Bun.spawnSync(["powershell.exe", "-NoProfile", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Status", "-Job", job.id, "-Task", `playsrc-local-job-${token}`])
+      expect(status.exitCode).toBe(0)
+      const observed = JSON.parse(status.stdout.toString())
+      expect(observed.result).toBeNull()
+      expect(observed.launchError).toContain("rejected before a command")
+    }
     expect((await runLocalJob(job.id, ["test", "fail.test.ts"], false, source)).outcome).toBe("failed")
     await mkdir(path.join(job.directory, "checkout", "node_modules"), { recursive: true })
     const nativeCache = path.join(job.directory, "checkout", "node_modules", "native-build-marker")

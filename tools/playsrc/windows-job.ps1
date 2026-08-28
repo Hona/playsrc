@@ -9,6 +9,7 @@ param(
   [switch]$Ready
 )
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 if ($Job -notmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$') { throw 'Invalid job ID' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $bun = (Get-Command bun -CommandType Application).Source
@@ -34,13 +35,27 @@ if ($Action -eq 'Doctor') {
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build') {
   $taskState = $null
+  $launchFile = $null
+  $launchText = $null
   if ($Task) {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
+    $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
+    $launchText = Get-Content -Raw -LiteralPath $launchFile
     $taskState = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue | Select-Object TaskName,State
   }
-  $latest = Get-ChildItem -Path "$directory/*/command.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  $result = if ($latest -and (Test-Path (Join-Path $latest.DirectoryName 'result.json'))) { Get-Content -Raw (Join-Path $latest.DirectoryName 'result.json') | ConvertFrom-Json } else { $null }
+  $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
+  if ($launchFile -and $latestRun -and $latestRun.CreationTimeUtc -lt (Get-Item -LiteralPath $launchFile).CreationTimeUtc) { $latestRun = $null }
+  $latest = if ($latestRun) { Get-Item (Join-Path $latestRun.FullName 'command.log') -ErrorAction SilentlyContinue } else { $null }
+  $result = $null
+  if ($Task) {
+    # A rejected launch may never create a command.log. Never report the prior
+    # build/test's success as this task's outcome.
+    try { if ($launchText) { $result = $launchText | ConvertFrom-Json } } catch { }
+  } elseif ($latestRun -and (Test-Path (Join-Path $latestRun.FullName 'result.json'))) {
+    $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
+  }
   if ($Action -eq 'Logs') {
+    if ($launchText) { Write-Output $launchText }
     if ($latest) { Get-Content -LiteralPath $latest.FullName -Tail 80 }
     if ($latest) {
       $build = Select-String -LiteralPath $latest.FullName -Pattern '^\[performance\] development build log=(.+)$' | Select-Object -Last 1
@@ -60,7 +75,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
       }
     }
     $summary = if ($result) { $result | Select-Object commit,outcome,startedAt,finishedAt,run } else { $null }
-    @{job=$Job;task=$taskState;running=$running;processes=$processes;log=$latest.FullName;result=$summary} | ConvertTo-Json -Depth 8 -Compress
+    @{job=$Job;task=$taskState;running=$running;processes=$processes;log=$latest.FullName;launchLog=$launchFile;launchError=$(if (!$result) { $launchText } else { $null });result=$summary} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
 }
