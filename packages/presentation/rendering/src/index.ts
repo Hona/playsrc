@@ -57,7 +57,7 @@ import { ModelLightingGraphs, bindModelLighting, bindModelTexture, bindStaticPro
 import { modelMaterialGraph, swizzleModelTexture } from "./model-material-graphs"
 import { sourceFragmentColor } from "./source-fragment-color"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
-import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
+import { createStaticPropFadeVariant, selectStaticPropFadePass, type StaticPropFadeBinding, distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation, withSourceModelPanelTargetViewport } from "./model-panel"
@@ -1002,6 +1002,7 @@ type StaticPropResource = Readonly<{
   radius: number
   bounds: readonly [number, number, number, number, number, number]
   fadeUniform: ReturnType<typeof TSL.uniform>
+  fadeBindings: readonly StaticPropFadeBinding[]
   batches: Readonly<{ batch: StaticPropBatch; index: number }>[]
 }>
 
@@ -2730,6 +2731,15 @@ class RendererOwner implements Renderer {
     ))
     const eligibleGroups = new Set([...eligibleProps].map(prop => prop.object))
     const eligibleSources = new Set([...eligibleProps].map(prop => prop.source))
+    const fadeVariants=new THREE.Group()
+    for(const prop of leaves?eligibleProps:scene.staticPropInstances){
+      for(const binding of prop.fadeBindings){
+        const mesh=new THREE.Mesh(binding.mesh.geometry,binding.faded)
+        bindStaticPropFade(mesh,prop.fadeUniform)
+        fadeVariants.add(mesh)
+      }
+    }
+    scene.group.add(fadeVariants)
     const batchSources = new Map(scene.staticPropBatches.map(({ batch }) => [batch.mesh, batch.sources] as const))
     const visibility = prepareReachablePipelineVisibility(
       scene.group,
@@ -2756,6 +2766,7 @@ class RendererOwner implements Renderer {
       }
     } finally {
       visibility.restore()
+      fadeVariants.removeFromParent();fadeVariants.clear()
     }
   }
 
@@ -3688,10 +3699,11 @@ class RendererOwner implements Renderer {
       // VHV and unlit occurrences share only an exact template/pass material.
       // Fade is draw data, not graph identity; runtime-lit graphs still capture
       // their own authored lighting. Opaque batching remains unchanged.
-      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>()
+      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>(),fadedMaterials=new Map<THREE.MeshBasicNodeMaterial,THREE.MeshBasicNodeMaterial>()
         for(let propIndex=0;propIndex<props.count;propIndex+=1){const modelIdentity=props.models[props.presentationModel[propIndex]!]!,key=modelKey(modelIdentity,props.skin[propIndex]!),template=modelTemplates.get(key);if(!template)throw new RenderingError("MissingInput",`static-prop model ${key} is unavailable`)
           if(props.body[propIndex]!==0)throw new RenderingError("UnsupportedFeature","nonzero static-prop body selection is unavailable")
           const instance=template.clone(true),lightingKind=props.lightingKind[propIndex]!,fadeUniform=TSL.uniform(1,"float"),meshes:THREE.Mesh[]=[];instance.traverse(value=>{if(value instanceof THREE.Mesh)meshes.push(value)})
+          const fadeBindings:StaticPropFadeBinding[]=[]
           let colorMeshes:StaticPropInput["vhv"][number]["meshes"]=Object.freeze([])
           if(lightingKind===0){const objectIndex=props.vhvObjects[propIndex*2+profile]!,object=props.vhv[objectIndex];if(!object||object.occurrence!==props.source[propIndex]||object.profile!==profile||object.model!==props.dictionaryModel[propIndex])throw new RenderingError("IdentityMismatch","static-prop VHV occurrence identity differs");colorMeshes=Object.freeze(object.meshes.filter(mesh=>mesh.lod===props.lod[propIndex]))}
           let colorIndex=0
@@ -3709,11 +3721,15 @@ class RendererOwner implements Renderer {
               const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
               material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fading?modelLightingGraphs.staticFade:fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
-              if(fading){material.transparent=true;material.depthWrite=false}
               disposables.add(material)
               if(sharingKey!==undefined)sharedStaticMaterials.set(sharingKey,material)
             }
             mesh.material=material
+            if(fading){
+              let faded=fadedMaterials.get(material)
+              if(!faded){faded=createStaticPropFadeVariant(material);fadedMaterials.set(material,faded);disposables.add(faded)}
+              fadeBindings.push({mesh,authored:material,faded})
+            }
             if(fading&&handoffProfile)observeStaticPropUse(mesh,handoffProfile,sceneGeneration,props.source[propIndex]!)
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
@@ -3741,6 +3757,7 @@ class RendererOwner implements Renderer {
             radius: sphere.radius,
             bounds: Object.freeze([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z] as const),
             fadeUniform,
+            fadeBindings,
             batches: [],
           }))
         }
@@ -4604,6 +4621,7 @@ class RendererOwner implements Renderer {
       }
       alpha = quantizeStaticPropOpacity(alpha)
       prop.fadeUniform.value = alpha
+      selectStaticPropFadePass(prop.fadeBindings,alpha)
       if (alpha > 0 && (!frustumCull || this.#staticPropFrustum.intersectsSphere(
         this.#staticPropSphere.set(
           this.#staticPropSphere.center.set(
@@ -5380,7 +5398,17 @@ class RendererOwner implements Renderer {
     return this.#particleBatchMeshes.map(({ key, mesh }) => ({ key, visible: mesh.visible,
       sky: mesh.parent === this.#skyParticles, count: mesh.geometry.drawRange.count,
       positions: Array.from(mesh.geometry.getAttribute("position").array.slice(0, 12)),
-      material: (mesh.material as THREE.Material).name }))
+      material: (mesh.material as THREE.Material).name,
+      depthTest:(mesh.material as THREE.Material).depthTest,depthWrite:(mesh.material as THREE.Material).depthWrite,depthFunc:(mesh.material as THREE.Material).depthFunc }))
+  }
+
+  captureMaterialDepthEvidence() {
+    const materials=new Map<number,unknown>()
+    this.#scene.traverseVisible(object=>{
+      if(!(object instanceof THREE.Mesh))return
+      for(const material of Array.isArray(object.material)?object.material:[object.material])materials.set(material.id,{id:material.id,name:material.name,identity:object.userData.materialIdentity,depthTest:material.depthTest,depthWrite:material.depthWrite,depthFunc:material.depthFunc,transparent:material.transparent,renderOrder:object.renderOrder})
+    })
+    return [...materials.values()]
   }
 
   #stageParticleBatches(
@@ -5425,9 +5453,9 @@ class RendererOwner implements Renderer {
         const profile = browserFrameProfiler()
         mesh.onBeforeRender = (renderer, _scene, camera) => {
           if (Array.isArray((renderer as any)._compilationPromises)) return
-          if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && camera === this.#camera
+          if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && mesh.parent!==this.#skyParticles && camera === this.#camera
             && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))) {
-            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera, camera === this.#camera
+            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera, mesh.parent!==this.#skyParticles && camera === this.#camera
               && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))
           }
           if (profile && !material.userData.firstParticleUse) {

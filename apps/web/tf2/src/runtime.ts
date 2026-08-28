@@ -4955,7 +4955,7 @@ export class Tf2Application {
     if (profile && Number.isSafeInteger(profile.particleEvidenceRevision)
       && (profile.particleEvidence as { revision?: number } | undefined)?.revision !== profile.particleEvidenceRevision) {
       profile.particleEvidence = { revision: profile.particleEvidenceRevision, tick: prepared.snapshot.tick.toString(), camera,
-        items: particles, batches: renderer.captureParticleBatchEvidence(), visibilityQueries: renderer.captureParticleVisibilityEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
+        items: particles, batches: renderer.captureParticleBatchEvidence(), visibilityQueries:renderer.captureParticleVisibilityEvidence(),materialDepth:renderer.captureMaterialDepthEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
     }
     if (profile && Array.isArray(profile.doorEvidenceTargets) && this.#view.phase === "Ready") {
       const captures = (profile.doorEvidence ??= []) as Array<{ key: string }>

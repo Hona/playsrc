@@ -94,6 +94,56 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_ROCKET_SMOKE==="1"){
+    expect(target).toBe("cp_granary")
+    const cameras=[
+      {position:[-1632,-6420,-224],yawDegrees:90,pitchDegrees:15},
+      {position:[-1664,-6200,-320],yawDegrees:90,pitchDegrees:0},
+    ]
+    for(const phase of ["active","stopped"]){
+      if(phase==="stopped"){await command("ent_fire particle_rocketsteam* Stop");await closeConsole();await page.waitForTimeout(12000)}
+      for(const [index,camera]of cameras.entries()){
+        await page.evaluate(camera=>{(globalThis as any).__playsrcProfile.displacementCameraOverride=camera},camera)
+        await page.waitForTimeout(350)
+        if(phase==="active"&&index===0){
+          await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;p.cosmeticDepthRevision=1;p.particleEvidenceRevision=1})
+          await page.waitForFunction(()=>{const p=(globalThis as any).__playsrcProfile;return p.cosmeticDepthCapture?.revision===1&&p.particleEvidence?.revision===1})
+          const evidence=await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;return {particles:p.particleEvidence,depth:{width:p.cosmeticDepthCapture.buffers.width,height:p.cosmeticDepthCapture.buffers.height,bytes:Array.from(p.cosmeticDepthCapture.buffers.depth)}}})
+          const consoleMaterials=evidence.particles.materialDepth.filter((material:any)=>/control_room_consoles/.test(material.identity??""))
+          expect(consoleMaterials.length).toBeGreaterThan(0)
+          expect(consoleMaterials.every((material:any)=>material.depthWrite&&!material.transparent)).toBe(true)
+          expect(evidence.particles.items.some((item:any)=>item.material==="effects/smoke/smokelit.vmt"&&!item.sky)).toBe(true)
+          const consoleDepth=Number(evidence.depth.bytes[(390*evidence.depth.width+590)*4+3])*192/255
+          expect(consoleDepth).toBeGreaterThan(0);expect(consoleDepth).toBeLessThan(100)
+          await writeFile(testInfo.outputPath("rocket-smoke-depth.rgba"),Buffer.from(evidence.depth.bytes as number[]))
+          await writeFile(testInfo.outputPath("rocket-smoke-depth.json"),json({...evidence,consoleDepth,depth:{width:evidence.depth.width,height:evidence.depth.height}}))
+        }
+        await capture(`rocket-smoke-${phase}-${index}`)
+      }
+    }
+    if(target==="cp_granary"){
+      const active=decodeScreenshot(await readFile(testInfo.outputPath(`${target}-rocket-smoke-active-0-world.png`)))
+      const stopped=decodeScreenshot(await readFile(testInfo.outputPath(`${target}-rocket-smoke-stopped-0-world.png`)))
+      let changed=0
+      // Opaque console panel, in front of the authored rocket steam emitters.
+      for(let y=355;y<425;y++)for(let x=560;x<620;x++){
+        const at=(y*active.width+x)*active.channels
+        if([0,1,2].some(c=>Math.abs(active.pixels[at+c]-stopped.pixels[at+c])>5))changed++
+      }
+      await writeFile(testInfo.outputPath("rocket-console-occlusion.json"),json({changed,pixels:4200}))
+      expect(changed,"rocket steam must not draw through the opaque console").toBe(0)
+      const exposed=decodeScreenshot(await readFile(testInfo.outputPath(`${target}-rocket-smoke-active-1-world.png`)))
+      const drained=decodeScreenshot(await readFile(testInfo.outputPath(`${target}-rocket-smoke-stopped-1-world.png`)))
+      let exposedChanged=0
+      for(let y=280;y<520;y++)for(let x=540;x<740;x++){
+        const at=(y*exposed.width+x)*exposed.channels
+        if([0,1,2].some(c=>Math.abs(exposed.pixels[at+c]-drained.pixels[at+c])>5))exposedChanged++
+      }
+      await writeFile(testInfo.outputPath("rocket-visible-steam.json"),json({exposedChanged,pixels:48000}))
+      expect(exposedChanged,"unoccluded rocket steam must remain visible").toBeGreaterThan(16)
+    }
+    expect(errors).toEqual([]);return
+  }
   if(process.env.PROFILE_MAP_SPOTLIGHT==="1"){
     const beam=facts.legacyVisuals.find((entity:any)=>entity.classname==="point_spotlight"&&Math.hypot(...entity.end.map((v:number,i:number)=>v-entity.position[i]))>1)
     expect(beam).toBeTruthy()
