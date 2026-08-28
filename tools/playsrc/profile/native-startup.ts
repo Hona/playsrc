@@ -148,10 +148,12 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
        if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
-      records.push({ at: Date.now(), facts, native, targetId: targetInfo.targetId })
+       const record = { at: Date.now(), facts, native, targetId: targetInfo.targetId, documentState: null as { visible: boolean; focused: boolean } | null }
+       records.push(record)
       if (matches.length !== 1 || established !== undefined && established !== matches[0].id) throw new Error("Static startup page/native window linkage changed or is ambiguous")
       const window = matches[0]; established = window.id
-      const documentState = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus() }))
+       const documentState = await page.evaluate(() => ({ visible: document.visibilityState === "visible", focused: document.hasFocus() }))
+       record.documentState = documentState
       return { at: Date.now(), physical: true, unlocked: true, foreground: native.foreground === window.id && documentState.focused,
         visible: window.visible && documentState.visible, minimized: window.minimized, idleMilliseconds: native.idleMilliseconds,
          browserPid, windowId: window.id, targetId: targetInfo.targetId, ...(native.pixels ? { pixels: native.pixels } : {}) }

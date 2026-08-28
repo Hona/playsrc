@@ -76,9 +76,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const nativeAdmission: MacPageAdmission[] = []
   const nativeRecords = () => windowsReader?.records ?? nativeAdmission
   const checkNativeWindow = async (desktopScreenshot?: string) => {
-    if (nativeReader) nativeAdmission.push(await nativeReader.read(desktopScreenshot))
-    if (windowsReader) {
-      requireStartupNative(await windowsReader.read())
+    try {
+      if (nativeReader) nativeAdmission.push(await nativeReader.read(desktopScreenshot))
+      if (windowsReader) requireStartupNative(await windowsReader.read())
+    } catch (error) {
+      // Preserve the rejecting native observation too; it is not a passing
+      // sample and must not be guessed to be human input or a rendering fault.
+      await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
+      throw error
     }
   }
   const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
@@ -219,6 +224,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       cdp.send("Profiler.enable").then(() => cdp.send("Profiler.setSamplingInterval", { interval: 1000 })),
     ])).catch(error => { profilerPreparationError = error })
     await page.bringToFront()
+    if (windowsReader) await checkNativeWindow()
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 100_000 })
     const startupMilliseconds = Date.now() - started
     networkStage = `${cache}-menu`
