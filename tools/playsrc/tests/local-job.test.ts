@@ -11,6 +11,13 @@ test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", as
   await expect(resolveCargoExecutable(path.join(path.dirname(process.execPath), "missing-pinned-cargo.exe"), process.env)).rejects.toThrow("pinned Cargo")
 })
 
+test("the session bridge preserves normal interactive priority instead of the scheduler background default", async () => {
+  const script = await readFile(path.resolve(import.meta.dir, "../windows-job.ps1"), "utf8")
+  expect(script).toContain("New-ScheduledTaskSettingsSet -Priority 5")
+  expect(script).toContain("processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass")
+  expect(script).not.toMatch(/New-ScheduledTaskSettingsSet -Priority [0-3]\b/)
+})
+
 test("Playwright config arguments reach a Bun script without becoming Bun configuration", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-args-"))
   try {

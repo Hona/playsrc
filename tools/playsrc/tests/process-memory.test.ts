@@ -33,6 +33,14 @@ describe("browser-host process memory boundaries", () => {
     expect(processMemoryCommand("linux", processes).args).toEqual(["-o", "pid=,rss=", "-p", "12,34,56"])
   })
 
+  test("records native scheduling class and CPU counters without changing priority", () => {
+    const values = decodeProcessMemory("win32", JSON.stringify([{ id: 12, residentBytes: 100, privateBytes: 200, priorityClass: "BelowNormal", cpuSeconds: 1.25 }]), processes)
+    expect(values[0]!.priorityClass).toBe("BelowNormal")
+    expect(values[0]!.cpuSeconds).toBe(1.25)
+    expect(values[1]!.priorityClass).toBeNull()
+    expect(values[1]!.cpuSeconds).toBeNull()
+  })
+
   test("does not report absent, exited, denied or malformed process memory as zero", async () => {
     const partial = await captureProcessMemory(processes, { platform: "win32", execute: async () => '[{"id":12,"residentBytes":100,"privateBytes":200}]' })
     expect(partial.residentBytes).toBeNull()

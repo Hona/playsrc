@@ -17,14 +17,14 @@ test("delivery keeps empty seconds and start/end stalls rather than reporting on
 test("paired evidence rejects a changed source, resolution, quality, camera or active roster", () => {
   const commit = "a".repeat(40), fingerprint = "b".repeat(64)
   const sample = { started: 0, ended: 6000, firstFrame: 0, lastFrame: 1, frames: [{ at: 400, frame: 1 }], raf: [10, 20],
-    before: { tick: 10, bots: 15, botProbe: "2:3:5" }, after: { tick: 20, bots: 15 }, lifecycle: [], missedPublications: 0 }
+    before: { tick: 10, bots: 15, botProbe: Array.from({ length: 15 }, (_, index) => `${index + 2}:${2 + index % 2}:${1 + index % 9}`).join("|") }, after: { tick: 20, bots: 15 }, lifecycle: [], missedPublications: 0 }
   const nativeAdmission = [{ native: { desktop: { state: 0, flags: 1, protocol: 0, processSessionId: 3, consoleSessionId: 3 },
     foreground: 12, windows: [{ id: 12, visible: true, minimized: false }] } }]
   const ordinary = { mode: "ordinary", applicationCommit: commit, sourceFingerprint: fingerprint, sample, nativeAdmission }
   const traced = { ...ordinary, mode: "traced" }
   const boundary = { applicationCommit: commit, sourceFingerprint: fingerprint, browserVersion: "browser", capturePlan: { interaction: "forward-movement" },
     configuration: { assetOrigin: "http://127.0.0.1:4000", renderLevel: 0 }, boundary: { viewport: { width: 1280, height: 720, dpr: 1 },
-      userAgent: "browser", storage: {}, state: { cameraPosition: "1,2,3" }, instrumentation: { app: false, frame: false } } }
+      userAgent: "browser", storage: {}, state: { cameraPosition: "1,2,3", cameraYaw: "0" }, instrumentation: { app: false, frame: false } } }
   const traceBoundary = { ...boundary, boundary: { ...boundary.boundary, instrumentation: { app: true, frame: true } } }
   expect(compareDeliveryEvidence(ordinary, boundary, traced, traceBoundary).ordinary.completed.zeroBuckets).toBe(5)
   for (const changed of [
@@ -32,8 +32,10 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
     { ...traceBoundary, configuration: { ...traceBoundary.configuration, renderLevel: 1 } },
     { ...traceBoundary, boundary: { ...traceBoundary.boundary, viewport: { width: 640, height: 480, dpr: 1 } } },
     { ...traceBoundary, boundary: { ...traceBoundary.boundary, state: { cameraPosition: "4,5,6" } } },
+    { ...traceBoundary, boundary: { ...traceBoundary.boundary, state: { ...traceBoundary.boundary.state, cameraYaw: "129" } } },
   ]) expect(() => compareDeliveryEvidence(ordinary, boundary, traced, changed)).toThrow()
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, botProbe: "2:3:9" } } }, traceBoundary)).toThrow("roster")
+  expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, bots: 23 } } }, traceBoundary)).toThrow("changed comparison")
 })
 
 test("passive observer counts unchanged RAF surfaces separately and detects missed publications", () => {
