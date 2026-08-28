@@ -1,5 +1,30 @@
 type Interval = { scene: string; input: string; lowerMilliseconds: number; upperMilliseconds: number | null; endCensored: boolean }
 
+export type SelectionPreparationOwner = "model" | "visible-world" | "particle"
+
+/** Attribute complete preparation without subtracting native waits from the
+ * input/Ready boundary. Summed native latency is not CPU time. */
+export function selectionPreparation(measurement: any, owner: SelectionPreparationOwner) {
+  const boundaries = { model: ["model-poses-ready", "pipeline-end"], "visible-world": ["pipeline-start", "visible-pipelines-ready"],
+    particle: ["visible-pipelines-ready", "particle-pipelines-ready"] } as const
+  const [startKind, endKind] = boundaries[owner]
+  const entries = measurement.evidence.owners
+  const start = entries.find((entry: any) => entry.kind === startKind), end = entries.find((entry: any) => entry.kind === endKind)
+  if (!start || !end || end.at < start.at) throw new Error(`Complete ${owner} preparation ownership is required`)
+  const native = measurement.evidence.gpuOperations.filter((operation: any) => operation.kind === "createRenderPipelineAsync" && operation.at >= start.at && operation.at < end.at)
+  if (native.some((operation: any) => !Number.isFinite(operation.end) || operation.end < operation.at || operation.end > end.at)) throw new Error("Preparation published before recorded native readiness")
+  const events = native.flatMap((operation: any) => [{ at: operation.at, delta: 1 }, { at: operation.end, delta: -1 }])
+    .sort((a: any, b: any) => a.at - b.at || a.delta - b.delta)
+  let active = 0, maximum = 0, covered = 0, previous = start.at
+  for (const event of events) {
+    if (active > 0) covered += event.at - previous
+    active += event.delta; maximum = Math.max(maximum, active); previous = event.at
+  }
+  return { owner, wallMilliseconds: end.at - start.at, nativePipelines: native.length, maximumNativeInFlight: maximum,
+    summedNativeMilliseconds: native.reduce((sum: number, operation: any) => sum + operation.end - operation.at, 0),
+    nativeCoveredMilliseconds: covered }
+}
+
 export function compareSelectionIntervals(before: readonly Interval[], after: readonly Interval[]) {
   if (before.length !== 2 || after.length !== 2) throw new Error("Both trusted selection transitions are required")
   return before.map((prior, index) => {
