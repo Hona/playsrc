@@ -26,7 +26,7 @@ import { startGameplayReplayJournal } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
 import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
-import { macPageAdmission, requireMacPageAdmission, type MacPageAdmission } from "./macos-page-admission"
+import { macPageAdmission, requireMacPageAdmission, awaitMacBrowserOverlay, type MacPageAdmission } from "./macos-page-admission"
 import { auditEngineerMenus } from "./engineer-menu-audit"
 import { auditSpriteOrientation } from "./sprite-orientation-audit"
 import { startupNativeReader } from "./native-startup"
@@ -378,6 +378,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
   const nativeScreenshot = nativeReader ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
   if (!nativeReader && process.env.PROFILE_NATIVE_SCREENSHOT === "1") throw new Error("Native desktop screenshot capture requires the configured macOS capture tool")
+  if (nativeReader && capturePlan.interaction === "movement-weapon") {
+    const wait: MacPageAdmission[] = []
+    try { await awaitMacBrowserOverlay(() => nativeReader.read(), wait) }
+    finally { await writeFile(path.join(directory, `${label}-native-overlay-wait.json`), JSON.stringify({ scope: "before-sample", records: wait })) }
+  }
   await checkNativeWindow(nativeScreenshot ?? undefined)
   await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
   if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
@@ -1094,14 +1099,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
-  if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1") {
+  if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1" || process.env.PROFILE_DRAW_LIGHTING_PARITY === "1") {
     // Install only after all active sampling and memory extraction. Compare
     // actual GPU color/depth/normal planes with the reference GPU upload path
     // without changing simulation cadence or the measured performance window.
-    await page.evaluate(async url => {
-      const { installSkinningEvidence } = await import(/* @vite-ignore */ url)
-      ;(globalThis as any).__skinningEvidence = installSkinningEvidence()
-    }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/skinning-evidence.ts`)
+    const lightingParity = process.env.PROFILE_DRAW_LIGHTING_PARITY === "1"
+    await page.evaluate(async ({ url, lightingParity }) => {
+      const module = await import(/* @vite-ignore */ url)
+      ;(globalThis as any).__skinningEvidence = lightingParity ? module.installDrawLightingEvidence() : module.installSkinningEvidence()
+    }, { url: `/@fs/${repositoryRoot}/packages/presentation/rendering/src/${lightingParity ? "draw-lighting-evidence" : "skinning-evidence"}.ts`, lightingParity })
     const records = []
     for (const pass of ["main", "viewmodel"]) {
       if (pass === "main") {
@@ -1125,18 +1131,23 @@ test("profile authored headed Upward offline-practice default roster and actual 
         new Promise((_, reject) => setTimeout(() => reject(new Error(`no skinned ${pass} pass`)), 8_000)),
       ]), { label, pass }) as any
       records.push(record)
+      if (lightingParity) {
+        expect(record.lightingDraws).toBeGreaterThan(0)
+        expect(record.lightingValues).toBe(record.lightingDraws * 44)
+      }
       await writeFile(path.join(directory, `${label}-skinning-parity.json`), JSON.stringify(records, null, 2))
       expect(record.planes).toHaveLength(3)
       for (const plane of record.planes) {
         expect(plane.mismatches, `${pass}/${plane.plane}`).toBe(0)
         expect(plane.referenceSha256).toBe(plane.sha256)
+        if (lightingParity) expect(plane.identicalDrawOrder).toBe(true)
         if (plane.plane === "color") expect(plane.actorPixels).toBeGreaterThan(40)
         if (plane.plane === "depth") expect(plane.channels[0]).toBeGreaterThan(1)
       }
       await writeFile(path.join(directory, `${label}-skinning-${pass}.png`), await canvas.screenshot({ timeout: 5_000 }))
       await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
     }
-    await page.evaluate(() => (globalThis as any).__skinningEvidence.dispose())
+    await page.evaluate(() => { (globalThis as any).__skinningEvidence.dispose(); delete (globalThis as any).__skinningEvidence })
   }
   if (acceptance && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
