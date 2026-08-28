@@ -414,7 +414,7 @@ pub struct MapRuntime {
     sprites: playsrc_entity::sprite::Sprites,
     suns:playsrc_entity::sun::Suns,
     spotlights:Vec<playsrc_entity::spotlight::Beam>,
-    spotlight_ends:std::sync::Arc<BTreeMap<u32,[f32;3]>>,
+    spotlight_collision:Option<crate::spotlight::Collision>,
     sprite_models: std::sync::Arc<BTreeMap<Vec<u8>,u32>>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
@@ -976,7 +976,7 @@ impl MapRuntime {
             soundscape_player: playsrc_entity::soundscape::Player::default(),
             sprites: playsrc_entity::sprite::Sprites::default(),
             suns,
-            spotlights:Vec::new(),spotlight_ends:std::sync::Arc::default(),
+            spotlights:Vec::new(),spotlight_collision:None,
             sprite_models: std::sync::Arc::default(),
             world,
             player,
@@ -1469,14 +1469,12 @@ impl MapRuntime {
 
     pub fn sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.sprites.presentation(&self.world,source) }
     pub fn sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.suns.get(&self.world,source)}
-    pub fn install_spotlights(&mut self,mut trace:impl FnMut([f32;3],[f32;3])->Result<[f32;3],()>)->Result<MapPhase,RuntimeFailure>{
-        let mut ends=BTreeMap::new();
-        let (seeds,commands)=playsrc_entity::spotlight::prepare(&self.world,|source,start,end,ignore|{
-            let end=if ignore{end}else{trace(start,end)?};ends.insert(source,end);Ok(end)
-        }).map_err(|source|invalid(source as usize))?;
+    pub fn install_spotlights(&mut self,world:std::sync::Arc<playsrc_collision::World>,inputs:Vec<playsrc_collision::ObjectInput>)->Result<MapPhase,RuntimeFailure>{
+        let collision=crate::spotlight::Collision::new(world,inputs);
+        let (seeds,commands)=collision.prepare(&self.world).map_err(|source|invalid(source as usize))?;
         let batch=self.world.phase(self.world.current_tick(),&commands)?;
         self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
-        self.spotlight_ends=std::sync::Arc::new(ends);self.consume(batch)
+        self.spotlight_collision=Some(collision);self.consume(batch)
     }
     pub fn spotlight_state(&self,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{
         playsrc_entity::spotlight::presentation(&self.world,self.spotlights.iter().find(|beam|beam.source==source)?)
@@ -1573,7 +1571,7 @@ impl MapRuntime {
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
         self.sprites.reconcile(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied()).map_err(|source|invalid(source as usize))?;
         self.suns.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
-        let (seeds,commands)=playsrc_entity::spotlight::prepare(&self.world,|source,_,_,_|self.spotlight_ends.get(&source).copied().ok_or(())).map_err(|source|invalid(source as usize))?;
+        let (seeds,commands)=self.spotlight_collision.as_ref().map(|collision|collision.prepare(&self.world)).transpose().map_err(|source|invalid(source as usize))?.unwrap_or_default();
         let beams=self.world.phase(tick,&commands)?;
         self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
         result.append(self.consume(beams)?);

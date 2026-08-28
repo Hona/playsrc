@@ -18,6 +18,7 @@ pub mod dynamic_prop;
 pub mod health;
 pub mod koth;
 mod map_runtime;
+mod spotlight;
 pub mod particle_resources;
 pub mod medic;
 pub mod melee;
