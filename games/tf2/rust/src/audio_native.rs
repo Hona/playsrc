@@ -150,6 +150,12 @@ macro_rules! native_sounds {
         ScorchShotCrit = 155, "Weapon_ScorchShot.SingleCrit", 1;
         ManmelterCrit = 156, "Weapon_ManMelter.SingleCrit", 1;
         ManmelterReady = 157, "Weapon_SniperRailgun.NonScoped", 1;
+        TimeAddedForEnemy = 158, "Announcer.TimeAddedForEnemy", 1;
+        TimeAwardedForTeam = 159, "Announcer.TimeAwardedForTeam", 3;
+        CartWarning = 119, "Announcer.Cart.Warning", 10;
+        CartFinalWarning = 120, "Announcer.Cart.FinalWarning", 10;
+        CartAlarm = 121, "Cart.Warning", 1;
+        CartAlarmSingle = 122, "Cart.WarningSingle", 1;
     } };
 }
 pub(crate) use native_sounds;

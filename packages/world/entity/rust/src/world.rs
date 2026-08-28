@@ -835,6 +835,7 @@ pub enum RuntimeRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Transition {
+    PathTrackPassed { node: EntityHandle },
     Lifecycle {
         entity: EntityHandle,
         state: Lifecycle,
@@ -4968,6 +4969,9 @@ impl EntityWorld {
         for (output, value, activator) in outputs {
             self.fire_output(target, &output, value, activator, target.into(), 0.0, batch)?;
         }
+        if record.input.eq_ignore_ascii_case(b"InPass") && self.entity(target).is_some_and(|entity| matches!(&entity.behavior, BehaviorState::PathNode(path) if path.track)) {
+            self.push_transition(batch, Transition::PathTrackPassed { node: target })?;
+        }
         if breakable_became_nonsolid {
             self.push_transition(
                 batch,
@@ -7521,7 +7525,7 @@ impl EntityWorld {
         )
     }
 
-    fn path_next(
+    pub fn path_next(
         &self,
         node: EntityHandle,
         forward: bool,

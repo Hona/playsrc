@@ -81,6 +81,11 @@ pub trait GameplayWorld: Tracer {
         position: [f32; 3],
         hull: Hull,
     ) -> Result<bool, MoveError>;
+
+    fn overlaps_transformed_model_hull(&self, model:usize, transform:Transform, position:[f32;3], hull:Hull) -> Result<bool,MoveError> {
+        if transform.angles != [0.0;3] { return Err(MoveError::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Missing,"rotated capture-area collision")); }
+        self.overlaps_model_hull(model,transform.origin,position,hull)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -251,6 +256,7 @@ pub struct TriggerContact {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapPhase {
+    pub payload_events: Vec<crate::payload::Event>,
     pub events: Vec<EntityEvent>,
     pub control_point_events: Vec<crate::control_point::Event>,
     pub effects: Vec<Effect>,
@@ -304,6 +310,7 @@ pub struct BeginTickInput {
 
 impl MapPhase {
     pub fn append(&mut self, mut other: Self) {
+        self.payload_events.append(&mut other.payload_events);
         self.events.append(&mut other.events);
         self.control_point_events.append(&mut other.control_point_events);
         self.effects.append(&mut other.effects);
@@ -415,6 +422,7 @@ pub struct MapRuntime {
     round_inputs: Vec<(u32, Vec<u8>, Variant)>,
     counts: MapCounts,
     payload_constraint_blocked: bool,
+    payload_watchers: Vec<crate::payload::Watcher>,
     tick_interval: f32,
     next_producer_sequence: u64,
     last_player_position: [f32; 3],
@@ -555,6 +563,10 @@ impl MapRuntime {
                         .collect(),
                 },
                 playsrc_entity::ExternalClassBinding {
+                    classname: b"team_train_watcher".to_vec(),
+                    inputs: crate::payload::INPUTS.iter().map(|input| input.to_vec()).collect(),
+                },
+                playsrc_entity::ExternalClassBinding {
                     classname: b"team_round_timer".to_vec(),
                     inputs: [
                         b"Enable".as_slice(),
@@ -563,6 +575,7 @@ impl MapRuntime {
                         b"Resume",
                         b"SetTime",
                         b"AddTime",
+                        b"AddTeamTime",
                         b"ShowInHUD",
                         b"RoundSpawn",
                     ]
@@ -974,6 +987,7 @@ impl MapRuntime {
             round_inputs: Vec::new(),
             counts,
             payload_constraint_blocked,
+            payload_watchers: crate::payload::Watcher::from_entities(&graph.entities),
             tick_interval,
             next_producer_sequence: 1,
             last_player_position: [0.0; 3],
@@ -992,6 +1006,56 @@ impl MapRuntime {
 
     pub fn payload_constraint_blocked(&self) -> bool {
         self.payload_constraint_blocked
+    }
+
+    pub fn payload_watchers(&self) -> &[crate::payload::Watcher] { &self.payload_watchers }
+
+    pub fn payload_timer_may_expire(&self) -> bool {
+        self.payload_watchers.iter().all(crate::payload::Watcher::timer_may_expire)
+    }
+
+    pub fn advance_payload(&mut self, tick:u64, running:bool, overtime:bool) -> Result<MapPhase,RuntimeFailure> {
+        let mut events=Vec::new();
+        if let Some(points)=&self.control_points {
+            for watcher in &mut self.payload_watchers { watcher.think(&self.world,points,tick as f32*self.tick_interval,running,overtime,&mut events); }
+        }
+        self.apply_payload_events(tick,events)
+    }
+
+    pub fn payload_overtime_started(&mut self,tick:u64) -> Result<MapPhase,RuntimeFailure> {
+        let mut events=Vec::new();
+        if let Some(points)=&self.control_points {
+            for watcher in &mut self.payload_watchers { watcher.input(b"OnStartOvertime",&Variant::Void,None,&self.world,points,tick as f32*self.tick_interval,true,&mut events); }
+        }
+        self.apply_payload_events(tick,events)
+    }
+
+    fn apply_payload_events(&mut self,tick:u64,events:Vec<crate::payload::Event>) -> Result<MapPhase,RuntimeFailure> {
+        use crate::{payload::Event,control_point::Event as PointEvent,AudioAction,SoundDefinition};
+        let mut phase=MapPhase::default();
+        for event in &events {
+            let mut commands=Vec::new();
+            match event {
+                Event::TrainInput { train,input,value } => {
+                    // This is a policy request, not a replacement cart solver.
+                    // Never advance a train away from its unimplemented cart body.
+                    if !self.payload_constraint_blocked || *input!=b"SetSpeedDirAccel" || value.as_float()==Some(0.0) {
+                        commands.push(WorldCommand::Input(InputRecord {target:EventTarget::Direct(*train),input:input.to_vec(),value:value.clone(),activator:None,caller:None,output_action:None,producer_sequence:self.next_producer_sequence}));
+                        self.next_producer_sequence+=1;
+                    }
+                }
+                Event::StartRecede { watcher } => if let Some(entity)=self.source_handle(*watcher) { commands.push(WorldCommand::EmitOutput {entity,output:b"OnTrainStartRecede".to_vec(),value:Variant::Void,activator:Some(entity),caller:Some(entity),delay:0.0}); },
+                Event::Sparks { name,active } => if !name.is_empty() && !self.payload_constraint_blocked {
+                    commands.push(WorldCommand::Input(InputRecord {target:EventTarget::Expression(name.clone()),input:if *active {b"StartSpark".to_vec()} else {b"StopSpark".to_vec()},value:Variant::Void,activator:None,caller:None,output_action:None,producer_sequence:self.next_producer_sequence}));self.next_producer_sequence+=1;
+                }
+                Event::CaptureAlert { point,final_point } => phase.control_point_events.push(PointEvent::Sound {point:*point,recipient:None,definition:if *final_point{SoundDefinition::CartFinalWarning}else{SoundDefinition::CartWarning},action:AudioAction::Play}),
+                Event::AlarmStart {point} | Event::AlarmSingle {point} | Event::AlarmStop {point} => phase.control_point_events.push(PointEvent::Sound {point:*point,recipient:None,definition:if matches!(event,Event::AlarmSingle{..}){SoundDefinition::CartAlarmSingle}else{SoundDefinition::CartAlarm},action:if matches!(event,Event::AlarmStop{..}){AudioAction::Stop}else{AudioAction::Play}}),
+                Event::Speak {..} | Event::Pushed {..} => {},
+            }
+            if !commands.is_empty(){let batch=self.world.phase(tick,&commands)?;phase.append(self.consume(batch)?);}
+        }
+        phase.payload_events.extend(events);
+        Ok(phase)
     }
 
     pub fn pickups(&self) -> Vec<MapPickupSnapshot> {
@@ -1385,6 +1449,10 @@ impl MapRuntime {
 
     pub fn apply_round_inputs(&mut self, rules: &mut crate::round::Rules, now: f32) {
         for (entity, input, value) in self.round_inputs.drain(..) {
+            if input.eq_ignore_ascii_case(b"AddTeamTime") {
+                if let Variant::String(value) = &value { rules.add_team_time(entity, value, now); }
+                continue;
+            }
             let number = value.as_float().unwrap_or(0.0);
             let integer = match &value {
                 Variant::Integer(value) => *value,
@@ -1424,6 +1492,9 @@ impl MapRuntime {
 
     pub fn restart_control_point_map(&mut self, tick: u64) -> Result<MapPhase, RuntimeFailure> {
         let Some(definitions) = self.restart_definitions.clone() else { return Ok(MapPhase::default()); };
+        let mut payload_events=Vec::new();
+        for watcher in &mut self.payload_watchers { watcher.stop_alarm(&mut payload_events); }
+        let mut payload_phase=self.apply_payload_events(tick,payload_events)?;
         let actors: std::collections::BTreeSet<_> = self.actor_handles.values().copied().chain([self.player]).collect();
         let removals: Vec<_> = self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)
             && self.world.entity(*handle).is_some_and(|entity| !preserved_on_round_restart(&entity.definition))).map(WorldCommand::Remove).collect();
@@ -1431,6 +1502,7 @@ impl MapRuntime {
         self.world.set_map_load_kind(playsrc_entity::MapLoadKind::MultiplayerNewRound);
         let removed = self.world.phase(tick, &removals)?;
         let mut result = self.consume(removed)?;
+        result.append(std::mem::take(&mut payload_phase));
         self.world.clear_event_queue();
         let spawns = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().collect();
         let spawned = self.world.phase(tick, &[WorldCommand::SpawnMapEntities(spawns)])?;
@@ -1458,6 +1530,7 @@ impl MapRuntime {
             exclusion.enabled = definitions.iter().find(|e| e.index == exclusion.source as usize).is_none_or(|e| !boolean(e, b"StartDisabled", false));
         }
         self.prop_animations.clear();
+        self.payload_watchers=crate::payload::Watcher::from_entities(&definitions);
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
         if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
         result.append(self.consume(spawned)?);
@@ -1466,6 +1539,12 @@ impl MapRuntime {
 
     pub fn set_control_point_facts(&mut self, facts: crate::control_point::Facts) {
         self.control_point_facts = facts;
+    }
+
+    pub fn sync_capture_area_transforms(&mut self) {
+        if let Some(points)=&mut self.control_points {
+            points.update_area_transforms(|source|self.world.entity(*self.source_handles.get(&source)?).map(|entity|entity.world_transform));
+        }
     }
 
     pub fn activate_control_point_round(&mut self, tick: u64, facts: crate::control_point::Facts, random: &mut crate::UniformRandomStream) -> Result<MapPhase, RuntimeFailure> {
@@ -1499,14 +1578,23 @@ impl MapRuntime {
 
     pub fn emit_control_point_outputs(&mut self, tick: u64, events: &[crate::control_point::Event]) -> Result<MapPhase, RuntimeFailure> {
         let mut commands = Vec::new();
+        let mut payload_events=Vec::new();
         for event in events {
             let crate::control_point::Event::MapOutput { entity, output, value } = event else { continue; };
             let handle = self.source_handle(*entity).ok_or_else(|| invalid(*entity as usize))?;
             commands.push(WorldCommand::EmitOutput { entity: handle, output: output.as_bytes().to_vec(), value: value.clone(), activator: Some(handle), caller: Some(handle), delay: 0.0 });
+            if *output=="OnNumCappersChanged2" && let Variant::Integer(count)=value {
+                let blocked=self.control_points.as_ref().and_then(|points|points.areas().iter().find(|area|area.identity==*entity)).is_some_and(|area|area.blocked);
+                for watcher in &mut self.payload_watchers {
+                    if watcher.capture_area==Some(*entity) { watcher.set_cappers(*count,Some((*entity,blocked)),tick as f32*self.tick_interval,self.control_point_facts.in_overtime,&mut payload_events); }
+                }
+            }
         }
         if commands.is_empty() { return Ok(MapPhase::default()); }
         let batch = self.world.phase(tick, &commands)?;
-        self.consume(batch)
+        let mut phase=self.consume(batch)?;
+        phase.append(self.apply_payload_events(tick,payload_events)?);
+        Ok(phase)
     }
 
     pub fn emit_objective_outputs(
@@ -2002,6 +2090,17 @@ impl MapRuntime {
         self.world.entity(*self.source_handles.get(&identity)?).map(|entity| entity.world_transform)
     }
 
+    pub fn entity_collision_state(&self, identity:u32) -> Option<(Transform,bool)> {
+        let entity=self.world.entity(*self.source_handles.get(&identity)?)?;
+        let solid=match &entity.behavior {
+            BehaviorState::DynamicProp(prop)=>prop.collision_enabled,
+            BehaviorState::Mover(mover)=>mover.solid,
+            BehaviorState::Brush(brush)=>match brush.solidity {playsrc_entity::BrushSolidity::Always=>true,playsrc_entity::BrushSolidity::Never=>false,playsrc_entity::BrushSolidity::Toggle=>brush.enabled},
+            _=>true,
+        };
+        Some((entity.world_transform,solid))
+    }
+
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
         let Some(handle) = self.source_handles.get(&identity) else { return false; };
         let Some(ancestor) = self.source_handles.get(&ancestor) else { return false; };
@@ -2020,6 +2119,11 @@ impl MapRuntime {
         let mut output = MapPhase::default();
         for record in batch.records {
             match record.transition {
+                Transition::PathTrackPassed {node} => {
+                    let mut events=Vec::new();
+                    for watcher in &mut self.payload_watchers { watcher.path_passed(node,&self.world,&mut events); }
+                    output.append(self.apply_payload_events(self.world.current_tick(),events)?);
+                }
                 Transition::Input {
                     target,
                     input,
@@ -2251,10 +2355,17 @@ impl MapRuntime {
                         entity,
                         input,
                         value,
+                        caller,
                         ..
                     } => {
                         self.soundscapes.input(entity, &input);
                         let source = self.source(entity);
+                        if let Some(index)=self.payload_watchers.iter().position(|watcher|watcher.identity==source) {
+                            let area=caller.and_then(|caller|self.control_points.as_ref()?.areas().iter().find(|area|area.identity==self.source(caller)).map(|area|(area.identity,area.blocked)));
+                            let mut events=Vec::new();
+                            if let Some(points)=&self.control_points { self.payload_watchers[index].input(&input,&value,area,&self.world,points,self.world.current_tick() as f32*self.tick_interval,self.control_point_facts.in_overtime,&mut events); }
+                            output.append(self.apply_payload_events(self.world.current_tick(),events)?);
+                        }
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
                         let mut point_events = Vec::new();
@@ -2265,7 +2376,14 @@ impl MapRuntime {
                         {
                             koth.round_activate(points, self.world.current_tick() as f32 * self.tick_interval, self.control_point_facts, &mut point_events);
                         }
-                        if let Some(points) = &mut self.control_points {
+                        if input.eq_ignore_ascii_case(b"SetControlPoint") {
+                            let name=match &value {Variant::String(name)=>Some(name.as_slice()),Variant::Void=>Some(b"".as_slice()),_=>None};
+                            if let Some(name)=name {
+                                let name=&name[..name.iter().position(|byte|*byte==0).unwrap_or(name.len()).min(254)];
+                                let point=self.world.resolve(name,None,None,None).first().and_then(|handle|self.world.entity(*handle)).filter(|entity|class(&entity.definition,b"team_control_point")).map(|entity|entity.source_index as u32);
+                                if let Some(points)=&mut self.control_points{points.retarget_area(source,point,self.world.current_tick() as f32*self.tick_interval,self.control_point_facts,&mut point_events);}
+                            }
+                        } else if let Some(points) = &mut self.control_points {
                             points.apply_input(source, &input, &value, self.world.current_tick() as f32 * self.tick_interval, self.control_point_facts, &mut point_events);
                         }
                         if !point_events.is_empty() {
@@ -2364,8 +2482,14 @@ impl MapRuntime {
                     contact: None,
                     name: Vec::new(),
                 }),
-                Transition::Lifecycle { .. }
-                | Transition::Scheduled { .. }
+                Transition::Lifecycle {entity,..} => {
+                    if self.world.entity(entity).is_none() {
+                        let source=self.source(entity);let mut events=Vec::new();
+                        for watcher in &mut self.payload_watchers{watcher.entity_removed(entity,source,&mut events);}
+                        output.append(self.apply_payload_events(self.world.current_tick(),events)?);
+                    }
+                }
+                Transition::Scheduled { .. }
                 | Transition::Cancelled { .. }
                 | Transition::ParentChanged { .. } => {}
             }

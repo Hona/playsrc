@@ -174,8 +174,11 @@ impl Point {
 pub struct Area {
     pub identity: u32,
     pub point: usize,
+    pub point_valid: bool,
+    pub present: bool,
     pub model: usize,
     pub origin: [f32; 3],
+    pub angles: [f32; 3],
     pub bounds: Option<([f32; 3], [f32; 3])>,
     pub disabled: bool,
     pub cap_seconds: f32,
@@ -331,6 +334,8 @@ pub struct World {
     master: Master,
     configuration: Configuration,
     koth: bool,
+    payload: bool,
+    capture_actors: Vec<Actor>,
     won: bool,
     next_master_think: f32,
     facts: Facts,
@@ -348,14 +353,6 @@ pub struct World {
 
 impl World {
     pub fn from_graph(graph: &Graph) -> Result<Option<Self>, Error> {
-        // Payload has its own train watcher, and is not a control-point match.
-        if graph
-            .entities
-            .iter()
-            .any(|e| class(e, b"team_train_watcher"))
-        {
-            return Ok(None);
-        }
         let Some(master) = graph
             .entities
             .iter()
@@ -460,8 +457,11 @@ impl World {
             areas.push(Area {
                 identity: e.index as u32,
                 point,
+                point_valid: true,
+                present: true,
                 model,
                 origin: vector(e, b"origin")?,
+                angles: vector(e, b"angles")?,
                 bounds: None,
                 disabled,
                 cap_seconds: number(e, b"area_time_to_cap", 0.0),
@@ -507,6 +507,8 @@ impl World {
             areas,
             configuration: Configuration::default(),
             koth: graph.entities.iter().any(|e| class(e, b"tf_logic_koth")),
+            payload: graph.entities.iter().any(|e| class(e, b"team_train_watcher")),
+            capture_actors: Vec::new(),
             won: false,
             next_master_think: 0.1,
             facts: Facts::default(),
@@ -544,6 +546,35 @@ impl World {
 
     pub fn points(&self) -> &[Point] {
         &self.points
+    }
+
+    pub fn is_payload(&self) -> bool { self.payload }
+
+    pub fn would_capture_win(&self, point: usize) -> bool {
+        if self.rounds.is_empty() {
+            return TEAMS.into_iter().any(|team| self.team_may_capture(team,point,false)
+                && self.master.restricted_winner != 1 && self.master.restricted_winner != slot(team) as u8
+                && self.group_winner(0..self.points.len(),Some((point,team))) == team);
+        }
+        if (0..self.rounds.len()).filter(|index|self.round_playable(*index)).count()!=1 { return false; }
+        let Some(round)=self.current_round.map(|index|&self.rounds[index]) else { return false; };
+        TEAMS.into_iter().any(|team| self.team_may_capture(team,point,false)
+            && round.restricted_winner != 1 && round.restricted_winner != slot(team) as u8
+            && self.group_winner(round.points.iter().copied(),Some((point,team))) == team)
+    }
+
+    /// Current player facts for entity inputs serviced between capture thinks.
+    /// Physical touching remains owned by the area; this never creates contact.
+    pub fn set_capture_actors(&mut self, actors: impl IntoIterator<Item = Actor>) {
+        self.capture_actors.clear();
+        self.capture_actors.extend(actors);
+    }
+
+    pub fn update_area_transforms(&mut self, resolve:impl Fn(u32)->Option<playsrc_entity::Transform>) {
+        for area in &mut self.areas {
+            let transform=resolve(area.identity);area.present=transform.is_some();
+            if let Some(transform)=transform{area.origin=transform.origin;area.angles=transform.angles;}
+        }
     }
 
     pub fn set_model_bounds(&mut self, bounds: &[playsrc_entity::ModelBounds]) {
@@ -607,14 +638,14 @@ impl World {
         self.configuration
     }
     pub fn snapshot(&self, events: Vec<Event>) -> Snapshot {
-        let local_area = self.areas.iter().find(|a| self.in_round(a.point) && a.touching.contains(&crate::PLAYER_IDENTITY));
+        let local_area = self.areas.iter().find(|a| a.present && a.point_valid && self.in_round(a.point) && a.touching.contains(&crate::PLAYER_IDENTITY));
         Snapshot {
             points: self.points.iter().cloned().map(|mut point| { point.visible &= self.in_round(point.index); point }).collect(),
             local_point: local_area.map(|a| a.point),
             local_capture_text: local_area.map_or("", |a| self.capture_text(a)),
             display_progress: self.points.iter().map(|p| self.presentation_progress(p.index)).collect(),
             may_capture: self.points.iter().map(|p| [self.team_may_capture(PlayerTeam::Red, p.index, self.facts.waiting_for_players), self.team_may_capture(PlayerTeam::Blue, p.index, self.facts.waiting_for_players)]).collect(),
-            areas: self.areas.clone(),
+            areas: self.areas.iter().filter(|area|area.present).cloned().collect(),
             master: self.master.clone(),
             configuration: self.configuration,
             events,
@@ -712,7 +743,7 @@ impl World {
     }
 
     pub fn contested(&self) -> bool {
-        self.areas.iter().any(|a| a.capturing_team.is_gameplay())
+        self.areas.iter().any(|a| a.present && a.point_valid && a.capturing_team.is_gameplay())
     }
 
     pub fn actor_can_capture(&self, actor: Actor, point: usize) -> bool {
@@ -736,6 +767,7 @@ impl World {
     pub fn round_spawn(&mut self, now: f32, full_reset: bool, events: &mut Vec<Event>) {
         self.now = now;
         self.local_actor = None;
+        self.capture_actors.clear();
         self.won = false;
         self.next_master_think = now + 0.1;
         if !full_reset { return; }
@@ -767,6 +799,8 @@ impl World {
                 a.disabled = a.initial_disabled;
                 a.teams = a.initial_teams;
                 a.point = a.initial_point;
+                a.point_valid = true;
+                a.present = true;
             }
             a.capturing_team = PlayerTeam::Unassigned;
             a.team_in_zone = PlayerTeam::Unassigned;
@@ -784,10 +818,37 @@ impl World {
     }
 
     pub fn apply_input(&mut self, entity: u32, input: &[u8], value: &Variant, now: f32, facts: Facts, events: &mut Vec<Event>) -> bool {
-        let start = events.len();
-        let accepted = self.apply_input_inner(entity, input, value, now, facts, events);
-        self.capture_sounds(start, events);
+        let start=events.len();
+        let accepted=self.apply_input_inner(entity,input,value,now,facts,events);
+        self.capture_sounds(start,events);
         accepted
+    }
+
+    /// The entity world resolves the FIELD_STRING name, including first-match
+    /// class checks. Capture rules own breaking, rebinding and retouching.
+    pub fn retarget_area(&mut self, entity:u32, point:Option<u32>, now:f32, facts:Facts, events:&mut Vec<Event>) -> bool {
+        self.now=now;self.facts=facts;
+        let Some(i)=self.areas.iter().position(|area|area.identity==entity) else{return false;};
+        let start=events.len();
+        break_capture(&mut self.areas[i],events);
+        let resolved=point.and_then(|identity|self.points.iter().position(|point|point.identity==identity));
+        self.areas[i].point_valid=resolved.is_some();
+        if let Some(point)=resolved{self.areas[i].point=point;}
+        let actors=self.capture_actors.clone();
+        // The SDK iterates the live vector while EndTouch removes and
+        // StartTouch appends; this is intentionally not a cloned iteration.
+        let mut touching=0;
+        while touching<self.areas[i].touching.len(){
+            let player=self.areas[i].touching.remove(touching);
+            let point=self.areas[i].point;
+            if self.areas[i].point_valid{events.push(Event::Touch{point,player,start:false});}
+            self.areas[i].touching.retain(|id|actors.iter().any(|actor|actor.identity==*id&&actor.alive));
+            self.areas[i].touching.push(player);
+            if self.areas[i].point_valid{events.push(Event::Touch{point,player,start:true});self.think_area(i,now,facts,&actors,true,events);}
+            touching+=1;
+        }
+        self.capture_sounds(start,events);
+        true
     }
 
     fn apply_input_inner(
@@ -889,16 +950,10 @@ impl World {
                         }
                     }
                 }
-            } else if input.eq_ignore_ascii_case(b"SetControlPoint") {
-                break_capture(a, events);
-                if let Variant::String(name) = value {
-                    if let Some(p) = self.points.iter().position(|p| p.name.as_bytes() == name) {
-                        a.point = p;
-                    }
-                }
             } else if input.eq_ignore_ascii_case(b"CaptureCurrentCP") {
-                if a.capturing_team.is_gameplay() {
-                    self.end_capture(i, &[], events);
+                if a.point_valid && a.capturing_team.is_gameplay() {
+                    let actors = self.capture_actors.clone();
+                    self.end_capture(i, &actors, events);
                 }
             } else if !input.eq_ignore_ascii_case(b"RoundSpawn") {
                 return false;
@@ -949,6 +1004,7 @@ impl World {
     ) -> Result<(), Error> {
         self.facts = facts;
         self.now = now;
+        self.set_capture_actors(actors.iter().copied());
         let sound_start = events.len();
         self.local_actor = actors.iter().copied().find(|a| a.identity == crate::PLAYER_IDENTITY);
         for point in &mut self.points {
@@ -983,13 +1039,13 @@ impl World {
             // StartTouch runs CaptureThink immediately. EndTouch removes the contact but
             // does not run CaptureThink. Keep that ordering separate from the 10Hz think.
             let mut contacts = Vec::new();
-            if !self.areas[i].disabled {
+            if self.areas[i].present && !self.areas[i].disabled {
                 for actor in actors {
                     if !actor.alive || !actor.team.is_gameplay() { continue; }
                     if collision
-                        .overlaps_model_hull(
+                        .overlaps_transformed_model_hull(
                             self.areas[i].model,
-                            self.areas[i].origin,
+                            playsrc_entity::Transform {origin:self.areas[i].origin,angles:self.areas[i].angles},
                             actor.position,
                             actor.hull,
                         )
@@ -1003,25 +1059,25 @@ impl World {
             for id in old {
                 if !contacts.contains(&id) {
                     self.areas[i].touching.retain(|v| *v != id);
-                    events.push(Event::Touch {
+                    if self.areas[i].point_valid { events.push(Event::Touch {
                         point: self.areas[i].point,
                         player: id,
                         start: false,
-                    });
+                    }); }
                 }
             }
             for id in contacts {
                 if !self.areas[i].touching.contains(&id) {
                     self.areas[i].touching.push(id);
-                    events.push(Event::Touch {
+                    if self.areas[i].point_valid { events.push(Event::Touch {
                         point: self.areas[i].point,
                         player: id,
                         start: true,
                     });
-                    self.think_area(i, now, facts, actors, true, events);
+                    self.think_area(i, now, facts, actors, true, events); }
                 }
             }
-            if now >= self.areas[i].next_think {
+            if self.areas[i].present && now >= self.areas[i].next_think {
                 self.think_area(i, now, facts, actors, false, events);
             }
         }
@@ -1045,6 +1101,7 @@ impl World {
         events: &mut Vec<Event>,
     ) {
         self.areas[index].next_think = now + AREA_THINK_SECONDS;
+        if !self.areas[index].point_valid { return; }
         if !self.in_round(self.areas[index].point) { return; }
         if !facts.points_may_be_captured {
             break_capture(&mut self.areas[index], events);
@@ -1528,6 +1585,51 @@ mod tests {
     }
     impl GameplayWorld for NoContact {
         fn overlaps_model_hull(&self, _: usize, _: [f32;3], _: [f32;3], _: Hull) -> Result<bool, playsrc_movement::Error> { Ok(false) }
+    }
+
+    #[test]
+    fn payload_checkpoint_input_contract_retains_cappers_and_retargets_touching_players() {
+        // This is an entity/capture contract test, not simulated payload motion.
+        let graph = playsrc_entity::parse(br#"
+            {"classname" "team_train_watcher"}
+            {"classname" "team_control_point_master" "score_style" "1" "cpm_restrict_team_cap_win" "2" "switch_teams" "1"}
+            {"classname" "team_control_point" "targetname" "first" "point_index" "1" "point_default_owner" "2"}
+            {"classname" "team_control_point" "targetname" "last" "point_index" "2" "point_default_owner" "2" "team_previouspoint_3_0" "first"}
+            {"classname" "trigger_capture_area" "targetname" "cart_area" "model" "*1" "area_cap_point" "first" "area_time_to_cap" "99999" "team_cancap_3" "1"}
+        "#, Default::default()).unwrap();
+        let mut world = World::from_graph(&graph).unwrap().expect("payload points still own the SDK capture contracts");
+        let facts = Facts { points_may_be_captured: true, round_running: true, ..Default::default() };
+        let actors = [actor(1,PlayerTeam::Blue,PlayerClass::Scout),actor(2,PlayerTeam::Blue,PlayerClass::Soldier)];
+        world.set_capture_actors(actors.iter().copied());
+        let mut events = vec![];
+        world.apply_input(4,b"CaptureCurrentCP",&Variant::Void,0.0,facts,&mut events);
+        assert!(events.is_empty(), "a checkpoint cannot capture without an active capturing team");
+        world.areas[0].touching = vec![1,2];
+        world.think_area(0,0.1,facts,&actors,true,&mut events);
+        events.clear();
+        world.apply_input(4,b"CaptureCurrentCP",&Variant::Void,0.2,facts,&mut events);
+        assert!(events.iter().any(|event| matches!(event, Event::Captured { point:0, cappers, .. } if cappers == &[1,2])));
+        assert_eq!(world.points[0].owner,PlayerTeam::Blue);
+        events.clear();
+        world.retarget_area(4,Some(3),0.3,facts,&mut events);
+        assert_eq!(world.areas[0].point,1);
+        assert_eq!(world.areas[0].capturing_team,PlayerTeam::Blue);
+        assert_eq!(events.iter().filter_map(|event|match event{Event::Touch{point:1,player,start:true}=>Some(*player),_=>None}).collect::<Vec<_>>(),[1,1]);
+        events.clear();
+        world.apply_input(4,b"CaptureCurrentCP",&Variant::Void,0.4,facts,&mut events);
+        assert!(events.iter().any(|event| matches!(event,Event::RoundWon { team:PlayerTeam::Blue, full_reset:true, switch_teams:true, .. })));
+        world.round_spawn(1.0,true,&mut events);
+        assert_eq!(world.areas[0].point,0);
+        assert!(world.areas[0].touching.is_empty());
+        assert!(world.points.iter().all(|point| point.owner==PlayerTeam::Red));
+        world.set_capture_actors(actors.iter().copied());
+        world.areas[0].touching=vec![1,2];
+        events.clear();
+        world.retarget_area(4,None,1.1,facts,&mut events);
+        assert!(!world.areas[0].point_valid);
+        assert!(world.snapshot(vec![]).local_point.is_none());
+        world.apply_input(4,b"CaptureCurrentCP",&Variant::Void,1.2,facts,&mut events);
+        assert!(world.points.iter().all(|point|point.owner==PlayerTeam::Red));
     }
 
     #[test]

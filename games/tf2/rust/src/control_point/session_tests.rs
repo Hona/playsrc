@@ -19,6 +19,111 @@ impl GameplayWorld for CaptureFloor {
 }
 
 #[test]
+fn authored_team_time_input_reaches_rules_events_and_team_announcer() {
+    let graph = playsrc_entity::parse(br#"
+        {"classname" "team_round_timer" "targetname" "game_timer" "timer_length" "100" "max_length" "600" "start_paused" "1" "show_in_hud" "1" "auto_countdown" "0"}
+        {"classname" "logic_relay" "targetname" "checkpoint" "OnTrigger" "game_timer,AddTeamTime,3 180,0,-1"}
+    "#, Default::default()).unwrap();
+    for (team, expected) in [(team_selection::TeamChoice::Blue, "Announcer.TimeAwardedForTeam"), (team_selection::TeamChoice::Red, "Announcer.TimeAddedForEnemy")] {
+        let map = MapRuntime::compile(&graph, 0.015, 42, vec![]).unwrap();
+        let mut session = Session::new(CaptureFloor, [-200.0, 0.0, 1.0], map);
+        session.select_team_choice(team).unwrap();
+        session.round = round::Rules::active(session.map.round_configuration()).unwrap();
+        session.fire_entity_input(b"checkpoint", b"Trigger", b"", 0.0).unwrap();
+        let snapshot = session.advance(Command::default()).unwrap();
+        assert_eq!(snapshot.round.timer.unwrap().remaining, 280.0, "authored string input must not disappear or become the team number");
+        assert!(snapshot.round.events.iter().any(|event| matches!(event, round::Event::TimerTimeAdded { seconds: 180, .. })));
+        assert!(session.audio_events().iter().any(|event| event.definition.identity() == expected), "{expected}");
+    }
+}
+
+#[test]
+#[ignore = "requires playsrc.local.json and the exact configured Upward BSP; input-contract test, not live payload acceptance"]
+fn configured_upward_checkpoint_awards_and_round_recreation_without_cart_motion() {
+    use std::{fs,path::PathBuf};
+    use sha2::{Digest,Sha256};
+    let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let config=fs::read_to_string(root.join("playsrc.local.json")).unwrap();
+    let value=&config[config.find("\"tf2Dir\"").unwrap()+"\"tf2Dir\"".len()..];
+    let value=value[value.find(':').unwrap()+1..].trim_start();
+    let tf2=PathBuf::from(&value[1..value[1..].find('"').unwrap()+1]);
+    let bytes=fs::read(tf2.join("maps/pl_upward.bsp")).unwrap();
+    assert_eq!(bytes.len(),25_446_018);
+    assert_eq!(format!("{:x}",Sha256::digest(&bytes)),"15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709");
+    let bsp=playsrc_bsp::parse(&bytes,playsrc_bsp::Profile::Source2013V20,Default::default()).unwrap();
+    let graph=playsrc_entity::parse(bsp.lump(0).unwrap().bytes(&bsp),Default::default()).unwrap();
+    let playsrc_bsp::LumpData::Models(models)=&bsp.lump(14).unwrap().records else{panic!("models");};
+    let bounds=models.iter().enumerate().map(|(model,b)|playsrc_entity::ModelBounds{model,mins:[b.mins.x.value(),b.mins.y.value(),b.mins.z.value()],maxs:[b.maxs.x.value(),b.maxs.y.value(),b.maxs.z.value()]}).collect();
+    let named=|name:&[u8]|graph.entities.iter().find(|entity|entity.targetname.as_deref()==Some(name)).unwrap().index as u32;
+    let map=MapRuntime::compile(&graph,0.015,42,bounds).unwrap();
+    let area=map.control_points().unwrap().areas()[0].identity;
+    let area_model=map.control_points().unwrap().areas()[0].model;
+    #[derive(Clone)] struct ContractWorld(usize);
+    impl Tracer for ContractWorld {
+        fn trace(&self,start:[f32;3],end:[f32;3],_:Hull,_:u32)->Result<Trace,MoveError>{
+            let down=end[2]<start[2];
+            Ok(Trace{fraction:if down{0.0}else{1.0},start_solid:false,all_solid:false,end:if down{start}else{end},normal:down.then_some([0.0,0.0,1.0]),hit:down.then_some(0),contents:u32::from(down)})
+        }
+    }
+    impl GameplayWorld for ContractWorld {
+        fn overlaps_model_hull(&self,model:usize,_:[f32;3],_:[f32;3],_:Hull)->Result<bool,MoveError>{Ok(model==self.0)}
+    }
+    let mut session=Session::connected(ContractWorld(area_model),[0.0;3],map,team_selection::TeamRules::default());
+    session.select_team_choice(team_selection::TeamChoice::Blue).unwrap();
+    session.advance(Command{select_class:Some(PlayerClass::Scout),..Default::default()}).unwrap();
+    for _ in 0..7100 {session.advance(Command::default()).unwrap();}
+    assert!(session.map.payload_constraint_blocked());
+    assert!(session.map.control_points().unwrap().is_payload());
+    assert_eq!(session.map.control_points().unwrap().current_round(),Some(0),"authored round_a is selected by RoundActivate");
+    assert!(!session.round.snapshot(vec![]).in_setup);
+    assert!(session.map.control_points().unwrap().areas()[0].touching.is_empty(),"unavailable physics must not supply synthetic cart contacts");
+    let train=named(b"minecart_tracktrain");
+    let train_pose=session.entity_world_transform(train).unwrap();
+    session.fire_entity_input(b"game_timer",b"Pause",b"",0.0).unwrap();
+    session.advance(Command::default()).unwrap();
+    let actor=*session.map.control_points().unwrap().capture_actors.iter().find(|actor|actor.identity==PLAYER_IDENTITY).unwrap();
+    let facts=session.control_point_facts();
+    let mut events=vec![];
+    // Explicitly supplied contact observation for deterministic I/O testing.
+    // The runtime gate above remains closed and no cart/constraint is advanced.
+    session.map.control_points_mut().unwrap().step(session.tick as f32*0.015,facts,&[actor],&ContractWorld(area_model),&mut events).unwrap();
+    let mut phase=session.map.emit_control_point_outputs(session.tick,&events).unwrap();
+    session.pending_control_point_events.extend(events);
+    session.pending_control_point_events.append(&mut phase.control_point_events);
+    session.pending_payload_events.append(&mut phase.payload_events);
+    for (index,seconds) in [180,300,240].into_iter().enumerate(){
+        let before=session.round.timer().unwrap().remaining;
+        let expected=if before+seconds as f32>600.0{(600.0-before) as i32}else{seconds};
+        session.fire_entity_input(format!("cap_{}_relay",index+1).as_bytes(),b"Trigger",b"",0.0).unwrap();
+        let captured=session.advance(Command::default()).unwrap();
+        assert_eq!(captured.round.blue_score,index as u16+1);
+        assert_eq!(session.map.control_points().unwrap().points()[index].owner,PlayerTeam::Blue);
+        assert!(captured.round.events.iter().any(|event|matches!(event,round::Event::TimerTimeAdded{seconds,responsible_team:3,..} if *seconds==expected)));
+        assert!(session.audio_events().iter().any(|event|event.definition==SoundDefinition::TimeAwardedForTeam));
+        for _ in 0..9{session.advance(Command::default()).unwrap();}
+        assert_eq!(session.map.control_points().unwrap().areas()[0].point,index+1,"authored delayed SetControlPoint rebinds and retouches");
+        assert_eq!(session.map.control_points().unwrap().areas()[0].capturing_team,PlayerTeam::Blue);
+        assert_eq!(session.entity_world_transform(train),Some(train_pose));
+        assert!(!session.mover_requests().iter().any(|request|request.entity==train));
+    }
+    let old_area=session.map.source_handle(area).unwrap();
+    session.fire_entity_input(b"minecart_path_174",b"InPass",b"",0.0).unwrap();
+    let mut won=false;
+    for _ in 0..30 {let snapshot=session.advance(Command::default()).unwrap();won|=snapshot.round.winning_team==Some(PlayerTeam::Blue);}
+    assert!(won,"authored final-node capture/win contract: {:?}",session.round.snapshot(vec![]));
+    assert_eq!(session.round.snapshot(vec![]).blue_score,4);
+    assert!(session.entity_world_transform(train).is_none(),"the authored final-node Kill is retained");
+    for _ in 0..1100{session.advance(Command::default()).unwrap();}
+    assert_ne!(session.map.source_handle(area),Some(old_area));
+    assert_eq!(session.map.control_points().unwrap().areas()[0].point,0);
+    assert!(session.map.control_points().unwrap().areas()[0].touching.is_empty());
+    assert!(session.map.control_points().unwrap().points().iter().all(|point|point.owner==PlayerTeam::Red));
+    assert!(session.map.payload_constraint_blocked());
+    assert_eq!(session.map.payload_watchers()[0].recede_at,0.0);
+    assert_eq!(session.map.payload_watchers()[0].cappers,0);
+}
+
+#[test]
 fn session_attack_defend_keeps_mini_round_entities_timer_and_scores_then_switches_teams() {
     let mut text = String::from(r#"
         {"classname" "team_control_point_master" "targetname" "master" "switch_teams" "1" "score_style" "1"}

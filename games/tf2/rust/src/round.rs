@@ -313,13 +313,50 @@ pub enum Event {
     TimerFinished { timer: u32 },
     TimerThreshold { timer: u32, seconds: u16 },
     TimerWarning { timer: u32, seconds: u16, setup: bool },
-    TimerTimeAdded { timer: u32, seconds: i32 },
+    // The game event exposes timer/seconds; the remaining fields retain the
+    // sound audience and eligibility at the instant the input was executed.
+    TimerTimeAdded { timer: u32, seconds: i32, responsible_team: i32, announce: bool },
     WinningCapper { player: u32 },
     MapRoundWin { entity: u32 },
     OvertimeChanged { active: bool },
     RoundWon { team: PlayerTeam, reason: u8 },
     RoundRespawn,
     ScoresReset,
+}
+
+impl Event {
+    pub fn timer_sound(self, listener: PlayerTeam) -> Option<crate::SoundDefinition> {
+        let Self::TimerTimeAdded { responsible_team, announce: true, .. } = self else { return None; };
+        if responsible_team < 2 { return Some(crate::SoundDefinition::TimeAdded); }
+        if !listener.is_gameplay() { return None; }
+        Some(if responsible_team == listener as i32 { crate::SoundDefinition::TimeAwardedForTeam } else { crate::SoundDefinition::TimeAddedForEnemy })
+    }
+}
+
+/// CTeamRoundTimer::InputAddTeamTime uses two bounded nexttoken calls and
+/// Q_atoi, not whitespace splitting or KeyValues' decimal integer conversion.
+fn team_time_arguments(input: &[u8]) -> (i32, i32) {
+    fn token(input: &[u8]) -> (&[u8], &[u8]) {
+        let end = input.iter().position(|byte| *byte == 0 || *byte == b' ').unwrap_or(input.len()).min(127);
+        let next = if input.get(end).is_some_and(|byte| *byte != 0) { &input[end + 1..] } else { &[] };
+        (&input[..end], next)
+    }
+    fn integer(mut value: &[u8]) -> i32 {
+        let sign = if value.first() == Some(&b'-') { value = &value[1..]; -1_i64 }
+            else { if value.first() == Some(&b'+') { value = &value[1..]; } 1_i64 };
+        if value.first() == Some(&b'\'') { return sign.wrapping_mul(i64::from(value.get(1).copied().unwrap_or(0) as i8)) as i32; }
+        let hex = value.starts_with(b"0x") || value.starts_with(b"0X");
+        if hex { value = &value[2..]; }
+        let mut result = 0_i64;
+        for byte in value {
+            let digit = match *byte { b'0'..=b'9' => byte - b'0', b'a'..=b'f' if hex => byte - b'a' + 10, b'A'..=b'F' if hex => byte - b'A' + 10, _ => break };
+            result = result.wrapping_mul(if hex { 16 } else { 10 }).wrapping_add(i64::from(digit));
+        }
+        result.wrapping_mul(sign) as i32
+    }
+    let (team, rest) = token(input);
+    let (seconds, _) = token(rest);
+    (integer(team), integer(seconds))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -452,6 +489,8 @@ impl Rules {
         self.state
     }
 
+    pub fn in_overtime(&self) -> bool { self.in_overtime }
+
     pub fn timer(&self) -> Option<&Timer> {
         self.timers
             .iter()
@@ -569,7 +608,7 @@ impl Rules {
                         return;
                     }
                     if add {
-                        self.add_timer_seconds(identity, value);
+                        self.add_timer_seconds(identity, value, 0);
                     } else {
                         self.timer_mut(identity)
                             .expect("KOTH timer")
@@ -589,7 +628,7 @@ impl Rules {
         let running = matches!(self.state, State::Running | State::TeamWin);
         let waiting = self.waiting_for_players();
         if input.eq_ignore_ascii_case(b"AddTime") && running {
-            self.add_timer_seconds(entity, value);
+            self.add_timer_seconds(entity, value, 0);
             return;
         }
         let Some(timer) = self.timer_mut(entity) else {
@@ -618,6 +657,13 @@ impl Rules {
         std::mem::take(&mut self.pending_events)
     }
 
+    pub fn add_team_time(&mut self, entity: u32, input: &[u8], now: f32) {
+        self.now = now;
+        for timer in &mut self.timers { timer.refresh(now); }
+        let (team, seconds) = team_time_arguments(input);
+        if seconds != 0 { self.add_timer_seconds(entity, seconds, team); }
+    }
+
     pub fn record_capture(&mut self, cappers: &[u32]) {
         self.most_recent_cappers.clear();
         self.most_recent_cappers.extend_from_slice(cappers);
@@ -644,19 +690,25 @@ impl Rules {
         }
     }
 
-    fn add_timer_seconds(&mut self, identity: u32, seconds: i32) {
+    fn add_timer_seconds(&mut self, identity: u32, seconds: i32, responsible_team: i32) {
         if !matches!(self.state, State::Running | State::TeamWin) {
             return;
         }
+        let selected = self.timer().is_some_and(|timer| timer.configuration.identity == identity && timer.configuration.show_in_hud);
+        let koth = self.configuration.koth.is_some();
+        let announce = selected && !koth && self.state == State::Running;
         let Some(timer) = self.timer_mut(identity) else {
             return;
         };
         if let Some(seconds) = timer.add_time(seconds)
             && timer.configuration.show_in_hud
+            && (selected || koth)
         {
             self.pending_events.push(Event::TimerTimeAdded {
                 timer: identity,
                 seconds,
+                responsible_team,
+                announce,
             });
         }
     }
@@ -1338,7 +1390,9 @@ mod tests {
             rules.take_events(),
             [Event::TimerTimeAdded {
                 timer: 2,
-                seconds: -100_000
+                seconds: -100_000,
+                responsible_team: 0,
+                announce: false,
             }]
         );
         assert_eq!(rules.koth_timers().unwrap()[0].remaining, 0.0);
@@ -1351,6 +1405,40 @@ mod tests {
             rules.take_events().is_empty(),
             "AddTimerSeconds is inert during preround"
         );
+    }
+
+    #[test]
+    fn add_team_time_keeps_source_tokens_clamping_and_input_time_audience() {
+        for (input,expected) in [
+            ("3 180",(3,180)),("3  180",(3,0)),(" 3 180",(0,3)),("3\t180",(3,0)),
+            ("0x3 +0xb4",(3,180)),("3 -5seconds",(3,-5)),("3 'A",(3,65)),("3",(3,0)),
+            ("0x100000003 180",(3,180)),("3 \0 180",(3,0)),
+        ] { assert_eq!(team_time_arguments(input.as_bytes()),expected,"{input}"); }
+        let graph=playsrc_entity::parse(br#"{"classname" "team_round_timer" "timer_length" "100" "max_length" "600" "start_paused" "1" "show_in_hud" "1"}"#,Default::default()).unwrap();
+        let configuration=Configuration::from_graph(&graph).unwrap();
+        let mut rules=Rules::new(configuration.clone()).unwrap();
+        rules.add_team_time(0,b"3 180",0.0);
+        assert_eq!(rules.timer().unwrap().remaining,100.0);
+        assert!(rules.take_events().is_empty());
+        let mut rules=Rules::active(configuration).unwrap();
+        for (value,remaining,delta) in [(b"3 180".as_slice(),280.0,180),(b"3 300",580.0,300),(b"3 240",600.0,20),(b"3 240",600.0,0),(b"3 -10",590.0,-10)] {
+            rules.add_team_time(0,value,0.0);
+            assert_eq!(rules.timer().unwrap().remaining,remaining);
+            let events=rules.take_events();
+            assert!(matches!(events.as_slice(),[Event::TimerTimeAdded {seconds,responsible_team:3,announce:true,..}] if *seconds==delta));
+            assert_eq!(events[0].timer_sound(PlayerTeam::Blue),Some(crate::SoundDefinition::TimeAwardedForTeam));
+            assert_eq!(events[0].timer_sound(PlayerTeam::Red),Some(crate::SoundDefinition::TimeAddedForEnemy));
+            assert_eq!(events[0].timer_sound(PlayerTeam::Spectator),None);
+        }
+        rules.add_team_time(0,b"3 0",0.0);assert!(rules.take_events().is_empty());
+        rules.apply_input(0,b"AddTime",0,0.0);
+        assert_eq!(rules.take_events()[0].timer_sound(PlayerTeam::Spectator),Some(crate::SoundDefinition::TimeAdded));
+        rules.add_team_time(0,b"3 10",0.0);
+        rules.win(PlayerTeam::Blue,WIN_REASON_FLAG_CAPTURE_LIMIT).unwrap();
+        assert_eq!(rules.take_events()[0].timer_sound(PlayerTeam::Blue),Some(crate::SoundDefinition::TimeAwardedForTeam),"a later win cannot retroactively silence an earlier input");
+        rules.add_team_time(0,b"3 -10",0.0);
+        assert!(matches!(rules.take_events().as_slice(),[Event::TimerTimeAdded {seconds:-10,announce:false,..}]));
+        rules.apply_input(0,b"Disable",0,0.0);rules.add_team_time(0,b"3 180",0.0);assert!(rules.take_events().is_empty());
     }
 
     #[test]
