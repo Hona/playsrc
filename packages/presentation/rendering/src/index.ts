@@ -2781,7 +2781,7 @@ class RendererOwner implements Renderer {
       // the entire preparation owner while they compile; all still settle
       // before visibility is restored or this preparation can publish Ready.
       await withBoundedPipelineCompilation((this.#backend as any)._pipelines, () =>
-        prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene)))
+        prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene)), 2)
       this.#checkAbort(signal, ordinal)
       const profile = browserFrameProfiler()
       if (profile) {
