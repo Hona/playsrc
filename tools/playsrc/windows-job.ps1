@@ -19,9 +19,25 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
+function OwnedRunner([string]$ownerFile) {
+ if(!(Test-Path -LiteralPath $ownerFile)){return $null}
+ $identity=Get-Content -Raw -LiteralPath $ownerFile|ConvertFrom-Json
+ if(!$identity.pid){return $null}
+ try {$process=[System.Diagnostics.Process]::GetProcessById([int]$identity.pid)}catch [ArgumentException]{return $null}
+ try {$null=$process.Handle;$created=([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}catch [InvalidOperationException]{return $null}
+ if(!$identity.startedEpoch -or $created -ne $identity.startedEpoch){throw 'Owned launcher process identity changed; refusing a PID-only wait'}
+ return $process
+}
 if ($Action -eq 'Wait') {
-  $runner = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*" }
-  foreach ($process in $runner) { Wait-Process -Id $process.ProcessId -Timeout 175 -ErrorAction SilentlyContinue }
+  if($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$'){throw 'Wait requires this job current recorded task'}
+  $launch=Join-Path $directory "$($Matches[1])-launch.log"
+  if(!(Test-Path -LiteralPath $launch)){throw 'Task is not recorded for this job'}
+  $deadline=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+175000
+  $ownerFile=[IO.Path]::ChangeExtension($launch,'owner.json')
+  while(!(Test-Path -LiteralPath $ownerFile) -and (Get-Item -LiteralPath $launch).Length -eq 0 -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 100}
+  $runner=OwnedRunner $ownerFile
+  if($runner -and !$runner.WaitForExit([int][Math]::Max(1,$deadline-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()))){throw 'Owned job wait exceeded175seconds'}
+  if($runner){$runner.Dispose()}
   $Action = 'Status'
 }
 if ($Action -eq 'Doctor') {
@@ -37,7 +53,7 @@ if ($Action -eq 'Doctor') {
   exit $LASTEXITCODE
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
-  $tasks = if ($Action -eq 'Status') { @(Get-ScheduledTask -TaskName 'playsrc-local-job-*' -ErrorAction SilentlyContinue) } else { @() }
+  $tasks = if ($Action -eq 'Status' -and $Task) { @(Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
   $launchFile = $null
   $launchText = $null
@@ -61,12 +77,18 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
   }
   if ($Action -eq 'Result') {
-    @{result=$result;launchError=$(if (!$result) { $launchText } else { $null })} | ConvertTo-Json -Depth 8 -Compress
+    $bootstrap=if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Get-Content -Raw -LiteralPath "$launchFile.bootstrap.log"}else{$null}
+    @{result=$result;launchError=$(if (!$result) { "$launchText$bootstrap" } else { $null })} | ConvertTo-Json -Depth 8 -Compress
     exit 0
   }
   if ($Action -eq 'Artifacts') {
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
+    if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){$files+=@{name='job/bootstrap.log';path="$launchFile.bootstrap.log"}}
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.metadata.json")){$files+=@{name='job/launch-metadata.json';path="$launchFile.metadata.json"}}
+    $consoleOwner=Join-Path $result.run 'console-owner.json';if(Test-Path -LiteralPath $consoleOwner){$files+=@{name='job/console-owner.json';path=$consoleOwner}}
+    $consoleLock=Join-Path $result.run 'console-lock.json';if(Test-Path -LiteralPath $consoleLock){$files+=@{name='job/console-lock.json';path=$consoleLock}}
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}
@@ -83,6 +105,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     exit 0
   }
   if ($Action -eq 'Logs') {
+    if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Get-Content -LiteralPath "$launchFile.bootstrap.log" -Tail 20}
     if ($launchText) { Write-Output $launchText }
     if ($latest) { Get-Content -LiteralPath $latest.FullName -Tail 80 }
     if ($latest) {
@@ -90,7 +113,9 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if ($build) { Get-Content -LiteralPath $build.Matches[0].Groups[1].Value -Tail 30 }
     }
   } else {
-    $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*")) } | Select-Object ProcessId,ParentProcessId,Name)
+    $owned=if($launchFile){OwnedRunner ([IO.Path]::ChangeExtension($launchFile,'owner.json'))}else{$null}
+    $processes=@(if($owned -and !$owned.HasExited){@{ProcessId=$owned.Id;role='owned-local-job'}})
+    if($owned){$owned.Dispose()}
     $running = Test-Path (Join-Path $directory 'running')
     # Retire from the launching account, not the deliberately unelevated task.
     # Never remove a queued/running task or another job's recorded task name.
@@ -119,8 +144,10 @@ $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
 $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile)" + $(if ($Grep) { " --grep $(Quote $Grep)" } else { '' }) + $(if ($FreshBrowser) { ' --fresh-browser' } else { '' }) }
-$command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
+$ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+New-Item -ItemType File -Path $log | Out-Null
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

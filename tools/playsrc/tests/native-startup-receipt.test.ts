@@ -4,7 +4,8 @@ import { NativeStartupProbeError, nativeProbeResponse } from "../profile/native-
 test("failed native capture retains both observations, including zero handles, without admitting them", () => {
   const receipt = { before: { handle: 123, ownerPid: 45, windowClass: "Chrome_WidgetWin_1", idleMilliseconds: 10425281 },
     after: { handle: 0, ownerPid: 0, windowClass: null, idleMilliseconds: 10425384 },
-    helper: { pid: 67 }, captureStartedEpoch: 1000, captureEndedEpoch: 1103 }
+    helper: { pid: 67 }, captureStartedEpoch: 1000, captureEndedEpoch: 1103,
+    diagnosticPixels: { admitted: false, privacy: "private-desktop-never-upload", path: "rejected.png" } }
   let caught: unknown
   try { nativeProbeResponse({ error: "Native foreground changed during pixel capture", receipt }) } catch(error) { caught=error }
   expect(caught).toBeInstanceOf(NativeStartupProbeError)

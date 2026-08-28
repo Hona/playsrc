@@ -4,7 +4,7 @@ import os from "node:os"
 // Read-only WTSInfoEx prefix. Its union is eight-byte aligned because level 1
 // contains LARGE_INTEGER timestamps. No user/domain names are collected.
 // https://learn.microsoft.com/windows/win32/api/wtsapi32/ns-wtsapi32-wtsinfoexw
-export const WINDOWS_DESKTOP_QUERY = String.raw`$ErrorActionPreference='Stop'
+export const WINDOWS_DESKTOP_QUERY = String.raw`$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;

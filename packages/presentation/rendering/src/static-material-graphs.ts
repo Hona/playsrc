@@ -1,4 +1,5 @@
 import * as TSL from "three/tsl"
+import type * as THREE from "three/webgpu"
 import type { MaterialStateInput } from "./index"
 import { sourceFragmentUsesAlpha } from "./material-state"
 import { sourceFragmentColor } from "./source-fragment-color"
@@ -13,15 +14,16 @@ function fragmentKey(state?: MaterialStateInput) {
  * textures or move any first-use upload past pipeline readiness. One owner is
  * used only while constructing one scene's immutable template/VHV materials. */
 export class StaticMaterialGraphs {
+  static releasePreparationIdentity(material: THREE.Material) { delete material.userData.sourcePreparationIdentity }
   readonly #templates = new Map<string, any>()
   readonly #static = new Map<string, any>()
   get size() { return this.#static.size }
   constructor(readonly waterFog: SourceWaterFogUniforms, readonly exposure: any, readonly staticFade: any) {}
 
-  template(base: any, state?: MaterialStateInput) {
+  template(base: any, state?: MaterialStateInput, created?: any) {
     const key=JSON.stringify([base.uuid,fragmentKey(state)])
     let color=this.#templates.get(key)
-    if(!color){color=sourceFragmentColor(base,state,this.waterFog);this.#templates.set(key,color)}
+    if(!color){color=created??sourceFragmentColor(base,state,this.waterFog);this.#templates.set(key,color)}
     return color
   }
 
