@@ -67,7 +67,8 @@ export async function analyzeNativeSelectionPixels(directory: string) {
       return { startedEpoch: interval.startedEpoch, endedEpoch: interval.endedEpoch,
         matches: !pixelsMatch ? false : interval.startedEpoch >= drawEpoch ? true : null }
     }))
-    return { scene: reference.scene, input: input.name, glyphPixels: mask.length, reference: captures[reference.index].file, ...result }
+    return { scene: reference.scene, input: input.name, glyphPixels: mask.length, reference: captures[reference.index].file,
+      over250Milliseconds: result.upperMilliseconds === null || result.upperMilliseconds > 250, ...result }
   })
   await writeFile(path.join(directory, "selection-latency.json"), JSON.stringify(latencies, null, 2))
   return latencies

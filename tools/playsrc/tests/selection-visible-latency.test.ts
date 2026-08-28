@@ -1,6 +1,17 @@
 import { expect, test } from "bun:test"
 import { selectionVisibleLatency } from "../profile/selection-visible-latency"
 import { nativeSelectionRect } from "../profile/selection-transition-analysis"
+import { compareSelectionIntervals } from "../profile/selection-comparison"
+
+test("matched selection acceptance rejects censored and measurably slower transitions without hiding overlap", () => {
+  const before = [{ scene: "class", input: "team", lowerMilliseconds: 2000, upperMilliseconds: 2100, endCensored: false },
+    { scene: "world", input: "class", lowerMilliseconds: 100, upperMilliseconds: 160, endCensored: false }]
+  const after = [{ ...before[0]!, lowerMilliseconds: 900, upperMilliseconds: 1000 }, { ...before[1]!, lowerMilliseconds: 110, upperMilliseconds: 170 }]
+  expect(compareSelectionIntervals(before, after).map(value => value.disposition)).toEqual(["proven-reduction", "overlapping-measurement-intervals"])
+  expect(compareSelectionIntervals(before, after)[0]!.remainingOver250Milliseconds).toBe(true)
+  expect(() => compareSelectionIntervals(before, [{ ...after[0]!, endCensored: true }, after[1]!])).toThrow("complete")
+  expect(() => compareSelectionIntervals(before, [after[0]!, { ...after[1]!, lowerMilliseconds: 161, upperMilliseconds: 180 }])).toThrow("regressed")
+})
 
 test("full desktop and full window pixel receipts address the same authored glyph without cropping admission", () => {
   const window = { left: 10, top: 10, width: 1296, height: 808 }
