@@ -57,3 +57,16 @@ test("scene/device graph owners and failed construction cannot share or publish 
   expect(failed.size).toBe(1)
   for (const owner of [first, second, failed]) { owner.releaseDrawReferences(); owner.releaseDrawReferences(); expect(owner.phong.tint.value).toBeNull() }
 })
+
+test("sampler role aliasing is part of the actual compiler bind layout", () => {
+  const input = fixture(), first = new THREE.DataTexture(null, 32, 32), second = first.clone()
+  const state = { ...input.state, phong: { ...phong, exponentFactor: 100 } }
+  const aliased = { ...input, state, textures: { warp: first, exponent: first } }
+  const distinct = { ...input, state, textures: { warp: first, exponent: second } }
+  expect(modelMaterialGraphKey(aliased)).not.toBe(modelMaterialGraphKey(distinct))
+  const owner = createCompilerParityOwner(), geometry = new THREE.BoxGeometry()
+  owner.admit("aliased warp/exponent", geometry, "panel", aliased, { lighting }, false)
+  owner.admit("distinct warp/exponent", geometry, "panel", distinct, { lighting }, false)
+  expect(owner.verifyLifetime().programs).toBe(2)
+  geometry.dispose(); first.dispose(); second.dispose(); input.baseTexture!.texture.dispose()
+})
