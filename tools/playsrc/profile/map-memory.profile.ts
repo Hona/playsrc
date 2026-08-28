@@ -380,6 +380,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     const root = page.locator("main")
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
+    if (lightmapAudit) await page.bringToFront()
     await native()
     if (lightmapAudit) await page.evaluate(async url => {
       const module = await import(/* @vite-ignore */ url)
@@ -886,7 +887,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         owners: (globalThis as any).__playsrcProfile?.mapResidency,
       }
     }).catch(() => null)
-    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline }, null, 2)}\n`)
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline, nativeAdmission: nativeReader?.records }, null, 2)}\n`)
     console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { phase: failure.application.phase, generation: failure.application.generation, detail: failure.application.detail, console: failure.console, command: failure.command })}`)
     throw error
   } finally {
