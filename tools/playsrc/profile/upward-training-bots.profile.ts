@@ -35,6 +35,7 @@ import { requireStartupNative } from "./static-startup-gate"
 import { auditDrawPlaneParity } from "./draw-plane-parity"
 import { loadCommandWorkload, compareWorkloadJournal } from "./command-workload"
 import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } from "./workload-state"
+import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -44,17 +45,21 @@ test.afterEach(async () => {
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
+  const applicationRoot = process.cwd()
+  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "traced" | undefined
+  if (deliveryMode && !["ordinary", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
   const createServer = entry === "create-server"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
-  const { sourceCacheDir } = await loadLocalConfig()
+  const { sourceCacheDir } = await loadLocalConfig(applicationRoot)
   const authorWorkload = process.env.PROFILE_AUTHOR_WORKLOAD === "1"
   const workload = process.env.PROFILE_COMMAND_WORKLOAD
     ? await loadCommandWorkload(path.join(sourceCacheDir, "profiles/command-workloads"), process.env.PROFILE_COMMAND_WORKLOAD) : undefined
   if ((authorWorkload || workload) && (!capturePlan.warmReload || exerciseClasses || combat)) throw new Error("Workload requires the declared warm ordinary roster/route")
+  if ((authorWorkload || workload) && deliveryMode) throw new Error("Recorded workload controls and frame-delivery comparison projects are separate capture plans")
   // This workflow already owns the checked machine-wide lock. Admit genuine
   // physical-console idle before any gameplay input, also on the local desktop.
   if (process.platform === "darwin") {
@@ -84,12 +89,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const replayIdentity = () => page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.applicationGeneration))
   const stopReplay = async (complete: boolean) => replay?.stop(await replayIdentity().catch(error => { if (complete) throw error; return null }), complete)
   retainIncomplete = () => stopReplay(false)
-  const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
-  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
+  const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity(applicationRoot)
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: applicationRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
-  await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
+  if (deliveryMode !== "ordinary") await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
-  await page.addInitScript(captureClientFrames => {
+  if (deliveryMode !== "ordinary") await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
     ;(globalThis as any).__playsrcProfile = { captureClientFrames }
   }, authorWorkload)
@@ -414,6 +420,43 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   const before = await canvas.screenshot({ timeout: 20_000 })
+  if (deliveryMode) {
+    if (exerciseClasses || combat || capturePlan.interaction !== "forward-movement" || expectedBots !== 15) throw new Error("Delivery comparison requires the same 15-bot forward-movement scenario")
+    const boundary = await page.evaluate(() => ({ userAgent: navigator.userAgent, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio,
+      canvasWidth: document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!.width, canvasHeight: document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!.height },
+      state: { ...document.querySelector<HTMLElement>("main")!.dataset }, storage: { ...localStorage },
+      instrumentation: { app: Boolean((globalThis as any).__playsrcProfile), frame: Boolean((globalThis as any).__playsrcFrameProfiler) } }))
+    const configuration = await (await page.request.get("/playsrc-config.json")).json()
+    await writeFile(path.join(directory, "delivery-boundary.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(),
+      sourceFingerprint, harnessRoot: repositoryRoot, browserVersion: context.browser()!.version(), configuration, capturePlan, boundary }, null, 2))
+    await writeFile(path.join(directory, "delivery-before.png"), before)
+  }
+  if (deliveryMode === "ordinary") {
+    expect(await page.evaluate(() => Boolean((globalThis as any).__playsrcProfile || (globalThis as any).__playsrcFrameProfiler))).toBe(false)
+    await page.keyboard.down("w")
+    let monitoring = true, nativeFailure: unknown
+    const monitor = (async () => { while (monitoring) { await new Promise(resolve => setTimeout(resolve, 500)); if (monitoring) try { await checkNativeWindow() } catch (error) { nativeFailure = error; break } } })()
+    let sample: any
+    try {
+      sample = await page.evaluate(async seconds => {
+        const owner = (globalThis as any).__playsrcDeliveryObserver
+        owner.start()
+        await new Promise(resolve => setTimeout(resolve, seconds * 1000))
+        return owner.stop()
+      }, seconds)
+    } finally { monitoring = false; await page.keyboard.up("w"); await monitor }
+    await checkNativeWindow()
+    await writeFile(path.join(directory, "delivery-after.png"), await canvas.screenshot())
+    await writeFile(path.join(directory, "delivery.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint,
+      sample, completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)),
+      raf: deliveryTimeline(sample.started, sample.ended, sample.raf), nativeAdmission: nativeRecords(), nativeFailure: nativeFailure ? String(nativeFailure) : null }, null, 2))
+    expect(nativeFailure).toBeUndefined()
+    expect(sample.lifecycle).toEqual([])
+    expect(sample.missedPublications).toBe(0)
+    expect(sample.lastFrame).toBeGreaterThan(sample.firstFrame)
+    expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
+    return
+  }
   if (capturePlan.interaction === "movement-weapon") await canvas.click({ position: { x: 300, y: 250 } })
   await profilerPreparation
   if (profilerPreparationError) throw profilerPreparationError
@@ -531,7 +574,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const persistNativeEvidence = async (probes: TraceProbes, details: Record<string, unknown>) => {
     const { raw, completion, workerArtifact, mainCapture, collectionErrors, memory } = await finishNative()
     const { allocation, memoryAfter } = await memory
-    const sourceFingerprintAfter = await applicationBuildIdentity().catch(error => `unavailable: ${String(error)}`)
+    const sourceFingerprintAfter = await applicationBuildIdentity(applicationRoot).catch(error => `unavailable: ${String(error)}`)
     return retainCompositorEvidence({ directory: evidenceDirectory, raw: raw.bytes,
       complete: raw.complete && !interrupted, dataLossOccurred: completion.dataLossOccurred, mainCpu: mainCapture, collectionErrors,
       memory: { schema: "playsrc-allocation-memory-v1", main: allocation,
@@ -618,6 +661,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const firstSnapshots = phase?.values ?? structuredClone(firstSnapshotOwner ?? {}) as Record<string, number>
     const firstSnapshotAt = phase?.snapshotAt ?? performance.now()
     const started = phase?.at ?? performance.now()
+    ;(globalThis as any).__playsrcDeliveryObserver?.start(started)
     ;(globalThis as any).__playsrcProfile.classInputSampleStarted = started
     performance.mark(startMark, { startTime: started })
     const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean; button?: number; trusted?: boolean; controllerAction?: string | null }> = []
@@ -770,8 +814,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
       longTasks: instrumentation.longTasks.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
       longAnimationFrames: instrumentation.longAnimationFrames.filter((entry: { at: number }) => entry.at >= started && entry.at < started + elapsed),
     }
+    const delivery = (globalThis as any).__playsrcDeliveryObserver?.stop(output.ended) ?? null
     await instrumentation.flushShaderHashes()
-    return output
+    return { ...output, delivery }
   }, { duration: workload ? (workload.plan.sampleEnded - workload.plan.sampleStarted) / 1000 : seconds,
     startMark: TRACE_START, endMark: TRACE_END, workloadStart: workload?.plan.sampleStarted ?? null,
     captureState: Boolean(authorWorkload || workload), workloadTick: workload?.initialState?.frame.tick ?? null })
@@ -944,6 +989,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
   sampling = false
   await nativeMonitor
   sample.error ??= nativeFailure
+  if (deliveryMode === "traced" && sample.measurement?.delivery) {
+    const delivery = sample.measurement.delivery
+    expect(delivery.lifecycle).toEqual([])
+    expect(delivery.missedPublications).toBe(0)
+    await writeFile(path.join(directory, "delivery.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint,
+      sample: delivery, completed: deliveryTimeline(delivery.started, delivery.ended, delivery.frames.map((frame: any) => frame.at)),
+      raf: deliveryTimeline(delivery.started, delivery.ended, delivery.raf), nativeAdmission: nativeRecords() }, null, 2))
+  }
   await checkNativeWindow(nativeScreenshot ? path.join(directory, `${evidenceLabel}.after.desktop.png`) : undefined)
   await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
   profilePhases.enter("trace-drain")
