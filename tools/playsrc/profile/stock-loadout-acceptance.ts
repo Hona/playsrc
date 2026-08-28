@@ -2,19 +2,20 @@ import path from "node:path"
 import { writeFile } from "node:fs/promises"
 import type { Page } from "@playwright/test"
 import { expect } from "./application-test"
+import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
 
-// Browser protocol identities for the configured stock primary/secondary/melee
-// loadouts. Spy's secondary is the sapper, not a combat firearm.
+// Class button order is authored; selectable stock items come from the native
+// inventory rather than admitting weapons whose gameplay is unavailable.
 const CLASSES = [
-  { digit: 1, identity: 1, name: "scout", weapons: [4, 5, 6] },
-  { digit: 2, identity: 3, name: "soldier", weapons: [1, 7, 8] },
-  { digit: 3, identity: 7, name: "pyro", weapons: [15, 7, 16] },
-  { digit: 4, identity: 4, name: "demoman", weapons: [18, 3, 17] },
-  { digit: 5, identity: 6, name: "heavy", weapons: [9, 10, 11] },
-  { digit: 6, identity: 9, name: "engineer", weapons: [40, 41, 42] },
-  { digit: 7, identity: 5, name: "medic", weapons: [19, 20, 21] },
-  { digit: 8, identity: 2, name: "sniper", weapons: [12, 13, 14] },
-  { digit: 9, identity: 8, name: "spy", weapons: [50, 52, 51] },
+  { digit: 1, identity: 1, name: "scout" },
+  { digit: 2, identity: 3, name: "soldier" },
+  { digit: 3, identity: 7, name: "pyro" },
+  { digit: 4, identity: 4, name: "demoman" },
+  { digit: 5, identity: 6, name: "heavy" },
+  { digit: 6, identity: 9, name: "engineer" },
+  { digit: 7, identity: 5, name: "medic" },
+  { digit: 8, identity: 2, name: "sniper" },
+  { digit: 9, identity: 8, name: "spy" },
 ] as const
 
 export async function acceptStockLoadouts(page: Page, directory: string, label: string) {
@@ -32,7 +33,11 @@ export async function acceptStockLoadouts(page: Page, directory: string, label: 
     await page.keyboard.press(`Digit${playerClass.digit}`)
     await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     await expect.poll(async () => (await main.getAttribute("data-hud-probe"))?.split(":")[1]).toBe(String(playerClass.identity))
-    for (const [slot, weapon] of playerClass.weapons.entries()) {
+    const weapons = nativeEquipment.classes.find(value => value.class === playerClass.identity)!.baseItems.flatMap(item => {
+      const selector = nativeEquipment.inventory.find(entry => entry.item.definitionIndex === item.definitionIndex)!.classSlots.find(value => value.class === playerClass.identity && value.slot === item.slot)!
+      return selector.weapon !== null && selector.selectionSlot !== null && selector.selectionSlot <= 2 ? [{ slot: selector.selectionSlot, weapon: selector.weapon }] : []
+    }).sort((left, right) => left.slot - right.slot)
+    for (const { slot, weapon } of weapons) {
       await page.keyboard.press(`Digit${slot + 1}`)
       await expect.poll(async () => (await main.getAttribute("data-hud-probe"))?.split(":")[2], { timeout: 5000 }).toBe(String(weapon))
       // The HUD publishes selection before the authored deploy animation has

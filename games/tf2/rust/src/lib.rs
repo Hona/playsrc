@@ -9710,17 +9710,14 @@ mod tests {
                     );
                 }
                 PlayerClass::Demoman => {
-                    assert_eq!(snapshot.weapon, Some(Weapon::StickybombLauncher));
+                    assert_eq!(snapshot.weapon, Some(Weapon::Bottle));
                     assert_eq!(
                         snapshot
                             .loadout
                             .iter()
                             .map(|weapon| weapon.weapon)
                             .collect::<Vec<_>>(),
-                        vec![
-                            Weapon::StickybombLauncher,
-                            Weapon::Bottle,
-                        ],
+                        vec![Weapon::Bottle],
                     );
                 }
                 PlayerClass::Heavy => {
@@ -9889,6 +9886,13 @@ mod tests {
         }
     }
 
+    // These isolated physics-seam tests supply body results explicitly. They do
+    // not register a weapon in the user-facing equipment inventory.
+    fn admit_sticky_physics_fixture(session: &mut Session<Floor>) {
+        session.weapon = Some(Weapon::StickybombLauncher);
+        session.loadout.insert(Weapon::StickybombLauncher, WeaponRuntime::full(Weapon::StickybombLauncher));
+    }
+
     fn launch_sticky(tick_interval: f32) -> (Session<Floor>, u32) {
         let mut session = Session::new(Floor, [0.0; 3], MapRuntime::empty(tick_interval));
         session.movement_configuration.tick_interval = tick_interval;
@@ -9899,6 +9903,7 @@ mod tests {
                 ..Command::default()
             })
             .unwrap();
+        admit_sticky_physics_fixture(&mut session);
         session
             .loadout
             .get_mut(&Weapon::StickybombLauncher)
@@ -10543,6 +10548,7 @@ mod tests {
                 ..Command::default()
             })
             .unwrap();
+        admit_sticky_physics_fixture(&mut session);
         session
             .loadout
             .get_mut(&Weapon::StickybombLauncher)
@@ -11165,17 +11171,16 @@ mod tests {
 
         let changed = session
             .advance(Command {
-                select_class: Some(PlayerClass::Demoman),
+                select_class: Some(PlayerClass::Scout),
                 fire: true,
                 ..Command::default()
             })
             .unwrap();
-        assert_eq!(changed.class, PlayerClass::Demoman);
+        assert_eq!(changed.class, PlayerClass::Scout);
         assert!(changed.projectile_events.is_empty());
-        let sticky = session.weapon_runtime(Weapon::StickybombLauncher).unwrap();
-        assert_eq!(sticky.next_primary_tick, 45);
-        assert_eq!(sticky.first_primary_tick, 45);
-        assert!(sticky.charge_begin_tick.is_none());
+        let scattergun = session.weapon_runtime(Weapon::Scattergun).unwrap();
+        assert_eq!(scattergun.next_primary_tick, 45);
+        assert_eq!(scattergun.first_primary_tick, 45);
     }
 
     #[test]

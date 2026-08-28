@@ -838,7 +838,7 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     for (const [identity, model, maximumHealth] of classes) {
       for (const team of [2, 3] as const) {
         const armed = identity === 1 || identity === 2 || identity === 3 || identity === 4 || identity === 6 || identity === 9
-        const active = identity === 1 ? 4 : identity === 2 ? 12 : identity === 3 ? 1 : identity === 4 ? 3 : identity === 6 ? 9 : identity === 9 ? 40 : null
+        const active = identity === 1 ? 4 : identity === 2 ? 12 : identity === 3 ? 1 : identity === 4 ? 17 : identity === 6 ? 9 : identity === 9 ? 40 : null
         const source = compactSnapshot(1n, {
           class: identity,
           team,
@@ -867,7 +867,7 @@ describe("canonical all-class TF2 session HUD adapter", () => {
         expect(value(binding.values, "image", "PlayerStatusClassImage"))
           .toMatchObject({ value: { value: `../hud/class_${image}${team === 2 ? "red" : "blue"}` } })
         expect(value(binding.values, "visible", "HudWeaponAmmo"))
-          .toMatchObject({ value: armed })
+          .toMatchObject({ value: armed && active !== 17 })
       }
     }
   })
@@ -893,15 +893,13 @@ describe("canonical all-class TF2 session HUD adapter", () => {
 
   test("publishes implemented Demoman stock items, authored slots, and hidden Bottle ammunition", () => {
     const loadout = Object.freeze([
-      Object.freeze({ weapon: 3 as const, reload: 0 as const, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 }),
       Object.freeze({ weapon: 17 as const, reload: 0 as const, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 }),
     ])
-    for (const active of [3, 17] as const) {
+    for (const active of [17] as const) {
       const source = compactSnapshot(1n, { class: 4, weapon: active, health: 175, maximumHealth: 175, loadout })
       const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(source), context))
       const player = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
       expect(player.weapons.map((item) => ({ identity: item.identity, item: item.itemDefinition, slot: item.slot, name: item.displayName, ammo: item.ammoDisplay }))).toEqual([
-        { identity: 3, item: { kind: "available", value: 20 }, slot: 1, name: "Stickybomb Launcher", ammo: "clip-and-reserve" },
         { identity: 17, item: { kind: "available", value: 1 }, slot: 2, name: "Bottle", ammo: "hidden" },
       ])
       expect(value(binding.values, "visible", "HudWeaponAmmo")).toMatchObject({ value: active !== 17 })
@@ -1020,10 +1018,10 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     const demo = compactSnapshot(1n, {
       class: 4,
       team: 3,
-      weapon: 3,
+      weapon: 17,
       health: 175,
       maximumHealth: 175,
-      loadout: Object.freeze([Object.freeze({ weapon: 3, reload: 0, clip: 8, reserve: 24, maximumClip: 8, maximumReserve: 24 })]),
+      loadout: Object.freeze([Object.freeze({ weapon: 17, reload: 0, clip: 0, reserve: 0, maximumClip: 0, maximumReserve: 0 })]),
     })
     const binding = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(demo), context))
     const mappedPlayer = (binding.facts.player as Extract<Tf2HudSnapshot["player"], { kind: "available" }>).value
@@ -1031,13 +1029,13 @@ describe("canonical all-class TF2 session HUD adapter", () => {
       class: { kind: "available", value: 4 },
       team: { kind: "available", value: 3 },
       health: { kind: "available", value: { current: 175, maximum: 175, maximumBuffed: 260 } },
-      activeWeapon: { kind: "available", value: 3 },
+      activeWeapon: { kind: "available", value: 17 },
       playerClassUsePlayerModel: false,
       classModel: { kind: "available", value: { identity: "models/player/demo.mdl", skin: 1 } },
     })
     expect(value(binding.values, "image", "PlayerStatusClassImage")).toMatchObject({ value: { value: "../hud/class_demoblue" } })
-    expect(value(binding.values, "dialog-variable", "classmodelpanel", "weaponName")).toMatchObject({ value: { value: "Stickybomb Launcher" } })
-    expect(value(binding.values, "scalar", "classmodelpanel", "itemDefinition")).toMatchObject({ value: { kind: "available", value: 20 } })
+    expect(value(binding.values, "dialog-variable", "classmodelpanel", "weaponName")).toMatchObject({ value: { value: "Bottle" } })
+    expect(value(binding.values, "scalar", "classmodelpanel", "itemDefinition")).toMatchObject({ value: { kind: "available", value: 1 } })
   })
 
   test("retains regenerate-before-fire ammo within one compact tick", () => {

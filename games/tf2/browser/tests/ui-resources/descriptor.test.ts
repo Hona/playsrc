@@ -158,12 +158,12 @@ describe("configured TF2 UI resource descriptor", () => {
     expect(tf2UiResources.controls).toHaveLength(90)
     expect(tf2UiResources.properties).toHaveLength(26_569)
     expect(tf2UiResources.commands).toHaveLength(162)
-    expect(tf2UiResources.localization.tokens).toHaveLength(772)
+    expect(tf2UiResources.localization.tokens).toHaveLength(771)
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Valve_Move_Forward")?.definitions[0]?.value).toBe("Move forward")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_OptionCategory_Combat")?.definitions[0]?.value).toBe("Combat Options")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#Winpanel_WinningCapture")?.definitions[0]?.value).toBe("Winning capture: %s1")
     expect(tf2UiResources.localization.tokens.find((token) => token.name === "#TF_Class_Name_Soldier")?.definitions[0]?.value).toBe("Soldier")
-    expect(tf2UiResources.images).toHaveLength(512)
+    expect(tf2UiResources.images).toHaveLength(511)
     expect(tf2UiResources.images.find((image) => image.configuredValue === "maps/menu_photos_pl_upward")?.material?.sha256)
       .toBe("79ca3d5e39f80c8d18c79eb63fd9b457a359e2a2db147c426eb7814a2cd1101e")
     expect(tf2UiResources.fonts).toHaveLength(85)
@@ -234,7 +234,6 @@ describe("authored TF2 crosshair content closure", () => {
       autoaim: weapon.autoaim?.crop,
     }))).toEqual(expect.arrayContaining([...new Map([
       { identities: [1, 2], script: "scripts/tf_weapon_rocketlauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
-      { identities: [3], script: "scripts/tf_weapon_pipebomblauncher.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [4], script: "scripts/tf_weapon_scattergun.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [5], script: "scripts/tf_weapon_pistol_scout.ctx", crop: { x: 0, y: 0, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },
       { identities: [6], script: "scripts/tf_weapon_bat.ctx", crop: { x: 32, y: 32, width: 32, height: 32 }, autoaim: { x: 0, y: 48, width: 24, height: 24 } },

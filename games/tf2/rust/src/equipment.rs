@@ -492,11 +492,13 @@ mod tests {
     #[test]
     fn storage_cannot_restore_known_unimplemented_items() {
         let base = Equipment::default();
-        let mut old = base.persist();
-        let slot = 8 + (PlayerClass::Demoman as usize - 1) * CLASS_SLOT_COUNT * 4;
-        old[slot..slot + 4].copy_from_slice(&19_u32.to_le_bytes());
-        assert_eq!(Equipment::restore(&old), Ok(base));
-        assert_eq!(Equipment::default().equip(PlayerClass::Demoman, LoadoutPosition::Primary, Some(19)), Err(EquipmentError::UnsupportedItem));
+        for (definition, position) in [(19_u32, LoadoutPosition::Primary), (20, LoadoutPosition::Secondary)] {
+            let mut old = base.persist();
+            let slot = 8 + ((PlayerClass::Demoman as usize - 1) * CLASS_SLOT_COUNT + position as usize) * 4;
+            old[slot..slot + 4].copy_from_slice(&definition.to_le_bytes());
+            assert_eq!(Equipment::restore(&old), Ok(base.clone()));
+            assert_eq!(Equipment::default().equip(PlayerClass::Demoman, position, Some(definition)), Err(EquipmentError::UnsupportedItem));
+        }
     }
 
     #[test]
