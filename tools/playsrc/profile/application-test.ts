@@ -1,6 +1,13 @@
 import { test as base, expect } from "@playwright/test"
 import { ProfilePhases } from "./profile-phases"
 
+const startupInputGuards = new WeakMap<object, () => Promise<void>>()
+export function guardStartupInput(page: object, guard: () => Promise<void>): void { startupInputGuards.set(page, guard) }
+export async function admitStartupInput(page: object, action: () => Promise<void>): Promise<void> {
+  await startupInputGuards.get(page)?.()
+  await action()
+}
+
 const headedBrowser = process.env.PLAYSRC_PROFILE_CDP_ENDPOINT
   ? base.extend<{}, { browser: import("@playwright/test").Browser }>({
       browser: [async ({ playwright }, use) => {
@@ -59,7 +66,8 @@ export const test = headedBrowser.extend<{
       if (!preserveStartupMovie && !startupSkipRequested && state.phase === "Startup"
         && (state.startupState === "Playing" || state.startupState === "AwaitingGesture")) {
         startupSkipRequested = true
-        await page.keyboard.press("Escape")
+        try { await admitStartupInput(page, () => page.keyboard.press("Escape")) }
+        catch (error) { fail(`Startup input admission failed: ${String(error)}`); return }
         if (lastState !== state) return
       }
       if (state.phase === "Failed") {
@@ -99,6 +107,7 @@ export const test = headedBrowser.extend<{
       await Promise.race([use(), failure])
     } finally {
       finished = true
+      startupInputGuards.delete(page)
       if (stallTimer) clearTimeout(stallTimer)
       if (lastState) await testInfo.attach("terminal-application-state", { body: JSON.stringify(lastState, null, 2), contentType: "application/json" })
       const maps: Array<{ detail: string; startedMilliseconds: number; readyMilliseconds: number; durationMilliseconds: number }> = []
