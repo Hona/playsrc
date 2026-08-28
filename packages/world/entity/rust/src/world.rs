@@ -739,6 +739,7 @@ pub enum WorldCommand {
         entity: EntityHandle,
         model: Option<usize>,
     },
+    SetRenderEffects { entity:EntityHandle,effects:u16 },
     SetAttachmentTransform {
         parent: EntityHandle,
         attachment: Vec<u8>,
@@ -1487,6 +1488,7 @@ impl EntityWorld {
         };
         let (behavior, coverage) = self.behavior_for(&definition, local_transform)?;
         let mut render = render_state(&definition)?;
+        render.effects=crate::sprite::spawn_effects(&definition,render.effects);
         if let Some(model) = render.brush_model.filter(|model| *model != 0)
             && !self
                 .config
@@ -3364,6 +3366,10 @@ impl EntityWorld {
                         world: entity_state.world_transform,
                     },
                 )
+            }
+            WorldCommand::SetRenderEffects {entity,effects}=>{
+                if !self.is_resolvable(entity) {return self.diagnostic(batch,DiagnosticCode::StaleHandle,Some(entity));}
+                self.entity_mut(entity).expect("validated sprite").render.effects=effects;Ok(())
             }
             WorldCommand::SetBrushModel { entity, model } => {
                 if !self.is_resolvable(entity) {
@@ -8981,7 +8987,7 @@ fn angles_from_quat(quat: [f64; 4]) -> [f32; 3] {
     ]
 }
 
-fn compose_transform(parent: Transform, local: Transform) -> Transform {
+pub(crate) fn compose_transform(parent: Transform, local: Transform) -> Transform {
     if parent.angles == [0.0; 3] && local.angles == [0.0; 3] {
         return Transform {
             origin: add(parent.origin, local.origin),

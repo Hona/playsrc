@@ -1,6 +1,20 @@
 //! Sprite_DX9 material initialization and authored render-mode passes.
 use crate::{BlendFactor, BlendState, CullState, Error, ErrorCode, FogMode, Material, Shader};
 
+pub fn gamma_constant(value:f32)->f32 {
+    if value>1.0 {value} else if value<0.0 {0.0} else if value>=0.95 {1.0} else {((value*255.0).round_ties_even()/255.0).powf(2.2)}
+}
+
+pub fn unlit_sprite_modulation(material:&Material)->Result<[f32;4],Error> {
+    if material.shader!=Shader::UnlitGeneric {return Err(crate::error(ErrorCode::RootKind,None));}
+    let mut parameters=material.first_parameters.clone();
+    // CSprite and CGlowOverlay supply this per draw, rather than preserving a
+    // previous user's HDR scale on the shared material.
+    parameters.insert(b"$hdrcolorscale".to_vec(),b"1".to_vec());
+    let color=crate::model::unlit_color_modulation(&parameters,material.selection_environment)?;
+    Ok([color[0],color[1],color[2],1.0])
+}
+
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
 #[repr(u8)]
 pub enum Orientation { ParallelUpright=0, FacingUpright=1, Parallel=2, Oriented=3, ParallelOriented=4 }

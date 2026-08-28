@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
-import { PixelFeedbackLedger } from "../src/legacy-visuals"
+import * as THREE from "three/webgpu"
+import { LegacyVisuals,PixelFeedbackLedger,type LegacyVisualFrame } from "../src/legacy-visuals"
 
 test("a newly submitted proxy cannot overwrite an unread completed sample count",()=>{
   const ledger=new PixelFeedbackLedger()
@@ -19,4 +20,20 @@ test("a newly submitted proxy cannot overwrite an unread completed sample count"
   expect(ledger.consume()[0]).toMatchObject({submission:2,visible:0,possible:28,clipFraction:0.75})
   ledger.clear()
   expect(ledger.consume()).toEqual([])
+})
+
+test("native world sprites, ignore-depth sprites and overlays retain separate draw owners",()=>{
+  const original=()=>{},backend={device:{},finishRender:original}
+  const first=new THREE.MeshBasicMaterial(),second=new THREE.MeshBasicMaterial()
+  const pool=new LegacyVisuals(backend,[[first,second]])
+  const quad=(source:number,layer:0|1|2,frame=0)=>({source,layer,material:0,frame,hdrScale:1,origin:new Float32Array([10,20,30]),positions:new Float32Array([9,19,30,9,21,30,11,21,30,11,19,30]),uv:new Float32Array([0,1,0,0,1,0,1,1]),color:new Float32Array(16).fill(1)})
+  const input:LegacyVisualFrame={proxies:[],quads:[quad(1,0),quad(2,1),quad(3,2)]}
+  pool.update(input)
+  expect(pool.world.children).toHaveLength(1);expect(pool.noDepthClip.children).toHaveLength(1);expect(pool.group.children).toHaveLength(1)
+  const mesh=pool.world.children[0] as THREE.Mesh
+  expect(mesh.geometry.boundingSphere!.center.toArray()).toEqual([10,20,30])
+  pool.update({proxies:[],quads:[quad(1,0,1)]})
+  expect(mesh.material).toBe(second);expect(pool.noDepthClip.children[0]!.visible).toBe(false)
+  pool.dispose();expect(backend.finishRender).toBe(original)
+  first.dispose();second.dispose()
 })

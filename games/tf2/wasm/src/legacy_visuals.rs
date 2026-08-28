@@ -1,20 +1,19 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap,sync::Arc};
 use playsrc_map::{legacy_glow::LightGlow, pixel_visibility::{Query, View, DEFAULT_FADE_TIME}};
 
 pub const GLOW_MATERIAL: &str = "materials/sprites/light_glow02_add_noz.vmt";
 
 pub fn encode_materials(out: &mut Vec<u8>, graph: &playsrc_entity::Graph, bundle: &BTreeMap<String, &[u8]>,
     decoders: &super::TextureDecoders<'_>, hashes: &BTreeMap<String,[u8;32]>, profile: playsrc_map::LightingProfile) -> Result<(), ()> {
-    let world = World::compile(graph)?;
-    let materials = world.materials().collect::<Vec<_>>();
-    out.extend_from_slice(b"PLVM"); out.extend_from_slice(&1_u32.to_le_bytes()); out.extend_from_slice(&(materials.len() as u32).to_le_bytes());
-    for identity in materials {
-        let material = super::resolve_material_semantics(identity, bundle, super::material_environment(profile,false))?;
-        let (selected,_,_) = super::selected_texture(&material,decoders)?;
-        let path=selected.logical_path.as_ref().ok_or(())?.to_ascii_lowercase();
-        let texture=super::model_authored_texture(&path,decoders,hashes,true)?;
-        super::pbytes(out,identity.as_bytes())?;
-        super::encode_model_authored_texture(out,&path,&texture)?;
+    let layout=super::legacy_materials::compile(graph,bundle,decoders,profile)?;
+    out.extend_from_slice(b"PLVM"); out.extend_from_slice(&2_u32.to_le_bytes()); out.extend_from_slice(&(layout.materials.len() as u32).to_le_bytes());
+    for asset in &layout.materials {
+        let texture=super::model_authored_texture(&asset.texture,decoders,hashes,true)?;
+        super::pbytes(out,asset.identity.as_bytes())?;
+        super::encode_model_authored_texture(out,&asset.texture,&texture)?;
+        let p=&asset.program;
+        let flags=u32::from(p.srgb)|(u32::from(p.vertex_rgb)<<1)|(u32::from(p.vertex_alpha)<<2)|(u32::from(p.vertex_gamma)<<3)|(u32::from(p.gamma_exposure)<<4)|(u32::from(p.world_renderable)<<5);
+        out.extend_from_slice(&flags.to_le_bytes());for value in p.modulation {out.extend_from_slice(&value.to_le_bytes());}
     }
     Ok(())
 }
@@ -23,9 +22,22 @@ pub fn encode_materials(out: &mut Vec<u8>, graph: &playsrc_entity::Graph, bundle
 mod tests {
     use super::*;
     #[test]
+    fn sun_client_frame_issues_both_native_proxy_channels(){
+        let mut layout=super::super::legacy_materials::Layout::default();
+        layout.suns.push(super::super::legacy_materials::SunDefinition{source:816,materials:[0,0]});
+        let mut world=World{layout:Arc::new(layout),suns:vec![SunClient::default()],..Default::default()};
+        let entity=playsrc_entity::EntityHandle{slot:816,generation:1};
+        let sun=playsrc_entity::sun::Presentation{source:816,entity,direction:[-0.6123724,-0.35355338,0.70710677],size:18,overlay_size:15,overlay_color:[254,226,188,255],hdr_scale:1.0,active:true};
+        let view=View::perspective([4455.78,-1042.0,931.75],-150.0,-45.0,59.840443,16.0/9.0,7.0,28377.92,720);
+        let mut bytes=Vec::new();
+        world.frame(&view,0,12.0,1,0.016,1.0,&[],|_|Some((entity,playsrc_entity::Transform::IDENTITY,playsrc_entity::EntityRenderState{brush_model:None,mode:0,color:[254,221,177,255],fx:0,effects:0},None)),|_|Some(sun.clone()),|_|None,|_,_|(true,true),&mut bytes).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()),2);
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()),0x8000_0000|816);
+    }
+    #[test]
     fn abandoned_render_candidates_do_not_advance_the_source_random_stream() {
         let graph=playsrc_entity::parse(br#"{"classname" "env_lightglow" "origin" "100 0 0"}"#,playsrc_entity::Limits::default()).unwrap();
-        let runtime=Runtime::new(World::compile(&graph).unwrap());
+        let runtime=Runtime::new(World::definitions(&graph).unwrap());
         let initial=runtime.committed.random.state();
         let (mut staged,mut candidate)=runtime.begin(1,0).unwrap();
         candidate.random.random_float(0.0,3.0);
@@ -40,14 +52,14 @@ mod tests {
     fn submitted_raster_results_drive_overlays_and_recreated_entities_drop_old_results() {
         let graph=playsrc_entity::parse(br#"{"classname" "worldspawn"}
           {"classname" "env_lightglow" "origin" "100 0 0" "HorizontalGlowSize" "8" "VerticalGlowSize" "4" "MaxDist" "100"}"#,playsrc_entity::Limits::default()).unwrap();
-        let mut world=World::compile(&graph).unwrap();
+        let mut world=World::definitions(&graph).unwrap();
         let view=View::perspective([0.0;3],0.0,0.0,75.0,16.0/9.0,1.0,30000.0,720);
         let state=|generation|Some((playsrc_entity::EntityHandle{slot:1,generation},playsrc_entity::Transform{origin:[100.0,0.0,0.0],angles:[0.0;3]},
-            playsrc_entity::EntityRenderState{brush_model:None,mode:0,color:[255;4],fx:0,effects:0}));
+            playsrc_entity::EntityRenderState{brush_model:None,mode:0,color:[255;4],fx:0,effects:0},None));
         let mut client_frame=0;
         let mut draw=|now,feedback:&[Feedback],generation| {
             client_frame+=1;
-            let mut bytes=Vec::new();world.frame(&view,false,now,client_frame,0.015,feedback,|_|state(generation),|_|(true,true),&mut bytes).unwrap();
+            let mut bytes=Vec::new();world.frame(&view,0,now,client_frame,0.015,1.0,feedback,|_|state(generation),|_|None,|_|None,|_,_|(true,true),&mut bytes).unwrap();
             (u32::from_le_bytes(bytes[8..12].try_into().unwrap()),u32::from_le_bytes(bytes[12..16].try_into().unwrap()))
         };
         assert_eq!(draw(0.0,&[],1),(0,0));
@@ -74,14 +86,29 @@ struct Glow {
     hdr_scale: f32,
 }
 
+#[derive(Clone,Default)]
+struct SpriteClient {
+    entity:Option<playsrc_entity::EntityHandle>,queries:[Query;5],submissions:[u32;5],discarded_submissions:[u32;5],fx:playsrc_map::render_fx::FxBlend,
+}
+
+#[derive(Clone)]
+struct SunClient {entity:Option<playsrc_entity::EntityHandle>,queries:[[Query;2];2],cutoff:[[u32;2];2],sky_fraction:[f32;2]}
+impl Default for SunClient {fn default()->Self{Self{entity:None,queries:[[Query::default();2];2],cutoff:[[0;2];2],sky_fraction:[1.0;2]}}}
+
+struct DrawQuad {source:u32,material:u32,frame:u32,layer:u32,hdr:f32,origin:[f32;3],positions:[[f32;3];4],color:[[f32;4];4],uv:[[f32;2];4]}
+
 #[derive(Clone)]
 pub struct World {
     glows: Vec<Glow>,
+    layout:Arc<super::legacy_materials::Layout>,
+    sprites:Vec<SpriteClient>,
+    suns:Vec<SunClient>,
+    spotlights:Vec<SpriteClient>,
     random: playsrc_tf2::UniformRandomStream,
 }
 
 impl Default for World {
-    fn default() -> Self { Self { glows:Vec::new(),random:playsrc_tf2::UniformRandomStream::from_seed(0).expect("Source default random seed") } }
+    fn default() -> Self { Self { glows:Vec::new(),layout:Arc::default(),sprites:Vec::new(),suns:Vec::new(),spotlights:Vec::new(),random:playsrc_tf2::UniformRandomStream::from_seed(0).expect("Source default random seed") } }
 }
 
 #[derive(Clone, Copy)]
@@ -94,7 +121,16 @@ pub struct Feedback {
 }
 
 impl World {
-    pub fn compile(graph: &playsrc_entity::Graph) -> Result<Self, ()> {
+    pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decoders:&super::TextureDecoders<'_>,profile:playsrc_map::LightingProfile)->Result<Self,()> {
+        let mut world=Self::definitions(graph)?;
+        world.layout=super::legacy_materials::compile(graph,bundle,decoders,profile)?;
+        world.sprites=vec![SpriteClient::default();world.layout.sprites.len()];
+        world.suns=vec![SunClient::default();world.layout.suns.len()];
+        world.spotlights=vec![SpriteClient::default();world.layout.spotlights.len()];
+        Ok(world)
+    }
+
+    fn definitions(graph: &playsrc_entity::Graph) -> Result<Self, ()> {
         let mut world = Self::default();
         for entity in &graph.entities {
             if !entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"env_lightglow")) { continue; }
@@ -116,18 +152,19 @@ impl World {
         Ok(world)
     }
 
-    pub fn materials(&self) -> impl Iterator<Item=&'static str> { (!self.glows.is_empty()).then_some(GLOW_MATERIAL).into_iter() }
-
-    pub fn frame(&mut self, view: &View, sky: bool, now: f32, client_frame:u32, client_frame_seconds:f32, feedback: &[Feedback],
-        mut state: impl FnMut(u32) -> Option<(playsrc_entity::EntityHandle, playsrc_entity::Transform, playsrc_entity::EntityRenderState)>,
-        mut visibility: impl FnMut([f32; 3]) -> (bool, bool), out: &mut Vec<u8>) -> Result<(), ()> {
-        let camera = usize::from(sky);
+    pub fn frame(&mut self, view: &View, owner:u32, now: f32, client_frame:u32, client_frame_seconds:f32, fov_distance_adjust:f32,feedback: &[Feedback],
+        mut state: impl FnMut(u32) -> Option<(playsrc_entity::EntityHandle, playsrc_entity::Transform, playsrc_entity::EntityRenderState,Option<playsrc_entity::sprite::Presentation>)>,
+        mut sun_state:impl FnMut(u32)->Option<playsrc_entity::sun::Presentation>,
+        mut spotlight_state:impl FnMut(u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>,
+        mut visibility: impl FnMut([f32; 3],Option<playsrc_visibility::Aabb>) -> (bool, bool), out: &mut Vec<u8>) -> Result<(), ()> {
+        let camera=owner as usize;
         let frame=u64::from(client_frame);
         let mut proxies = Vec::new();
         let mut quads = Vec::new();
         let feedback = feedback.iter().map(|value| (value.source,value)).collect::<BTreeMap<_,_>>();
         for glow in &mut self.glows {
-            let Some((entity, transform, render)) = state(glow.source) else { continue; };
+            if owner>1 {continue;}
+            let Some((entity, transform, render,_)) = state(glow.source) else { continue; };
             if glow.entity != Some(entity) {
                 glow.entity=Some(entity); glow.definition.distance_origin=transform.origin;
                 glow.queries=[Query::default();2]; glow.active=false;
@@ -135,7 +172,7 @@ impl World {
                 if let Some(value)=feedback.get(&glow.source) { glow.discarded_submissions[camera]=value.submission; }
                 glow.next_think=now+self.random.random_float(0.0,3.0);
             }
-            let (belongs,visible)=visibility(transform.origin);
+            let (belongs,visible)=visibility(transform.origin,None);
             if !belongs { continue; }
             if now >= glow.next_think {
                 glow.active=visible;
@@ -158,20 +195,104 @@ impl World {
             let (sp,cp)=transform.angles[0].to_radians().sin_cos();
             let (sy,cy)=transform.angles[1].to_radians().sin_cos();
             if let Some(quad) = glow.definition.quad(view,transform.origin,[cp*cy,cp*sy,-sp],render.color[..3].try_into().unwrap(),brightness) {
-                quads.push((glow.source,glow.hdr_scale,quad));
+                quads.push(DrawQuad{source:glow.source,material:0,frame:0,layer:2,hdr:glow.hdr_scale,origin:transform.origin,positions:quad.positions,color:[[quad.color[0],quad.color[1],quad.color[2],1.0];4],uv:[[0.0,1.0],[1.0,1.0],[1.0,0.0],[0.0,0.0]]});
             }
         }
-        out.extend_from_slice(b"PLVF"); out.extend_from_slice(&2_u32.to_le_bytes());
+        for (definition,client) in self.layout.suns.iter().zip(&mut self.suns){
+            if owner>1{continue;}
+            let Some(sun)=sun_state(definition.source).filter(|sun|sun.active) else {continue;};
+            let Some((_,_,render,_))=state(definition.source) else{continue;};
+            if client.entity!=Some(sun.entity){*client=SunClient::default();client.entity=Some(sun.entity);}
+            let colors=playsrc_map::legacy_sun::colors(render.color[..3].try_into().unwrap(),sun.overlay_color[..3].try_into().unwrap());
+            for layer in 0..2 {
+                let identity=definition.source|if layer==0 {0x8000_0000}else{0x4000_0000};
+                let query=&mut client.queries[layer][camera];
+                if query.expired_before_frame(frame){*query=Query::default();client.cutoff[layer][camera]=feedback.get(&identity).map_or(0,|value|value.submission);}
+                let counts=feedback.get(&identity).filter(|value|value.submission>client.cutoff[layer][camera]).and_then(|value|(value.visible>=0&&value.possible>=0).then_some((value.visible as u32,value.possible as u32)));
+                let fraction=query.sample(frame,client_frame_seconds,DEFAULT_FADE_TIME,counts);
+                let position=std::array::from_fn(|axis|view.origin[axis]+sun.direction[axis]*(view.far*0.999));
+                let proxy=view.proxy(playsrc_map::pixel_visibility::Parameters{position,size:0.05,aspect:1.0,screen_space:true});
+                if query.issue(frame,proxy.as_ref())&&let Some(proxy)=proxy{proxies.push((identity,proxy));}
+                if owner==1 {client.sky_fraction[layer]=fraction;continue;}
+                let size=if layer==0{sun.size}else{sun.overlay_size};
+                if let Some(quad)=playsrc_map::legacy_sun::quad(view,sun.direction,size,colors[layer],fraction*client.sky_fraction[layer],layer==1){
+                    quads.push(DrawQuad{source:definition.source,material:definition.materials[layer] as u32,frame:0,layer:2,hdr:sun.hdr_scale,origin:position,positions:quad.positions,color:[[quad.color[0],quad.color[1],quad.color[2],1.0];4],uv:[[0.0,1.0],[1.0,1.0],[1.0,0.0],[0.0,0.0]]});
+                }
+            }
+        }
+        for (definition,client) in self.layout.sprites.iter().zip(&mut self.sprites) {
+            let Some((entity,transform,render,sprite))=state(definition.source) else {continue;};
+            let sprite=sprite.ok_or(())?;if !sprite.active {continue;}
+            let radius=definition.size[0].max(definition.size[1]) as f32*sprite.scale*0.5;
+            if radius<0.0 {return Err(());}
+            let bounds=playsrc_visibility::Aabb{minimum:transform.origin.map(|v|v-radius),maximum:transform.origin.map(|v|v+radius)};
+            let (belongs,visible)=visibility(transform.origin,Some(bounds));if !belongs||!visible {continue;}
+            if client.entity!=Some(entity) {
+                *client=SpriteClient::default();client.entity=Some(entity);
+                client.discarded_submissions[camera]=feedback.get(&definition.source).map_or(0,|value|value.submission);
+            }
+            let delta=std::array::from_fn::<_,3,_>(|axis|transform.origin[axis]-view.origin[axis]);
+            let distance=delta[0]*view.forward[0]+delta[1]*view.forward[1]+delta[2]*view.forward[2];
+            let blend=client.fx.sample(client_frame,u32::from(entity.slot),now,render.mode,render.fx,render.color,distance,255,|min,max|self.random.random_int(min,max).expect("Source FX range"));
+            if blend==0 {continue;}
+            let mut fraction=1.0;
+            if render.mode==3||render.mode==9 {
+                let query=&mut client.queries[camera];
+                if query.expired_before_frame(frame) {*query=Query::default();client.discarded_submissions[camera]=feedback.get(&definition.source).map_or(client.submissions[camera],|value|value.submission);}
+                let counts=feedback.get(&definition.source).and_then(|value|{
+                    if value.submission<=client.discarded_submissions[camera] {return None;}
+                    client.submissions[camera]=value.submission;
+                    (value.visible>=0&&value.possible>=0).then_some((value.visible as u32,value.possible as u32))
+                });
+                fraction=query.sample(frame,client_frame_seconds,DEFAULT_FADE_TIME,counts);
+                let proxy=view.proxy(playsrc_map::pixel_visibility::Parameters{position:transform.origin,size:definition.proxy_radius,aspect:definition.size[0] as f32/definition.size[1] as f32,screen_space:false});
+                if query.issue(frame,proxy.as_ref())&&let Some(proxy)=proxy {proxies.push((definition.source,proxy));}
+            }
+            let color=[render.color[0],render.color[1],render.color[2],sprite.brightness];
+            let Some(quad)=playsrc_map::legacy_sprite::quad(view,transform.origin,transform.angles,definition.orientation,definition.extents,definition.size,sprite.scale,render.mode,render.fx,color,blend,fraction,fov_distance_adjust) else {continue;};
+            for (pass,&material) in definition.variants.get(usize::from(render.mode)).ok_or(())?.iter().enumerate() {
+                if self.layout.materials[material].state.no_draw {continue;}
+                let requested=sprite.frame as i32;
+                let requested=if render.mode==8&&pass==1 {(requested+1)%(definition.frames as i32)} else {requested};
+                let selected=if requested<0||requested as u32>=definition.frames {0}else{requested as u32};
+                let program=&self.layout.materials[material].program;
+                quads.push(DrawQuad{source:definition.source,material:material as u32,frame:selected,layer:if render.mode==3||render.mode==9 {1}else{0},
+                    hdr:if program.hdr_gamma {playsrc_material::legacy_sprite::gamma_constant(definition.hdr_scale)}else{definition.hdr_scale},
+                    origin:transform.origin,positions:quad.positions,color:[quad.color.map(|value|f32::from(value)/255.0);4],uv:quad.uv});
+            }
+        }
+        for (definition,client) in self.layout.spotlights.iter().zip(&mut self.spotlights){
+            let Some((beam,render))=spotlight_state(definition.source) else{continue;};
+            if render.effects&0x20!=0||beam.minimum_dx_level>95{continue;}
+            let radius=0.5*beam.width.max(beam.end_width);
+            let bounds=playsrc_visibility::Aabb{minimum:std::array::from_fn(|i|beam.start[i].min(beam.end[i])-radius),maximum:std::array::from_fn(|i|beam.start[i].max(beam.end[i])+radius)};
+            let (belongs,visible)=visibility(beam.start,Some(bounds));if !belongs||!visible{continue;}
+            if client.entity!=Some(beam.entity){*client=SpriteClient::default();client.entity=Some(beam.entity);client.discarded_submissions[camera]=feedback.get(&definition.source).map_or(0,|value|value.submission);}
+            let blend=client.fx.sample(client_frame,u32::from(beam.entity.slot),now,render.mode,render.fx,render.color,0.0,255,|min,max|self.random.random_int(min,max).expect("Source FX range"));
+            if blend==0{continue;}
+            let query=&mut client.queries[camera];
+            if query.expired_before_frame(frame){*query=Query::default();client.discarded_submissions[camera]=feedback.get(&definition.source).map_or(client.submissions[camera],|value|value.submission);}
+            let counts=feedback.get(&definition.source).filter(|value|value.submission>client.discarded_submissions[camera]).and_then(|value|(value.visible>=0&&value.possible>=0).then_some((value.visible as u32,value.possible as u32)));
+            let fraction=query.sample(frame,client_frame_seconds,DEFAULT_FADE_TIME,counts);
+            let color=[render.color[0],render.color[1],render.color[2],blend];
+            let Some(geometry)=playsrc_map::legacy_spotlight::geometry(view,beam.start,beam.end,beam.width,beam.end_width,color,fraction)else{continue;};
+            let proxy=view.proxy(playsrc_map::pixel_visibility::Parameters{position:beam.start,size:geometry.halo_proxy_size,aspect:1.0,screen_space:false});
+            if query.issue(frame,proxy.as_ref())&&let Some(proxy)=proxy{proxies.push((definition.source,proxy));}
+            for (index,quad) in std::iter::once(geometry.beam).chain(geometry.halo).enumerate(){
+                let asset=definition.materials[index];let hdr=if self.layout.materials[asset].program.hdr_gamma{playsrc_material::legacy_sprite::gamma_constant(beam.hdr_scale)}else{beam.hdr_scale};
+                quads.push(DrawQuad{source:definition.source,material:asset as u32,frame:0,layer:0,hdr,origin:std::array::from_fn(|i|(beam.start[i]+beam.end[i])*0.5),positions:quad.positions,color:quad.colors,uv:quad.uv});
+            }
+        }
+        out.extend_from_slice(b"PLVF"); out.extend_from_slice(&7_u32.to_le_bytes());
         out.extend_from_slice(&(proxies.len() as u32).to_le_bytes()); out.extend_from_slice(&(quads.len() as u32).to_le_bytes());
         for (source,proxy) in proxies {
             out.extend_from_slice(&source.to_le_bytes()); out.extend_from_slice(&proxy.clip_fraction.to_le_bytes());
-            for value in proxy.clip_vertices.into_iter().flatten() { out.extend_from_slice(&value.to_le_bytes()); }
+            for vertex in proxy.vertices {for value in vertex.into_iter().chain([1.0]) {out.extend_from_slice(&value.to_le_bytes());}}
         }
-        for (source,hdr_scale,quad) in quads {
-            out.extend_from_slice(&source.to_le_bytes()); out.extend_from_slice(&0_u32.to_le_bytes());
-            out.extend_from_slice(&0_u32.to_le_bytes());out.extend_from_slice(&hdr_scale.to_le_bytes());
-            for value in quad.positions.into_iter().flatten().chain(quad.color).chain([1.0]) { out.extend_from_slice(&value.to_le_bytes()); }
-            for value in [0.0_f32,1.0,1.0,1.0,1.0,0.0,0.0,0.0] {out.extend_from_slice(&value.to_le_bytes());}
+        for quad in quads {
+            for value in [quad.source,quad.material,quad.frame,quad.layer] {out.extend_from_slice(&value.to_le_bytes());}
+            out.extend_from_slice(&quad.hdr.to_le_bytes());
+            for value in quad.origin.into_iter().chain(quad.positions.into_iter().flatten()).chain(quad.color.into_iter().flatten()).chain(quad.uv.into_iter().flatten()) {out.extend_from_slice(&value.to_le_bytes());}
         }
         Ok(())
     }
@@ -186,7 +307,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(world:World)->Self {Self{committed:std::sync::Arc::new(world),..Default::default()}}
-    pub fn required(&self)->bool {!self.committed.glows.is_empty()}
+    pub fn required(&self)->bool {!self.committed.glows.is_empty()||!self.committed.layout.sprites.is_empty()||!self.committed.layout.suns.is_empty()||!self.committed.layout.spotlights.is_empty()}
     fn begin(&self,client_frame:u32,accepted_client_frame:u32)->Result<(Self,World),()> {
         if client_frame!=accepted_client_frame.checked_add(1).ok_or(())? {return Err(());}
         let mut runtime=self.clone();
@@ -207,13 +328,14 @@ pub(super) fn prepare(slot:&super::Slot,payload:&[u8],client_frame:u32,accepted_
     let (mut runtime,mut candidate)=slot.legacy_visuals.begin(client_frame,accepted_client_frame)?;
     let (Some(visibility),Some(area),Some(candidates),Some(environment),Some(session))=(slot.visibility.as_ref(),slot.area_state.as_ref(),slot.visibility_candidates.as_ref(),slot.environment.as_ref(),slot.session.as_ref()) else {return Err(());};
     let mut reader=Reader{bytes:payload,at:0};
-    if reader.take(4)?!=b"PLVQ"||reader.u32()?!=1 {return Err(());}
+    if reader.take(4)?!=b"PLVQ"||reader.u32()?!=2 {return Err(());}
     let count=reader.u32()?;
-    if !(1..=2).contains(&count) {return Err(());}
-    let mut output=b"PLVF".to_vec();output.extend_from_slice(&3_u32.to_le_bytes());output.extend_from_slice(&count.to_le_bytes());
+    if !(1..=5).contains(&count) {return Err(());}
+    let mut owners=std::collections::BTreeSet::new();
+    let mut output=b"PLVF".to_vec();output.extend_from_slice(&5_u32.to_le_bytes());output.extend_from_slice(&count.to_le_bytes());
     let sky_area=environment.world.controllers.iter().find_map(|controller|match controller.state {playsrc_map::ControllerState::SkyCamera{area,..}=>Some(area),_=>None});
-    for index in 0..count {
-        let owner=reader.u32()?;if owner!=index {return Err(());}
+    for _ in 0..count {
+        let owner=reader.u32()?;if owner>4||!owners.insert(owner) {return Err(());}
         let now=reader.f32()?;let height=reader.u32()?;let feedback_count=reader.u32()?;
         if now<0.0||!(1..=32768).contains(&height)||feedback_count>65536 {return Err(());}
         let position=[reader.f32()?,reader.f32()?,reader.f32()?];
@@ -230,15 +352,19 @@ pub(super) fn prepare(slot:&super::Slot,payload:&[u8],client_frame:u32,accepted_
         let pvs=visibility.view(area,candidates,&playsrc_visibility::ViewQuery{origins:vec![pvs_origin],bypass_pvs:false}).map_err(|_|())?;
         let view=View::perspective(position,yaw,pitch,fov,aspect,near,far,height);
         let mut bytes=Vec::new();
-        candidate.frame(&view,owner==1,now,client_frame,client_frame_seconds,&feedback,|source|session.map_visual_entity(source),|position|{
+        let fov_distance_adjust=if slot.latest_game_snapshot.as_ref().is_some_and(|snapshot|snapshot.class==playsrc_tf2::PlayerClass::Sniper&&snapshot.weapon==Some(playsrc_tf2::Weapon::SniperRifle)&&snapshot.conditions&2!=0) {20.0/75.0} else {1.0};
+        candidate.frame(&view,owner,now,client_frame,client_frame_seconds,fov_distance_adjust,&feedback,|source|{
+            let (entity,transform,render)=session.map_visual_entity(source)?;Some((entity,transform,render,session.map_sprite_state(source)))
+        },|source|session.map_sun_state(source),|source|session.map_spotlight_state(source),|position,bounds|{
             visibility.locate_leaf(position).ok().map_or((false,false),|leaf| {
                 let sky=Some(usize::from(visibility.leaves[leaf].area_and_flags&0x1ff))==sky_area;
-                (sky==(owner==1),pvs.leaves.contains(&leaf))
+                let visible=bounds.map_or_else(||pvs.leaves.contains(&leaf),|bounds|visibility.leaves_in_box(bounds).is_ok_and(|leaves|leaves.iter().any(|leaf|pvs.leaves.contains(leaf))));
+                (sky==(owner==1),visible)
             })
         },&mut bytes)?;
-        output.extend_from_slice(&(bytes.len() as u32).to_le_bytes());output.extend_from_slice(&bytes);
+        output.extend_from_slice(&owner.to_le_bytes());output.extend_from_slice(&(bytes.len() as u32).to_le_bytes());output.extend_from_slice(&bytes);
     }
-    if reader.at!=payload.len() {return Err(());}
+    if reader.at!=payload.len()||!owners.contains(&0) {return Err(());}
     if output.len()>4*1024*1024 {return Err(());}
     runtime.pending=Some((client_frame,std::sync::Arc::new(candidate)));
     Ok((runtime,output))

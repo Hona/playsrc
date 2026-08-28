@@ -85,7 +85,7 @@ export type StaticMaterialState = Readonly<{
   }>
 }>
 export type ParticleTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string; materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null; additiveSprite: import("@playsrc/rendering").AdditiveSpriteInput | null }>
-export type LegacyVisualTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string }>
+export type LegacyVisualTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string;program:import("@playsrc/rendering").LegacyVisualProgram }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
   unavailable: ReadonlySet<string>
@@ -1551,13 +1551,16 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r, resources, sharedTextures)
-  if (r.decode(r.take(4)) !== "PLVM" || r.u32() !== 1) throw new ArtifactError("legacy visual material identity")
+  if (r.decode(r.take(4)) !== "PLVM" || r.u32() !== 2) throw new ArtifactError("legacy visual material identity")
   const legacyCount = r.u32()
   if (legacyCount > 4096) throw new ArtifactError("legacy visual material count")
   const legacyVisualTextures = Object.freeze(Array.from({ length: legacyCount }, () => {
     const material = r.text()
     if (!materialStates.has(material.toLowerCase())) throw new ArtifactError("legacy visual material state")
-    return Object.freeze({ material, ...parseModelAuthoredTextureRecord(r, resources, sharedTextures) })
+    const texture=parseModelAuthoredTextureRecord(r, resources, sharedTextures),flags=r.u32()
+    if(flags>63)throw new ArtifactError("legacy visual program flags")
+    const modulation=Object.freeze([r.f32(),r.f32(),r.f32(),r.f32()]) as readonly[number,number,number,number]
+    return Object.freeze({material,...texture,program:Object.freeze({srgb:(flags&1)!==0,vertexRgb:(flags&2)!==0,vertexAlpha:(flags&4)!==0,vertexGamma:(flags&8)!==0,gammaExposure:(flags&16)!==0,worldRenderable:(flags&32)!==0,modulation})})
   }))
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   const staticProps = parseStaticProps(r, modelCount,[...models.keys()],resources)

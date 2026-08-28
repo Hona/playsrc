@@ -6,8 +6,8 @@ use playsrc_material::legacy_sprite::Orientation;
 pub struct Quad { pub positions:[[f32;3];4], pub uv:[[f32;2];4], pub color:[u8;4] }
 
 pub fn quad(view:&View,position:[f32;3],angles:[f32;3],orientation:Orientation,extents:[f32;4],size:[u32;2],
-    mut scale_value:f32,mode:u8,fx:u8,mut color:[u8;4],visibility:f32,fov_distance_adjust:f32)->Option<Quad> {
-    if mode==6||mode==10 {return None;}
+    mut scale_value:f32,mode:u8,fx:u8,mut color:[u8;4],render_blend:u8,visibility:f32,fov_distance_adjust:f32)->Option<Quad> {
+    if mode==6||mode==10||render_blend==0 {return None;}
     if mode==3||mode==9 {
         let distance=length(sub(position,view.origin))*fov_distance_adjust;
         if visibility<=0.0||distance<=0.0 {return None;}
@@ -16,6 +16,7 @@ pub fn quad(view:&View,position:[f32;3],angles:[f32;3],orientation:Orientation,e
                 if mode!=9 {if scale_value==0.0 {scale_value=1.0;}scale_value*=distance*(1.0/200.0);}
                 ((1200.0*1200.0)/(distance*distance)).clamp(0.0,1.0)*visibility
             };
+        let blend=blend*(render_blend as f32/255.0);
         for component in &mut color[..3] {*component=(*component as f32*blend) as u8;}
     }
     let (right,up)=axes(view,position,angles,orientation)?;
@@ -60,11 +61,11 @@ mod tests {
     fn view()->View {View::perspective([0.0;3],0.0,0.0,75.0,16.0/9.0,1.0,30000.0,720)}
     #[test]
     fn world_glow_and_no_dissipation_keep_authored_scale_and_integer_tint() {
-        let draw=|mode,fx|quad(&view(),[400.0,0.0,0.0],[0.0;3],Orientation::Parallel,[-8.0,8.0,4.0,-4.0],[16,8],1.0,mode,fx,[255,128,64,128],0.5,1.0).unwrap();
+        let draw=|mode,fx|quad(&view(),[400.0,0.0,0.0],[0.0;3],Orientation::Parallel,[-8.0,8.0,4.0,-4.0],[16,8],1.0,mode,fx,[255,128,64,128],128,0.5,1.0).unwrap();
         assert_eq!(draw(9,0).positions[0],[400.0,8.0,-4.0]);
         assert_eq!(draw(3,0).positions[0],[400.0,16.0,-8.0]);
         assert_eq!(draw(3,14).positions[0],[400.0,8.0,-4.0]);
-        assert_eq!(draw(3,14).color,[64,32,16,128]);
+        assert_eq!(draw(3,14).color,[32,16,8,128]);
         assert_eq!(draw(9,0).uv[0],[0.03125,0.9375]);
     }
     #[test]
