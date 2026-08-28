@@ -6,6 +6,7 @@ export default headedProfileConfiguration({
     ? "skinning-equivalence.profile.ts"
     : process.env.PROFILE_SCENARIOS === "deathnotice" ? "combat-lifecycle.profile.ts"
     : process.env.PROFILE_SCENARIOS === "damage-indicator" ? "damage-indicator.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "setup-round" ? "setup-round.profile.ts"
     : process.env.PROFILE_SCENARIOS === "control-points" ? "control-points.profile.ts"
     : process.env.PROFILE_SCENARIOS === "koth" ? "koth.profile.ts"
     : process.env.PROFILE_SCENARIOS === "map-admission" ? "map-admission.profile.ts"
