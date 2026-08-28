@@ -100,7 +100,10 @@ while (($line=[Console]::ReadLine()) -ne $null) {
    if ($request.ownedDiagnostic) {
     if (!$request.captureWindow -or !$request.capture -or $foregroundOwner.processId -ne $request.pid) {throw 'Owned UI diagnosis requires the linked private capture'}
     $ui=Read-OwnedUI $foreground ([uint32]$request.pid)
-    if ($request.permissionOrigin) {$action=Allow-OwnedLocalPermission $ui ([string]$request.permissionOrigin) ([uint32]$request.pid) $foreground}
+     if ($request.permissionOrigin) {
+      if ([StartupWindow]::Idle() -lt 2000) {throw 'Owned permission requires genuine two-second idle admission'}
+      $action=Allow-OwnedLocalPermission $ui ([string]$request.permissionOrigin) ([uint32]$request.pid) $foreground
+     }
    }
    $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
    $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui;action=$action}
@@ -195,6 +198,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const facts = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
       // Read-only identity checks happen before the explicit action request.
       const before = await windowsSnapshot(cacheDir, browserPid)
+      if (before.idleMilliseconds < 2000) throw new Error("Owned permission requires genuine two-second idle admission")
       const mainWindowId = ownedDiagnosticWindow(before, facts.bounds as any, browserPid)
       if (before.foreground === mainWindowId) throw new Error("No owned permission window to resolve")
       const native = await windowsSnapshot(cacheDir, browserPid, captureBefore, facts.bounds as any, mainWindowId, true, origin)

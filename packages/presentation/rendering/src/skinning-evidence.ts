@@ -21,7 +21,8 @@ export function unpackGpuRgbaRows(data: Uint8Array | Float32Array, width: number
 // Explicitly installed only by the headed acceptance harness. The normal
 // application never imports this module or allocates these diagnostic targets.
 export function installSkinningEvidence(referenceRender?: (draw: () => void) => void,
-  acceptRender?: (scene: THREE.Scene, camera: THREE.Camera, renderer: THREE.WebGPURenderer) => boolean) {
+  acceptRender?: (scene: THREE.Scene, camera: THREE.Camera, renderer: THREE.WebGPURenderer) => boolean,
+  includeRigidMeshes = false) {
   const prototype = THREE.WebGPURenderer.prototype
   const render = prototype.render
   const instrument = RendererFrameInstrumentation.prototype.pass
@@ -54,10 +55,10 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
     if (acceptRender && !acceptRender(scene, camera, this)) return result
     const meshes: THREE.Mesh[] = []
     scene.traverseVisible(object => {
-      if ((object instanceof THREE.SkinnedMesh || currentPass === "hud-model" && object instanceof THREE.Mesh) && camera.layers.test(object.layers)) meshes.push(object)
+      if ((object instanceof THREE.SkinnedMesh || (currentPass === "hud-model" || includeRigidMeshes) && object instanceof THREE.Mesh) && camera.layers.test(object.layers)) meshes.push(object)
     })
     const pass = currentPass
-    if (request.pass !== pass || !(request.allowRigid || (pass === "hud-model" ? meshes.length > 0 : meshes.some(mesh => mesh instanceof THREE.SkinnedMesh && mesh.skeleton.bones.length > 1)))) return result
+    if ((request.pass !== pass && !(acceptRender && request.pass === "*")) || !(request.allowRigid || (pass === "hud-model" ? meshes.length > 0 : meshes.some(mesh => mesh instanceof THREE.SkinnedMesh && mesh.skeleton.bones.length > 1)))) return result
     requested = undefined
     capturing = true
     const renderer = this
