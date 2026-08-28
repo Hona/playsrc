@@ -8,6 +8,7 @@ import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
+import { parseLocalPreparationStage } from "./prepare-local-stage"
 
 const LIMIT = 175_000
 const SHA = /^[0-9a-f]{40}$/
@@ -53,7 +54,11 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
   if (kind === "build" && options.length === 1 && (TF2_TARGET_NAMES as readonly string[]).includes(options[0]!)) {
     return { command: ["tools/playsrc/src/cli.ts", "dev", options[0]!, "--prepare-only"], interactive: false }
   }
-  throw new Error("Expected test [files...], build <map>, or profile <normal profile name> [normal profiler options]")
+  if (kind === "build-stage") {
+    parseLocalPreparationStage(options)
+    return { command: ["tools/playsrc/src/prepare-local-stage.ts", ...options], interactive: false }
+  }
+  throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|resources <map>, or profile <normal profile name> [normal profiler options]")
 }
 
 /** Remote transport never supplies a browser endpoint, fixture, or asset server.
@@ -207,6 +212,6 @@ if (import.meta.main) {
       const result = await runLocalJob(args[0]!, args.slice(ready ? 2 : 1), ready)
       console.log(JSON.stringify(result))
       if (result.failure) process.exitCode = 1
-    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> [existing-job] | run <id> [--ready] test|build|profile ...")
+    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> [existing-job] | run <id> [--ready] test|build|build-stage|profile ...")
   } catch (error) { console.error(String(error)); process.exitCode = 1 }
 }
