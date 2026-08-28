@@ -106,17 +106,20 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     page.on("response",response=>evidence.responses.push({url:response.url(),status:response.status(),headers:response.headers()}))
     evidence.unexpectedInput=[]
     await page.exposeBinding("__playsrcUnexpectedStartupInput",(_source,event)=>{evidence.unexpectedInput.push(event)})
+    evidence.gpuFailures=[]
+    await page.exposeBinding("__playsrcStartupGpuFailure",(_source,event)=>{evidence.gpuFailures.push(event)})
     await page.addInitScript(()=>{
       ;(globalThis as any).__playsrcProfile={}
       const graphics={devices:[] as any[],losses:[] as any[]};(globalThis as any).__playsrcStartupGraphics=graphics
+      const gpuFailure=(value:any)=>{if(graphics.losses.length>=256)return;const detail={at:performance.now(),timeOrigin:performance.timeOrigin,...value};graphics.losses.push(detail);void(globalThis as any).__playsrcStartupGpuFailure(detail)}
       const adapter=(globalThis as any).GPUAdapter?.prototype,requestDevice=adapter?.requestDevice
       if(requestDevice)Object.defineProperty(adapter,"requestDevice",{configurable:true,writable:true,value:function(this:any,...args:any[]){
         const result=requestDevice.apply(this,args)
         void result.then((device:any)=>{
           const info=this.info
           if(graphics.devices.length<16)graphics.devices.push({label:args[0]?.label??"",requiredFeatures:[...(args[0]?.requiredFeatures??[])],features:[...device.features],isFallbackAdapter:this.isFallbackAdapter??info?.isFallbackAdapter??null,info:Object.fromEntries(["vendor","architecture","device","description","backend","driver"].map(key=>[key,info?.[key]??null]))})
-          device.addEventListener("uncapturederror",(event:any)=>graphics.losses.push({kind:"validation",message:String(event.error?.message??event.error)}))
-          void device.lost.then((value:any)=>{if(value.reason!=="destroyed")graphics.losses.push({kind:"device",...value})})
+          device.addEventListener("uncapturederror",(event:any)=>gpuFailure({kind:"validation",message:String(event.error?.message??event.error)}))
+          void device.lost.then((value:any)=>{if(value.reason!=="destroyed")gpuFailure({kind:"device",reason:value.reason,message:value.message})})
         },()=>{})
         return result
       }})
@@ -135,6 +138,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
       navigate,
       read:async()=>{
         if(routingFailure)throw routingFailure
+        if(evidence.gpuFailures.length)throw new Error(`Static startup GPU failure: ${evidence.gpuFailures[0].message}`)
         const state=await page.evaluate(()=>{const main=document.querySelector<HTMLElement>("main"),video=document.querySelector<HTMLVideoElement>(".startup-movie"),canvas=document.querySelector<HTMLElement>("canvas.world-canvas");return {phase:main?.dataset.phase??"Absent",detail:main?.dataset.detail??"",startupState:main?.dataset.startupState,visible:document.visibilityState==="visible",focused:document.hasFocus(),timeOrigin:performance.timeOrigin,at:performance.now(),frame:Number(canvas?.dataset.displayFrame??0),cache:main?.dataset.cache,consoleVisible:main?.dataset.consoleVisible==="true",gameUi:main?.dataset.gameui,playerClass:Number(main?.dataset.hudProbe?.split(":")[1]??0),tick:main?.dataset.snapshotTick,teamSelection:main?.dataset.teamSelectionVisible==="true",classSelection:main?.dataset.classSelectionVisible==="true",unexpectedInput:(globalThis as any).__playsrcStartupInput?.unexpected.length??0,movie:video?{time:video.currentTime,paused:video.paused,muted:video.muted,width:video.videoWidth,height:video.videoHeight}:null} as StartupObservation})
         if(state.phase==="MainMenu"||state.phase==="Ready")await admitGameplayWorker()
         state.unexpectedInput=Math.max(state.unexpectedInput,evidence.unexpectedInput.length)
@@ -156,7 +160,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     },router.admitted.configuration.defaultTarget)
     const upgradeNavigations=router.upgradeNavigations
     evidence.runtime=await page.evaluate(()=>({graphics:(globalThis as any).__playsrcStartupGraphics,quality:(globalThis as any).__playsrcProfile.videoQuality,generation:(globalThis as any).__playsrcProfile.applicationGeneration,cache:(globalThis as any).__playsrcProfile.immutableCache,state:{...document.querySelector<HTMLElement>("main")?.dataset}}))
-    if(evidence.runtime.graphics?.losses.length)throw new Error("Static startup encountered a GPU validation/device failure")
+    if(evidence.gpuFailures.length)throw new Error("Static startup encountered a GPU validation/device failure")
     // A declared network-failure fixture tests the independent boot UI. It does
     // not edit or relabel any package/WASM byte, and is not a successful boot.
     await context.route("https://playsrc.online/tf2/playsrc-config.json",route=>route.fulfill({status:503,contentType:"application/problem+json",body:'{"title":"Startup gate unavailable configuration fixture"}'}))
@@ -169,6 +173,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     const bootFailure={phase:"Failed",visible:await failurePanel.isVisible(),text:await failurePanel.innerText(),pixels:startupPixelEvidence(failurePixels),native:failureNative}
     await testInfo.attach("boot-failure",{body:failurePixels,contentType:"image/png"})
     evidence.bootFailure=bootFailure
+    if(evidence.gpuFailures.length||evidence.unexpectedInput.length)throw new Error("Static startup post-capture GPU/input guard failed")
     await router.verifyUnchanged()
     await Promise.all([workerPage.detach(),workerBrowser.detach()])
     evidence.capture=capture

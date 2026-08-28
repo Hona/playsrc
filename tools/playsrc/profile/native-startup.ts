@@ -57,12 +57,16 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
   if (processes.length !== 1) throw new Error("Static startup browser owner is ambiguous")
   const browserPid = processes[0]!.id
   let established: number | undefined
+  let establishedBounds: string | undefined
   const records: any[] = []
   return {
     records,
     async read(desktopScreenshot?: string): Promise<StartupNativeAdmission> {
       if (mac) {
         const record = await mac.read(desktopScreenshot); records.push(record); requireMacPageAdmission(record)
+        const bounds=JSON.stringify(record.page!.bounds)
+        if(establishedBounds!==undefined&&establishedBounds!==bounds)throw new Error("Static startup native window geometry changed")
+        establishedBounds=bounds
         const console = record.snapshot?.console
         if (!console?.onConsole || !console.loginDone || console.locked) throw new Error("Static startup console changed")
         return { at: record.at, physical: true, unlocked: true, foreground: !record.occluders?.length,
@@ -72,6 +76,9 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       if (process.platform !== "win32") throw new Error("Static startup native window reader is unavailable")
       const { targetInfo } = await pageCdp.send("Target.getTargetInfo")
       const facts = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
+      const boundsIdentity=JSON.stringify(facts.bounds)
+      if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
+      establishedBounds=boundsIdentity
       const native = await windowsSnapshot(browserPid)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)
@@ -97,11 +104,15 @@ export async function externalStartupNativeReader(page: Page, endpoint: string, 
   if(processes.length!==1)throw new Error("External startup browser owner is ambiguous")
   const browserPid=processes[0]!.id,records:any[]=[]
   let sequence=0
+  let establishedBounds:string|undefined
   const facts=async()=>{const {targetInfo}=await pageCdp.send("Target.getTargetInfo");return {targetId:targetInfo.targetId,...await browserCdp.send("Browser.getWindowForTarget",{targetId:targetInfo.targetId})}}
   return {
     records,
     async read(_desktopScreenshot?:string):Promise<StartupNativeAdmission> {
       const before=await facts()
+      const bounds=JSON.stringify(before.bounds)
+      if(establishedBounds!==undefined&&establishedBounds!==bounds)throw new Error("Static startup external window geometry changed")
+      establishedBounds=bounds
       const request={sequence:++sequence,browserPid,...before,lockToken}
       const response=await fetch(`${endpoint}/snapshot`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(request),signal:AbortSignal.timeout(12_000)})
       if(!response.ok)throw new Error(`External native startup broker rejected readback: ${await response.text()}`)
