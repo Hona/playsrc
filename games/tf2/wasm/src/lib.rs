@@ -1384,6 +1384,7 @@ unsafe fn compile_map(
             &collision_templates,
             1,
             None,
+            None,
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
@@ -5266,7 +5267,18 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     },
                     linear_speed: request.speed,
                     angular_speed,
-                    hierarchy: Vec::new(),
+                    hierarchy: templates.iter().filter_map(|template| {
+                        // The prop children are rigid members of this pusher;
+                        // independently driven brush movers keep their own requests.
+                        if !matches!(&template.input.shape, playsrc_collision::SnapshotShape::Physics(_)) { return None; }
+                        let identity = u32::try_from(template.input.identity).ok()?;
+                        if !candidate.entity_descends_from(identity, request.entity) { return None; }
+                        let transform = candidate.entity_world_transform(identity)?;
+                        Some(playsrc_movement::PusherHierarchyMemberRequest {
+                            identity: u64::from(identity),
+                            start: playsrc_collision::Transform { origin: transform.origin, angles: transform.angles },
+                        })
+                    }).collect(),
                 };
                 let pusher = match playsrc_movement::PusherSnapshot::start_transforms(
                     collision_revision,
@@ -5287,7 +5299,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &prior_collision,
             templates,
             current_revision,
-            snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
+            Some(&|identity| candidate.entity_world_transform(identity)),
             &transforms,
             &velocities,
         ) {
@@ -5298,6 +5310,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 current_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
+                Some(&|identity| candidate.entity_world_transform(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -5387,6 +5400,13 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 for result in &frame.results {
                     transforms.insert(result.identity, result.transform);
                     velocities.insert(result.identity, result.trajectory_velocity);
+                    for child in &result.hierarchy {
+                        transforms.insert(child.identity, child.transform);
+                        // CBaseEntity::CalcAbsoluteVelocity adds the parent's
+                        // absolute velocity to the child's rotated local one.
+                        // These rigid hierarchy members have zero local velocity.
+                        velocities.insert(child.identity, result.trajectory_velocity);
+                    }
                 }
                 consumed_mover_results.extend(records.into_iter().take(consumed_records));
                 if frame.next.active_count() != 0 && !superseded {
@@ -5407,6 +5427,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 collision_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
+                Some(&|identity| candidate.entity_world_transform(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -8751,7 +8772,7 @@ fn collision_object_templates(
                 surface_flags: 0,
                 shape: playsrc_collision::SnapshotShape::Physics(shape),
             },
-            runtime_transform: false,
+            runtime_transform: true,
         });
     }
     for prop in &map.static_props.occurrences {
@@ -8840,40 +8861,41 @@ fn collision_object_templates(
     Ok(output)
 }
 
+// Dynamic props (including gate children) share the entity world's resolved
+// parent transform with presentation. A brush-only snapshot cannot own their
+// collision pose. Removed entities must not leave a solid at the authored pose.
+fn collision_template_transform(
+    template: &CollisionObjectTemplate,
+    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
+    overrides: &BTreeMap<u64, playsrc_collision::Transform>,
+) -> (bool, playsrc_collision::Transform) {
+    let mut enabled = template.input.enabled;
+    let mut transform = template.input.transform;
+    if template.runtime_transform && let Some(resolve) = entity_transform {
+        match u32::try_from(template.input.identity).ok().and_then(resolve) {
+            Some(value) => transform = playsrc_collision::Transform { origin: value.origin, angles: value.angles },
+            None => enabled = false,
+        }
+    }
+    if let Some(value) = overrides.get(&template.input.identity) { transform = *value; }
+    (enabled, transform)
+}
+
 fn compile_collision_snapshot(
     previous: Option<&playsrc_collision::Snapshot>,
     world: &playsrc_collision::World,
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
+    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
-    let runtime_transforms = latest
-        .into_iter()
-        .flat_map(|snapshot| &snapshot.entity_transforms)
-        .map(|value| {
-            (
-                u64::from(value.identity),
-                playsrc_collision::Transform {
-                    origin: value.position,
-                    angles: value.angles,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
     let inputs = templates
         .iter()
         .map(|template| {
             let mut input = template.input.clone();
-            if template.runtime_transform
-                && let Some(transform) = runtime_transforms.get(&input.identity)
-            {
-                input.transform = *transform;
-            }
-            if let Some(transform) = transform_overrides.get(&input.identity) {
-                input.transform = *transform;
-            }
+            (input.enabled, input.transform) = collision_template_transform(template, entity_transform, transform_overrides);
             if let Some(velocity) = velocity_overrides.get(&input.identity) {
                 input.linear_velocity = *velocity;
             }
@@ -8918,7 +8940,7 @@ fn retain_collision_snapshot(
     previous: &playsrc_collision::Snapshot,
     templates: &[CollisionObjectTemplate],
     revision: u64,
-    latest: Option<&playsrc_tf2::Snapshot>,
+    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Option<playsrc_collision::Snapshot> {
@@ -8930,32 +8952,55 @@ fn retain_collision_snapshot(
         if record.identity != identity {
             return None;
         }
-        let runtime = template.runtime_transform.then(|| {
-            latest.and_then(|snapshot| {
-                snapshot
-                    .entity_transforms
-                    .iter()
-                    .find(|value| u64::from(value.identity) == identity)
-                    .map(|value| playsrc_collision::Transform {
-                        origin: value.position,
-                        angles: value.angles,
-                    })
-            })
-        });
-        let transform = transform_overrides
-            .get(&identity)
-            .copied()
-            .or_else(|| runtime.flatten())
-            .unwrap_or(template.input.transform);
+        let (enabled, transform) = collision_template_transform(template, entity_transform, transform_overrides);
         let velocity = velocity_overrides
             .get(&identity)
             .copied()
             .unwrap_or(template.input.linear_velocity);
-        if record.transform != transform || record.linear_velocity != velocity {
+        if record.enabled != enabled || record.transform != transform || record.linear_velocity != velocity {
             return None;
         }
     }
     Some(previous.with_identity(revision))
+}
+
+#[cfg(test)]
+#[test]
+fn setup_gate_child_collision_follows_parent_and_invalidates_retention() {
+    use playsrc_collision::{ObjectInput, ObjectRole, SnapshotShape, Transform, CONTENTS_SOLID};
+    let graph = playsrc_entity::parse(br#"
+        {"classname" "func_door" "targetname" "gate" "model" "*1" "movedir" "-90 0 0" "lip" "0" "wait" "-1"}
+        {"classname" "prop_dynamic" "parentname" "gate" "origin" "0 0 0" "solid" "6" "model" "models/gate.mdl"}
+    "#, playsrc_entity::Limits::default()).unwrap();
+    let mut map = playsrc_tf2::MapRuntime::compile(&graph, 0.015, 1,
+        vec![playsrc_entity::ModelBounds { model: 1, mins: [-64.0,-4.0,0.0], maxs: [64.0,4.0,128.0] }]).unwrap();
+    let world = playsrc_collision::World::empty();
+    let templates = [CollisionObjectTemplate {
+        input: ObjectInput { identity: 1, role: ObjectRole::Entity, enabled: true, volume_contents: false,
+            transform: Transform { origin: [0.0;3], angles: [0.0;3] }, linear_velocity: [0.0;3], angular_velocity: [0.0;3],
+            collision_group: 0, contents: CONTENTS_SOLID, surface_flags: 0,
+            shape: SnapshotShape::BoundingBox { bounds: playsrc_collision::Hull { mins: [-64.0,-4.0,0.0], maxs: [64.0,4.0,128.0] } } },
+        runtime_transform: true,
+    }];
+    let transforms = BTreeMap::new();
+    let velocities = BTreeMap::new();
+    let closed = compile_collision_snapshot(None, &world, &templates, 1, None, None, &transforms, &velocities).unwrap();
+    let request = map.input(0, 0, b"Open", playsrc_entity::Variant::Void).unwrap().mover_requests[0];
+    map.apply_mover_results(1, &[playsrc_tf2::MoverResult { request_id: request.request_id, entity: 0,
+        kind: playsrc_tf2::MoverResultKind::Completed, transform: playsrc_entity::Transform { origin: [0.0,0.0,128.0], angles: [0.0;3] }, carry: [0.0;3] }]).unwrap();
+    assert!(map.entity_descends_from(1,0));
+    assert!(!map.entity_descends_from(0,1));
+    let resolve = |identity| map.entity_world_transform(identity);
+    assert!(retain_collision_snapshot(&closed, &templates, 2, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
+    let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities).unwrap();
+    let child = map.entity_world_transform(1).unwrap();
+    assert!(child.origin[2] > 120.0);
+    assert_eq!(opened.records()[0].transform.origin, child.origin);
+    assert!(retain_collision_snapshot(&opened, &templates, 3, Some(&resolve), &transforms, &velocities).is_some());
+    let removed = |_| None;
+    assert!(retain_collision_snapshot(&opened, &templates, 4, Some(&removed), &transforms, &velocities).is_none());
+    let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities).unwrap();
+    assert!(!removed.records()[0].enabled);
 }
 
 fn authored_entity_model(entity: &playsrc_entity::Entity) -> Result<Option<String>, ()> {
@@ -9472,6 +9517,7 @@ fn compile_static_prop_section(
             collision,
             &templates,
             1,
+            None,
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
