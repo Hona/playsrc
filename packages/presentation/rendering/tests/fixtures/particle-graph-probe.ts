@@ -2,13 +2,9 @@ import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
 import { ParticleMaterialGraphs, particleMaterialNodes, bindParticleTexture } from "../../src/particle-material-graphs"
 import { createSourceWaterFogUniforms } from "../../src/source-water"
-import { StaticMaterialGraphs } from "../../src/static-material-graphs"
-import { ModelLightingGraphs, bindStaticPropFade } from "../../src/model-lighting-graphs"
-import { sourceFragmentColor } from "../../src/source-fragment-color"
-import { sourceStaticVertexLightingNode } from "../../src/source-model-lighting"
 
 /** Real overlapping translucent pixels and depth, not a performance sample. */
-export async function createParticleGraphProbe(staticMaterials = false) {
+export async function createParticleGraphProbe() {
   const width = 640, height = 480, renderer = new THREE.WebGPURenderer({ antialias: false })
   await renderer.init()
   if (!renderer.backend.isWebGPUBackend) throw new Error("Particle parity requires WebGPU")
@@ -29,9 +25,6 @@ export async function createParticleGraphProbe(staticMaterials = false) {
     const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1); texture.colorSpace = THREE.SRGBColorSpace; texture.needsUpdate = true; return texture
   })
   const graphs = new ParticleMaterialGraphs(), waterFog = createSourceWaterFogUniforms()
-  const lighting = new ModelLightingGraphs(), exposure = TSL.uniform(1)
-  const staticGraphs = new StaticMaterialGraphs(waterFog, exposure, lighting.staticFade)
-  const bases = planes.map(texture => TSL.texture(texture, TSL.uv()))
   const actors = planes.map((texture, index) => {
     const geometry = new THREE.PlaneGeometry(1.6, 1.6)
     geometry.setAttribute("particleCenterOrientation", new THREE.Float32BufferAttribute(new Float32Array(16), 4))
@@ -44,20 +37,10 @@ export async function createParticleGraphProbe(staticMaterials = false) {
     const input = { texture, state, waterFog, depth: TSL.vec4(1), exposure: TSL.float(1), hdr: false,
       fog: { start: TSL.float(0), end: TSL.float(100), enabled: TSL.float(1), maximumDensity: TSL.float(1) } }
     const samplers: any[] = []
-    if(!staticMaterials) {
-      original.colorNode = particleMaterialNodes(input, (nodes, color) => { samplers.push(...nodes); return color }).color
-      shared.colorNode = graphs.get(shared, input).color
-    }
+    original.colorNode = particleMaterialNodes(input, (nodes, color) => { samplers.push(...nodes); return color }).color
+    shared.colorNode = graphs.get(shared, input).color
     const mesh = new THREE.Mesh(geometry, shared); mesh.position.set((index - 1) * .85, (index % 2) * .35 - .15, index * .2); scene.add(mesh)
-    const fade = TSL.uniform(1)
-    if(staticMaterials) {
-      geometry.setAttribute("staticLighting", new THREE.Uint8BufferAttribute(Array.from({length:16},(_,i)=>i%4===3?255:120+index*30),4,true))
-      const base=bases[index===2?1:0], before=sourceFragmentColor(base,state,waterFog)
-      original.colorNode=sourceFragmentColor(TSL.vec4(before.rgb.mul(sourceStaticVertexLightingNode()).mul(exposure),TSL.float(1).mul(lighting.staticFade)),state,waterFog,true)
-      shared.colorNode=staticGraphs.vertex(staticGraphs.template(base,state),state,false,true,fade)
-      bindStaticPropFade(mesh,fade)
-    }
-    return { original, shared, mesh, samplers, fade }
+    return { original, shared, mesh, samplers }
   })
   const capture = async (shared: boolean) => {
     for (const actor of actors) actor.mesh.material = shared ? actor.shared : actor.original
@@ -74,17 +57,14 @@ export async function createParticleGraphProbe(staticMaterials = false) {
       if (phase === 2) scene.add(actors[1]!.mesh)
       for (const [index, actor] of actors.entries()) {
         const texture = planes[(index + phase) % planes.length]!
-        if(!staticMaterials) {
-          bindParticleTexture(actor.shared, texture)
-          for (const sampler of actor.samplers) sampler.value = texture
-        }
-        actor.fade.value=1-(index+phase)%3*.2
+        bindParticleTexture(actor.shared, texture)
+        for (const sampler of actor.samplers) sampler.value = texture
         actor.mesh.position.y += .03 * phase
       }
       const before = await capture(false), after = await capture(true)
       const mismatches = (a: Uint8Array, b: Uint8Array) => a.reduce((sum, value, index) => sum + Number(value !== b[index]), 0)
       return { phase, colorMismatches: mismatches(before.color, after.color), depthMismatches: mismatches(before.depth, after.depth),
-        graphs: staticMaterials?staticGraphs.size:graphs.size, colorBytes: after.color.length, depthBytes: after.depth.length,
+        graphs: graphs.size, colorBytes: after.color.length, depthBytes: after.depth.length,
         visibleActors: actors.filter(actor => actor.mesh.parent === scene).length, beforePixels: before.pixels, afterPixels: after.pixels }
     },
     dispose() {
