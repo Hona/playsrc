@@ -436,11 +436,13 @@ function copyEvent(value: Tf2HudEvent): Tf2HudEvent {
     case "lifecycle":
       if (!["active", "dying", "observer"].includes(value.lifecycle)) malformed("lifecycle event is invalid")
       return Object.freeze({ ...identity, kind: value.kind, lifecycle: value.lifecycle })
+    case "loadout":
     case "regenerate": {
-      if (!Array.isArray(value.weapons)) malformed("regenerate weapon list is invalid")
-      if (value.weapons.length > TF2_HUD_LIMITS.loadoutWeapons) bound("regenerate weapon list exceeds its bound")
+      if (!Array.isArray(value.weapons)) malformed("event weapon list is invalid")
+      if (value.weapons.length > TF2_HUD_LIMITS.loadoutWeapons) bound("event weapon list exceeds its bound")
       const weapons = Object.freeze(value.weapons.map(copyWeapon))
-      if (new Set(weapons.map((weapon) => weapon.identity)).size !== weapons.length) malformed("regenerate weapon identities are duplicated")
+      if (new Set(weapons.map((weapon) => weapon.identity)).size !== weapons.length) malformed("event weapon identities are duplicated")
+      if (value.kind === "loadout") return Object.freeze({ ...identity, kind: value.kind, weapons })
       return Object.freeze({ ...identity, kind: value.kind, zone: copyIntegerAvailability(value.zone, "regenerate zone"), health: copyHealth(value.health), weapons, conditions: copyConditions(value.conditions) })
     }
     case "pickup": return Object.freeze({ ...identity, kind: value.kind, notification: copyPickup(value.notification), health: copyAvailability(value.health, copyHealth, "pickup health"), weapon: copyAvailability(value.weapon, copyWeapon, "pickup weapon") })
@@ -786,6 +788,15 @@ export function bindTf2Hud(publication: Tf2HudPublication): Tf2HudBinding {
 
   for (const event of events) {
     switch (event.kind) {
+      case "loadout":
+        rollingWeapons.clear()
+        lastAmmo.clear()
+        for (const weapon of event.weapons) {
+          rollingWeapons.set(weapon.identity, weapon)
+          lastAmmo.set(weapon.identity, weapon)
+        }
+        if (lastWeapon !== null && !rollingWeapons.has(lastWeapon)) lastWeapon = null
+        break
       case "health": transitionHealth(event.health, event); break
       case "damage": {
         transitionHealth(event.health, event)

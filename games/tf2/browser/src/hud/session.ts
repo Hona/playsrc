@@ -394,10 +394,17 @@ export function adaptSessionHud(
       events.push(Object.freeze({ tick: source.tick, ordinal, ...event }) as Tf2HudEvent)
       ordinal += 1
     }
-    for (const event of source.events) mapGameplayEvent(event, source, finalPlayer(current).weapons, push)
-
     const priorPlayer = rolling?.player.kind === "available" ? rolling.player.value : null
     const currentPlayer = finalPlayer(current)
+    // Each native batch owns its complete weapon roster. Publish replacements
+    // before its events, including intermediate classes absent from the final frame.
+    if (!priorPlayer || priorPlayer.weapons.length !== currentPlayer.weapons.length
+      || currentPlayer.weapons.some(weapon => !priorPlayer.weapons.some(prior => prior.identity === weapon.identity
+        && sameNumber(prior.itemDefinition, weapon.itemDefinition)))) {
+      push({ kind: "loadout", weapons: currentPlayer.weapons })
+    }
+    for (const event of source.events) mapGameplayEvent(event, source, currentPlayer.weapons, push)
+
     if (priorPlayer) {
       const priorHealth = priorPlayer.health.kind === "available" ? priorPlayer.health.value : null
       const currentHealth = currentPlayer.health.kind === "available" ? currentPlayer.health.value : null
