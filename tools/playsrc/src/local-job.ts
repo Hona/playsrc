@@ -208,7 +208,7 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
       env.PLAYSRC_PROFILE_LOCK_DELEGATION=JSON.stringify({...consoleLock,pid:process.pid,startedAt})
       const quote=(value:string)=>`'${value.replaceAll("'","''")}'`
       const log=path.join(run,"command.log")
-      const script=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { . ${quote(path.join(checkout,"tools/playsrc/windows-job-console.ps1"))} -Receipt ${quote(path.join(run,"console-owner.json"))}; & ${command.map(quote).join(" ")} *> ${quote(log)}; exit $LASTEXITCODE } catch { $_ | Out-String | Out-File -LiteralPath ${quote(log)} -Append; exit 1 }`
+      const script=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { . ${quote(path.join(checkout,"tools/playsrc/windows-job-console.ps1"))} -Receipt ${quote(path.join(run,"console-owner.json"))}; $LASTEXITCODE=1; $ErrorActionPreference='Continue'; & ${command.map(quote).join(" ")} 2>&1 | ForEach-Object { if($_ -is [System.Management.Automation.ErrorRecord]){$_.Exception.Message}else{$_} } | Out-File -LiteralPath ${quote(log)} -Encoding utf8 -Width 32768 -ErrorAction Stop; exit $LASTEXITCODE } catch { $_ | Out-String | Out-File -LiteralPath ${quote(log)} -Append; exit 1 }`
       // Start-Process explicitly creates a NEW console scope. A normal spawn
       // would inherit the launcher's windowless console instead. No focus API
       // is used; the scope is created only after this parent owns the lock.
