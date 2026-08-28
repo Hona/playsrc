@@ -8,8 +8,10 @@ function fixture() {
   const counters: any[] = []
   const queries = new ParticleVisibilityQueries(() => {
     const counter = { pending: false, bufferBytes: 208, prepare: async () => {}, dispose: () => {},
-      issue: (_encoder: unknown, _depth: unknown, vertices: Float32Array, format: string, color: unknown) => {
-        expect(counter.pending).toBe(false); expect(vertices.length).toBe(20); expect(format).toBe("rgba8unorm"); expect(color).toBeTruthy()
+      vertices:new Float32Array(),matrices:new Float32Array(),
+      issue: (_encoder: unknown, _depth: unknown, vertices: Float32Array, matrices:Float32Array, format: string, color: unknown) => {
+        expect(counter.pending).toBe(false); expect(vertices.length).toBe(20); expect(matrices.length).toBe(32);expect(format).toBe("rgba8unorm"); expect(color).toMatchObject({loadOp:"load",storeOp:"store"})
+        counter.vertices=vertices.slice();counter.matrices=matrices.slice()
         issued++; counter.pending = true
         return async () => {
           expect(submitted).toBe(true); readCalls++
@@ -33,7 +35,7 @@ function fixture() {
     backend.finishRender({ depth: true, renderTarget: null }); queries.endPass()
   }
   const flush = () => { submitted = true; queries.flushReads() }
-  return { queries, draw, flush, releases, counters, counts: () => ({ issued, ended, readCalls }) }
+  return { queries, draw, flush, releases, counters,camera, counts: () => ({ issued, ended, readCalls }) }
 }
 
 test("sample readback starts after submission, holds pending queries, and uses exact integer counts", async () => {
@@ -46,6 +48,14 @@ test("sample readback starts after submission, holds pending queries, and uses e
   f.releases[0]!(new Uint32Array([40, 80])); await Promise.resolve(); await Promise.resolve()
   expect(f.queries.takeSamples()).toEqual([{ identity: 7n, visiblePixels: 40, possiblePixels: 80, clipFraction: 0.5 }])
   expect(f.queries.evidence()).toMatchObject({ issued: 1, readbackBytes: 8, vertexBytes: 192 })
+  f.queries.dispose()
+})
+
+test("far world proxies use the renderer matrices on GPU rather than rounded CPU clip coordinates",async()=>{
+  const f=fixture();f.camera.matrixWorldInverse.makeTranslation(-15000,4000,2000);f.camera.projectionMatrix.makeScale(2,3,4)
+  await f.queries.prepare();f.queries.stage([{visibility:{identity:11n,vertices:new Float32Array([30000,4000,2000,30001,4001,2001,30002,4002,2002,30003,4003,2003,30004,4004,2004]),clipFraction:1}}]);f.draw()
+  expect([...f.counters[0].vertices.slice(0,4)]).toEqual([30000,4000,2000,1])
+  expect([...f.counters[0].matrices]).toEqual([...f.camera.matrixWorldInverse.elements,...f.camera.projectionMatrix.elements])
   f.queries.dispose()
 })
 
