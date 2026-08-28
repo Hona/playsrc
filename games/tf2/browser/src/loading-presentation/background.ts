@@ -68,8 +68,10 @@ function mapLoading(target: Tf2TargetName): MapLoading {
   return Object.freeze({
     photoLocations,
     photo: photo ? Object.freeze({
-      material: Object.freeze({ ...photo.material, logicalPath: material, providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
-      texture: Object.freeze({ ...photo.texture, logicalPath: `materials/vgui/maps/menu_photos_${target}.vtf`, providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
+      // Keep the deployed descriptor's canonical field order. Existing clients
+      // validate these exact configured identities before generation recovery.
+      material: Object.freeze({ logicalPath: material, byteLength: photo.material.byteLength, sha256: photo.material.sha256, providerIdentity: "tf2_misc_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Misc }),
+      texture: Object.freeze({ logicalPath: `materials/vgui/maps/menu_photos_${target}.vtf`, byteLength: photo.texture.byteLength, sha256: photo.texture.sha256, providerIdentity: "tf2_textures_dir.vpk", providerRevision: TF2_CONTENT_BUILD.archiveIndexes.tf2Textures }),
     }) : null,
   })
 }
