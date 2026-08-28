@@ -18,6 +18,7 @@ import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
 import { instrumentParticleAliasSource } from "./particle-alias-route"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -89,6 +90,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
   const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
   const aliasPixels = process.env.PROFILE_MEMORY_ALIAS_PIXELS === "1"
+  const aliasCombat = process.env.PROFILE_MEMORY_ALIAS_COMBAT === "1"
+  if (aliasCombat) await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})();` })
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
   let permissionResolved = false
@@ -708,12 +711,20 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         expect(observed.load.presentationCache).toBe("hit")
       }
       const traceEvents: ChromiumTraceEvent[] = []
+      if (aliasCombat) {
+        await native()
+        await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 360 } })
+        await expect(root).toHaveAttribute("data-pointer-locked", "true")
+        await native()
+      }
       const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
       pageCdp.on("Tracing.dataCollected", collectTrace)
       await pageCdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
       const frameSample = page.evaluate(async (minimumMilliseconds) => {
         const root = document.querySelector<HTMLElement>("main")!
         const first = Number(root.dataset.snapshotTick)
+        const profiler = (globalThis as any).__playsrcFrameProfiler
+        if (profiler) profiler.active = true
         const start = performance.now()
         let count = 0
         let previous = start
@@ -729,7 +740,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           requestAnimationFrame(frame)
         })
         const ordered = gaps.toSorted((left, right) => left - right)
+        if (profiler) profiler.active = false
         return {
+          ...(profiler ? { actualFrames: profiler.completedFrames, gpuTimestamps: profiler.gpuTimestamps, counters: profiler.counters, losses: profiler.losses } : {}),
           milliseconds: performance.now() - start,
           count,
           firstTick: first,
@@ -741,6 +754,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         }
       }, sampleWindows[index]! * 1_000)
       const input: Record<string, unknown>[] = []
+      if (aliasCombat) await page.mouse.down({ button: "left" })
       if (process.env.PROFILE_MEMORY_INPUT === "1") {
         await page.locator("canvas.world-canvas").focus()
         for (let trial = 0; trial < 3; trial++) {
@@ -761,7 +775,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           } finally { await page.keyboard.up("w") }
         }
       }
-      const frames = await frameSample
+       const frames = await frameSample.finally(async () => { if (aliasCombat) await page.mouse.up({ button: "left" }) })
+       if (aliasCombat) {
+         expect(frames.actualFrames?.some((frame: any) => frame.detail.particleItems > 0)).toBe(true)
+         expect(frames.gpuTimestamps?.length).toBeGreaterThan(0)
+         expect(frames.losses).toEqual([])
+         await native()
+       }
       const traced = new Promise<void>((resolve) => pageCdp.once("Tracing.tracingComplete", () => resolve()))
       await pageCdp.send("Tracing.end")
       await traced
