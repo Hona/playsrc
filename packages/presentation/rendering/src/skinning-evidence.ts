@@ -20,7 +20,7 @@ export function unpackGpuRgbaRows(data: Uint8Array | Float32Array, width: number
 
 // Explicitly installed only by the headed acceptance harness. The normal
 // application never imports this module or allocates these diagnostic targets.
-export function installSkinningEvidence() {
+export function installSkinningEvidence(referenceRender?: (draw: () => void) => void) {
   const prototype = THREE.WebGPURenderer.prototype
   const render = prototype.render
   const instrument = RendererFrameInstrumentation.prototype.pass
@@ -99,6 +99,20 @@ export function installSkinningEvidence() {
         scene.overrideMaterial = plane === "color" ? previous.override : plane === "normal" ? normal : depth
         scene.background = plane === "color" ? previous.background : null
         const pair: Promise<Uint8Array | Float32Array>[] = []
+        const drawOrders: number[][][] = []
+        const drawPair = () => {
+          if (!referenceRender) return render.call(renderer, scene, camera)
+          const backend = renderer.backend as any, original = backend.draw
+          const order: number[][] = []
+          backend.draw = function (draw: any, ...args: any[]) {
+            const geometry = draw.geometry
+            order.push([draw.object.id, draw.material.id, geometry.id, geometry.drawRange.start, geometry.drawRange.count,
+              geometry.index?.version ?? -1, geometry.index?.count ?? 0, geometry.attributes.position?.version ?? -1, geometry.attributes.position?.count ?? 0])
+            return original.call(this, draw, ...args)
+          }
+          try { return render.call(renderer, scene, camera) }
+          finally { backend.draw = original; drawOrders.push(order) }
+        }
         for (const reference of [false, true]) {
           const key = `${plane}:${size.x}:${size.y}`
           let target = targets.get(key)
@@ -113,11 +127,11 @@ export function installSkinningEvidence() {
           configure(target)
           renderer.setRenderTarget(target)
           renderer.setViewport(0, 0, size.x, size.y)
-          if (reference) withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, () => render.call(renderer, scene, camera))
-          else render.call(renderer, scene, camera)
+          if (reference) (referenceRender ?? (draw => withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, draw)))(drawPair)
+          else drawPair()
           pair.push(read(target))
           if (reference && plane === "color") {
-            withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, () => render.call(renderer, scene, camera))
+            ;(referenceRender ?? (draw => withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, draw)))(drawPair)
             pair.push(read(target))
           }
         }
@@ -154,7 +168,8 @@ export function installSkinningEvidence() {
           }
           const digest = async (values: Uint8Array | Float32Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", values as BufferSource)), byte => byte.toString(16).padStart(2, "0")).join("")
           const [sha256, referenceSha256] = await Promise.all([digest(optimized), digest(reference)])
-          return { plane, values: optimized.length, mismatches, maximumAbsolute, actorPixels, referenceMismatches, minimumValue, maximumValue, channels, sha256, referenceSha256 }
+          return { plane, values: optimized.length, mismatches, maximumAbsolute, actorPixels, referenceMismatches, minimumValue, maximumValue, channels, sha256, referenceSha256,
+            ...(referenceRender ? { drawOrders, identicalDrawOrder: drawOrders.slice(1).every(order => JSON.stringify(order) === JSON.stringify(drawOrders[0])) } : {}) }
         }))
       }
     } catch (error) {
@@ -195,6 +210,8 @@ export function installSkinningEvidence() {
       requested = undefined
       for (const target of targets.values()) target.dispose()
       targets.clear()
+      targetOwner = undefined
+      targetSize = ""
       normal.dispose()
       depth.dispose()
     },

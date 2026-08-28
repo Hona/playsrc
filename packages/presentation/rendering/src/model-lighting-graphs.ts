@@ -6,21 +6,37 @@ const reference = (path: string, type: string) => TSL.reference(`userData.${path
 
 const LIGHT_FIELDS = ["enabled", "kind", "color", "position", "direction", "attenuation", "falloff", "theta", "phi"] as const
 
-class DrawLightingEvent extends THREE.EventNode {
-  override build(builder: THREE.NodeBuilder): any {
-    // Node.before forwards its consumer's output type. An update-only event
-    // has no shader value, irrespective of that consumer's scalar/vector type.
-    return super.build(builder, "void")
-  }
-}
-
 /** All lighting members belong to the same drawn occurrence. Resolve that
  * owner once per draw, not once per scalar/vector. This is NOT a value cache:
  * every draw reads the current binding, including consecutive draws of the
  * same object within a pass. Three still compares/uploads each used uniform.
  * Each member declares the event dependency, so even a partial graph updates. */
-function drawLighting(): SourceModelLightingUniforms {
-  const event = new DrawLightingEvent("object", ({ object }: { object: THREE.Mesh }) => {
+class DrawLightingNode extends THREE.Node {
+  declare readonly lighting: SourceModelLightingUniforms
+
+  constructor() {
+    super("void")
+    this.updateType = "object"
+    const member = (type: string) => TSL.uniform(null, type).before(this)
+    // These uniforms depend on this update owner, not vice versa. Keep the
+    // ownership field out of Three's enumerable shader-child traversal.
+    Object.defineProperty(this, "lighting", { value: Object.freeze({
+      ambientEnabled: member("float"), cameraPosition: member("vec3"),
+      ambient: Object.freeze(Array.from({ length: 6 }, () => member("vec3"))),
+      local: Object.freeze(Array.from({ length: 4 }, () => Object.freeze(Object.fromEntries(LIGHT_FIELDS.map(name =>
+        [name, member(["color", "position", "direction", "attenuation"].includes(name) ? "vec3" : "float")],
+      ))))),
+    }) })
+  }
+
+  override build(builder: THREE.NodeBuilder): any {
+    // Node.before forwards its consumer's output type. This dependency has no
+    // shader value, irrespective of that consumer's scalar/vector type.
+    return super.build(builder, "void")
+  }
+
+  override update({ object }: { object: THREE.Mesh }): void {
+    const lighting = this.lighting
     const source = object.userData.sourceLighting as SourceModelLightingUniforms
     lighting.ambientEnabled.value = source.ambientEnabled.value
     lighting.cameraPosition.value = source.cameraPosition.value
@@ -29,16 +45,7 @@ function drawLighting(): SourceModelLightingUniforms {
       const target = lighting.local[index]!, light = source.local[index]!
       for (const name of LIGHT_FIELDS) target[name].value = light[name].value
     }
-  })
-  const member = (type: string) => TSL.uniform(null, type).before(event)
-  const lighting: SourceModelLightingUniforms = Object.freeze({
-    ambientEnabled: member("float"), cameraPosition: member("vec3"),
-    ambient: Object.freeze(Array.from({ length: 6 }, () => member("vec3"))) as SourceModelLightingUniforms["ambient"],
-    local: Object.freeze(Array.from({ length: 4 }, () => Object.freeze(Object.fromEntries(LIGHT_FIELDS.map(name =>
-      [name, member(["color", "position", "direction", "attenuation"].includes(name) ? "vec3" : "float")],
-    ))))) as unknown as SourceModelLightingUniforms["local"],
-  })
-  return lighting
+  }
 }
 
 /** One immutable graph family per scene/exposure/fog domain. Values are read
@@ -50,7 +57,7 @@ export class ModelLightingGraphs {
   // Static VHV/unlit primitives share their material graph. Distance/screen
   // fade remains an occurrence binding, just like dynamic model lighting.
   readonly staticFade = reference("sourceStaticFade", "float")
-  readonly lighting = drawLighting()
+  readonly lighting = new DrawLightingNode().lighting
   readonly eyes = Object.freeze(Object.fromEntries(
     ["irisU", "irisV", "glintU", "glintV", "origin"].map(name =>
       [name, reference(`sourceEye.${name}`, name === "origin" ? "vec3" : "vec4")]),

@@ -42,7 +42,7 @@ test("one draw dependency replaces member dispatch without changing full or part
     const baseline = build(old, partial), candidate = build(graphs.lighting, partial)
     expect(candidate.vertexShader).toBe(baseline.vertexShader)
     expect(candidate.fragmentShader).toBe(baseline.fragmentShader)
-    const events = candidate.updateNodes.filter((node: any) => node instanceof THREE.EventNode)
+    const events = candidate.updateNodes.filter((node: any) => node === (graphs.lighting.ambientEnabled as any)._beforeNodes[0])
     expect(events).toHaveLength(1)
     const lightingReferences = (builder: any) => builder.updateNodes.filter((node: any) => node.property?.startsWith("userData.sourceLighting."))
     expect(lightingReferences(candidate)).toHaveLength(0)

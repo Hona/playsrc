@@ -26,6 +26,19 @@ export function requireMacPageAdmission(record: MacPageAdmission): void {
   if (record.document && record.document.visibility !== "visible") throw new Error("Measured page is not the visible document in its native window")
 }
 
+/** Browser pointer-lock notices are genuine occluders. Await their dismissal
+ * before sampling, never whitelist them or erase a rejected native record. */
+export async function awaitMacBrowserOverlay(read: () => Promise<MacPageAdmission>, retain: MacPageAdmission[], maximumMilliseconds = 5_000): Promise<void> {
+  const deadline = Date.now() + maximumMilliseconds
+  for (;;) {
+    const record = await read()
+    retain.push(record)
+    if (record.error || !record.occluders?.length || record.occluders.some(window => window.pid !== record.page?.browserPid)
+      || Date.now() >= deadline) { requireMacPageAdmission(record); return }
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))))
+  }
+}
+
 /** Read-only native admission for one measured Page. Keep the established join
  * across navigation and resize; errors retain all facts for rejected evidence. */
 export async function macPageAdmission(page: Page, cacheDir: string) {
