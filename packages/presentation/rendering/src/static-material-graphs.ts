@@ -15,6 +15,7 @@ function fragmentKey(state?: MaterialStateInput) {
 export class StaticMaterialGraphs {
   readonly #templates = new Map<string, any>()
   readonly #static = new Map<string, any>()
+  get size() { return this.#static.size }
   constructor(readonly waterFog: SourceWaterFogUniforms, readonly exposure: any, readonly staticFade: any) {}
 
   template(base: any, state?: MaterialStateInput) {
