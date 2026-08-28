@@ -5768,6 +5768,9 @@ class RendererOwner implements Renderer {
             updateSourceModelEyeUniforms(eyeUniforms, eye)
             bindModelLighting(mesh, uniforms, eyeUniforms)
           }
+          // This draw now belongs to the dynamic model graph family, not the
+          // immutable template/VHV preparation family it was cloned from.
+          StaticMaterialGraphs.releasePreparationIdentity(material)
           material.colorNode = modelMaterialGraph(mesh, resources.graphs, { shader: authored.shader, state: state as typeof state & { halfLambert: boolean },
             fragment: resources.states.get(identity), base, baseTexture: baseTexture && { texture: baseTexture.texture, sourceFormat: baseTexture.input.sourceFormat },
             textures, environment, exposure: resources.exposure, waterFog: resources.waterFog }, () => this.#instrumentation?.dynamicModel("graphCreated"))
