@@ -3239,8 +3239,8 @@ fn main() -> Result<(), String> {
     if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"tf_logic_koth")
         || value.eq_ignore_ascii_case(b"team_round_timer") && entity.pairs.iter().rev().any(|pair| pair.key.eq_ignore_ascii_case(b"show_in_hud") && pair.value == b"1"))) {
         for (script, targets) in [
-            ("scripts/game_sounds_vo.txt", ["Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds", "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds", "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds"].as_slice()),
-            ("scripts/game_sounds.txt", ["Game.Overtime", "Game.YourTeamWon", "Game.YourTeamLost"].as_slice()),
+            ("scripts/game_sounds_vo.txt", playsrc_tf2::audio::TIMER_VOICE_SOUNDS),
+            ("scripts/game_sounds.txt", playsrc_tf2::audio::TIMER_GENERAL_SOUNDS),
         ] { round_scripts.push((script, targets.to_vec())); }
     }
     if control_points {
