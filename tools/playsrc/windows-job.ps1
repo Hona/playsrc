@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Grep = '',
+  [switch]$FreshBrowser,
   [string]$Target,
   [ValidateSet('wasm','producer','resources')][string]$Stage,
   [string]$Task,
@@ -117,7 +118,7 @@ $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
-$arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile)" + $(if ($Grep) { " --grep $(Quote $Grep)" } else { '' }) }
+$arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile)" + $(if ($Grep) { " --grep $(Quote $Grep)" } else { '' }) + $(if ($FreshBrowser) { ' --fresh-browser' } else { '' }) }
 $command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
