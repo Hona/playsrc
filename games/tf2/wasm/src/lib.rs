@@ -11981,7 +11981,7 @@ fn encode_model_occurrence_matrices(
             source_vector(entity_vector(entity, b"angles")?),
         )
         .map_err(|_| ())?;
-        out.extend_from_slice(&entity.index.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(entity.index).map_err(|_| ())?.to_le_bytes());
         pbytes(out, identity.as_bytes())?;
         let integer = |key: &[u8]| -> Result<i32, ()> {
             entity_scalar(entity, key)
@@ -15703,6 +15703,26 @@ mod tests {
             },
             0
         );
+    }
+
+    #[test]
+    fn model_occurrence_entity_wire_index_is_u32_on_native_and_wasm() {
+        let mut graph = playsrc_entity::parse(b"{\"classname\"\"prop_dynamic\"\"model\"\"models/a.mdl\"\"origin\"\"0 0 0\"\"angles\"\"0 0 0\"}\0", playsrc_entity::Limits::default()).unwrap();
+        let lighting = || CompiledModelOccurrenceLighting {
+            lighting: playsrc_map::ModelWorldLighting { origin: [0.0; 3], leaf: 0, ambient_cube: [[0.0; 3]; 6], local_lights: std::sync::Arc::from([]) },
+            eyes: Vec::new(),
+        };
+        let mut output = Vec::new();
+        encode_model_occurrence_matrices(&mut output, &graph, &BTreeMap::from([(0, lighting())]), &[], &[]).unwrap();
+        assert_eq!(&output[..4], b"PMTX");
+        assert_eq!(u32::from_le_bytes(output[8..12].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(output[12..16].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(output[16..20].try_into().unwrap()), 12);
+        assert_eq!(&output[20..32], b"models/a.mdl");
+        if usize::BITS > 32 {
+            graph.entities[0].index = usize::MAX;
+            assert!(encode_model_occurrence_matrices(&mut Vec::new(), &graph, &BTreeMap::from([(usize::MAX, lighting())]), &[], &[]).is_err());
+        }
     }
 
     #[test]
