@@ -38,11 +38,16 @@ import { loadCommandWorkload, compareWorkloadJournal } from "./command-workload"
 import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } from "./workload-state"
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
+import { selectionLoadingControl } from "./selection-loading-control"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
+let retainLoadingControl: (() => Promise<void>) | undefined
 test.afterEach(async () => {
-  try { await retainIncomplete?.() } finally { retainIncomplete = undefined; await closeNativeAdmission?.(); closeNativeAdmission = undefined }
+  try { await retainIncomplete?.() } finally {
+    retainIncomplete = undefined
+    try { await retainLoadingControl?.() } finally { retainLoadingControl = undefined; await closeNativeAdmission?.(); closeNativeAdmission = undefined }
+  }
 })
 
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
@@ -76,6 +81,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY ?? path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", crypto.randomUUID())
   const evidenceDirectory = path.join(sourceCacheDir, "profiles", createServer ? "2fort-startup" : "upward-training-bots", "compositor-evidence")
   await mkdir(directory, { recursive: true })
+  const loadingSession = await context.newCDPSession(page)
+  const loadingControl = await selectionLoadingControl(loadingSession)
+  retainLoadingControl = async () => {
+    await writeFile(path.join(directory, "delivery-loading-control.json"), JSON.stringify(loadingControl.stop()))
+    await loadingSession.detach()
+  }
   const nativeAdmission: MacPageAdmission[] = []
   const nativeRecords = () => windowsReader?.records ?? nativeAdmission
   const checkNativeWindow = async (desktopScreenshot?: string) => {
@@ -407,6 +418,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const finalLoad = loads.at(-1)!
   const { readyMilliseconds, playerCount, launch } = finalLoad
   profilePhases.enter("pre-sample")
+  loadingControl.boundary("pre-sample")
   const expectedBots = playerCount - 1
 
   const combatCommand = async (value: string): Promise<void> => {
@@ -472,6 +484,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await diagnosticWorkers?.start()
     }
     await page.keyboard.down("w")
+    loadingControl.boundary("active-start-request")
     let monitoring = true, nativeFailure: unknown
     const monitor = (async () => { while (monitoring) { await new Promise(resolve => setTimeout(resolve, 500)); if (monitoring) try { await checkNativeWindow() } catch (error) { nativeFailure = error; break } } })()
     let sample: any
@@ -487,6 +500,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         return { ...owner.stop(ended), startedEpoch, endedEpoch: performance.timeOrigin + ended }
       }, { seconds, presented: Boolean(presentationCdp), startMark: TRACE_START, endMark: TRACE_END })
     } finally { monitoring = false; await page.keyboard.up("w"); await monitor }
+    loadingControl.boundary("active-end-readback")
     await checkNativeWindow()
     await writeFile(path.join(directory, "delivery-after.png"), await canvas.screenshot())
     await writeFile(path.join(directory, "delivery.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint,
