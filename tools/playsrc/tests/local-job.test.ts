@@ -3,6 +3,12 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { localJobCommand, localJobEnvironment, prepareLocalJob, runLocalJob, validateRevision } from "../src/local-job"
+import { resolveCargoExecutable } from "../src/tf2-wasm-build"
+
+test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", async () => {
+  expect(await resolveCargoExecutable(process.execPath, {})).toBe(process.execPath)
+  await expect(resolveCargoExecutable(path.join(path.dirname(process.execPath), "missing-pinned-cargo.exe"), process.env)).rejects.toThrow("pinned Cargo")
+})
 
 test("local jobs accept an explicit origin revision, never shell fragments or ambiguous branches", () => {
   for (const ref of ["refs/heads/work/fix", "refs/tags/v0.0.10", "a".repeat(40)]) expect(() => validateRevision(ref, "b".repeat(40))).not.toThrow()
