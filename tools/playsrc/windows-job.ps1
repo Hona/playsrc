@@ -82,7 +82,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if ($report) {
         $profileDirectory = Split-Path $report.Matches[0].Groups[1].Value
         if (![IO.Path]::GetFullPath($profileDirectory).StartsWith([IO.Path]::GetFullPath($config.sourceCacheDir), [StringComparison]::OrdinalIgnoreCase)) { throw 'Profiler report is outside the configured cache' }
-        foreach ($artifact in Get-ChildItem -LiteralPath $profileDirectory -File | Where-Object { $_.Extension -in '.json','.png','.cpuprofile' -and $_.Length -le 16MB } | Sort-Object @{Expression={if ($_.Extension -eq '.png') {1} else {0}}},Name | Select-Object -First 64) {
+        foreach ($artifact in Get-ChildItem -LiteralPath $profileDirectory -File | Where-Object { ($_.Extension -in '.json','.png','.cpuprofile' -or $_.Name -match '^[a-f0-9]{64}\.(trace|probes)\.json\.gz$') -and $_.Length -le 16MB } | Sort-Object @{Expression={if ($_.Extension -eq '.png') {1} else {0}}},Name | Select-Object -First 64) {
           $files += @{name="profile/$($artifact.Name)";path=$artifact.FullName}
         }
         if ($IncludeTrace) {

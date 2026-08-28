@@ -46,8 +46,9 @@ test.afterEach(async () => {
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
   const applicationRoot = process.cwd()
-  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "traced" | undefined
-  if (deliveryMode && !["ordinary", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
+  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "traced" | undefined
+  if (deliveryMode && !["ordinary", "presentation", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
+  const passiveDelivery = deliveryMode === "ordinary" || deliveryMode === "presentation"
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
@@ -99,9 +100,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   if (deliveryMode) expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
-  if (deliveryMode !== "ordinary") await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  if (!passiveDelivery) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
-  if (deliveryMode !== "ordinary") await page.addInitScript(captureClientFrames => {
+  if (!passiveDelivery) await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
     ;(globalThis as any).__playsrcProfile = { captureClientFrames }
   }, authorWorkload)
@@ -439,25 +440,68 @@ test("profile authored headed Upward offline-practice default roster and actual 
       browserVersion: context.browser()!.version(), configuration, capturePlan, boundary }, null, 2))
     await writeFile(path.join(directory, "delivery-before.png"), before)
   }
-  if (deliveryMode === "ordinary") {
+  if (passiveDelivery) {
     expect(await page.evaluate(() => Boolean((globalThis as any).__playsrcProfile || (globalThis as any).__playsrcFrameProfiler))).toBe(false)
+    const presentationCdp = deliveryMode === "presentation" ? await context.browser()!.newBrowserCDPSession() : undefined
+    const presentationCategories = ["disabled-by-default-display.framedisplayed", "blink.user_timing"]
+    const processBefore = await presentationCdp?.send("SystemInfo.getProcessInfo")
+    const processBoundaryStarted = performance.now()
+    const memoryBefore = processBefore ? await captureProcessMemory(processBefore.processInfo) : undefined
+    if (presentationCdp) {
+      const available = (await presentationCdp.send("Tracing.getCategories")).categories
+      expect(presentationCategories.every(category => available.includes(category))).toBe(true)
+      await presentationCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+        traceConfig: { recordMode: "recordUntilFull", includedCategories: presentationCategories, traceBufferSizeInKb: 8192 } })
+    }
     await page.keyboard.down("w")
     let monitoring = true, nativeFailure: unknown
     const monitor = (async () => { while (monitoring) { await new Promise(resolve => setTimeout(resolve, 500)); if (monitoring) try { await checkNativeWindow() } catch (error) { nativeFailure = error; break } } })()
     let sample: any
     try {
-      sample = await page.evaluate(async seconds => {
+      sample = await page.evaluate(async ({ seconds, presented, startMark, endMark }) => {
         const owner = (globalThis as any).__playsrcDeliveryObserver
-        owner.start()
+        const started = performance.now()
+        owner.start(started)
+        if (presented) performance.mark(startMark, { startTime: started })
         await new Promise(resolve => setTimeout(resolve, seconds * 1000))
-        return owner.stop()
-      }, seconds)
+        const ended = performance.now()
+        if (presented) performance.mark(endMark, { startTime: ended })
+        return owner.stop(ended)
+      }, { seconds, presented: Boolean(presentationCdp), startMark: TRACE_START, endMark: TRACE_END })
     } finally { monitoring = false; await page.keyboard.up("w"); await monitor }
     await checkNativeWindow()
     await writeFile(path.join(directory, "delivery-after.png"), await canvas.screenshot())
     await writeFile(path.join(directory, "delivery.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint,
       sample, completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)),
       raf: deliveryTimeline(sample.started, sample.ended, sample.raf), nativeAdmission: nativeRecords(), nativeFailure: nativeFailure ? String(nativeFailure) : null }, null, 2))
+    if (presentationCdp) {
+      const processAfter = await presentationCdp.send("SystemInfo.getProcessInfo")
+      const processBoundaryEnded = performance.now()
+      const memoryAfter = await captureProcessMemory(processAfter.processInfo)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const complete = new Promise<{ stream?: string; dataLossOccurred?: boolean }>((resolve, reject) => {
+        presentationCdp.once("Tracing.tracingComplete", resolve)
+        timer = setTimeout(() => reject(new Error("Presentation trace completion exceeded 15 seconds")), 15_000)
+      })
+      let completion
+      try { await presentationCdp.send("Tracing.end"); completion = await complete }
+      finally { clearTimeout(timer) }
+      expect(completion.stream).toBeTruthy()
+      const raw = await drainTraceStream(presentationCdp, completion.stream!)
+      const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(completion.dataLossOccurred),
+        categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint,
+          mode: deliveryMode, nativeAdmission: nativeRecords(), applicationGeneration: (await (await page.request.get("/playsrc-config.json")).json()),
+          instrumentation: "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
+        probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.missedPublications } })
+      const compositor = summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined)
+      await writeFile(path.join(directory, "delivery-presentation.json"), JSON.stringify({ evidence: evidence.artifact, complete: evidence.manifest.complete, compositor,
+        nativeDelivery: evidence.analysis, processes: { before: processBefore, after: processAfter, started: processBoundaryStarted, ended: processBoundaryEnded,
+          scope: "Unprorated process CPU counters bracket sampling and boundary readback; not active-only CPU or GPU device time" },
+        memory: { before: memoryBefore, after: memoryAfter, scope: "Boundary process residency/commit, not active peaks or deduplicated physical RAM" } }, null, 2))
+      expect(evidence.manifest.complete).toBe(true)
+      expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
+      await presentationCdp.detach()
+    }
     expect(nativeFailure).toBeUndefined()
     expect(sample.lifecycle).toEqual([])
     expect(sample.missedPublications).toBe(0)
