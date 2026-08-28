@@ -60,6 +60,8 @@ type WasmExports = Readonly<{
   playsrc_reply_output_capacity(handle: number, kind: number): number
   playsrc_reply_output_take(handle: number, kind: number): number
   playsrc_reply_output_recycle(handle: number, kind: number, pointer: number, capacity: number): void
+  playsrc_acoustic_update(handle: number, pointer: number, length: number): number
+  playsrc_acoustic_output_length(handle: number): number
   playsrc_visibility_query(handle: number, pointer: number): number
   playsrc_visibility_output_length(handle: number): number
   playsrc_spawn_copy(handle: number, pointer: number, capacity: number): number
@@ -1090,11 +1092,37 @@ function reclaimModelOutputs(): void {
     wasm!.playsrc_model_output_recycle(retained.handle, retained.pointer, retained.capacity)
   })
 }
+function acousticOutput(exports: WasmExports, handle: number, batch: ArrayBuffer): ReplyRange & { release: () => void } {
+  const pointer = exports.playsrc_alloc(batch.byteLength) >>> 0
+  try {
+    new Uint8Array(exports.memory.buffer, pointer, batch.byteLength).set(new Uint8Array(batch))
+    if (exports.playsrc_acoustic_update(handle, pointer, batch.byteLength) !== 1) throw new Error("Acoustic scene transaction failed")
+    const length = exports.playsrc_acoustic_output_length(handle)
+    if (length < 60 || length > 2048) throw new Error("Acoustic scene output exceeds bound")
+    return takeReply(exports, handle, 6, length)
+  } finally { exports.playsrc_free(pointer, batch.byteLength) }
+}
+
+function acoustics(request: Extract<WorkerRequest, { kind: "acoustics" }>): void {
+  const started = performance.now()
+  const value = requireActive(request.id, request.generation)
+  if (!value) return
+  if (!(request.batch instanceof ArrayBuffer) || request.batch.byteLength > 4096) { fail(request.id, "MalformedRequest"); return }
+  const output = acousticOutput(value.exports, value.handle, request.batch)
+  try {
+    postShared({ id: request.id, kind: "acoustics", generation: request.generation, ranges: [output], timings: {
+      queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds: 0, transactMilliseconds: performance.now() - started,
+      outputCopyMilliseconds: 0, totalMilliseconds: performance.now() - started,
+    } }, output.release)
+  } catch (error) { output.release(); throw error }
+}
+
 function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): void {
   const started = performance.now()
   const value = requireActive(request.id, request.generation)
   if (!value) return
-  if (!Array.isArray(request.views) || request.views.length < 1 || request.views.length > 2 || request.views.some(view => {
+  if (request.acoustic !== undefined && (!(request.acoustic instanceof ArrayBuffer) || request.acoustic.byteLength > 4096)
+    || !Array.isArray(request.views) || request.views.length < 1 || request.views.length > 2 || request.views.some(view => {
     const visibilityPosition = view.visibilityPosition ?? view.position
     return view.position.length !== 3 || !view.position.every(Number.isFinite) || visibilityPosition.length !== 3 || !visibilityPosition.every(Number.isFinite)
       || ![view.yawDegrees, view.pitchDegrees, view.verticalFovDegrees, view.aspectRatio, view.near, view.far, view.presentationTimeSeconds, view.areaFilter ?? -1].every(Number.isFinite)
@@ -1132,8 +1160,13 @@ function visibility(request: Extract<WorkerRequest, { kind: "visibility" }>): vo
       outputs.push(takeReply(value.exports, value.handle, 4, length))
       outputCopyMilliseconds += performance.now() - outputCopyStarted
     }
-    // Both views publish once, with one release/acquire edge and request identity.
-    postShared({ id: request.id, kind: "visibility", generation: request.generation, ranges: outputs, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, () => { for (const output of outputs) output.release() })
+    if (request.acoustic) {
+      const acousticStarted = performance.now()
+      outputs.push(acousticOutput(value.exports, value.handle, request.acoustic))
+      transactMilliseconds += performance.now() - acousticStarted
+    }
+    // Views and optional audio geometry share one release/acquire edge.
+    postShared({ id: request.id, kind: "visibility", generation: request.generation, ranges: outputs, acoustic: request.acoustic !== undefined, timings: { queueMilliseconds: queueMilliseconds(request, started), inputCopyMilliseconds, transactMilliseconds, outputCopyMilliseconds, totalMilliseconds: performance.now() - started } }, () => { for (const output of outputs) output.release() })
     published = true
   } finally {
     value.exports.playsrc_free(pointer, 56)
@@ -1216,6 +1249,7 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
             generation: request.generation,
             queuedAt: companion.queuedAt,
             views: companion.views,
+            ...(companion.acoustic ? { acoustic: companion.acoustic } : {}),
           })
         } catch {
           fail(companion.id, "InternalFailure", 904)
@@ -1225,6 +1259,8 @@ function dispatch(request: WorkerRequest): void | Promise<void> {
     }
     case "visibility":
       return visibility(request)
+    case "acoustics":
+      return acoustics(request)
     case "shutdown":
       return shutdown(request)
     default:
@@ -1240,7 +1276,7 @@ function unexpected(request: WorkerRequest, error: unknown): void {
   fail(
     request.id,
     "InternalFailure",
-    ({ observe: 901, particles: 902, models: 903, visibility: 904 } as Record<string, number>)[request.kind] ?? 999,
+    ({ observe: 901, particles: 902, models: 903, visibility: 904, acoustics: 905 } as Record<string, number>)[request.kind] ?? 999,
     error instanceof Error ? `${error.name}:${error.message}` : String(error),
   )
 }

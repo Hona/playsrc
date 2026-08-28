@@ -90,6 +90,26 @@ test("model decoder ownership survives ring acknowledgement and replay tick stay
   f.reader.close(); await run
 })
 
+test("main, sky and acoustic geometry share one immutable publication without overwriting metadata", async () => {
+  const f = fixture()
+  new Uint8Array(f.shared.memory.buffer, 64, 3).set([5, 6, 7])
+  new Uint8Array(f.shared.memory.buffer, 80, 4).set([0x50, 0x53, 0x41, 0x52])
+  f.writer.shared({ ...f.reply(1, "visibility"), acoustic: true,
+    ranges: [{ pointer: 16, length: 4 }, { pointer: 64, length: 3 }, { pointer: 80, length: 4 }] }, () => f.released.push(1))
+  const run = f.reader.run()
+  const reply = await f.next() as Extract<WorkerResponse, { kind: "visibility" }>
+  expect(reply.outputs.map(bytes => [...new Uint8Array(bytes)])).toEqual([[1, 2, 3, 4], [5, 6, 7]])
+  expect([...new Uint8Array(reply.acoustic!)]).toEqual([0x50, 0x53, 0x41, 0x52])
+  expect(reply.timings).toMatchObject(timings)
+  f.writer.reclaim(); expect(f.released).toEqual([1])
+  f.writer.shared(f.reply(2, "acoustics", 80), () => f.released.push(2))
+  const audio = await f.next() as Extract<WorkerResponse, { kind: "acoustics" }>
+  expect([...new Uint8Array(audio.output)]).toEqual([2, 2, 3, 4])
+  expect([...new Uint8Array(reply.acoustic!)]).toEqual([0x50, 0x53, 0x41, 0x52])
+  f.writer.reclaim(); expect(f.released).toEqual([1, 2])
+  f.reader.close(); await run
+})
+
 test("legacy particle and visual ranges publish and release atomically with exact byte gauges", async () => {
   const f = fixture()
   const reply = f.reply(1)

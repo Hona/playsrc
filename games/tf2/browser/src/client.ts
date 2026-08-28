@@ -26,7 +26,7 @@ type QueuedModels = {
   id: number
   generation: number
   batch: ArrayBuffer
-  visibility?: { id: number; queuedAt: number; views: readonly VisibilityView[] }
+  visibility?: { id: number; queuedAt: number; views: readonly VisibilityView[]; acoustic?: ArrayBuffer }
 }
 
 export type WorkerLike = Readonly<{
@@ -270,7 +270,7 @@ export class Tf2WorkerClient {
       generation: queued.generation,
       batch: queued.batch,
       ...(queued.visibility ? { visibility: queued.visibility } : {}),
-    }, queued.id, [queued.batch])
+    }, queued.id, [queued.batch, ...(queued.visibility?.acoustic ? [queued.visibility.acoustic] : [])])
   }
 
   #request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
@@ -821,7 +821,7 @@ export class Tf2WorkerClient {
     return (await this.visibilityViews(generation, [input]))[0]!
   }
 
-  async visibilityViews(generation: number, inputs: readonly VisibilityView[]): Promise<readonly VisibilityResult[]> {
+  async visibilityViews(generation: number, inputs: readonly VisibilityView[], acoustic?: Readonly<{ input: ArrayBuffer; accept(reply: ArrayBuffer): void }>): Promise<readonly VisibilityResult[]> {
     if (inputs.length < 1 || inputs.length > 2) throw new Tf2WorkerError("BoundExceeded")
     const unique: VisibilityView[] = []
     const indexes = inputs.map(input => {
@@ -840,11 +840,11 @@ export class Tf2WorkerClient {
     const queued = this.#queuedModels
     if (queued && queued.generation === generation && !queued.visibility) {
       const companion = this.#reserve()
-      queued.visibility = { id: companion.id, queuedAt: queuedAt(), views: unique }
+      queued.visibility = { id: companion.id, queuedAt: queuedAt(), views: unique, ...(acoustic ? { acoustic: acoustic.input } : {}) }
       requested = companion.response
       this.#flushModels()
     } else {
-      requested = this.#request({ kind: "visibility", generation, views: unique })
+      requested = this.#request({ kind: "visibility", generation, views: unique, ...(acoustic ? { acoustic: acoustic.input } : {}) }, acoustic ? [acoustic.input] : [])
     }
     const response = await requested
     if (
@@ -855,7 +855,18 @@ export class Tf2WorkerClient {
     )
       throw new Tf2WorkerError("WorkerFailed")
     const results = response.outputs.map(output => this.#decodeVisibility(output))
+    if (acoustic) {
+      if (!(response.acoustic instanceof ArrayBuffer) || response.acoustic.byteLength > 2048) throw new Tf2WorkerError("WorkerFailed")
+      acoustic.accept(response.acoustic)
+    } else if (response.acoustic !== undefined) throw new Tf2WorkerError("WorkerFailed")
     return Object.freeze(indexes.map(index => results[index]!))
+  }
+
+  async acoustics(generation: number, batch: ArrayBuffer): Promise<ArrayBuffer> {
+    if (!(batch instanceof ArrayBuffer) || batch.byteLength > 4096) throw new Tf2WorkerError("BoundExceeded")
+    const response = await this.#request({ kind: "acoustics", generation, batch }, [batch])
+    if (response.kind !== "acoustics" || response.generation !== generation || !(response.output instanceof ArrayBuffer) || response.output.byteLength > 2048) throw new Tf2WorkerError("WorkerFailed")
+    return response.output
   }
 
   #decodeVisibility(output: ArrayBuffer): VisibilityResult {

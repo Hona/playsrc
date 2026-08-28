@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+playsrc-wav = { path = "../../../formats/wav/rust" }
+playsrc-mp3 = { path = "../../../formats/mp3/rust" }
 playsrc-keyvalues = { path = "../../../formats/keyvalues/rust" }
 playsrc-entity = { path = "../../../world/entity/rust" }
 playsrc-visibility = { path = "../../../world/visibility/rust" }

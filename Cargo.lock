@@ -524,7 +524,17 @@ version = "0.1.0"
 dependencies = [
  "playsrc-entity",
  "playsrc-keyvalues",
+ "playsrc-mp3",
  "playsrc-visibility",
+ "playsrc-wav",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "playsrc-audio-wasm"
+version = "0.1.0"
+dependencies = [
+ "playsrc-audio",
  "sha2 0.10.9",
 ]
 

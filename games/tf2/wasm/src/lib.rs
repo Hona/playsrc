@@ -4,6 +4,7 @@ mod gameplay_replay;
 mod memory;
 mod reply_output;
 mod soundscapes;
+mod acoustic_scene;
 mod wearable;
 mod map_particles;
 mod smokestack;
@@ -416,6 +417,10 @@ struct CollisionObjectTemplate {
     runtime_transform: bool,
 }
 
+fn static_prop_collision_identity(source: usize) -> Result<u64, ()> {
+    Ok(0x8000_0000_0000_0000 | u64::try_from(source).map_err(|_| ())?)
+}
+
 #[derive(Clone, Copy)]
 struct Spawn {
     entity: u32,
@@ -618,6 +623,8 @@ struct Slot {
     model_output: Vec<u8>,
     visibility: Option<playsrc_visibility::World>,
     soundscapes: playsrc_audio::soundscape::ZoneIndex,
+    acoustic_scene: Option<acoustic_scene::Scene>,
+    acoustic_output: Vec<u8>,
     visibility_candidates: Option<playsrc_visibility::CandidateSet>,
     area_state: Option<playsrc_visibility::AreaState>,
     visibility_output: Vec<u8>,
@@ -1242,6 +1249,9 @@ unsafe fn compile_map(
             compile_presentation(presentation_inputs).map_err(|_| 9_u32)?
         };
         memory_metrics[4] = memory::live_bytes();
+        let registry = surface_property_registry(&resources).map_err(|_| 5_u32)?;
+        let acoustic_scene = acoustic_scene::Scene::new(acoustic_scene::Materials::compile(
+            &canonical, &bsp, &map_materials, &resources, &registry).map_err(|_| 5_u32)?);
         drop(bsp);
         memory_metrics[10] = memory::live_bytes();
         compile_metrics[11..17].copy_from_slice(&presentation_metrics);
@@ -1391,7 +1401,6 @@ unsafe fn compile_map(
             &BTreeMap::new(),
         )
         .map_err(|_| 5_u32)?;
-        let registry = surface_property_registry(&resources).map_err(|_| 5_u32)?;
         let mut impact_surfaces = BTreeMap::<i16, Vec<(u32, u8, [f32; 4])>>::new();
         for surface in &runtime.map.surfaces {
             let Some(material) = map_materials.get(surface.material) else {
@@ -1520,6 +1529,7 @@ unsafe fn compile_map(
             environment,
             visibility,
             soundscapes,
+            acoustic_scene,
             area_state,
             collision,
             gameplay_world,
@@ -1562,6 +1572,7 @@ unsafe fn compile_map(
             environment,
             visibility,
             soundscapes,
+            acoustic_scene,
             area_state,
             collision,
             gameplay_world,
@@ -1600,6 +1611,8 @@ unsafe fn compile_map(
                 .ok(),
             visibility: Some(visibility),
             soundscapes,
+            acoustic_scene: Some(acoustic_scene),
+            acoustic_output: Vec::new(),
             area_state: Some(area_state),
             visibility_output: Vec::new(),
             environment: Some(environment),
@@ -1650,6 +1663,8 @@ unsafe fn compile_map(
             model_output: Vec::new(),
             visibility: None,
             soundscapes: Default::default(),
+            acoustic_scene: None,
+            acoustic_output: Vec::new(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -5158,6 +5173,8 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
     slot.model_output = Vec::new();
     slot.visibility = None;
     slot.soundscapes = Default::default();
+    slot.acoustic_scene = None;
+    slot.acoustic_output = Vec::new();
     slot.visibility_candidates = None;
     slot.area_state = None;
     slot.visibility_output = Vec::new();
@@ -8833,7 +8850,7 @@ fn collision_object_templates(
             let [mins, maxs] = playsrc_studio_model::transform_model_render_bounds(bounds, transform).map_err(|_| ())?;
             output.push(CollisionObjectTemplate {
                 input: playsrc_collision::ObjectInput {
-                    identity: 0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                    identity: static_prop_collision_identity(prop.source)?,
                     role: playsrc_collision::ObjectRole::StaticProp,
                     enabled: true, volume_contents: false,
                     transform: playsrc_collision::Transform { origin: prop.origin, angles: [0.0; 3] },
@@ -8875,7 +8892,7 @@ fn collision_object_templates(
         };
         output.push(CollisionObjectTemplate {
             input: playsrc_collision::ObjectInput {
-                identity: 0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                identity: static_prop_collision_identity(prop.source)?,
                 role: playsrc_collision::ObjectRole::StaticProp,
                 enabled: true,
                 volume_contents: false,
@@ -9776,7 +9793,7 @@ fn compile_static_prop_section(
                 start: origin,
                 end,
                 ignored_static_prop: Some(
-                    0x8000_0000_0000_0000u64 | u64::try_from(prop.source).map_err(|_| ())?,
+                    static_prop_collision_identity(prop.source)?,
                 ),
             });
             direct_candidates.push((prop.source, light_index, identity, direction, ratio));
@@ -16132,6 +16149,8 @@ mod tests {
             model_output: vec![0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0xc0, 0x7f],
             visibility: None,
             soundscapes: Default::default(),
+            acoustic_scene: None,
+            acoustic_output: Vec::new(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),
@@ -16232,6 +16251,8 @@ mod tests {
             model_output: Vec::new(),
             visibility: None,
             soundscapes: Default::default(),
+            acoustic_scene: None,
+            acoustic_output: Vec::new(),
             visibility_candidates: None,
             area_state: None,
             visibility_output: Vec::new(),

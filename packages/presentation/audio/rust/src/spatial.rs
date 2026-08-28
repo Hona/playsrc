@@ -74,6 +74,7 @@ pub fn stereo(
     listener: Listener,
     radius: f32,
     acoustic_gain: f32,
+    omni: bool,
 ) -> Stereo {
     let master = (volume * 255.0) as i32;
     let (distance, pan, mono) = if let Some(origin) = origin {
@@ -86,7 +87,7 @@ pub fn stereo(
         } else {
             0.0
         };
-        let mono = if level == 0 {
+        let mono = if level == 0 || omni {
             1.0
         } else if radius > 0.0 && distance < radius {
             1.0 - (distance - radius * 0.5).max(0.0) / (radius * 0.5)
@@ -98,7 +99,7 @@ pub fn stereo(
         (12.0, 0.0, 1.0)
     };
     let gain = if origin.is_none() {
-        1.0
+        acoustic_gain
     } else {
         distance_gain(level, distance) * acoustic_gain
     };
@@ -137,8 +138,8 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             right: [0.0, -1.0, 0.0],
         };
-        let ambient = stereo(1.0, 0, None, listener, 0.0, 1.0);
-        let world = stereo(1.0, 0, Some([1.0, 0.0, 0.0]), listener, 0.0, 1.0);
+        let ambient = stereo(1.0, 0, None, listener, 0.0, 1.0, false);
+        let world = stereo(1.0, 0, Some([1.0, 0.0, 0.0]), listener, 0.0, 1.0, false);
         assert_eq!(ambient.volume, [254, 254]);
         assert_eq!(world.volume, [127, 127]);
         let mut preset = Preset {

@@ -303,6 +303,14 @@ pub fn read_model_render_bounds(identity: &str, bytes: &[u8], limits: Limits) ->
     Ok(parse_mdl(identity, profile, bytes, limits)?.document.bounds.render_bounds())
 }
 
+/// The model-wide studio surface is distinct from per-bone surface overrides.
+pub fn read_model_surface_property(identity: &str, bytes: &[u8], limits: Limits) -> Result<Vec<u8>, Error> {
+    let profile = Profile::from_version(i32_at(bytes, 4, identity)?).ok_or_else(|| failure(Classification::Unsupported, ErrorCode::ProfileMismatch, identity, Some(4..8)))?;
+    let bytes = mdl_header_bytes(identity, profile, bytes, limits)?;
+    let offset = i32_at(bytes, 308, identity)?;
+    if offset == 0 { Ok(Vec::new()) } else { relative_string(bytes, 0, offset, limits, identity) }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bone {
     pub index: usize,
@@ -1614,7 +1622,7 @@ fn validate_procedure(
     Ok(())
 }
 
-fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> Result<Mdl, Error> {
+fn mdl_header_bytes<'a>(identity: &str, profile: Profile, bytes: &'a [u8], limits: Limits) -> Result<&'a [u8], Error> {
     if bytes.len() > limits.max_file_bytes {
         return Err(failure(
             Classification::Malformed,
@@ -1649,7 +1657,12 @@ fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> 
             Some(76..80),
         ));
     }
-    let bytes = &bytes[..declared_length];
+    Ok(&bytes[..declared_length])
+}
+
+fn parse_mdl(identity: &str, profile: Profile, bytes: &[u8], limits: Limits) -> Result<Mdl, Error> {
+    let bytes = mdl_header_bytes(identity, profile, bytes, limits)?;
+    let declared_length = bytes.len();
     let checksum = i32_at(bytes, 8, identity)?;
     let internal_name = fixed_string(&bytes[12..76], limits, identity)?;
     let flags = i32_at(bytes, 152, identity)?;
@@ -4236,6 +4249,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn model_surface_property_uses_the_model_header_and_declared_length() {
+        let mut bytes = mdl(48, false);
+        assert_eq!(read_model_surface_property("fixture", &bytes, Limits::default()).unwrap(), b"");
+        let offset = bytes.len() as i32;
+        bytes.extend_from_slice(b"metal\0");
+        let length = bytes.len() as i32;
+        bytes[76..80].copy_from_slice(&length.to_le_bytes());
+        bytes[308..312].copy_from_slice(&offset.to_le_bytes());
+        assert_eq!(read_model_surface_property("fixture", &bytes, Limits::default()).unwrap(), b"metal");
+        bytes[76..80].copy_from_slice(&offset.to_le_bytes());
+        assert!(read_model_surface_property("fixture", &bytes, Limits::default()).is_err());
+    }
 
     fn mdl(version: i32, body_part: bool) -> Vec<u8> {
         let mut bytes = vec![0; MDL_HEADER_BYTES];

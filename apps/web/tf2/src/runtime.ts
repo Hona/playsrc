@@ -1,8 +1,9 @@
 import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObjectCache, type ImmutableObjectPriority } from "@playsrc/asset-store/browser"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
-import { createAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld } from "@playsrc/audio"
 import { combatPoseSelection } from "./combat-pose-selection"
+import { createSourceAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld, type PcmResource } from "@playsrc/audio"
+import { tf2AudioModuleUrl } from "@playsrc/game-tf2-browser/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
@@ -291,7 +292,7 @@ export type ApplicationView = Readonly<{
 }>
 
 type Renderer = Awaited<ReturnType<typeof createRenderer>>
-type Audio = ReturnType<typeof createAudioSystem>
+type Audio = Awaited<ReturnType<typeof createSourceAudioSystem>>
 type ProjectileMapper = ReturnType<typeof createProjectilePresentationMapper>
 type LockerAnimationState=Readonly<{openTick:bigint;closeTick:bigint;body:number;openAnimation:"open"|"close";closeAnimation:"open"|"close"}>
 type PreparedPresentation=Readonly<{
@@ -388,13 +389,13 @@ export class Tf2Application {
   #audioContext?: AudioContext
   #audioRegistry?: SoundRegistry
   #audioWorld?: SourceAudioWorld
-  #audioBuffers = new Map<string, AudioBuffer>()
+  #audioBuffers: ReadonlyMap<string, PcmResource> = new Map()
   #audioStarts: string[] = []
   #pendingAudioRequests: Tf2AudioRequest[] = []
   #lockerAnimations = new Map<number, LockerAnimationState>()
   #reloadHistory:string[]=[]
   #fireTickHistory:string[]=[]
-  #wasmCalls={observe:0,models:0,visibility:0,particles:0}
+  #wasmCalls={observe:0,models:0,visibility:0,particles:0,acoustics:0}
   #maximumScheduledSamples=0
   #maximumPublicationTicks=0
   #phaseTimings=[0,0,0,0,0]
@@ -1736,7 +1737,7 @@ export class Tf2Application {
       this.#advanceLoading("creating-client-world")
       const AudioContextConstructor = window.AudioContext
       if (!AudioContextConstructor) throw new Error("Web Audio is unavailable")
-      const audioContext = new AudioContextConstructor()
+      const audioContext = new AudioContextConstructor({ sampleRate: 44100 })
       this.#audioContext = audioContext
       this.#audioRegistry = new SoundRegistry(this.#artifacts.audio.documents.map((document) => Object.freeze({
         logicalPath: document.logicalPath, mode: "base" as const, preload: false, entries: document.entries,
@@ -1747,11 +1748,19 @@ export class Tf2Application {
         return false
       })
       const audioStarted = performance.now()
-      const audioResourcesReady = Promise.all(audioPaths.map(async identity => {
-        const bytes = this.#dependencyEntries.get(identity)
-        if (!bytes) throw new Error(`Audio dependency ${identity} is missing`)
-        return Object.freeze({ identity, buffer: await audioContext.decodeAudioData(bytes.slice().buffer) })
-      }))
+      for (const identity of audioPaths) if (!this.#dependencyEntries.has(identity)) throw new Error(`Audio dependency ${identity} is missing`)
+      if (!this.#presentationRandom) throw new Error("The installed client random stream is unavailable")
+      const audioReady = createSourceAudioSystem(audioContext, tf2AudioModuleUrl(), this.#dependencyEntries, this.#presentationRandom).then(async audio => {
+        if (this.#closed || !this.#operations.current(operation) || this.#audioContext !== audioContext) {
+          await audio.close()
+          throw new Error("Audio map construction was cancelled")
+        }
+        this.#audio = audio
+        return audio
+      })
+      // Renderer preparation and audio decoding overlap, but either failure
+      // still belongs to this one load transaction and its teardown owner.
+      void audioReady.catch(() => {})
       const scene = await this.#renderer.loadMap({
         payload: this.#loaded.payload,
         resourceIdentity: this.#dependencies.sha256,
@@ -1781,14 +1790,16 @@ export class Tf2Application {
         this.#blockers.add(`${diagnostic.code}: ${diagnostic.identity} — ${diagnostic.detail}`)
       }
       finishLoadPhase("rendererLoadMap")
-      const audioResources = await audioResourcesReady
+      await audioReady
+      this.#requireOperation(operation)
+      if (!this.#audio) throw new Error("Audio map construction has no owner")
       const startupProfile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
       if (startupProfile) {
         const spans = (startupProfile.startupSpans ??= []) as Array<Record<string, unknown>>
-        spans.push({ kind: "audio-decode", started: audioStarted, finished: performance.now(), resources: audioResources.length })
+        spans.push({ kind: "audio-decode", started: audioStarted, finished: performance.now(), resources: this.#audio.resources().size })
+        startupProfile.audio = this.#audio
       }
-      this.#audio = createAudioSystem(audioContext, audioResources)
-      this.#audioBuffers = new Map(audioResources.map((resource) => [resource.identity, resource.buffer]))
+      this.#audioBuffers = this.#audio.resources()
       this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
@@ -3480,7 +3491,7 @@ export class Tf2Application {
         this.#loaded && { ...this.#loaded, sections: this.#dependencies?.sections },
         resources && { ...loaded, generation: resources.generation, sections: resources.sections },
       ),
-      audioDecodedSampleBytes: [...this.#audioBuffers.values()].reduce((total, buffer) => total + buffer.length * buffer.numberOfChannels * 4, 0),
+      audioDecodedSampleBytes: [...this.#audioBuffers.values()].reduce((total, buffer) => total + buffer.length * buffer.numberOfChannels * 2, 0),
       canonicalSnapshotBaselineBytes: [...snapshotGenerations].reduce((total, generation) =>
         total + (this.#client?.snapshotMetrics(generation)?.retainedBaselineBytes ?? 0), 0),
       vguiFontFaces: document.fonts.size,
@@ -3648,6 +3659,9 @@ export class Tf2Application {
     if (!this.#client || !this.#renderer || !this.#loaded || !this.#dependencies) throw new Error("Application is not ready")
     const preparationTeam = this.#snapshot?.team
     this.#paused = true
+    this.#audio?.reset()
+    this.#audioWorld?.reset()
+    this.#suspendAudio()
     this.#neutral()
     this.#predictedEye.suspend()
     this.#simulationSamples.clear()
@@ -3816,7 +3830,7 @@ export class Tf2Application {
     this.#lockerAnimations.clear()
     this.#reloadHistory=[]
     this.#fireTickHistory=[]
-    this.#wasmCalls={observe:0,models:0,visibility:0,particles:0};this.#maximumScheduledSamples=0;this.#maximumPublicationTicks=0;this.#phaseTimings=[0,0,0,0,0]
+    this.#wasmCalls={observe:0,models:0,visibility:0,particles:0,acoustics:0};this.#maximumScheduledSamples=0;this.#maximumPublicationTicks=0;this.#phaseTimings=[0,0,0,0,0]
     this.#attachments.clear()
     this.#projectiles?.dispose()
     this.#projectiles = createProjectilePresentationMapper(
@@ -3857,11 +3871,15 @@ export class Tf2Application {
     this.#modelProbes = await this.#probePlayerModels(artifacts)
     this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(artifacts)
     finishReplacePhase("initialization")
-    this.#audio?.reset()
-    this.#audioWorld?.reset()
+    if (this.#audio) {
+      this.#audioBuffers = this.#audio.replace(this.#dependencyEntries)
+      this.#audioRegistry = new SoundRegistry(artifacts.audio.documents.map(document => Object.freeze({ logicalPath: document.logicalPath, mode: "base" as const, preload: false, entries: document.entries })))
+      this.#audioWorld = new SourceAudioWorld(this.#audioRegistry, { maxActiveVoices: 128 })
+    }
     this.#lastRandomAudioProbe = ""
     this.#lastCollisionMoverProbe = ""
     this.#paused = document.hidden
+    if (!this.#paused) void this.resumeAudio()
     this.#publishProfileCoverage()
     this.#output(`Loaded ${name}; generation ${generation}; derived cache ${staged.cache}.`, true)
     this.#set({
@@ -4185,6 +4203,24 @@ export class Tf2Application {
     })
   }
 
+  #audioFrame(snapshot: Snapshot, camera: Camera, hostTime: number) {
+    if (!this.#audioRunning || !this.#audio || this.#paused || this.#closed) return undefined
+    const yaw = camera.yawDegrees * Math.PI / 180, pitch = camera.pitchDegrees * Math.PI / 180
+    const frame = this.#audio.frame(snapshot.soundscape, {
+      identity: 1, revision: Number(snapshot.tick), origin: camera.position,
+      forward: [Math.cos(pitch) * Math.cos(yaw), Math.cos(pitch) * Math.sin(yaw), -Math.sin(pitch)],
+      right: [Math.sin(yaw), -Math.cos(yaw), 0], masterGain: 1, categoryGain: 1, muted: this.#masterMuted,
+    }, Number(snapshot.tick) * SIMULATION_SAMPLE_INTERVAL_SECONDS, hostTime, this.#masterMuted ? 0 : this.#effectVolume, [
+      { domain: 1, identity: 1, origin: snapshot.position },
+      ...snapshot.bots.map(bot => ({ domain: 1 as const, identity: bot.identity, origin: bot.position })),
+      ...(snapshot.controlPoints?.points ?? []).map(point => ({ domain: 2 as const, identity: point.identity, origin: point.position })),
+      ...snapshot.buildings.map(building => ({ domain: 2 as const, identity: building.identity, origin: building.position })),
+      ...snapshot.pickups.map(pickup => ({ domain: 2 as const, identity: pickup.identity, origin: pickup.origin })),
+    ])
+    if (frame) this.#wasmCalls.acoustics++
+    return frame
+  }
+
   #playAudio(snapshot: Snapshot, camera: Camera): void {
     const incoming = [...tf2Audio(snapshot)]
     for(let ordinal=0;ordinal<snapshot.events.length;ordinal++){
@@ -4266,7 +4302,7 @@ export class Tf2Application {
             envelope: { from: request.action === "fade-in" ? 0 : 1, to: request.action === "fade-in" ? 1 : 0, seconds: request.fadeSeconds! },
           } : {}),
           resourceDurationSeconds: buffer.duration,
-          resourceLoopStartSeconds: patch?.loopStartSeconds ?? null,
+          resourceLoopStartSeconds: buffer.loopStartSeconds,
           resourceChannels: buffer.numberOfChannels,
           resourceAvailable: (identity) => this.#audioBuffers.has(identity),
           scheduledTimeSeconds: this.#audioContext.currentTime,
@@ -4280,19 +4316,19 @@ export class Tf2Application {
         throw error
       }
       for (const replaced of started.replaced) this.#audio.stop(replaced)
-      this.#audio.playNeutral(started.voice)
+      this.#audio.playNeutral(started.voice, request.source)
       this.#audioStarts.push(`${started.voice.definition}:${started.voice.resource}:${started.voice.channel}:${started.voice.soundLevel}`)
     }
-    for (const voice of this.#audioWorld.refreshSpatial(listener, source => {
+    this.#audioWorld.refreshSpatial(listener, source => {
       if (source.kind !== "entity") return undefined
-      if (source.sourceClass === "tf_weapon" || source.sourceClass === "player") {
+      if (source.sourceClass === "tf_weapon" || source.sourceClass === "player" || source.sourceClass === "tf_player") {
         const owner = source.sourceClass === "tf_weapon" ? source.ownerIdentity ?? source.identity : source.identity
         return owner === 1 ? snapshot.position : snapshot.bots.find(bot => bot.identity === owner)?.position
       }
       if (source.sourceClass === "team_control_point") return snapshot.controlPoints?.points.find(point => point.identity === source.identity)?.position
       if (source.sourceClass === "item") return snapshot.pickups.find(pickup => pickup.identity === source.identity)?.origin
       return undefined
-    })) this.#audio.updateNeutral(voice)
+    })
   }
 
   #updateAttachmentTransforms(snapshot: Snapshot, viewmodels: readonly PosedModel[], camera: Camera): void {
@@ -4551,6 +4587,9 @@ export class Tf2Application {
     let timeSeconds: number
     try {
       timeSeconds = this.#frameClock.admit(performance.now() / 1_000)
+      // Keep the device supplied while an asynchronous GPU submission is still
+      // pending. Control/geometry updates remain one coherent audio transaction.
+      if (!this.#paused && this.#audioRunning) this.#audio?.pump()
       const owners = visibleFrameOwners(this.#view, !this.#gameUiRoot.hidden)
       if (owners & GAME_UI_FRAME_OWNER) this.#gameUi?.frame(timeSeconds)
       if (owners & LOADING_FRAME_OWNER) this.#loadingVgui?.frame(timeSeconds)
@@ -4646,6 +4685,7 @@ export class Tf2Application {
       viewRevision, mouseRevision, snapRevision, tick: prepared.snapshot.tick,
     }, skyController)
     const camera = presentedCamera.main
+    const audioFrame = this.#audioFrame(prepared.snapshot, camera, phaseStart / 1000)
     let visibility = prepared.visibility
     let skyVisibility = prepared.skyVisibility
     const viewChanged = !equivalentPresentedVisibility(prepared.presentedCamera, presentedCamera)
@@ -4668,8 +4708,9 @@ export class Tf2Application {
         verticalFovDegrees: skyCamera.verticalFovDegrees, aspectRatio,
         near: skyCamera.near, far: skyCamera.far, presentationTimeSeconds,
       }] : [mainView]
-      ;[visibility, skyVisibility] = await client.visibilityViews(generation, views)
+      ;[visibility, skyVisibility] = await client.visibilityViews(generation, views, audioFrame)
     }
+    else if (audioFrame) audioFrame.accept(await client.acoustics(generation, audioFrame.input))
     let sky3d: Frame["sky3d"]
     if (selectAuthoredSky(visibility.sky, skyController !== null)) {
       if (!skyController || !presentedCamera.sky || !skyVisibility) throw new Error("Authored 3D-sky visibility is unavailable")
@@ -6090,12 +6131,15 @@ export class Tf2Application {
     this.#openingCache = undefined
     this.#projectiles?.dispose()
     this.#projectiles = undefined
-    await this.#audio?.close().catch(() => {})
+    if (this.#audio) await this.#audio.close().catch(() => {})
+    else await this.#audioContext?.close().catch(() => {})
+    const audioProfile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
+    if (audioProfile) delete audioProfile.audio
     this.#audio = undefined
     this.#audioContext = undefined
     this.#audioRegistry = undefined
     this.#audioWorld = undefined
-    this.#audioBuffers.clear()
+    this.#audioBuffers = new Map()
     this.#audioRunning = false
     this.#hudIntegration?.reset("disconnect")
     this.#classSelection?.dispatch({ kind: "hide" })

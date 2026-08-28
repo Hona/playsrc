@@ -1,6 +1,6 @@
 //! Sample-domain DSP. Processing uses the Source 44.1 kHz integer mix domain;
 //! browser sample-rate conversion belongs outside this processor.
-use crate::soundscape::Random;
+use crate::{ramp::Ramp, soundscape::Random};
 use std::fmt;
 
 pub const SAMPLE_RATE: u32 = 44_100;
@@ -51,7 +51,7 @@ impl Preset {
             return Err(Error::Malformed("processor count for configuration"));
         }
         for processor in &self.processors {
-            if ![0, 1, 2, 3, 10].contains(&processor.kind) {
+            if ![0, 1, 2, 3, 10, 11].contains(&processor.kind) {
                 return Err(Error::UnsupportedProcessor(processor.kind));
             }
             if processor.parameters.iter().any(|value| !value.is_finite()) {
@@ -478,11 +478,94 @@ impl Modulation {
 }
 
 #[derive(Clone, Debug)]
+struct Amplifier {
+    gain: i32,
+    maximum: i32,
+    threshold: i32,
+    distortion: i32,
+    period: i32,
+    remaining: i32,
+    depth: i32,
+    random: bool,
+    glide: f32,
+    ramp: Option<Ramp>,
+}
+impl Amplifier {
+    fn new(parameters: &[f32; 16]) -> Self {
+        let rate = parameters[4].clamp(0.0, 200.0);
+        let seconds = if rate > 0.0 {
+            (1.0 / f64::from(rate).max(0.01)) as f32
+        } else {
+            0.0
+        };
+        let period = (seconds * SAMPLE_RATE as f32) as i32;
+        let gain = (parameters[0].clamp(0.0, 1000.0) * ONE as f32) as i32;
+        Self {
+            gain,
+            maximum: gain,
+            threshold: (f64::from(parameters[1].clamp(0.0, 1.0)) * 32767.0) as i32,
+            distortion: (parameters[2].clamp(0.0, 1.0) * ONE as f32) as i32,
+            period,
+            remaining: period,
+            depth: if rate > 0.0 {
+                (parameters[5].clamp(0.0, 1.0) * ONE as f32) as i32
+            } else {
+                0
+            },
+            random: parameters[7].clamp(0.0, 1.0) > 0.0,
+            glide: if rate > 0.0 {
+                (f64::from(parameter(parameters[6], 0.01, 100.0)) / 1000.0) as f32
+            } else {
+                0.0
+            },
+            ramp: None,
+        }
+    }
+    fn sample(&mut self, input: i32, random: &mut impl Random) -> i32 {
+        let value = if self.threshold < ONE && self.distortion != 0 {
+            let clipped = input.clamp(-self.threshold, self.threshold);
+            if self.distortion < ONE {
+                input.wrapping_add(mul(clipped.wrapping_sub(input), self.distortion))
+            } else {
+                clipped
+            }
+        } else {
+            input
+        };
+        let output = mul(value, self.gain);
+        if let Some(ramp) = &mut self.ramp {
+            self.gain = ramp.next();
+            if ramp.finished() {
+                self.ramp = None;
+            }
+        }
+        if self.period != 0 {
+            let due = self.remaining == 0;
+            self.remaining -= 1;
+            if due {
+                self.remaining = self.period;
+                let minimum = self.maximum.wrapping_sub(mul(self.maximum, self.depth));
+                let target = if self.random {
+                    random.integer(minimum.min(self.maximum), minimum.max(self.maximum))
+                } else if self.gain == minimum {
+                    self.maximum
+                } else {
+                    minimum
+                };
+                self.ramp = Some(Ramp::new(self.glide, self.gain, target));
+            }
+        }
+        output
+    }
+}
+
+#[derive(Clone, Debug)]
 enum Kernel {
     Identity,
     Filter(Filter),
     Delay(Delay),
     Cascade(Vec<Delay>),
+    Amplifier(Amplifier),
     Reverb {
         delays: Vec<Delay>,
         output_filter: Option<Filter>,
@@ -635,6 +718,7 @@ impl Processor {
             1 => Kernel::Delay(Delay::from_parameters(p)),
             2 => reverb(p)?,
             3 => Kernel::Filter(Filter::new(p)),
+            11 => Kernel::Amplifier(Amplifier::new(p)),
             10 => {
                 let delays = [13, 19, 26, 21, 32, 36, 38, 16];
                 let count = (p[1].clamp(0.0, 4.0) as usize).clamp(1, 8);
@@ -672,6 +756,7 @@ impl Processor {
             Kernel::Cascade(delays) => delays
                 .iter_mut()
                 .fold(value, |value, delay| delay.next(value, random)),
+            Kernel::Amplifier(amplifier) => amplifier.sample(value, random),
             Kernel::Reverb {
                 delays,
                 output_filter,

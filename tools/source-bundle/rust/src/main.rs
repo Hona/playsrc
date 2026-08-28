@@ -3231,9 +3231,11 @@ fn main() -> Result<(), String> {
             .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
     });
     let control_points = graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point_master")) && !graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_train_watcher"));
+    resolver.required("scripts/dsp_presets.txt", "audio-dsp")?;
+    let soundscapes = playsrc_audio::soundscape::Registry::load(&target, |path| resolver.optional(path, "soundscape-script"))?;
     if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|class|
         [b"env_soundscape".as_slice(), b"env_soundscape_triggerable", b"env_soundscape_proxy"].iter().any(|name| class.eq_ignore_ascii_case(name)))) {
-        let registry = playsrc_audio::soundscape::Registry::load(&target, |path| resolver.optional(path, "soundscape-script"))?;
+        let registry = &soundscapes;
         let mut roots = Vec::new();
         for entity in &graph.entities {
             if !entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"env_soundscape") || class.eq_ignore_ascii_case(b"env_soundscape_triggerable")) { continue; }
@@ -3246,9 +3248,6 @@ fn main() -> Result<(), String> {
             let path = std::str::from_utf8(&resource).map_err(|_| "soundscape wave path is not UTF-8")?;
             resolver.required(path, "soundscape-wave")?;
         }
-        // This is resource closure, not admission of a processor implementation.
-        // Preserve the configured document without constructing room candidates.
-        resolver.required("scripts/dsp_presets.txt", "soundscape-dsp")?;
     }
     let mut round_scripts: Vec<(&str, Vec<&str>)> = Vec::new();
     if flags {

@@ -59,7 +59,8 @@ export async function readWasmManifest(directory: string, identity: string): Pro
   try {
     const parsed = JSON.parse(await readFile(path.join(directory, ".playsrc-build.json"), "utf8")) as WasmBuildManifest
     if (parsed.schema !== "playsrc-threaded-wasm-build-v2" || parsed.identity !== identity || !Array.isArray(parsed.files)
-      || parsed.files.length === 0 || !parsed.files.some((file) => file.name === "tf2_wasm_bg.wasm")) return null
+      || parsed.files.length === 0 || !parsed.files.some((file) => file.name === "tf2_wasm_bg.wasm")
+      || !parsed.files.some((file) => file.name === "audio_wasm.wasm")) return null
     for (const file of parsed.files) {
       if (typeof file.name !== "string" || path.isAbsolute(file.name) || file.name.split(/[\\/]/u).includes("..")
         || !Number.isSafeInteger(file.bytes) || file.bytes < 0) return null
@@ -190,6 +191,18 @@ export async function buildThreadedTf2Wasm(
   const patched = source.replaceAll("\r\n", "\n").replace("import('../../..')", "import('../../../tf2_wasm.js')")
   if (patched === source) throw new Tf2WasmBuildError("wasm-bindgen Rayon worker import contract changed")
   await writeFile(helper, patched)
+  const audioTarget = path.join(repositoryRoot, "target", "audio-client")
+  const audio = Bun.spawn([
+    cargo, `+${toolchains.rust.threadedToolchain}`, "build", "-p", "playsrc-audio-wasm",
+    "--target", "wasm32-unknown-unknown", "--target-dir", audioTarget, "--release", "-Z", "build-std=panic_abort,std",
+  ], {
+    cwd: repositoryRoot,
+    env: { ...buildEnvironment, RUSTFLAGS: undefined, CARGO_ENCODED_RUSTFLAGS: flags.filter(flag => flag.startsWith("--remap-path-prefix=")).join("\x1f"), CARGO_BUILD_JOBS: process.env.PLAYSRC_PROFILE_OWNER_TOKEN ? "2" : process.env.CARGO_BUILD_JOBS },
+    stdout: "inherit", stderr: "inherit",
+  })
+  const audioExit = await audio.exited
+  if (audioExit !== 0) throw new Tf2WasmBuildError(`audio cargo build exited with code ${audioExit}`)
+  await copyFile(path.join(audioTarget, "wasm32-unknown-unknown", "release", "playsrc_audio_wasm.wasm"), path.join(output, "audio_wasm.wasm"))
   return path.join(output, "tf2_wasm_bg.wasm")
 }
 
