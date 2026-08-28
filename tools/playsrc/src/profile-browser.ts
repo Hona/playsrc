@@ -37,8 +37,22 @@ export async function browserLease(filename: string, token: string, milliseconds
   const temporary = `${filename}.lease.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporary, JSON.stringify({ token, expiresAt: Date.now() + milliseconds, closeUnderLockToken }))
-    await rename(temporary, `${filename}.lease`)
+    await publishBrowserRecord(temporary, `${filename}.lease`)
   } finally { await rm(temporary, { force: true }) }
+}
+
+/** Windows readers can transiently deny replacement. Keep the old complete
+ * record authoritative until rename succeeds; never delete it to work around
+ * sharing violations or retry beyond one second. */
+export async function publishBrowserRecord(source: string, destination: string,
+  replace = rename, pause: (milliseconds: number) => Promise<unknown> = milliseconds => Bun.sleep(milliseconds)) {
+  for (let attempt = 0; ; attempt++) {
+    try { await replace(source, destination); return }
+    catch (error) {
+      if (attempt >= 19 || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error
+      await pause(50)
+    }
+  }
 }
 
 export async function acquireBrowserRetirementLock(filename: string, token: string) {
@@ -83,7 +97,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   }
   if (remaining() <= 0) throw new Error("No command budget remains for headed browser startup")
   const token = randomUUID()
-  await browserLease(filename, token, remaining())
+  await browserLease(filename, token, remaining(), lockToken)
   const logPath = `${filename}.${token}.log`
   const log = openSync(logPath, "wx", 0o600)
   const child = spawn(process.execPath, [import.meta.filename, filename, token, JSON.stringify(launch)], {
@@ -169,7 +183,13 @@ if (import.meta.main) {
     await stop(Boolean(lease?.closeUnderLockToken && holder?.token === lease.closeUnderLockToken))
   }
   else {
-    await writeFile(temporary, JSON.stringify(owner))
-    await rename(temporary, filename)
+    try {
+      await writeFile(temporary, JSON.stringify(owner))
+      await publishBrowserRecord(temporary, filename)
+    } catch (error) {
+      const holder = await optionalJson(path.join(path.dirname(filename), "chromium-profile.lock"))
+      await stop(Boolean(lease?.closeUnderLockToken && holder?.token === lease.closeUnderLockToken))
+      throw error
+    } finally { await rm(temporary, { force: true }) }
   }
 }

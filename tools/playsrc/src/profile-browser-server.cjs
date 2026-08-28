@@ -15,6 +15,8 @@ async function stop() {
 process.once("SIGTERM", () => { void stop() })
 process.once("SIGINT", () => { void stop() })
 process.stdin.once("data", () => { void stop() })
+process.stdin.once("end", () => { void stop() })
+process.stdin.once("error", () => { void stop() })
 
 void (async () => {
   server = await chromium.launchServer({ ...JSON.parse(process.argv[2]), host: "127.0.0.1", headless: false, timeout: 20_000 })
