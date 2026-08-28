@@ -1726,6 +1726,7 @@ export class Tf2Application {
       await this.#equipmentRenderTask
       if (this.#renderer) await this.#renderer.dispose()
       this.#renderer = await createRenderer({
+        serviceAudio: this.#serviceAudio,
         canvas: this.#canvas,
         configuration: { ...(this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" },
         powerPreference: "high-performance",
@@ -1750,7 +1751,8 @@ export class Tf2Application {
       const audioStarted = performance.now()
       for (const identity of audioPaths) if (!this.#dependencyEntries.has(identity)) throw new Error(`Audio dependency ${identity} is missing`)
       if (!this.#presentationRandom) throw new Error("The installed client random stream is unavailable")
-      const audioReady = createSourceAudioSystem(audioContext, tf2AudioModuleUrl(), this.#dependencyEntries, this.#presentationRandom).then(async audio => {
+      const audioReady = createSourceAudioSystem(audioContext, tf2AudioModuleUrl(), this.#dependencyEntries, this.#presentationRandom,
+        Boolean((globalThis as typeof globalThis & { __playsrcProfile?: unknown }).__playsrcProfile)).then(async audio => {
         if (this.#closed || !this.#operations.current(operation) || this.#audioContext !== audioContext) {
           await audio.close()
           throw new Error("Audio map construction was cancelled")
@@ -2133,6 +2135,7 @@ export class Tf2Application {
         await Promise.all([this.#displayTask, this.#equipmentRenderTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
         if (!this.#renderer) {
           this.#renderer = await createRenderer({ canvas: this.#canvas,
+            serviceAudio: this.#serviceAudio,
             configuration: { ...(profile === 1 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" }, powerPreference: "high-performance",
             sampleCount: this.#videoConfiguration.antialias === 4 ? 4 : 1,
             textureQuality: { mipOffset: this.#videoConfiguration.picmip, trilinear: this.#videoConfiguration.trilinear === 1, anisotropy: this.#videoConfiguration.anisotropy } })
@@ -3727,6 +3730,7 @@ export class Tf2Application {
         rendererChanged = true
         await this.#renderer.dispose()
         this.#renderer = await createRenderer({
+          serviceAudio: this.#serviceAudio,
           canvas: this.#canvas,
           configuration: { ...(this.#renderLevel === 2 ? SOURCE_PC_INTEGER_HDR : SOURCE_LDR), alphaMode: "premultiplied" },
           powerPreference: "high-performance",
@@ -3779,6 +3783,7 @@ export class Tf2Application {
         || this.#renderer.textureQuality !== priorTextureQuality) {
         await this.#renderer.dispose().catch(() => {})
         this.#renderer = await createRenderer({
+          serviceAudio: this.#serviceAudio,
           canvas: this.#canvas,
           configuration: priorConfiguration,
           powerPreference: "high-performance",
@@ -4201,6 +4206,10 @@ export class Tf2Application {
       const parts = poses.filter((pose) => pose.activity === activity)
       if(parts.length!==2||parts[0]?.role!=="item"||parts[1]?.role!=="hand")throw new Error(`Viewmodel timeline composition ${activity} differs`);const hand=parts[1]!;return `${activity}:${hand.sequence}:${hand.cycle}:${parts.map(part=>part.primitives.length).join("+")}:${hand.events.length}:item>hand`
     })
+  }
+
+  readonly #serviceAudio = (): void => {
+    if (!this.#paused && this.#audioRunning) this.#audio?.extraUpdate()
   }
 
   #audioFrame(snapshot: Snapshot, camera: Camera, hostTime: number) {

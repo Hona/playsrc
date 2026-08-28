@@ -185,7 +185,10 @@ pub fn read_reply(bytes: &[u8]) -> Option<SceneReply> {
             let width = read.i32()?;
             let length = read.i32()?;
             let height = read.i32()?;
-            if width < 0 || length < 0 || height < 0 {
+            if !(0..=9600).contains(&width)
+                || !(0..=9600).contains(&length)
+                || !(0..=4800).contains(&height)
+            {
                 return None;
             }
             let diffusion = read.f32()?;
@@ -198,6 +201,13 @@ pub fn read_reply(bytes: &[u8]) -> Option<SceneReply> {
                 read.f32()?,
                 read.f32()?,
             ];
+            if [diffusion, reflectivity]
+                .into_iter()
+                .chain(surfaces)
+                .any(|value| !(0.0..=1.0).contains(&value))
+            {
+                return None;
+            }
             Some(Room {
                 outside,
                 width,
@@ -276,6 +286,16 @@ mod tests {
         assert_eq!(read_reply(&bytes).unwrap().room, reply.room);
         for end in 0..bytes.len() {
             assert!(read_reply(&bytes[..end]).is_none());
+        }
+        for (offset, word) in [
+            (68, 9601_u32),
+            (76, 4801),
+            (80, 1.1_f32.to_bits()),
+            (88, (-0.1_f32).to_bits()),
+        ] {
+            let mut malformed = bytes.clone();
+            malformed[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+            assert!(read_reply(&malformed).is_none());
         }
     }
 }

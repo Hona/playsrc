@@ -12,11 +12,19 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
     this.mask = capacity - 1
     this.epoch = Atomics.load(this.control, 2) >>> 0
     this.capture = null
+    this.diagnostics = options.processorOptions.diagnostics === true
+    this.gap = null
+    this.diagnosticCount = 0
+    this.lastNonzeroTime = null
     this.port.onmessage = ({ data }) => {
-      if (!Number.isInteger(data.captureFrames) || data.captureFrames < 1 || data.captureFrames > 441000 || this.capture) {
-        this.port.postMessage({ error: "Invalid audio capture request" }); return
+      if (data.cancelCapture !== undefined) {
+        if (this.capture?.id === data.cancelCapture) this.capture = null
+        return
       }
-      this.capture = { samples: new Int16Array(data.captureFrames * 2), at: 0,
+      if (!Number.isInteger(data.captureId) || data.captureId < 1 || data.captureId > 0xffff_ffff || !Number.isInteger(data.captureFrames) || data.captureFrames < 1 || data.captureFrames > 441000 || this.capture) {
+        this.port.postMessage({ captureId: data.captureId, error: "Invalid audio capture request" }); return
+      }
+      this.capture = { id: data.captureId, samples: new Int16Array(data.captureFrames * 2), at: 0,
         startRead: Atomics.load(this.control, 0) >>> 0, epoch: Atomics.load(this.control, 2) >>> 0,
         gaps: new Uint32Array(8192), gapCount: 0, missing: 0 }
     }
@@ -29,6 +37,7 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
       // before the producer can reuse any slot for the replacement map.
       Atomics.store(this.control, 0, Atomics.load(this.control, 1))
       this.epoch = epoch
+      this.lastNonzeroTime = null
       Atomics.store(this.control, 6, epoch | 0)
     }
     const read = Atomics.load(this.control, 0) >>> 0
@@ -46,16 +55,28 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
     Atomics.store(this.control, 0, (read + count) | 0)
     Atomics.add(this.control, 5, left.length)
     if (enabled && count < left.length) Atomics.add(this.control, 3, left.length - count)
+    if (this.diagnostics) {
+      for (let frame = 0; frame < count; frame++) {
+        if (left[frame] !== 0 || right[frame] !== 0) this.lastNonzeroTime = currentTime + frame / sampleRate
+      }
+      if (enabled && count < left.length) {
+        if (!this.gap) this.gap = { start: currentTime + count / sampleRate, epoch, read, written, lastNonzeroTime: this.lastNonzeroTime, frames: 0 }
+        this.gap.frames += left.length - count
+      } else if (this.gap) {
+        if (this.diagnosticCount++ < 64) this.port.postMessage({ deviceGap: { ...this.gap, end: currentTime, resumedEnabled: enabled, resumedRead: read, resumedWrite: written } })
+        this.gap = null
+      }
+    }
     if (this.capture) {
       const capture = this.capture
-      if (capture.epoch !== epoch) { this.capture = null; this.port.postMessage({ error: "Audio capture crossed map ownership" }); return true }
+      if (capture.epoch !== epoch) { this.capture = null; this.port.postMessage({ captureId: capture.id, error: "Audio capture crossed map ownership" }); return true }
       const frames = Math.min(left.length, capture.samples.length / 2 - capture.at)
       if (count < frames) {
         const start = capture.at + count, missing = frames - count
         if (capture.gapCount > 0 && capture.gaps[capture.gapCount - 2] + capture.gaps[capture.gapCount - 1] === start) {
           capture.gaps[capture.gapCount - 1] += missing
         } else {
-          if (capture.gapCount + 2 > capture.gaps.length) { this.capture = null; this.port.postMessage({ error: "Audio capture gap bound exceeded" }); return true }
+          if (capture.gapCount + 2 > capture.gaps.length) { this.capture = null; this.port.postMessage({ captureId: capture.id, error: "Audio capture gap bound exceeded" }); return true }
           capture.gaps[capture.gapCount++] = start; capture.gaps[capture.gapCount++] = missing
         }
         capture.missing += missing
@@ -67,7 +88,7 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
       capture.at += frames
       if (capture.at * 2 === capture.samples.length) {
         this.capture = null
-        this.port.postMessage({ capture: capture.samples.buffer, startRead: capture.startRead, epoch,
+        this.port.postMessage({ captureId: capture.id, capture: capture.samples.buffer, startRead: capture.startRead, epoch,
           underruns: capture.missing, gaps: capture.gaps.buffer, gapCount: capture.gapCount }, [capture.samples.buffer, capture.gaps.buffer])
       }
     }

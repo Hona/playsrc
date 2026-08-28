@@ -105,6 +105,7 @@ import { SourceHudMaterials, type HudMaterialFrame } from "./source-hud-material
 export type { HudMaterial, HudTexture, HudMaterialDraw, HudMaterialFrame } from "./source-hud-materials"
 import { SourceCloakFramebuffer, SourceModelCloak, sourceCloakTransparentSort, type SourceCloakState, type SourceCloakBinding } from "./source-cloak"
 import { prepareWaterPipelineVisibility } from "./water-pipeline-visibility"
+import { installRenderService } from "./render-service"
 import {
   buildRuntimeLightmap,
   parseRuntimeMap,
@@ -840,6 +841,7 @@ export type ResizeResult = Readonly<{
 export type RendererLifecycle = "Initializing" | "Ready" | "Recovering" | "Failed" | "Disposed"
 
 export type RendererCreateRequest = Readonly<{
+  serviceAudio?: () => void
   canvas: Canvas
   configuration: RenderConfiguration
   powerPreference?: "low-power" | "high-performance"
@@ -1586,6 +1588,7 @@ class RendererOwner implements Renderer {
   readonly textureQuality: RendererCreateRequest["textureQuality"]
   readonly #canvas: Canvas
   readonly #powerPreference: "low-power" | "high-performance" | undefined
+  readonly #serviceAudio: (() => void) | undefined
   readonly #exposure: ExposureController
   #exposureSampler?: SourceExposureSampler
   #lifecycle: RendererLifecycle = "Initializing"
@@ -1708,6 +1711,7 @@ class RendererOwner implements Renderer {
     }
     this.#canvas = request.canvas
     this.#powerPreference = request.powerPreference
+    this.#serviceAudio = request.serviceAudio
     const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
     if (profile) {
       this.#uploadEvidence = {
@@ -1837,6 +1841,7 @@ class RendererOwner implements Renderer {
   }
 
   #drawPass(identity: string, scene: THREE.Scene, camera: THREE.Camera): void {
+    this.#serviceAudio?.()
     if (!this.#pendingDepthReset) {
       this.#drawScene(identity, scene, camera)
       return
@@ -2150,6 +2155,7 @@ class RendererOwner implements Renderer {
     let context: Backend["backend"]["context"]
     try {
       await backend.init()
+      if (this.#serviceAudio) installRenderService(backend, this.#serviceAudio)
       if (!backend.backend.isWebGPUBackend) throw new Error("fallback backend")
       this.#renderObjectLifetime = installRenderObjectLifetime((backend as any)._objects)
       this.#restoreGeometryAttributeLifetime = installGeometryAttributeLifetime((backend as any)._geometries)

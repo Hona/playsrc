@@ -120,6 +120,7 @@ test("configured Granary mixed PCM, soundscape transitions, pause and map owners
   const replacement = await page.evaluate(() => ({ sameOwner: (globalThis as any).__playsrcProfile.audioOwner === (globalThis as any).__playsrcProfile.audio, stats: (globalThis as any).__playsrcProfile.audio.stats() }))
   expect(replacement.sameOwner).toBe(true)
   expect(replacement.stats.epoch).toBeGreaterThan(sample.after.epoch)
+  expect(replacement.stats.underrunFrames).toBe(0)
   const filename = testInfo.outputPath("soundscape-selection.json")
   await writeFile(filename, JSON.stringify({ outside, inside, coldBefore, coldAfter, sample: { ...sample, pcm: undefined }, nonzero, peak, stereoDifferences, paused, replacement, errors, graphPcmMatchesPaint: true }))
   await testInfo.attach("soundscape-selection", { path: filename, contentType: "application/json" })

@@ -662,14 +662,43 @@ impl Playback {
         obstruction: &[(u32, f32)],
         underwater: bool,
     ) -> Result<(), Error> {
+        self.validate_obstruction(obstruction)?;
+        self.apply_spatialization(obstruction, underwater);
+        Ok(())
+    }
+
+    pub fn scene(
+        &mut self,
+        room: Option<crate::acoustics::RoomChange>,
+        obstruction: &[(u32, f32)],
+        underwater: bool,
+    ) -> Result<(), Error> {
+        // Validate the whole reply before mutating a room node or any channel.
+        // An extra paint may retire a queried voice; it cannot replace its slot
+        // until the next control frame, so that expired result is safe to ignore.
+        self.validate_obstruction(obstruction)?;
+        if let Some(change) = room {
+            self.room(change.node, change.created)?;
+        }
+        self.apply_spatialization(obstruction, underwater);
+        Ok(())
+    }
+
+    fn validate_obstruction(&self, obstruction: &[(u32, f32)]) -> Result<(), Error> {
         if obstruction.len() != self.requests.len()
             || obstruction
                 .iter()
                 .zip(&self.requests)
-                .any(|((id, gain), request)| *id != request.voice || !gain.is_finite())
+                .any(|((id, gain), request)| {
+                    *id != request.voice || !gain.is_finite() || !(0.0..=1.0).contains(gain)
+                })
         {
             return Err(Error::Malformed("obstruction response"));
         }
+        Ok(())
+    }
+
+    fn apply_spatialization(&mut self, obstruction: &[(u32, f32)], underwater: bool) {
         self.underwater = underwater;
         for &(id, gain) in obstruction {
             if let Some(voice) = self.voices[id as usize - 1].as_mut() {
@@ -752,7 +781,6 @@ impl Playback {
         if self.mixer_request.is_some() {
             self.render_mixer = self.mixer_request.take();
         }
-        Ok(())
     }
 
     pub fn paint(&mut self, frames: usize, random: &mut impl Random) -> Result<&[i16], Error> {
