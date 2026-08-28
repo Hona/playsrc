@@ -92,6 +92,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
   const nativeEvidenceDirectory = path.join(output, "native", randomUUID())
+  let samplerFailure: string | undefined
   let permissionResolved = false
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
   const diagnoseUi = async (stage: string) => {
@@ -102,6 +103,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await writeFile(path.join(nativeEvidenceDirectory, `${filename}.json`), JSON.stringify({ diagnosticOnly: true, record }, null, 2))
   }
   const native = async () => { if (nativeReader) {
+    if (samplerFailure) throw new Error(`Process/host telemetry failed: ${samplerFailure}`)
     const value = await nativeReader.read()
     try { requireStartupNative(value) } catch (error) {
       if (ownedUiDiagnostic || process.env.PROFILE_MEMORY_LOCAL_PERMISSION === "1") await diagnoseUi("guard-failure")
@@ -168,6 +170,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           ? processes.reduce((total, entry) => total + entry.privateBytes!, 0) : null,
       }))
     } catch (error) {
+      samplerFailure = String(error)
       if (timeline.length === 0) console.error(`[map-memory] process sampler: ${String(error)}`)
     } finally {
       busy = false
@@ -814,6 +817,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         }
       }
        const frames = await frameSample.finally(async () => { if (aliasCombat) await page.mouse.up({ button: "left" }) })
+       await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-active-${index}.json`), JSON.stringify({ frames, input, inputDelivery, timeline, hostSamples, sourceReceipts, nativeAdmission: nativeReader?.records, samplerFailure }, null, 2))
        if (aliasCombat) {
          expect(frames.actualFrames?.some((frame: any) => frame.detail.particleItems > 0)).toBe(true)
          expect(frames.gpuTimestamps?.length).toBeGreaterThan(0)
@@ -1062,7 +1066,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     }).catch(() => null)
     const inputDiagnosis = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1" ? { helpers: helperProcesses,
       page: await page.evaluate(() => (globalThis as any).__playsrcInputDiagnosis).catch(() => null) } : undefined
-    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline, nativeAdmission: nativeReader?.records, inputDiagnosis }, null, 2)}\n`)
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-failure.json`), `${JSON.stringify({ error: String(error), failure, timeline, hostSamples, samplerFailure, nativeAdmission: nativeReader?.records, inputDiagnosis }, null, 2)}\n`)
     console.error(`PLAYSRC_MAP_MEMORY_FAILURE ${JSON.stringify(failure && { phase: failure.application.phase, generation: failure.application.generation, detail: failure.application.detail, console: failure.console, command: failure.command })}`)
     throw error
   } finally {
