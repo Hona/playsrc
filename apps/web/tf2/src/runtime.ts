@@ -84,6 +84,8 @@ import {
   classPreviewBaseActivity,
   encodeModelPoseBatch,
   projectileFrame,
+  projectileModelPath,
+  weaponParticleColorRequests,
   projectileModels,
   hitscanMuzzleParticles,
   combatImpactParticles,
@@ -166,43 +168,6 @@ const MAX_REQUIRED_PARTICLE_DISPLAY_FRAMES = 256
 const BOT_MODEL_IDENTITY_BASE = 0x6000_0000
 const OBJECTIVE_MODEL_IDENTITY_BASE = 0x6100_0000
 const BUILDING_BLUEPRINT_IDENTITY = 0x5fff_ffff
-const PARTICLE_SYSTEMS = new Set([
-  "mark_for_death",
-  "rockettrail",
-  "rocketbackblast",
-  "stickybombtrail_red",
-  "stickybombtrail_blue",
-  "stickybomb_pulse_red",
-  "stickybomb_pulse_blue",
-  "muzzle_pipelauncher",
-  "muzzle_scattergun",
-  "muzzle_pistol",
-  "muzzle_shotgun",
-  "new_flame",
-  "pyro_blast",
-  "muzzle_revolver",
-  "ExplosionCore_Wall",
-  "ExplosionCore_MidAir",
-  "nailtrails_medic_red",
-  "nailtrails_medic_blue",
-  "muzzle_syringe",
-  "medicgun_beam_red",
-  "medicgun_beam_blue",
-  "medicgun_beam_red_invun",
-  "medicgun_beam_blue_invun",
-  "blood_impact_red_01",
-  "blood_spray_red_01",
-  "blood_spray_red_01_far",
-  "crit_text",
-  "minicrit_text",
-  ...["scattergun", "pistol", "shotgun"].flatMap((weapon) =>
-    ["red", "blue"].flatMap((team) =>
-      [`bullet_${weapon}_tracer01_${team}`, `bullet_${weapon}_tracer01_${team}_crit`])),
-  "bullet_tracer01_red",
-  "bullet_tracer01_blue",
-  "bullet_tracer01_red_crit",
-  "bullet_tracer01_blue_crit",
-])
 
 export type ApplicationView = Readonly<{
   phase: "Startup" | "MainMenu" | "Loading" | "Ready" | "Replacing" | "Failed" | "Closed"
@@ -451,7 +416,9 @@ export class Tf2Application {
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #clientRenderFrames = createClientRenderFrameClock()
+  #particleSystems = new Set<string>()
   #pyroFlameEffect?: string
+  #manmelterChargeEffect?: string
   #combatTracerCount = 0
   #combatDecalCount = 0
   #pyroEffectSerial = 0
@@ -1743,7 +1710,7 @@ export class Tf2Application {
       this.#projectiles = createProjectilePresentationMapper(
         Object.freeze({
           models: new Set(this.#artifacts.models.keys()),
-          systems: PARTICLE_SYSTEMS,
+          systems: this.#particleSystems = new Set(this.#artifacts.particleSystems),
           attachments: this.#attachments,
           attachmentTransforms: this.#attachmentTransforms,
           fireAttachmentTransforms: this.#fireAttachmentTransforms,
@@ -1972,6 +1939,7 @@ export class Tf2Application {
     this.#audioStarts = []
     this.#pendingAudioRequests = []
     this.#pyroFlameEffect = undefined
+    this.#manmelterChargeEffect = undefined
     this.#combatTracerCount = 0
     this.#combatDecalCount = 0
     this.#pyroEffectSerial = 0
@@ -3851,7 +3819,7 @@ export class Tf2Application {
     this.#projectiles = createProjectilePresentationMapper(
       Object.freeze({
         models: new Set(artifacts.models.keys()),
-        systems: PARTICLE_SYSTEMS,
+        systems: this.#particleSystems = new Set(artifacts.particleSystems),
         attachments: this.#attachments,
         attachmentTransforms: this.#attachmentTransforms,
         fireAttachmentTransforms: this.#fireAttachmentTransforms,
@@ -4110,6 +4078,8 @@ export class Tf2Application {
     }
     await renderer.prepareParticlePipelines(camera, this.#mainFog(artifacts))
     checkOwner()
+    await this.#prepareProjectilePipelines(camera)
+    checkOwner()
     // Replacement resets the simulation's team. Keep the admitted presentation
     // team's bounded panel/view variants; world players include both teams.
     const requests = [
@@ -4129,6 +4099,23 @@ export class Tf2Application {
         position: request.lighting.origin, angles: request.lighting.angles, scale: 1, pose, modelLighting: pose.lighting, eyeStates: pose.eyes } }
     }), camera, this.#mainFog(artifacts))
     checkOwner()
+  }
+
+  async #prepareProjectilePipelines(camera: Camera): Promise<void> {
+    const renderer = this.#renderer!, artifacts = this.#artifacts!, generation = this.#generation
+    const paths = new Set(([1, 2, 3, 4] as const).map(kind => projectileModelPath(kind, false)))
+    paths.add(projectileModelPath(1, true))
+    const models = [...paths].flatMap(model => {
+      const artifact = artifacts.models.get(model)
+      if (!artifact) throw new Error(`Projectile pipeline model unavailable: ${model}`)
+      return Array.from({ length: artifact.skinCount }, (_, skin) => ({ pass: "world" as const, item: {
+        identity: 0, model, skin, position: camera.position, angles: [0, 0, 0] as const, scale: 1,
+      } }))
+    })
+    await renderer.prepareModelPipelines(models, camera, this.#mainFog(artifacts))
+    if (renderer !== this.#renderer || artifacts !== this.#artifacts || generation !== this.#generation) {
+      throw new Error("Projectile pipeline preparation generation was replaced")
+    }
   }
 
   #recordLockerAnimations(snapshot:Snapshot):void{for(const event of snapshot.regenerateAnimationEvents)this.#lockerAnimations.set(event.associatedModel,Object.freeze({openTick:event.openTick,closeTick:event.closeTick,body:event.body,openAnimation:event.openAnimation,closeAnimation:event.closeAnimation}))}
@@ -4311,7 +4298,7 @@ export class Tf2Application {
     this.#fireAttachmentTransforms.clear()
     for (const projectile of snapshot.projectiles) {
       const artifact = this.#artifacts.models.get(
-        projectile.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : projectile.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
+        projectileModelPath(projectile.kind, projectile.miniRocket),
       )
       if (artifact) {
         this.#attachments.set(projectile.identity, new Set(artifact.attachments.keys()))
@@ -4327,7 +4314,7 @@ export class Tf2Application {
     for (const event of snapshot.projectileEvents) {
       if (this.#attachmentTransforms.has(event.projectile)) continue
       const artifact = this.#artifacts.models.get(
-        event.kind === 1 ? "models/weapons/w_models/w_rocket.mdl" : event.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl" : "models/weapons/w_models/w_syringe_proj.mdl",
+        projectileModelPath(event.kind, event.miniRocket),
       )
       if (!artifact) continue
       this.#attachments.set(event.projectile, new Set(artifact.attachments.keys()))
@@ -4372,11 +4359,8 @@ export class Tf2Application {
       const launcherPose = event.launcherPose
       if (event.ownerIdentity !== 1) {
         if (!launcherPose) throw new Error(`TF2 bot fire-tick launcher pose unavailable: ${event.tick}:${event.projectile}`)
-        const model = event.kind === 1
-          ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-          : event.kind === 2
-            ? "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
-            : "models/weapons/c_models/c_syringegun/c_syringegun.mdl"
+        const model = this.#equipmentProfile!.state()!.inventory.find(item => item.weapon === event.weapon)?.modelPlayer
+        if (!model) throw new Error(`Authored TF2 bot launcher definition unavailable: ${event.weapon}`)
         const artifact = this.#artifacts.models.get(model)
         if (!artifact) throw new Error(`Authored TF2 bot launcher model unavailable: ${model}`)
         const transforms = new Map([...artifact.attachments].map(([name, matrix]) => [
@@ -4422,14 +4406,16 @@ export class Tf2Application {
     const muzzle=snapshot.weapon===null?undefined:this.#attachmentTransforms.get(snapshot.weapon)?.get("muzzle")
     const team=snapshot.team===2?"red" as const:"blue" as const
     const ownerIdentity=1
-    const start=(effectIdentity:string,system:string,tick:bigint)=>{
+    const start=(effectIdentity:string,system:string,tick:bigint,colored=false)=>{
       if(!muzzle)throw new Error(`TF2 Pyro authored muzzle attachment unavailable: ${system}`)
-      requests.push(Object.freeze({
+      const request: Extract<ProjectileParticleRequest, { kind: "start" }> = Object.freeze({
         kind:"start",identity:`${effectIdentity}:start:${tick}`,effectIdentity,eventIdentity:`${effectIdentity}:${tick}`,
         tick,projectileIdentity:snapshot.weapon!,ownerIdentity,launcherIdentity:snapshot.weapon!,team,system,
         attachment:Object.freeze({entityIdentity:snapshot.weapon!,name:"muzzle" as const}),
         controlPoints:Object.freeze([Object.freeze({index:0 as const,position:muzzle.position,orientation:muzzle.orientation,ownerIdentity})]),
-      }))
+      })
+      requests.push(request)
+      if (colored) requests.push(...weaponParticleColorRequests(request))
     }
     const firing=snapshot.class===7&&snapshot.weapon===15&&snapshot.flameFiring
     if(!firing&&this.#pyroFlameEffect){
@@ -4462,6 +4448,36 @@ export class Tf2Application {
       }else if(activity.weapon===7&&activity.activity===2){
         start(`pyro-shotgun:${++this.#pyroEffectSerial}`,"muzzle_shotgun",snapshot.tick)
       }
+    }
+    const stopCharge = () => {
+      if (!this.#manmelterChargeEffect) return
+      const effectIdentity = this.#manmelterChargeEffect
+      requests.push(Object.freeze({ kind: "stop", identity: `${effectIdentity}:stop:${snapshot.tick}`, effectIdentity,
+        eventIdentity: `${effectIdentity}:stop`, tick: snapshot.tick, projectileIdentity: 98, immediate: false }))
+      this.#manmelterChargeEffect = undefined
+    }
+    const manmelterVisible = snapshot.lifecycle === 1 && snapshot.weapon === 98
+    if (!manmelterVisible) stopCharge()
+    for (const event of snapshot.events) {
+      if (event.kind !== 24) continue
+      if (event.subject === 2) { stopCharge(); continue }
+      if (!manmelterVisible) continue
+      if (event.subject === 1) {
+        stopCharge()
+        this.#manmelterChargeEffect = `manmelter-charge:${++this.#pyroEffectSerial}`
+        start(this.#manmelterChargeEffect, "drg_manmelter_vacuum", snapshot.tick, true)
+      } else if (event.subject === 3) {
+        start(`manmelter-absorb:${++this.#pyroEffectSerial}`, "drg_manmelter_vacuum_flames", snapshot.tick, true)
+      } else if (event.subject === 4) {
+        start(`manmelter-idle:${++this.#pyroEffectSerial}`, "drg_bison_idle", snapshot.tick, true)
+        start(`manmelter-idle:${++this.#pyroEffectSerial}`, "drg_manmelter_idle", snapshot.tick)
+      }
+    }
+    if (this.#manmelterChargeEffect && muzzle) {
+      const effectIdentity = this.#manmelterChargeEffect
+      requests.push(Object.freeze({ kind: "set-control-point", identity: `${effectIdentity}:muzzle:${snapshot.tick}`, effectIdentity,
+        eventIdentity: `${effectIdentity}:follow`, tick: snapshot.tick, projectileIdentity: 98,
+        controlPoint: Object.freeze({ index: 0 as const, position: muzzle.position, orientation: muzzle.orientation, ownerIdentity }) }))
     }
     return requests
   }
@@ -4794,10 +4810,26 @@ export class Tf2Application {
       const skyGeometry=sky3d?renderer.captureGeometryEvidence(sky3d.camera,"sky3d"):null
       profile.geometryEvidence=Object.freeze({revision:geometryEvidenceRevision,generation,target:this.#mapIdentity,finalReady:true,identities:Object.freeze({bsp:this.#activeTarget?.objects.bsp.sha256,resourceRoot:this.#activeTarget?.objects.resources.sha256,contentBuild:this.#resourceGraph?.contentBuild,graphTarget:this.#resourceGraph?.target,wasm:this.#configuration?.wasm.sha256,simulationTick:prepared.snapshot.tick.toString()}),camera,visibility:Object.freeze({outsideWorld:visibility.outsideWorld,eyeLeaf:visibility.eyeLeaf,leaves:Object.freeze([...visibility.leaves]),areas:Object.freeze([...visibility.areas]),pvsSurfaces:Object.freeze([...visibility.surfaces]),drawSurfaces:Object.freeze([...visibility.drawSurfaces])}),skyGeometry,geometry:renderer.captureGeometryEvidence(camera)})
     }
+    if (profile?.captureProjectileQueries === true) profile.projectileQueries = renderer.captureParticleVisibilityEvidence()
+    if (profile?.captureProjectileGameplay === true) profile.projectileState = {
+      tick: prepared.snapshot.tick.toString(), health: prepared.snapshot.health, grounded: prepared.snapshot.grounded,
+      position: prepared.snapshot.position, velocity: prepared.snapshot.velocity, conditions: prepared.snapshot.conditions,
+      bots: prepared.snapshot.bots.length, ropeItems: particles.filter(item => item.primitive === "rope").length,
+      projectileItems: prepared.snapshot.projectiles.map(item => ({ identity: item.identity, kind: item.kind, trail: item.trail, miniRocket: item.miniRocket, modelVisible: item.modelVisible })),
+    }
+    if (profile?.captureProjectileHistory === true && !browserFrameProfiler()?.active) {
+      const state = profile.projectileState as { grounded: boolean; conditions: number[]; projectileItems: { identity: number; trail: number }[] }
+      const key = `${state.grounded}:${state.conditions.join(":")}:${state.projectileItems.map(item => `${item.identity}:${item.trail}`).join(",")}`
+      if (profile.projectileHistoryKey !== key) {
+        profile.projectileHistoryKey = key
+        const history = (profile.projectileHistory ??= []) as unknown[]
+        history.push({ at: performance.now(), ...state }); if (history.length > 64) history.shift()
+      }
+    }
     if (profile && Number.isSafeInteger(profile.particleEvidenceRevision)
       && (profile.particleEvidence as { revision?: number } | undefined)?.revision !== profile.particleEvidenceRevision) {
       profile.particleEvidence = { revision: profile.particleEvidenceRevision, tick: prepared.snapshot.tick.toString(), camera,
-        items: particles, batches: renderer.captureParticleBatchEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
+        items: particles, batches: renderer.captureParticleBatchEvidence(), visibilityQueries: renderer.captureParticleVisibilityEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
     }
     if (profile && Array.isArray(profile.doorEvidenceTargets) && this.#view.phase === "Ready") {
       const captures = (profile.doorEvidence ??= []) as Array<{ key: string }>
@@ -5070,19 +5102,9 @@ export class Tf2Application {
         const add = (identity: number, next: ReadonlySet<string>) =>
           this.#attachments.set(identity, new Set([...(this.#attachments.get(identity) ?? []), ...next]))
         const m = this.#artifacts.models.get(
-          p.kind === 1 ? "models/weapons/w_models/w_rocket.mdl"
-            : p.kind === 2 ? "models/weapons/w_models/w_stickybomb.mdl"
-              : "models/weapons/w_models/w_syringe_proj.mdl",
+          projectileModelPath(p.kind, p.miniRocket),
         )
         if (m) add(p.identity, new Set(m.attachments.keys()))
-        const l = this.#artifacts.models.get(
-          p.kind === 1
-            ? "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl"
-            : p.kind === 2
-              ? "models/weapons/c_models/c_stickybomb_launcher/c_stickybomb_launcher.mdl"
-              : "models/weapons/c_models/c_syringegun/c_syringegun.mdl",
-        )
-        if (l) add(p.launcherIdentity, new Set(l.attachments.keys()))
       }
       const authoritativeCamera=tf2Camera(snapshot,this.#yaw,this.#pitch)
       const presentedEye=this.#predictedEye.sample(publication.interpolation)
@@ -5321,6 +5343,12 @@ export class Tf2Application {
       const viewmodelIdentities=new Set([...historicalViewmodels.map(request=>request.identity),...(viewmodel?[viewmodel.item.identity]:[])])
       const timelineViewmodelPoses = modelPoses.filter((pose) => viewmodelIdentities.has(pose.identity))
       const viewmodelPoses = currentViewmodelRequest===undefined?[]:timelineViewmodelPoses.filter((pose) => pose.identity===currentViewmodelRequest.identity&&!pose.attachmentsOnly&&pose.sampleTick===currentViewmodelRequest.sampleTick)
+      const weaponProfile = (globalThis as any).__playsrcProfile
+      if (weaponProfile?.captureWeaponPoses) {
+        const item = viewmodelPoses.find(pose => pose.role === "item")
+        weaponProfile.weaponPose = item ? { model: item.model, definition: currentViewmodelRequest?.itemDefinition,
+          class: snapshot.class, weapon: snapshot.weapon, ammo: snapshot.loadout.find(value => value.weapon === snapshot.weapon), tick: String(snapshot.tick) } : null
+      }
       const lockerPoses=modelPoses.filter(pose=>this.#lockerAnimations.has(pose.identity))
       const studioPoses = modelPoses.filter(pose => studioRequests.some(request => request.identity === pose.identity))
       const watchPose = watchRequest && modelPoses.find(pose => pose.identity === watchRequest!.identity)
@@ -5361,7 +5389,7 @@ export class Tf2Application {
       const projectileMilliseconds=performance.now()-projectileStart
       this.#pendingProjectileTimeline.splice(0,projectileTimeline.length)
       const particleStart=performance.now()
-      const pyroParticles=snapshot.class===7||this.#pyroFlameEffect?this.#pyroParticles(snapshot):[]
+      const pyroParticles=snapshot.class===7||this.#pyroFlameEffect||this.#manmelterChargeEffect?this.#pyroParticles(snapshot):[]
       const medicBeam: ProjectileParticleRequest[] = []
       if (this.#medicBeamTarget !== null && (this.#medicBeamTarget !== snapshot.medigunTarget || this.#medicBeamReleasing !== snapshot.medigunReleasing)) {
         const prior = this.#medicBeamTarget
@@ -5395,15 +5423,18 @@ export class Tf2Application {
       const playerActors=botSelection.criticalTargets.size?new Map(snapshot.bots.map(bot=>[bot.identity,bot])):undefined
       const combatParticles=publication.eventBatches.flatMap(batch=>{
         const muzzles=snapshot.class===1||snapshot.class===3||snapshot.class===6||snapshot.class===9||snapshot.class===8
-          ?hitscanMuzzleParticles(batch.snapshot,{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms}):[]
-        const result=combatImpactParticles(batch.snapshot,{tracerCount:this.#combatTracerCount},{systems:PARTICLE_SYSTEMS,attachmentTransforms:this.#attachmentTransforms,playerAttachmentTransforms,playerActors})
+          ?hitscanMuzzleParticles(batch.snapshot,{systems:this.#particleSystems,attachmentTransforms:this.#attachmentTransforms}):[]
+        const result=combatImpactParticles(batch.snapshot,{tracerCount:this.#combatTracerCount},{systems:this.#particleSystems,attachmentTransforms:this.#attachmentTransforms,playerAttachmentTransforms,playerActors})
         this.#combatTracerCount=result.state.tracerCount
         return [...muzzles,...result.particles]
       })
       const conditionParticles=this.#meleeConditions.map(snapshot)
       const supplementalParticles=[...combatParticles,...pyroParticles,...medicBeam,...conditionParticles]
       const combinedParticles=supplementalParticles.length===0?presentation.particles:[...presentation.particles,...supplementalParticles].sort((left,right)=>left.tick<right.tick?-1:left.tick>right.tick?1:0)
-      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,combinedParticles)
+      const particleBatch=owners.encoder.encode(snapshot.tick,camera.position,combinedParticles, {
+        yawDegrees: camera.yawDegrees, pitchDegrees: camera.pitchDegrees, verticalFovDegrees: camera.verticalFovDegrees,
+        width: this.#canvas.width, height: this.#canvas.height, samples: this.#renderer!.takeParticleVisibilitySamples(),
+      })
       if(!ownsGeneration())return
       this.#wasmCalls.particles++
       const particleOutput=await client.particles(generation,particleBatch)

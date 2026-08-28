@@ -55,6 +55,9 @@ pub enum RandomDecision {
     WeaponCritical,
     EnemySpeedOnHit,
     BulletSpread,
+    ScorchShotBounceVelocity,
+    ScorchShotBounceAngle,
+    ScorchShotBounceSign,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

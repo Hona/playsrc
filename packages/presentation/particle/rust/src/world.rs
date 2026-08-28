@@ -123,6 +123,7 @@ pub struct AdvanceRequest {
 pub enum Primitive {
     Sprite,
     Trail,
+    Rope,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,6 +154,7 @@ pub enum ParticleColorSpace {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParticleMaterial {
+    pub mapping_height: u32,
     pub shader: ParticleMaterialShader,
     pub blend: ParticleBlendState,
     pub color_space: ParticleColorSpace,
@@ -170,6 +172,8 @@ pub struct ParticleMaterialState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderItem {
     pub sky: bool,
+    pub visibility: Option<crate::VisibilityProxy>,
+    pub rope: Option<Box<crate::RopeRender>>,
     pub effect_identity: u32,
     pub system_uuid: [u8; 16],
     pub particle_identity: u32,
@@ -223,12 +227,18 @@ pub fn resolve_render_output(
                 format!("particle material {} is missing", item.material),
             )
         })?;
+        if let Some(rope) = item.rope.as_mut() {
+            if material.shader == ParticleMaterialShader::SpriteCard {
+                return Err(Error::new(ErrorCode::UnsupportedFunction, "particle-output", 0, "rope spline-card material path is not implemented"));
+            }
+            rope.resolve(material.mapping_height)?;
+        }
         if item.primitive == Primitive::Trail
             && material.shader == ParticleMaterialShader::SpriteCard
         {
             continue;
         }
-        if material.shader == ParticleMaterialShader::MeshSprite && item.opacity == 0.0 {
+        if material.shader == ParticleMaterialShader::MeshSprite && item.opacity == 0.0 && item.primitive != Primitive::Rope && item.visibility.is_none() {
             continue;
         }
         let fit_lifetime =
@@ -300,7 +310,7 @@ pub fn encode_render_output(
     materials: &[String],
     max_bytes: usize,
 ) -> Result<Vec<u8>, Error> {
-    let length = OUTPUT_HEADER_BYTES
+    let record_length = OUTPUT_HEADER_BYTES
         .checked_add(
             items
                 .len()
@@ -322,6 +332,27 @@ pub fn encode_render_output(
                 "output length overflowed",
             )
         })?;
+    let mut length = record_length;
+    for item in items {
+        if let Some(proxy) = &item.visibility {
+            if proxy.vertices.iter().any(|vertex| !finite(vertex)) || !proxy.clip_fraction.is_finite() || !(0.0..=1.0).contains(&proxy.clip_fraction) {
+                return Err(Error::new(ErrorCode::InvalidValue, "particle-output", 0, "visibility proxy is malformed"));
+            }
+            length = length.checked_add(72).ok_or_else(|| Error::new(ErrorCode::BoundExceeded, "particle-output", 0, "visibility output length overflow"))?;
+        }
+        if (item.primitive == Primitive::Rope) != item.rope.is_some() { return Err(Error::new(ErrorCode::InvalidValue, "particle-output", 0, "rope primitive payload differs")); }
+        if let Some(rope) = &item.rope {
+            let mesh = rope.mesh.as_ref().ok_or_else(|| Error::new(ErrorCode::InvalidValue, "particle-output", 0, "rope mesh was not resolved"))?;
+            if mesh.vertices.len() < 4 || mesh.vertices.len() > u32::MAX as usize || mesh.indices.is_empty() || mesh.indices.len() % 6 != 0
+                || mesh.indices.iter().any(|index| *index as usize >= mesh.vertices.len())
+                || mesh.vertices.iter().any(|vertex| !finite(&vertex.position) || !finite(&vertex.uv)) {
+                return Err(Error::new(ErrorCode::InvalidValue, "particle-output", 0, "rope mesh is malformed"));
+            }
+            length = mesh.vertices.len().checked_mul(24).and_then(|bytes| mesh.indices.len().checked_mul(4).and_then(|indices| bytes.checked_add(indices)))
+                .and_then(|bytes| bytes.checked_add(8)).and_then(|bytes| length.checked_add(bytes))
+                .ok_or_else(|| Error::new(ErrorCode::BoundExceeded, "particle-output", 0, "rope output length overflow"))?;
+        }
+    }
     if length > max_bytes || items.len() > u32::MAX as usize {
         return Err(Error::new(
             ErrorCode::BoundExceeded,
@@ -345,7 +376,7 @@ pub fn encode_render_output(
     let sorted_materials = materials.windows(2).all(|pair| pair[0] <= pair[1]);
     let mut bytes = vec![0; length];
     bytes[0..4].copy_from_slice(&0x5250_5350_u32.to_le_bytes());
-    bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
     bytes[8..12].copy_from_slice(&(items.len() as u32).to_le_bytes());
     if let Some(bounds) = bounds {
         if !finite(&bounds.minimum)
@@ -434,8 +465,9 @@ pub fn encode_render_output(
         bytes[offset + 14] = match item.primitive {
             Primitive::Sprite => 0,
             Primitive::Trail => 1,
+            Primitive::Rope => 2,
         };
-        bytes[offset + 15] = u8::from(item.sky);
+        bytes[offset + 15] = u8::from(item.sky) | (u8::from(item.visibility.is_some()) << 1);
         bytes[offset + 16..offset + 32].copy_from_slice(&item.system_uuid);
         bytes[offset + 32..offset + 36].copy_from_slice(&material.to_le_bytes());
         put_vector(&mut bytes, offset + 36, item.position);
@@ -494,6 +526,25 @@ pub fn encode_render_output(
         bytes[offset + 424..offset + 432].copy_from_slice(&item.stable_tie_identity.to_le_bytes());
         bytes[offset + 432..offset + 436].copy_from_slice(&item.yaw_radians.to_le_bytes());
     }
+    let mut at = record_length;
+    for item in items {
+        if let Some(proxy) = &item.visibility {
+            bytes[at..at + 8].copy_from_slice(&proxy.identity.to_le_bytes());
+            for (index, vertex) in proxy.vertices.iter().enumerate() { put_vector(&mut bytes, at + 8 + index * 12, *vertex); }
+            bytes[at + 68..at + 72].copy_from_slice(&proxy.clip_fraction.to_le_bytes());
+            at += 72;
+        }
+        let Some(rope) = &item.rope else { continue; };
+        let mesh = rope.mesh.as_ref().unwrap();
+        bytes[at..at + 4].copy_from_slice(&(mesh.vertices.len() as u32).to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&(mesh.indices.len() as u32).to_le_bytes());
+        at += 8;
+        for vertex in &mesh.vertices { put_vector(&mut bytes, at, vertex.position); at += 12; }
+        for vertex in &mesh.vertices { for value in vertex.uv { bytes[at..at + 4].copy_from_slice(&value.to_le_bytes()); at += 4; } }
+        for vertex in &mesh.vertices { bytes[at..at + 4].copy_from_slice(&vertex.color); at += 4; }
+        for index in &mesh.indices { bytes[at..at + 4].copy_from_slice(&index.to_le_bytes()); at += 4; }
+    }
+    debug_assert_eq!(at, length);
     Ok(bytes)
 }
 
@@ -601,6 +652,7 @@ struct Effect {
 
 #[derive(Clone, Debug, PartialEq)]
 struct System {
+    visibility: Option<Box<BTreeMap<u16, crate::visibility::VisibilityState>>>,
     definition_uuid: [u8; 16],
     definition_index: usize,
     group_id: i32,
@@ -645,6 +697,7 @@ struct Particle {
     color: [f32; 3],
     initial_alpha: f32,
     alpha: f32,
+    alpha2: f32,
     sequence: i32,
     secondary_sequence: i32,
     trail_length: f32,
@@ -781,7 +834,7 @@ impl ParticleWorld {
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
     ) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
-        self.transact(events, &[], request, collision, |items, bounds| {
+        self.transact(events, &[], &[], None, request, collision, |items, bounds| {
             Ok((items, bounds))
         })
     }
@@ -790,13 +843,15 @@ impl ParticleWorld {
         &mut self,
         events: &[Event],
         attached_controls: &[(u32, ControlPoint)],
+        visibility_samples: &[crate::VisibilitySample],
+        visibility_view: Option<crate::VisibilityView>,
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
         materials: &BTreeMap<String, ParticleMaterial>,
         material_identities: &[String],
         maximum_output_bytes: usize,
     ) -> Result<Vec<u8>, Error> {
-        self.transact(events, attached_controls, request, collision, |items, bounds| {
+        self.transact(events, attached_controls, visibility_samples, visibility_view, request, collision, |items, bounds| {
             let resolved = resolve_render_output(items, materials)?;
             encode_render_output(&resolved, bounds, material_identities, maximum_output_bytes)
         })
@@ -808,11 +863,13 @@ impl ParticleWorld {
         &mut self,
         events: &[Event],
         attached_controls: &[(u32, ControlPoint)],
+        visibility_samples: &[crate::VisibilitySample],
+        visibility_view: Option<crate::VisibilityView>,
         request: AdvanceRequest,
         collision: &mut impl CollisionQuery,
         complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        self.transact_views(events, attached_controls, request, |_| request.camera_position, collision, complete)
+        self.transact_views(events, attached_controls, visibility_samples, visibility_view, request, |_| request.camera_position, collision, complete)
     }
 
     /// Each collection is sorted using the camera of its owning render pass.
@@ -820,12 +877,20 @@ impl ParticleWorld {
         &mut self,
         events: &[Event],
         attached_controls: &[(u32, ControlPoint)],
+        visibility_samples: &[crate::VisibilitySample],
+        visibility_view: Option<crate::VisibilityView>,
         request: AdvanceRequest,
         camera: impl Fn(u32) -> [f32; 3],
         collision: &mut impl CollisionQuery,
         complete: impl FnOnce(Vec<RenderItem>, Option<Bounds>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         validate_advance(self.time, events, request, self.limits)?;
+        if visibility_view.is_some_and(|view| !view.valid()) || visibility_samples.len() > self.limits.max_render_items
+            || visibility_samples.windows(2).any(|pair| pair[0].identity >= pair[1].identity)
+            || visibility_samples.iter().any(|sample| !sample.clip_fraction.is_finite() || !(0.0..=1.0).contains(&sample.clip_fraction)
+                || sample.visible_pixels < -1 || sample.possible_pixels < -1) {
+            return Err(invalid_state("visibility samples must be bounded, finite and uniquely sorted"));
+        }
         let mut candidate = self.clone();
         for (identity, control) in attached_controls {
             validate_control_point(control, self.limits)?;
@@ -858,7 +923,7 @@ impl ParticleWorld {
         candidate
             .effects
             .retain(|effect| !finished(&effect.root, &candidate.registry, request.to_seconds));
-        let (items, bounds) = candidate.render(camera)?;
+        let (items, bounds) = candidate.render(camera, visibility_samples, visibility_view, request.to_seconds - request.from_seconds)?;
         let output = complete(items, bounds)?;
         *self = candidate;
         Ok(output)
@@ -1159,22 +1224,25 @@ impl ParticleWorld {
         })
     }
 
-    fn render(&self, camera: impl Fn(u32) -> [f32; 3]) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
+    fn render(&mut self, camera: impl Fn(u32) -> [f32; 3], visibility_samples: &[crate::VisibilitySample], visibility_view: Option<crate::VisibilityView>, seconds: f32) -> Result<(Vec<RenderItem>, Option<Bounds>), Error> {
         let mut items = Vec::with_capacity(particle_count(&self.effects));
         let mut bounds: Option<Bounds> = None;
-        for effect in &self.effects {
+        let mut vertex_budget = self.limits.max_render_items.saturating_mul(4);
+        for effect in &mut self.effects {
             let camera = camera(effect.identity);
             if !finite(&camera) { return Err(Error::new(ErrorCode::NonFinite, "particle-world", 0, "camera position is non-finite")); }
             if let Some(effect_bounds) = system_bounds(&effect.root, &self.registry) {
                 merge_bounds(&mut bounds, effect_bounds);
             }
             render_system(
-                &effect.root,
+                &mut effect.root,
                 &self.registry,
                 effect.identity,
                 camera,
                 &mut items,
                 self.limits.max_render_items,
+                &mut vertex_budget,
+                visibility_samples, visibility_view, seconds,
             )?;
         }
         Ok((items, bounds))
@@ -1328,6 +1396,7 @@ fn instantiate(
         )?);
     }
     Ok(System {
+        visibility: None,
         definition_uuid: definition.uuid,
         definition_index: definition.registry_index,
         group_id: integer_attribute(definition, &["group id"], 0),
@@ -1610,6 +1679,7 @@ fn initialize_particle(
             constant_color[2] as f32 / 255.0,
         ],
         initial_alpha: constant_color[3] as f32 / 255.0,
+        alpha2: 1.0,
         alpha: constant_color[3] as f32 / 255.0,
         sequence: integer_attribute(definition, &["sequence_number"], 0),
         secondary_sequence: integer_attribute(definition, &["sequence_number 1"], 0),
@@ -1642,6 +1712,7 @@ fn initialize_particle(
                 .identity
                 .eq_ignore_ascii_case("Lifetime Pre-Age Noise")
             || initializer.identity.eq_ignore_ascii_case("Lifetime From Sequence")
+            || initializer.identity.eq_ignore_ascii_case("Remap Initial Distance to Control Point to Scalar")
         {
             continue;
         }
@@ -2018,6 +2089,20 @@ fn initialize_particle(
                 speed = -speed;
             }
             particle.roll_speed += speed.to_radians();
+        } else if initializer.identity.eq_ignore_ascii_case("Remap Initial Distance to Control Point to Scalar") {
+            let point = integer_parameter(initializer, "control point", 0).clamp(0, 30) as usize;
+            let control = system.controls.get(point).and_then(Option::as_ref).map_or([0.0; 3], |control| control.position);
+            let distance = length_squared(sub(control, particle.position)).sqrt();
+            let minimum = float_parameter(initializer, "distance minimum", 0.0);
+            let maximum = float_parameter(initializer, "distance maximum", 128.0);
+            if bool_parameter(initializer, "only active within specified distance", false) && (distance < minimum || distance > maximum) { continue; }
+            let field = integer_parameter(initializer, "output field", 3);
+            let mut min = float_parameter(initializer, "output minimum", 0.0);
+            let mut max = float_parameter(initializer, "output maximum", 1.0);
+            if matches!(field, 7 | 16) { min = min.clamp(0.0, 1.0); max = max.clamp(0.0, 1.0); }
+            let mut value = mix(min, max, remap(distance, minimum, maximum));
+            if bool_parameter(initializer, "output is scalar of initial random range", false) { value *= particle_scalar(&particle, field).unwrap(); }
+            set_particle_scalar(&mut particle, field, value);
         } else if initializer
             .identity
             .eq_ignore_ascii_case("Remap Initial Scalar")
@@ -2325,6 +2410,7 @@ fn operate_position_lock(system: &mut System, operator: &Function, index: usize,
     *previous_orientation = orientation;
     let delta = mul(sub(current, previous), strength);
     let rotation_lock = bool_parameter(operator, "lock rotation", false);
+    let range = float_parameter(operator, "distance fade range", 0.0);
     let inverse = [-prior_orientation[0], -prior_orientation[1], -prior_orientation[2], prior_orientation[3]];
     let transformed = |position| add(current, rotate(orientation, rotate(inverse, sub(position, previous))));
     let start_min = float_parameter(operator, "start_fadeout_min", 1.0);
@@ -2349,12 +2435,20 @@ fn operate_position_lock(system: &mut System, operator: &Function, index: usize,
             };
             if lock > 0.0 {
                 let bias = age.min(dt) / dt;
+                let mut movement = mul(mul(delta, bias), lock);
+                let mut rotation_weight = if always { strength } else { lock };
+                if range != 0.0 {
+                    let distance = length_squared(sub(add(particle.position, movement), current)).sqrt();
+                    let fraction = (distance / range).min(1.0);
+                    let dampening = fraction / (3.0 * (1.0 - fraction) + 1.0);
+                    movement = mul(movement, 1.0 - dampening);
+                    rotation_weight = 1.0 - dampening * rotation_weight;
+                }
                 if rotation_lock {
-                    let weight = if always { strength * bias } else { lock * bias };
+                    let weight = rotation_weight * bias;
                     particle.position = add(particle.position, mul(sub(transformed(particle.position), particle.position), weight));
                     particle.previous_position = add(particle.previous_position, mul(sub(transformed(particle.previous_position), particle.previous_position), weight));
                 } else {
-                    let movement = mul(mul(delta, bias), lock);
                     particle.position = add(particle.position, movement);
                     particle.previous_position = add(particle.previous_position, movement);
                 }
@@ -2796,6 +2890,20 @@ fn operate_movement(
         if strength <= 0.0 {
             continue;
         }
+        if force.identity.eq_ignore_ascii_case("Pull towards control point") {
+            let center = control_at_time(system, integer_parameter(force, "control point number", 0).clamp(0, 63), time);
+            let amount = -float_parameter(force, "amount of force", 0.0) * strength;
+            let exponent = (-4.0 * float_parameter(force, "falloff power", 2.0)) as i32;
+            for (particle, acceleration) in system.particles.iter().zip(&mut accelerations) {
+                let offset = sub(particle.position, center);
+                let distance = length_squared(offset).sqrt();
+                if distance > f32::EPSILON {
+                    let force = mul(mul(offset, amount / distance), fixed_quarter_power(distance, exponent));
+                    *acceleration = add(*acceleration, force);
+                }
+            }
+            continue;
+        }
         if force.identity.eq_ignore_ascii_case("twist around axis") {
             let mut axis = vector_parameter(force, "twist axis", [0.0, 0.0, 1.0]);
             if bool_parameter(force, "object local space axis 0/1", false)
@@ -2862,6 +2970,24 @@ fn constrain(
         .functions(FunctionCategory::Constraint)
         .enumerate()
     {
+        if constraint.identity.eq_ignore_ascii_case("Prevent passing through a plane") {
+            let control = integer_parameter(constraint, "control point number", 0);
+            let transform_axis = |value: [f32; 3]| {
+                let local = [value[1], -value[0], value[2]];
+                rotate(control_orientation(system, control).unwrap_or([0.0, 0.0, 0.0, 1.0]), local)
+            };
+            let authored_normal = vector_parameter(constraint, "plane normal", [0.0, 0.0, 1.0]);
+            let normal = if bool_parameter(constraint, "global normal", false) { authored_normal } else { transform_axis(authored_normal) };
+            let Some(normal) = normalize(normal) else { continue; };
+            let point = vector_parameter(constraint, "plane point", [0.0; 3]);
+            let point = if bool_parameter(constraint, "global origin", false) { point }
+                else { add(transform_axis(point), control_at_time(system, control, system.local_time)) };
+            for particle in &mut system.particles {
+                let penetration = dot(sub(particle.position, point), normal) - particle.radius;
+                if penetration < 0.0 { particle.position = sub(particle.position, mul(normal, penetration)); }
+            }
+            continue;
+        }
         if constraint
             .identity
             .eq_ignore_ascii_case("Constrain distance to path between two control points")
@@ -3122,12 +3248,16 @@ fn update_collision_planes(
 }
 
 fn render_system(
-    system: &System,
+    system: &mut System,
     registry: &Registry,
     effect_identity: u32,
     camera: [f32; 3],
     output: &mut Vec<RenderItem>,
     limit: usize,
+    vertex_budget: &mut usize,
+    visibility_samples: &[crate::VisibilitySample],
+    visibility_view: Option<crate::VisibilityView>,
+    seconds: f32,
 ) -> Result<(), Error> {
     let definition = registry
         .definition_at(system.definition_index)
@@ -3145,7 +3275,27 @@ fn render_system(
         particles.reverse();
     }
     for (renderer_index, renderer) in definition.functions(FunctionCategory::Renderer).enumerate() {
-        let primitive = if renderer
+        let visibility_cp = integer_parameter(renderer, "Visibility Proxy Input Control Point Number", -1);
+        let mut visibility = None;
+        let (mut alpha_visibility, mut radius_visibility) = (1.0, 1.0);
+        if visibility_cp >= 0 {
+            let control = system.controls.get(visibility_cp as usize).and_then(Option::as_ref)
+                .ok_or_else(|| invalid_state("visibility control point is unavailable"))?;
+            let identity = hash(system.path_identity, renderer_index as u64);
+            let context = system.visibility.get_or_insert_with(Default::default).entry(renderer_index as u16).or_default();
+            let sample = visibility_samples.binary_search_by_key(&identity, |sample| sample.identity).ok().map(|index| &visibility_samples[index]);
+            let fraction = context.sample(sample, seconds);
+            let input_min = float_parameter(renderer, "Visibility input minimum", 0.0);
+            let input_max = float_parameter(renderer, "Visibility input maximum", 1.0);
+            let t = if input_min == input_max { if fraction >= input_max { 1.0 } else { 0.0 } } else { ((fraction - input_min) / (input_max - input_min)).clamp(0.0, 1.0) };
+            let alpha_min = float_parameter(renderer, "Visibility Alpha Scale minimum", 0.0);
+            alpha_visibility = alpha_min + (float_parameter(renderer, "Visibility Alpha Scale maximum", 1.0) - alpha_min) * t;
+            let radius_min = float_parameter(renderer, "Visibility Radius Scale minimum", 1.0);
+            radius_visibility = radius_min + (float_parameter(renderer, "Visibility Radius Scale maximum", 1.0) - radius_min) * t;
+            let view = visibility_view.ok_or_else(|| invalid_state("visibility renderer requires a view"))?;
+            visibility = Some(view.proxy(identity, control.position, float_parameter(renderer, "Visibility Proxy Radius", 1.0), camera));
+        }
+        let primitive = if renderer.identity.eq_ignore_ascii_case("render_rope") { Primitive::Rope } else if renderer
             .identity
             .eq_ignore_ascii_case("render_sprite_trail")
         {
@@ -3153,7 +3303,14 @@ fn render_system(
         } else {
             Primitive::Sprite
         };
-        for particle in &particles {
+        if primitive == Primitive::Rope && system.particles.len() < 2 { continue; }
+        for (index, particle) in particles.iter().enumerate() {
+            if primitive == Primitive::Rope && index > 0 { break; }
+            let particle = if primitive == Primitive::Rope { &system.particles[0] } else { *particle };
+            let subdivisions = integer_parameter(renderer, "subdivision_count", 3).max(1) as usize;
+            let vertices = if primitive == Primitive::Rope { crate::RopeRender::vertex_count(system.particles.len(), subdivisions).unwrap_or(usize::MAX) } else { 4 };
+            if vertices > *vertex_budget { return Err(Error::new(ErrorCode::BoundExceeded, "particle-world", 0, "particle geometry exceeds the render vertex budget")); }
+            *vertex_budget -= vertices;
             if output.len() >= limit {
                 return Err(Error::new(
                     ErrorCode::BoundExceeded,
@@ -3164,6 +3321,13 @@ fn render_system(
             }
             let distance = length_squared(sub(particle.position, camera));
             let item = RenderItem {
+                visibility,
+                rope: (primitive == Primitive::Rope).then(|| Box::new(crate::RopeRender {
+                    points: system.particles.iter().map(|particle| crate::RopePoint { position: particle.position,
+                        width: particle.radius, color: [particle.color[0], particle.color[1], particle.color[2], particle.alpha] }).collect(),
+                    subdivisions, texel_size: { let value = float_parameter(renderer, "texel_size", 4.0); if value <= 0.0 { 1.0 } else { value } },
+                    scroll_offset: float_parameter(renderer, "texture_scroll_rate", 0.0) * system.local_time, camera, mesh: None,
+                })),
                 effect_identity,
                 system_uuid: system.definition_uuid,
                 sky: false,
@@ -3173,13 +3337,13 @@ fn render_system(
                 material: definition.material.clone(),
                 position: particle.position,
                 previous_position: particle.previous_position,
-                radius: particle.radius,
+                radius: particle.radius * radius_visibility,
                 roll_radians: particle.roll,
                 yaw_radians: particle.yaw,
                 color: particle
                     .color
                     .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
-                opacity: (particle.alpha.clamp(0.0, 1.0) * 255.0).round() / 255.0,
+                opacity: ((particle.alpha * particle.alpha2 * alpha_visibility).clamp(0.0, 1.0) * 255.0).round() / 255.0,
                 sequence: particle.sequence,
                 secondary_sequence: particle.secondary_sequence,
                 trail_length_scale: particle.trail_length,
@@ -3215,8 +3379,8 @@ fn render_system(
             output.push(item);
         }
     }
-    for child in &system.children {
-        render_system(child, registry, effect_identity, camera, output, limit)?;
+    for child in &mut system.children {
+        render_system(child, registry, effect_identity, camera, output, limit, vertex_budget, visibility_samples, visibility_view, seconds)?;
     }
     Ok(())
 }
@@ -3795,6 +3959,8 @@ fn definition_reads_control_zero(definition: &Definition) -> bool {
                 .identity
                 .eq_ignore_ascii_case("Position Within Box Random")
                 && integer_parameter(function, "control point number", 0) == 0)
+            || (function.identity.eq_ignore_ascii_case("Prevent passing through a plane")
+                && integer_parameter(function, "control point number", 0) == 0)
     })
 }
 
@@ -4050,6 +4216,7 @@ fn particle_scalar(particle: &Particle, field: i32) -> Option<f32> {
         11 => particle.identity as f32,
         12 => particle.yaw,
         13 => particle.secondary_sequence as f32,
+        16 => particle.alpha2,
         21 => f32::from(particle.target_control_point),
         _ => return None,
     })
@@ -4066,6 +4233,7 @@ fn set_particle_scalar(particle: &mut Particle, field: i32, value: f32) {
         10 => particle.trail_length = value.max(0.0),
         12 => particle.yaw = value,
         13 => particle.secondary_sequence = value as i32,
+        16 => particle.alpha2 = value.clamp(0.0, 1.0),
         21 => particle.target_control_point = value as u8,
         _ => {}
     }
@@ -4203,15 +4371,15 @@ fn mix(left: f32, right: f32, fraction: f32) -> f32 {
     left + (right - left) * fraction
 }
 
-fn add(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+pub(crate) fn add(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
 }
 
-fn sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
-fn mul(value: [f32; 3], scale: f32) -> [f32; 3] {
+pub(crate) fn mul(value: [f32; 3], scale: f32) -> [f32; 3] {
     [value[0] * scale, value[1] * scale, value[2] * scale]
 }
 
@@ -4227,7 +4395,7 @@ fn length_squared4(value: [f32; 4]) -> f32 {
     value.iter().map(|component| component * component).sum()
 }
 
-fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
+pub(crate) fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
     let length = length_squared(value).sqrt();
     (length > f32::EPSILON).then(|| mul(value, length.recip()))
 }
@@ -4239,7 +4407,7 @@ fn rotate(quaternion: [f32; 4], vector: [f32; 3]) -> [f32; 3] {
     add(vector, add(mul(uv, 2.0 * quaternion[3]), mul(uuv, 2.0)))
 }
 
-fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+pub(crate) fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [
         left[1] * right[2] - left[2] * right[1],
         left[2] * right[0] - left[0] * right[2],

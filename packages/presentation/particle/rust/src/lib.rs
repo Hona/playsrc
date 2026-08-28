@@ -2,6 +2,8 @@ mod definition;
 mod control_point_light;
 mod dmx;
 mod sheet;
+mod rope;
+mod visibility;
 mod source_noise;
 mod source_random;
 mod world;
@@ -14,6 +16,8 @@ pub use dmx::{Attribute, Document, Element, Value};
 pub use sheet::{
     ParticleSheet, SheetFrame, SheetSample, SheetSampleRequest, SheetSequence, sample_sheet,
 };
+pub use rope::{RopeMesh, RopePoint, RopeRender, RopeVertex};
+pub use visibility::{VisibilityProxy, VisibilitySample, VisibilityView};
 pub use world::{
     AdvanceRequest, Bounds, CollisionBatch, CollisionQuery, CollisionResult, ControlPoint, Event,
     EventCommand, ParticleBlendFactor, ParticleBlendState, ParticleColorSpace, ParticleMaterial,

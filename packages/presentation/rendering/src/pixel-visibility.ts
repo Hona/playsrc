@@ -5,19 +5,21 @@
  */
 export class SourcePixelVisibility {
   readonly #device: GPUDevice
-  readonly #pipelines = new Map<number, GPURenderPipeline>()
+  readonly #pipelines = new Map<string, GPURenderPipeline>()
   #vertices: GPUBuffer | null = null
   #counts: GPUBuffer | null = null
   #readback: GPUBuffer | null = null
-  #target: GPUTexture | null = null
   #capacity = 0
   #pending = false
   #disposed = false
 
   constructor(device: GPUDevice) { this.#device = device }
+  get pending(): boolean { return this.#pending }
+  get bufferBytes(): number { return this.#capacity * (12 * 16 + 8 + 8) }
 
-  async prepare(sampleCount: number): Promise<void> {
-    if (this.#pipelines.has(sampleCount)) return
+  async prepare(sampleCount: number, format: GPUTextureFormat): Promise<void> {
+    const key = `${sampleCount}:${format}`
+    if (this.#pipelines.has(key)) return
     const multisampled = sampleCount > 1
     const module = this.#device.createShaderModule({ label: "Source pixel visibility sample counting", code: `
       @group(0) @binding(0) var sceneDepth: ${multisampled ? "texture_depth_multisampled_2d" : "texture_depth_2d"};
@@ -35,22 +37,22 @@ export class SourcePixelVisibility {
     const pipeline = await this.#device.createRenderPipelineAsync({
       label: "Source pixel visibility sample counting", layout: "auto",
       vertex: { module, entryPoint: "vertex", buffers: [{ arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x4" }] }] },
-      fragment: { module, entryPoint: "fragment", targets: [{ format: "rgba8unorm", writeMask: 0 }] },
+      fragment: { module, entryPoint: "fragment", targets: [{ format, writeMask: 0 }] },
       primitive: { topology: "triangle-list", frontFace: "ccw", cullMode: "back" },
       multisample: { count: sampleCount },
     })
-    if (!this.#disposed) this.#pipelines.set(sampleCount, pipeline)
+    if (!this.#disposed) this.#pipelines.set(key, pipeline)
   }
 
   /** Five clip-space vertices per query: center, top-left, top-right,
    * bottom-right, bottom-left. A pending GPU read must not be overwritten.
    * The caller submits the encoder before invoking the returned read operation.
    */
-  issue(encoder: GPUCommandEncoder, depth: GPUTexture, proxies: Float32Array): (() => Promise<Uint32Array>) | null {
+  issue(encoder: GPUCommandEncoder, depth: GPUTexture, proxies: Float32Array, format: GPUTextureFormat, color: GPURenderPassColorAttachment): (() => Promise<Uint32Array>) | null {
     if (this.#disposed) throw new Error("Pixel visibility has been disposed")
     if (this.#pending || proxies.length === 0) return null
     if (proxies.length % 20 !== 0 || !proxies.every(Number.isFinite)) throw new Error("Invalid pixel visibility proxy vertices")
-    const pipeline = this.#pipelines.get(depth.sampleCount)
+    const pipeline = this.#pipelines.get(`${depth.sampleCount}:${format}`)
     if (!pipeline) throw new Error("Pixel visibility sample pipeline is not prepared")
     const count = proxies.length / 20
     if (count > this.#capacity) {
@@ -59,10 +61,6 @@ export class SourcePixelVisibility {
       this.#vertices = this.#device.createBuffer({ label: "Pixel visibility proxy fans", size: count * 12 * 16, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST })
       this.#counts = this.#device.createBuffer({ label: "Pixel visibility sample counts", size: count * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST })
       this.#readback = this.#device.createBuffer({ label: "Pixel visibility readback", size: count * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
-    }
-    if (!this.#target || this.#target.width !== depth.width || this.#target.height !== depth.height || this.#target.sampleCount !== depth.sampleCount) {
-      this.#target?.destroy()
-      this.#target = this.#device.createTexture({ label: "Pixel visibility raster target", size: [depth.width, depth.height], format: "rgba8unorm", sampleCount: depth.sampleCount, usage: GPUTextureUsage.RENDER_ATTACHMENT })
     }
     const vertices = new Float32Array(count * 12 * 4)
     // Source's clockwise fan is expressed in the renderer's CCW front convention.
@@ -77,7 +75,9 @@ export class SourcePixelVisibility {
       { binding: 0, resource: depth.createView({ aspect: "depth-only" }) },
       { binding: 1, resource: { buffer: this.#counts! } },
     ] })
-    const pass = encoder.beginRenderPass({ label: "Source pixel visibility", colorAttachments: [{ view: this.#target.createView(), loadOp: "clear", clearValue: [0, 0, 0, 0], storeOp: "discard" }] })
+    // Reuse the scene's color attachment without writing it. No full-resolution
+    // query target is allocated, cleared, or substituted for the scene depth.
+    const pass = encoder.beginRenderPass({ label: "Source pixel visibility", colorAttachments: [{ ...color, loadOp: "load", storeOp: "store" }] })
     pass.setPipeline(pipeline); pass.setBindGroup(0, group); pass.setVertexBuffer(0, this.#vertices!)
     for (let query = 0; query < count; query++) pass.draw(12, 1, query * 12, query)
     pass.end()
@@ -100,7 +100,7 @@ export class SourcePixelVisibility {
 
   dispose(): void {
     this.#disposed = true
-    this.#vertices?.destroy(); this.#counts?.destroy(); this.#readback?.destroy(); this.#target?.destroy()
+    this.#vertices?.destroy(); this.#counts?.destroy(); this.#readback?.destroy()
     this.#pipelines.clear()
   }
 }

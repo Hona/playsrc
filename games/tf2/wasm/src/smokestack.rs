@@ -260,6 +260,8 @@ impl Smokestacks {
                 let maximum = color[0].max(color[1].max(color[2]));
                 let scale = if maximum > 1.0 { 255.0 / maximum } else { 255.0 };
                 output.push(RenderItem {
+                    rope: None,
+                    visibility: None,
                     sky: stack.sky, effect_identity: 0x5000_0000 + state.source as u32,
                     system_uuid: [0; 16], particle_identity: particle.identity, renderer_index: 0, primitive: Primitive::Sprite,
                     material: parameters.material.clone(), position: particle.position, previous_position: particle.position,

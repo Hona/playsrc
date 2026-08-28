@@ -332,7 +332,6 @@ fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, ite
             criticals.push((registration.definition_index, override_name.to_owned()));
         }
     }
-    if names.len() > 64 { return Err("configured weapon sound registry exceeds wire range".into()); }
     let (_, manifest) = super::dependency(content, "scripts/game_sounds_manifest.txt")?;
     let (_, _, _, _, nodes) = super::parse_summary("sound-manifest", "scripts/game_sounds_manifest.txt", &manifest.ok_or("missing sound manifest")?)?;
     let files: Vec<_> = nodes.first().ok_or("missing sound manifest root")?.children.iter()
@@ -357,6 +356,13 @@ fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, ite
     let missing: Vec<_> = names.iter().filter(|name| !found.contains_key(*name)).cloned().collect();
     if missing.iter().any(|name| !extra_names.contains(name)) { return Err(format!("unresolved item sound {missing:?}")); }
     names.retain(|name| found.contains_key(name));
+    for (_, name, waves) in NATIVE_AUDIO {
+        if let Some((_, authored)) = found.get(*name) {
+            if authored.len() != usize::from(*waves) { return Err(format!("native sound wave count differs from configured script {name}")); }
+            names.remove(*name);
+        }
+    }
+    if names.len() > 64 { return Err(format!("configured weapon sound registry has {} non-native entries; wire range admits 64", names.len())); }
     let mut rust = format!("// Generated from the configured item schema and sound manifest.\npub const MISSING_CONFIGURED_SOUNDS: &[&str] = &{:?};\npub const CONFIGURED_SOUNDS: &[(&str, &str, u8)] = &[\n", missing);
     for name in &names {
         let (path, waves) = found.get(name).ok_or_else(|| format!("unresolved equipped sound {name}"))?;
@@ -364,7 +370,9 @@ fn generate_audio(content: &Content, repository: &Path, schema: &ItemSchema, ite
     }
     rust.push_str("];\npub const MELEE_CRITICAL_SOUNDS: &[(u32, u8)] = &[\n");
     for (item, name) in criticals {
-        writeln!(rust, "({item}, {}),", names.iter().position(|candidate| candidate == &name).unwrap()).unwrap();
+        let code = NATIVE_AUDIO.iter().find(|(_, candidate, _)| *candidate == name).map(|(code, _, _)| *code)
+            .unwrap_or_else(|| 160 + names.iter().position(|candidate| candidate == &name).unwrap() as u8);
+        writeln!(rust, "({item}, {code}),").unwrap();
     }
     rust.push_str("];\n");
     fs::write(repository.join("games/tf2/rust/src/equipment-audio.generated.rs"), rust).map_err(|e| e.to_string())?;

@@ -81,8 +81,8 @@ pub unsafe extern "C" fn playsrc_equipment_models_admit(handle: u32, definitions
         out.extend_from_slice(&(particles.as_ref().map_or(0, |value| value.1.len()) as u32).to_le_bytes());
         if let Some((_, identities, _, presentation)) = &particles {
             for identity in identities { pbytes(&mut out, identity.as_bytes())?; }
-            encode_particle_textures(&mut out, presentation)?;
-        } else { encode_particle_textures(&mut out, &BTreeMap::new())?; }
+            encode_particle_textures(&mut out, presentation, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")])?;
+        } else { encode_particle_textures(&mut out, &BTreeMap::new(), &[])?; }
         if out.len() > 64 * 1024 * 1024 { return Err(()); }
         let metadata = models.iter().map(|(path, artifact)| (path.clone(), StudioModelLightingMetadata {
             flex: Arc::clone(&artifact.flex), position: artifact.illumination_position,
@@ -172,8 +172,9 @@ pub(super) fn encode_headers(out: &mut Vec<u8>, models: &[(String, Box<CompiledP
         for part in &model.body_parts { out.extend_from_slice(&(part.model_names.len() as u32).to_le_bytes()); }
         let parameters = vec![studio::Float32(0); model.pose_parameters.len()];
         let pose = studio::sample_pose(model, &studio::AnimationState { base_sequence: 0, cycle: studio::Float32(0), pose_parameters: parameters.clone(), layers: Vec::new(), bone_rotations: Vec::new() }).map_err(|_| ())?;
-        out.extend_from_slice(&(model.attachments.len() as u32).to_le_bytes());
-        for attachment in &model.attachments {
+        let attachments = named_attachments(&model.attachments, |attachment| &attachment.name);
+        out.extend_from_slice(&(attachments.clone().count() as u32).to_le_bytes());
+        for attachment in attachments {
             pbytes(out, &attachment.name)?;
             let sampled = pose.attachments.iter().find(|sample| sample.index == attachment.index).ok_or(())?;
             for value in sampled.model_transform.0 { out.extend_from_slice(&value.0.to_le_bytes()); }

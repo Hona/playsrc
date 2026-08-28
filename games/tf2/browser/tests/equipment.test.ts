@@ -70,9 +70,16 @@ test("local inventory owns each implemented hitscan unlock exactly once", () => 
 
 test("unavailable projectile solvers and unimplemented items cannot be offered or restored as class base items", () => {
   const state = decodeEquipmentState(new Uint8Array(nativeEquipment))
-  expect(state.inventory).toHaveLength(52)
-  for (const definition of [19, 20, 735, 513]) {
+  expect(state.inventory).toHaveLength(62)
+  for (const definition of [19, 20, 735]) {
     expect(state.inventory.some(entry => entry.item.definitionIndex === definition)).toBe(false)
     expect(state.classes.some(player => [...player.items, ...player.baseItems].some(item => item.definitionIndex === definition))).toBe(false)
+  }
+})
+
+test("the ten executable rocket and flare unlocks each have one inventory item", () => {
+  const state = decodeEquipmentState(new Uint8Array(nativeEquipment))
+  for (const definition of [127, 228, 237, 414, 513, 1104, 39, 351, 740, 595]) {
+    expect(state.inventory.filter(entry => entry.item.definitionIndex === definition)).toHaveLength(1)
   }
 })

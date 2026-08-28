@@ -10,9 +10,9 @@ const NO_EQUIPPED_ITEMS: readonly Tf2EquippedItem[] = Object.freeze([])
 
 export type Tf2Class = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 export type Tf2Team = 0 | 1 | 2 | 3
-export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54 | 60
-export const isTf2Weapon = (value: number): value is Tf2Weapon => Number.isInteger(value)
-  && (value >= 1 && value <= 21 || value >= 40 && value <= 45 || value >= 50 && value <= 54 || value === 60)
+export type Tf2Weapon = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 40 | 41 | 42 | 43 | 44 | 45 | 50 | 51 | 52 | 53 | 54 | 60 | 90 | 91 | 92 | 93 | 94 | 95 | 96 | 97 | 98
+export const isTf2Weapon = (value: number | undefined): value is Tf2Weapon => value !== undefined && Number.isInteger(value)
+  && (value >= 1 && value <= 21 || value >= 40 && value <= 45 || value >= 50 && value <= 54 || value === 60 || value >= 90 && value <= 98)
 export type Tf2BuildingKind = 0 | 1 | 2
 export type Tf2BuildingMode = 0 | 1
 export type Tf2BuildingObject = Readonly<{ kind: Tf2BuildingKind; mode: Tf2BuildingMode }>
@@ -22,7 +22,8 @@ export type Tf2BuildingRequest = Readonly<
   | { action: "hurt"; amount: number }
 >
 export type MovementMode = 0 | 1
-export type ProjectileKind = 1 | 2 | 3
+export type ProjectileKind = 1 | 2 | 3 | 4
+export type ProjectileTrail = 0 | 1 | 2 | 3 | 4 | 5 | 6
 export type ProjectileState = 1 | 2 | 3
 export type ContactKind = 1 | 2 | 3
 export type BotDifficulty = 0 | 1 | 2 | 3
@@ -59,6 +60,7 @@ export type RandomStreamState = Readonly<{
 }>
 export type Tf2RandomState = Readonly<{
   configuredAvailable: readonly number[]
+  projectileUnlockAvailable: readonly number[]
   authority: RandomStreamState
   predictedPresentation: RandomStreamState
   rocketExplosionAvailable: number
@@ -96,7 +98,7 @@ function isSoundDefinition(value: number | undefined): value is number {
 
 export type RandomDraw = Readonly<{
   context: 1 | 2
-  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 14 | 64 | 65
+  decision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 64 | 65
   definition: number
   phase: 0 | 1 | 2
   raw: number
@@ -336,6 +338,15 @@ export type AuthorityBlocker = Readonly<{
 }>
 
 export type Projectile = Readonly<{
+  airBurst: boolean
+  underwaterExplosion: boolean
+  trail: ProjectileTrail
+  miniRocket: boolean
+  practiceExplosion: boolean
+  modelVisible: boolean
+  weapon: Tf2Weapon
+  critical: boolean
+  selfBlastOnly: boolean
   identity: number
   kind: ProjectileKind
   team: Tf2Team
@@ -350,8 +361,16 @@ export type Projectile = Readonly<{
   ageSeconds: number
 }>
 
-export type ProjectileEventType = "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"
+export type ProjectileEventType = "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode" | "deflect"
 export type ProjectileEvent = Readonly<{
+  airBurst: boolean
+  underwaterExplosion: boolean
+  trail: ProjectileTrail
+  miniRocket: boolean
+  practiceExplosion: boolean
+  weapon: Tf2Weapon
+  critical: boolean
+  selfBlastOnly: boolean
   type: ProjectileEventType
   projectile: number
   kind: ProjectileKind
@@ -395,7 +414,7 @@ export type EntityEvent = Readonly<{
 }>
 
 export type GameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 24
   detail: number
   subject: number
   auxiliary: number
@@ -1547,7 +1566,7 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
     if (event.type === "fire" && current.last !== undefined) {
       throw new Tf2CodecError("projectile fire event is duplicated")
     }
-    if (event.type === "impact" && current.last === "impact" && event.kind !== 2) {
+    if (event.type === "impact" && current.last === "impact" && event.kind !== 2 && event.weapon !== 97) {
       throw new Tf2CodecError("projectile impact event is duplicated")
     }
     if (event.type === "stick" && (event.kind !== 2 || current.last !== "impact")) {
@@ -1563,9 +1582,9 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
 }
 
 function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): Tf2RandomState {
-  if (length !== 360) throw new Tf2CodecError("TF2 random state length is invalid")
+  if (length !== 364) throw new Tf2CodecError("TF2 random state length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 2) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 3) {
     throw new Tf2CodecError("TF2 random state identity is invalid")
   }
   let at = 8
@@ -1591,12 +1610,17 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     || (fistAndBonesawFlesh & ~31) !== 0 || (fistAndBonesawWorld & ~15) !== 0 || (fistHitFleshAvailable & ~7) !== 0
     || (flagEnemyStolenAvailable & ~15) !== 0 || (flagEnemyDroppedAvailable & ~3) !== 0
     || (flagEnemyCapturedAvailable & ~7) !== 0 || (flagEnemyReturnedAvailable & ~7) !== 0 || (flagTeamDroppedAvailable & ~3) !== 0
-    || data[at + 13]! > 15 || view.getUint16(at + 14, true) > 0x1fff) {
+    || data[at + 13]! > 15 || view.getUint16(at + 14, true) > 0x1fff || (data[362]! & ~7) !== 0 || data[363] !== 0) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
   const configuredAvailable = Object.freeze(Array.from(data.subarray(296, 360)))
   if (configuredAvailable.some((mask, index) => mask & ~((1 << (configuredEquipmentSoundWaves[index] ?? 0)) - 1))) throw new Tf2CodecError("configured sound selection mask is invalid")
-  return Object.freeze({ configuredAvailable, authority, predictedPresentation, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
+  const projectileUnlockAvailable = Object.freeze([
+    data[360]! & 7, (data[360]! >> 3) & 7,
+    (data[360]! >> 6) | ((data[361]! & 1) << 2),
+    (data[361]! >> 1) & 7, data[361]! >> 4, data[362]!,
+  ])
+  return Object.freeze({ configuredAvailable, authority, predictedPresentation, projectileUnlockAvailable, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {
@@ -1780,10 +1804,22 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const projectiles: Projectile[] = []
   for (let index = 0; index < projectileCount; index += 1) {
     const item = at + index * 84
-    const kind = data[item + 4]
+    const appearance = data[item + 4]!
+    const kind = appearance & 7
+    const miniRocket = (appearance & 8) !== 0
+    const trail = (appearance >> 4) & 7
+    const practiceExplosion = (appearance & 128) !== 0
     const projectileTeam = data[item + 5]
-    const state = data[item + 6]
-    const hasNormal = data[item + 7]
+    const packedState = data[item + 6]!
+    const flags = data[item + 7]!
+    const state = packedState & 7
+    const hasNormal = flags & 1
+    const weapon = (packedState >> 3) | (((flags >> 2) & 3) << 5)
+    const critical = (flags & 2) !== 0
+    const selfBlastOnly = (flags & 16) !== 0
+    const modelVisible = (flags & 32) !== 0
+    const airBurst = (flags & 64) !== 0
+    const underwaterExplosion = (flags & 128) !== 0
     const position = vector(view, item + 16)
     const velocity = vector(view, item + 28)
     const orientation = quaternion(view, item + 40)
@@ -1791,7 +1827,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const rawNormal = vector(view, item + 68)
     const ageSeconds = view.getFloat32(item + 80, true)
     if (
-      (kind !== 1 && kind !== 2 && kind !== 3) ||
+      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4) ||
+      !isTf2Weapon(weapon) || trail > 6 ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       state === undefined ||
       state < 1 ||
@@ -1809,6 +1846,15 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     projectiles.push(
       Object.freeze({
         identity: view.getUint32(item, true),
+        trail: trail as ProjectileTrail,
+        miniRocket,
+        practiceExplosion,
+        modelVisible,
+        airBurst,
+        underwaterExplosion,
+        weapon,
+        critical,
+        selfBlastOnly,
         kind,
         team: projectileTeam,
         ownerIdentity: view.getUint32(item + 8, true),
@@ -1827,13 +1873,23 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
 
   requireBytes(projectileEventCount * 92, "projectile event")
   const projectileEvents: ProjectileEvent[] = []
-  const eventNames: readonly ProjectileEventType[] = ["fire", "impact", "stick", "arm", "fizzle", "explode"]
+  const eventNames: readonly ProjectileEventType[] = ["fire", "impact", "stick", "arm", "fizzle", "explode", "deflect"]
   for (let index = 0; index < projectileEventCount; index += 1) {
     const item = at + index * 92
-    const eventCode = data[item]
-    const kind = data[item + 1]
+    const packedEvent = data[item]!
+    const eventCode = packedEvent & 7
+    const appearance = data[item + 1]!
+    const kind = appearance & 7
+    const miniRocket = (appearance & 8) !== 0
+    const trail = (appearance >> 4) & 7
+    const practiceExplosion = (appearance & 128) !== 0
     const projectileTeam = data[item + 2]
     const flags = data[item + 3]
+    const weapon = (packedEvent >> 3) | ((((flags ?? 0) >> 3) & 3) << 5)
+    const critical = ((flags ?? 0) & 4) !== 0
+    const selfBlastOnly = ((flags ?? 0) & 32) !== 0
+    const airBurst = ((flags ?? 0) & 128) !== 0
+    const underwaterExplosion = ((flags ?? 0) & 64) !== 0
     const hasNormal = flags === undefined ? undefined : flags & 1
     const hasLauncherPose = flags === undefined ? undefined : (flags >> 1) & 1
     const position = vector(view, item + 24)
@@ -1844,11 +1900,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     if (
       eventCode === undefined ||
       eventCode < 1 ||
-      eventCode > 6 ||
-      (kind !== 1 && kind !== 2 && kind !== 3) ||
+      eventCode > 7 || trail > 6 ||
+      (kind !== 1 && kind !== 2 && kind !== 3 && kind !== 4) ||
+      !isTf2Weapon(weapon) ||
       (projectileTeam !== 2 && projectileTeam !== 3) ||
       flags === undefined ||
-      flags > 3 ||
       hasNormal === undefined ||
       hasLauncherPose === undefined ||
       !finite(position) ||
@@ -1864,6 +1920,14 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     projectileEvents.push(
       Object.freeze({
         type: eventNames[eventCode - 1]!,
+        trail: trail as ProjectileTrail,
+        miniRocket,
+        practiceExplosion,
+        weapon,
+        critical,
+        selfBlastOnly,
+        airBurst,
+        underwaterExplosion,
         projectile: view.getUint32(item + 4, true),
         kind,
         ownerIdentity: view.getUint32(item + 8, true),
@@ -1962,7 +2026,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     ]) as readonly [number, number, number, number]
     const nameLength = view.getUint16(item + 2, true)
     if (kind === 17 && ![0, 1, 2].includes(values[2])) throw new Tf2CodecError("damage critical kind is invalid")
-    if (kind === undefined || kind < 1 || kind > 19 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || (death ? nameLength < 1 || nameLength > 255 : nameLength !== 0) || !finite(values))
+    if (kind === undefined || kind < 1 || kind > 19 && kind !== 24 || ((kind === 15 || kind === 16) && data[item + 1]! > 2) || (kind === 24 && (data[item + 1] !== 98 || view.getUint32(item + 4, true) < 1 || view.getUint32(item + 4, true) > 4)) || (death ? nameLength < 1 || nameLength > 255 : nameLength !== 0) || !finite(values))
       throw new Tf2CodecError("gameplay event record is invalid")
     requireBytes(28 + nameLength, "death notice weapon")
     const killingWeapon = death ? new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(item + 28, item + 28 + nameLength)) : undefined
@@ -2050,7 +2114,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   for (let index = 0; index < radiusRequestCount; index += 1) {
     const item = at + index * 36, kind = data[item + 4], source = vector(view, item + 8)
     const values = [view.getFloat32(item + 20, true), view.getFloat32(item + 24, true), view.getFloat32(item + 28, true)]
-    if ((kind !== 1 && kind !== 2) || !data.subarray(item + 5, item + 8).every((value) => value === 0) || !finite([...source, ...values])) {
+    if ((kind !== 1 && kind !== 2 && kind !== 4) || !data.subarray(item + 5, item + 8).every((value) => value === 0) || !finite([...source, ...values])) {
       throw new Tf2CodecError("radius damage request record is invalid")
     }
     const directTarget = view.getUint32(item + 32, true)
@@ -2156,11 +2220,11 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
     const raw = view.getInt32(item + 4, true), resultKind = data[item + 8], resultValue = view.getUint32(item + 12, true)
     const soundDecision = decision !== undefined && decision >= 1 && decision <= 4
     if (
-      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 10 && decision !== 14 && decision !== 64 && decision !== 65 ||
+      (context !== 1 && context !== 2) || decision === undefined || decision < 1 || decision > 14 && decision !== 64 && decision !== 65 ||
       (soundDecision ? !isSoundDefinition(definition) || (phase !== 1 && phase !== 2) : definition !== 0 || phase !== 0 || context !== 1 && decision !== 14 && decision !== 65) ||
       raw <= 0 || raw >= 2_147_483_647 || resultKind === undefined || resultKind < 1 || resultKind > 3 ||
       data[item + 9] !== 0 || data[item + 10] !== 0 || data[item + 11] !== 0 ||
-      ((decision === 3 || decision === 7 || decision === 8 || decision === 14) ? resultKind === 1 : resultKind !== 1) ||
+      ((decision === 3 || decision === 7 || decision === 8 || decision === 13 || decision === 14) ? resultKind === 1 : resultKind !== 1) ||
       (resultKind === 3 && resultValue !== 0)
     ) throw new Tf2CodecError("random draw record is invalid")
     const result: RandomDraw["result"] = resultKind === 1

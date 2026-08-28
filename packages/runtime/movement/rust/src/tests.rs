@@ -181,6 +181,7 @@ fn tf2_policy() -> Policy {
         backward_speed_factor: 0.9,
         backward_speed_minimum: 100.0,
         ground_detach_speed: 250.0,
+        ground_detach_relative_to_support: false,
         jump_impulse: 289.0,
         air_dash_impulse: None,
         surface_friction: 1.0,

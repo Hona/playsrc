@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { nativeEquipment, stockItems } from "../fixtures/equipment"
 import {
   isVguiGenericResourcePropertySupported,
   parseVguiAnimationScript,
@@ -201,7 +202,12 @@ function compact(
 ): SessionSimulationPublication {
   const maximumClip = weapon === 17 ? 0 : weapon === 4 ? 6 : weapon === 3 ? 8 : 4
   const maximumReserve = weapon === 17 ? 0 : weapon === 4 ? 32 : weapon === 3 ? 24 : 20
+  const selected = nativeEquipment.inventory.find(item => item.classSlots.some(slot => slot.class === classIdentity && slot.weapon === weapon))!.item
   const snapshot = Object.freeze({
+    equippedItems: stockItems(classIdentity).map(item => item.slot === selected.slot ? selected : item),
+    decapitations: 0,
+    revengeCrits: 0,
+    weaponCrosshairScale: 1,
     tick,
     class: classIdentity,
     equippedItems: stockItems(classIdentity),
@@ -244,6 +250,37 @@ const contextWithModel = (playerClassUsePlayerModel: boolean): SessionHudContext
   Object.freeze({ ...context, playerClassUsePlayerModel })
 
 describe("TF2 HUD and pause headed symptom loop", () => {
+  test("keeps authored kill and revenge count panels independent through holster and class changes", () => {
+    const hud = initializeTf2HudIntegration({ root: createRoot(new FakeDocument()) as unknown as HTMLElement,
+      resources: resources(), viewport: { width: 1280, height: 720, devicePixelRatio: 1 }, reducedMotion: true,
+      clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0.5 }, onCommand() {} })
+    const publish = (tick: bigint, definition: number, active: 94 | 98 | 7 | 15, count: number, lifecycle: 1 | 2 = 1) => {
+      const item = nativeEquipment.inventory.find(item => item.item.definitionIndex === definition)!
+      const slot = item.classSlots[0]!
+      const source = Object.freeze({ ...compact(tick, 3, 2, 1, 4, 20).snapshot,
+        class: slot.class, weapon: active, lifecycle, decapitations: count, revengeCrits: Math.min(count, 35),
+        equippedItems: stockItems(slot.class).map(base => base.slot === item.item.slot ? item.item : base),
+        loadout: [{ weapon: slot.weapon!, reload: 0 as const, clip: 4, reserve: 20, maximumClip: 8, maximumReserve: 20 },
+          ...(active === slot.weapon ? [] : [{ weapon: active, reload: 0 as const, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }])],
+      })
+      hud.publish({ snapshot: source, eventBatches: [{ snapshot: source }] }, context)
+      return hud.snapshot().vgui.panels
+    }
+    let panels = publish(1n, 1104, 94, 800)
+    let root = panels.find(panel => panel.name === "HudWeaponCount_kills")!
+    expect(root.effectivelyVisible).toBe(true)
+    expect(panels.find(panel => panel.parent === root.id && panel.name === "ItemEffectMeterCount")?.text).toBe("800")
+    expect(panels.find(panel => panel.parent === root.id && panel.name === "ItemEffectMeterLabel")?.text).toBe("KILLS")
+    expect(publish(2n, 1104, 7, 801).find(panel => panel.name === "HudWeaponCount_kills")?.effectivelyVisible).toBe(true)
+    panels = publish(3n, 595, 98, 3)
+    root = panels.find(panel => panel.name === "HudWeaponCount_crits")!
+    expect(root.effectivelyVisible).toBe(true)
+    expect(panels.find(panel => panel.parent === root.id && panel.name === "ItemEffectMeterCount")?.text).toBe("3")
+    expect(panels.find(panel => panel.name === "HudWeaponCount_kills")?.effectivelyVisible).toBe(false)
+    expect(publish(4n, 595, 15, 3).find(panel => panel.name === "HudWeaponCount_crits")?.effectivelyVisible).toBe(false)
+    expect(publish(5n, 595, 98, 3, 2).find(panel => panel.name === "HudWeaponCount_crits")?.effectivelyVisible).toBe(false)
+    hud.destroy()
+  })
   test("renders authored Engineer build and destroy menu states from stock resources", () => {
     const root = createRoot(new FakeDocument())
     let binding: string | null = "q"
@@ -293,7 +330,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     const localized = Object.freeze({ ...configured, localization: Object.freeze({
       ...configured.localization,
       tokens: Object.freeze([
-        ...configured.localization.tokens,
+        ...configured.localization.tokens.filter(token => !["tf_scoreboard_player", "tf_scoreboard_players", "scoreboard_spectator"].includes(token.name.toLowerCase())),
         Object.freeze({ name: "TF_ScoreBoard_Player", value: "%s1 player" }),
         Object.freeze({ name: "TF_ScoreBoard_Players", value: "%s1 players" }),
         Object.freeze({ name: "ScoreBoard_Spectator", value: "%s1 spectator: %s2" }),

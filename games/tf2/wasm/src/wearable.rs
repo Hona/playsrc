@@ -93,7 +93,7 @@ impl ParticleStates {
                 EventCommand::SetControlPoint { effect_identity, control_point } => (Vec::new(), vec![(effect_identity, control_point)]),
                 command => (vec![Event { identity: state.event, timestamp_seconds, source_order: 0, command }], Vec::new()),
             };
-            world.transact_render_output(&events, &controls,
+            world.transact_render_output(&events, &controls, &[], None,
                 AdvanceRequest { from_seconds: from, to_seconds: request.current_time, maximum_step_seconds: 0.05, camera_position: lighting.camera },
                 &mut NoQueries, inputs.materials, inputs.identities, 1024 * 1024).map_err(|_| ())
         } else { self.queue(timestamp_seconds, command); Ok(Vec::new()) }

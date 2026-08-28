@@ -53,5 +53,15 @@
   {"definitionIndex":326,"weapon":"FireAxe","quality":6},
   {"definitionIndex":355,"weapon":"Bat","quality":6,"extraSounds":["Weapon_Marked_for_Death.Indicator","Weapon_Marked_for_Death.Initial"]},
   {"definitionIndex":401,"weapon":"Kukri","quality":6},
-  {"definitionIndex":416,"weapon":"Shovel","quality":6}
+  {"definitionIndex":416,"weapon":"Shovel","quality":6},
+  {"definitionIndex":127,"weapon":"DirectHit","quality":6},
+  {"definitionIndex":228,"weapon":"BlackBox","quality":6},
+  {"definitionIndex":237,"weapon":"RocketJumper","quality":6},
+  {"definitionIndex":414,"weapon":"LibertyLauncher","quality":6},
+  {"definitionIndex":513,"weapon":"Original","quality":6},
+  {"definitionIndex":1104,"weapon":"AirStrike","quality":6},
+  {"definitionIndex":39,"weapon":"FlareGun","quality":6},
+  {"definitionIndex":351,"weapon":"Detonator","quality":6},
+  {"definitionIndex":740,"weapon":"ScorchShot","quality":6},
+  {"definitionIndex":595,"weapon":"Manmelter","quality":6}
 ]

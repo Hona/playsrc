@@ -395,12 +395,33 @@ impl Damage {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CombatTarget {
+    pub blast_jump_state: bool,
+    pub crouched: bool,
+    pub in_water: bool,
     pub identity: u32,
     pub class: PlayerClass,
     pub team: PlayerTeam,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
     pub burning: bool,
+    pub hull: Hull,
+    pub grounded: bool,
+    pub water_level: u8,
+    pub conditions: [u32; 5],
+}
+
+impl CombatTarget {
+    pub fn world_center(self) -> [f32; 3] {
+        std::array::from_fn(|axis| self.position[axis] + (self.hull.mins[axis] + self.hull.maxs[axis]) * 0.5)
+    }
+
+    pub fn condition(self, value: usize) -> bool {
+        self.conditions[value / 32] & (1 << (value % 32)) != 0
+    }
+
+    pub fn in_air_due_to_explosion(self) -> bool {
+        (!self.grounded && self.water_level == 0 && self.blast_jump_state) || self.condition(125)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -533,6 +554,7 @@ struct Bot {
     scattergun_jumped: bool,
     blast_since_movement: bool,
     blast_jump_state: bool,
+    in_water: bool,
     decapitations: i32,
     critical_history: crate::critical::PlayerHistory,
     identity: u32,
@@ -932,6 +954,13 @@ impl BotWorld {
             .values()
             .filter(|bot| bot.lifecycle == PlayerLifecycle::Active)
             .map(|bot| CombatTarget {
+                blast_jump_state: bot.blast_jump_state,
+                crouched: bot.movement.crouch.uses_crouched_hull(),
+                in_water: bot.in_water,
+                hull: bot.movement.active_hull(MovementPolicy { class: bot.class, modifiers: MovementModifiers::default() }.resolve()),
+                grounded: bot.movement.ground.is_some(),
+                water_level: bot.movement.water_level,
+                conditions: bot.conditions.words(),
                 identity: bot.identity,
                 class: bot.class,
                 team: bot.team,
@@ -998,6 +1027,7 @@ impl BotWorld {
         &mut self,
         identity: u32,
         attacker: u32,
+        source_weapon: Option<crate::weapon::WeaponSource>,
         now: f32,
         damage: f32,
     ) -> bool {
@@ -1019,23 +1049,90 @@ impl BotWorld {
         if bot.health.current == 0 {
             bot.lifecycle = PlayerLifecycle::Dying;
             bot.afterburn = None;
+            bot.conditions.remove(ConditionId::BURNING, true);
+            bot.conditions.remove(ConditionId::HEALING_DEBUFF, true);
         } else {
+            let starting = bot.afterburn.is_none();
             bot.afterburn = Some(crate::pyro::Afterburn::ignite(
                 bot.afterburn,
                 bot.class,
                 attacker,
-                21,
+                Weapon::Flamethrower,
+                "flamethrower",
+                source_weapon,
                 now,
+                crate::pyro::FLAME_INITIAL_AFTERBURN,
+                crate::pyro::FLAME_AFTERBURN_PER_HIT,
             ));
+            let _ = bot.conditions.add(ConditionId::BURNING, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false);
+            if starting {
+                let _ = bot.conditions.add(ConditionId::HEALING_DEBUFF, crate::condition::ConditionDuration::Finite(crate::pyro::FLAME_INITIAL_AFTERBURN), Some(attacker), true, false);
+            }
         }
         true
     }
 
     pub fn extinguish(&mut self, identity: u32) -> bool {
-        self.bots
-            .get_mut(&identity)
-            .and_then(|bot| bot.afterburn.take())
-            .is_some()
+        let Some(bot) = self.bots.get_mut(&identity) else { return false; };
+        let was_burning = bot.afterburn.take().is_some() || bot.conditions.contains(ConditionId::BURNING);
+        bot.conditions.remove(ConditionId::BURNING, true);
+        bot.conditions.remove(ConditionId::HEALING_DEBUFF, true);
+        was_burning
+    }
+
+    pub fn burn_attacker(&self, identity: u32) -> Option<u32> {
+        self.bots.get(&identity)?.afterburn.and_then(|burn| burn.original_attacker)
+    }
+
+    pub fn afterburn_damage(&mut self, now: f32) -> Vec<Damage> {
+        let mut damage = Vec::new();
+        for bot in self.bots.values_mut() {
+            if bot.conditions.contains(ConditionId::HEALTH_BUFF) && let Some(burn) = bot.afterburn.as_mut() {
+                burn.duration -= 2.0 * self.tick_interval;
+            }
+            if bot.lifecycle != PlayerLifecycle::Active || bot.health.current <= 0
+                || bot.movement.water_level >= 2
+                || bot.afterburn.is_some_and(|burn| burn.duration <= 0.0) {
+                bot.afterburn = None;
+                bot.conditions.remove(ConditionId::BURNING, true);
+                bot.conditions.remove(ConditionId::HEALING_DEBUFF, true);
+                continue;
+            }
+            if let Some(burn) = bot.afterburn.as_mut()
+                && let Some(amount) = burn.advance(now) {
+                damage.push(Damage {
+                    source_weapon: burn.source_weapon,
+                    damage_type: DamageType::BURN | DamageType::PREVENT_FORCE,
+                    force: [0.0; 3], modifiers: DamageModifiers::default(), killing_weapon: Some(burn.killing_weapon),
+                    attacker: burn.attacker, victim: bot.identity, weapon: burn.weapon,
+                    amount, position: bot.movement.position,
+                    crit: CritKind::None, range_multiplier: 1.0, custom: CustomDamage::Burning,
+                });
+            }
+        }
+        damage
+    }
+
+    pub fn ignite_projectile(&mut self, identity: u32, attacker: u32, weapon: Weapon, killing_weapon: &'static str, source_weapon: Option<crate::weapon::WeaponSource>, now: f32, initial_duration: f32, rate: f32) {
+        if let Some(bot) = self.bots.get_mut(&identity)
+            && bot.lifecycle == PlayerLifecycle::Active && !bot.conditions.is_invulnerable()
+            && !bot.conditions.contains(ConditionId::PHASE) && !bot.conditions.contains(ConditionId::PASSTIME_INTERCEPTION) {
+            let starting = bot.afterburn.is_none();
+            bot.afterburn = Some(crate::pyro::Afterburn::ignite(bot.afterburn, bot.class,
+                attacker, weapon, killing_weapon, source_weapon, now, initial_duration, rate));
+            let _ = bot.conditions.add(ConditionId::BURNING, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false);
+            if starting && initial_duration > 0.0 {
+                let _ = bot.conditions.add(ConditionId::HEALING_DEBUFF, crate::condition::ConditionDuration::Finite(initial_duration), Some(attacker), true, false);
+            }
+        }
+    }
+
+    pub fn actor_center(&self, identity: u32) -> Option<[f32; 3]> {
+        let bot = self.bots.get(&identity)?;
+        let hull = bot.movement.active_hull(MovementPolicy {
+            class: bot.class, modifiers: MovementModifiers::default(),
+        }.resolve());
+        Some(std::array::from_fn(|axis| bot.movement.position[axis] + (hull.mins[axis] + hull.maxs[axis]) * 0.5))
     }
 
     pub fn apply_impulse(&mut self, identity: u32, impulse: [f32; 3]) -> bool {
@@ -1054,10 +1151,11 @@ impl BotWorld {
         true
     }
 
-    pub fn apply_damage_impulse(&mut self, identity: u32, impulse: [f32; 3]) -> bool {
+    pub fn apply_damage_impulse(&mut self, identity: u32, impulse: [f32; 3], enemy_blast: bool) -> bool {
         let Some(bot) = self.bots.get_mut(&identity) else { return false; };
         if !matches!(bot.lifecycle, PlayerLifecycle::Active | PlayerLifecycle::Dying) || !impulse.iter().all(|value| value.is_finite()) { return false; }
         for (velocity, added) in bot.movement.velocity.iter_mut().zip(impulse) { *velocity += added; }
+        bot.blast_since_movement |= enemy_blast;
         true
     }
 
@@ -1151,6 +1249,7 @@ impl BotWorld {
                     scattergun_jumped: false,
                     blast_since_movement: false,
                     blast_jump_state: false,
+                    in_water: false,
                     decapitations: 0,
                     damagers: crate::deathnotice::DamagerHistory::default(),
                     critical_history: crate::critical::PlayerHistory::default(),
@@ -1239,27 +1338,6 @@ impl BotWorld {
             }
         }
         self.had_bots = true;
-        for bot in self.bots.values_mut() {
-            if let Some(burn) = bot.afterburn.as_mut() {
-                if let Some(damage) = burn.advance(now)
-                    && !bot.conditions.is_invulnerable()
-                {
-                    bot.health.current = bot
-                        .health
-                        .current
-                        .saturating_sub((damage + 0.5) as i32)
-                        .max(0);
-                }
-                if burn.duration <= 0.0 || bot.health.current == 0 || bot.movement.water_level >= 2
-                {
-                    bot.afterburn = None;
-                }
-                if bot.health.current == 0 {
-                    bot.lifecycle = PlayerLifecycle::Dying;
-                    bot.death_tick.get_or_insert(tick);
-                }
-            }
-        }
         let actors = self.actors(human, tick);
         let mut attacks = Vec::new();
         let mut supply_cache = SupplyCache::default();
@@ -1513,8 +1591,6 @@ impl BotWorld {
             let (forward, side) = bot.movement_stuns.command(now,
                 if should_move { policy.maximum_speed * relative.cos() } else { 0.0 },
                 if should_move { policy.maximum_speed * relative.sin() } else { 0.0 });
-            if bot.blast_since_movement && bot.movement.velocity[2] > 250.0 { bot.blast_jump_state = true; }
-            bot.blast_since_movement = false;
             let movement = step(
                 world,
                 bot.movement,
@@ -1542,7 +1618,18 @@ impl BotWorld {
             )
             .map_err(Error::Movement)?;
             bot.movement = movement.state;
-            if bot.movement.ground.is_some() { bot.weapon_knockback = false; bot.scattergun_jumped = false; bot.blast_jump_state = false; bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false); bot.conditions.remove(ConditionId::BLAST_JUMPING, false); }
+            if bot.blast_since_movement && movement.ground_detach_by_upward_speed {
+                bot.blast_jump_state = true;
+                bot.conditions.add(ConditionId::new(81).unwrap(), crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
+            }
+            bot.blast_since_movement = false;
+            if bot.movement.ground.is_some() {
+                bot.weapon_knockback = false;
+                bot.scattergun_jumped = false;
+                bot.blast_jump_state = false;
+                bot.conditions.remove(ConditionId::KNOCKED_INTO_AIR, false);
+                bot.conditions.remove(ConditionId::BLAST_JUMPING, false);
+            }
 
             if let Some(attack) = take_melee_smack(bot, tick) { attacks.push(attack); }
             let Some(active_weapon) = bot.active_weapon else {
@@ -1744,9 +1831,7 @@ impl BotWorld {
     pub fn generic_push(&mut self, identity: u32, attacker: u32, impulse: [f32; 3], horizontal_scale: f32, vertical_scale: f32) -> Result<bool, Error> {
         if self.hitscan_target(identity).is_none_or(|target| target.push_immune) || self.bots[&identity].conditions.contains(ConditionId::RUNE_KNOCKOUT) { return Ok(false); }
         let bot = self.bots.get_mut(&identity).unwrap();
-        let mut force = crate::scale(impulse, horizontal_scale);
-        if bot.movement.ground.is_some() { force[2] = force[2].max(268.328_16); }
-        force[2] *= vertical_scale;
+        let force = crate::combat::generic_push_impulse(impulse, bot.movement.ground.is_some(), horizontal_scale, vertical_scale);
         bot.conditions.add(ConditionId::KNOCKED_INTO_AIR, crate::condition::ConditionDuration::Permanent, Some(attacker), true, false).map_err(|_| Error::InvalidEntity)?;
         Ok(self.apply_impulse(identity, force))
     }
@@ -1935,10 +2020,6 @@ impl BotWorld {
         let Some(victim) = self.bots.get_mut(&input.victim) else {
             return Ok(None);
         };
-        if input.damage_type.contains(DamageType::BLAST) {
-            if input.attacker != input.victim { victim.blast_since_movement = true; }
-            else if matches!(victim.class, PlayerClass::Soldier | PlayerClass::Demoman) { victim.blast_jump_state = true; }
-        }
         let result = damage::apply_damage(
             victim.lifecycle == PlayerLifecycle::Active,
             &mut victim.health,
@@ -1965,6 +2046,7 @@ impl BotWorld {
         if killed {
             victim.lifecycle = PlayerLifecycle::Dying;
             victim.conditions.remove_all();
+            victim.afterburn = None;
             victim.deaths = victim.deaths.saturating_add(1);
             victim.killstreak = 0;
             victim.death_tick = Some(tick);
@@ -1997,6 +2079,39 @@ impl BotWorld {
         self.bots.values().map(|bot| format!("bot={} area={:?} feet={:?} goal={:?} path={:?} crossing={:?} surfaces={:?}",bot.identity,bot.current_area,bot.movement.position,bot.goal,&bot.path[bot.path_index..bot.path.len().min(bot.path_index+4)],bot.crossing,bot.path[bot.path_index..bot.path.len().min(bot.path_index+2)].iter().filter_map(|id|self.mesh.area(*id)).map(|a|(a.northwest,a.southeast,a.northeast_z,a.southwest_z)).collect::<Vec<_>>())).collect()
     }
     pub(crate) fn position(&self, identity: u32) -> Option<[f32; 3]> { self.bots.get(&identity).map(|bot| bot.movement.position) }
+    pub(crate) fn take_health(&mut self, identity: u32, amount: f32, multiplier: f32) -> Result<i32, Error> {
+        let Some(bot) = self.bots.get_mut(&identity) else { return Ok(0); };
+        if bot.health.current <= 0 { return Ok(0); }
+        bot.health.take_health(amount, false, multiplier, &bot.conditions).map_err(|_| Error::Damage)
+    }
+
+    pub(crate) fn apply_self_blast_impulse(&mut self, identity: u32, impulse: [f32; 3], blast_jumping: bool) {
+        if let Some(bot) = self.bots.get_mut(&identity) {
+            bot.movement.velocity = crate::add(bot.movement.velocity, impulse);
+            if blast_jumping {
+                bot.blast_jump_state = true;
+                bot.conditions.add(ConditionId::new(81).unwrap(), crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
+            }
+        }
+    }
+
+    pub(crate) fn update_water_flags(&mut self) {
+        for bot in self.bots.values_mut() {
+            match bot.movement.water_level { 0 => bot.in_water = false, 1 | 2 => bot.in_water = true, _ => {} }
+            if bot.movement.ground.is_some() || bot.movement.water_level != 0 {
+                bot.blast_jump_state = false;
+                bot.conditions.remove(ConditionId::new(81).unwrap(), true);
+            }
+        }
+    }
+
+    pub(crate) fn decapitations(&self, identity: u32) -> i32 {
+        self.bots.get(&identity).map_or(0, |bot| bot.decapitations)
+    }
+
+    pub(crate) fn add_decapitations(&mut self, identity: u32, count: i32) {
+        if let Some(bot) = self.bots.get_mut(&identity) { bot.decapitations = bot.decapitations.saturating_add(count); }
+    }
 
     pub(crate) fn conditions(&self, identity: u32) -> Option<&ConditionState> {
         Some(&self.bots.get(&identity)?.conditions)
@@ -2864,6 +2979,8 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::Bonesaw => DamageType::MELEE | DamageType::NEVER_GIB | DamageType::CLUB,
         Weapon::Flamethrower => DamageType::IGNITE | DamageType::PREVENT_FORCE,
         Weapon::RocketLauncher
+        | Weapon::DirectHit | Weapon::BlackBox | Weapon::LibertyLauncher
+        | Weapon::RocketJumper | Weapon::AirStrike
         | Weapon::Original
         | Weapon::GrenadeLauncher => DamageType::BLAST | DamageType::HALF_FALLOFF | DamageType::USE_DISTANCE,
         Weapon::StickybombLauncher => DamageType::BLAST | DamageType::HALF_FALLOFF | DamageType::NO_CLOSE_DISTANCE,
@@ -2878,6 +2995,7 @@ pub(crate) fn weapon_damage_type(weapon: Weapon) -> Option<DamageType> {
         | Weapon::Revolver => DamageType::BULLET | DamageType::USE_DISTANCE,
         Weapon::SniperRifle => DamageType::BULLET | DamageType::USE_HITLOCATIONS,
         Weapon::SyringeGun => DamageType::BULLET | DamageType::USE_DISTANCE | DamageType::NO_CLOSE_DISTANCE | DamageType::PREVENT_FORCE,
+        Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot | Weapon::Manmelter => DamageType::BULLET | DamageType::IGNITE,
         Weapon::Sapper
         | Weapon::DisguiseKit
         | Weapon::InvisibilityWatch
@@ -2945,6 +3063,9 @@ fn respawn_bot(bot: &mut Bot, spawn: Spawn, mesh: &Mesh, tick: u64, interval: f3
         policy,
     );
     bot.lifecycle = PlayerLifecycle::Active;
+    bot.in_water = false;
+    bot.blast_since_movement = false;
+    bot.blast_jump_state = false;
     bot.damagers = crate::deathnotice::DamagerHistory::default();
     bot.health =
         HealthState::spawn(bot.class, 0.0, 0.0).expect("authored bot class health is valid");
@@ -3937,6 +4058,32 @@ mod tests {
     }
 
     #[test]
+    fn native_bot_provider_hooks_and_weapon_source_use_the_same_runtime_owner() {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        projectile_step(&mut session, crate::Command { bot_request: Some(Request { operation: Operation::Add,
+            count: 1, class: Some(PlayerClass::Soldier), team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal }), ..Default::default() });
+        let owner = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        assert!(session.bots.as_ref().unwrap().bots[&owner].equipment.is_none(), "the default bot roster adds no per-bot equipment graph");
+        assert_eq!(session.equipped_weapon_attribute(owner, Weapon::RocketLauncher, "mult_dmg", 90.0), 90.0);
+        let original = session.weapon_source(owner, Weapon::RocketLauncher).unwrap();
+        session.equip_bot_item(owner, crate::schema::LoadoutPosition::Primary, Some(127)).unwrap();
+        assert!(session.source_weapon_is_live(original, Weapon::RocketLauncher));
+        assert!(session.bots.as_mut().unwrap().regenerate(owner, session.tick));
+        assert!(!session.source_weapon_is_live(original, Weapon::RocketLauncher));
+        let source = session.weapon_source(owner, Weapon::DirectHit).unwrap();
+        assert_eq!(source.owner, owner);
+        assert_eq!(source.definition_index, 127);
+        assert_eq!(session.source_weapon_attribute(Some(source), Weapon::DirectHit, "mult_dmg", 90.0), 112.5);
+        assert_eq!(session.equipped_weapon_attribute(crate::PLAYER_IDENTITY, Weapon::RocketLauncher, "mult_dmg", 90.0), 90.0);
+        session.bots.as_mut().unwrap().weapon_runtime_mut(owner, Weapon::DirectHit).unwrap().generation += 1;
+        assert_eq!(session.source_weapon_attribute(Some(source), Weapon::DirectHit, "mult_dmg", 90.0), 90.0);
+        projectile_step(&mut session, crate::Command { bot_request: Some(Request { operation: Operation::KickAll,
+            count: 0, class: None, team: None, difficulty: Difficulty::Normal }), ..Default::default() });
+        assert!(!session.bots.as_ref().unwrap().contains(owner));
+    }
+
+    #[test]
     fn bot_health_uses_equipped_passive_and_active_provider_rates_without_changing_healer_attribution() {
         let mut world = BotWorld::new(fixture_mesh(), &fixture_graph(), &Floor, 0.015, None).unwrap();
         let mut random = UniformRandomStream::from_seed(7).unwrap();
@@ -4075,6 +4222,339 @@ mod tests {
             if definition == 61 { assert!(events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { crit: CritKind::Full, custom: 1, .. }))); }
             if definition == 460 { assert!(!session.actor_condition(identity, ConditionId::DISGUISED)); }
             if definition == 402 { assert_eq!(session.bots.as_ref().unwrap().bots[&identity].decapitations, 1); }
+        }
+    }
+
+    fn projectile_step(session: &mut crate::Session<Floor>, mut command: crate::Command) -> crate::Snapshot {
+        command.nextbot_stop = true;
+        assert!(session.physics_requests.is_empty());
+        let results = session.rocket_trace_requests.iter().map(|request| {
+            let trace = Floor.trace(request.start, request.end, Hull { mins: [0.0; 3], maxs: [0.0; 3] }, request.mask).unwrap();
+            crate::RocketTraceResult {
+                projectile: request.projectile, tick: session.tick,
+                end: trace.end, solid: trace.fraction < 1.0 || trace.start_solid,
+                sky: false, normal: trace.normal, direct_target: None,
+            }
+        }).collect::<Vec<_>>();
+        session.advance_with_external(command, &[], &results, None).unwrap_or_else(|error| {
+            panic!("tick={} weapon={:?} command={command:?} results={results:?}: {error:?}", session.tick, session.weapon)
+        })
+    }
+
+    fn projectile_session(definition: u32, weapon: Weapon) -> (crate::Session<Floor>, u32) {
+        let mut session = crate::Session::new(Floor, [0.0, 0.0, 1.0], crate::MapRuntime::empty(0.015));
+        let class = if weapon.is_rocket_launcher() { PlayerClass::Soldier } else { PlayerClass::Pyro };
+        projectile_step(&mut session, crate::Command { select_class: Some(class), ..Default::default() });
+        session.equip_item(class, if weapon.is_rocket_launcher() { crate::schema::LoadoutPosition::Primary }
+            else { crate::schema::LoadoutPosition::Secondary }, Some(definition)).unwrap();
+        projectile_step(&mut session, crate::Command { respawn: true, ..Default::default() });
+        projectile_step(&mut session, crate::Command { select_weapon: Some(weapon), ..Default::default() });
+        session.configure_navigation(fixture_mesh(), &fixture_graph()).unwrap();
+        projectile_step(&mut session, crate::Command { bot_request: Some(Request {
+            operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+            team: Some(PlayerTeam::Blue), difficulty: Difficulty::Normal,
+        }), ..Default::default() });
+        let identity = session.bots.as_ref().unwrap().snapshots()[0].identity;
+        session.bots.as_mut().unwrap().teleport(identity, [200.0, 0.0, 1.0], 0.0, 180.0).unwrap();
+        for _ in 0..35 { projectile_step(&mut session, crate::Command::default()); }
+        (session, identity)
+    }
+
+    #[test]
+    fn native_flare_family_launch_impact_and_ammunition_are_item_backed() {
+        for (definition, weapon, damage, reserve, expected_clip) in [
+            (39, Weapon::FlareGun, 30.0, 16, 0),
+            (351, Weapon::Detonator, 22.5, 16, 0),
+            (740, Weapon::ScorchShot, 19.5, 16, 0),
+            (595, Weapon::Manmelter, 30.0, 32, 20),
+        ] {
+            let (mut session, target) = projectile_session(definition, weapon);
+            let fired = projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+            assert_eq!(fired.projectiles.len(), 1);
+            assert_eq!(fired.projectiles[0].kind, crate::ProjectileKind::Flare);
+            assert_eq!(fired.projectiles[0].damage, damage);
+            let runtime = session.weapon_runtime(weapon).unwrap();
+            assert_eq!(runtime.clip, expected_clip);
+            assert_eq!(runtime.reserve, reserve - u16::from(weapon != Weapon::Manmelter));
+            let gravity = if weapon == Weapon::Manmelter { 0.3 * 1.5 } else { 0.3 };
+            assert_eq!(session.projectiles[0].gravity_scale, gravity);
+            let mut impact = None;
+            for _ in 0..20 {
+                let frame = projectile_step(&mut session, crate::Command::default());
+                impact = frame.events.into_iter().find(|event| matches!(event, crate::Event::PlayerDamaged { victim, .. } if *victim == target));
+                if impact.is_some() { break; }
+            }
+            assert!(matches!(impact, Some(crate::Event::PlayerDamaged { amount, .. }) if amount == (damage + 0.5) as u32), "{weapon:?}: {impact:?}");
+            assert!(session.bots.as_ref().unwrap().combat_targets().find(|victim| victim.identity == target).unwrap().burning);
+            if weapon == Weapon::ScorchShot {
+                assert_eq!(session.projectiles.len(), 1);
+                assert!(session.projectiles[0].flare_debris);
+                assert_eq!(session.projectiles[0].direct_target, Some(target));
+                assert!(session.projectiles[0].presentation.angular_velocity.iter().all(|value| value.abs() >= 180.0 && value.abs() <= 720.0));
+            } else { assert!(session.projectiles.is_empty()); }
+        }
+    }
+
+    #[test]
+    fn native_standard_flare_crits_burning_targets_and_afterburn_keeps_ticking_with_ai_stopped() {
+        let (mut session, target) = projectile_session(39, Weapon::FlareGun);
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(270));
+        let health_after_hit = session.bots.as_ref().unwrap().health(target).unwrap();
+        for _ in 0..35 { projectile_step(&mut session, crate::Command::default()); }
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(health_after_hit - 4));
+        while session.tick < session.weapon_runtime(Weapon::FlareGun).unwrap().next_primary_tick {
+            projectile_step(&mut session, crate::Command::default());
+        }
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        let mut hit = None;
+        while !session.projectiles.is_empty() {
+            let frame = projectile_step(&mut session, crate::Command::default());
+            hit = frame.events.into_iter().find(|event| matches!(event,
+                crate::Event::PlayerDamaged { victim, weapon: Weapon::FlareGun, amount: 90, crit: damage::CritKind::Full, .. } if *victim == target)).or(hit);
+        }
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn native_detonator_secondary_precedes_primary_and_cancels_queued_flight() {
+        let (mut session, target) = projectile_session(351, Weapon::Detonator);
+        let both = projectile_step(&mut session, crate::Command { fire: true, detonate: true, ..Default::default() });
+        assert!(both.projectiles.is_empty());
+        assert_eq!(session.weapon_runtime(Weapon::Detonator).unwrap().reserve, 16);
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        let burst = projectile_step(&mut session, crate::Command { detonate: true, ..Default::default() });
+        assert!(burst.projectiles.is_empty());
+        assert!(session.rocket_trace_requests.is_empty());
+        assert_eq!(session.radius_damage_requests[0].radius, 110.0);
+        assert_eq!(session.radius_damage_requests[0].self_radius, 100.0);
+        assert!(burst.projectile_events.iter().any(|event| event.kind == crate::ProjectileEventKind::Explode));
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(300));
+        projectile_step(&mut session, crate::Command::default());
+    }
+
+    #[test]
+    fn native_black_box_heals_once_and_rocket_jumper_does_not_damage_enemy_players() {
+        let (mut black_box, target) = projectile_session(228, Weapon::BlackBox);
+        black_box.health = 100;
+        projectile_step(&mut black_box, crate::Command { fire: true, ..Default::default() });
+        while !black_box.projectiles.is_empty() { projectile_step(&mut black_box, crate::Command::default()); }
+        assert_eq!(black_box.health, 120);
+        assert!(black_box.bots.as_ref().unwrap().health(target).unwrap() < 300);
+        let (mut jumper, target) = projectile_session(237, Weapon::RocketJumper);
+        let before = jumper.health;
+        projectile_step(&mut jumper, crate::Command { fire: true, ..Default::default() });
+        while !jumper.projectiles.is_empty() { projectile_step(&mut jumper, crate::Command::default()); }
+        assert_eq!(jumper.bots.as_ref().unwrap().health(target), Some(300));
+        assert_eq!(jumper.health, before);
+    }
+
+    #[test]
+    fn native_radius_healing_precedes_self_damage_and_respects_no_healing_admission() {
+        let mut outcomes = Vec::new();
+        for denied in [false, true] {
+            let (mut session, target) = projectile_session(228, Weapon::BlackBox);
+            session.bots.as_mut().unwrap().teleport(target, [70.0, 0.0, 1.0], 0.0, 180.0).unwrap();
+            session.health = 60;
+            if denied { session.conditions.words[0] |= 1 << 31; }
+            projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+            while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+            outcomes.push(session.health);
+        }
+        assert!(outcomes[0] > 0, "accepted radius healing must save the owner before the self pass: {outcomes:?}");
+        assert_eq!(outcomes[1], 0, "NOHEALINGDAMAGEBUFF must not admit the Black Box heal");
+    }
+
+    #[test]
+    fn native_liberty_and_jumper_preserve_stock_jump_force_with_distinct_health_costs() {
+        let mut outcomes = Vec::new();
+        for (definition, weapon) in [(18, Weapon::RocketLauncher), (414, Weapon::LibertyLauncher), (237, Weapon::RocketJumper)] {
+            let (mut session, _) = projectile_session(definition, weapon);
+            projectile_step(&mut session, crate::Command { fire: true, pitch_degrees: 90.0, ..Default::default() });
+            while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+            outcomes.push((session.health, session.movement.velocity));
+        }
+        assert!(outcomes[0].0 < outcomes[1].0 && outcomes[1].0 < 200);
+        assert_eq!(outcomes[2].0, 200);
+        for value in outcomes.iter().skip(1) {
+            for axis in 0..3 { assert!((value.1[axis] - outcomes[0].1[axis]).abs() < 0.0001); }
+        }
+        assert!(outcomes[0].1[2] > 250.0);
+    }
+
+    #[test]
+    fn native_rocket_hit_hooks_follow_the_original_weapon_lifetime_not_current_selection() {
+        for replace in [false, true] {
+            let (mut session, target) = projectile_session(228, Weapon::BlackBox);
+            session.health = 100;
+            projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+            let launched_source = session.projectiles[0].presentation.source_weapon.unwrap();
+            if replace {
+                session.equip_item(PlayerClass::Soldier, crate::schema::LoadoutPosition::Primary, Some(127)).unwrap();
+                session.regenerate(0, None, &mut Vec::new());
+                session.equip_item(PlayerClass::Soldier, crate::schema::LoadoutPosition::Primary, Some(228)).unwrap();
+                session.regenerate(0, None, &mut Vec::new());
+                // Equip may regenerate health; isolate the original launcher's hit hook.
+                session.health = 100;
+                assert!(!session.source_weapon_is_live(launched_source, Weapon::BlackBox));
+            } else {
+                projectile_step(&mut session, crate::Command { select_weapon: Some(Weapon::Shotgun), ..Default::default() });
+                assert!(session.source_weapon_is_live(launched_source, Weapon::BlackBox));
+            }
+            while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+            assert_eq!(session.health, if replace { 100 } else { 120 });
+            assert!(session.bots.as_ref().unwrap().health(target).unwrap() < 300);
+        }
+    }
+
+    #[test]
+    fn native_airstrike_does_not_credit_a_destroyed_launcher_recreated_with_the_same_definition() {
+        let (mut session, target) = projectile_session(1104, Weapon::AirStrike);
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().health.current = 70;
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        session.equip_item(PlayerClass::Soldier, crate::schema::LoadoutPosition::Primary, Some(127)).unwrap();
+        session.regenerate(0, None, &mut Vec::new());
+        session.equip_item(PlayerClass::Soldier, crate::schema::LoadoutPosition::Primary, Some(1104)).unwrap();
+        session.regenerate(0, None, &mut Vec::new());
+        while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+        assert_eq!(session.decapitations(), 0);
+        assert_eq!(session.weapon_runtime(Weapon::AirStrike).unwrap().profile().maximum_clip, 4);
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(0));
+    }
+
+    #[test]
+    fn native_delayed_rocket_keeps_damage_source_but_resolves_sound_and_death_icon_at_their_sdk_lifetimes() {
+        let (mut session, target) = projectile_session(228, Weapon::BlackBox);
+        session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().health.current = 70;
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        session.equip_item(PlayerClass::Soldier, crate::schema::LoadoutPosition::Primary, Some(1104)).unwrap();
+        session.regenerate(0, None, &mut Vec::new());
+        session.health = 100;
+        let mut killed = None;
+        let mut explosion_sound = None;
+        while !session.projectiles.is_empty() {
+            let snapshot = projectile_step(&mut session, crate::Command::default());
+            killed = snapshot.events.into_iter().find(|event| matches!(event, crate::Event::PlayerKilled { victim, .. } if *victim == target)).or(killed);
+            explosion_sound = session.audio_events.iter().find(|event| event.identity == crate::AudioEventIdentity::ExplosionSpecial1).map(|event| event.definition).or(explosion_sound);
+        }
+        assert!(matches!(killed, Some(crate::Event::PlayerKilled { weapon: Some(Weapon::BlackBox), killing_weapon: "airstrike", .. })));
+        assert_eq!(explosion_sound, Some(crate::SoundDefinition::RocketExplosion));
+        assert_eq!(session.health, 100, "the recreated weapon cannot supply the old launcher's radius hit hook");
+        assert_eq!(session.decapitations(), 0, "the new Air Strike only changes the displayed icon, not OnPlayerKill");
+    }
+
+    #[test]
+    fn native_direct_hit_minicrits_explosive_airborne_state_not_a_normal_jump() {
+        for (blast_jumping, expected_crit) in [(false, false), (true, true)] {
+            let (mut session, target) = projectile_session(127, Weapon::DirectHit);
+            if blast_jumping {
+                session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().blast_jump_state = true;
+                session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap().conditions
+                    .add(ConditionId::new(81).unwrap(), crate::condition::ConditionDuration::Permanent, None, true, false).unwrap();
+            }
+            projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+            let mut hit = None;
+            while !session.projectiles.is_empty() {
+                hit = projectile_step(&mut session, crate::Command::default()).events.into_iter()
+                    .find(|event| matches!(event, crate::Event::PlayerDamaged { victim, .. } if *victim == target)).or(hit);
+            }
+            assert!(matches!(hit, Some(crate::Event::PlayerDamaged { crit, .. }) if crit == if expected_crit { damage::CritKind::Mini } else { damage::CritKind::None }));
+        }
+    }
+
+    #[test]
+    fn native_airstrike_steals_heads_and_increases_capacity_without_granting_rockets() {
+        let (mut session, target) = projectile_session(1104, Weapon::AirStrike);
+        let victim = session.bots.as_mut().unwrap().bots.get_mut(&target).unwrap();
+        victim.health.current = 70;
+        victim.decapitations = 3;
+        projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+        assert_eq!(session.decapitations(), 4);
+        let runtime = session.weapon_runtime(Weapon::AirStrike).unwrap();
+        assert_eq!(runtime.profile().maximum_clip, 8);
+        assert_eq!(runtime.clip, 3);
+        assert_eq!(runtime.reserve, 20);
+        assert_eq!(session.bots.as_ref().unwrap().health(target), Some(0));
+    }
+
+    #[test]
+    fn native_self_blast_uses_shared_invulnerability_admission_without_losing_jump_force() {
+        let (mut session, _) = projectile_session(414, Weapon::LibertyLauncher);
+        session.conditions.insert(crate::Condition::Invulnerable);
+        let health = session.health;
+        let mut damage_events = Vec::new();
+        damage_events.extend(projectile_step(&mut session, crate::Command { fire: true, pitch_degrees: 90.0, ..Default::default() }).events);
+        while !session.projectiles.is_empty() { damage_events.extend(projectile_step(&mut session, crate::Command::default()).events); }
+        assert_eq!(session.health, health);
+        assert!(session.movement.velocity[2] > 250.0);
+        assert!(!damage_events.iter().any(|event| matches!(event, crate::Event::PlayerDamaged { .. } | crate::Event::Damaged { .. })));
+    }
+
+    #[test]
+    fn native_manmelter_extinguish_credits_only_the_original_enemy_burner_and_spends_one_crit() {
+        let (mut session, enemy) = projectile_session(595, Weapon::Manmelter);
+        projectile_step(&mut session, crate::Command { bot_request: Some(Request {
+            operation: Operation::Add, count: 1, class: Some(PlayerClass::Heavy),
+            team: Some(PlayerTeam::Red), difficulty: Difficulty::Normal,
+        }), ..Default::default() });
+        let friend = session.bots.as_ref().unwrap().snapshots().into_iter().find(|bot| bot.team == PlayerTeam::Red).unwrap().identity;
+        session.bots.as_mut().unwrap().teleport(friend, [100.0, 0.0, 1.0], 0.0, 0.0).unwrap();
+        session.health = 100;
+        let now = session.tick as f32 * 0.015;
+        session.bots.as_mut().unwrap().ignite_projectile(friend, enemy, Weapon::FlareGun, "flaregun", None, now, 3.0, 7.5);
+        projectile_step(&mut session, crate::Command { detonate: true, ..Default::default() });
+        assert!(!session.bots.as_ref().unwrap().combat_targets().find(|bot| bot.identity == friend).unwrap().burning);
+        assert_eq!(session.revenge_crits(), 1);
+        assert_eq!(session.health, 120);
+        assert!(session.weapon_runtime(Weapon::Manmelter).unwrap().charge_begin_tick.is_some());
+        projectile_step(&mut session, crate::Command::default());
+        let shot = projectile_step(&mut session, crate::Command { fire: true, ..Default::default() });
+        assert!(shot.projectiles[0].critical);
+        assert_eq!(session.revenge_crits(), 0);
+        assert!(session.audio_events.iter().any(|event| event.definition == crate::SoundDefinition::ManmelterCrit));
+        assert_eq!(session.weapon_runtime(Weapon::Manmelter).unwrap().clip, 20);
+        assert_eq!(session.weapon_runtime(Weapon::Manmelter).unwrap().reserve, 32);
+        // Burning from our team still extinguishes, but never awards a crit or heal.
+        while !session.projectiles.is_empty() { projectile_step(&mut session, crate::Command::default()); }
+        for _ in 0..36 { projectile_step(&mut session, crate::Command::default()); }
+        let now = session.tick as f32 * 0.015;
+        session.bots.as_mut().unwrap().ignite_projectile(friend, crate::PLAYER_IDENTITY, Weapon::FlareGun, "flaregun", None, now, 3.0, 7.5);
+        projectile_step(&mut session, crate::Command { detonate: true, ..Default::default() });
+        assert_eq!(session.revenge_crits(), 0);
+        assert_eq!(session.health, 120);
+    }
+
+    #[test]
+    fn native_manmelter_effect_clock_and_charge_stop_survive_holster_and_resupply() {
+        use crate::projectile_weapon::WeaponEffect;
+        let (mut session, _) = projectile_session(595, Weapon::Manmelter);
+        projectile_step(&mut session, crate::Command { select_weapon: Some(Weapon::Flamethrower), ..Default::default() });
+        projectile_step(&mut session, crate::Command { select_weapon: Some(Weapon::Manmelter), ..Default::default() });
+        let mut idle_ticks = Vec::new();
+        let mut ready_sounds = 0;
+        for _ in 0..80 {
+            let snapshot = projectile_step(&mut session, crate::Command::default());
+            if snapshot.events.iter().any(|event| matches!(event, crate::Event::ProjectileWeaponEffect { effect: WeaponEffect::Idle, .. })) {
+                idle_ticks.push(snapshot.tick);
+            }
+            ready_sounds += session.audio_events.iter().filter(|event| event.definition == crate::SoundDefinition::ManmelterReady).count();
+            assert!(session.random_draws.iter().all(|draw| draw.context == crate::RandomContext::PredictedPresentation));
+        }
+        assert!(idle_ticks.len() >= 3);
+        assert!(idle_ticks.windows(2).all(|ticks| ticks[1] - ticks[0] == 17));
+        assert_eq!(ready_sounds, 1);
+        let charging = projectile_step(&mut session, crate::Command { detonate: true, ..Default::default() });
+        assert!(charging.events.iter().any(|event| matches!(event, crate::Event::ProjectileWeaponEffect { effect: WeaponEffect::ChargeStart, .. })));
+        session.regenerate(0, None, &mut Vec::new());
+        let stopped = projectile_step(&mut session, crate::Command::default());
+        assert!(stopped.events.iter().any(|event| matches!(event, crate::Event::ProjectileWeaponEffect { effect: WeaponEffect::ChargeStop, .. })));
+        assert!(session.weapon_runtime(Weapon::Manmelter).unwrap().charge_begin_tick.is_none());
+        projectile_step(&mut session, crate::Command { select_weapon: Some(Weapon::Flamethrower), ..Default::default() });
+        for _ in 0..35 {
+            let snapshot = projectile_step(&mut session, crate::Command::default());
+            assert!(!snapshot.events.iter().any(|event| matches!(event, crate::Event::ProjectileWeaponEffect { .. })));
         }
     }
 
@@ -5012,11 +5492,11 @@ mod tests {
             )
             .unwrap();
         let identity = world.snapshots()[0].identity;
-        assert!(world.apply_flame_contact(identity, 1, 1.0, 13.0));
+        assert!(world.apply_flame_contact(identity, 1, None, 1.0, 13.0));
         assert_eq!(world.snapshots()[0].health, 112);
         assert!(world.combat_targets().next().unwrap().burning);
-        assert!(!world.apply_flame_contact(identity, 1, 1.04, 13.0));
-        assert!(world.apply_flame_contact(identity, 1, 1.08, 13.0));
+        assert!(!world.apply_flame_contact(identity, 1, None, 1.04, 13.0));
+        assert!(world.apply_flame_contact(identity, 1, None, 1.08, 13.0));
         assert_eq!(world.snapshots()[0].health, 99);
         assert!(world.apply_impulse(identity, [500.0, 0.0, 100.0]));
         assert_eq!(world.snapshots()[0].velocity, [500.0, 0.0, 100.0]);

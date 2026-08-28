@@ -43,7 +43,7 @@ type CompactWeaponState = Readonly<{
 }>
 
 type CompactGameplayEvent = Readonly<{
-  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19
+  kind: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 24
   detail: number
   subject: number
   auxiliary: number
@@ -71,7 +71,7 @@ type SessionSnapshot = Readonly<{
   loadout: readonly CompactWeaponState[]
   events: readonly CompactGameplayEvent[]
   lifecycleEvents: readonly Readonly<{ tick: bigint; kind: 1 | 2 | 3 | 4; class: Tf2Class; team: Tf2Team }>[]
-  projectileEvents: readonly Readonly<{ type: "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode"; launcherIdentity: number }>[]
+  projectileEvents: readonly Readonly<{ type: "fire" | "impact" | "stick" | "arm" | "fizzle" | "explode" | "deflect"; launcherIdentity: number }>[]
   bots?: readonly Readonly<{ identity: number; team: Tf2Team; class: Tf2Class }>[]
   scoreboard?: Readonly<{ players: readonly Readonly<{ identity: number; name: string; team: Tf2Team }>[] }>
 }>

@@ -670,6 +670,20 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     expect(publication.snapshot.player.value.crosshair).toMatchObject({ kind: "available", value: { weaponScale: 1.625 } })
   })
 
+  test("projects all ten equipped rocket and flare unlocks with authored names, slots and ammo visibility", () => {
+    for (const definition of [127, 228, 237, 414, 513, 1104, 39, 351, 740, 595]) {
+      const item = nativeEquipment.inventory.find(item => item.item.definitionIndex === definition)!
+      const slot = item.classSlots[0]!
+      const state = { weapon: slot.weapon!, reload: 0 as const, clip: 1, reserve: 12, maximumClip: 4, maximumReserve: 32 }
+      const source = compactSnapshot(1n, { class: slot.class, weapon: slot.weapon!, equippedItems: [item.item], loadout: [state] })
+      const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)
+      if (publication.snapshot.player.kind !== "available") throw new Error("missing player")
+      expect(publication.snapshot.player.value.weapons[0]).toMatchObject({ displayName: item.displayName,
+        slot: slot.class === 7 ? 1 : 0, itemDefinition: { kind: "available", value: definition },
+        ammoDisplay: definition === 595 ? "hidden" : slot.class === 7 ? "total" : "clip-and-reserve", crosshairScript: slot.hud!.script })
+    }
+  })
+
   test("reuses the final canonical event-batch snapshot instead of rebuilding its immutable player graph", () => {
     const source = compactSnapshot(7n)
     const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)

@@ -276,7 +276,7 @@ impl<W: crate::GameplayWorld + Clone> crate::Session<W> {
         if attacker == victim && let Some(actor) = self.melee_actor(victim) && actor.class != crate::PlayerClass::Soldier {
             let impulse = player_push(crate::sub(actor.hull.maxs, actor.hull.mins), amount, true);
             if victim == crate::PLAYER_IDENTITY { self.movement.velocity[2] += impulse; }
-            else if let Some(bots) = &mut self.bots { bots.apply_damage_impulse(victim, [0.0, 0.0, impulse]); }
+            else if let Some(bots) = &mut self.bots { bots.apply_damage_impulse(victim, [0.0, 0.0, impulse], false); }
         } else {
             let origin = if attacker == crate::PLAYER_IDENTITY {
                 let hull = self.movement.active_hull(crate::MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());

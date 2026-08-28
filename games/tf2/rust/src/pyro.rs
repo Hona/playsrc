@@ -1,4 +1,5 @@
 use crate::{
+    Weapon,
     class::PlayerClass,
     random::{RandomError, UniformRandomStream},
 };
@@ -290,7 +291,11 @@ impl FlameManager {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Afterburn {
     pub attacker: u32,
-    pub weapon: u32,
+    pub original_attacker: Option<u32>,
+    pub weapon: Weapon,
+    pub killing_weapon: &'static str,
+    pub source_weapon: Option<crate::weapon::WeaponSource>,
+    pub healing_debuff_end: f32,
     pub duration: f32,
     pub next_damage_time: f32,
     pub immune: bool,
@@ -301,29 +306,39 @@ impl Afterburn {
         previous: Option<Self>,
         victim_class: PlayerClass,
         attacker: u32,
-        weapon: u32,
+        weapon: Weapon,
+        killing_weapon: &'static str,
+        source_weapon: Option<crate::weapon::WeaponSource>,
         now: f32,
+        initial_duration: f32,
+        rate: f32,
     ) -> Self {
         let immune = victim_class == PlayerClass::Pyro;
         match previous {
             Some(mut state) => {
                 state.attacker = attacker;
                 state.weapon = weapon;
+                state.killing_weapon = killing_weapon;
+                state.source_weapon = source_weapon;
                 state.immune = immune;
                 state.duration = if immune {
                     PYRO_VISIBLE_BURN_DURATION
                 } else {
-                    (state.duration + FLAME_AFTERBURN_PER_HIT).min(AFTERBURN_MAXIMUM)
+                    (state.duration + rate).min(AFTERBURN_MAXIMUM)
                 };
                 state
             }
             None => Self {
                 attacker,
+                original_attacker: (!immune).then_some(attacker),
                 weapon,
+                killing_weapon,
+                source_weapon,
+                healing_debuff_end: now + initial_duration,
                 duration: if immune {
                     PYRO_VISIBLE_BURN_DURATION
                 } else {
-                    FLAME_INITIAL_AFTERBURN + FLAME_AFTERBURN_PER_HIT
+                    (initial_duration + rate).min(AFTERBURN_MAXIMUM)
                 },
                 next_damage_time: now + AFTERBURN_FREQUENCY,
                 immune,
@@ -581,17 +596,17 @@ mod tests {
 
     #[test]
     fn afterburn_stacks_caps_ticks_and_exempts_pyros() {
-        let mut burn = Afterburn::ignite(None, PlayerClass::Scout, 7, 21, 1.0);
+        let mut burn = Afterburn::ignite(None, PlayerClass::Scout, 7, Weapon::Flamethrower, "flamethrower", None, 1.0, FLAME_INITIAL_AFTERBURN, FLAME_AFTERBURN_PER_HIT);
         assert_eq!(burn.duration, 3.4);
         assert_eq!(burn.next_damage_time, 1.5);
         assert_eq!(burn.advance(1.49), None);
         assert_eq!(burn.advance(1.5), Some(4.0));
         for _ in 0..30 {
-            burn = Afterburn::ignite(Some(burn), PlayerClass::Scout, 7, 21, 1.5);
+            burn = Afterburn::ignite(Some(burn), PlayerClass::Scout, 7, Weapon::Flamethrower, "flamethrower", None, 1.5, FLAME_INITIAL_AFTERBURN, FLAME_AFTERBURN_PER_HIT);
         }
         assert_eq!(burn.duration, 10.0);
 
-        let mut pyro = Afterburn::ignite(None, PlayerClass::Pyro, 7, 21, 2.0);
+        let mut pyro = Afterburn::ignite(None, PlayerClass::Pyro, 7, Weapon::Flamethrower, "flamethrower", None, 2.0, FLAME_INITIAL_AFTERBURN, FLAME_AFTERBURN_PER_HIT);
         assert_eq!(pyro.duration, 0.25);
         assert_eq!(pyro.advance(2.5), None);
         assert_eq!(pyro.duration, 0.0);

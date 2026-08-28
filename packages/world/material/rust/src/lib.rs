@@ -644,6 +644,26 @@ pub fn static_state(
     static_state_with_alpha(material, texture_alpha, alpha)
 }
 
+/// Sprite_DX9 kRenderTransAdd shader constants. `$mod2x` is not a Sprite parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdditiveSpriteState {
+    pub srgb: bool,
+    pub vertex_color: bool,
+    pub color: [f32; 3],
+    pub hdr_color_scale: f32,
+}
+
+pub fn additive_sprite_state(material: &Material) -> Result<Option<AdditiveSpriteState>, Error> {
+    if material.shader != Shader::Sprite || material.particle.is_some()
+        || integer_or(&material.first_parameters, b"$spriterendermode", 0)? != 5 { return Ok(None); }
+    Ok(Some(AdditiveSpriteState {
+        srgb: !boolean_or(&material.first_parameters, b"$nosrgb", true)?,
+        vertex_color: !boolean_or(&material.first_parameters, b"$ignorevertexcolors", true)?,
+        color: color_or(&material.first_parameters, b"$color", [1.0; 3])?,
+        hdr_color_scale: float_or(&material.first_parameters, b"$hdrcolorscale", 1.0)?,
+    }))
+}
+
 fn static_state_with_alpha(
     material: &Material,
     texture_alpha: TextureAlphaFacts,
@@ -667,7 +687,10 @@ fn static_state_with_alpha(
         && !base_alpha_environment_mask
         && (features.translucent || features.alpha_test);
     let alpha_blend = alpha < 1.0 || features.vertex_alpha || (base_texture_alpha && !alpha_test);
-    let blend = if material.shader == Shader::Modulate {
+    let additive_sprite = additive_sprite_state(material)?;
+    let blend = if additive_sprite.is_some() {
+        BlendState { enabled: true, equation: BlendEquation::Add, source: BlendFactor::SourceAlpha, destination: BlendFactor::One }
+    } else if material.shader == Shader::Modulate {
         BlendState {
             enabled: true,
             equation: BlendEquation::Add,
@@ -800,15 +823,15 @@ fn static_state_with_alpha(
         },
         fog: if material.particle.is_some() || features.no_fog {
             FogMode::Disabled
-        } else if features.additive {
+        } else if features.additive || additive_sprite.is_some() {
             FogMode::Black
         } else {
             FogMode::Color
         },
         wireframe: features.wireframe,
         no_draw: features.no_draw,
-        vertex_color: features.vertex_color || material.particle.is_some(),
-        vertex_alpha: features.vertex_alpha || material.particle.is_some(),
+        vertex_color: features.vertex_color || material.particle.is_some() || additive_sprite.as_ref().is_some_and(|state| state.vertex_color),
+        vertex_alpha: features.vertex_alpha || material.particle.is_some() || additive_sprite.as_ref().is_some_and(|state| state.vertex_color),
         translucent_queue: features.translucent || blend.enabled,
     })
 }
@@ -1867,6 +1890,23 @@ mod tests {
             selected.environment_map.as_ref().unwrap().tint,
             [0.6, 0.6, 0.6]
         );
+    }
+
+    #[test]
+    fn sprite_transadd_uses_shader_defaults_not_modulate_or_vertex_color_flags() {
+        let material = material(br#"Sprite { "$basetexture" "Effects/beam_generic_3" "$spriterendermode" "5" "$mod2x" "1" "$nocull" "1" }"#, Default::default()).unwrap();
+        let constants = additive_sprite_state(&material).unwrap().unwrap();
+        assert!(!constants.srgb);
+        assert!(!constants.vertex_color);
+        assert_eq!(constants.color, [1.0; 3]);
+        assert_eq!(constants.hdr_color_scale, 1.0);
+        let state = static_state(&material, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.blend.source, BlendFactor::SourceAlpha);
+        assert_eq!(state.blend.destination, BlendFactor::One);
+        assert!(!state.depth_write);
+        assert!(state.depth_test);
+        assert_eq!(state.cull, CullState::None);
+        assert_eq!(state.fog, FogMode::Black);
     }
 
     #[test]

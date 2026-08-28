@@ -1,5 +1,5 @@
 const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
-const OUTPUT_VERSION = 4
+const OUTPUT_VERSION = 5
 const OUTPUT_HEADER_BYTES = 40
 const OUTPUT_RECORD_BYTES = 436
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -40,7 +40,9 @@ export type ParticleRenderItem = Readonly<{
   effectIdentity: number
   particleIdentity: number
   rendererIndex: number
-  primitive: "sprite" | "trail"
+  primitive: "sprite" | "trail" | "rope"
+  visibility?: Readonly<{ identity: bigint; vertices: Float32Array; clipFraction: number }>
+  mesh?: Readonly<{ positions: Float32Array; uv: Float32Array; colors: Uint8Array; indices: Uint32Array }>
   systemUuid: string
   material: string
   position: readonly [number, number, number]
@@ -155,7 +157,7 @@ export function decodeParticleRenderOutput(
     throw new ParticleAdapterError("BoundExceeded", "particle render item count exceeds its limit")
   }
   const expected = OUTPUT_HEADER_BYTES + count * OUTPUT_RECORD_BYTES
-  if (!Number.isSafeInteger(expected) || expected !== bytes.byteLength) {
+  if (!Number.isSafeInteger(expected) || expected > bytes.byteLength) {
     throw new ParticleAdapterError("MalformedOutput", "particle output records do not frame its bytes")
   }
   const boundsState = view.getUint32(12, true)
@@ -178,7 +180,7 @@ export function decodeParticleRenderOutput(
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
     const primitive = bytes[offset + 14]
-    if ((primitive !== 0 && primitive !== 1) || bytes[offset + 15]! > 1) {
+    if ((primitive !== 0 && primitive !== 1 && primitive !== 2) || bytes[offset + 15]! > 3) {
       throw new ParticleAdapterError("MalformedOutput", "particle primitive or reserved byte is invalid")
     }
     const materialIndex = view.getUint32(offset + 32, true)
@@ -250,6 +252,7 @@ export function decodeParticleRenderOutput(
       || stepSeconds <= 0
       || trailWidth < 0
       || trailLengthScale < 0
+      || orientationType < 0 || orientationType > 2
       || (flags & ~3) !== 0
       || (sheetFlags & ~3) !== 0
       || (materialShader !== 0 && materialShader !== 1)
@@ -263,8 +266,8 @@ export function decodeParticleRenderOutput(
       effectIdentity: view.getUint32(offset + 4, true),
       particleIdentity: view.getUint32(offset + 8, true),
       rendererIndex: view.getUint16(offset + 12, true),
-      primitive: primitive === 0 ? "sprite" : "trail",
-      sky: bytes[offset + 15] === 1,
+      primitive: primitive === 0 ? "sprite" : primitive === 1 ? "trail" : "rope",
+      sky: (bytes[offset + 15]! & 1) !== 0,
       systemUuid: uuid(bytes, offset + 16),
       material,
       position,
@@ -301,6 +304,43 @@ export function decodeParticleRenderOutput(
       secondarySheet,
     })
   }
+  let at = expected
+  let verticesRemaining = limits.maxRenderItems * 4
+  for (let index = 0; index < output.length; index++) {
+    let item = output[index]!
+    if ((bytes[OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES + 15]! & 2) !== 0) {
+      if (at + 72 > bytes.byteLength) throw new ParticleAdapterError("MalformedOutput", "visibility proxy is truncated")
+      const identity = view.getBigUint64(at, true), vertices = new Float32Array(15), clipFraction = view.getFloat32(at + 68, true)
+      for (let index = 0; index < 15; index++) vertices[index] = view.getFloat32(at + 8 + index * 4, true)
+      if (!vertices.every(Number.isFinite) || !Number.isFinite(clipFraction) || clipFraction < 0 || clipFraction > 1) throw new ParticleAdapterError("MalformedOutput", "visibility proxy is invalid")
+      item = output[index] = Object.freeze({ ...item, visibility: Object.freeze({ identity, vertices, clipFraction }) })
+      at += 72
+    }
+    if (item.primitive !== "rope") { verticesRemaining -= 4; continue }
+    if (at + 8 > bytes.byteLength) throw new ParticleAdapterError("MalformedOutput", "rope header is truncated")
+    const vertices = view.getUint32(at, true), indicesCount = view.getUint32(at + 4, true)
+    at += 8
+    if (vertices < 4 || vertices % 2 !== 0 || vertices > verticesRemaining || indicesCount !== (vertices / 2 - 1) * 6) {
+      throw new ParticleAdapterError("BoundExceeded", "rope geometry count is invalid")
+    }
+    verticesRemaining -= vertices
+    if (at + vertices * 24 + indicesCount * 4 > bytes.byteLength) throw new ParticleAdapterError("MalformedOutput", "rope geometry is truncated")
+    const positions = new Float32Array(vertices * 3), uv = new Float32Array(vertices * 2)
+    for (const array of [positions, uv]) for (let component = 0; component < array.length; component++, at += 4) {
+      const value = view.getFloat32(at, true)
+      if (!Number.isFinite(value)) throw new ParticleAdapterError("MalformedOutput", "rope vertex is nonfinite")
+      array[component] = value
+    }
+    const colors = bytes.slice(at, at + vertices * 4); at += vertices * 4
+    const indices = new Uint32Array(indicesCount)
+    for (let component = 0; component < indicesCount; component++, at += 4) {
+      const value = view.getUint32(at, true)
+      if (value >= vertices) throw new ParticleAdapterError("MalformedOutput", "rope index is out of range")
+      indices[component] = value
+    }
+    output[index] = Object.freeze({ ...item, mesh: Object.freeze({ positions, uv, colors, indices }) })
+  }
+  if (verticesRemaining < 0 || at !== bytes.byteLength) throw new ParticleAdapterError("MalformedOutput", "particle geometry does not frame its output")
   return Object.freeze({ bounds, items: Object.freeze(output) })
 }
 

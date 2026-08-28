@@ -191,7 +191,8 @@ impl WeaponProfile {
                 reload_start: 1.0, reload_round: 0.0, maximum_charge: None,
                 center_fire_projectile: false, flip_viewmodel: false,
             },
-            Weapon::RocketLauncher => Self {
+            Weapon::RocketLauncher | Weapon::DirectHit | Weapon::BlackBox
+            | Weapon::LibertyLauncher | Weapon::RocketJumper | Weapon::AirStrike => Self {
                 maximum_clip: 4,
                 maximum_reserve: 20,
                 fire_delay: 0.8,
@@ -209,6 +210,16 @@ impl WeaponProfile {
                 reload_round: 0.83,
                 maximum_charge: None,
                 center_fire_projectile: true,
+                flip_viewmodel: false,
+            },
+            Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot | Weapon::Manmelter => Self {
+                maximum_clip: if matches!(weapon, Weapon::Manmelter) { 20 } else { 0 },
+                maximum_reserve: 32,
+                fire_delay: 2.0,
+                reload_start: 0.0,
+                reload_round: 0.0,
+                maximum_charge: None,
+                center_fire_projectile: false,
                 flip_viewmodel: false,
             },
             Weapon::GrenadeLauncher => Self {
@@ -444,6 +455,8 @@ pub struct WeaponRuntime {
     pub discard_chambered_on_reload: bool,
     pub generation: u64,
     pub critical: crate::critical::WeaponState,
+    pub last_flare_deny_time: f32,
+    pub last_extinguish_time: f32,
     pub resolved_profile: WeaponProfile,
     pub weapon: Weapon,
     pub clip: u16,
@@ -505,6 +518,8 @@ impl WeaponRuntime {
             spinup_seconds: 0.75,
             postfire_until: None,
             discard_chambered_on_reload: false,
+            last_flare_deny_time: 0.0,
+            last_extinguish_time: 0.0,
             resolved_profile: profile,
             weapon,
             clip: profile.maximum_clip,
@@ -804,7 +819,8 @@ impl WeaponRuntime {
             return PrimaryResult::None;
         }
         let available = match self.weapon {
-            Weapon::SniperRifle => self.reserve > 0,
+            Weapon::SniperRifle | Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot => self.reserve > 0,
+            Weapon::Manmelter => true,
             Weapon::Bat
             | Weapon::Shovel
             | Weapon::Kukri
@@ -928,7 +944,8 @@ impl WeaponRuntime {
         activities: &mut Vec<ActivityEvent>,
     ) -> PrimaryResult {
         match self.weapon {
-            Weapon::SniperRifle => self.reserve -= 1,
+            Weapon::SniperRifle | Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot => self.reserve -= 1,
+            Weapon::Manmelter => {},
             Weapon::Bat
             | Weapon::Shovel
             | Weapon::Kukri
