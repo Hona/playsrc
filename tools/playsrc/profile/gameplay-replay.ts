@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { Page, Worker } from "@playwright/test"
+import { MAX_ADMISSION_EVENTS } from "../../../games/tf2/browser/src/admission-metrics"
 
 export const REPLAY_BYTES = 4 * 1024 * 1024
 export type ReplayCheckpoint = { configurationSha256: string; configurationBytes: number; profile: number; generation: number }
@@ -66,7 +67,7 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expec
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2) {
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2, retainAdmission = false) {
   if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
@@ -74,6 +75,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
   await writeFile(partial, Buffer.alloc(0), { flag: "wx" })
   let worker: Worker | undefined, offset = 0, failure: string | null = null, checkpoint: ReplayCheckpoint | undefined
   let pending = Promise.resolve(), stopped = false, closedAt: number | null = null
+  let admission: { file: string; sha256: string; bytes: number } | undefined
   const persistStatus = () => writeFile(progress, JSON.stringify({ schema: "playsrc-gameplay-replay-progress-v1", complete: false, bytes: offset, checkpoint, error: failure }))
   await persistStatus()
   const capture = async (stop = false) => {
@@ -81,7 +83,11 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const result = await Promise.race([
-        worker.evaluate(({ offset, stop }) => (globalThis as any).__playsrcGameplayReplay.read(offset, stop), { offset, stop }),
+        worker.evaluate(({ offset, stop, retainAdmission }) => {
+          const owner = (globalThis as any).__playsrcGameplayReplay
+          const result = owner.read(offset, stop)
+          return result && stop && retainAdmission ? { ...result, admission: owner.admission() } : result
+        }, { offset, stop, retainAdmission }),
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Replay owner read exceeded 3 seconds")), 3000) }),
       ])
       if (!result) return
@@ -94,6 +100,18 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       await appendFile(partial, bytes)
       offset += bytes.length
       if (stop && !result.complete) throw new Error("Authoritative replay owner reported incomplete evidence")
+      if (stop && retainAdmission) {
+        const value = result.admission
+        if (value?.schema !== 1 || !Number.isFinite(value.timeOrigin) || !Number.isSafeInteger(value.dropped) || value.dropped < 0
+          || !Array.isArray(value.events) || value.events.length > MAX_ADMISSION_EVENTS) throw new Error("Invalid admission evidence")
+        const bytes = Buffer.from(JSON.stringify(value))
+        if (bytes.length > REPLAY_BYTES) throw new Error("Admission evidence byte bound exceeded")
+        const sha256 = createHash("sha256").update(bytes).digest("hex"), file = `${sha256}.admission.json`
+        await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
+          if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
+        })
+        admission = { file, sha256, bytes: bytes.length }
+      }
     } catch (error) { failure = String(error) }
     finally { if (timeout) clearTimeout(timeout); await persistStatus() }
   }
@@ -152,7 +170,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
         if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
       })
-        const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, error: failure }
+        const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, admission, error: failure }
       const manifestBytes = Buffer.from(JSON.stringify(manifest))
       const manifestFile = `${createHash("sha256").update(manifestBytes).digest("hex")}.replay.json`
       await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" })
@@ -178,7 +196,7 @@ export function bindReplayGeneration(journal: any, installed: ReplayInstalledIde
  * coverage. Each new Worker must close its predecessor and authenticate anew. */
 export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1) {
   if (warmReload && mapOrdinal !== 1) throw new Error("Warm-reload replay requires the initial map of each Worker")
-  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2)
+  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2, true)
   let ordinal = 1, previous: typeof journal | undefined, transitionAt: number | undefined
   let stopped = false
   const generations: any[] = []
@@ -202,7 +220,7 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
       previous = journal
       transitionAt = Date.now()
       ordinal = 2
-      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal)
+      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal, 2, true)
     },
     async ready() {
       if (ordinal !== (warmReload ? 2 : 1)) throw new Error("Requested replay navigation missing")

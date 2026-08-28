@@ -209,7 +209,8 @@ test("requested warm reload authenticates two distinct Worker journals and prese
       async evaluate(_fn: unknown, args: any) {
         if (!args || args.mapOrdinal || typeof args === "number") return
         return { checkpoint: { configurationSha256: "b".repeat(64), configurationBytes: 12, profile: 1, generation: 1 },
-          mapOrdinal: 1, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64") }
+          mapOrdinal: 1, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64"),
+          admission: { schema: 1, timeOrigin: 123, dropped: 0, events: [] } }
       } }
   }
   try {
@@ -228,6 +229,7 @@ test("requested warm reload authenticates two distinct Worker journals and prese
       [1, 0, "checkpoint-to-pre-navigation"], [2, 2, "checkpoint-through-sample"],
     ])
     expect(manifest.generations[0].journal.sha256).not.toBe(manifest.generations[1].journal.sha256)
+    expect(manifest.generations[0].journal.admission.file).toMatch(/^[0-9a-f]{64}\.admission\.json$/)
     expect(manifest.generations.every((entry: any) => entry.applicationGeneration.resourceRoot === identity.resourceRoot)).toBe(true)
     const broken = structuredClone(manifest); broken.generations.reverse()
     expect(() => validateReplayLifecycle(broken)).toThrow("generation order")
