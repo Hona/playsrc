@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import Textures from "three/src/renderers/common/Textures.js"
+import WebGPUTextureUtils from "three/src/renderers/webgpu/utils/WebGPUTextureUtils.js"
 import { borrowWorldLightmapTextures, createWorldLightmapTextures, replaceWorldLightmapData } from "../src/world-lightmap-textures"
 import { retainedSceneSource } from "../src/scene-resource-handoff"
 import { SharedTextureResidency } from "../src/texture-residency"
@@ -12,6 +13,13 @@ import { hdrFixture } from "./hdr-fixture"
 // recorded. This proves API work and source aliasing, NOT physical residency.
 function ownerLoop() {
   const state = { liveBytes: 0, peakBytes: 0, createdBytes: 0, uploadBytes: 0, destroyedBytes: 0 }
+  let uploading: THREE.DataTexture | undefined
+  const utils = new WebGPUTextureUtils({ device: { queue: { writeTexture(_destination: unknown, data: Float32Array, layout: any, size: any) {
+    expect(data).toBe(uploading!.image.data)
+    expect(layout.bytesPerRow).toBe(uploading!.image.width * 16)
+    expect(size.width).toBe(uploading!.image.width); expect(size.height).toBe(uploading!.image.height)
+    state.uploadBytes += data.byteLength
+  } } } })
   const backend = {
     createTexture(texture: THREE.DataTexture, options: any) {
       expect(options.levels).toBe(1); expect(options.needsMipmaps).toBe(false)
@@ -20,7 +28,9 @@ function ownerLoop() {
     },
     updateTexture(texture: THREE.DataTexture, options: any) {
       expect(options.image.data).toBe(texture.image.data)
-      state.uploadBytes += options.image.data.byteLength
+      uploading = texture
+      try { utils._copyBufferToTexture(options.image, {}, { format: "rgba32float" }, 0, texture.flipY) }
+      finally { uploading = undefined }
     },
     destroyTexture(texture: THREE.DataTexture) { const bytes = texture.image.data.byteLength; state.liveBytes -= bytes; state.destroyedBytes += bytes },
   }
