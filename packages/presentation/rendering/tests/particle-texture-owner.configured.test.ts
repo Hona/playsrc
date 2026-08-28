@@ -62,7 +62,7 @@ configured("actual particle preparation retires cold flame mips, first required 
   expect(device.writes).toHaveLength(33)
   device.phase("map-teardown"); owner.offlineDispose(); snapshot("disposed")
   expect(device.allocations.every((record: any) => record.destroyed)).toBe(true)
-  await Bun.write(path.join(directory, "flame-lifecycle.json"), JSON.stringify({ schema: "playsrc-offline-owner-lifecycle-v1",
+  await Bun.write(path.join(directory, "../alias-investigation/flame-lifecycle.json"), JSON.stringify({ schema: "playsrc-offline-owner-lifecycle-v1",
     interpretation: "Production JS texture factory/preparation/disposal and Three texture manager/queue writer; native device/compiler boundary recorded, not executed. No browser, pixels, physical residency or FPS claim.",
     sourceSha256: loaded.sourceSha256, effect, input: { path: record.logicalPath, sourceSha256: record.sourceSha256, bytes: record.sourceBytes }, stages,
     allocations: device.allocations, writes: device.writes }, null, 2) + "\n")
@@ -117,7 +117,7 @@ configured("all captured cold particle owners reconcile exact formats/mips/queue
   expect(warm.destroyed).toBe(false)
   device.phase("terminal-map-teardown"); owner.offlineDispose()
   expect(device.allocations.every((record: any) => record.destroyed)).toBe(true)
-  await Bun.write(path.join(root, "offline/particle-owner-attribution.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256,
+  await Bun.write(path.join(root, "alias-investigation/particle-owner-attribution.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256,
     interpretation: "Exact configured source ranges and unchanged production factory/preparation/disposal/Three queue writer. Native GPU/compiler boundary recorded only; no pixel or physical residency claim.",
     owners: attributed, creationEvents: device.allocations.length, uploadInputBytes: device.writes.reduce((n: number, write: any) => n + write.bytes, 0), terminalLive: 0 }, null, 2) + "\n")
 })
@@ -150,7 +150,7 @@ configured("configured raw cubemap owner uploads all six faces/mips once; exact 
   expect(device.writes.reduce((sum: number, write: any) => sum + write.bytes, 0)).toBe(65520)
   device.phase("cube-teardown"); next.dispose()
   expect(device.allocations.every((record: any) => record.destroyed)).toBe(true)
-  await Bun.write(path.join(root, "offline/cubemap-lifecycle.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256,
+  await Bun.write(path.join(root, "alias-investigation/cubemap-lifecycle.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256,
     interpretation: "Configured cube owner regression, not identification of the unrecorded historical replacement cubemap path or physical GPU residency.",
     allocations: device.allocations, writes: device.writes }, null, 2) + "\n")
 })
@@ -186,7 +186,7 @@ configured("real animation residency resets consumers and releases unused old fr
   }
   device.phase("terminal-animation-teardown"); next.dispose()
   expect(device.allocations.every((record: any) => record.destroyed)).toBe(true)
-  await Bun.write(path.join(root, "offline/animation-lifecycle.json"), JSON.stringify({ source: record.logicalPath, sourceSha256: record.sourceSha256,
+  await Bun.write(path.join(root, "alias-investigation/animation-lifecycle.json"), JSON.stringify({ source: record.logicalPath, sourceSha256: record.sourceSha256,
     frameCount: 30, mipCount: 9, bytesPerFrame: 43704, pinnedBaseFrames: 1, selectedNewNonzeroFrames: 19,
     currentSettledBytesAfterSelection: 874080, retainingAllOldFramesBytes: 1311120, indiscriminateRetentionIncrease: 437040,
     interpretation: "Representative valid19-frame selection, not invented historical frame indices. Actual production factory/residency/queue writer, native boundary recorded; no physical residency or pixel claim.",

@@ -5,6 +5,7 @@ import { parseResourceSet } from "../../../asset-store/src/graph"
 import { parsePresentationArtifacts } from "../../../../games/tf2/browser/src/artifacts"
 import { decodeModelPoseOutput, projectileModelPath } from "../../../../games/tf2/browser/src/presentation"
 import { decodeSnapshot } from "../../../../games/tf2/browser/src/codec"
+import { particleTextureAlias } from "../src/particle-texture-alias"
 import { loadOfflineTextureOwner, offlineTextureDevice, offlinePipelineDevice } from "./offline-texture-owner"
 
 test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured scene replacement distinguishes retained sample objects from fresh owners", async () => {
@@ -82,6 +83,15 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
   const after = entries(second), newSamples = after.filter((entry: any) => !beforeObjects.has(entry.value))
   const transferred = after.filter((entry: any) => beforeObjects.has(entry.value))
   const firstParticles = new Set(first.particleTextures.values())
+  const unique: any[] = [], aliases: any[] = []
+  for (const [material, value] of first.particleTextures) {
+    const alias = particleTextureAlias(value, unique)
+    if (alias) aliases.push({ material, owner: value.name, originalId: value.id, sharedId: alias.id,
+      bytes: value.mipmaps.reduce((sum: number, mip: any) => sum + mip.data.byteLength, 0) })
+    else unique.push(value)
+  }
+  expect(aliases).toHaveLength(8)
+  expect(aliases.reduce((sum, alias) => sum + alias.bytes, 0)).toBe(420712)
   expect([...second.particleTextures.values()].every(texture => !firstParticles.has(texture))).toBe(true)
   expect(second.refractionTarget).not.toBe(first.refractionTarget)
   expect(second.lightmapTextures[0]).toBe(first.lightmapTextures[0])
@@ -146,8 +156,8 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
     expect(compilation.terminalNewlyResidentLive).toBe(0)
     device.renderer.dispose()
   }
-  await Bun.write(path.join(root, "offline/scene-construction.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256, manifest,
+  await Bun.write(path.join(root, "alias-investigation/scene-construction.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256, manifest,
     diagnostics: { first: first.diagnostics, second: second.diagnostics }, compilation, first: before.map(record), second: after.map(record), newSamples: newSamples.map(record),
-    transferredSamples: transferred.length, particleInputs: artifacts.particleTextures.map(input => ({ material: input.material, logicalPath: input.logicalPath, sourceSha256: input.sourceSha256 })),
+    transferredSamples: transferred.length, aliases, particleInputs: artifacts.particleTextures.map(input => ({ material: input.material, logicalPath: input.logicalPath, sourceSha256: input.sourceSha256 })),
     interpretation: "Actual configured production scene construction, Three pipeline traversal and initial unassigned-world command-encoding path. GPU commands recorded, not executed; no browser, pixels, physical residency or FPS evidence. Historical native and newly compiled fixture identities remain separate." }, null, 2) + "\n")
 }, 20_000)

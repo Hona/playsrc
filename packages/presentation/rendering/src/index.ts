@@ -28,6 +28,7 @@ import { retainedSceneSource } from "./scene-resource-handoff"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
+import { particleTextureAlias } from "./particle-texture-alias"
 import { sourceTextureSamples } from "./texture-samples"
 import { sourceTextureLayout,authoredMipUpload } from "./source-texture-layout"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
@@ -1367,6 +1368,7 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, layout.type)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, layout.compressed, layout.type)
   texture.mipmaps = mipmaps
+  texture.name = `authored:${input.logicalPath}:frame=${frame}/${input.frameCount}:${colorSpace}`
   texture.colorSpace = colorSpace
   const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
   texture.wrapS = wrap(input.sampling.wrapS)
@@ -1401,6 +1403,7 @@ function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: str
     const texture=new THREE.DataTexture(data(plane),plane.width,plane.height,THREE.RGBAFormat,componentType);texture.colorSpace=colorSpace;texture.flipY=false;texture.generateMipmaps=false;texture.needsUpdate=true;return texture
   }))})
   const base=level(0),texture=new THREE.CubeTexture([...base.images] as any)
+  texture.name = `cubemap:${input.logicalPath}:frame=${frame}/${input.frameCount}:${colorSpace}`
   texture.mipmaps=Array.from({length:input.mipCount-1},(_,index)=>level(index+1)) as any
   texture.colorSpace=colorSpace;texture.type=componentType;texture.format=THREE.RGBAFormat;texture.flipY=false;texture.generateMipmaps=false;texture.minFilter=[THREE.NearestFilter,THREE.LinearFilter,THREE.LinearMipmapNearestFilter,THREE.LinearMipmapLinearFilter,THREE.LinearMipmapLinearFilter][input.sampling.minFilter]??THREE.LinearFilter;texture.magFilter=input.sampling.magFilter===0?THREE.NearestFilter:THREE.LinearFilter;texture.anisotropy=input.sampling.anisotropyLevel;texture.needsUpdate=true
   return texture
@@ -2672,7 +2675,7 @@ class RendererOwner implements Renderer {
     const owner = this.#active ?? this.#panelAssets
     if (!owner || this.#renderBusy) throw new RenderingError("InvalidState", "particle pipeline preparation requires idle admitted assets")
     const backend = this.#backend, ordinal = this.#loadOrdinal, deviceGeneration = this.#deviceGeneration
-    const coldTextures = [...owner.particleTextures.values()].filter(texture => !backend.backend.has(texture))
+    const coldTextures = [...new Set(owner.particleTextures.values())].filter(texture => !backend.backend.has(texture))
     const previousFog = this.#scene.fog as THREE.Fog | null
     const started = performance.now()
     this.#renderBusy = true
@@ -5251,8 +5254,10 @@ class RendererOwner implements Renderer {
       const key = particlePipelineKey(particlePipelineVariant(texture.material, state))
       if (materials.has(key)) continue
       const additive = texture.additiveSprite
-      const value = textureFromAuthored(texture, additive && !additive.srgb ? THREE.NoColorSpace : THREE.SRGBColorSpace, 0, this.textureQuality)
-      textures.set(texture.material.toLowerCase(), value); disposables.add(value)
+      const candidate = textureFromAuthored(texture, additive && !additive.srgb ? THREE.NoColorSpace : THREE.SRGBColorSpace, 0, this.textureQuality)
+      const alias = texture.frameCount === 1 ? particleTextureAlias(candidate, textures.values()) : undefined
+      const value = alias ?? disposables.add(candidate)
+      textures.set(texture.material.toLowerCase(), value)
       const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0 }, state))
       disposables.add(material); applyParticleDepthState(material, state)
       const current = TSL.texture(value, TSL.uv()), next = TSL.texture(value, TSL.attribute("particleUvNext", "vec2"))
