@@ -3,13 +3,23 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
-import { localJobCommand, localJobEnvironment, prepareLocalJob, readLocalTaskResult, runLocalJob, validateRevision } from "../src/local-job"
+import { availableDevelopmentPort, localJobCommand, localJobEnvironment, prepareLocalJob, readLocalTaskResult, runLocalJob, validateRevision } from "../src/local-job"
 import { resolveCargoExecutable } from "../src/tf2-wasm-build"
 
 test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", async () => {
   expect(await resolveCargoExecutable(process.execPath, {})).toBe(process.execPath)
   await expect(resolveCargoExecutable(path.join(path.dirname(process.execPath), "missing-pinned-cargo.exe"), process.env)).rejects.toThrow("pinned Cargo")
 })
+
+test("both development ports can be rebound immediately by a separate native Bun process", async () => {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const port = await availableDevelopmentPort()
+    const code = 'const p=Number(process.argv[1]);const servers=[p,p+1].map(port=>Bun.serve({hostname:"127.0.0.1",port,fetch:()=>new Response(null)}));await Promise.all(servers.map(server=>server.stop(true)));console.log("bound")'
+    const child = Bun.spawn([process.execPath, "-e", code, String(port)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect({ exit, stdout: stdout.trim(), stderr }).toEqual({ exit: 0, stdout: "bound", stderr: "" })
+  }
+}, 15_000)
 
 test("local jobs accept an explicit origin revision, never shell fragments or ambiguous branches", () => {
   for (const ref of ["refs/heads/work/fix", "refs/tags/v0.0.10", "a".repeat(40)]) expect(() => validateRevision(ref, "b".repeat(40))).not.toThrow()

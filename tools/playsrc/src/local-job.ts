@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { finished } from "node:stream/promises"
-import { createServer } from "node:net"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
@@ -95,18 +94,21 @@ async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, l
   })
 }
 
-async function availablePort(): Promise<number> {
+export async function availableDevelopmentPort(): Promise<number> {
   for (let attempt = 0; attempt < 32; attempt++) {
-    const application = createServer(), assets = createServer()
+    let application: ReturnType<typeof Bun.serve> | undefined, assets: ReturnType<typeof Bun.serve> | undefined
     try {
-      await new Promise<void>((resolve, reject) => { application.once("error", reject); application.listen(0, "127.0.0.1", resolve) })
-      const address = application.address()
-      if (!address || typeof address === "string" || address.port < 1024 || address.port >= 65535) continue
-      await new Promise<void>((resolve, reject) => { assets.once("error", reject); assets.listen(address.port + 1, "127.0.0.1", resolve) })
-      return address.port
+      // Use the same native listener as the asset service. A node:net close
+      // callback is not proof that a different Windows process can bind it.
+      const fetch = () => new Response(null, { status: 503 })
+      application = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch })
+      const port = application.port!
+      if (port < 1024 || port >= 65535) continue
+      assets = Bun.serve({ hostname: "127.0.0.1", port: port + 1, fetch })
+      return port
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error }
     finally {
-      await Promise.all([application, assets].filter(server => server.listening).map(server => new Promise<void>(resolve => server.close(() => resolve()))))
+      await Promise.all([application?.stop(true), assets?.stop(true)])
     }
   }
   throw new Error("Could not reserve adjacent local development/application asset ports")
@@ -175,7 +177,7 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
   await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
   await mkdir(run)
-  const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availablePort() : undefined
+  const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
   const command = [process.execPath, ...plan.command]
   let failure: string | null = null
   try {
