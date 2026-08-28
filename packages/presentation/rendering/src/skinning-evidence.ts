@@ -103,7 +103,12 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
         const drawPair = () => {
           if (!referenceRender) return render.call(renderer, scene, camera)
           const backend = renderer.backend as any, original = backend.draw
+          const addBundle = backend.addBundle
           const order: number[][] = []
+          backend.addBundle = function (context: any, bundle: any) {
+            order.push([-1, bundle.bundleGroup.id, bundle.camera.id, bundle.renderContext.id])
+            return addBundle.call(this, context, bundle)
+          }
           backend.draw = function (draw: any, ...args: any[]) {
             const geometry = draw.geometry
             order.push([draw.object.id, draw.material.id, geometry.id, geometry.drawRange.start, geometry.drawRange.count,
@@ -111,7 +116,7 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
             return original.call(this, draw, ...args)
           }
           try { return render.call(renderer, scene, camera) }
-          finally { backend.draw = original; drawOrders.push(order) }
+          finally { backend.draw = original; backend.addBundle = addBundle; drawOrders.push(order) }
         }
         for (const reference of [false, true]) {
           const key = `${plane}:${size.x}:${size.y}`
@@ -127,6 +132,10 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
           configure(target)
           renderer.setRenderTarget(target)
           renderer.setViewport(0, 0, size.x, size.y)
+          // A new diagnostic target initially encodes static bundles. Admit it
+          // before both draws: compare bundle execution with bundle execution,
+          // not first-use encoding callbacks with later cached execution.
+          if (referenceRender && !reference) render.call(renderer, scene, camera)
           if (reference) (referenceRender ?? (draw => withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, draw)))(drawPair)
           else drawPair()
           pair.push(read(target))
