@@ -164,15 +164,30 @@ export async function publishTf2Release(config: LocalConfig, target: string | un
   const descriptors = sortPublicationDescriptors(Array.from(artifact.files.values(), ({ descriptor }) => descriptor))
   const adapter = createR2Adapter()
   const objects: { sha256: string; byteLength: string; kind: ObjectDescriptor["kind"]; outcome: "Uploaded" | "AlreadyPresent" }[] = []
+  const totalBytes = descriptors.reduce((total, descriptor) => total + Number(descriptor.byteLength), 0)
+  const started = Date.now()
+  let verifiedBytes = 0, uploaded = 0, alreadyPresent = 0
+  const progress = (state = "publishing") => {
+    const percent = totalBytes === 0 ? 100 : Math.floor(verifiedBytes / totalBytes * 1000) / 10
+    console.error(`[publish] ${state} ${percent.toFixed(1)}% | verified ${(verifiedBytes / 1_048_576).toFixed(2)}/${(totalBytes / 1_048_576).toFixed(2)} MiB | objects ${objects.length}/${descriptors.length} | uploaded ${uploaded} | already present ${alreadyPresent} | ${((Date.now() - started) / 1000).toFixed(0)}s`)
+  }
+  progress()
+  const timer = setInterval(progress, 1000)
   try {
     for (const descriptor of descriptors) {
       const source = releaseObjectPath(config, descriptor)
       await verifyFile(source, descriptor)
       const outcome = await publishImmutableObject(descriptor, await readFile(source), adapter)
       objects.push({ sha256: descriptor.sha256, byteLength: descriptor.byteLength, kind: descriptor.kind, outcome })
+      // Count completed remote readback, not bytes merely sent or found by name.
+      verifiedBytes += Number(descriptor.byteLength)
+      if (outcome === "Uploaded") uploaded++
+      else alreadyPresent++
     }
   } finally {
+    clearInterval(timer)
     adapter.close()
+    progress(objects.length === descriptors.length ? "complete" : "failed")
   }
   console.log(JSON.stringify({
     schema: "playsrc-r2-publication-v1",
