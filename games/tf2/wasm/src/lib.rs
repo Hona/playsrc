@@ -5383,7 +5383,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             templates,
             current_revision,
             snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-            Some(&candidate),
+            Some(&|identity|candidate.map_collision_entity(identity)),
             &transforms,
             &velocities,
         ) {
@@ -5394,7 +5394,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 current_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&candidate),
+                Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -5513,7 +5513,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 collision_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&candidate),
+                Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -9025,9 +9025,9 @@ fn parented_pusher_members(session:&playsrc_tf2::Session<SharedWorld>,source:u32
     }).collect()
 }
 
-fn collision_entity_state(template:&CollisionObjectTemplate,session:Option<&playsrc_tf2::Session<SharedWorld>>)->(playsrc_collision::Transform,bool){
-    if template.runtime_transform&&let Some(session)=session {
-        return u32::try_from(template.input.identity).ok().and_then(|source|session.map_collision_entity(source)).map_or((template.input.transform,false),|state|(
+fn collision_entity_state(template:&CollisionObjectTemplate,resolve:Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>)->(playsrc_collision::Transform,bool){
+    if template.runtime_transform&&let Some(resolve)=resolve {
+        return u32::try_from(template.input.identity).ok().and_then(resolve).map_or((template.input.transform,false),|state|(
             playsrc_collision::Transform{origin:state.transform.origin,angles:state.transform.angles},state.enabled||template.input.volume_contents,
         ));
     }
@@ -9040,7 +9040,7 @@ fn compile_collision_snapshot(
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
-    session: Option<&playsrc_tf2::Session<SharedWorld>>,
+    resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
@@ -9048,7 +9048,7 @@ fn compile_collision_snapshot(
         .iter()
         .map(|template| {
             let mut input = template.input.clone();
-            (input.transform,input.enabled)=collision_entity_state(template,session);
+            (input.transform,input.enabled)=collision_entity_state(template,resolve);
             if let Some(transform) = transform_overrides.get(&input.identity) {
                 input.transform = *transform;
             }
@@ -9097,7 +9097,7 @@ fn retain_collision_snapshot(
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
-    session: Option<&playsrc_tf2::Session<SharedWorld>>,
+    resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Option<playsrc_collision::Snapshot> {
@@ -9109,7 +9109,7 @@ fn retain_collision_snapshot(
         if record.identity != identity {
             return None;
         }
-        let (runtime,enabled)=collision_entity_state(template,session);
+        let (runtime,enabled)=collision_entity_state(template,resolve);
         let transform = transform_overrides
             .get(&identity)
             .copied()
@@ -9151,24 +9151,24 @@ fn setup_gate_child_collision_follows_parent_and_invalidates_retention() {
         kind: playsrc_tf2::MoverResultKind::Completed, transform: playsrc_entity::Transform { origin: [0.0,0.0,128.0], angles: [0.0;3] }, carry: [0.0;3] }]).unwrap();
     assert!(map.entity_descends_from(1,0));
     assert!(!map.entity_descends_from(0,1));
-    let resolve = |identity| map.entity_collision_state(identity);
-    assert!(retain_collision_snapshot(&closed, &templates, 2, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
+    let resolve = |identity| map.collision_entity(identity);
+    assert!(retain_collision_snapshot(&closed, &templates, 2, None, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
     let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities).unwrap();
     let child = map.entity_world_transform(1).unwrap();
     assert!(child.origin[2] > 120.0);
     assert_eq!(opened.records()[0].transform.origin, child.origin);
-    assert!(retain_collision_snapshot(&opened, &templates, 3, Some(&resolve), &transforms, &velocities).is_some());
+    assert!(retain_collision_snapshot(&opened, &templates, 3, None, Some(&resolve), &transforms, &velocities).is_some());
     map.input(2,1,b"DisableCollision",playsrc_entity::Variant::Void).unwrap();
-    let resolve=|identity|map.entity_collision_state(identity);
-    assert!(retain_collision_snapshot(&opened,&templates,4,Some(&resolve),&transforms,&velocities).is_none());
+    let resolve=|identity|map.collision_entity(identity);
+    assert!(retain_collision_snapshot(&opened,&templates,4,None,Some(&resolve),&transforms,&velocities).is_none());
     let disabled=compile_collision_snapshot(Some(&opened),&world,&templates,4,None,Some(&resolve),&transforms,&velocities).unwrap();
     assert!(!disabled.records()[0].enabled,"checkpoint sign collision inputs reach collision, not just rendering");
     map.input(3,1,b"EnableCollision",playsrc_entity::Variant::Void).unwrap();
-    let resolve=|identity|map.entity_collision_state(identity);
+    let resolve=|identity|map.collision_entity(identity);
     let enabled=compile_collision_snapshot(Some(&disabled),&world,&templates,5,None,Some(&resolve),&transforms,&velocities).unwrap();
     assert!(enabled.records()[0].enabled);
     let removed = |_| None;
-    assert!(retain_collision_snapshot(&opened, &templates, 4, Some(&removed), &transforms, &velocities).is_none());
+    assert!(retain_collision_snapshot(&opened, &templates, 4, None, Some(&removed), &transforms, &velocities).is_none());
     let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities).unwrap();
     assert!(!removed.records()[0].enabled);
 }
