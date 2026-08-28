@@ -7,7 +7,7 @@ import { loadLocalConfig } from "../src/config"
 import { acquireMap } from "../src/targets"
 import { buildCollisionReplay } from "../src/collision-replay-build"
 import { summarizeDistribution } from "./gameui-profile"
-import { parseGameplayReplay, REPLAY_BYTES, validateReplayMutation, type ReplayRecord } from "./gameplay-replay"
+import { parseGameplayReplay, REPLAY_BYTES, validateReplayLifecycle, validateReplayMutation, type ReplayRecord } from "./gameplay-replay"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "../../../games/tf2/browser/src/admission-metrics"
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
@@ -47,12 +47,36 @@ export function verifyReplayCheckpoint(checkpoint: any, installed: any, bspSha25
 // Build the opt-in collision-replay WASM feature; ordinary game builds contain
 // neither the direct-sweep selector nor its per-plane diagnostics.
 export async function replayGameplay(manifestPath: string, wasmPath: string, ticksOnly = false, displacement = false, baselineWasmPath?: string, configuredResourceRoot?: string) {
+  return replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, configuredResourceRoot, undefined, performance.now())
+}
+async function replayGeneration(manifestPath: string, wasmPath: string, ticksOnly: boolean, displacement: boolean,
+  baselineWasmPath: string | undefined, configuredResourceRoot: string | undefined, generation: any, deadlineStart: number): Promise<any> {
   const started = performance.now()
   const captureBytes = await readFile(manifestPath)
   require(path.basename(manifestPath) === `${hash(captureBytes)}.manifest.json`, "Capture manifest hash mismatch")
   const capture = JSON.parse(captureBytes.toString())
-  const linked = capture.identity?.gameplayReplay
-  const capturedResourceRoot = capture.identity?.applicationGeneration?.resourceRoot
+  const lifecycleLink = capture.identity?.gameplayReplayLifecycle
+  if (lifecycleLink && !generation) {
+    require(!configuredResourceRoot && lifecycleLink.complete && /^[0-9a-f]{64}\.replay-lifecycle\.json$/.test(lifecycleLink.file), "Invalid replay lifecycle linkage")
+    const bytes = await readFile(path.join(path.dirname(manifestPath), lifecycleLink.file))
+    require(bytes.length === lifecycleLink.bytes && hash(bytes) === lifecycleLink.sha256 && lifecycleLink.file === `${hash(bytes)}.replay-lifecycle.json`, "Replay lifecycle identity changed")
+    const lifecycle = JSON.parse(bytes.toString())
+    validateReplayLifecycle(lifecycle)
+    const last = lifecycle.generations.at(-1)
+    require(last.journal.sha256 === capture.identity.gameplayReplay?.sha256
+      && last.applicationGeneration.resourceRoot === capture.identity.applicationGeneration?.resourceRoot
+      && last.applicationGeneration.mapGeneration === capture.identity.applicationGeneration?.mapGeneration, "Measured replay differs from the final lifecycle generation")
+    const generations = []
+    for (const entry of lifecycle.generations) {
+      require(performance.now() - deadlineStart < 170_000, "Replay lifecycle exceeded its bounded deadline")
+      generations.push({ workerOrdinal: entry.workerOrdinal, scope: entry.scope, applicationGeneration: entry.applicationGeneration,
+        comparison: await replayGeneration(manifestPath, wasmPath, ticksOnly, displacement, baselineWasmPath, undefined, entry, deadlineStart) })
+    }
+    return { schema: "playsrc-gameplay-replay-lifecycle-comparison-v1", lifecycleSha256: lifecycleLink.sha256, generations, totalMilliseconds: performance.now() - started }
+  }
+  const linked = generation?.journal ?? capture.identity?.gameplayReplay
+  const installed = generation?.applicationGeneration ?? capture.identity?.applicationGeneration
+  const capturedResourceRoot = installed?.resourceRoot
   // An explicit configured root is authenticated below against the recorded
   // resource-section digest/size, BSP, initial world and complete transcript.
   // Never discover another graph or silently repair historical capture identity.
@@ -65,11 +89,16 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
   require(manifest.schema === "playsrc-gameplay-replay-v1" && manifest.complete && /^[0-9a-f]{64}$/u.test(manifest.sha256) && manifest.bytes <= REPLAY_BYTES
     && manifest.file === `${manifest.sha256}.replay.bin`, "Replay manifest is incomplete or invalid")
   require(manifest.sha256 === linked.sha256 && manifest.bytes === linked.bytes, "Capture/replay linkage changed")
+  require(manifest.mapOrdinal === linked.mapOrdinal && (manifest.expectedMarks ?? 2) === (linked.expectedMarks ?? 2)
+    && JSON.stringify(manifest.checkpoint) === JSON.stringify(linked.checkpoint), "Replay checkpoint linkage changed")
   const bytes = await readFile(path.join(path.dirname(manifestPath), manifest.file))
   require(bytes.length === manifest.bytes && hash(bytes) === manifest.sha256, "Replay journal hash mismatch")
-  const replay = parseGameplayReplay(bytes)
+  const expectedMarks = manifest.expectedMarks ?? 2
+  require(expectedMarks === 0 || expectedMarks === 2, "Invalid replay boundary contract")
+  require(expectedMarks === 2 || generation?.scope === "checkpoint-to-pre-navigation", "Setup journal requires its authenticated lifecycle")
+  const replay = parseGameplayReplay(bytes, true, expectedMarks)
   const checkpoint = manifest.checkpoint
-  verifyReplayCheckpoint(checkpoint, capture.identity?.applicationGeneration, replay.bspSha256)
+  verifyReplayCheckpoint(checkpoint, installed, replay.bspSha256)
   const config = await loadLocalConfig()
   const graphBytes = await readFile(objectPath(config.assetDir, graphIdentity))
   require(hash(graphBytes) === graphIdentity, "Captured resource graph hash mismatch")
@@ -152,7 +181,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     const tickTimes: number[] = [], groups: Array<{ ticks: number; milliseconds: number }> = []
     let groupTicks = 0, groupMilliseconds = 0, groupIndex = 0
     for (const [index, record] of replay.records.entries()) {
-      require(performance.now() - started < 170_000, "Offline replay exceeded its bounded deadline")
+      require(performance.now() - deadlineStart < 170_000, "Offline replay exceeded its bounded deadline")
       const data = record.bytes
       if (record.kind === 7) {
         active = data.readUInt32LE(0) === 0
@@ -209,14 +238,14 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
     e.playsrc_free(replayPointer, replayLength)
     // The v3 journal adds a loadout checkpoint. V2 bytes remain immutable and
     // their ambiguous mutation kinds are rejected by the parser above.
-    const reconstructed = parseGameplayReplay(actual, !ticksOnly)
+    const reconstructed = parseGameplayReplay(actual, !ticksOnly, expectedMarks)
     require(actual.subarray(0, 4).equals(bytes.subarray(0, 4)) && actual.subarray(8, 88).equals(bytes.subarray(8, 88))
       && (!replay.initialEquipment || reconstructed.initialEquipment?.equals(replay.initialEquipment)), "Reconstructed initial checkpoint differs")
     if (!ticksOnly) {
       let active = false
       const recordedTicks = replay.records.filter(record => record.kind === 2)
       let tick = 0
-      for (const record of parseGameplayReplay(actual).records) {
+      for (const record of reconstructed.records) {
         if (record.kind === 7) active = record.bytes.readUInt32LE(0) === 0
         if (record.kind === 2) {
           const expected = recordedTicks[tick++]?.bytes

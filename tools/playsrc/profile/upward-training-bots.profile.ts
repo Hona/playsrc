@@ -23,7 +23,7 @@ import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
-import { startGameplayReplayJournal } from "./gameplay-replay"
+import { startGameplayReplayLifecycle } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
 import { startAllocationCapture, loadAllocationMemoryEvidence } from "./allocation-memory-evidence"
 import { summarizeSnapshotTransport, type SnapshotTransportBoundary } from "./snapshot-transport-memory"
@@ -74,8 +74,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
   const replay = exerciseClasses || capturePlan.gameplayReplay === "required"
-    ? await startGameplayReplayJournal(page, evidenceDirectory, evidenceLabel, capturePlan.replacement ? 2 : 1) : undefined
-  retainIncomplete = () => replay?.stop(false) ?? Promise.resolve()
+    ? await startGameplayReplayLifecycle(page, evidenceDirectory, evidenceLabel, capturePlan.warmReload, capturePlan.replacement ? 2 : 1) : undefined
+  const replayIdentity = () => page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.applicationGeneration))
+  const stopReplay = async (complete: boolean) => replay?.stop(await replayIdentity().catch(error => { if (complete) throw error; return null }), complete)
+  retainIncomplete = () => stopReplay(false)
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
@@ -315,7 +317,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
     if (nativeReader) requireMacPageAdmission(nativeAdmission[0]!)
   }
-  if (capturePlan.warmReload) await loadPractice("warm")
+  if (capturePlan.warmReload) {
+    await replay?.beforeReload(await replayIdentity())
+    await loadPractice("warm")
+  }
   const replacement: Array<Record<string, unknown>> = []
   if (capturePlan.replacement) {
     const prior = await root.getAttribute("data-generation")
@@ -506,7 +511,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const retainInterrupted = () => retainNativeEvidence({ started: 0, ended: 0, joins: [], dropped: 1 }, { sampleError: "Capture interrupted before measurement retention" })
   const interrupt = () => {
     interrupted = true
-    void Promise.allSettled([retainInterrupted(), replay?.stop(false)])
+    void Promise.allSettled([retainInterrupted(), stopReplay(false)])
   }
   let captureDeadline: ReturnType<typeof setTimeout> | undefined
   process.once("SIGTERM", interrupt)
@@ -514,7 +519,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     clearTimeout(captureDeadline)
     process.off("SIGTERM", interrupt)
     interrupted = true
-    await Promise.allSettled([finishNative(), replay?.stop(false)])
+    await Promise.allSettled([finishNative(), stopReplay(false)])
     const evidence = await retainInterrupted()
     console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
   }
@@ -866,7 +871,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
   await replay?.mark(1).catch(() => { interrupted = true })
-  const replayArtifact = await replay?.stop(!interrupted && sample.error === null)
+  const replayCapture = await stopReplay(!interrupted && sample.error === null)
+  const replayArtifact = replayCapture?.artifact
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
   const { workerCapture, workerArtifact, mainCapture, performanceAfter, memory } = await finishNative()
@@ -890,7 +896,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   profilePhases.enter("trace-analysis-retention")
   const evidence = await retainNativeEvidence(
     { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
-    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact, nativeAdmission: nativeRecords(), replacement })
+    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact,
+      gameplayReplayLifecycle: replayCapture?.lifecycle, nativeAdmission: nativeRecords(), replacement })
   const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
