@@ -202,8 +202,11 @@ function sameOwner(left: OwnerMetadata, right: OwnerMetadata): boolean {
 }
 
 async function checkRetirementLock(metadataPath: string, pid: number): Promise<void> {
-  const holder = JSON.parse(await readFile(path.join(path.dirname(metadataPath), "chromium-profile.lock"), "utf8")) as { pid?: number }
-  if (holder.pid !== process.pid || holder.pid === pid) throw new Error("Development retirement requires the current checked profile lock; never signal its holder")
+  const lockPath=path.join(path.dirname(metadataPath), "chromium-profile.lock")
+  const holder = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: number; profile?: string }
+  const delegated=holder.pid!==process.pid&&typeof holder.profile==="string"
+    ? await delegatedHeadedProfileLock(lockPath,process.env.PLAYSRC_PROFILE_LOCK_DELEGATION,repositoryRoot,holder.profile) : undefined
+  if (holder.pid === pid || holder.pid !== process.pid && !delegated) throw new Error("Development retirement requires the current checked profile lock; never signal its holder")
 }
 
 export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000): Promise<void> {

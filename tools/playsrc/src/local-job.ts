@@ -69,9 +69,9 @@ export function localJobEnvironment(source: NodeJS.ProcessEnv, port?: number): N
   return env
 }
 
-async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, log?: string, timeout = LIMIT, windowsHide = true): Promise<string> {
+async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, log?: string, timeout = LIMIT): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command[0]!, command.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide })
+    const child = spawn(command[0]!, command.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
     let output = "", diagnostic = "", timedOut = false
     const stream = log ? createWriteStream(log, { flags: "wx" }) : undefined
     let logFailure: unknown
@@ -207,10 +207,16 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
       consoleLock=await acquireHeadedProfileLock(lockPath,args[1]!,Math.max(1,LIMIT-(Date.now()-startedAt)),{onProgress:state=>consoleQueue.push(state)})
       env.PLAYSRC_PROFILE_LOCK_DELEGATION=JSON.stringify({...consoleLock,pid:process.pid,startedAt})
       const quote=(value:string)=>`'${value.replaceAll("'","''")}'`
-      const script=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; . ${quote(path.join(checkout,"tools/playsrc/windows-job-console.ps1"))} -Receipt ${quote(path.join(run,"console-owner.json"))}; & ${command.map(quote).join(" ")}; exit $LASTEXITCODE`
-      launched=["powershell.exe","-NoProfile","-NonInteractive","-WindowStyle","Hidden","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")]
+      const log=path.join(run,"command.log")
+      const script=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { . ${quote(path.join(checkout,"tools/playsrc/windows-job-console.ps1"))} -Receipt ${quote(path.join(run,"console-owner.json"))}; & ${command.map(quote).join(" ")} *> ${quote(log)}; exit $LASTEXITCODE } catch { $_ | Out-String | Out-File -LiteralPath ${quote(log)} -Append; exit 1 }`
+      // Start-Process explicitly creates a NEW console scope. A normal spawn
+      // would inherit the launcher's windowless console instead. No focus API
+      // is used; the scope is created only after this parent owns the lock.
+      const encoded=Buffer.from(script,"utf16le").toString("base64")
+      const proxy=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $child=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',${quote(encoded)}) -WorkingDirectory ${quote(checkout)} -WindowStyle Hidden -PassThru; $child.WaitForExit(); exit $child.ExitCode`
+      launched=["powershell.exe","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(proxy,"utf16le").toString("base64")]
     }
-    await execute(launched, checkout, env, path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)), !consoleLock)
+    await execute(launched, checkout, env, consoleLock?undefined:path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
     await phase("verify-source")
     await assertCheckout(checkout, job)
   } catch (error) { failure = String(error) }
