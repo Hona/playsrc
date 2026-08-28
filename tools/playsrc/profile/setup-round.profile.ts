@@ -5,6 +5,7 @@ import { loadLocalConfig } from "../src/config"
 import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admission"
 import { summarizeFrameTimes } from "./profile-window"
 import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
+import { observeSetupObjectiveContacts } from "./setup-objective-evidence"
 
 test("authentic setup countdown reaches a live local round with configured audio", async ({ page }, testInfo) => {
   const { sourceCacheDir } = await loadLocalConfig()
@@ -43,7 +44,7 @@ test("authentic setup countdown reaches a live local round with configured audio
     await writeFile(testInfo.outputPath(`${name}.json`), JSON.stringify(value, null, 2))
   }
   await page.addInitScript(() => {
-    ;(globalThis as any).__playsrcProfile = {}
+    ;(globalThis as any).__playsrcProfile ??= {}
     const probe = { contexts: [] as any[], states: [] as any[], voices: [] as any[] }
     ;(globalThis as any).__setupEvidence = probe
     const connect = AudioNode.prototype.connect
@@ -77,6 +78,7 @@ test("authentic setup countdown reaches a live local round with configured audio
       if (p.round) probe.states.push({at:performance.now(), tick:d?.snapshotTick, round:p.round, player:p.player, points:p.controlPoints, bots:p.bots, audio:d?.audioStarts, phase:d?.phase, camera:d?.cameraPosition, visibility:document.visibilityState})
     },1000)
   })
+  await page.addInitScript(`(${observeSetupObjectiveContacts.toString()})(globalThis.__playsrcProfile ??= {})`)
   const command = async (text: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
     const input = page.locator("[aria-label='Console command']")
@@ -204,7 +206,7 @@ test("authentic setup countdown reaches a live local round with configured audio
       }
     }
     if (map !== "pl_upward") {
-      await page.waitForFunction(() => (globalThis as any).__setupEvidence.states.some((s: any) => s.points?.points.some((p: any) => p.playerCounts[1] > 0 || p.owner === 3)),undefined,{timeout:25000})
+      await page.waitForFunction(() => (globalThis as any).__playsrcProfile.setupObjectiveContacts.length > 0,undefined,{timeout:25000})
       await capture("live-objective-interaction")
     }
     if (map === "pl_upward") {
@@ -224,7 +226,7 @@ test("authentic setup countdown reaches a live local round with configured audio
         for (const byte of bytes) binary+=String.fromCharCode(byte)
         audio.push(btoa(binary))
       }
-      return {states:p.states,voices:p.voices,audio}
+      return {states:p.states,voices:p.voices,audio,objectiveContacts:(globalThis as any).__playsrcProfile.setupObjectiveContacts}
     }).catch(error => ({error:String(error),audio:[]}))
     for (const [i, audio] of evidence.audio.entries()) await writeFile(testInfo.outputPath(`countdown-output-${i}.webm`),Buffer.from(audio,"base64"))
     await save("lifecycle",{...evidence,audio:undefined,map,team})
