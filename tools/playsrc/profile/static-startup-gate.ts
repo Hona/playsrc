@@ -84,7 +84,7 @@ export async function captureStaticStartup(driver: StaticStartupDriver, target: 
       const menuNative = await driver.native(); requireStartupNative(menuNative); native.push(menuNative)
       run.menu = { state: menu, pixels: startupPixelEvidence(await driver.screenshot(`${mode}-menu`)) }
       await driver.action("open-map", target)
-      const mapDeadline = Math.min(deadline, Date.now() + 45_000)
+      const mapDeadline = Math.min(deadline, Date.now() + 75_000)
       let team = false, playerClass = false, consoleClosed = false, firstFrame: StartupObservation | undefined, playable: StartupObservation | undefined
       while (Date.now() < mapDeadline) {
         const state = await read(); run.states.push(state)

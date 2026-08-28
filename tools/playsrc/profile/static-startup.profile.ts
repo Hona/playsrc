@@ -40,6 +40,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   let launchError: unknown, browser: Awaited<ReturnType<typeof playwright.chromium.connectOverCDP>> | undefined
   let native: Awaited<ReturnType<typeof startupNativeReader>> | Awaited<ReturnType<typeof externalStartupNativeReader>> | undefined
   let packageRouting: Awaited<ReturnType<typeof installStaticPackageRouting>> | undefined
+  let observedPage: import("@playwright/test").Page | undefined
   child?.on("error", error => { launchError=error });child?.stderr!.on("data", data => { evidence.browserDiagnostics=((evidence.browserDiagnostics??"")+data).slice(-8192) })
   const terminate = () => child?.kill("SIGTERM")
   process.once("SIGTERM", terminate)
@@ -52,6 +53,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     browser = await playwright.chromium.connectOverCDP(endpoint, { noDefaults: true, timeout: 10_000 })
     evidence.browserVersion = browser.version()
     const context=browser.contexts()[0]!,page=context.pages()[0]!
+    observedPage=page
     page.setDefaultTimeout(5_000)
     if(context.pages().length!==1)throw new Error("Static startup requires its single fresh native page")
     if(!externalEndpoint)await page.bringToFront()
@@ -189,6 +191,8 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     console.log(`PLAYSRC_STATIC_STARTUP_RECEIPT ${JSON.stringify(receipt)}`)
   } catch(error) {
     evidence.failure=String(error);evidence.capture=(error as any).startupEvidence
+    try {evidence.failureState=await observedPage?.evaluate(()=>({state:{...document.querySelector<HTMLElement>("main")?.dataset},console:document.querySelector<HTMLElement>('[aria-label="Console output"]')?.innerText,profile:(globalThis as any).__playsrcProfile&&{cache:(globalThis as any).__playsrcProfile.immutableCache,generation:(globalThis as any).__playsrcProfile.applicationGeneration}}))}
+    catch(readback){evidence.failureStateError=String(readback)}
     // Read only: distinguish OS/window loss from document focus loss without
     // reactivating, clicking, retrying, or collecting a hidden page screenshot.
     try {evidence.failureNative=await native?.read(path.join(directory,"native-failure.png"))}
