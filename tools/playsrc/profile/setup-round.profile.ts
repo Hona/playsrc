@@ -14,10 +14,10 @@ test("authentic setup countdown reaches a live local round with configured audio
   const map = process.env.PROFILE_MAP_TARGET ?? "pl_upward"
   const team = process.env.PROFILE_SETUP_TEAM ?? "blue"
   const reproduceOrigin = process.env.PROFILE_SETUP_FAILURE_ORIGIN === "1"
-  const sampleSeconds = process.env.PROFILE_SETUP_SAMPLE_SECONDS === "10" ? 10 : 5
-  const aimDown = process.env.PROFILE_SETUP_AIM_DOWN === "1"
-  const faceCart = process.env.PROFILE_SETUP_CART_FACING === "1"
-  const botQuota = process.env.PROFILE_SETUP_BOT_QUOTA === "16" ? 16 : 15
+  const sampleSeconds = Number(process.env.PROFILE_SETUP_SAMPLE_SECONDS ?? "5")
+  const botQuota = Number(process.env.PROFILE_SETUP_BOT_QUOTA ?? "15")
+  const verifyLifecycle = process.env.PROFILE_SETUP_VERIFY_LIFECYCLE === "1"
+  if(![5,10].includes(sampleSeconds)||![15,16].includes(botQuota))throw Error("Setup evidence requires a five/ten-second sample and fifteen/sixteen bots")
   if (reproduceOrigin && (map !== "pl_upward" || team !== "blue")) throw Error("The retained failed origin belongs to Upward BLU")
   if (!["pl_upward", "cp_dustbowl", "cp_gorge"].includes(map) || !["blue", "red"].includes(team)) throw Error("Unsupported setup acceptance target/team")
   const native = await macPageAdmission(page, sourceCacheDir)
@@ -218,11 +218,6 @@ test("authentic setup countdown reaches a live local round with configured audio
       return r && r.state === 4 && !r.waitingForPlayers && !r.inSetup
     },undefined,{timeout:125_000})
     await capture("live-round")
-    if(faceCart) {
-      const delta=await page.evaluate(()=>((Number(document.querySelector<HTMLElement>("main")!.dataset.cameraYaw)+180)%360+360)%360-180)
-      await lookBy(delta/0.066); await capture("native-cart-facing-aim")
-    }
-    if(aimDown) { await lookBy(0,45/0.066); await capture("native-downward-aim") }
     await page.keyboard.down("KeyW"); await page.mouse.down()
     const sample = await page.evaluate(async (sampleSeconds) => {
       const d = document.querySelector<HTMLElement>("main")!.dataset, p = (globalThis as any).__playsrcProfile
@@ -240,6 +235,10 @@ test("authentic setup countdown reaches a live local round with configured audio
     expect(sample.ticks/sample.seconds).toBeGreaterThan(65)
     expect(sample.after).not.toBe(sample.before)
     expect(sample.botsAfter.length).toBe(botQuota)
+    if(botQuota===16&&map==="pl_upward") {
+      const admission=await page.evaluate(()=>(globalThis as any).__playsrcProfile.frameAdmission)
+      expect(admission.total,"exercise the formerly rejected particle/scene mixture").toBeGreaterThan(4096)
+    }
     expect(sample.audio).toContain("Weapon_Scatter_Gun.Single")
     for (const seconds of [60,30,10,5,4,3,2,1]) expect(sample.audio).toContain(`Announcer.RoundBegins${seconds}Seconds:sound/vo/announcer_begins_${seconds}sec.mp3`)
     expect(sample.audio).toContain("Ambient.Siren:sound/ambient_mp3/siren.mp3")
@@ -260,6 +259,33 @@ test("authentic setup countdown reaches a live local round with configured audio
       await save("objective-admission",{complete:false,blockers:blockers.filter(value=>value.includes("Payload cart"))})
     }
     expect(await main.getAttribute("data-phase")).toBe("Ready")
+    if(verifyLifecycle) {
+      await page.keyboard.press("Comma")
+      await expect(main).toHaveAttribute("data-class-selection-visible","true")
+      await page.locator(".class-selection-layer [data-vgui-name='CancelButton']").click()
+      await expect(main).toHaveAttribute("data-class-selection-visible","false")
+      await capture("class-cancelled-after-combat")
+      const previousGeneration=Number(await main.getAttribute("data-generation"))
+      await command(`map ${map}`)
+      await expect(main).toHaveAttribute("data-team-selection-visible","true",{timeout:20000})
+      await page.locator(`.team-selection-layer [data-vgui-name='teambutton${team === "blue" ? 0 : 1}']`).click()
+      await expect(main).toHaveAttribute("data-class-selection-visible","true")
+      await page.keyboard.press("Digit1")
+      await expect(main).toHaveAttribute("data-class-selection-visible","false")
+      await expect(main).toHaveAttribute("data-phase","Ready")
+      const generation=Number(await main.getAttribute("data-generation"))
+      expect(generation).toBeGreaterThan(previousGeneration)
+      await expect.poll(()=>page.evaluate(()=>(globalThis as any).__playsrcProfile.frameAdmission?.generation)).toBe(generation)
+      await capture("replacement-first-frame")
+      await page.locator("canvas.world-canvas").click()
+      await expect(main).toHaveAttribute("data-pointer-locked","true")
+      await page.keyboard.press("Escape")
+      await expect(main).toHaveAttribute("data-gameui","pause")
+      await page.locator("[data-vgui-name='DisconnectButton']").click()
+      await expect(main).toHaveAttribute("data-phase","MainMenu",{timeout:10000})
+      await expect(main).toHaveAttribute("data-gameplay-initialized","false")
+      await capture("disconnected-after-replacement")
+    }
   } finally {
     await page.keyboard.up("KeyW").catch(()=>{})
     await page.mouse.up().catch(()=>{})

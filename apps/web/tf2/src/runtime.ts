@@ -4794,14 +4794,14 @@ export class Tf2Application {
     if(profile?.captureFrameAdmission) {
       const counts={effects:prepared.frame.effects.length,shadows:prepared.frame.shadows?.length??0,models:models?.length??0,particles:particles?.length??0,brushes:prepared.frame.brushModels?.models.length??0}
       const total=Object.values(counts).reduce((sum,count)=>sum+count,0)
-      const old=profile.frameAdmission as {total:number}|undefined
-      if(!old||total>old.total) {
+      const old=profile.frameAdmission as {total:number;generation:number}|undefined
+      if(!old||generation!==old.generation||total>old.total) {
         const materials=new Map<string,{count:number;minimumAge:number;maximumAge:number}>()
         for(const item of particles??[]) {
           const entry=materials.get(item.material)??{count:0,minimumAge:Infinity,maximumAge:-Infinity}
           entry.count++;entry.minimumAge=Math.min(entry.minimumAge,item.ageSeconds);entry.maximumAge=Math.max(entry.maximumAge,item.ageSeconds);materials.set(item.material,entry)
         }
-        profile.frameAdmission={total,counts,tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,deltaTicks,camera,materials:[...materials].sort((a,b)=>b[1].count-a[1].count).slice(0,32)}
+        profile.frameAdmission={generation,total,counts,tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,deltaTicks,camera,materials:[...materials].sort((a,b)=>b[1].count-a[1].count).slice(0,32)}
       }
     }
     let rendered

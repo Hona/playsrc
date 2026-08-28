@@ -2,9 +2,8 @@ const OUTPUT_MAGIC = 0x5250_5350 // "PSPR"
 const OUTPUT_VERSION = 5
 const OUTPUT_HEADER_BYTES = 40
 const OUTPUT_RECORD_BYTES = 436
-const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
-const DEFAULT_MAX_RENDER_ITEMS = 65_536
-const DEFAULT_LIMITS = Object.freeze({ maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES, maxRenderItems: DEFAULT_MAX_RENDER_ITEMS })
+/** Standard native PSPR admission, shared with the final frame consumer. */
+export const PARTICLE_RENDER_OUTPUT_LIMITS = Object.freeze({ maxOutputBytes: 64 * 1024 * 1024, maxRenderItems: 65_536 })
 const HEX_BYTES = Object.freeze(Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0")))
 
 export type PcfResource = Readonly<{
@@ -106,7 +105,7 @@ export class ParticleAdapterError extends Error {
 export function createParticleSystem(
   kernel: ParticleKernel,
   resources: readonly PcfResource[],
-  limits: ParticleAdapterLimits = DEFAULT_LIMITS,
+  limits: ParticleAdapterLimits = PARTICLE_RENDER_OUTPUT_LIMITS,
 ): Readonly<{
   advance(batch: ParticleBatch): ParticleRenderOutput
   reset(bytes: Uint8Array): void
@@ -141,7 +140,7 @@ export function createParticleSystem(
 export function decodeParticleRenderOutput(
   bytes: Uint8Array,
   materials: readonly string[],
-  limits: ParticleAdapterLimits = DEFAULT_LIMITS,
+  limits: ParticleAdapterLimits = PARTICLE_RENDER_OUTPUT_LIMITS,
 ): ParticleRenderOutput {
   validateLimits(limits)
   validateMaterials(materials)
