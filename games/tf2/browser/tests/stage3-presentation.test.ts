@@ -135,7 +135,7 @@ test("preserves source ticks and graceful stop in one multi-tick Particle phase"
   expect(() => reversed.encode(4n, [0, 0, 0], [requests[0]!])).toThrow(ProjectilePresentationError)
 })
 
-test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v12 contract", () => {
+test("encodes each Unicode model/activity exactly once into the snapshot-bound PMRQ v13 contract", () => {
   const request = Object.freeze({
     identity: 7,
     model: "models/é.mdl",
@@ -154,7 +154,7 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const bytes = encodeModelPoseBatch([request])
   const view = new DataView(bytes.buffer)
   expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("PMRQ")
-  expect(view.getUint32(4, true)).toBe(12)
+  expect(view.getUint32(4, true)).toBe(13)
   expect(view.getUint32(8, true)).toBe(1)
   expect(view.getUint32(16, true)).toBe(0)
   expect(view.getBigUint64(44, true)).toBe(0n)
@@ -174,7 +174,7 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   const item = { itemId: 379, definitionIndex: 378, quality: 5, style: 0, slot: 8, attributes: [{ definition: 134, value: 13 }] }
   const equipped = encodeModelPoseBatch([{ ...request, equippedItems: [item] }])
   expect(equipped.byteLength - bytes.byteLength).toBe(20)
-  const itemOffset = equipped.byteLength - 52 - 20
+  const itemOffset = equipped.byteLength - 56 - 20
   const itemView = new DataView(equipped.buffer)
   expect(itemView.getUint32(itemOffset - 4, true)).toBe(1)
   expect(itemView.getUint32(itemOffset, true)).toBe(379)
@@ -195,6 +195,11 @@ test("encodes each Unicode model/activity exactly once into the snapshot-bound P
   expect(typedView.getBigUint64(60, true)).toBe(7n)
   const phase = 144 + new TextEncoder().encode(weapon.model).length + new TextEncoder().encode(weapon.itemModel).length + new TextEncoder().encode(weapon.activity).length
   expect(typed[phase + 3]).toBe(1)
+  const prefire = encodeModelPoseBatch([{ ...weapon, prefirePlaybackRate: 1.5 }])
+  expect(new DataView(prefire.buffer).getFloat32(prefire.byteLength - 4, true)).toBe(1.5)
+  for (const invalid of [0, -1, NaN, Infinity, Number.MAX_VALUE, Number.MIN_VALUE]) {
+    expect(() => encodeModelPoseBatch([{ ...weapon, prefirePlaybackRate: invalid }])).toThrow("viewmodel prefire playback rate")
+  }
   expect(() => encodeModelPoseBatch([{ ...weapon, activityStartTick: undefined }])).toThrow("viewmodel activity clock")
   const hud = encodeModelPoseBatch([{ ...weapon, model: "models/player/soldier.mdl", modelPanel: true, worldItem: true,
     actorIdentity: 1, hudModel: true, preparation: true, phase: undefined, activityStartTick: undefined }])
@@ -522,13 +527,14 @@ test("composes every Heavy stock weapon with distinct identities and hands-only 
       class: 6, team: 2, tick: 1n, weapon, health: 300, maximumHealth: 300,
       equippedItems: [],
       velocity: Object.freeze([0, 0, 0]), projectiles: Object.freeze([]),
-      loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 10 ? 6 : 0 }]),
+      loadout: Object.freeze([{ weapon, reload: 0, clip: weapon === 10 ? 6 : 0, prefirePlaybackRate: weapon === 9 ? 1.5 : null }]),
       activities: Object.freeze([{ tick: 1n, weapon, activity: 2 }]),
     } as unknown as Snapshot
     const request = createViewmodelPresenter(artifacts, item).map(snapshot).request
     expect(request.model).toBe(hands)
     expect(request.itemModel).toBe(item)
     expect(request.handsOnlyViewmodel).toBe(weapon === 11 ? true : undefined)
+    expect(request.prefirePlaybackRate).toBe(weapon === 9 ? 1.5 : undefined)
     expect(request.activity).toBe(genericActivity(activity))
     expect(tf2Hud(snapshot).weaponName).toBe(name)
   }

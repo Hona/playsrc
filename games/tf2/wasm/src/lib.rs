@@ -2386,6 +2386,7 @@ pub unsafe extern "C" fn playsrc_particle_output_copy(
 
 #[derive(Clone, Debug)]
 struct ModelPoseRequest {
+    prefire_playback_rate: Option<f32>,
     barrel_angle: Option<f32>,
     item_definition: Option<u32>,
     activity_start_tick: Option<u64>,
@@ -2617,7 +2618,7 @@ pub unsafe extern "C" fn playsrc_model_output_copy(
 
 fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
     let mut reader = ParticleReader { bytes, at: 0 };
-    if reader.take(4)? != b"PMRQ" || reader.u32()? != 12 {
+    if reader.take(4)? != b"PMRQ" || reader.u32()? != 13 {
         return Err(());
     }
     let count = reader.u32()? as usize;
@@ -2794,8 +2795,12 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             }
             None
         };
+        let rate = reader.f32()?;
+        if rate < 0.0 { return Err(()); }
+        let prefire_playback_rate = (rate > 0.0).then_some(rate);
         identities.insert(identity, (sample_tick, attachments_only == 1));
         requests.push(ModelPoseRequest {
+            prefire_playback_rate,
             barrel_angle: None,
             item_definition,
             activity_start_tick,
@@ -6129,7 +6134,7 @@ fn encode_snapshot(
     let MAX = (64_usize * 1024 * 1024).checked_sub(extensions.collision_snapshot.len())?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
-    u32_field(&mut out, 30, MAX)?;
+    u32_field(&mut out, 31, MAX)?;
     u64_field(&mut out, snapshot.tick, MAX)?;
     extend(
         &mut out,
@@ -6260,7 +6265,11 @@ fn encode_snapshot(
         u64_field(&mut out, state.reload_due_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.charge_begin_tick.unwrap_or(u64::MAX), MAX)?;
         u64_field(&mut out, state.first_primary_tick, MAX)?;
-        let scalar = snapshot
+        // PSSN31 keeps the weapon-specific scalar in the same 48-byte record:
+        // Minigun viewmodel rate, rifle charge, or the existing Spy state.
+        let scalar = if state.weapon == playsrc_tf2::Weapon::Minigun {
+            state.prefire_playback_rate()
+        } else { snapshot
             .spy
             .map_or(state.charged_damage, |spy| match state.weapon {
                 playsrc_tf2::Weapon::InvisibilityWatch => spy.cloak_meter,
@@ -6268,7 +6277,7 @@ fn encode_snapshot(
                 playsrc_tf2::Weapon::Knife => spy.disguise_complete_time,
                 playsrc_tf2::Weapon::Sapper => spy.no_attack_until,
                 _ => state.charged_damage,
-            });
+            }) };
         f32_field(&mut out, scalar, MAX)?;
     }
     for point in &producer.flame_points {
@@ -16955,9 +16964,9 @@ mod tests {
         // Two ten-wave masks add four wire bytes without another allocation.
         assert!(metrics.requests <= 10 && metrics.bytes <= 5376, "snapshot encoder retains redundant staging/growth");
         assert_eq!(metrics.live, 1288);
-        let expected_hash = "c3e218d905c914634d2025e7f000776ad34fcd1799f3a1709fb8fcb13e7c44b5";
+        let expected_hash = "8c449b6099679f8d31bd5360c38042b098a8090ec018305005c0f1683e49fdc6";
         assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
-        assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
+        assert_eq!(&encoded[..8], b"PSSN\x1f\0\0\0");
         assert_eq!(encoded.len(), 1268);
         assert_eq!(&encoded[1132..1148], &[0; 16]);
         assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 800);
@@ -16985,6 +16994,21 @@ mod tests {
         assert_eq!(&encoded[552 + 293..552 + 296], &[15, 255, 255]);
         assert_eq!(&encoded[552 + 360..552 + 364], &[255, 255, 7, 0]);
         assert_eq!(&encoded[552 + 364..552 + 368], &[255, 3, 255, 3]);
+
+        let mut heavy = snapshot.clone();
+        heavy.class = playsrc_tf2::class::PlayerClass::Heavy;
+        heavy.weapon = Some(playsrc_tf2::Weapon::Minigun);
+        let mut heavy_producer = producer.clone();
+        heavy_producer.weapons[0] = playsrc_tf2::weapon::WeaponRuntime::full(playsrc_tf2::Weapon::Minigun);
+        heavy_producer.weapons[0].spinup_seconds = 0.5;
+        let heavy_bytes = encode_snapshot(&heavy, &heavy_producer, 2, None, SnapshotExtensions {
+            random_state, random_draws: &[], audio_events: &[], soundscape: Default::default(),
+            rocket_results: &[], mover_results: &[], collision_snapshot: &collision_snapshot,
+            entity_presentation: &entity_presentation, payload_constraint_blocked: false, combat_decals: &[],
+        }).unwrap();
+        assert_eq!(heavy_bytes[276], weapon_code(playsrc_tf2::Weapon::Minigun));
+        assert_eq!(f32::from_le_bytes(heavy_bytes[320..324].try_into().unwrap()), 1.5);
+        assert_eq!(heavy_bytes.len(), encoded.len());
 
         let constrained = encode_snapshot(
             &snapshot,

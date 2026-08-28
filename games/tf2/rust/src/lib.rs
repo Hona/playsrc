@@ -285,7 +285,7 @@ impl WeaponState {
         let profile = runtime.profile();
         Self {
             minigun_state: runtime.minigun_state,
-            prefire_playback_rate: if runtime.weapon == Weapon::Minigun { 0.75 / runtime.spinup_seconds.max(0.00001) } else { 1.0 },
+            prefire_playback_rate: runtime.prefire_playback_rate(),
             weapon: runtime.weapon,
             clip: runtime.clip,
             reserve: runtime.reserve,
