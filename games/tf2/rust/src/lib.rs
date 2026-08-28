@@ -18,6 +18,7 @@ pub mod dynamic_prop;
 pub mod health;
 pub mod koth;
 mod map_runtime;
+mod spotlight;
 pub mod particle_resources;
 pub mod medic;
 pub mod melee;
@@ -1988,16 +1989,23 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.smokestacks()
     }
 
+    pub fn map_visual_entity(&self, source: u32) -> Option<(playsrc_entity::EntityHandle, playsrc_entity::Transform, playsrc_entity::EntityRenderState)> {
+        self.map.visual_entity(source)
+    }
+
+    pub fn map_sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.map.sprite_state(source) }
+    pub fn map_sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.map.sun_state(source)}
+    pub fn map_rope_state(&self,source:u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>{self.map.rope_state(source)}
+    pub fn map_spotlight_state(&self,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{self.map.spotlight_state(source)}
+    pub fn map_collision_entity(&self,source:u32)->Option<playsrc_entity::EntityCollisionState>{self.map.collision_entity(source)}
+    pub fn map_mover_hierarchy(&self,source:u32)->Vec<(u32,playsrc_entity::EntityCollisionState,Vec<playsrc_entity::Transform>)>{self.map.mover_hierarchy(source)}
+
     pub fn payload_constraint_blocked(&self) -> bool {
         self.map.payload_constraint_blocked()
     }
 
     pub fn entity_world_transform(&self, identity: u32) -> Option<playsrc_entity::Transform> {
         self.map.entity_world_transform(identity)
-    }
-
-    pub fn entity_collision_state(&self, identity:u32) -> Option<(playsrc_entity::Transform,bool)> {
-        self.map.entity_collision_state(identity)
     }
 
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {

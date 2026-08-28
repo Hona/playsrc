@@ -7,10 +7,16 @@ import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { activeGameplayTraceWindow, summarizeActivePresentationSilence, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { captureProcessMemory } from "./process-memory"
+import {macPageAdmission,requireMacPageAdmission,type MacPageAdmission} from "./macos-page-admission"
 
 test("integrated persisted quality, two live map replacements and overhead water", async ({ page, context }, testInfo) => {
-  const directory = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "integrated-acceptance", `lifecycle-${Date.now()}`)
+  const {sourceCacheDir}=await loadLocalConfig()
+  const directory = path.join(sourceCacheDir, "profiles", "integrated-acceptance", `lifecycle-${Date.now()}`)
   await mkdir(directory, { recursive: true })
+  const native=await macPageAdmission(page,sourceCacheDir),nativeRecords:MacPageAdmission[]=[],nativeWaits:MacPageAdmission[]=[]
+  const checkNative=async(file?:string)=>{if(native){const record=await native.read(file);nativeRecords.push(record);requireMacPageAdmission(record)}}
+  const waitNative=async()=>{if(native){const deadline=Date.now()+5000;for(;;){const record=await native.read();try{requireMacPageAdmission(record);nativeRecords.push(record);break}catch(error){nativeWaits.push(record);if(Date.now()>=deadline)throw error}await page.waitForTimeout(250)}}}
+  try{
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
   const errors: string[] = []
@@ -30,8 +36,9 @@ test("integrated persisted quality, two live map replacements and overhead water
     await entry.fill(value)
     await entry.press("Enter")
   }
-  await page.goto("/")
   await page.bringToFront()
+  await waitNative()
+  await page.goto("/")
   await expect(main).toHaveAttribute("data-phase", "MainMenu")
   // Raise HDR/filtering through the real console and preserve them across reload
   // and replacement. Never lower quality to manufacture a faster sample.
@@ -76,6 +83,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     expect(await main.getAttribute("data-camera-position")).not.toBe(before)
     maps.push({ target, milliseconds: Date.now() - started, ...current, heap: await pageMetrics.send("Runtime.getHeapUsage"), resident: await captureProcessMemory((await browserMetrics.send("SystemInfo.getProcessInfo")).processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) }), workerMemory: await Promise.all(page.workers().filter(worker => worker.url().includes("gameplay-worker")).map(worker => worker.evaluate(() => (globalThis as any).__playsrcWorkerMemory))) })
     await writeFile(path.join(directory, "maps.json"), JSON.stringify(maps, null, 2))
+    await waitNative();await checkNative(path.join(directory,`${target}.desktop.png`))
     await page.screenshot({ path: path.join(directory, `${target}.png`) })
   }
   const water = await page.evaluate(() => (globalThis as any).__playsrcProfile.materialAnimation?.volumes?.[0])
@@ -100,9 +108,13 @@ test("integrated persisted quality, two live map replacements and overhead water
   await page.mouse.move(640, 360 + (80 - pitch) / 0.066)
   await expect.poll(async () => Number(await main.getAttribute("data-camera-pitch"))).toBeGreaterThan(65)
   const cdp = await context.newCDPSession(page)
+  await waitNative()
   const traceEvents: ChromiumTraceEvent[] = []
   cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value))
   await cdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,blink.user_timing", options: "record-as-much-as-possible" })
+  await checkNative()
+  let sampling=true,nativeFailure:unknown
+  const monitor=(async()=>{while(native&&sampling){await new Promise(resolve=>setTimeout(resolve,500));if(sampling){try{await checkNative()}catch(error){nativeFailure=error;break}}}})()
   const initial = await page.evaluate(() => {
     (globalThis as any).__playsrcFrameProfiler.active = true
     performance.mark("playsrc-active-gameplay-start")
@@ -116,6 +128,7 @@ test("integrated persisted quality, two live map replacements and overhead water
     const main = document.querySelector<HTMLElement>("main")!
     return { tick: Number(main.dataset.snapshotTick), ended: performance.now(), visible: document.visibilityState, focused: document.hasFocus(), plan: main.dataset.waterPlan, passes: main.dataset.waterPasses, restored: main.dataset.waterRestored, gpu: profiler.counters, losses: profiler.losses }
   })
+  sampling=false;await monitor;await checkNative();if(nativeFailure)throw nativeFailure
   const finished = new Promise<void>(resolve => cdp.once("Tracing.tracingComplete", () => resolve()))
   await cdp.send("Tracing.end")
   await finished
@@ -136,4 +149,5 @@ test("integrated persisted quality, two live map replacements and overhead water
   expect(errors).toEqual([])
   expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
   expect(silence.maximumActiveSilenceMilliseconds).toBeLessThan(250)
+  }finally{await writeFile(path.join(directory,"native-admission.json"),JSON.stringify({records:nativeRecords,waits:nativeWaits}));await native?.close()}
 })

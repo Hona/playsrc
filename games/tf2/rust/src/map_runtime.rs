@@ -60,6 +60,9 @@ pub struct CombatPlayerFacts {
 }
 
 pub trait GameplayWorld: Tracer {
+    /// Host monotonic work clock for NextBot's frame budget. Deterministic
+    /// fixture worlds report zero work; runtime adapters supply real elapsed time.
+    fn bot_update_milliseconds(&self)->f64{0.0}
     fn has_player_hitbox_models(&self) -> bool { false }
 
     fn pose_player_hitboxes(&self, _actors: &[crate::PlayerHitboxPose], _tick: u64, _interval: f32) -> Result<Vec<crate::PosedPlayerHitbox>, MoveError> {
@@ -411,6 +414,12 @@ pub struct MapRuntime {
     prop_animations: BTreeMap<EntityHandle, crate::dynamic_prop::Animation>,
     particle_systems: playsrc_entity::particle_system::Systems,
     smokestacks: playsrc_entity::smokestack::Systems,
+    sprites: playsrc_entity::sprite::Sprites,
+    suns:playsrc_entity::sun::Suns,
+    ropes:playsrc_entity::rope::Ropes,
+    spotlights:Vec<playsrc_entity::spotlight::Beam>,
+    spotlight_collision:Option<crate::spotlight::Collision>,
+    sprite_models: std::sync::Arc<BTreeMap<Vec<u8>,u32>>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
     control_points: Option<crate::control_point::World>,
@@ -653,6 +662,10 @@ impl MapRuntime {
             &standard_graph
         } else { graph };
         config.external_classes.extend(playsrc_entity::soundscape::bindings());
+        config.external_classes.extend(playsrc_entity::sprite::bindings());
+        config.external_classes.push(playsrc_entity::sun::binding());
+        config.external_classes.extend(playsrc_entity::rope::bindings());
+        config.external_classes.extend(playsrc_entity::spotlight::bindings());
         let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
             for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
@@ -958,6 +971,8 @@ impl MapRuntime {
         });
         let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.as_ref().clone())).collect()));
         let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
+        let suns=playsrc_entity::sun::Suns::from_world(&world).map_err(|source|invalid(source as usize))?;
+        let ropes=playsrc_entity::rope::Ropes::from_world(&world).map_err(|source|invalid(source as usize))?;
         let mut smokestacks = playsrc_entity::smokestack::Systems::default();
         smokestacks.synchronize(&world).map_err(|_| invalid(0))?;
         Ok(Self {
@@ -965,6 +980,11 @@ impl MapRuntime {
             smokestacks,
             soundscapes: playsrc_entity::soundscape::Systems::default(),
             soundscape_player: playsrc_entity::soundscape::Player::default(),
+            sprites: playsrc_entity::sprite::Sprites::default(),
+            suns,
+            ropes,
+            spotlights:Vec::new(),spotlight_collision:None,
+            sprite_models: std::sync::Arc::default(),
             world,
             player,
             actor_handles: BTreeMap::new(),
@@ -1443,6 +1463,47 @@ impl MapRuntime {
         self.source_handles.get(&source).copied()
     }
 
+    pub fn visual_entity(&self, source: u32) -> Option<(EntityHandle, playsrc_entity::Transform, playsrc_entity::EntityRenderState)> {
+        let entity = self.world.entity(self.source_handle(source)?)?;
+        Some((entity.handle, entity.world_transform, entity.render.clone()))
+    }
+
+    pub fn install_sprite_models(&mut self, models:BTreeMap<Vec<u8>,u32>) -> Result<(),RuntimeFailure> {
+        let sprites=playsrc_entity::sprite::Sprites::from_world(&self.world,self.world.current_tick() as f32*self.tick_interval,|name|models.get(name).copied())
+            .map_err(|source|invalid(source as usize))?;
+        self.sprites=sprites;self.sprite_models=std::sync::Arc::new(models);Ok(())
+    }
+
+    pub fn sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.sprites.presentation(&self.world,source) }
+    pub fn sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.suns.get(&self.world,source)}
+    pub fn rope_state(&self,source:u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>{self.ropes.get(&self.world,source)}
+    pub fn install_spotlights(&mut self,world:std::sync::Arc<playsrc_collision::World>,inputs:Vec<playsrc_collision::ObjectInput>)->Result<MapPhase,RuntimeFailure>{
+        let collision=crate::spotlight::Collision::new(world,inputs);
+        let (seeds,commands)=collision.prepare(&self.world).map_err(|source|invalid(source as usize))?;
+        let batch=self.world.phase(self.world.current_tick(),&commands)?;
+        self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
+        self.spotlight_collision=Some(collision);self.consume(batch)
+    }
+    pub fn spotlight_state(&self,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{
+        playsrc_entity::spotlight::presentation(&self.world,self.spotlights.iter().find(|beam|beam.source==source)?)
+    }
+
+    pub fn collision_entity(&self,source:u32)->Option<playsrc_entity::EntityCollisionState>{
+        self.world.collision_state(*self.source_handles.get(&source)?)
+    }
+
+    pub fn mover_hierarchy(&self,source:u32)->Vec<(u32,playsrc_entity::EntityCollisionState,Vec<playsrc_entity::Transform>)>{
+        let Some(root_handle)=self.source_handles.get(&source).copied()else{return Vec::new();};
+        let Some(root)=self.world.entity(root_handle)else{return Vec::new();};
+        let mut pending=root.children.iter().rev().copied().collect::<Vec<_>>();let mut output=Vec::new();
+        while let Some(handle)=pending.pop(){
+            let Some(entity)=self.world.entity(handle)else{continue;};
+            if let Ok(source)=u32::try_from(entity.source_index){output.push((source,self.world.collision_state(handle).expect("live hierarchy member"),self.world.descendant_local_chain(root_handle,handle).expect("descendant chain")));}
+            pending.extend(entity.children.iter().rev().copied());
+        }
+        output
+    }
+
     pub fn round_configuration(&self) -> crate::round::Configuration {
         self.round_configuration.clone()
     }
@@ -1504,8 +1565,8 @@ impl MapRuntime {
         let mut result = self.consume(removed)?;
         result.append(std::mem::take(&mut payload_phase));
         self.world.clear_event_queue();
-        let spawns = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().collect();
-        let spawned = self.world.phase(tick, &[WorldCommand::SpawnMapEntities(spawns)])?;
+        let excluded_sources=definitions.iter().filter(|entity|preserved_on_round_restart(entity)).map(|entity|entity.index).collect();
+        let spawned=self.world.phase(tick,&[WorldCommand::SpawnMapEntities{definitions:definitions.to_vec(),excluded_sources}])?;
         self.source_handles.clear();
         for handle in self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)) {
             if let Some(entity) = self.world.entity(handle) { self.source_handles.insert(entity.source_index as u32, handle); }
@@ -1532,6 +1593,13 @@ impl MapRuntime {
         self.prop_animations.clear();
         self.payload_watchers=crate::payload::Watcher::from_entities(&definitions);
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
+        self.sprites.reconcile(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied()).map_err(|source|invalid(source as usize))?;
+        self.suns.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
+        self.ropes.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
+        let (seeds,commands)=self.spotlight_collision.as_ref().map(|collision|collision.prepare(&self.world)).transpose().map_err(|source|invalid(source as usize))?.unwrap_or_default();
+        let beams=self.world.phase(tick,&commands)?;
+        self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
+        result.append(self.consume(beams)?);
         if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
         result.append(self.consume(spawned)?);
         Ok(result)
@@ -1778,7 +1846,10 @@ impl MapRuntime {
                 pickup.respawn_tick = None;
             }
         }
-        self.consume(batch).map_err(MapError::from)
+        let mut output=self.consume(batch).map_err(MapError::from)?;
+        let commands=self.sprites.advance(&self.world,input.tick as f32*self.tick_interval);
+        if !commands.is_empty() {let batch=self.world.phase(input.tick,&commands)?;output.append(self.consume(batch)?);}
+        Ok(output)
     }
 
     pub fn apply_mover_results(
@@ -2090,17 +2161,6 @@ impl MapRuntime {
         self.world.entity(*self.source_handles.get(&identity)?).map(|entity| entity.world_transform)
     }
 
-    pub fn entity_collision_state(&self, identity:u32) -> Option<(Transform,bool)> {
-        let entity=self.world.entity(*self.source_handles.get(&identity)?)?;
-        let solid=match &entity.behavior {
-            BehaviorState::DynamicProp(prop)=>prop.collision_enabled,
-            BehaviorState::Mover(mover)=>mover.solid,
-            BehaviorState::Brush(brush)=>match brush.solidity {playsrc_entity::BrushSolidity::Always=>true,playsrc_entity::BrushSolidity::Never=>false,playsrc_entity::BrushSolidity::Toggle=>brush.enabled},
-            _=>true,
-        };
-        Some((entity.world_transform,solid))
-    }
-
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
         let Some(handle) = self.source_handles.get(&identity) else { return false; };
         let Some(ancestor) = self.source_handles.get(&ancestor) else { return false; };
@@ -2368,6 +2428,22 @@ impl MapRuntime {
                         }
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
+                        self.ropes.input(&self.world,entity,&input,&value).map_err(|source|invalid(source as usize))?;
+                        if input.eq_ignore_ascii_case(b"Width")&&let Some(beam)=self.spotlights.iter_mut().find(|beam|beam.entity==entity)&&let Some(width)=value.as_float(){beam.width=width.min(102.3);beam.end_width=beam.width;}
+                        if let Some(color)=self.suns.input(&self.world,entity,&input,&value){
+                            let changed=self.world.phase(self.world.current_tick(),&[WorldCommand::Input(InputRecord{target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:color,activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence})])?;
+                            self.next_producer_sequence+=1;output.append(self.consume(changed)?);
+                        }
+                        if let Some(change)=self.sprites.input(&self.world,entity,&input,&value,self.world.current_tick() as f32*self.tick_interval) {
+                            let command=match change {
+                                playsrc_entity::sprite::Change::Effects(effects)=>WorldCommand::SetRenderEffects{entity,effects},
+                                playsrc_entity::sprite::Change::Color(color)=>WorldCommand::Input(InputRecord{
+                                    target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:Variant::Color(color),activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence,
+                                }),
+                            };
+                            let changed=self.world.phase(self.world.current_tick(),&[command])?;
+                            self.next_producer_sequence+=1;output.append(self.consume(changed)?);
+                        }
                         let mut point_events = Vec::new();
                         if input.eq_ignore_ascii_case(b"RoundActivate")
                             && let Some(koth) = self.round_configuration.koth

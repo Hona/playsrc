@@ -716,7 +716,7 @@ pub(crate) fn resolve_model_state(
     }
 }
 
-fn unlit_color_modulation(parameters: &BTreeMap<Vec<u8>, Vec<u8>>, environment: SelectionEnvironment) -> Result<[f32; 3], Error> {
+pub(crate) fn unlit_color_modulation(parameters: &BTreeMap<Vec<u8>, Vec<u8>>, environment: SelectionEnvironment) -> Result<[f32; 3], Error> {
     let mut color = color_or(parameters, b"$color", [1.0; 3])?;
     for name in [b"$color2".as_slice(), b"$srgbtint"] {
         if name == b"$srgbtint" && !environment.srgb_correct_blending { continue; }

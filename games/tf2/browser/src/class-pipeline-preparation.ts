@@ -50,7 +50,19 @@ export function classPipelinePoseRequests(artifacts: PresentationArtifacts, skin
       activity: sequence.label, bodygroups: artifact.bodygroupCounts.map(() => 0),
     } })
   }
+  // Held world weapons are not class-preview children: e.g. the Medic preview
+  // carries a different weapon from its bot's initial gun. Prepare each already
+  // admitted weapon's authored palette for both resident team skins as well.
+  for(const model of new Set(inventory.filter(item=>item.weapon!==null&&item.modelPlayer).map(item=>item.modelPlayer))){
+    const artifact=artifacts.models.get(model)
+    if(!artifact)continue // Incremental equipment admission prepares nonresident models.
+    const sequence=artifact.sequences[0]
+    if(!sequence)throw new Error(`World weapon pipeline sequence unavailable: ${model}`)
+    for(let worldSkin=0;worldSkin<Math.min(2,artifact.skinCount);worldSkin++)output.push({pass:"world",request:{
+      ...common,identity:0xfffc0000+output.length,model,skin:worldSkin,activity:sequence.label,bodygroups:artifact.bodygroupCounts.map(()=>0),
+    }})
+  }
   // Nine class queries each include their exact authored carried item.
-  if (output.length + 9 + output.reduce((sum, entry) => sum + (entry.request.equippedItems?.length ?? 0), 0) > 96) throw new Error("Class pipeline resource bound exceeded")
+  if (output.length + 9 + output.reduce((sum, entry) => sum + (entry.request.equippedItems?.length ?? 0), 0) > 128) throw new Error("Class pipeline resource bound exceeded")
   return Object.freeze(output.map(value => Object.freeze(value)))
 }

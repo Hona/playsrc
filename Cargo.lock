@@ -539,6 +539,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-beam"
+version = "0.1.0"
+
+[[package]]
 name = "playsrc-bsp"
 version = "0.1.0"
 dependencies = [
@@ -596,6 +600,7 @@ name = "playsrc-map"
 version = "0.1.0"
 dependencies = [
  "playsrc-asset-graph",
+ "playsrc-beam",
  "playsrc-bsp",
  "playsrc-collision",
  "playsrc-entity",
@@ -656,6 +661,7 @@ name = "playsrc-particle"
 version = "0.1.0"
 dependencies = [
  "playsrc-asset-graph",
+ "playsrc-beam",
  "playsrc-vpk",
 ]
 
@@ -725,6 +731,7 @@ version = "0.1.0"
 dependencies = [
  "playsrc-asset-graph",
  "playsrc-audio",
+ "playsrc-beam",
  "playsrc-bsp",
  "playsrc-collision",
  "playsrc-entity",

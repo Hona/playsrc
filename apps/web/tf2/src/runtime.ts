@@ -2,9 +2,11 @@ import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObje
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { combatPoseSelection } from "./combat-pose-selection"
+import {mapRendererInputs} from "./map-renderer-inputs"
 import { createSourceAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld, type PcmResource } from "@playsrc/audio"
 import { tf2AudioModuleUrl } from "@playsrc/game-tf2-browser/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
+import { encodeLegacyVisualQuery,decodeLegacyVisualViews,type LegacyVisualView } from "@playsrc/game-tf2-browser/legacy-visuals"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -946,6 +948,7 @@ export class Tf2Application {
       return
     }
     if (request.kind === "disconnect") {
+      this.#nextOperation()
       await this.#teardownGameplay()
       this.#gameUi?.dispatch({ kind: "teardown-confirmed" })
       this.#returnToMainMenu()
@@ -1242,6 +1245,7 @@ export class Tf2Application {
           const section = sourceIndex !== undefined
             ? await this.#client!.retainResourceSection(generation!, prior!, sourceIndex)
             : await this.#client!.decodeResources([{ descriptor: record.descriptor, bytes: record.bytes! }], generation)
+          if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
           span(sourceIndex !== undefined ? "resource-retain" : "resource-decode", started, {
             group: index,
             bytes: section.byteLength,
@@ -1775,21 +1779,9 @@ export class Tf2Application {
         payload: this.#loaded.payload,
         resourceIdentity: this.#dependencies.sha256,
         payloadSha256: this.#loaded.payloadSha256,
-        directionalTextures: this.#artifacts.directionalTextures,
-        environment: this.#artifacts.environment,
+        ...mapRendererInputs(this.#artifacts),
         materialStates: this.#materialStates(this.#artifacts),
-        particleTextures: this.#artifacts.particleTextures,
-        modelOccurrences: this.#artifacts.modelOccurrences,
-        modelDrawInputs: this.#artifacts.modelOccurrences.map((occurrence) => Object.freeze({
-          entity: occurrence.entity,
-          lighting: occurrence.lighting,
-          eyes: occurrence.eyes,
-        })),
         modelFacing: this.#modelFacing(this.#artifacts),
-        modelMaterials: this.#artifacts.modelMaterials,
-        authoredTextures: this.#artifacts.authoredTextures,
-        brushModels:this.#artifacts.brushModels,
-        staticProps:this.#artifacts.staticProps,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -3765,21 +3757,9 @@ export class Tf2Application {
         payload: staged.payload,
         resourceIdentity: (candidate?.dependencies ?? this.#dependencies).sha256,
         payloadSha256: staged.payloadSha256,
-        directionalTextures: artifacts.directionalTextures,
-        environment: artifacts.environment,
+        ...mapRendererInputs(artifacts),
         materialStates: this.#materialStates(artifacts),
-        particleTextures: artifacts.particleTextures,
-      modelOccurrences: artifacts.modelOccurrences,
-      modelDrawInputs: artifacts.modelOccurrences.map((occurrence) => Object.freeze({
-        entity: occurrence.entity,
-        lighting: occurrence.lighting,
-        eyes: occurrence.eyes,
-      })),
       modelFacing: this.#modelFacing(artifacts),
-      modelMaterials: artifacts.modelMaterials,
-      authoredTextures: artifacts.authoredTextures,
-      brushModels:artifacts.brushModels,
-      staticProps:artifacts.staticProps,
         diagnostic: true,
       })
       finishReplacePhase("rendererLoadMap")
@@ -3817,21 +3797,9 @@ export class Tf2Application {
         payload: prior.payload,
         resourceIdentity: this.#dependencies.sha256,
         payloadSha256: prior.payloadSha256,
-        directionalTextures: priorArtifacts?.directionalTextures,
-        environment: priorArtifacts?.environment,
+        ...(priorArtifacts?mapRendererInputs(priorArtifacts):{}),
         materialStates: priorArtifacts ? this.#materialStates(priorArtifacts) : undefined,
-        particleTextures: priorArtifacts?.particleTextures,
-        modelOccurrences: priorArtifacts?.modelOccurrences,
-        modelDrawInputs: priorArtifacts?.modelOccurrences.map((occurrence) => Object.freeze({
-          entity: occurrence.entity,
-          lighting: occurrence.lighting,
-          eyes: occurrence.eyes,
-        })),
         modelFacing: priorArtifacts ? this.#modelFacing(priorArtifacts) : undefined,
-        modelMaterials: priorArtifacts?.modelMaterials,
-        staticProps:priorArtifacts?.staticProps,
-        authoredTextures: priorArtifacts?.authoredTextures,
-        brushModels:priorArtifacts?.brushModels,
         diagnostic: true,
       })
       throw error
@@ -4774,14 +4742,32 @@ export class Tf2Application {
         : prepared.publication.selectedTicks
     const models=prepared.frame.models
     let particles = prepared.frame.particles
+    let legacyVisuals:Frame["legacyVisuals"]
     let legacyParticleMilliseconds = 0, legacyParticleBytes = 0
     if (this.#loaded?.legacyParticleFrames && this.#artifacts) {
       const started = performance.now()
       this.#wasmCalls.particles++
-      const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio }))
-      if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer) return
+      const hasVisuals=this.#artifacts.legacyVisualTextures.length>0
+      const visualViews:LegacyVisualView[]=[]
+      if(hasVisuals){
+        if(sky3d&&skyController)visualViews.push({...sky3d.camera,kind:1,aspectRatio,presentationTimeSeconds,visibilityPosition:skyController.origin,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(1)})
+        if(this.#artifacts.legacyVisualTextures.some(texture=>texture.program.worldRenderable)){
+          for(const pass of visibility.water.passes){
+            if(!pass.drawEntities)continue
+            const kind=pass.kind==="reflection"?2:pass.kind==="refraction"?3:pass.kind==="intersection"?4:0
+            visualViews.push({...camera,kind,position:pass.origin,yawDegrees:pass.angles[1],pitchDegrees:pass.angles[0],aspectRatio,presentationTimeSeconds,viewportHeight:renderer.legacyVisualViewport(kind).height,pixelVisibility:renderer.pixelVisibilityFeedback(kind)})
+          }
+        }
+        if(!visualViews.some(view=>view.kind===0))visualViews.push({...camera,kind:0,aspectRatio,presentationTimeSeconds,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(0)})
+      }
+      const visualPayload=hasVisuals?encodeLegacyVisualQuery(visualViews,{screenWidth:renderer.legacyVisualViewport(0).width,samples:renderer.sampleCount}):new Uint8Array()
+      if(profile?.legacyVisualProbe)profile.legacyVisualViews=visualViews
+      const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio },visualPayload))
+      if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer || this.#classSelection?.state().visible || this.#teamSelection?.state().visible
+        || !currentPresentedCamera(presentedCamera,{generation:this.#generation,viewportRevision:this.#presentationViewport?.revision??-1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision})) return
       particles = [...(particles ?? []), ...decodeParticleRenderOutput(output.particles, this.#artifacts.particleMaterials).items]
-      if (output.visuals.byteLength !== 0) throw new Error("Legacy frame visual output has no admitted renderer")
+      if(hasVisuals)legacyVisuals=decodeLegacyVisualViews(output.visuals)
+      else if(output.visuals.byteLength)throw new Error("Unexpected legacy visual output")
       legacyParticleBytes = output.particles.byteLength + output.visuals.byteLength
       legacyParticleMilliseconds = performance.now() - started
     }
@@ -4808,6 +4794,7 @@ export class Tf2Application {
     try { rendered=await renderer.render({
       ...prepared.frame,
       particles,
+      legacyVisuals,
       clientFrame: clientFrame.clientFrame,
       clientFrameSeconds: clientFrame.clientFrameSeconds,
       hudMaterials:this.#hudIntegration?.materialFrame(),
@@ -4930,10 +4917,11 @@ export class Tf2Application {
         history.push({ at: performance.now(), ...state }); if (history.length > 64) history.shift()
       }
     }
+    if (profile?.legacyVisualProbe) profile.legacyVisualEvidence=renderer.captureLegacyVisualEvidence()
     if (profile && Number.isSafeInteger(profile.particleEvidenceRevision)
       && (profile.particleEvidence as { revision?: number } | undefined)?.revision !== profile.particleEvidenceRevision) {
       profile.particleEvidence = { revision: profile.particleEvidenceRevision, tick: prepared.snapshot.tick.toString(), camera,
-        items: particles, batches: renderer.captureParticleBatchEvidence(), visibilityQueries: renderer.captureParticleVisibilityEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
+        items: particles, batches: renderer.captureParticleBatchEvidence(), visibilityQueries:renderer.captureParticleVisibilityEvidence(),materialDepth:renderer.captureMaterialDepthEvidence(), skyCamera: sky3d?.camera, geometry: renderer.captureGeometryEvidence(camera), pixels: this.#canvas.toDataURL("image/png") }
     }
     if (profile && Array.isArray(profile.doorEvidenceTargets) && this.#view.phase === "Ready") {
       const captures = (profile.doorEvidence ??= []) as Array<{ key: string }>
@@ -6008,8 +5996,9 @@ export class Tf2Application {
       const authored = new Map([
         ...this.#artifacts.environment.authoredTextures,
         ...this.#artifacts.authoredTextures,
+        ...this.#artifacts.legacyVisualTextures.flatMap(texture=>[[texture.logicalPath,texture] as const,...texture.normal?[[texture.normal.logicalPath,texture.normal] as const]:[]]),
       ])
-      let planes = 0, planeBytes = 0, mipLevels = 0, frames = 0, compressed = 0, compressedBytes = 0
+      let planes = 0, planeBytes = 0, mipLevels = 0, frames = 0, compressed = 0, compressedBytes = 0,decodedCompressedTailBytes=0
       for (const texture of authored.values()) {
         mipLevels += texture.mipCount
         frames += texture.frameCount
@@ -6017,6 +6006,7 @@ export class Tf2Application {
         for (const plane of texture.planes) {
           planes += 1
           planeBytes += plane.rgba.byteLength
+          decodedCompressedTailBytes+=plane.decodedRgba?.byteLength??0
           if ([13, 14, 15, 20].includes(texture.sourceFormat ?? -1)) compressedBytes += plane.rgba.byteLength
         }
       }
@@ -6040,6 +6030,7 @@ export class Tf2Application {
         frames,
         compressedTextures: compressed,
         compressedPlaneBytes: compressedBytes,
+        decodedCompressedTailBytes,
         directionalBytes: this.#artifacts.directionalTextures.reduce((total, texture) => total
           + (texture.authored.planes.find((plane) => plane.mip === 0 && plane.frame === 0 && plane.face === 0 && plane.slice === 0)?.rgba.byteLength ?? 0), 0),
         particleBytes: this.#artifacts.particleTextures.reduce((total, texture) => total + texture.planes.reduce((bytes, plane) => bytes + plane.rgba.byteLength, 0), 0),
@@ -6185,6 +6176,8 @@ export class Tf2Application {
     await this.#renderer?.dispose().catch(() => {})
     this.#renderer = undefined
     await this.#releaseEquipmentAdmissions()
+    await this.#resourceRuntime?.catch(() => {})
+    this.#resourceRuntime = undefined
     await this.#client?.shutdown().catch(() => {})
     this.#equipmentProfile?.close()
     this.#equipmentProfile = undefined

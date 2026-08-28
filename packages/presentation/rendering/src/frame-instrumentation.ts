@@ -56,6 +56,8 @@ export type BrowserFrameProfiler = {
   renderOwnerPlan?: typeof RENDER_OWNER_PLAN
   renderOwners?: RenderOwnerEvidence[]
   captureModelPrograms?: boolean
+  nodeKeyMaterial?: string
+  nodeKeys?: unknown[]
   modelPreparation?: { started: number; ended?: number; models: { model: string; skin: number; pass: string }[] }
   particlePreparation?: { started: number; ended?: number; generation: number; materials: { id: number; identity: string; key: string }[] }
   firstParticleUses?: { at: number; id: number; identity: string; pass: string | null }[]
@@ -204,6 +206,12 @@ export function installNodeBuilderInstrumentation(
   const original = manager._createNodeBuilder
   if (typeof original !== "function") throw new Error("WebGPU node-builder instrumentation backend is unavailable")
   manager._createNodeBuilder = function (...arguments_: any[]): any {
+    const object=arguments_[0],identity=String(object?.object?.userData?.materialIdentity??arguments_[1]?.name??"")
+    if(profile.nodeKeyMaterial===identity&&(profile.nodeKeys?.length??0)<64){
+      (profile.nodeKeys??=[]).push({active:profile.active,pass:profile.currentPass?.identity??null,identity,
+        initial:object.initialCacheKey,dynamic:object.getDynamicCacheKey?.(),material:object.material?.id,materialKey:object.material?.customProgramCacheKey?.(),
+        context:object.context?.id,clipping:object.clippingContextCacheKey,geometry:object.getGeometryCacheKey?.()})
+    }
     if (!profile.active) return original.apply(this, arguments_)
     profile.counters.nodeBuilderMisses = (profile.counters.nodeBuilderMisses ?? 0) + 1
     const builder = original.apply(this, arguments_)

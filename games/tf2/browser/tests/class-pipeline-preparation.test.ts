@@ -61,10 +61,20 @@ test("missing class facts and a larger-than-resident resource set fail before pr
   models.delete(tf2ClassPresentation(3).model)
   expect(() => classPipelinePoseRequests(values, 0, camera, 1, [])).toThrow("unavailable")
   const full = artifacts()
-  for (let i = 0; i < 96; i++) (full.models as Map<string, ModelArtifact>).set(`models/test${i}.mdl`, {
+  for (let i = 0; i < 128; i++) (full.models as Map<string, ModelArtifact>).set(`models/test${i}.mdl`, {
     profile: "viewmodel", skinCount: 1, bodygroupCounts: [], sequences: [{ label: "reference" }],
   } as ModelArtifact)
   expect(() => classPipelinePoseRequests(full, 0, camera, 1, [])).toThrow("bound")
+})
+
+test("resident world weapons prepare authored poses independently of previews and deduplicate shared item models",()=>{
+  const values=artifacts(),model="models/weapons/c_models/c_bottle/c_bottle.mdl"
+  const inventory=[{weapon:7,modelPlayer:model,classSlots:[]},{weapon:7,modelPlayer:model,classSlots:[]},{weapon:1,modelPlayer:"models/not-admitted.mdl",classSlots:[]}] as any
+  const requests=classPipelinePoseRequests(values,0,camera,1,inventory)
+  const world=requests.filter(entry=>entry.pass==="world"&&entry.request.model===model)
+  expect(world).toHaveLength(1);expect(world[0]!.request.skin).toBe(0)
+  expect(world[0]!.request.activity).toBe("reference");expect(world[0]!.request.preparation).toBe(true)
+  expect(requests.some(entry=>entry.request.model==="models/not-admitted.mdl")).toBe(false)
 })
 
 test("prepares only registered eligible wearables without creating effects", () => {

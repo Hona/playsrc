@@ -13,7 +13,11 @@ mod acoustic_scene;
 mod wearable;
 mod map_particles;
 mod smokestack;
+mod legacy_visuals;
+mod legacy_materials;
 pub mod static_prop_artifact;
+#[cfg(not(target_arch="wasm32"))]
+pub use legacy_visuals::RopeFacts;
 
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
@@ -377,6 +381,13 @@ impl playsrc_movement::Tracer for SharedWorld {
 }
 
 impl playsrc_tf2::GameplayWorld for SharedWorld {
+    fn bot_update_milliseconds(&self)->f64{
+        #[cfg(target_arch="wasm32")]
+        let actual=unsafe{monotonic_milliseconds()};
+        #[cfg(not(target_arch="wasm32"))]
+        let actual={static ORIGIN:OnceLock<std::time::Instant>=OnceLock::new();ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()*1000.0};
+        gameplay_replay::work_clock(actual)
+    }
     fn has_player_hitbox_models(&self) -> bool { true }
 
     fn pose_player_hitboxes(&self, actors: &[playsrc_tf2::PlayerHitboxPose], tick: u64, interval: f32) -> Result<Vec<playsrc_tf2::PosedPlayerHitbox>, playsrc_movement::Error> {
@@ -608,6 +619,7 @@ struct ClassPreview {
 }
 
 struct Slot {
+    legacy_visuals: legacy_visuals::Runtime,
     generation: u16,
     payload: Option<Vec<u8>>,
     payload_bytes: usize,
@@ -1169,6 +1181,7 @@ unsafe fn compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
+        let mut legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph,&resources,&decoders,profile).map_err(|_| 9_u32)?);
         let collision_world = playsrc_collision::compile(&bsp).map_err(|_| 3_u32)?;
         let visibility_world = playsrc_visibility::compile(&bsp).map_err(|_| 3_u32)?;
         let mut canonical =
@@ -1395,7 +1408,7 @@ unsafe fn compile_map(
             &studio_model_checksums,
         )
         .map_err(|_| 5_u32)?;
-        let model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
+        let mut model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
         let visibility = runtime.visibility;
         let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
             .map_err(|_| 3_u32)?;
@@ -1471,6 +1484,18 @@ unsafe fn compile_map(
         map.install_studio_models(&studio_models.iter().map(|(identity, model)|
             (identity.clone(), Arc::clone(model.source()))).collect())
             .map_err(|_| 5_u32)?;
+        let mut sprite_models=BTreeMap::new();
+        for entity in &runtime.entities.entities {
+            if !entity.classname.as_deref().is_some_and(playsrc_entity::sprite::is_sprite) { continue; }
+            let model=entity_scalar(entity,b"model").ok_or(9_u32)?;
+            let path=playsrc_entity::visual_resources::sprite_material(std::str::from_utf8(model).map_err(|_|9_u32)?).ok_or(9_u32)?;
+            let material=resolve_material_semantics(&path,&resources,material_environment(profile,false)).map_err(|_|9_u32)?;
+            let (_,_,metadata)=selected_texture(&material,&decoders).map_err(|_|9_u32)?;
+            sprite_models.insert(model.to_vec(),u32::from(metadata.frame_count));
+        }
+        map.install_sprite_models(sprite_models).map_err(|_|9_u32)?;
+        map.install_spotlights(Arc::clone(&collision),collision_templates.iter().map(|template|template.input.clone()).collect()).map_err(|_|9_u32)?;
+        legacy_visuals.initialize_ropes(&map,&mut model_lighting_world,&visibility,&collision,&gameplay_world.snapshot()).map_err(|_|9_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity
@@ -1551,6 +1576,7 @@ unsafe fn compile_map(
                 decoders.requests.load(Ordering::Relaxed),
                 decoders.inspections.load(Ordering::Relaxed),
             ],
+            legacy_visuals,
         ))
     })();
     let mut slots = slots().lock().expect("TF2 slots");
@@ -1591,6 +1617,7 @@ unsafe fn compile_map(
             spawn,
             session,
             texture_inspections,
+            legacy_visuals,
         )) => Slot {
             generation,
             payload: Some(payload),
@@ -1598,6 +1625,7 @@ unsafe fn compile_map(
             presentation_bytes: cached_presentation.map_or(presentation.len(), <[u8]>::len),
             presentation,
             coverage,
+            legacy_visuals,
             map_particles: (!session.map_particle_systems().is_empty())
                 .then(|| (particles.independent(), map_particles::MapParticles::default())),
             smokestacks: (!session.map_smokestacks().is_empty()).then(|| smokestack::Frames::new(
@@ -1658,6 +1686,7 @@ unsafe fn compile_map(
             map_particles: None,
             smokestacks: None,
             legacy_visual_output: Vec::new(),
+            legacy_visuals: legacy_visuals::Runtime::default(),
             particle_materials: Vec::new(),
             particle_sheets: BTreeMap::new(),
             combat_decals: None,
@@ -1715,7 +1744,7 @@ pub struct CompiledArtifact {
 /// Bounded native acceptance through the same compiled-map transaction used by
 /// the browser. This does not replace headed presentation or timing evidence.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
+pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], crossing:Option<(u32,u32)>, mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
     let section = ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let hash: [u8; 32] = Sha256::digest(resources).into();
     let handle = unsafe { playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, hash.as_ptr(), 1) };
@@ -1728,24 +1757,97 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         command[4..8].copy_from_slice(&9_u32.to_le_bytes());
         command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
         command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
-        command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
-        for batch in 0..189 {
-            if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), if batch == 0 { 1 } else if batch == 188 { 31 } else { 64 }) } == 0 {
-                return Err(format!("gameplay transaction failed: {}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
+        let bot_add_tick=std::env::var("PLAYSRC_NATIVE_BOT_ADD_TICK").ok().map(|value|value.parse::<u32>().map_err(|_|"invalid bot command tick")).transpose()?.unwrap_or(1);
+        if !(1..=4096).contains(&bot_add_tick){return Err("bot command tick outside fixture bound".into());}
+        let mut budget_ticks=12_000_u32;
+        let mut advanced=0;
+        let mut entered=std::collections::BTreeSet::new();
+        let trace_range=std::env::var("PLAYSRC_NATIVE_MATCH_TRACE_RANGE").ok().map(|value|{
+            let (start,end)=value.split_once(':').ok_or("invalid trace range")?;
+            let start=start.parse::<u32>().map_err(|_|"invalid trace start")?;
+            let end=end.parse::<u32>().map_err(|_|"invalid trace end")?;
+            if start>=end||end-start>512{return Err("invalid trace bounds");}Ok((start,end))
+        }).transpose()?;
+        while advanced<budget_ticks {
+            let mut steps=if advanced==0 {1}else{64.min(budget_ticks-advanced)};
+            if crossing.is_some(){steps=1;}
+            if advanced+1==bot_add_tick{steps=1;command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());}
+            else if advanced+1<bot_add_tick{steps=steps.min(bot_add_tick-1-advanced);}
+            if let Some((start,end))=trace_range{
+                if advanced<start{steps=steps.min(start-advanced);}else if advanced<end{steps=1;}
+            }
+            if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), steps) } == 0 {
+                let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").clone();
+                return Err(format!("gameplay transaction failed: {}{detail}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
             }
             command[32..36].fill(0); command[42..44].fill(0);
             let values = slots().lock().expect("TF2 slots");
             let snapshot = values[index].latest_game_snapshot.as_ref().ok_or("missing gameplay snapshot")?;
-            observe(snapshot);
-            if snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
+            if advanced==0 && let Some(timers)=snapshot.round.koth_timers {
+                // Leave the authored clock untouched. KOTH must also run its
+                // full team timer, in addition to the traversal/capture budget.
+                let seconds=timers.iter().map(|timer|timer.remaining).fold(0.0_f32,f32::max);
+                budget_ticks+=(seconds/0.015).ceil() as u32;
+            }
+            advanced+=steps;
+            if let Some((from,to))=crossing{
+                if snapshot.round.state==playsrc_tf2::round::State::Running&&!snapshot.round.in_setup&&!snapshot.round.waiting_for_players{
+                    for bot in &snapshot.bots{
+                        if bot.area==Some(from){entered.insert(bot.identity);}
+                        if bot.area==Some(to)&&entered.contains(&bot.identity){observe(snapshot);return Ok(());}
+                    }
+                }else{entered.clear();}
+            }
+            if crossing.is_none()||advanced%64==0{observe(snapshot);}
+            if crossing.is_none()&&snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
         }
         let values = slots().lock().expect("TF2 slots");
         let paths = values[index].session.as_ref().and_then(|session| session.bot_world()).map_or_else(Vec::new, |bots|bots.navigation_diagnostics());
-        Err(format!("walking bots did not complete the control-point round within 180 simulation seconds: {}", paths.join("\n")))
+        let mut collision_detail=String::new();
+        if let (Some(session),Some(world),Some(bot))=(&values[index].session,&values[index].gameplay_world,values[index].latest_game_snapshot.as_ref().and_then(|snapshot|snapshot.bots.first())){
+            let hull=playsrc_tf2::MovementPolicy{class:bot.class,modifiers:playsrc_tf2::MovementModifiers::default()}.resolve().standing_hull;
+            let yaw=bot.yaw_degrees.to_radians();let end=[bot.position[0]+yaw.cos()*96.0,bot.position[1]+yaw.sin()*96.0,bot.position[2]];
+            let trace=playsrc_movement::Tracer::trace(world,bot.position,end,hull,playsrc_movement::Configuration::default().solid_mask);
+            collision_detail.push_str(&format!("\nforward collision={trace:?}"));
+            for side in [-50.0,0.0,50.0] {
+                for height in [0.0,36.0,72.0] {
+                    let start=[bot.position[0]-yaw.sin()*side,bot.position[1]+yaw.cos()*side,bot.position[2]+height];
+                    let end=[start[0]+yaw.cos()*96.0,start[1]+yaw.sin()*96.0,start[2]];
+                    let trace=playsrc_movement::Tracer::trace(world,start,end,hull,playsrc_movement::Configuration::default().solid_mask);
+                    collision_detail.push_str(&format!("\nledge probe side={side} height={height}: {trace:?}"));
+                }
+            }
+            for template in values[index].collision_templates.iter().filter(|template|template.runtime_transform){
+                let Some(state)=u32::try_from(template.input.identity).ok().and_then(|source|session.map_collision_entity(source))else{continue;};
+                if state.transform.origin.iter().zip(bot.position).map(|(a,b)|(a-b)*(a-b)).sum::<f32>()<512.0*512.0{
+                    collision_detail.push_str(&format!("\nnearby collider={} state={state:?}",template.input.identity));
+                }
+            }
+        }
+        Err(format!("walking bots did not complete the control-point round within {} simulation seconds: {}{collision_detail}",budget_ticks as f32*0.015, paths.join("\n")))
     })();
     playsrc_dispose(handle);
     result
 }
+
+#[cfg(not(target_arch="wasm32"))]
+pub fn verified_rope_facts(handle:u32)->Vec<RopeFacts>{with(handle,|slot|{
+    let mut facts=slot.legacy_visuals.rope_facts();
+    if let (Some(visibility),Some(world))=(&slot.visibility,&slot.gameplay_world){
+        for rope in &mut facts{
+            let start=rope.nodes[0];let end=*rope.nodes.last().unwrap();let middle=rope.nodes[rope.nodes.len()/2];
+            let dx=end[0]-start[0];let dy=end[1]-start[1];let length=dx.hypot(dy);if length<1.0{continue;}
+            for distance in [96.0,200.0,400.0]{for sign in [1.0,-1.0]{for height in [-128.0,-64.0,0.0,64.0,128.0]{
+                let position=[middle[0]-dy/length*distance*sign,middle[1]+dx/length*distance*sign,middle[2]+height];
+                if !visibility.locate_leaf(position).is_ok_and(|leaf|visibility.leaves[leaf].cluster>=0){continue;}
+                let trace=world.world.trace_snapshot_ray(&world.snapshot(),playsrc_collision::SnapshotRayRequest{start:position,end:middle,mask:playsrc_collision::MASK_OPAQUE,scope:playsrc_collision::TraceScope::Everything,ignored:&[]},|_|true);
+                if !trace.is_ok_and(|trace|trace.fraction==1.0&&!trace.start_solid){continue;}
+                rope.cameras.push([position[0],position[1],position[2],(middle[1]-position[1]).atan2(middle[0]-position[0]).to_degrees(),height.atan2(distance).to_degrees()]);
+            }}}
+        }
+    }
+    facts
+}).unwrap_or_default()}
 
 pub fn compile_artifact(
     bsp: &[u8],
@@ -2141,13 +2243,18 @@ pub unsafe extern "C" fn playsrc_particle_transact(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_legacy_particle_frames(handle: u32) -> u32 {
-    with(handle, |slot| u32::from(slot.smokestacks.is_some())).unwrap_or(0)
+    with(handle, |slot| u32::from(slot.smokestacks.is_some()||slot.legacy_visuals.required())).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_legacy_visual_output_length(handle: u32) -> usize {
     with(handle, |slot| slot.legacy_visual_output.len()).unwrap_or(0)
 }
+
+#[cfg(not(target_arch="wasm32"))]
+pub fn map_sun_presentation(handle:u32,source:u32)->Option<playsrc_entity::sun::Presentation>{with(handle,|slot|slot.session.as_ref()?.map_sun_state(source)).flatten()}
+#[cfg(not(target_arch="wasm32"))]
+pub fn map_spotlight_presentation(handle:u32,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{with(handle,|slot|slot.session.as_ref()?.map_spotlight_state(source)).flatten()}
 
 /// Select a real, PVS-admitted opaque-world occluder for the headed map probe.
 /// This does not mutate entities, collision, render depth, or particle state.
@@ -2194,9 +2301,19 @@ pub fn smokestack_occlusion_probe(handle: u32) -> Option<(usize, [f32; 3], [f32;
 struct LegacyParticleFrame<'a> { seconds: f32, accepted: u32, identity: u32, view: [f32; 4], visual_payload: &'a [u8] }
 
 fn transact_legacy_particle_frame(slot: &mut Slot, request: playsrc_particle::AdvanceRequest, frame: LegacyParticleFrame<'_>) -> u32 {
-    if !frame.visual_payload.is_empty() {
-        *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("legacy frame error detail") = "Legacy visual frame payload has no admitted processor".into();
-        return 0;
+    let visuals=if frame.visual_payload.is_empty() {
+        if slot.legacy_visuals.required() {return 0;} None
+    } else {
+        match legacy_visuals::prepare(slot,frame.visual_payload,frame.identity,frame.accepted,frame.seconds) {
+            Ok(value)=>Some(value),Err(())=>{
+                *SIMULATION_ERROR_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("legacy frame error detail")="Invalid native legacy visual client frame".into();return 0;
+            }
+        }
+    };
+    if slot.smokestacks.is_none() {
+        let Some((state,bytes))=visuals else {return 0;};
+        let Ok(particles)=playsrc_particle::encode_render_output(&[],None,&slot.particle_materials,64*1024*1024) else {return 0;};
+        slot.legacy_visuals=state;slot.legacy_visual_output=bytes;slot.particle_output=particles;return 1;
     }
     let (Some(smoke), Some(visibility)) = (slot.smokestacks.as_mut(), slot.visibility.as_ref()) else { return 0; };
     let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
@@ -2228,7 +2345,11 @@ fn transact_legacy_particle_frame(slot: &mut Slot, request: playsrc_particle::Ad
     let result = playsrc_particle::resolve_render_output(items, &slot.particle_sheets)
         .and_then(|items| playsrc_particle::encode_render_output(&items, None, &slot.particle_materials, 64 * 1024 * 1024));
     match result {
-        Ok(output) => { smoke.prepare(frame.identity, candidate); slot.particle_output = output; slot.legacy_visual_output.clear(); 1 }
+        Ok(output) => {
+            smoke.prepare(frame.identity,candidate);slot.particle_output=output;
+            if let Some((state,bytes))=visuals {slot.legacy_visuals=state;slot.legacy_visual_output=bytes;} else {slot.legacy_visual_output.clear();}
+            1
+        }
         Err(error) => {
             *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("particle error detail") = error.to_string();
             0
@@ -5208,7 +5329,7 @@ pub extern "C" fn playsrc_dispose(handle: u32) -> u32 {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `pointer` must identify one complete version-4 gameplay transaction in this module's memory.
+/// `pointer` must identify one complete version-9 gameplay transaction in this module's memory.
 pub unsafe extern "C" fn playsrc_game_advance(
     handle: u32,
     pointer: *const u8,
@@ -5248,6 +5369,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
     let Some(session) = slot.session.as_ref() else {
         fail!(6);
     };
+    let _game_scope=gameplay_replay::game_scope(handle);
     playsrc_tf2::admission_metrics::begin_tick(session.tick());
     playsrc_tf2::admission_metrics::emit(playsrc_tf2::admission_metrics::TRANSACTION, 0);
     let mut candidate = session.clone();
@@ -5277,6 +5399,11 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 .iter()
                 .any(|request| request.request_id == *request_id)
         });
+        pushers.retain(|request_id,_|candidate.mover_requests().iter().any(|request|request.request_id==*request_id));
+        for (request_id,pusher) in &mut pushers {
+            let request=candidate.mover_requests().iter().find(|request|request.request_id==*request_id).expect("retained mover request");
+            if pusher.update_hierarchy(*request_id,&parented_pusher_members(&candidate,request.entity,templates)).is_err(){fail!(10);}
+        }
         let pending_movers = candidate
             .mover_requests()
             .iter()
@@ -5304,18 +5431,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     },
                     linear_speed: request.speed,
                     angular_speed,
-                    hierarchy: templates.iter().filter_map(|template| {
-                        // The prop children are rigid members of this pusher;
-                        // independently driven brush movers keep their own requests.
-                        if !matches!(&template.input.shape, playsrc_collision::SnapshotShape::Physics(_)) { return None; }
-                        let identity = u32::try_from(template.input.identity).ok()?;
-                        if !candidate.entity_descends_from(identity, request.entity) { return None; }
-                        let transform = candidate.entity_world_transform(identity)?;
-                        Some(playsrc_movement::PusherHierarchyMemberRequest {
-                            identity: u64::from(identity),
-                            start: playsrc_collision::Transform { origin: transform.origin, angles: transform.angles },
-                        })
-                    }).collect(),
+                    hierarchy: parented_pusher_members(&candidate,request.entity,templates),
                 };
                 let pusher = match playsrc_movement::PusherSnapshot::start_transforms(
                     collision_revision,
@@ -5336,7 +5452,8 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &prior_collision,
             templates,
             current_revision,
-            Some(&|identity| candidate.entity_collision_state(identity)),
+            snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
+            Some(&|identity|candidate.map_collision_entity(identity)),
             &transforms,
             &velocities,
         ) {
@@ -5347,7 +5464,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 current_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_collision_state(identity)),
+                Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -5402,7 +5519,10 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     |_, _| true,
                 ) {
                     Ok(value) => value,
-                    Err(_) => fail!(12),
+                    Err(error) => {
+                        *GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail")=format!("; pusher request={request_id} error={error:?}");
+                        fail!(12)
+                    },
                 };
                 let Some(records) = mover_records(&frame) else {
                     fail!(13);
@@ -5438,11 +5558,10 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     transforms.insert(result.identity, result.transform);
                     velocities.insert(result.identity, result.trajectory_velocity);
                     for child in &result.hierarchy {
-                        transforms.insert(child.identity, child.transform);
-                        // CBaseEntity::CalcAbsoluteVelocity adds the parent's
-                        // absolute velocity to the child's rotated local one.
-                        // These rigid hierarchy members have zero local velocity.
-                        velocities.insert(child.identity, result.trajectory_velocity);
+                        transforms.insert(child.identity,child.transform);
+                        // Parent-relative prop velocity is zero; Source's absolute
+                        // velocity adds the parent's linear velocity (no orbital term).
+                        velocities.insert(child.identity,result.trajectory_velocity);
                     }
                 }
                 consumed_mover_results.extend(records.into_iter().take(consumed_records));
@@ -5464,7 +5583,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 collision_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_collision_state(identity)),
+                Some(&|identity|candidate.map_collision_entity(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -5627,6 +5746,25 @@ pub unsafe extern "C" fn playsrc_game_advance(
     slot.error = 0;
     collision_transaction.committed = true;
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_game_advance_error() -> u32 {
+    GAME_ADVANCE_ERROR.load(Ordering::Relaxed)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_game_advance_error_length()->usize{
+    GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").len()
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `pointer` must identify `capacity` writable bytes in this module's memory.
+pub unsafe extern "C" fn playsrc_game_advance_error_copy(pointer:*mut u8,capacity:usize)->usize{
+    let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail");
+    if pointer.is_null()||capacity<detail.len(){return 0;}
+    unsafe{std::ptr::copy_nonoverlapping(detail.as_ptr(),pointer,detail.len());}detail.len()
 }
 
 fn gameplay_error_code(error: &playsrc_tf2::Error) -> u32 {
@@ -8584,6 +8722,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
         playsrc_material::Shader::SkyLdr => 9,
         playsrc_material::Shader::DecalModulate => 11,
         playsrc_material::Shader::Modulate => 12,
+        playsrc_material::Shader::Cable => 13,
         playsrc_material::Shader::Unsupported => 255,
     }
 }
@@ -8970,24 +9109,19 @@ fn collision_object_templates(
     Ok(output)
 }
 
-// Dynamic props (including gate children) share the entity world's resolved
-// parent transform with presentation. A brush-only snapshot cannot own their
-// collision pose. Removed entities must not leave a solid at the authored pose.
-fn collision_template_transform(
-    template: &CollisionObjectTemplate,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
-    overrides: &BTreeMap<u64, playsrc_collision::Transform>,
-) -> (bool, playsrc_collision::Transform) {
-    let mut enabled = template.input.enabled;
-    let mut transform = template.input.transform;
-    if template.runtime_transform && let Some(resolve) = entity_transform {
-        match u32::try_from(template.input.identity).ok().and_then(resolve) {
-            Some((value,solid)) => { transform = playsrc_collision::Transform { origin: value.origin, angles: value.angles }; enabled=solid || template.input.volume_contents; },
-            None => enabled = false,
-        }
+fn parented_pusher_members(session:&playsrc_tf2::Session<SharedWorld>,source:u32,templates:&[CollisionObjectTemplate])->Vec<playsrc_movement::PusherHierarchyMemberRequest>{
+    session.map_mover_hierarchy(source).into_iter().filter(|(source,state,_)|state.enabled&&templates.iter().any(|template|template.input.identity==u64::from(*source))).map(|(source,_,chain)|playsrc_movement::PusherHierarchyMemberRequest{
+        identity:u64::from(source),local_chain:chain.into_iter().map(|local|playsrc_collision::Transform{origin:local.origin,angles:local.angles}).collect(),
+    }).collect()
+}
+
+fn collision_entity_state(template:&CollisionObjectTemplate,resolve:Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>)->(playsrc_collision::Transform,bool){
+    if template.runtime_transform&&let Some(resolve)=resolve {
+        return u32::try_from(template.input.identity).ok().and_then(resolve).map_or((template.input.transform,false),|state|(
+            playsrc_collision::Transform{origin:state.transform.origin,angles:state.transform.angles},state.enabled||template.input.volume_contents,
+        ));
     }
-    if let Some(value) = overrides.get(&template.input.identity) { transform = *value; }
-    (enabled, transform)
+    (template.input.transform,template.input.enabled)
 }
 
 fn compile_collision_snapshot(
@@ -8996,7 +9130,7 @@ fn compile_collision_snapshot(
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
+    resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
@@ -9004,7 +9138,10 @@ fn compile_collision_snapshot(
         .iter()
         .map(|template| {
             let mut input = template.input.clone();
-            (input.enabled, input.transform) = collision_template_transform(template, entity_transform, transform_overrides);
+            (input.transform,input.enabled)=collision_entity_state(template,resolve);
+            if let Some(transform) = transform_overrides.get(&input.identity) {
+                input.transform = *transform;
+            }
             if let Some(velocity) = velocity_overrides.get(&input.identity) {
                 input.linear_velocity = *velocity;
             }
@@ -9049,11 +9186,12 @@ fn retain_collision_snapshot(
     previous: &playsrc_collision::Snapshot,
     templates: &[CollisionObjectTemplate],
     revision: u64,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
+    latest: Option<&playsrc_tf2::Snapshot>,
+    resolve: Option<&dyn Fn(u32)->Option<playsrc_entity::EntityCollisionState>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Option<playsrc_collision::Snapshot> {
-    if previous.records().len() != templates.len() {
+    if previous.records().len() != templates.len()||latest.is_some_and(|snapshot|!snapshot.buildings.is_empty()) {
         return None;
     }
     for (record, template) in previous.records().iter().zip(templates) {
@@ -9061,12 +9199,16 @@ fn retain_collision_snapshot(
         if record.identity != identity {
             return None;
         }
-        let (enabled, transform) = collision_template_transform(template, entity_transform, transform_overrides);
+        let (runtime,enabled)=collision_entity_state(template,resolve);
+        let transform = transform_overrides
+            .get(&identity)
+            .copied()
+            .unwrap_or(runtime);
         let velocity = velocity_overrides
             .get(&identity)
             .copied()
             .unwrap_or(template.input.linear_velocity);
-        if record.enabled != enabled || record.transform != transform || record.linear_velocity != velocity {
+        if record.transform != transform || record.linear_velocity != velocity || record.enabled != enabled {
             return None;
         }
     }
@@ -9099,24 +9241,24 @@ fn setup_gate_child_collision_follows_parent_and_invalidates_retention() {
         kind: playsrc_tf2::MoverResultKind::Completed, transform: playsrc_entity::Transform { origin: [0.0,0.0,128.0], angles: [0.0;3] }, carry: [0.0;3] }]).unwrap();
     assert!(map.entity_descends_from(1,0));
     assert!(!map.entity_descends_from(0,1));
-    let resolve = |identity| map.entity_collision_state(identity);
-    assert!(retain_collision_snapshot(&closed, &templates, 2, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
+    let resolve = |identity| map.collision_entity(identity);
+    assert!(retain_collision_snapshot(&closed, &templates, 2, None, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
     let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities).unwrap();
     let child = map.entity_world_transform(1).unwrap();
     assert!(child.origin[2] > 120.0);
     assert_eq!(opened.records()[0].transform.origin, child.origin);
-    assert!(retain_collision_snapshot(&opened, &templates, 3, Some(&resolve), &transforms, &velocities).is_some());
+    assert!(retain_collision_snapshot(&opened, &templates, 3, None, Some(&resolve), &transforms, &velocities).is_some());
     map.input(2,1,b"DisableCollision",playsrc_entity::Variant::Void).unwrap();
-    let resolve=|identity|map.entity_collision_state(identity);
-    assert!(retain_collision_snapshot(&opened,&templates,4,Some(&resolve),&transforms,&velocities).is_none());
+    let resolve=|identity|map.collision_entity(identity);
+    assert!(retain_collision_snapshot(&opened,&templates,4,None,Some(&resolve),&transforms,&velocities).is_none());
     let disabled=compile_collision_snapshot(Some(&opened),&world,&templates,4,None,Some(&resolve),&transforms,&velocities).unwrap();
     assert!(!disabled.records()[0].enabled,"checkpoint sign collision inputs reach collision, not just rendering");
     map.input(3,1,b"EnableCollision",playsrc_entity::Variant::Void).unwrap();
-    let resolve=|identity|map.entity_collision_state(identity);
+    let resolve=|identity|map.collision_entity(identity);
     let enabled=compile_collision_snapshot(Some(&disabled),&world,&templates,5,None,Some(&resolve),&transforms,&velocities).unwrap();
     assert!(enabled.records()[0].enabled);
     let removed = |_| None;
-    assert!(retain_collision_snapshot(&opened, &templates, 4, Some(&removed), &transforms, &velocities).is_none());
+    assert!(retain_collision_snapshot(&opened, &templates, 4, None, Some(&removed), &transforms, &velocities).is_none());
     let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities).unwrap();
     assert!(!removed.records()[0].enabled);
 }
@@ -10458,12 +10600,22 @@ fn encode_material_states(
             false,
         )?;
     }
+    let legacy=legacy_materials::compile(graph,bundle,decoders,profile)?;
+    for asset in &legacy.materials {
+        // CEngineSprite creates separate render-mode materials from one VMT.
+        // Their explicit compiled states are distinct from ordinary path aliases.
+        if let Some(existing)=targets.get(&asset.identity) {
+            if existing!=&(asset.source.clone(),false) {return Err(());}
+        } else {targets.insert(asset.identity.clone(),(asset.source.clone(),false));}
+    }
     let start = out.len();
     out.extend_from_slice(b"PMST");
     out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
     for (identity, (source, model)) in targets {
-        if let Some(particle) = particle_materials.get(&identity) {
+        if let Some(asset)=legacy.materials.iter().find(|asset|asset.identity==identity) {
+            encode_resolved_material_state(out,&identity,&asset.state,Some(decoders.metadata(&asset.texture)?))?;
+        } else if let Some(particle) = particle_materials.get(&identity) {
             encode_resolved_material_state(
                 out,
                 &identity,
@@ -10537,6 +10689,7 @@ struct EncodedAuthoredTexture {
 
 #[derive(Clone)]
 struct ReferencedTexturePlane {
+    decoded_tail:Option<Vec<u8>>,
     identity: playsrc_material::TextureSubresourceIdentity,
     width: u32,
     height: u32,
@@ -10785,7 +10938,7 @@ fn model_authored_texture(
         );
     if direct || two_dimensional && converted_or_compressed {
         let manifest = material_texture_manifest(metadata);
-        let planes = metadata
+        let mut planes:Vec<_> = metadata
             .subresources
             .iter()
             .filter_map(|subresource| match subresource.identity {
@@ -10796,6 +10949,7 @@ fn model_authored_texture(
                     face,
                     slice,
                 } => Some(ReferencedTexturePlane {
+                    decoded_tail:None,
                     identity: playsrc_material::TextureSubresourceIdentity {
                         mip,
                         frame,
@@ -10816,6 +10970,14 @@ fn model_authored_texture(
                 }),
             })
             .collect();
+        if matches!(metadata.high_format,playsrc_vtf::ImageFormat::Dxt1|playsrc_vtf::ImageFormat::Dxt1OneBitAlpha|playsrc_vtf::ImageFormat::Dxt3|playsrc_vtf::ImageFormat::Dxt5){
+            for plane in &mut planes{
+                if plane.width%4==0&&plane.height%4==0{continue;}
+                let decoded=decoder.decode(vtf_subresource(plane.identity)).map_err(|_|())?;
+                if decoded.scalar_encoding!=playsrc_vtf::ScalarEncoding::U8||decoded.channel_layout!=playsrc_vtf::ChannelLayout::Rgba{return Err(());}
+                plane.decoded_tail=Some(decoded.samples);
+            }
+        }
         return Ok(ModelAuthoredTexture::Referenced(
             ReferencedAuthoredTexture {
                 source_sha256: *resource_hashes.get(path).ok_or(())?,
@@ -11342,7 +11504,7 @@ fn encode_model_authored_texture(
                 out.extend_from_slice(&0_u16.to_le_bytes());
                 out.extend_from_slice(&plane.width.to_le_bytes());
                 out.extend_from_slice(&plane.height.to_le_bytes());
-                out.extend_from_slice(&[1, 0, 0, 0]);
+                out.extend_from_slice(&[if plane.decoded_tail.is_some(){2}else{1}, 0, 0, 0]);
                 out.extend_from_slice(&texture.format.to_le_bytes());
                 out.extend_from_slice(
                     &u32::try_from(plane.range.start)
@@ -11354,6 +11516,7 @@ fn encode_model_authored_texture(
                         .map_err(|_| ())?
                         .to_le_bytes(),
                 );
+                if let Some(decoded)=&plane.decoded_tail{pbytes(out,decoded)?;}
             }
         }
     }
@@ -11919,7 +12082,7 @@ fn cached_presentation_models(
 ) -> Result<Vec<(String, playsrc_studio_model::PresentationProfile, [u8; 32])>, ()> {
     if bytes.len() < 24
         || &bytes[..4] != b"PTF2"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 14
+        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| ())?) != 15
         || static_prop_artifact::decode_section(static_prop_artifact::section_from_presentation(
             bytes,
         )?)
@@ -12274,6 +12437,9 @@ fn encoded_model_authored_texture_length(
             length = length
                 .checked_add(texture.planes.len().checked_mul(32).ok_or(())?)
                 .ok_or(())?;
+            for decoded in texture.planes.iter().filter_map(|plane|plane.decoded_tail.as_ref()){
+                length=length.checked_add(4).and_then(|value|value.checked_add(decoded.len())).ok_or(())?;
+            }
         }
     }
     Ok(length)
@@ -12604,7 +12770,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     let mut out = Vec::new();
     out.try_reserve_exact(capacity).map_err(|_| ())?;
     out.extend_from_slice(b"PTF2");
-    out.extend_from_slice(&14u32.to_le_bytes());
+    out.extend_from_slice(&15u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(models.len()).map_err(|_| ())?.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(directional.len())
@@ -12832,6 +12998,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         &models,
     )?;
     encode_model_materials(&mut out, &prepared_model_materials)?;
+    legacy_visuals::encode_materials(&mut out, graph, bundle, decoders, resource_hashes, profile)?;
     section_ends[6] = out.len();
     for model in &canonical.brush_models {
         out.extend_from_slice(&u32::try_from(model.index).map_err(|_| ())?.to_le_bytes());
@@ -15778,6 +15945,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compressed_sub_block_mips_retain_native_decoding_and_exact_encoded_size(){
+        let mut source=vec![0_u8;64+8+8+8+16+32];
+        source[..4].copy_from_slice(b"VTF\0");source[4..8].copy_from_slice(&7_u32.to_le_bytes());source[8..12].copy_from_slice(&1_u32.to_le_bytes());source[12..16].copy_from_slice(&64_u32.to_le_bytes());
+        source[16..18].copy_from_slice(&16_u16.to_le_bytes());source[18..20].copy_from_slice(&4_u16.to_le_bytes());source[24..26].copy_from_slice(&1_u16.to_le_bytes());source[52..56].copy_from_slice(&13_i32.to_le_bytes());source[56]=5;source[57..61].copy_from_slice(&(-1_i32).to_le_bytes());
+        for block in source[64..].chunks_exact_mut(8){block[..2].copy_from_slice(&0xf800_u16.to_le_bytes());}
+        let path="materials/narrow.vtf".to_owned();let bundle=BTreeMap::from([(path.clone(),source.as_slice())]);let hashes=BTreeMap::from([(path.clone(),[7_u8;32])]);
+        let texture=model_authored_texture(&path,&TextureDecoders::new(&bundle),&hashes,false).unwrap();
+        let ModelAuthoredTexture::Referenced(referenced)=&texture else{panic!("aligned levels should remain compressed")};
+        assert_eq!(referenced.planes.iter().filter(|plane|plane.decoded_tail.is_some()).count(),4);
+        for plane in &referenced.planes{if let Some(decoded)=&plane.decoded_tail{assert_eq!(decoded.len(),plane.width as usize*plane.height as usize*4);assert!(decoded.chunks_exact(4).all(|pixel|pixel==[255,0,0,255]));}}
+        let mut bytes=Vec::new();encode_model_authored_texture(&mut bytes,&path,&texture).unwrap();assert_eq!(bytes.len(),encoded_model_authored_texture_length(&path,&texture).unwrap());
+    }
+
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PPTX");
@@ -15994,7 +16175,7 @@ mod tests {
     #[test]
     fn cached_model_headers_consume_complete_sequence_records() {
         let mut bytes = b"PTF2".to_vec();
-        bytes.extend_from_slice(&14_u32.to_le_bytes());
+        bytes.extend_from_slice(&15_u32.to_le_bytes());
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         pbytes(&mut bytes, b"models/test.mdl").unwrap();
@@ -16192,6 +16373,7 @@ mod tests {
         let mut guard = slots().lock().unwrap();
         guard.clear();
         guard.push(Slot {
+            legacy_visuals: legacy_visuals::Runtime::default(),
             generation: 1,
             payload: Some(vec![1, 2]),
             payload_bytes: 2,
@@ -16294,6 +16476,7 @@ mod tests {
         assert_eq!(playsrc_dispose(old), 1);
         let mut guard = slots().lock().unwrap();
         guard[0] = Slot {
+            legacy_visuals: legacy_visuals::Runtime::default(),
             generation: 2,
             payload: Some(vec![4]),
             payload_bytes: 1,

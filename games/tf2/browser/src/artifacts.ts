@@ -85,6 +85,7 @@ export type StaticMaterialState = Readonly<{
   }>
 }>
 export type ParticleTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string; materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null; additiveSprite: import("@playsrc/rendering").AdditiveSpriteInput | null }>
+export type LegacyVisualTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string;program:import("@playsrc/rendering").LegacyVisualProgram;normal:AuthoredTextureArtifact|null }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
   unavailable: ReadonlySet<string>
@@ -164,6 +165,7 @@ export type ModelMaterialArtifact = Readonly<{
     | Readonly<{ kind: "modulate" }>
 }>
 export type AuthoredTexturePlane = Readonly<{
+  decodedRgba?:Uint8Array
   mip: number
   frame: number
   face: number
@@ -417,6 +419,7 @@ export type PresentationArtifacts = Readonly<{
   particleSystems: readonly string[]
   materialStates: ReadonlyMap<string, StaticMaterialState>
   particleTextures: readonly ParticleTextureArtifact[]
+  legacyVisualTextures: readonly LegacyVisualTextureArtifact[]
   audio: AudioArtifact
   modelOccurrences: readonly ModelOccurrenceMatrix[]
   modelMaterials: ReadonlyMap<string, ModelMaterialArtifact>
@@ -1271,12 +1274,12 @@ function parseModelAuthoredTextureRecord(
     const planeWidth = r.u32(), planeHeight = r.u32(), storage = r.u8()
     if (r.u8() || r.u8() || r.u8()) throw new ArtifactError("model authored texture storage reserved field")
     const format = r.i32(), target = expected[index]!
-    let rgba: Uint8Array
+    let rgba: Uint8Array,decodedRgba:Uint8Array|undefined
     if (storage === 0 && format === -1) {
       rgba = r.blob(256 * 1024 * 1024)
       const componentBytes = scalarCode === 0 ? 1 : 2
       if (rgba.length !== planeWidth * planeHeight * 4 * componentBytes) throw new ArtifactError("model authored decoded plane")
-    } else if (storage === 1 && [0, 1, 2, 3, 11, 12, 13, 14, 15, 16, 20, 24].includes(format) && source) {
+    } else if ((storage === 1||storage===2) && [0, 1, 2, 3, 11, 12, 13, 14, 15, 16, 20, 24].includes(format) && source) {
       const offset = r.u32(), length = r.u32(), expectedLength = [2, 3].includes(format)
         ? planeWidth * planeHeight * 3
         : [0, 1, 11, 12, 16].includes(format)
@@ -1288,10 +1291,15 @@ function parseModelAuthoredTextureRecord(
         || (format === 24) !== (scalarCode === 1)) throw new ArtifactError("model authored source plane")
       sourceFormat = format
       rgba = source.subarray(offset, offset + length)
+      if(storage===2){
+        if(![13,14,15,20].includes(format)||planeWidth%4===0&&planeHeight%4===0)throw new ArtifactError("model authored decoded block tail")
+        decodedRgba=r.blob(256*1024*1024)
+        if(decodedRgba.length!==planeWidth*planeHeight*4)throw new ArtifactError("model authored decoded block tail size")
+      }
     } else throw new ArtifactError("model authored texture storage")
     if (mip !== target[0] || frame !== target[1] || face !== target[2] || slice !== target[3]
       || planeWidth !== Math.max(1, width >> mip) || planeHeight !== Math.max(1, height >> mip)) throw new ArtifactError("model authored texture plane")
-    planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba }))
+    planes.push(Object.freeze({ mip, frame, face, slice, width: planeWidth, height: planeHeight, rgba,decodedRgba }))
   }
   const texture = Object.freeze({
     logicalPath, sourceSha256, width, height, depth, mipCount, frameCount, faces,
@@ -1489,7 +1497,7 @@ function parseModelHeaders(r: Reader, modelCount: number): ReadonlyMap<string, M
 
 export async function parsePresentationArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): Promise<PresentationArtifacts> {
   const r = new Reader(bytes)
-  if (r.decode(r.take(4)) !== "PTF2" || r.u32() !== 14) throw new ArtifactError("artifact identity")
+  if (r.decode(r.take(4)) !== "PTF2" || r.u32() !== 15) throw new ArtifactError("artifact identity")
   const modelCount = r.u32(), directionalCount = r.u32(), particleMaterialCount = r.u32(), brushModelCount = r.u32()
   if (modelCount > 4096 || directionalCount > 4096 || particleMaterialCount > 65536 || brushModelCount < 1 || brushModelCount > 4096) throw new ArtifactError("artifact count")
   const models = parseModelHeaders(r, modelCount)
@@ -1549,6 +1557,18 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   const modelOccurrences = parseOccurrenceMatrices(r)
   const modelMaterials = parseModelMaterials(r)
   const authoredTextures = parseAuthoredTextures(r, resources, sharedTextures)
+  if (r.decode(r.take(4)) !== "PLVM" || r.u32() !== 3) throw new ArtifactError("legacy visual material identity")
+  const legacyCount = r.u32()
+  if (legacyCount > 4096) throw new ArtifactError("legacy visual material count")
+  const legacyVisualTextures = Object.freeze(Array.from({ length: legacyCount }, () => {
+    const material = r.text()
+    if (!materialStates.has(material.toLowerCase())) throw new ArtifactError("legacy visual material state")
+    const texture=parseModelAuthoredTextureRecord(r, resources, sharedTextures),flags=r.u32()
+    if(flags>127)throw new ArtifactError("legacy visual program flags")
+    const modulation=Object.freeze([r.f32(),r.f32(),r.f32(),r.f32()]) as readonly[number,number,number,number]
+    const cable=(flags&64)!==0,normal=cable?parseModelAuthoredTextureRecord(r,resources,sharedTextures):null
+    return Object.freeze({material,...texture,normal,program:Object.freeze({srgb:(flags&1)!==0,vertexRgb:(flags&2)!==0,vertexAlpha:(flags&4)!==0,vertexGamma:(flags&8)!==0,gammaExposure:(flags&16)!==0,worldRenderable:(flags&32)!==0,modulation,cable})})
+  }))
   const brushModels:BrushModelArtifact[]=[];let previousEnd=0;for(let expected=0;expected<brushModelCount;expected++){const index=r.u32(),minimum=tuple3(r),maximum=tuple3(r),origin=tuple3(r),headNode=r.i32(),start=r.u32(),end=r.u32(),vertexCount=r.u32(),triangleCount=r.u32(),mc=r.u32(),ec=r.u32();if(mc>65536||ec>65536)throw new ArtifactError("brush counts");const materials=Object.freeze(Array.from({length:mc},()=>r.u32())),entities=Object.freeze(Array.from({length:ec},()=>r.u32()));if(index!==expected||start!==previousEnd||end<start)throw new ArtifactError("brush descriptor");previousEnd=end;brushModels.push(Object.freeze({index,bounds:Object.freeze([minimum,maximum]) as BrushModelArtifact["bounds"],origin,headNode,surfaceRange:Object.freeze([start,end]) as readonly[number,number],vertexCount,triangleCount,materials,entities}))}
   const staticProps = parseStaticProps(r, modelCount,[...models.keys()],resources)
   if (staticProps.count !== 0 && await digest(resources.get("derived/static-prop-lighting.pvha")!) !== staticProps.aggregateSha256) throw new ArtifactError("static prop VHV aggregate hash")
@@ -1567,6 +1587,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     materialStates,
     particleTextures,
     particleSystems: Object.freeze(particleSystems),
+    legacyVisualTextures,
     audio,
     modelOccurrences,
     modelMaterials,

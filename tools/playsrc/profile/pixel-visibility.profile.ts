@@ -38,8 +38,9 @@ test("partial pixel visibility counts real covered MSAA samples", async ({ page 
       const pass = encoder.beginRenderPass({ colorAttachments: [{ ...attachment, loadOp: "clear" }], depthStencilAttachment: { view: depth.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } })
       pass.setPipeline(pipeline); pass.draw(3); pass.end()
       const vertices = new Float32Array([0.1, 0.5, 0.9].flatMap(z => [0,0,z,1, -.5,.5,z,1, .5,.5,z,1, .5,-.5,z,1, -.5,-.5,z,1]))
-      const read = counter.issue(encoder, depth, vertices, format, attachment)!
-      if (counter.issue(encoder, depth, vertices, format, attachment) !== null) throw new Error("Pending query overwritten")
+      const matrices=new Float32Array(32);for(let matrix=0;matrix<2;matrix++)for(let axis=0;axis<4;axis++)matrices[matrix*16+axis*5]=1
+      const read = counter.issue(encoder, depth, vertices,matrices,format,attachment)!
+      if (counter.issue(encoder, depth, vertices,matrices,format,attachment) !== null) throw new Error("Pending query overwritten")
       device.queue.submit([encoder.finish()])
       const counts = [...await read()]
       results.push({ samples, counts })

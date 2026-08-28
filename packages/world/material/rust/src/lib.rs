@@ -14,6 +14,7 @@ pub use refract::*;
 pub use surface_properties::*;
 pub use water::*;
 pub use world::*;
+pub mod legacy_sprite;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shader {
     LightmappedGeneric,
@@ -24,6 +25,7 @@ pub enum Shader {
     Water,
     Refract,
     Sprite,
+    Cable,
     DecalModulate,
     Modulate,
     SkyLdr,
@@ -493,6 +495,7 @@ pub fn resolve_for_environment(
                 sprite_card,
             );
             if shader == Shader::Modulate { request.color_read = TextureColorRead::Linear; }
+            if shader == Shader::Cable&&role==TextureRole::Base{request.color_read=TextureColorRead::Srgb;}
             if role == TextureRole::Environment
                 && document.root.key.bytes.eq_ignore_ascii_case(b"EyeRefract")
             {
@@ -500,6 +503,9 @@ pub fn resolve_for_environment(
             }
             textures.push(request);
         }
+    }
+    if shader==Shader::Cable&&!textures.iter().any(|request|request.role==TextureRole::Bump){
+        textures.push(texture(b"$bumpmap",TextureRole::Bump,b"cable/cablenormalmap")?);
     }
     let selected_textures = selected_textures(shader, environment, &textures)?;
     let active_textures = textures.iter().map(|texture| texture.role).collect();
@@ -656,11 +662,12 @@ pub struct AdditiveSpriteState {
 pub fn additive_sprite_state(material: &Material) -> Result<Option<AdditiveSpriteState>, Error> {
     if material.shader != Shader::Sprite || material.particle.is_some()
         || integer_or(&material.first_parameters, b"$spriterendermode", 0)? != 5 { return Ok(None); }
+    let sprite=legacy_sprite::SpriteMaterial::compile(material)?;
     Ok(Some(AdditiveSpriteState {
-        srgb: !boolean_or(&material.first_parameters, b"$nosrgb", true)?,
-        vertex_color: !boolean_or(&material.first_parameters, b"$ignorevertexcolors", true)?,
-        color: color_or(&material.first_parameters, b"$color", [1.0; 3])?,
-        hdr_color_scale: float_or(&material.first_parameters, b"$hdrcolorscale", 1.0)?,
+        srgb: sprite.srgb,
+        vertex_color: !sprite.ignore_vertex_colors,
+        color: sprite.color,
+        hdr_color_scale: sprite.hdr_color_scale,
     }))
 }
 
@@ -690,6 +697,8 @@ fn static_state_with_alpha(
     let additive_sprite = additive_sprite_state(material)?;
     let blend = if additive_sprite.is_some() {
         BlendState { enabled: true, equation: BlendEquation::Add, source: BlendFactor::SourceAlpha, destination: BlendFactor::One }
+    } else if material.shader==Shader::Cable {
+        BlendState{enabled:features.translucent,equation:BlendEquation::Add,source:if features.translucent{BlendFactor::SourceAlpha}else{BlendFactor::One},destination:if features.translucent{BlendFactor::OneMinusSourceAlpha}else{BlendFactor::Zero}}
     } else if material.shader == Shader::Modulate {
         BlendState {
             enabled: true,
@@ -772,6 +781,7 @@ fn static_state_with_alpha(
         Shader::UnlitGeneric
         | Shader::UnlitTwoTexture
         | Shader::Sprite
+        | Shader::Cable
         | Shader::Refract
         | Shader::DecalModulate => LightingModel::Unlit,
         Shader::Modulate => LightingModel::Unlit,
@@ -804,7 +814,7 @@ fn static_state_with_alpha(
         alpha_test,
         alpha_test_function,
         alpha_test_reference,
-        cull: if features.no_cull || material.particle.is_some() {
+        cull: if features.no_cull || material.particle.is_some() || additive_sprite.is_some() {
             CullState::None
         } else {
             CullState::Back
@@ -1126,6 +1136,9 @@ fn selected_textures(
             return Err(error(ErrorCode::MissingProfileTexture, None));
         }
         return Ok(vec![TextureRole::Base, TextureRole::Base2]);
+    }
+    if shader==Shader::Cable{
+        return (has(TextureRole::Base)&&has(TextureRole::Bump)).then_some(vec![TextureRole::Base,TextureRole::Bump]).ok_or_else(||error(ErrorCode::MissingProfileTexture,None));
     }
     if shader == Shader::Refract {
         return has(TextureRole::Normal)
@@ -1568,6 +1581,8 @@ fn shader(v: &[u8]) -> Shader {
         Shader::Refract
     } else if v.eq_ignore_ascii_case(b"Sprite") || v.eq_ignore_ascii_case(b"SpriteCard") {
         Shader::Sprite
+    } else if v.eq_ignore_ascii_case(b"Cable") || v.eq_ignore_ascii_case(b"Cable_DX9") {
+        Shader::Cable
     } else if v.eq_ignore_ascii_case(b"DecalModulate") {
         Shader::DecalModulate
     } else if v.eq_ignore_ascii_case(b"Modulate") || v.eq_ignore_ascii_case(b"Modulate_DX9") {
@@ -1667,6 +1682,18 @@ mod tests {
     use super::*;
     use playsrc_keyvalues::ConditionEnvironment;
     use playsrc_vmt::{Composition, Limits, compose};
+    #[test]
+    fn cable_selects_srgb_base_and_linear_authored_or_default_normal_texture(){
+        let Composition::Complete(document)=compose(br#"Cable { "$basetexture" "cable/black" "$vertexcolor" "1" "$nocull" "1" }"#,"materials/cable/cable.vmt",&[],&ConditionEnvironment::default(),Limits::default()).unwrap()else{panic!()};
+        let material=resolve_for_environment(&document,SelectionEnvironment::default()).unwrap();
+        assert_eq!(material.shader,Shader::Cable);assert_eq!(material.selected_textures,[TextureRole::Base,TextureRole::Bump]);
+        assert_eq!(material.textures[0].color_read,TextureColorRead::Srgb);
+        let normal=material.textures.iter().find(|texture|texture.role==TextureRole::Bump).unwrap();
+        assert_eq!(normal.logical_path.as_deref(),Some("materials/cable/cablenormalmap.vtf"));assert_eq!(normal.color_read,TextureColorRead::Linear);
+        let Composition::Complete(document)=compose(br#"Cable { "$basetexture" "cable/dx8cable" "$Translucent" "1" }"#,"materials/cable/cable_back.vmt",&[],&ConditionEnvironment::default(),Limits::default()).unwrap()else{panic!()};
+        let material=resolve_for_environment(&document,SelectionEnvironment::default()).unwrap();
+        let state=static_state(&material,TextureAlphaFacts{base:false}).unwrap();assert!(state.blend.enabled);assert!(!state.depth_write);
+    }
     #[test]
     fn configured_legacy_unlit_sky_keeps_its_authored_transform() {
         let Composition::Complete(document) = compose(
@@ -1894,13 +1921,14 @@ mod tests {
 
     #[test]
     fn sprite_transadd_uses_shader_defaults_not_modulate_or_vertex_color_flags() {
-        let material = material(br#"Sprite { "$basetexture" "Effects/beam_generic_3" "$spriterendermode" "5" "$mod2x" "1" "$nocull" "1" }"#, Default::default()).unwrap();
+        let material = material(br#"Sprite { "$basetexture" "Effects/beam_generic_3" "$spriterendermode" "5" "$mod2x" "1" }"#, Default::default()).unwrap();
         let constants = additive_sprite_state(&material).unwrap().unwrap();
         assert!(!constants.srgb);
-        assert!(!constants.vertex_color);
+        assert!(constants.vertex_color);
         assert_eq!(constants.color, [1.0; 3]);
         assert_eq!(constants.hdr_color_scale, 1.0);
         let state = static_state(&material, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.cull,CullState::None);
         assert_eq!(state.blend.source, BlendFactor::SourceAlpha);
         assert_eq!(state.blend.destination, BlendFactor::One);
         assert!(!state.depth_write);

@@ -92,7 +92,7 @@
       "material": { "byteLength": 128, "sha256": "6a45f1211c845f31142ba982d309fcd83998b28b009a9bf31a22632125edeb50" },
       "texture": { "byteLength": 349784, "sha256": "93fabba8582f98ddb430c02aa2271c71ef341e99ed73eec33aa0344cc691dbc5" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_badlands.bsp",
@@ -110,7 +110,7 @@
       "material": { "byteLength": 127, "sha256": "0cd68c8b8eae2b352744ecc878f75a2a337e89e6b5010b5a0a1e0a0aa59fe157" },
       "texture": { "byteLength": 349784, "sha256": "06c27814d6fcf62ada04195f1917ddfa01c8b09586d9f0afacc91a76e55d278d" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_granary.bsp",
@@ -128,7 +128,7 @@
       "material": { "byteLength": 124, "sha256": "82c576a9b577fc9fce810403c20410afbc1c038c6b3ed0725efd816c29754f4d" },
       "texture": { "byteLength": 349784, "sha256": "4685e3f54cf5591929f11ba1a37a57725667a3d012eadbe1e7650d12c6e24823" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_well.bsp",
@@ -146,7 +146,7 @@
       "material": { "byteLength": 134, "sha256": "34c6ccd4a2c177e24b3e3f82aff8184d763b1ca3d0b5a3b58a49ad41dd6ecde3" },
       "texture": { "byteLength": 349784, "sha256": "705c6434da851a39ae4f73e765aa007ba79f708ed62c1b8c261e91be49936e48" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_freight_final1.bsp",
@@ -164,7 +164,7 @@
       "material": { "byteLength": 134, "sha256": "0b52ccb300a921eefa1608fac294233a576eaa64241508423a86ff1d2f6d54dc" },
       "texture": { "byteLength": 349784, "sha256": "0bbd3dbdcf7b4ba8d181918ee86209c8e43b0118bd3320365a31ebe6f5d0ffc2" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "content",
     "logicalPath": "maps/cp_gullywash_final1.bsp",
@@ -182,7 +182,7 @@
       "material": { "byteLength": 133, "sha256": "b8da3bfe98c6ead74f4ea0ad000de3c551e17e56dd5fe20287f8a2f31a35fb1b" },
       "texture": { "byteLength": 349784, "sha256": "f0f17e8d8fe521f4de64343176beb5ee98a374cc51a8d4144bf0b96a3304b753" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "control-point",
     "navigation": "local",
     "logicalPath": "maps/cp_process_final.bsp",
@@ -200,7 +200,7 @@
       "material": { "byteLength": 129, "sha256": "2f8dddeef0cff874e22ed4b58909fc5bf44b67fa0da9d55f1cd4956d22751ba4" },
       "texture": { "byteLength": 349784, "sha256": "af246c72096fc065b5b5a2c0cd617638f31e783067104315ae7ffde691b1e70a" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_viaduct.bsp",
@@ -218,7 +218,7 @@
       "material": { "byteLength": 129, "sha256": "9dedf7d5b5de1ecd8d53910901ae825f5e57390ed15902e4716fffceb2903469" },
       "texture": { "byteLength": 349784, "sha256": "4ea0f6f0bd78decad44faa80d3a8faef18786c356a017add6d6eaad4af4d5383" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_sawmill.bsp",
@@ -236,7 +236,7 @@
       "material": { "byteLength": 135, "sha256": "f590775acccb6115d8835fed2f1561079cb9791b00bbd3ff8849619271d10cfc" },
       "texture": { "byteLength": 349784, "sha256": "d46cae5b1ee78ad235c71415e6bab2cc1fbd546fbe06ffd2d43a85f86fe1ff1c" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "king-of-the-hill",
     "navigation": "local",
     "logicalPath": "maps/koth_harvest_final.bsp",
@@ -254,7 +254,7 @@
       "material": { "byteLength": 136, "sha256": "8ad219c413a80b63d25e4dae202d4b41fd5a0929ad1188c9dd2d96b37783d7b6" },
       "texture": { "byteLength": 349784, "sha256": "9d7116cf245873ed7a77c966f81b82912d1fcaa53ce62b47445631073f94bf7c" }
     },
-    "admission": "integration",
+    "admission": "playable",
     "mode": "king-of-the-hill",
     "navigation": "content",
     "logicalPath": "maps/koth_lakeside_final.bsp",

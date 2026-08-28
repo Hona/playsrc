@@ -26,3 +26,15 @@ test("an already installed draw owner remains the draw authority", () => {
   draw!()
   expect([draws, serviced]).toEqual([1, 1])
 })
+
+test("pipeline compilation uses the same service without double servicing a delegated draw", () => {
+  let draws = 0, serviced = 0
+  let installed: Function | null = (...args: unknown[]) => backend.renderObject(...args)
+  const backend = { getRenderObjectFunction: () => installed, setRenderObjectFunction: (value: Function | null) => { installed = value },
+    renderObject(..._args: unknown[]) { draws++ } }
+  installRenderService(backend as any, () => { serviced++ })
+  // Three compileAsync selects this entry directly.
+  backend.renderObject()
+  installed!()
+  expect([draws, serviced]).toEqual([2, 2])
+})

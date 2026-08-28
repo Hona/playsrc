@@ -10,6 +10,7 @@ export const CLOUDFLARE_ASSET_BUCKET = "playsrc-production-assets"
 export const CLOUDFLARE_ASSET_ORIGIN = "https://assets.playsrc.online"
 export const WRANGLER_CONFIG = path.join(repositoryRoot, "apps", "web", "tf2", "wrangler.jsonc")
 const MAX_PUBLICATION_OBJECT_BYTES = 64 * 1024 * 1024
+const MAX_PUBLICATION_SOURCE_BYTES = 128 * 1024 * 1024
 const WRANGLER_TIMEOUT_MILLISECONDS = 30 * 60 * 1_000
 
 export class CloudflareError extends Error {
@@ -128,7 +129,8 @@ export async function publishImmutableObject(
   bytes: Uint8Array,
   adapter: RemoteObjectAdapter,
 ): Promise<"Uploaded" | "AlreadyPresent"> {
-  if (bytes.byteLength > MAX_PUBLICATION_OBJECT_BYTES) throw new CloudflareError(`object ${expected.sha256} exceeds the 67108864-byte publication bound`)
+  const maximum=publicationObjectByteLimit(expected.kind)
+  if (bytes.byteLength > maximum) throw new CloudflareError(`object ${expected.sha256} exceeds the ${maximum}-byte publication bound`)
   verifyBytes(bytes, expected, "local")
   const key = `objects/sha256/${expected.sha256}`
   const existing = await adapter.read(key)
@@ -141,6 +143,12 @@ export async function publishImmutableObject(
   if (readback === "Missing") throw new CloudflareError(`remote object ${expected.sha256} is absent after ${created}`)
   verifyBytes(readback, expected, "remote")
   return created === "Created" ? "Uploaded" : "AlreadyPresent"
+}
+
+/** Source BSPs are indivisible authenticated inputs; resource chunks and derived
+ * outputs keep their smaller publication guard. This does not authorize upload. */
+export function publicationObjectByteLimit(kind:ObjectDescriptor["kind"]):number {
+  return kind==="source-object"?MAX_PUBLICATION_SOURCE_BYTES:MAX_PUBLICATION_OBJECT_BYTES
 }
 
 export function sortPublicationDescriptors(descriptors: readonly ObjectDescriptor[]): readonly ObjectDescriptor[] {

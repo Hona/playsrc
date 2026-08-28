@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { CloudflareError, createR2Adapter, publishImmutableObject, sortPublicationDescriptors, type RemoteObjectAdapter } from "../src/cloudflare"
+import { CloudflareError, createR2Adapter, publishImmutableObject, publicationObjectByteLimit, sortPublicationDescriptors, type RemoteObjectAdapter } from "../src/cloudflare"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 
 describe("Cloudflare publication output", () => {
@@ -118,5 +118,20 @@ describe("Cloudflare publication output", () => {
       expect(lines.at(-1)).toContain("complete 100.0% | verified 2.00/2.00 MiB | objects 2/2 | uploaded 1 | already present 1")
       expect(JSON.parse(stdout).totals).toEqual({ objects: 2, bytes: 2097152, uploaded: 1, alreadyPresent: 1 })
     }
+  })
+
+  test("large exact source objects do not relax the derived-object or root guards",async()=>{
+    expect(publicationObjectByteLimit("source-object")).toBe(128*1024*1024)
+    for(const kind of ["derived-object","source-root","derived-root","catalog"] as const)expect(publicationObjectByteLimit(kind)).toBe(64*1024*1024)
+    const bytes=new Uint8Array(64*1024*1024+1)
+    bytes[0]=86;bytes[bytes.length-1]=80
+    const source:ObjectDescriptor={kind:"source-object",mediaType:"application/octet-stream",byteLength:String(bytes.length),sha256:new Bun.CryptoHasher("sha256").update(bytes).digest("hex")}
+    const local=adapter("Missing")
+    expect(await publishImmutableObject(source,bytes,local.value)).toBe("Uploaded")
+    expect(local.calls).toEqual(["read","create","read"])
+    const refused=adapter("Missing")
+    await expect(publishImmutableObject({...source,kind:"derived-object"},bytes,refused.value)).rejects.toThrow("67108864-byte")
+    await expect(publishImmutableObject(source,new Uint8Array(128*1024*1024+1),refused.value)).rejects.toThrow("134217728-byte")
+    expect(refused.calls).toEqual([])
   })
 })

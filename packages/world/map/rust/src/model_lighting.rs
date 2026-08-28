@@ -48,6 +48,7 @@ impl ModelLightingWorld<'static> {
 }
 
 impl<'source> ModelLightingWorld<'source> {
+    pub fn borrowed_view(&self)->ModelLightingWorld<'_>{ModelLightingWorld{indexes:Cow::Borrowed(&self.indexes),samples:Cow::Borrowed(&self.samples),lights:Cow::Borrowed(&self.lights),cache:BTreeMap::new(),revision:0}}
     pub fn borrowed(lighting: &'source LightingData) -> Self {
         Self {
             indexes: Cow::Borrowed(&lighting.ambient_indexes),
@@ -68,6 +69,21 @@ impl<'source> ModelLightingWorld<'source> {
 
     pub fn world_lights(&self) -> &[WorldLight] {
         &self.lights
+    }
+
+    /// Normal-free point lighting for client ropes. Keep the same light-cache
+    /// selection owner used by models, then average its six directional faces.
+    pub fn point_lighting(&mut self,origin:[f32;3],visibility:&Visibility,collision:&Collision,snapshot:&Snapshot)->Result<[f32;3],()>{
+        let lighting=self.sample(origin,visibility,collision,snapshot)?;
+        let mut cube=lighting.ambient_cube;
+        for selected in lighting.local_lights.iter(){
+            let (_,direction,ratio)=source_world_light_ray(origin,&selected.light)?;
+            let angle=source_world_light_angle(&selected.light,direction)?;
+            add_world_light_to_cube(&mut cube,direction,selected.light.intensity,ratio*angle)?;
+        }
+        Ok(std::array::from_fn(|channel|{
+            let mut color=0.0;for face in cube{color+=face[channel];}(color/6.0).min(1.0)
+        }))
     }
 
     pub fn sample(

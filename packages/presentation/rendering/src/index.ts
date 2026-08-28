@@ -3,6 +3,9 @@ import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
 import { SourceParticleDepth } from "./particle-depth"
+import { CombatDecals,type CombatDecalInput } from "./combat-decals"
+import { ProjectedMarkMaterials } from "./projected-mark-materials"
+import { createWorldClipGroup, prepareWorldViewPipelines } from "./world-pipeline-preparation"
 export type { SpriteCardInput } from "./sprite-card"
 import * as TSL from "three/tsl"
 import {
@@ -26,7 +29,7 @@ import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
-import { sourceTextureLayout } from "./source-texture-layout"
+import { sourceTextureLayout,authoredMipUpload } from "./source-texture-layout"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, observeStaticPropUse, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
@@ -42,6 +45,8 @@ import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
+import { LegacyVisuals,legacyFog, type LegacyVisualFrame, type PixelVisibilityFeedback,type LegacyVisualProgram,type LegacyVisualFrameSet,type LegacyViewKind } from "./legacy-visuals"
+export type { LegacyVisualFrame, PixelVisibilityFeedback,LegacyVisualProgram,LegacyVisualFrameSet,LegacyViewKind } from "./legacy-visuals"
 import { withBoundedPipelineCompilation } from "./bounded-pipeline-compilation"
 import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buffer-names"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
@@ -55,7 +60,7 @@ import { ModelLightingGraphs, bindModelLighting, bindModelTexture, bindStaticPro
 import { modelMaterialGraph, swizzleModelTexture } from "./model-material-graphs"
 import { sourceFragmentColor } from "./source-fragment-color"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
-import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
+import { createStaticPropFadeVariant, selectStaticPropFadePass, type StaticPropFadeBinding, distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
 import { selectDiagnosticModelBase } from "./diagnostic-model"
 import { sourceModelPanelPresentation, withSourceModelPanelTargetViewport } from "./model-panel"
@@ -274,6 +279,9 @@ export {
   type SurfaceLightingKind,
 } from "./runtime-map"
 
+// Native requests can expand into player, carried-item and wearable poses. This
+// bounded rendered-variant cache is distinct from the 128-request wire bound.
+const MAX_PREPARED_MODEL_VARIANTS = 192
 const MAX_EFFECTS = 4_096
 const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
@@ -420,15 +428,8 @@ export type Frame = Readonly<{
   effects: readonly Effect[]
   shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
-  combatDecals?: readonly Readonly<{
-    identity: number
-    face: number
-    reference: string
-    positions: Float32Array
-    normals: Float32Array
-    uv: Float32Array
-    indices: Uint32Array
-  }>[]
+  legacyVisuals?:LegacyVisualFrameSet
+  combatDecals?: readonly CombatDecalInput[]
   maximumCombatDecals?: number
   models?: readonly ModelItem[]
   modelVisibility?: ReadonlyMap<number, boolean>
@@ -696,6 +697,7 @@ export type AuthoredTextureInput = Readonly<{
     width: number
     height: number
     rgba: Uint8Array
+    decodedRgba?:Uint8Array
   }>[]
 }>
 export type StaticPropInput=Readonly<{
@@ -712,6 +714,7 @@ export type MapLoadRequest = Readonly<{
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null; additiveSprite?: AdditiveSpriteInput | null }>)[]
+  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string;program:LegacyVisualProgram;normal:AuthoredTextureInput|null }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -890,6 +893,9 @@ export type ModelGeometryEvidence = Readonly<{
   }>[]
 }>
 
+export type MaterialDepthEvidence=Readonly<{id:number;name:string;identity?:string;depthTest:boolean;depthWrite:boolean;depthFunc:number;transparent:boolean;renderOrder:number}>
+export type ParticleBatchEvidence=Readonly<{key:string;visible:boolean;sky:boolean;count:number;positions:number[];material:string;depthTest:boolean;depthWrite:boolean;depthFunc:number}>
+
 export interface Renderer {
   takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[]
   captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]>
@@ -914,6 +920,8 @@ export interface Renderer {
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
   captureWorldModelEvidence(camera: Camera): ModelGeometryEvidence
+  captureParticleBatchEvidence(): ParticleBatchEvidence[]
+  captureMaterialDepthEvidence(): MaterialDepthEvidence[]
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
@@ -998,6 +1006,7 @@ type StaticPropResource = Readonly<{
   radius: number
   bounds: readonly [number, number, number, number, number, number]
   fadeUniform: ReturnType<typeof TSL.uniform>
+  fadeBindings: readonly StaticPropFadeBinding[]
   batches: Readonly<{ batch: StaticPropBatch; index: number }>[]
 }>
 
@@ -1149,6 +1158,7 @@ type SceneResources = {
   particleTextures: Map<string, THREE.Texture>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   particleDepth: SourceParticleDepth
+  legacyVisuals: readonly LegacyVisuals[] | null
   particlePipelineMeshes: THREE.Group
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
@@ -1177,8 +1187,7 @@ type SceneResources = {
   leafVisibility: RetainedLeafVisibility
   runtimeStaticPropInstances: readonly StaticPropResource[]
   projectedMarks: readonly ProjectedMarkResource[]
-  combatDecalTexture: THREE.Texture | null
-  combatDecalMeshes: Map<number, Readonly<{ face: number; mesh: THREE.Mesh }>>
+  combatDecals: CombatDecals
   waterMeshes: readonly WaterMeshResource[]
   waterMaterials: ReadonlyMap<string,WaterMaterialResource>
   refractMaterials: ReadonlyMap<string, RefractMaterialResource>
@@ -1305,7 +1314,7 @@ function modelOccurrenceMatrices(
   return matrices
 }
 
-function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"textureResidency"|"brushModelTemplates"|"waterMaterials"|"refractMaterials"|"worldMaterials"|"cubemapTextures"|"particleBatchMaterials"|"combatDecalMeshes">>): void {
+function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTemplates"|"modelOccurrenceInstances"|"disposed"> & Partial<Pick<SceneResources,"textureResidency"|"brushModelTemplates"|"waterMaterials"|"refractMaterials"|"worldMaterials"|"cubemapTextures"|"particleBatchMaterials">>): void {
   if (scene.disposed) return
   scene.disposed = true
   scene.group.clear()
@@ -1319,8 +1328,6 @@ function disposeScene(scene: Pick<SceneResources,"group"|"disposables"|"modelTem
   ;(scene.worldMaterials as Map<string, WorldMaterialResource> | undefined)?.clear()
   ;(scene.cubemapTextures as Map<number, THREE.CubeTexture> | undefined)?.clear()
   scene.particleBatchMaterials?.clear()
-  for(const decal of scene.combatDecalMeshes?.values()??[]){decal.mesh.geometry.dispose();(decal.mesh.material as THREE.Material).dispose()}
-  scene.combatDecalMeshes?.clear()
 }
 
 function textureFromRgba(
@@ -1354,12 +1361,8 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
   }
   const selected = planes.slice(input.sampling.noLod ? 0 : Math.min(Math.max(0, quality?.mipOffset ?? 0), planes.length - 1))
-  const data = (plane: AuthoredTextureInput["planes"][number]) =>
-    sourceTextureSamples(plane.rgba, input.sourceFormat, input.scalarEncoding)
   const base = selected[0]!
-  const layout = sourceTextureLayout(input.sourceFormat, input.scalarEncoding)
-  if (!layout) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
-  const mipmaps = selected.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  const {layout,mipmaps}=authoredMipUpload(input.sourceFormat,input.scalarEncoding,selected)
   const texture = layout.compressed === null
     ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, layout.type)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, layout.compressed, layout.type)
@@ -1580,8 +1583,8 @@ class RendererOwner implements Renderer {
   #timestampPending = false
   #scene = new THREE.Scene()
   readonly #viewFogUniforms = createSourceViewFogUniforms()
-  #waterClipping = new THREE.ClippingGroup()
-  #waterClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+  #waterClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 0), 0)
+  #waterClipping = createWorldClipGroup(this.#waterClipPlane)
   #world = new THREE.Group()
   #effects = new THREE.Group()
   #particles = new THREE.Group()
@@ -1598,7 +1601,7 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   readonly #retainedModelPanels = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(32, retained => this.#disposeDynamicInstance(retained.instance))
-  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(96, retained => this.#disposeDynamicInstance(retained.instance))
+  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(MAX_PREPARED_MODEL_VARIANTS, retained => this.#disposeDynamicInstance(retained.instance))
   #viewModelInstances = new Map<number, RetainedViewModel>()
   // Detached occurrences share a bounded, generation-owned residency budget.
   // Never substitute one actor's mutable materials or skeleton for another's.
@@ -1707,8 +1710,6 @@ class RendererOwner implements Renderer {
     this.#scene.matrixAutoUpdate = false
     ;(this.#scene as THREE.Scene & { fogNode?: unknown }).fogNode = sourceViewFogNode(this.#viewFogUniforms)
     this.#waterClipping.matrixAutoUpdate = false
-    this.#waterClipping.enabled = false
-    this.#waterClipping.clippingPlanes = [this.#waterClipPlane]
     this.#world.matrixAutoUpdate = false
     this.#scene.background = null
     this.#waterClipping.add(this.#world, this.#effects, this.#particles)
@@ -1787,6 +1788,7 @@ class RendererOwner implements Renderer {
   completeFrameProfile(): RendererFrameProfile | undefined {
     if (this.#framePresentation?.begun) this.#pass("frame-output", () => this.#framePresentation!.finish())
     this.#particleVisibility.flushReads()
+    for (const view of this.#active?.legacyVisuals ?? []) view.finishFrame()
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     this.#renderOwnerProbe?.complete()
@@ -1899,6 +1901,7 @@ class RendererOwner implements Renderer {
     const samples = [] as GeometryEvidence["samples"][number][]
     for (const y of [-0.8, -0.4, 0, 0.4, 0.8]) {
       for (const x of [-0.8, -0.4, 0, 0.4, 0.8]) {
+        this.#serviceAudio?.()
         raycaster.setFromCamera(new THREE.Vector2(x, y), this.#camera)
         const intersection = raycaster.intersectObjects(meshes, false)[0]
         if (!intersection || intersection.faceIndex === undefined) {
@@ -2557,7 +2560,8 @@ class RendererOwner implements Renderer {
     this.#requireReady()
     const assets = this.#active ?? this.#panelAssets
     if (!assets || this.#renderBusy || !this.#active && models.some((model) => model.pass !== "panel")) throw new RenderingError("InvalidState", "model pipeline preparation requires admitted model assets")
-    if (models.length + models.filter(model => model.unposedPanel).length > 96) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
+    const variantCount=models.length+models.filter(model=>model.unposedPanel).length
+    if (variantCount > MAX_PREPARED_MODEL_VARIANTS) throw new RenderingError("BoundExceeded", `model pipeline preparation exceeds the resident model bound: ${variantCount}/${MAX_PREPARED_MODEL_VARIANTS}`)
     const ordinal = this.#loadOrdinal
     const owner = assets, backend = this.#backend, deviceGeneration = this.#deviceGeneration
     const checkOwner = () => {
@@ -2569,7 +2573,7 @@ class RendererOwner implements Renderer {
     }
     const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] } }[] = []
     const restoreVisibility: (() => void)[] = []
-    const viewModels = new THREE.Group(), panels = new THREE.Group(), world = new THREE.Group()
+    const viewModels = new THREE.Group(), panels = new THREE.Group(), world = createWorldClipGroup(this.#waterClipPlane)
     viewModels.layers.set(1)
     const previousFog = this.#scene.fog as THREE.Fog | null
     const keys = new Set<string>()
@@ -2640,7 +2644,7 @@ class RendererOwner implements Renderer {
           checkOwner()
         }
         this.#setSceneFog(this.#fog(fog))
-        if (world.children.length) await backend.compileAsync(world, this.#camera, this.#scene)
+        if (world.children.length) await prepareWorldViewPipelines(backend,world,this.#camera,this.#scene,world,this.#waterPreparationTargets(),this.#waterPreparationFogs())
       })
       checkOwner()
       for (const { key, retained } of staged) {
@@ -2674,6 +2678,7 @@ class RendererOwner implements Renderer {
     this.#renderBusy = true
     try {
       await owner.particleDepth.prepare()
+      if ("legacyVisuals" in owner && owner.legacyVisuals) await Promise.all(owner.legacyVisuals.map(view => view.prepare()))
       this.#setCamera(camera)
       this.#setSceneFog(this.#fog(fog))
       const profile = browserFrameProfiler()
@@ -2682,8 +2687,12 @@ class RendererOwner implements Renderer {
       // The retained one-quad layouts use the exact authored material closure,
       // attributes and main-pass attachments. compileAsync submits no pixels.
       await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
-        if (owner.particlePipelineMeshes.children.length) await backend.compileAsync(owner.particlePipelineMeshes, this.#camera, this.#scene)
         await this.#particleVisibility.prepare()
+        const clipping=createWorldClipGroup(this.#waterClipPlane)
+        clipping.add(owner.particlePipelineMeshes)
+        try{if (owner.particlePipelineMeshes.children.length) await prepareWorldViewPipelines(backend,clipping,this.#camera,this.#scene,clipping,this.#waterPreparationTargets(),this.#waterPreparationFogs())}
+        finally{clipping.remove(owner.particlePipelineMeshes)}
+        if("legacyVisuals" in owner&&owner.legacyVisuals?.length)await owner.legacyVisuals[0]!.prepareMaterials(backend,this.#camera,this.#scene,this.#waterClipPlane,this.#waterPreparationTargets())
       })
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
@@ -2706,34 +2715,60 @@ class RendererOwner implements Renderer {
   requestParticleDepthEvidence(): void { this.#active?.particleDepth.requestEvidence() }
   takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[] { return this.#particleVisibility.takeSamples() }
   captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]> { return this.#particleVisibility.evidence() }
+  pixelVisibilityFeedback(view:LegacyViewKind=0):readonly PixelVisibilityFeedback[] {return this.#active?.legacyVisuals?.[view]?.feedback()??[]}
+  legacyVisualViewport(view:LegacyViewKind):Readonly<{width:number;height:number}>{
+    if(view===2||view===3){const target=view===2?this.#active?.reflectionTarget:this.#active?.refractionTarget;if(!target)throw new RenderingError("MissingInput","Legacy water view target is unavailable");return {width:target.width,height:target.height}}
+    const size=this.#backend.getDrawingBufferSize(new THREE.Vector2());return {width:size.x,height:size.y}
+  }
+  captureLegacyVisualEvidence() { return this.#active?.legacyVisuals?.map(view=>view.evidence()) ?? [] }
   readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
+
+  #waterPreparationTargets(scene=this.#active):THREE.RenderTarget[]{
+    return scene?[scene.reflectionTarget,scene.refractionTarget].filter((target):target is THREE.RenderTarget=>target!==null):[]
+  }
+
+  #waterPreparationFogs(scene=this.#active):(THREE.Fog|null)[]{
+    // Height-fog refraction uses the Source fragment uniforms and disables
+    // Three fog. Ordinary underwater views use the authored Water fog object.
+    return scene&&this.#waterPreparationTargets(scene).length?[null,...[...scene.waterMaterials.values()].map(water=>water.fog)]:[]
+  }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
     this.#checkAbort(signal, ordinal)
+    const waterTargets=this.#waterPreparationTargets(scene)
     const visibleLeaves = new Set(leaves)
     const eligibleProps = new Set(scene.staticPropInstances.filter(prop =>
-      prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
+      leaves === undefined || prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
     ))
     const eligibleGroups = new Set([...eligibleProps].map(prop => prop.object))
     const eligibleSources = new Set([...eligibleProps].map(prop => prop.source))
+    const fadeVariants=new THREE.Group()
+    for(const prop of eligibleProps){
+      for(const binding of prop.fadeBindings){
+        const mesh=new THREE.Mesh(binding.mesh.geometry,binding.faded)
+        bindStaticPropFade(mesh,prop.fadeUniform)
+        fadeVariants.add(mesh)
+      }
+    }
+    scene.group.add(fadeVariants)
     const batchSources = new Map(scene.staticPropBatches.map(({ batch }) => [batch.mesh, batch.sources] as const))
     const visibility = prepareReachablePipelineVisibility(
       scene.group,
       scene.waterMeshes.map(water => water.mesh),
-      [scene.projectedMarkGroup, ...(leaves ? [] : [scene.mainStaticProps, scene.skyStaticProps, scene.mainModelOccurrences])],
+      [],
       mesh => {
         const sources = batchSources.get(mesh)
         if (sources) return sources.some(source => eligibleSources.has(source))
         for (let parent: THREE.Object3D | null = mesh; parent; parent = parent.parent) {
           if (eligibleGroups.has(parent)) return true
-          if (parent === scene.mainStaticProps || parent === scene.skyStaticProps) return false
+           if (parent === scene.mainStaticProps || parent === scene.skyStaticProps) return false
         }
         return true
       },
     )
     const started = performance.now()
     try {
-      await this.#backend.compileAsync(this.#scene, this.#camera)
+      await prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets,this.#waterPreparationFogs(scene))
       this.#checkAbort(signal, ordinal)
       const profile = browserFrameProfiler()
       if (profile) {
@@ -2742,6 +2777,7 @@ class RendererOwner implements Renderer {
       }
     } finally {
       visibility.restore()
+      fadeVariants.removeFromParent();fadeVariants.clear()
     }
   }
 
@@ -2863,6 +2899,7 @@ class RendererOwner implements Renderer {
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const particleDepth = disposables.add(new SourceParticleDepth(this.#backend.backend))
+    let legacyVisuals: readonly LegacyVisuals[] | null = null
     const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
     const attributes = (this.#backend as unknown as {
       _geometries: { attributes: { delete(attribute: THREE.BufferAttribute): unknown } }
@@ -3435,6 +3472,14 @@ class RendererOwner implements Renderer {
         if(authored)authoredEnvironmentMaterials.add(texture.material.toLowerCase())
         environmentTextures.set(texture.material.toLowerCase(), value)
       }
+      const projectedMarkMaterials=disposables.add(new ProjectedMarkMaterials(identity=>{
+        const state=materialStates.get(identity),texture=environmentTextures.get(identity)
+        if(!state||!texture)throw new RenderingError("MissingInput",`projected mark state or texture ${identity} is unavailable`)
+        if(!authoredEnvironmentMaterials.has(identity))requireMipInputs(identity,state)
+        const material=new THREE.MeshBasicNodeMaterial(materialOptions({logicalPath:identity,width:1,height:1,shader:3,features:1,textureRole:0},state))
+        material.colorNode=sourceFragmentColor(TSL.texture(texture,TSL.uv()),state,waterFogUniforms)
+        material.toneMapped=false;material.name=identity;return material
+      }))
       for (const mark of request.environment?.markRecords ?? []) {
         if (mark.status !== 0 || !mark.enabled) continue
         const identity = mark.material.toLowerCase()
@@ -3501,14 +3546,10 @@ class RendererOwner implements Renderer {
           geometry.setAttribute("uv", new THREE.BufferAttribute(fragment.uv, 2))
           geometry.setIndex(new THREE.BufferAttribute(fragment.indices, 1))
           disposables.add(geometry)
-          const state = materialStates.get(mark.material.toLowerCase())
-          if (!state) throw new RenderingError("MissingInput", `projected mark state ${mark.material} is unavailable`)
-          if(!authoredEnvironmentMaterials.has(mark.material.toLowerCase()))requireMipInputs(mark.material, state)
-          const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: mark.material, width: 1, height: 1, shader: 3, features: 1, textureRole: 0 }, state))
-          material.colorNode = sourceFragmentColor(TSL.texture(texture, TSL.uv()), state, waterFogUniforms)
-          material.toneMapped = false
-          disposables.add(material)
+          const identity=mark.material.toLowerCase()
+          const material=projectedMarkMaterials.fragment(identity)
           const mesh = new THREE.Mesh(geometry, material)
+          mesh.userData.materialIdentity=identity
           mesh.renderOrder = mark.renderOrder
           mesh.visible = false
           if (fragment.visibility.kind === "world") {
@@ -3670,19 +3711,20 @@ class RendererOwner implements Renderer {
         }
         modelTemplates.set(model.logicalPath, template)
       }
-      // VHV and unlit occurrences share only an exact template/pass material.
+      // VHV and unlit occurrences share the exact authored material/facing/pass.
       // Fade is draw data, not graph identity; runtime-lit graphs still capture
       // their own authored lighting. Opaque batching remains unchanged.
-      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>()
+      if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>(),fadedMaterials=new Map<THREE.MeshBasicNodeMaterial,THREE.MeshBasicNodeMaterial>()
         for(let propIndex=0;propIndex<props.count;propIndex+=1){const modelIdentity=props.models[props.presentationModel[propIndex]!]!,key=modelKey(modelIdentity,props.skin[propIndex]!),template=modelTemplates.get(key);if(!template)throw new RenderingError("MissingInput",`static-prop model ${key} is unavailable`)
           if(props.body[propIndex]!==0)throw new RenderingError("UnsupportedFeature","nonzero static-prop body selection is unavailable")
           const instance=template.clone(true),lightingKind=props.lightingKind[propIndex]!,fadeUniform=TSL.uniform(1,"float"),meshes:THREE.Mesh[]=[];instance.traverse(value=>{if(value instanceof THREE.Mesh)meshes.push(value)})
+          const fadeBindings:StaticPropFadeBinding[]=[]
           let colorMeshes:StaticPropInput["vhv"][number]["meshes"]=Object.freeze([])
           if(lightingKind===0){const objectIndex=props.vhvObjects[propIndex*2+profile]!,object=props.vhv[objectIndex];if(!object||object.occurrence!==props.source[propIndex]||object.profile!==profile||object.model!==props.dictionaryModel[propIndex])throw new RenderingError("IdentityMismatch","static-prop VHV occurrence identity differs");colorMeshes=Object.freeze(object.meshes.filter(mesh=>mesh.lod===props.lod[propIndex]))}
           let colorIndex=0
           for(const mesh of meshes){if(lightingKind===0){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere;const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true));disposables.add(geometry);mesh.geometry=geometry}
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
-            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=lightingKind===0||unlit?`${original.uuid}:${unlit?"unlit":"vertex"}:${Number(fading)}`:undefined
+            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=lightingKind===0||unlit?`${identity.toLowerCase()}:${original.side}:${unlit?"unlit":"vertex"}:${Number(fading)}`:undefined
             if(fading)bindStaticPropFade(mesh,fadeUniform)
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
             if(!material){
@@ -3694,11 +3736,15 @@ class RendererOwner implements Renderer {
               const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
               material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fading?modelLightingGraphs.staticFade:fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
-              if(fading){material.transparent=true;material.depthWrite=false}
               disposables.add(material)
               if(sharingKey!==undefined)sharedStaticMaterials.set(sharingKey,material)
             }
             mesh.material=material
+            if(fading){
+              let faded=fadedMaterials.get(material)
+              if(!faded){faded=createStaticPropFadeVariant(material);fadedMaterials.set(material,faded);disposables.add(faded)}
+              fadeBindings.push({mesh,authored:material,faded})
+            }
             if(fading&&handoffProfile)observeStaticPropUse(mesh,handoffProfile,sceneGeneration,props.source[propIndex]!)
           }
           if(lightingKind===0&&colorIndex!==colorMeshes.length)throw new RenderingError("IdentityMismatch","static-prop VHV mesh closure differs")
@@ -3726,6 +3772,7 @@ class RendererOwner implements Renderer {
             radius: sphere.radius,
             bounds: Object.freeze([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z] as const),
             fadeUniform,
+            fadeBindings,
             batches: [],
           }))
         }
@@ -3805,6 +3852,39 @@ class RendererOwner implements Renderer {
         mainModelOccurrences.add(instance)
       }
       this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes, exposureUniform, map.lighting.profile === "hdr")
+      if (request.legacyVisualTextures?.length) {
+        const textures=new Map<string,THREE.Texture>()
+        const materials = request.legacyVisualTextures.map(input => {
+          const state = materialStates.get(input.material.toLowerCase())
+          if (!state) throw new RenderingError("MissingInput", `Legacy visual material state ${input.material} is unavailable`)
+          return Array.from({length:input.frameCount},(_,frame)=>{
+            const program=input.program,key=`${input.sourceSha256}:${frame}:${program.srgb}`
+            let texture=textures.get(key)
+            if(!texture){texture=disposables.add(textureFromAuthored(input,program.srgb?THREE.SRGBColorSpace:THREE.NoColorSpace,frame,this.textureQuality));textures.set(key,texture)}
+            const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
+            const sampled=TSL.texture(texture,TSL.uv()), raw=TSL.attribute("legacyColor","vec4"), color=program.vertexGamma?TSL.vec4(raw.rgb.pow(2.2),raw.a):raw
+            let rgb=program.vertexRgb?sampled.rgb.mul(color.rgb):sampled.rgb
+            if(program.cable){
+              if(!input.normal)throw new RenderingError("MissingInput","Cable normal texture is unavailable")
+              const normalKey=`${input.normal.sourceSha256}:0:false`
+              let normal=textures.get(normalKey)
+              if(!normal){normal=disposables.add(textureFromAuthored(input.normal,THREE.NoColorSpace,0,this.textureQuality));textures.set(normalKey,normal)}
+              // Cable_DX9 expands the normal, then applies squared half-Lambert
+              // against tangent-space +Z: the resulting factor is blue squared.
+              rgb=rgb.mul(TSL.texture(normal,TSL.uv()).b.pow(2))
+            }
+            const alpha=program.vertexAlpha?sampled.a.mul(color.a):sampled.a
+            const hdr=this.configuration.lightingProfile==="hdr"?TSL.attribute("legacyHdr","float"):TSL.float(1)
+            const exposure=program.gammaExposure?exposureUniform.pow(1/2.2):exposureUniform
+            const value=TSL.vec4(rgb.mul(TSL.vec3(...program.modulation.slice(0,3))).mul(hdr).mul(exposure),alpha.mul(program.modulation[3]))
+            material.colorNode=legacyFog(sourceFragmentColor(value,state),state.fog,this.#viewFogUniforms,waterFogUniforms)
+            material.fog=false;material.toneMapped=false;material.forceSinglePass=true;material.name=`legacy:${input.material}:${frame}`
+            if(program.cable){material.transparent=false;material.userData.sourceRope=true}
+            return material
+          })
+        })
+        legacyVisuals=Array.from({length:5},(_,index)=>{const view=disposables.add(new LegacyVisuals(this.#backend.backend,materials));view.world.visible=index===0;group.add(view.world);return view})
+      }
     } catch (error) {
       const failed = {
         group,
@@ -3978,6 +4058,7 @@ class RendererOwner implements Renderer {
       particleTextures,
       particleBatchMaterials,
       particleDepth,
+      legacyVisuals,
       particlePipelineMeshes,
       materialStates,
       disposables,
@@ -4006,8 +4087,13 @@ class RendererOwner implements Renderer {
       leafVisibility,
       runtimeStaticPropInstances: Object.freeze(runtimeStaticPropInstances),
       projectedMarks: Object.freeze(projectedMarks),
-      combatDecalTexture,
-      combatDecalMeshes:new Map(),
+      combatDecals:disposables.add(new CombatDecals(projectedMarkGroup,"materials/decals/decals_mod2x.vmt",()=>{
+        const identity="materials/decals/decals_mod2x.vmt",state=materialStates.get(identity)
+        if(!combatDecalTexture||!state)throw new RenderingError("MissingInput","authored combat decal atlas or modulation state is unavailable")
+        const material=new THREE.MeshBasicNodeMaterial(materialOptions({logicalPath:identity,width:1,height:1,shader:11,features:1,textureRole:0},state))
+        material.colorNode=sourceFragmentColor(TSL.texture(combatDecalTexture,TSL.uv()),state,waterFogUniforms)
+        material.toneMapped=false;material.name=identity;return material
+      })),
       waterMeshes:Object.freeze(waterMeshes),
       waterMaterials,
       refractMaterials,
@@ -4153,7 +4239,7 @@ class RendererOwner implements Renderer {
         this.#modelPanelCamera.updateProjectionMatrix()
         const particleCamera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: presentation.verticalFovDegrees, near: presentation.near, far: presentation.far }
         let particlePool = this.#panelParticlePools.get(panel.identity)
-        if (!particlePool) { particlePool = { group: new THREE.Group(), meshes: [], ranges: [] }; this.#panelParticlePools.set(panel.identity, particlePool) }
+        if (!particlePool) { particlePool = { group: createWorldClipGroup(), meshes: [], ranges: [] }; this.#panelParticlePools.set(panel.identity, particlePool) }
         this.#stageParticleBatches(panel.particles ?? [], particleCamera, particlePool)
         this.#modelPanelScene.add(particlePool.group)
         this.#backend.setViewport(x, y, width, height)
@@ -4203,39 +4289,9 @@ class RendererOwner implements Renderer {
       }
       if(frame.combatDecals?.length){
         const scene=this.#active
-        const identity="materials/decals/decals_mod2x.vmt"
-        const texture=scene.combatDecalTexture,state=scene.materialStates.get(identity)
-        if(!texture||!state)throw new RenderingError("MissingInput","authored combat decal atlas or modulation state is unavailable")
         const maximum=frame.maximumCombatDecals??200
         if(!Number.isInteger(maximum)||maximum<0||maximum>4096)throw new RenderingError("MalformedInput","combat decal limit is invalid")
-        for(const decal of frame.combatDecals){
-          if(scene.combatDecalMeshes.has(decal.identity))continue
-          if(maximum===0)continue
-          const geometry=new THREE.BufferGeometry()
-          geometry.setAttribute("position",new THREE.BufferAttribute(decal.positions,3))
-          geometry.setAttribute("normal",new THREE.BufferAttribute(decal.normals,3))
-          geometry.setAttribute("uv",new THREE.BufferAttribute(decal.uv,2))
-          geometry.setIndex(new THREE.BufferAttribute(decal.indices,1))
-          const material=new THREE.MeshBasicNodeMaterial(materialOptions({logicalPath:identity,width:1,height:1,shader:11,features:1,textureRole:0},state))
-          material.colorNode=sourceFragmentColor(TSL.texture(texture,TSL.uv()),state,scene.waterFogUniforms)
-          material.toneMapped=false
-          const mesh=new THREE.Mesh(geometry,material)
-          mesh.matrixAutoUpdate=false
-          mesh.updateMatrix()
-          mesh.renderOrder=0
-          mesh.visible=false
-          mesh.userData.combatDecal=decal.reference
-          scene.projectedMarkGroup.add(mesh)
-          scene.combatDecalMeshes.set(decal.identity,{face:decal.face,mesh})
-          while(scene.combatDecalMeshes.size>maximum){
-            const oldest=scene.combatDecalMeshes.keys().next().value as number
-            const expired=scene.combatDecalMeshes.get(oldest)!
-            scene.projectedMarkGroup.remove(expired.mesh)
-            expired.mesh.geometry.dispose()
-            ;(expired.mesh.material as THREE.Material).dispose()
-            scene.combatDecalMeshes.delete(oldest)
-          }
-        }
+        scene.combatDecals.update(frame.combatDecals,maximum)
       }
       if (frame.visibility) {
         if (
@@ -4246,7 +4302,7 @@ class RendererOwner implements Renderer {
         const visibilityChanged = this.#worldVisibilityIdentity !== frame.visibility.cacheIdentity
         this.#setWorldVisibility(frame.visibility.surfaces, frame.visibility.cacheIdentity)
         if(visibilityChanged||frame.combatDecals?.length){
-          for(const decal of this.#active.combatDecalMeshes.values())decal.mesh.visible=this.#active.worldVisibility.has(decal.face)
+          for(const decal of this.#active.combatDecals.records.values())decal.mesh.visible=this.#active.worldVisibility.has(decal.face)
         }
         if (this.#active.skyGroup) this.#active.skyGroup.visible = frame.visibility.sky === 1
         if (!frame.collisionWorldIdentity || frame.collisionWorldIdentity !== this.#active.result.environment?.collisionWorldIdentity) {
@@ -4357,9 +4413,11 @@ class RendererOwner implements Renderer {
       let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
         this.#framePresentation?.begin()
+        if(this.#active?.legacyVisuals&&frame.legacyVisuals){for(const [index,view] of Object.entries(frame.legacyVisuals))this.#active.legacyVisuals[Number(index)]?.update(view)}
         const worldStarted=performance.now()
         sky3dPass=this.#renderSky3dPass(frame)
         const waterResult=this.#renderWaterPasses(frame,sky3dPass!==undefined)
+        this.#renderLegacyVisuals(frame.legacyVisuals?.[0], 0)
         worldMilliseconds=performance.now()-worldStarted
         waterPasses = waterResult.passes
         waterPassTimings = waterResult.timings
@@ -4563,6 +4621,7 @@ class RendererOwner implements Renderer {
       }
       alpha = quantizeStaticPropOpacity(alpha)
       prop.fadeUniform.value = alpha
+      selectStaticPropFadePass(prop.fadeBindings,alpha)
       if (alpha > 0 && (!frustumCull || this.#staticPropFrustum.intersectsSphere(
         this.#staticPropSphere.set(
           this.#staticPropSphere.center.set(
@@ -4852,21 +4911,19 @@ class RendererOwner implements Renderer {
   }
 
   #setClip(clip: WaterFramePass["clip"]): () => void {
-    const previousEnabled = this.#waterClipping.enabled
     const previousNormal = this.#waterClipPlane.normal.z
     const previousConstant = this.#waterClipPlane.constant
     if (clip) {
       const direction = clip.keep === "above" ? 1 : -1
       this.#waterClipPlane.normal.set(0, 0, direction)
       this.#waterClipPlane.constant = -direction * clip.height
-      this.#waterClipping.enabled = true
     } else {
-      this.#waterClipping.enabled = false
+      this.#waterClipPlane.normal.set(0,0,0)
+      this.#waterClipPlane.constant=0
     }
     return () => {
       this.#waterClipPlane.normal.set(0, 0, previousNormal)
       this.#waterClipPlane.constant = previousConstant
-      this.#waterClipping.enabled = previousEnabled
     }
   }
 
@@ -4935,6 +4992,7 @@ class RendererOwner implements Renderer {
       scene.skyStaticProps.visible = true
       scene.mainModelOccurrences.visible = false
       scene.projectedMarkGroup.visible = false
+      if(scene.legacyVisuals){for(let i=0;i<5;i++)scene.legacyVisuals[i]!.world.visible=i===1}
       for (const water of scene.waterMeshes) water.mesh.visible = false
       this.#effects.visible = false
       this.#particles.visible = false
@@ -4943,6 +5001,8 @@ class RendererOwner implements Renderer {
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
       this.#drawPass("sky3d", this.#scene, this.#camera)
+      this.#renderLegacyNoDepth(frame.legacyVisuals?.[1],1)
+      this.#renderLegacyVisuals(frame.legacyVisuals?.[1],1)
       rendered = true
       this.#resetDepth("sky-depth-reset")
     } finally {
@@ -4957,6 +5017,7 @@ class RendererOwner implements Renderer {
       scene.skyStaticProps.visible = skyVisible
       scene.mainModelOccurrences.visible = modelOccurrencesVisible
       scene.projectedMarkGroup.visible = marksVisible
+      if(scene.legacyVisuals){for(let i=0;i<5;i++)scene.legacyVisuals[i]!.world.visible=i===0}
       for (let index = 0; index < scene.waterMeshes.length; index += 1) {
         scene.waterMeshes[index]!.mesh.visible = waterVisibility[index] ?? false
       }
@@ -4981,6 +5042,29 @@ class RendererOwner implements Renderer {
     })
   }
 
+  #renderLegacyVisuals(frame: LegacyVisualFrame | undefined, view:LegacyViewKind): void {
+    const owner=this.#active?.legacyVisuals?.[view]
+    if (!owner || !frame) return
+    owner.capture(this.#camera)
+    if (!frame.quads.length) return
+    const autoClear=this.#backend.autoClear
+    // CGlowOverlay is drawn after the world view disables fog.
+    owner.group.fog=null
+    this.#backend.autoClear=false
+    try {
+      if(frame.quads.some(quad=>quad.layer===2))this.#drawPass(view===1?"sky-legacy-overlays":"legacy-overlays",owner.group,this.#camera)
+    }
+    finally { this.#backend.autoClear=autoClear }
+  }
+
+  #renderLegacyNoDepth(frame:LegacyVisualFrame|undefined,view:LegacyViewKind):void {
+    const owner=this.#active?.legacyVisuals?.[view]
+    if(!owner||!frame?.quads.some(quad=>quad.layer===1))return
+    const clear=this.#backend.autoClear;this.#backend.autoClear=false
+    owner.noDepthClip.enabled=this.#waterClipping.enabled;owner.noDepthClip.clippingPlanes=this.#waterClipping.clippingPlanes
+    try{this.#drawPass(view===1?"sky-legacy-no-depth":"legacy-no-depth",owner.noDepth,this.#camera)}finally{this.#backend.autoClear=clear}
+  }
+
   #renderWaterPasses(
     frame: Frame,
     preserveColor = false,
@@ -4995,6 +5079,7 @@ class RendererOwner implements Renderer {
     if (!plan) {
       this.#backend.autoClear = !preserveColor
       this.#drawPass("main", this.#scene, this.#camera)
+      this.#renderLegacyNoDepth(frame.legacyVisuals?.[0],0)
       this.#backend.autoClear = true
       return Object.freeze({ passes: Object.freeze(["main"] as const), timings: Object.freeze([]), restored: true })
     }
@@ -5009,6 +5094,7 @@ class RendererOwner implements Renderer {
       this.#scene.background = soleMain.drawSky2d ? background : null
       try {
         this.#drawPass("main", this.#scene, this.#camera)
+        this.#renderLegacyNoDepth(frame.legacyVisuals?.[0],0)
       } finally {
         this.#scene.background = background
       }
@@ -5034,6 +5120,7 @@ class RendererOwner implements Renderer {
     const previousClearAlpha = this.#backend.getClearAlpha()
     const effectsVisible = this.#effects.visible
     const particlesVisible = this.#particles.visible
+    const legacyVisible=scene.legacyVisuals?.map(view=>view.world.visible)
     const skyVisible = scene.skyGroup?.visible ?? false
     const completed: ("reflection" | "refraction" | "main" | "intersection")[] = []
     const timings: WaterPassTiming[] = []
@@ -5041,19 +5128,21 @@ class RendererOwner implements Renderer {
 
     try {
       for (const pass of plan.passes) {
+        const legacyView:LegacyViewKind=pass.kind==="reflection"?2:pass.kind==="refraction"?3:pass.kind==="intersection"?4:0
         const passStarted = performance.now()
         this.#setWorldVisibility(pass.surfaces)
         const visibilityMilliseconds = performance.now() - passStarted
         for (const mark of scene.projectedMarks) {
           if (mark.visibility.kind === "world") mark.mesh.visible = scene.worldVisibility.has(mark.face)
         }
-        for (const decal of scene.combatDecalMeshes.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
+        for (const decal of scene.combatDecals.records.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
         for (let index = 0; index < scene.waterMeshes.length; index += 1) {
           scene.waterMeshes[index]!.mesh.visible = pass.renderWaterSurface && waterVisibility[index] === true
         }
         if (scene.skyGroup) scene.skyGroup.visible = pass.drawSky2d
         this.#effects.visible = pass.drawEntities
         this.#particles.visible = pass.drawEntities
+        if(scene.legacyVisuals)for(let index=0;index<5;index++)scene.legacyVisuals[index]!.world.visible=pass.drawEntities&&index===legacyView
         this.#scene.background = pass.drawSky2d ? background : null
         this.#setWaterCamera(pass, frame.camera)
 
@@ -5099,6 +5188,7 @@ class RendererOwner implements Renderer {
           this.#backend.autoClear = pass.kind === "main" && preserveColor ? false : pass.kind !== "intersection"
           const renderStarted = performance.now()
           this.#drawPass(pass.kind, this.#scene, this.#camera)
+          if(pass.drawEntities){this.#renderLegacyNoDepth(frame.legacyVisuals?.[legacyView],legacyView);if(legacyView!==0)this.#renderLegacyVisuals(frame.legacyVisuals?.[legacyView],legacyView)}
           renderMilliseconds = performance.now() - renderStarted
           completed.push(pass.kind)
         } finally {
@@ -5122,9 +5212,10 @@ class RendererOwner implements Renderer {
       this.#scene.background = background
       this.#effects.visible = effectsVisible
       this.#particles.visible = particlesVisible
+      if(scene.legacyVisuals)scene.legacyVisuals.forEach((view,index)=>{view.world.visible=legacyVisible?.[index]??false})
       if (scene.skyGroup) scene.skyGroup.visible = skyVisible
       this.#setWorldVisibility(frame.visibility!.surfaces)
-      for (const decal of scene.combatDecalMeshes.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
+      for (const decal of scene.combatDecals.records.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)
       for (let index = 0; index < scene.projectedMarks.length; index += 1) {
         scene.projectedMarks[index]!.mesh.visible = markVisibility[index]!
       }
@@ -5172,6 +5263,7 @@ class RendererOwner implements Renderer {
       material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
       material.colorNode = sourceFragmentColor(sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state, waterFog)
       if (additive) {
+        material.forceSinglePass=true
         const tint = TSL.vec3(...additive.color.map(value => additive.srgb ? Math.pow(value, 2.2) : value) as [number, number, number])
         let rgb = current.rgb.mul(tint), alpha = current.a.mul(state.alphaModulation)
         if (additive.vertexColor) { rgb = rgb.mul(additive.srgb ? color.rgb.pow(2.2) : color.rgb); alpha = alpha.mul(color.a) }
@@ -5305,7 +5397,17 @@ class RendererOwner implements Renderer {
     return this.#particleBatchMeshes.map(({ key, mesh }) => ({ key, visible: mesh.visible,
       sky: mesh.parent === this.#skyParticles, count: mesh.geometry.drawRange.count,
       positions: Array.from(mesh.geometry.getAttribute("position").array.slice(0, 12)),
-      material: (mesh.material as THREE.Material).name }))
+      material: (mesh.material as THREE.Material).name,
+      depthTest:(mesh.material as THREE.Material).depthTest,depthWrite:(mesh.material as THREE.Material).depthWrite,depthFunc:(mesh.material as THREE.Material).depthFunc }))
+  }
+
+  captureMaterialDepthEvidence() {
+    const materials=new Map<number,MaterialDepthEvidence>()
+    this.#scene.traverseVisible(object=>{
+      if(!(object instanceof THREE.Mesh))return
+      for(const material of Array.isArray(object.material)?object.material:[object.material])materials.set(material.id,{id:material.id,name:material.name,identity:object.userData.materialIdentity,depthTest:material.depthTest,depthWrite:material.depthWrite,depthFunc:material.depthFunc,transparent:material.transparent,renderOrder:object.renderOrder})
+    })
+    return [...materials.values()]
   }
 
   #stageParticleBatches(
@@ -5350,9 +5452,9 @@ class RendererOwner implements Renderer {
         const profile = browserFrameProfiler()
         mesh.onBeforeRender = (renderer, _scene, camera) => {
           if (Array.isArray((renderer as any)._compilationPromises)) return
-          if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && camera === this.#camera
+          if (material.userData.sourceParticleDepth || (assets!.particleDepth.evidenceRequested && mesh.parent!==this.#skyParticles && camera === this.#camera
             && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))) {
-            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera, camera === this.#camera
+            assets!.particleDepth.capture(renderer as THREE.WebGPURenderer, camera, mesh.parent!==this.#skyParticles && camera === this.#camera
               && (renderer as THREE.WebGPURenderer).getRenderTarget() === (this.#framePresentation?.target ?? null))
           }
           if (profile && !material.userData.firstParticleUse) {
@@ -5368,7 +5470,7 @@ class RendererOwner implements Renderer {
       const batchCamera = first.sky ? skyCamera : camera
       if (!batchCamera) { retained.mesh.visible = false; continue }
       this.#updateParticleBatchGeometry(retained.mesh.geometry, items, batch.start, batch.end, batchCamera)
-      retained.mesh.renderOrder = batch.start
+      retained.mesh.renderOrder = batch.start+(retained.mesh.material.transparent?0:0x200000)
       retained.mesh.visible = true
     }
     for (let index = count; index < meshes.length; index += 1) {
