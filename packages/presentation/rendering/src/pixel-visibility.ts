@@ -81,7 +81,8 @@ export class SourcePixelVisibility {
     const fan = [0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 1, 4]
     for (let query = 0; query < count; query++) for (let index = 0; index < fan.length; index++) {
       const source = query * 20 + fan[index]! * 4
-      vertices.set(proxies.subarray(source, source + 4), (query * 12 + index) * 4)
+      const target=(query*12+index)*4
+      for(let axis=0;axis<4;axis++)vertices[target+axis]=proxies[source+axis]!
     }
     this.#device.queue.writeBuffer(this.#vertices!, 0, vertices)
     this.#matrices??=this.#device.createBuffer({label:"Pixel visibility camera matrices",size:128,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST})

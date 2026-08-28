@@ -70,7 +70,7 @@ export class ParticleVisibilityQueries {
     const vertices = new Float32Array(selected.length * 20)
     for (let index = 0; index < selected.length; index++) for (let vertex = 0; vertex < 5; vertex++) {
       const source = selected[index]!.vertices, at = vertex * 3
-      vertices.set([source[at]!,source[at+1]!,source[at+2]!,1],index*20+vertex*4)
+      const target=index*20+vertex*4;vertices[target]=source[at]!;vertices[target+1]=source[at+1]!;vertices[target+2]=source[at+2]!;vertices[target+3]=1
     }
     state.currentPass.end()
     const read = counter.issue(state.encoder, depth, vertices, matrices, color.format, {...attachment,loadOp:"load",storeOp:"store"})
