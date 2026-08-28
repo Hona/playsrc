@@ -1,5 +1,20 @@
 {
   "schema": "playsrc-tf2-release-v3",
+  "defaultTarget": "jump_beef",
+  "objects": {
+    "wasm": {
+      "kind": "derived-object",
+      "mediaType": "application/octet-stream",
+      "byteLength": "8566966",
+      "sha256": "001157a3b497cea2e0cf5169fee51440448a99fcafd2f54ffb50e231e6c5d072"
+    },
+    "catalog": {
+      "kind": "catalog",
+      "mediaType": "application/vnd.playsrc.asset-catalog+json",
+      "byteLength": "1147",
+      "sha256": "abab1f5f6f26c038f4fda967f862353d5bbe0b372f6af30574bd11d449146245"
+    }
+  },
   "wasmBindings": [
     {
       "name": "snippets/wasm-bindgen-rayon-38edf6e439f6d70d/src/workerHelpers.js",
@@ -9,24 +24,9 @@
     {
       "name": "tf2_wasm.js",
       "byteLength": "9072",
-      "sha256": "23cfa20fcedc2c09e8bc78c9de87c14b91ea5858da9567eb3cd25f62ba77b618"
+      "sha256": "b35a993769a2fbb9028d36f37cbae8fe56cae9a11e071161e854c602edc133c5"
     }
   ],
-  "defaultTarget": "jump_beef",
-  "objects": {
-    "wasm": {
-      "kind": "derived-object",
-      "mediaType": "application/octet-stream",
-      "byteLength": "6352160",
-      "sha256": "5e7e3b9da79a79ed5acf5fd7bf4068977dbb85f559be7d828e19118a791fd73d"
-    },
-    "catalog": {
-      "kind": "catalog",
-      "mediaType": "application/vnd.playsrc.asset-catalog+json",
-      "byteLength": "716",
-      "sha256": "ba408fa6e7178df1dda4fd94643c1bedc12ddd2ba992cd0f39a6b27b1b2baad9"
-    }
-  },
   "targets": [
     {
       "target": "jump_beef",
@@ -41,14 +41,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "682700",
-          "sha256": "fb1b8178aceff324d1ef706d71397d8eca3102acbc4486342ae366819adad545"
+          "byteLength": "887994",
+          "sha256": "978bfeea458f38d1b51c388bb9fc23a58811e5ba065b556f4deb3b66dd3f71b8"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "1864796",
-          "sha256": "3f40c3cdc867e4737655442df628c8172c559a1758186efa0e2d43a4f55b7951"
+          "byteLength": "2379867",
+          "sha256": "8fd2a5a6a3e74b5129334db0faabbdd033d0e80c9664579838379c687f5ce4da"
         }
       }
     },
@@ -65,14 +65,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1065662",
-          "sha256": "e5ef1f6d35be118a1f9e9437f98e5ef08dbe87bcf3a5c9b1f50bd95c039c2849"
+          "byteLength": "1284515",
+          "sha256": "15f2814b1a4589e2bd3b7982442f635a0b7f35ae38a40368e7377a8a653da784"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "4605274",
-          "sha256": "3fab0488950cff6afac2c05d99f8e36dbe896e06f1ab09efb694462057296ff9"
+          "byteLength": "5156240",
+          "sha256": "6e904d054537c9fcd4357c881f3a8a0240c0fd29cc4fa860ca83e3baa62f5c3f"
         }
       }
     },
@@ -89,14 +89,62 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1143845",
-          "sha256": "208c437fd1bcfd5931fc2206b2bd3b9df33bf807e5da2a038402b36796764afc"
+          "byteLength": "1353056",
+          "sha256": "1da96e04fdd031ca0f5964257a05c0df70ca8e37e6cbef9c1eb13329105d5dda"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5835888",
-          "sha256": "73501b69c945819e432a3492d9a5213e183e182c1a921992cd561d249b4f6472"
+          "byteLength": "6361017",
+          "sha256": "dabb7c482cb146ec84e256f8b35f4e740e448e51e61edbb6586cca2f0c6167a3"
+        }
+      }
+    },
+    {
+      "target": "cp_dustbowl",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "21945050",
+          "sha256": "f2595d3f6af19f21d7beaeed7ecb7a130246a5b934641a44f0f68d54edfc421e"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1295512",
+          "sha256": "b5d9cb87c53b95375c6991fb33f4ff58e35d4c70c275d2178e8a2d84c8e91787"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5884906",
+          "sha256": "9683773a475d18f86ba2cdff6b6441fc496ba28beb4d2b4f357fdfb067f8001e"
+        }
+      }
+    },
+    {
+      "target": "cp_gorge",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "50238340",
+          "sha256": "94db834e88f98048326513133a8c98178866cef2f72d6406515ed1af0a4a5f46"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1211169",
+          "sha256": "e2af48cf86abdc95049c0b169d3a6b1ceac593ad97f2deb3e104c2c3fb5c21e8"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5384035",
+          "sha256": "8435501c234899650e23339d7ebe94b700b63abfdf33608303d1588cdb150545"
         }
       }
     }
