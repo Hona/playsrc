@@ -37,6 +37,7 @@ import { auditDrawPlaneParity } from "./draw-plane-parity"
 import { loadCommandWorkload, compareWorkloadJournal } from "./command-workload"
 import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } from "./workload-state"
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
+import { installDeliveryRpcObserver } from "./delivery-rpc"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -47,9 +48,9 @@ test.afterEach(async () => {
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
   const applicationRoot = process.cwd()
-  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "cpu" | "traced" | undefined
-  if (deliveryMode && !["ordinary", "presentation", "cpu", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
-  const passiveDelivery = deliveryMode === "ordinary" || deliveryMode === "presentation" || deliveryMode === "cpu"
+  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "cpu" | "rpc" | "traced" | undefined
+  if (deliveryMode && !["ordinary", "presentation", "cpu", "rpc", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
+  const passiveDelivery = Boolean(deliveryMode && deliveryMode !== "traced")
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
@@ -101,6 +102,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   if (deliveryMode) expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
+  if (deliveryMode === "rpc") await page.addInitScript({ content: `(${installDeliveryRpcObserver.toString()})();` })
   if (!passiveDelivery) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
   if (!passiveDelivery) await page.addInitScript(captureClientFrames => {
@@ -428,6 +430,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await page.bringToFront()
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
+  const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
+  if (diagnosticMinimumTick !== undefined) {
+    if (deliveryMode !== "rpc" || !Number.isSafeInteger(diagnosticMinimumTick)) throw new Error("Tick-targeted sampling is diagnostic only")
+    await expect.poll(async () => Number(await root.getAttribute("data-snapshot-tick")), { timeout: 15_000 }).toBeGreaterThanOrEqual(diagnosticMinimumTick)
+  }
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (deliveryMode) {
     if (exerciseClasses || combat || capturePlan.interaction !== "forward-movement" || expectedBots !== 15) throw new Error("Delivery comparison requires the same 15-bot forward-movement scenario")
@@ -438,12 +445,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const configuration = await (await page.request.get("/playsrc-config.json")).json()
     await writeFile(path.join(directory, "delivery-boundary.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(),
       sourceFingerprint, harnessRoot: repositoryRoot, harnessFingerprint: process.env.PLAYSRC_PROFILE_HARNESS_FINGERPRINT,
-      browserVersion: context.browser()!.version(), configuration, capturePlan, boundary }, null, 2))
+      browserVersion: context.browser()!.version(), configuration, capturePlan, diagnosticMinimumTick, boundary }, null, 2))
     await writeFile(path.join(directory, "delivery-before.png"), before)
   }
   if (passiveDelivery) {
     expect(await page.evaluate(() => Boolean((globalThis as any).__playsrcProfile || (globalThis as any).__playsrcFrameProfiler))).toBe(false)
-    const presentationCdp = deliveryMode !== "ordinary" ? await context.browser()!.newBrowserCDPSession() : undefined
+    const presentationCdp = deliveryMode === "presentation" || deliveryMode === "cpu" ? await context.browser()!.newBrowserCDPSession() : undefined
     const diagnosticCdp = deliveryMode === "cpu" ? await context.newCDPSession(page) : undefined
     if (diagnosticCdp) await diagnosticCdp.send("Performance.enable")
     let diagnosticCpu: Awaited<ReturnType<typeof startMainCpuEvidence>> | undefined
@@ -527,6 +534,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(sample.ended - sample.started).toBeGreaterThanOrEqual(5000)
     expect(sample.ended - sample.started).toBeLessThanOrEqual(10000)
     expect(sample.lastFrame).toBeGreaterThan(sample.firstFrame)
+    if (deliveryMode === "rpc") {
+      expect(sample.rpc.workers).toBe(1)
+      expect(sample.rpc.records.length).toBeGreaterThan(0)
+      expect(sample.rpc.dropped).toBe(0)
+    }
     expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
     return
   }
