@@ -7,11 +7,11 @@ const uploadState = ["format", "type", "colorSpace", "channel", "internalFormat"
  * materials retain their own nodes, UVs, blend and animation attributes. Only
  * a complete, identical compressed image/sampler can use an existing owner. */
 export function particleTextureAlias(candidate: THREE.Texture, owned: Iterable<THREE.Texture>): THREE.Texture | undefined {
-  if (!(candidate as THREE.CompressedTexture).isCompressedTexture || candidate.isRenderTargetTexture || !candidate.source.dataReady || (candidate.image.depth ?? 1) !== 1) return
+  if (!(candidate as THREE.CompressedTexture).isCompressedTexture || candidate.isRenderTargetTexture || candidate.version < 1 || !candidate.source.dataReady || (candidate.image.depth ?? 1) !== 1) return
   const mips = candidate.mipmaps as THREE.CompressedTexture["mipmaps"]
   if (!mips.length) return
   for (const texture of owned) {
-    if (!(texture as THREE.CompressedTexture).isCompressedTexture || texture.isRenderTargetTexture || !texture.source.dataReady || (texture.image.depth ?? 1) !== 1) continue
+    if (!(texture as THREE.CompressedTexture).isCompressedTexture || texture.isRenderTargetTexture || texture.version < 1 || !texture.source.dataReady || (texture.image.depth ?? 1) !== 1) continue
     const prior = texture.mipmaps as THREE.CompressedTexture["mipmaps"]
     // Identity of the private canonical views is stronger than equal contents:
     // independently mutable/decompressed/replaced input spans cannot alias.
