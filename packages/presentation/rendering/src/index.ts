@@ -3858,7 +3858,7 @@ class RendererOwner implements Renderer {
             let texture=textures.get(key)
             if(!texture){texture=disposables.add(textureFromAuthored(input,program.srgb?THREE.SRGBColorSpace:THREE.NoColorSpace,frame,this.textureQuality));textures.set(key,texture)}
             const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
-            const sampled=TSL.texture(texture,TSL.uv()), raw=TSL.attribute("legacyColor","vec4"), color=program.vertexGamma?raw.pow(2.2):raw
+            const sampled=TSL.texture(texture,TSL.uv()), raw=TSL.attribute("legacyColor","vec4"), color=program.vertexGamma?TSL.vec4(raw.rgb.pow(2.2),raw.a):raw
             const rgb=program.vertexRgb?sampled.rgb.mul(color.rgb):sampled.rgb
             const alpha=program.vertexAlpha?sampled.a.mul(color.a):sampled.a
             const hdr=this.configuration.lightingProfile==="hdr"?TSL.attribute("legacyHdr","float"):TSL.float(1)
@@ -5249,6 +5249,7 @@ class RendererOwner implements Renderer {
       material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
       material.colorNode = sourceFragmentColor(sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state, waterFog)
       if (additive) {
+        material.forceSinglePass=true
         const tint = TSL.vec3(...additive.color.map(value => additive.srgb ? Math.pow(value, 2.2) : value) as [number, number, number])
         let rgb = current.rgb.mul(tint), alpha = current.a.mul(state.alphaModulation)
         if (additive.vertexColor) { rgb = rgb.mul(additive.srgb ? color.rgb.pow(2.2) : color.rgb); alpha = alpha.mul(color.a) }
