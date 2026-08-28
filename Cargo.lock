@@ -564,6 +564,7 @@ version = "0.1.0"
 name = "playsrc-collision"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "playsrc-asset-graph",
  "playsrc-bsp",
  "playsrc-phy",

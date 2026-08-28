@@ -82,6 +82,10 @@ type WasmExports = Readonly<{
   playsrc_simulation_error_copy(pointer:number,capacity:number):number
   playsrc_dispose(handle: number): number
   playsrc_gameplay_replay_begin(handle: number): number
+  playsrc_gameplay_replay_stop_admission(handle: number): number
+  playsrc_map_particle_entropy_length(handle: number): number
+  playsrc_map_particle_entropy_copy(handle: number, pointer: number, length: number): number
+  playsrc_map_particle_entropy_restore(handle: number, pointer: number, length: number): number
   playsrc_gameplay_replay_mark(handle: number, mark: number): number
   playsrc_gameplay_replay_stop(handle: number): number
   playsrc_gameplay_replay_length(handle: number): number
@@ -114,8 +118,12 @@ let replies: ReplyWriter | undefined
 let replayArmed = 0
 let replayMapOrdinal = 0
 let replayHandle: number | undefined
+let replayEntropy: Uint8Array | undefined
 let replayCheckpoint: { configurationSha256: string; configurationBytes: number; profile: number; generation: number } | undefined
 Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
+  stopAdmission() {
+    if (!wasm || !replayHandle || wasm.playsrc_gameplay_replay_stop_admission(replayHandle) !== 1) throw new Error("Admission recorder stop rejected")
+  },
   admission() {
     if (!wasm || !replayHandle) return null
     const length = wasm.playsrc_admission_metrics_length()
@@ -128,10 +136,14 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       return { schema: 1, timeOrigin: performance.timeOrigin, dropped: wasm.playsrc_admission_metrics_dropped(), events }
     } finally { wasm.playsrc_free(pointer, Math.max(1, length)) }
   },
-  arm(mapOrdinal: number) {
+  arm(mapOrdinal: number, entropyHex?: string) {
     if (active || pending || replayArmed) throw new Error("Replay must be armed before map construction")
     if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
     replayArmed = mapOrdinal
+    if (entropyHex !== undefined) {
+      if (!/^(?:[0-9a-f]{2})+$/.test(entropyHex) || entropyHex.length > 8 * 1024 * 1024) throw new Error("Invalid recorded entropy bytes")
+      replayEntropy = Uint8Array.from(entropyHex.match(/../g)!, value => parseInt(value, 16))
+    }
   },
   mark(mark: number) {
     if (!wasm || !replayHandle || wasm.playsrc_gameplay_replay_mark(replayHandle, mark) !== 1) throw new Error("Replay mark rejected")
@@ -149,7 +161,17 @@ Object.defineProperty(scope, "__playsrcGameplayReplay", { value: Object.freeze({
       const bytes = new Uint8Array(wasm.memory.buffer, pointer, count)
       let encoded = ""
       for (let at = 0; at < bytes.length; at += 8192) encoded += String.fromCharCode(...bytes.subarray(at, at + 8192))
-      return { checkpoint: replayCheckpoint, mapOrdinal: replayArmed, offset, length, complete, base64: btoa(encoded) }
+      let mapEntropyHex: string | undefined
+      if (stop) {
+        const bytes = wasm.playsrc_map_particle_entropy_length(replayHandle)
+        if (bytes < 12 || bytes > 4 * 1024 * 1024) throw new Error("Map entropy record bound exceeded")
+        const pointer = wasm.playsrc_alloc(bytes) >>> 0
+        try {
+          if (wasm.playsrc_map_particle_entropy_copy(replayHandle, pointer, bytes) !== bytes) throw new Error("Map entropy copy failed")
+          mapEntropyHex = Array.from(new Uint8Array(wasm.memory.buffer, pointer, bytes), byte => byte.toString(16).padStart(2, "0")).join("")
+        } finally { wasm.playsrc_free(pointer, bytes) }
+      }
+      return { checkpoint: replayCheckpoint, mapOrdinal: replayArmed, offset, length, complete, base64: btoa(encoded), mapEntropyHex }
     } finally { wasm.playsrc_free(pointer, Math.max(count, 1)) }
   },
 }) })
@@ -263,6 +285,10 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_spawn_copy,
         candidate.playsrc_team_state_copy,
         candidate.playsrc_team_select,
+        candidate.playsrc_gameplay_replay_stop_admission,
+        candidate.playsrc_map_particle_entropy_length,
+        candidate.playsrc_map_particle_entropy_copy,
+        candidate.playsrc_map_particle_entropy_restore,
         candidate.playsrc_equipment_state_copy,
         candidate.playsrc_equipment_update,
         candidate.playsrc_equipment_models_admit,
@@ -625,6 +651,13 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
   replayMapOrdinal++
   if (replayArmed === replayMapOrdinal) {
     if (replayHandle || exports.playsrc_gameplay_replay_begin(candidate) !== 1) throw new Error("Replay initial checkpoint rejected")
+    if (replayEntropy) {
+      const pointer = exports.playsrc_alloc(replayEntropy.length) >>> 0
+      try {
+        new Uint8Array(exports.memory.buffer, pointer, replayEntropy.length).set(replayEntropy)
+        if (exports.playsrc_map_particle_entropy_restore(candidate, pointer, replayEntropy.length) !== 1) throw new Error("Recorded map entropy rejected")
+      } finally { exports.playsrc_free(pointer, replayEntropy.length) }
+    }
     replayHandle = candidate
     replayCheckpoint = { configurationSha256: request.configurationSha256, configurationBytes: request.configurationBytes, profile: request.profile, generation: request.generation }
   }

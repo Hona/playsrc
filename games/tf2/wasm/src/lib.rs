@@ -2200,10 +2200,10 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         let sky = slot.environment.as_ref().and_then(|environment| environment.world.controllers.iter().find_map(|controller| {
             match controller.state { playsrc_map::ControllerState::SkyCamera { area, origin, scale, .. } => Some((area, origin, scale)), _ => None }
         }));
-        let (map_events, attached) = candidate.prepare(&map_systems, map_world, request, |position| {
+        let Ok((map_events, attached)) = candidate.prepare(&map_systems, map_world, request, |position| {
             visibility.locate_leaf(position).ok().and_then(|leaf| visibility.leaves.get(leaf))
                 .is_some_and(|leaf| Some(usize::from(leaf.area_and_flags & 0x1ff)) == sky.map(|sky| sky.0))
-        });
+        }) else { return 0; };
         let sky_position = sky.map(|(_, origin, scale)| std::array::from_fn(|axis| origin[axis] + request.camera_position[axis] / scale.max(1) as f32));
         let mut map_collision = ParticleCollision { world: collision.world.clone(), visibility, lighting, lighting_cache: BTreeMap::new() };
         world.transact(&events, &wearable_controls, &visibility_samples, visibility_view, request, &mut collision, |game_items, game_bounds| {

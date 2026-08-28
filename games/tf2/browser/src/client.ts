@@ -105,7 +105,7 @@ export type LoadedGame = Readonly<{
 }>
 export type StagedGame = LoadedGame
 export type SimulationEventBatch = Readonly<{ hostTick: bigint; byteLength: number; snapshot: Snapshot }>
-export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotByteLength: number; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot }>
+export type SimulationPublication = Readonly<{ hostFrame: bigint; firstHostTick: bigint; lastHostTick: bigint; selectedTicks: number; interpolation: number; snapshotByteLength: number; eventBatches: readonly SimulationEventBatch[]; snapshot: Snapshot; recordedCommandView?: Readonly<{ yaw: number; pitch: number }> }>
 export type WaterViewPass = Readonly<{ kind: "reflection" | "refraction" | "main" | "intersection"; origin: readonly [number,number,number]; angles: readonly [number,number,number]; renderAboveWater:boolean;renderUnderWater:boolean;renderWaterSurface:boolean;drawEntities:boolean;drawSky2d:boolean;clip:null|Readonly<{height:number;keep:"above"|"below"}>;forcedVisibilityLeaf:number|null;fog:Readonly<{kind:"world"}|{kind:"water";volume:number;heightFog:boolean}>;surfaces:Uint32Array }>
 export type WaterViewPlan = Readonly<{ visibleWater:null|Readonly<{volume:number;visibleLeaf:number;eyeLeaf:number;eyeInVolume:boolean;surfaceZ:number;distanceToWater:number|null;material:string;translucent:boolean;evaluated:null|Readonly<{normalFrame:number;normalTransform:Float32Array;cheapStart:number;cheapEnd:number}>;overlay:null|Readonly<{identity:string;normalFrame:number;normalTransform:Float32Array}>}>;render:Readonly<{cheap:boolean;reflect:boolean;refract:boolean;reflectEntities:boolean;drawSurface:boolean;opaque:boolean}>;nearPlaneIntersects:boolean;passes:readonly WaterViewPass[] }>
 export type EvaluatedWorldTexture = Readonly<{ role: number; frame: number | null; transform: Float32Array | null }>
@@ -142,6 +142,14 @@ function queuedAt(): number {
 }
 
 export class Tf2WorkerClient {
+  #workload: import("./command-workload").CommandWorkloadPlayer | undefined
+  #workloadTask: Promise<void> | undefined
+  #workloadFailure: unknown
+  #workloadFinished = false
+  #workloadLive = false
+  #workloadQueuedBytes = 0
+  #workloadResults: Array<{ response: WorkerResponse; nowSeconds: number; suspended: boolean; due: number; yaw: number; pitch: number }> = []
+  #workloadWake: (() => void) | undefined
   readonly #worker: WorkerLike
   readonly #cache: DerivedObjectCache
   readonly #applicationBuild: string
@@ -227,6 +235,8 @@ export class Tf2WorkerClient {
   #failAll(error: Error): void {
     this.#queuedModels = undefined
     for (const stream of this.#snapshotStreams.values()) stream.close()
+    this.#workload?.close(); this.#workload = undefined
+    this.#workloadResults.length = 0; this.#workloadQueuedBytes = 0; this.#workloadWake?.()
     this.#snapshotStreams.clear()
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
@@ -274,6 +284,15 @@ export class Tf2WorkerClient {
   }
 
   #request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
+    if (this.#workload && !this.#workloadLive) {
+      const redirected = this.#workload.redirect(request)
+      if (redirected instanceof Promise) return redirected
+      if ("id" in redirected) return Promise.resolve(redirected)
+      request = redirected
+    }
+    return this.#rawRequest(request, transfer)
+  }
+  #rawRequest(request: RequestWithoutId, transfer: Transferable[] = []): Promise<WorkerResponse> {
     if (this.#queuedModels) this.#flushModels()
     try {
       const pending = this.#reserve(request.kind === "shutdown")
@@ -417,6 +436,17 @@ export class Tf2WorkerClient {
     derivedKey: string,
   ): Promise<StagedGame> {
     const started = performance.now()
+    const workloadPlan = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV
+      ? (globalThis as typeof globalThis & { __playsrcCommandWorkload?: import("./command-workload").CommandWorkload }).__playsrcCommandWorkload : undefined
+    if (workloadPlan) {
+      const { CommandWorkloadPlayer } = await import("./command-workload")
+      if (workloadPlan.generation !== generation || workloadPlan.bspSha256 !== await sha256(bsp) || workloadPlan.configurationSha256 !== configuration.sha256
+        || workloadPlan.configurationBytes !== configuration.byteLength || workloadPlan.profile !== profile) throw new Error("Workload installed content differs")
+      this.#workload?.close()
+      this.#workloadResults.length = 0; this.#workloadQueuedBytes = 0; this.#workloadTask = undefined; this.#workloadFailure = undefined; this.#workloadFinished = false; this.#workloadLive = false
+      this.#workload = new CommandWorkloadPlayer(workloadPlan, generation, (request, transfer) => this.#rawRequest(request, transfer))
+      ;(globalThis as any).__playsrcProfile.commandWorkload = this.#workload.receipt
+    }
     if (
       !Number.isSafeInteger(generation) ||
       generation < 1 ||
@@ -658,6 +688,9 @@ export class Tf2WorkerClient {
   async coverage(generation:number):Promise<readonly CoverageSample[]>{const response=await this.#request({kind:"read-coverage",generation});if(response.kind!=="coverage"||response.generation!==generation||!(response.payload instanceof ArrayBuffer))throw new Tf2WorkerError("WorkerFailed");const bytes=new Uint8Array(response.payload),view=new DataView(response.payload);if(bytes.length<12||new TextDecoder().decode(bytes.subarray(0,4))!=="PCOV"||view.getUint32(4,true)!==1||12+view.getUint32(8,true)*24!==bytes.length)throw new Tf2WorkerError("WorkerFailed");return Object.freeze(Array.from({length:view.getUint32(8,true)},(_,index)=>{const at=12+index*24,position=Object.freeze([view.getFloat32(at+8,true),view.getFloat32(at+12,true),view.getFloat32(at+16,true)]) as readonly[number,number,number];if(!position.every(Number.isFinite)||view.getUint32(at+20,true)!==0)throw new Tf2WorkerError("WorkerFailed");return Object.freeze({leaf:view.getUint32(at,true),cluster:view.getInt16(at+4,true),area:view.getUint16(at+6,true),position})}))}
 
   async discard(generation: number): Promise<void> {
+    if (this.#workload?.generation === generation) {
+      this.#workload.close(); this.#workload = undefined; this.#workloadResults.length = 0; this.#workloadQueuedBytes = 0; this.#workloadWake?.()
+    }
     const discarded = await this.#request({ kind: "discard", generation })
     if (discarded.kind !== "discarded" || discarded.generation !== generation) {
       throw new Tf2WorkerError("WorkerFailed")
@@ -720,7 +753,26 @@ export class Tf2WorkerClient {
     let stream = this.#snapshotStreams.get(generation)
     if (!stream) { stream = new SimulationSnapshotStream(); this.#snapshotStreams.set(generation, stream) }
     try {
+      if (this.#workload?.generation === generation && !this.#workloadLive) {
+        return await this.#observeWorkload(generation, nowSeconds, stream)
+      }
+      const realNowSeconds = nowSeconds
+      if (this.#workload?.generation === generation) {
+        nowSeconds -= this.#workload.epoch! / 1000
+        if (nowSeconds < this.#workload.plan.observes.at(-1)!.nowSeconds) throw new Error("Live input precedes the completed recorded program")
+      }
       const response = await this.#request({ kind: "observe", generation, nowSeconds, suspended, command, snapshotTick: stream.tick }, [command])
+      return this.#decodeSimulation(response, generation, realNowSeconds, suspended, stream, nowSeconds === realNowSeconds ? undefined : nowSeconds)
+    } catch (error) {
+      if (stream.tick === 0n && this.#snapshotStreams.get(generation) === stream) {
+        stream.close(); this.#snapshotStreams.delete(generation)
+      }
+      throw error
+    }
+  }
+
+  #decodeSimulation(response: WorkerResponse, generation: number, nowSeconds: number, suspended: boolean,
+    stream: SimulationSnapshotStream, recordedNowSeconds?: number): readonly SimulationPublication[] {
       if (response.kind !== "simulation" || response.generation !== generation || !(response.output instanceof ArrayBuffer)) {
         throw new Tf2WorkerError("WorkerFailed")
       }
@@ -732,7 +784,8 @@ export class Tf2WorkerClient {
       if (profile?.active) {
         if (profile.simulation.length >= 16_384) profile.simulationDropped += 1
         else profile.simulation.push({
-          requestId: response.id, at: started, nowSeconds, suspended, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
+          requestId: response.id, at: started, nowSeconds,
+          ...(recordedNowSeconds === undefined ? {} : { recordedNowSeconds }), suspended, decodeMilliseconds: performance.now() - started, bytes: response.output.byteLength,
           replayAttack: response.replayAttack ? { ...response.replayAttack, hostTick: String(response.replayAttack.hostTick) } : null,
           publications: publications.map(publication => ({
             hostFrame: String(publication.hostFrame), firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick),
@@ -744,12 +797,60 @@ export class Tf2WorkerClient {
         })
       }
       return publications
-    } catch (error) {
-      if (stream.tick === 0n && this.#snapshotStreams.get(generation) === stream) {
-        stream.close(); this.#snapshotStreams.delete(generation)
-      }
-      throw error
+  }
+
+  async #observeWorkload(generation: number, nowSeconds: number, stream: SimulationSnapshotStream): Promise<readonly SimulationPublication[]> {
+    const owner = this.#workload!
+    if (!this.#workloadTask) {
+      // Recorded input deadlines, not renderer availability, own replay cadence.
+      // Every real response is retained and decoded in order; a slow renderer
+      // consumes all intervening publications through the normal merge path.
+      this.#workloadTask = (async () => {
+        for (const recorded of owner.plan.observes) {
+          const entry = await owner.next(BigInt(recorded.snapshotTick), nowSeconds * 1000)
+          const view = { yaw: owner.receipt.yaw, pitch: owner.receipt.pitch }
+          const response = await this.#rawRequest({ kind: "observe", generation, nowSeconds: entry.nowSeconds,
+            suspended: entry.suspended, command: entry.command, snapshotTick: BigInt(recorded.snapshotTick) }, [entry.command])
+          if (this.#workload !== owner) return
+          if (response.kind !== "simulation" || !(response.output instanceof ArrayBuffer)) throw new Error("Recorded observe response differs")
+          if (this.#workloadResults.length >= 1024 || this.#workloadQueuedBytes + response.output.byteLength > 64 * 1024 * 1024) throw new Error("Recorded publication queue overflow")
+          this.#workloadQueuedBytes += response.output.byteLength
+          this.#workloadResults.push({ response, nowSeconds: entry.nowSeconds, suspended: entry.suspended, due: entry.due, ...view })
+          owner.receipt.publicationQueueHighWater = Math.max(owner.receipt.publicationQueueHighWater, this.#workloadResults.length)
+          owner.receipt.publicationQueueBytesHighWater = Math.max(owner.receipt.publicationQueueBytesHighWater, this.#workloadQueuedBytes)
+          this.#workloadWake?.()
+        }
+      })().catch(error => { if (this.#workload === owner) this.#workloadFailure = error }).finally(() => { if (this.#workload === owner) this.#workloadFinished = true; this.#workloadWake?.() })
     }
+    while (!this.#workloadResults.length) {
+      if (this.#workload !== owner) throw new Error("Workload generation retired")
+      if (this.#workloadFailure) throw this.#workloadFailure
+      if (this.#workloadFinished) throw new Error("Authenticated workload exhausted")
+      await new Promise<void>(resolve => { this.#workloadWake = resolve })
+    }
+    // The initial-publication bootstrap deliberately consumes one response at
+    // a time until the first fixed tick; it must not discard later event batches.
+    const count = stream.tick === 0n ? 1 : this.#workloadResults.length
+    const publications: SimulationPublication[] = []
+    for (const entry of this.#workloadResults.splice(0, count)) {
+      owner.receipt.consumedPackets++
+      if (entry.response.kind === "simulation") this.#workloadQueuedBytes -= entry.response.output.byteLength
+      const decoded = this.#decodeSimulation(entry.response, generation, entry.due / 1000, entry.suspended, stream, entry.nowSeconds)
+      for (const publication of decoded) publications.push(Object.freeze({ ...publication, recordedCommandView: { yaw: entry.yaw, pitch: entry.pitch } }))
+    }
+    if (owner.ended && !this.#workloadResults.length) await this.#workloadTask
+    return publications
+  }
+
+  /** End the finite input program, not the game. Keep the same real/source
+   * clock offset, and let the caller retire only its unadmitted live samples. */
+  finishRecordedInput(generation: number, unadmittedLiveSamples: number): boolean {
+    if (!this.#workload || this.#workload.generation !== generation || this.#workloadLive
+      || !this.#workloadFinished || this.#workloadResults.length || this.#workloadFailure) return false
+    this.#workloadLive = true
+    const realMilliseconds = performance.now()
+    this.#workload.receipt.handoff = { realMilliseconds, sourceSeconds: (realMilliseconds - this.#workload.epoch!) / 1000, unadmittedLiveSamples }
+    return true
   }
 
   snapshotMetrics(generation: number): Readonly<SimulationSnapshotStream["metrics"]> | undefined {

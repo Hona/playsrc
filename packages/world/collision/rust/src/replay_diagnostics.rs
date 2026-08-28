@@ -1,5 +1,10 @@
 //! Offline differential replay only; absent from ordinary game builds.
 use std::cell::Cell;
+
+/// Isolated owner for native retained-input checks; not an alternate algorithm.
+pub fn ordered_brushes(world: &crate::World, head: i32, start: [f32; 3], end: [f32; 3], hull: crate::Hull) -> Result<Vec<usize>, crate::Error> {
+    world.ordered_brushes(head, start, end, hull)
+}
 /// Triangles, hierarchy nodes, distinct edge planes, retained heap bytes.
 pub fn displacement_storage(world: &crate::World) -> [usize; 4] {
     crate::displacement::storage(world)
