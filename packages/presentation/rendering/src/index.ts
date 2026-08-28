@@ -3,6 +3,7 @@ import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
 import { SourceParticleDepth } from "./particle-depth"
+import { createWorldClipGroup, prepareWorldViewPipelines } from "./world-pipeline-preparation"
 export type { SpriteCardInput } from "./sprite-card"
 import * as TSL from "three/tsl"
 import {
@@ -277,6 +278,9 @@ export {
 } from "./runtime-map"
 
 const MAX_EFFECTS = 4_096
+// Native requests can expand into player, carried-item and wearable poses. This
+// bounded rendered-variant cache is distinct from the 128-request wire bound.
+const MAX_PREPARED_MODEL_VARIANTS = 192
 const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
 const SOURCE_MODEL_BIND_GEOMETRY = new WeakMap<THREE.BufferGeometry, Readonly<{ geometry: THREE.BufferGeometry; palette: Uint16Array }>>()
@@ -1591,8 +1595,8 @@ class RendererOwner implements Renderer {
   #timestampPending = false
   #scene = new THREE.Scene()
   readonly #viewFogUniforms = createSourceViewFogUniforms()
-  #waterClipping = new THREE.ClippingGroup()
-  #waterClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+  #waterClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 0), 0)
+  #waterClipping = createWorldClipGroup(this.#waterClipPlane)
   #world = new THREE.Group()
   #effects = new THREE.Group()
   #particles = new THREE.Group()
@@ -1609,7 +1613,7 @@ class RendererOwner implements Renderer {
   #modelPanelCamera = new THREE.PerspectiveCamera(25, 1, 7, 1000)
   #modelPanelInstances = new Map<string, { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>()
   readonly #retainedModelPanels = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(32, retained => this.#disposeDynamicInstance(retained.instance))
-  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(96, retained => this.#disposeDynamicInstance(retained.instance))
+  readonly #preparedModelInstances = new RetainedModelCache<{ model: string; instance: THREE.Group; meshes?: THREE.Mesh[] }>(MAX_PREPARED_MODEL_VARIANTS, retained => this.#disposeDynamicInstance(retained.instance))
   #viewModelInstances = new Map<number, RetainedViewModel>()
   // Detached occurrences share a bounded, generation-owned residency budget.
   // Never substitute one actor's mutable materials or skeleton for another's.
@@ -1718,8 +1722,6 @@ class RendererOwner implements Renderer {
     this.#scene.matrixAutoUpdate = false
     ;(this.#scene as THREE.Scene & { fogNode?: unknown }).fogNode = sourceViewFogNode(this.#viewFogUniforms)
     this.#waterClipping.matrixAutoUpdate = false
-    this.#waterClipping.enabled = false
-    this.#waterClipping.clippingPlanes = [this.#waterClipPlane]
     this.#world.matrixAutoUpdate = false
     this.#scene.background = null
     this.#waterClipping.add(this.#world, this.#effects, this.#particles)
@@ -2569,7 +2571,8 @@ class RendererOwner implements Renderer {
     this.#requireReady()
     const assets = this.#active ?? this.#panelAssets
     if (!assets || this.#renderBusy || !this.#active && models.some((model) => model.pass !== "panel")) throw new RenderingError("InvalidState", "model pipeline preparation requires admitted model assets")
-    if (models.length + models.filter(model => model.unposedPanel).length > 96) throw new RenderingError("BoundExceeded", "model pipeline preparation exceeds the resident model bound")
+    const variantCount=models.length+models.filter(model=>model.unposedPanel).length
+    if (variantCount > MAX_PREPARED_MODEL_VARIANTS) throw new RenderingError("BoundExceeded", `model pipeline preparation exceeds the resident model bound: ${variantCount}/${MAX_PREPARED_MODEL_VARIANTS}`)
     const ordinal = this.#loadOrdinal
     const owner = assets, backend = this.#backend, deviceGeneration = this.#deviceGeneration
     const checkOwner = () => {
@@ -2581,7 +2584,7 @@ class RendererOwner implements Renderer {
     }
     const staged: { key: string; retained: { model: string; instance: THREE.Group; meshes?: THREE.Mesh[] } }[] = []
     const restoreVisibility: (() => void)[] = []
-    const viewModels = new THREE.Group(), panels = new THREE.Group(), world = new THREE.Group()
+    const viewModels = new THREE.Group(), panels = new THREE.Group(), world = createWorldClipGroup(this.#waterClipPlane)
     viewModels.layers.set(1)
     const previousFog = this.#scene.fog as THREE.Fog | null
     const keys = new Set<string>()
@@ -2652,7 +2655,7 @@ class RendererOwner implements Renderer {
           checkOwner()
         }
         this.#setSceneFog(this.#fog(fog))
-        if (world.children.length) await backend.compileAsync(world, this.#camera, this.#scene)
+        if (world.children.length) await prepareWorldViewPipelines(backend,world,this.#camera,this.#scene,world,this.#waterPreparationTargets())
       })
       checkOwner()
       for (const { key, retained } of staged) {
@@ -2695,9 +2698,12 @@ class RendererOwner implements Renderer {
       // The retained one-quad layouts use the exact authored material closure,
       // attributes and main-pass attachments. compileAsync submits no pixels.
       await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
-        if (owner.particlePipelineMeshes.children.length) await backend.compileAsync(owner.particlePipelineMeshes, this.#camera, this.#scene)
         await this.#particleVisibility.prepare()
-        if("legacyVisuals" in owner&&owner.legacyVisuals?.length)await owner.legacyVisuals[0]!.prepareMaterials(backend,this.#camera,this.#scene)
+        const clipping=createWorldClipGroup(this.#waterClipPlane)
+        clipping.add(owner.particlePipelineMeshes)
+        try{if (owner.particlePipelineMeshes.children.length) await prepareWorldViewPipelines(backend,clipping,this.#camera,this.#scene,clipping,this.#waterPreparationTargets())}
+        finally{clipping.remove(owner.particlePipelineMeshes)}
+        if("legacyVisuals" in owner&&owner.legacyVisuals?.length)await owner.legacyVisuals[0]!.prepareMaterials(backend,this.#camera,this.#scene,this.#waterClipPlane,this.#waterPreparationTargets())
       })
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
@@ -2728,8 +2734,13 @@ class RendererOwner implements Renderer {
   captureLegacyVisualEvidence() { return this.#active?.legacyVisuals?.map(view=>view.evidence()) ?? [] }
   readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
 
+  #waterPreparationTargets(scene=this.#active):THREE.RenderTarget[]{
+    return scene?[scene.reflectionTarget,scene.refractionTarget].filter((target):target is THREE.RenderTarget=>target!==null):[]
+  }
+
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
     this.#checkAbort(signal, ordinal)
+    const waterTargets=this.#waterPreparationTargets(scene)
     const visibleLeaves = new Set(leaves)
     const eligibleProps = new Set(scene.staticPropInstances.filter(prop =>
       prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
@@ -2755,14 +2766,14 @@ class RendererOwner implements Renderer {
         if (sources) return sources.some(source => eligibleSources.has(source))
         for (let parent: THREE.Object3D | null = mesh; parent; parent = parent.parent) {
           if (eligibleGroups.has(parent)) return true
-          if (parent === scene.mainStaticProps || parent === scene.skyStaticProps) return false
+           if (parent === scene.mainStaticProps || parent === scene.skyStaticProps) return false
         }
         return true
       },
     )
     const started = performance.now()
     try {
-      await this.#backend.compileAsync(this.#scene, this.#camera)
+      await prepareWorldViewPipelines(this.#backend,this.#scene,this.#camera,this.#scene,this.#waterClipping,waterTargets)
       this.#checkAbort(signal, ordinal)
       const profile = browserFrameProfiler()
       if (profile) {
@@ -3701,7 +3712,7 @@ class RendererOwner implements Renderer {
         }
         modelTemplates.set(model.logicalPath, template)
       }
-      // VHV and unlit occurrences share only an exact template/pass material.
+      // VHV and unlit occurrences share the exact authored material/facing/pass.
       // Fade is draw data, not graph identity; runtime-lit graphs still capture
       // their own authored lighting. Opaque batching remains unchanged.
       if(request.staticProps){const props=request.staticProps,profile=this.configuration.lightingProfile==="hdr"?1:0,sharedStaticMaterials=new Map<string,THREE.MeshBasicNodeMaterial>(),fadedMaterials=new Map<THREE.MeshBasicNodeMaterial,THREE.MeshBasicNodeMaterial>()
@@ -3714,7 +3725,7 @@ class RendererOwner implements Renderer {
           let colorIndex=0
           for(const mesh of meshes){if(lightingKind===0){const sourceGeometry=mesh.geometry,geometry=new THREE.BufferGeometry();for(const name of Object.keys(sourceGeometry.attributes))geometry.setAttribute(name,sourceGeometry.getAttribute(name));geometry.setIndex(sourceGeometry.getIndex());geometry.boundingBox=sourceGeometry.boundingBox;geometry.boundingSphere=sourceGeometry.boundingSphere;const color=colorMeshes[colorIndex++];const position=geometry.getAttribute("position");if(!color||color.vertexCount!==position.count||color.colors.length!==position.count*4)throw new RenderingError("IdentityMismatch","static-prop VHV mesh order differs");geometry.setAttribute("staticLighting",new THREE.Uint8BufferAttribute(color.colors,4,true));disposables.add(geometry);mesh.geometry=geometry}
             const original=mesh.material;if(Array.isArray(original)||!(original instanceof THREE.MeshBasicNodeMaterial))throw new RenderingError("UnsupportedFeature","static-prop model material family is unavailable")
-            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=lightingKind===0||unlit?`${original.uuid}:${unlit?"unlit":"vertex"}:${Number(fading)}`:undefined
+            const identity=String(mesh.userData.materialIdentity),shader=request.modelMaterials?.get(identity.toLowerCase())?.shader,unlit=shader==="unlit-generic"||shader==="unlit-two-texture",fading=(props.flags[propIndex]!&1)!==0,sharingKey=lightingKind===0||unlit?`${identity.toLowerCase()}:${original.side}:${unlit?"unlit":"vertex"}:${Number(fading)}`:undefined
             if(fading)bindStaticPropFade(mesh,fadeUniform)
             let material=sharingKey===undefined?undefined:sharedStaticMaterials.get(sharingKey)
             if(!material){
@@ -4214,7 +4225,7 @@ class RendererOwner implements Renderer {
         this.#modelPanelCamera.updateProjectionMatrix()
         const particleCamera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: presentation.verticalFovDegrees, near: presentation.near, far: presentation.far }
         let particlePool = this.#panelParticlePools.get(panel.identity)
-        if (!particlePool) { particlePool = { group: new THREE.Group(), meshes: [], ranges: [] }; this.#panelParticlePools.set(panel.identity, particlePool) }
+        if (!particlePool) { particlePool = { group: createWorldClipGroup(), meshes: [], ranges: [] }; this.#panelParticlePools.set(panel.identity, particlePool) }
         this.#stageParticleBatches(panel.particles ?? [], particleCamera, particlePool)
         this.#modelPanelScene.add(particlePool.group)
         this.#backend.setViewport(x, y, width, height)
@@ -4916,21 +4927,19 @@ class RendererOwner implements Renderer {
   }
 
   #setClip(clip: WaterFramePass["clip"]): () => void {
-    const previousEnabled = this.#waterClipping.enabled
     const previousNormal = this.#waterClipPlane.normal.z
     const previousConstant = this.#waterClipPlane.constant
     if (clip) {
       const direction = clip.keep === "above" ? 1 : -1
       this.#waterClipPlane.normal.set(0, 0, direction)
       this.#waterClipPlane.constant = -direction * clip.height
-      this.#waterClipping.enabled = true
     } else {
-      this.#waterClipping.enabled = false
+      this.#waterClipPlane.normal.set(0,0,0)
+      this.#waterClipPlane.constant=0
     }
     return () => {
       this.#waterClipPlane.normal.set(0, 0, previousNormal)
       this.#waterClipPlane.constant = previousConstant
-      this.#waterClipping.enabled = previousEnabled
     }
   }
 

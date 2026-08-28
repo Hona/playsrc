@@ -41,7 +41,7 @@ test("native world sprites, ignore-depth sprites and overlays retain separate dr
 test("legacy pipelines compile every authored frame for world and late-pass contexts before use",async()=>{
   const backend={device:{},finishRender:()=>{}},materials=[new THREE.MeshBasicMaterial(),new THREE.MeshBasicMaterial()]
   const pool=new LegacyVisuals(backend,[materials]),world=new THREE.Scene(),camera=new THREE.PerspectiveCamera(),scenes:THREE.Scene[]=[]
-  const renderer={compileAsync:async(group:THREE.Group,_camera:THREE.Camera,scene:THREE.Scene)=>{
+  const renderer={getRenderTarget:()=>null,setRenderTarget:()=>{},compileAsync:async(group:THREE.Group,_camera:THREE.Camera,scene:THREE.Scene)=>{
     expect(group.children).toHaveLength(2)
     const mesh=group.children[0] as THREE.Mesh
     expect(Object.keys(mesh.geometry.attributes).sort()).toEqual(["legacyColor","legacyFog","legacyHdr","position","uv"])
