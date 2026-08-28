@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
 import { localJobCommand, localJobEnvironment, prepareLocalJob, runLocalJob, validateRevision } from "../src/local-job"
@@ -72,9 +73,8 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     if (process.platform === "win32") {
       const token = randomUUID()
       await writeFile(path.join(job.directory, `${token}-launch.log`), "Error: rejected before a command started")
-      const status = Bun.spawnSync(["powershell.exe", "-NoProfile", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Result", "-Job", job.id, "-Task", `playsrc-local-job-${token}`], { timeout: 10_000 })
-      expect(status.exitCode).toBe(0)
-      const observed = JSON.parse(status.stdout.toString())
+      const status = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Result", "-Job", job.id, "-Task", `playsrc-local-job-${token}`], { timeout: 10_000, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+      const observed = JSON.parse(status)
       expect(observed.result).toBeNull()
       expect(observed.launchError).toContain("rejected before a command")
     }
