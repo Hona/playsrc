@@ -40,7 +40,7 @@ export function requireStartupNative(value: StartupNativeAdmission) {
     || !value.targetId || !Number.isFinite(value.idleMilliseconds) || value.idleMilliseconds<0) throw new Error("Static startup physical window admission failed")
 }
 
-export async function captureStaticStartup(driver: StaticStartupDriver, target: string) {
+export async function captureStaticStartupPhase(driver: StaticStartupDriver, target: string, mode: "cold" | "warm-upgrade") {
   const startedAt = Date.now(), deadline = startedAt + 145_000
   const runs: any[] = [], native: StartupNativeAdmission[] = []
   let terminal: StartupObservation | undefined
@@ -55,7 +55,7 @@ export async function captureStaticStartup(driver: StaticStartupDriver, target: 
   const initial = await driver.native(); requireStartupNative(initial); native.push(initial)
   if (initial.idleMilliseconds < 2000) throw new Error("Static startup requires genuine two-second idle admission")
   try {
-    for (const mode of ["cold", "warm-upgrade"] as const) {
+    {
       const run: any = { mode, startedAt: Date.now(), states: [], movie: [] }; runs.push(run)
       await driver.navigate(mode)
       const startupDeadline = Math.min(deadline, Date.now() + 50_000)
@@ -84,7 +84,7 @@ export async function captureStaticStartup(driver: StaticStartupDriver, target: 
       const menuNative = await driver.native(); requireStartupNative(menuNative); native.push(menuNative)
       run.menu = { state: menu, pixels: startupPixelEvidence(await driver.screenshot(`${mode}-menu`)) }
       await driver.action("open-map", target)
-      const mapDeadline = Math.min(deadline, Date.now() + 75_000)
+      const mapDeadline = Math.min(deadline - 5000, Date.now() + 110_000)
       let team = false, playerClass = false, consoleClosed = false, firstFrame: StartupObservation | undefined, playable: StartupObservation | undefined
       while (Date.now() < mapDeadline) {
         const state = await read(); run.states.push(state)
@@ -113,16 +113,33 @@ export async function captureStaticStartup(driver: StaticStartupDriver, target: 
 }
 
 export type StaticStartupReceipt = {
-  schema: "playsrc-static-startup-v1"; packageSha256: string; wasmSha256: string; previousPackageSha256: string
+  schema: "playsrc-static-startup-v2"; packageSha256: string; wasmSha256: string; previousPackageSha256: string
+  profileSha256: string
   previousEntryUsed: boolean; upgradeNavigations: number; capture: { startedAt: number; endedAt: number; native: StartupNativeAdmission[]; runs: any[] }
   bootFailure: { phase: string; visible: boolean; text: string; pixels: ReturnType<typeof startupPixelEvidence>; native: StartupNativeAdmission }
 }
 
-export function staticStartupReceipt(identity: Omit<StaticStartupReceipt, "schema" | "capture">, capture: Awaited<ReturnType<typeof captureStaticStartup>>): StaticStartupReceipt {
-  const receipt: StaticStartupReceipt = { schema: "playsrc-static-startup-v1", ...identity, capture: {
-    startedAt: capture.startedAt, endedAt: capture.endedAt, native: capture.native,
-    runs: capture.runs.map(run => ({ mode: run.mode, movie: run.movie, menu: run.menu, playable: run.playable,
-      guard: { observations: run.states.length, valid: run.states.length > 0 && run.states.every((s: StartupObservation) => s.visible && s.focused && !s.unexpectedInput && s.phase !== "Failed" && s.startupState !== "Failed" && s.startupState !== "Skipped") } })),
+export type StaticStartupPhase = { profileSha256:string;startedAt:number;endedAt:number;native:StartupNativeAdmission[];runs:any[] }
+
+export function compactStaticStartupPhase(capture: Awaited<ReturnType<typeof captureStaticStartupPhase>>,profileSha256:string): StaticStartupPhase {
+  return {...capture,profileSha256,runs:capture.runs.map(run=>({mode:run.mode,profileSha256,startedAt:run.startedAt,endedAt:run.endedAt,movie:run.movie,menu:run.menu,playable:run.playable,
+    guard:{observations:run.states.length,valid:run.states.length>0&&run.states.every((s:StartupObservation)=>s.visible&&s.focused&&!s.unexpectedInput&&s.phase!=="Failed"&&s.startupState!=="Failed"&&s.startupState!=="Skipped")}}))}
+}
+
+export function assertStaticStartupPhase(value:StaticStartupPhase,mode:"cold"|"warm-upgrade") {
+  if(!value||!/^[0-9a-f]{64}$/.test(value.profileSha256)||value.runs?.[0]?.profileSha256!==value.profileSha256||value.native?.length!==5||value.runs?.length!==1||value.endedAt<=value.startedAt||value.endedAt-value.startedAt>150_000)throw new Error("Static startup phase is incomplete or exceeds its bound")
+  value.native.forEach(requireStartupNative)
+  if(value.native[0]!.idleMilliseconds<2000)throw new Error("Static startup phase lacks idle admission")
+  if(value.native.some(native=>["browserPid","windowId","targetId"].some(key=>native[key as keyof StartupNativeAdmission]!==value.native[0]![key as keyof StartupNativeAdmission])))throw new Error("Static startup phase window ownership changed")
+  validateRun(value.runs[0],mode==="cold"?0:1)
+}
+
+export function staticStartupReceipt(identity: Omit<StaticStartupReceipt, "schema" | "capture" | "profileSha256">, cold: StaticStartupPhase, warm: StaticStartupPhase): StaticStartupReceipt {
+  assertStaticStartupPhase(cold,"cold");assertStaticStartupPhase(warm,"warm-upgrade")
+  if(cold.profileSha256!==warm.profileSha256)throw new Error("Warm startup did not retain its accepted cold profile")
+  const receipt: StaticStartupReceipt = { schema: "playsrc-static-startup-v2", ...identity,profileSha256:cold.profileSha256, capture: {
+    startedAt: cold.startedAt, endedAt: warm.endedAt, native: [...cold.native,...warm.native],
+    runs: [...cold.runs,...warm.runs],
   } }
   assertStaticStartupReceipt(receipt, identity)
   return receipt
@@ -130,18 +147,29 @@ export function staticStartupReceipt(identity: Omit<StaticStartupReceipt, "schem
 
 export function assertStaticStartupReceipt(value: unknown, expected: { packageSha256: string; wasmSha256: string }): asserts value is StaticStartupReceipt {
   const receipt = value as StaticStartupReceipt
-  if (!receipt || receipt.schema !== "playsrc-static-startup-v1" || receipt.packageSha256 !== expected.packageSha256
+  if (!receipt || receipt.schema !== "playsrc-static-startup-v2" || receipt.packageSha256 !== expected.packageSha256
     || receipt.wasmSha256 !== expected.wasmSha256 || !/^[0-9a-f]{64}$/.test(receipt.previousPackageSha256) || receipt.previousPackageSha256===receipt.packageSha256 || receipt.previousEntryUsed !== true || receipt.upgradeNavigations!==2
-    || !receipt.capture || receipt.capture.endedAt <= receipt.capture.startedAt || receipt.capture.endedAt - receipt.capture.startedAt > 150_000
-    || receipt.capture.native?.length !== 9 || receipt.capture.runs?.length !== 2) throw new Error("Exact static-package startup acceptance is absent or mismatched")
+    || !/^[0-9a-f]{64}$/.test(receipt.profileSha256)||!receipt.capture || receipt.capture.endedAt <= receipt.capture.startedAt
+    || receipt.capture.native?.length !== 10 || receipt.capture.runs?.length !== 2) throw new Error("Exact static-package startup acceptance is absent or mismatched")
   receipt.capture.native.forEach(requireStartupNative)
   if(!receipt.bootFailure||receipt.bootFailure.phase!=="Failed"||!receipt.bootFailure.visible||!receipt.bootFailure.text
     ||receipt.bootFailure.pixels?.nonblack<1024||receipt.bootFailure.pixels?.colors<16||!/^[0-9a-f]{64}$/.test(receipt.bootFailure.pixels?.sha256??""))throw new Error("Static startup receipt lacks visible independent boot failure evidence")
   requireStartupNative(receipt.bootFailure.native)
-  if (receipt.capture.native[0]!.idleMilliseconds < 2000) throw new Error("Static startup receipt has no idle admission")
-  if ([...receipt.capture.native,receipt.bootFailure.native].some(value => ["browserPid", "windowId", "targetId"].some(key => value[key as keyof StartupNativeAdmission] !== receipt.capture.native[0]![key as keyof StartupNativeAdmission]))) throw new Error("Static startup native window ownership changed")
+  if ([receipt.capture.native[0]!,receipt.capture.native[5]!].some(value=>value.idleMilliseconds < 2000)) throw new Error("Static startup receipt has no idle admission")
+  for(const [start,end] of [[0,5],[5,10]]){
+    const group=receipt.capture.native.slice(start,end)
+    if(start===5)group.push(receipt.bootFailure.native)
+    if(group.some(value=>["browserPid","windowId","targetId"].some(key=>value[key as keyof StartupNativeAdmission]!==receipt.capture.native[start!]![key as keyof StartupNativeAdmission])))throw new Error("Static startup native window ownership changed")
+  }
   for (const [index, run] of receipt.capture.runs.entries()) {
+    if(run.profileSha256!==receipt.profileSha256)throw new Error("Static startup receipt changed browser profiles")
+    validateRun(run,index)
+  }
+}
+
+function validateRun(run:any,index:number) {
     if (run.mode !== ["cold", "warm-upgrade"][index] || run.movie?.length !== 2 || !run.menu || !run.playable
+      || !(run.endedAt>run.startedAt) || run.endedAt-run.startedAt>145_000
       || run.movie[1].time < run.movie[0].time + 1 || run.movie[0].time < 1 || run.movie.some((m: any) => m.muted || m.paused)
       || run.menu.state.phase !== "MainMenu" || run.menu.state.startupState !== "Completed"
       || run.playable.state.phase !== "Ready" || run.playable.state.frame < run.playable.firstFrame + 2
@@ -153,5 +181,4 @@ export function assertStaticStartupReceipt(value: unknown, expected: { packageSh
     const images = [...run.movie.map((m: any) => m.pixels), run.menu.pixels, run.playable.pixels]
     if (images.some(p => !p || !/^[0-9a-f]{64}$/.test(p.sha256) || p.nonblack < 1024 || p.colors < 16 || !(p.width > 0 && p.height > 0))
       || run.movie[0].pixels.sha256 === run.movie[1].pixels.sha256) throw new Error("Static startup receipt lacks real changing pixels")
-  }
 }

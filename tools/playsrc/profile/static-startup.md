@@ -6,12 +6,13 @@ anything. `bun run prepare:static-startup --approved` instead selects the commit
 approved release and verifies its generated-binding closure and WASM interface.
 The final JSON line names the package directory and exact WASM file.
 
-Run the headed gate with those absolute paths:
+Run the cold headed phase with those absolute paths:
 
 ```sh
 PLAYSRC_STATIC_PACKAGE=/absolute/static-package \
 PLAYSRC_STATIC_WASM=/absolute/selected.wasm \
 PLAYSRC_PREVIOUS_STATIC_PACKAGE=/absolute/retained-previous-package \
+PLAYSRC_STARTUP_CASE=cold \
 bun run profile:static-startup
 ```
 
@@ -20,6 +21,11 @@ assets. The gate uses its entry once, then requires the application's one genuin
 generation-recovery navigation to the candidate. It preserves the same browser
 profile and verifies `stored` → `hit` for the application's compatible map cache;
 it does not claim an HTTP-cache benchmark while request routing is active.
+After cold success, repeat the command with `PLAYSRC_STARTUP_CASE=warm-upgrade`
+and `PLAYSRC_STATIC_COLD_PHASE=/absolute/cold-run/startup-phase.json`. The warm
+phase may reopen only that accepted, gate-owned browser profile. Each phase has
+its own checked lock, fresh idle/window admission and three-minute ceiling;
+cold success alone is not a release receipt.
 
 Only normal headed Chrome, an unlocked physical desktop, genuine two-second idle
 admission, and the checked machine-wide lock are admitted. No autoplay override,
