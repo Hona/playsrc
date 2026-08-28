@@ -11,6 +11,6 @@ test("GPU engine percentages retain native status and precise clocks without com
 
 test.skipIf(process.platform !== "win32")("native GPU reader parses before a headed capture is attempted", () => {
   const file = fileURLToPath(new URL("../profile/process-gpu.ps1", import.meta.url)).replaceAll("'", "''")
-  const script = `$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){throw ($errors|Out-String)}`
+  const script = `$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){throw ($errors|Out-String)};Import-Module Microsoft.PowerShell.Diagnostics;if(![Microsoft.PowerShell.Commands.GetCounter.PerformanceCounterSample].GetProperty('Timestamp100NSec')){throw 'Native counter clock property missing'}`
   expect(() => execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 5000 })).not.toThrow()
 })

@@ -8,6 +8,7 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lo
 import { exactWasmReplayRuntime } from "../profile/exact-wasm-replay"
 import { installNodeWorkerHost } from "../profile/node-worker-host.mjs"
 import { parseGameplayReplay } from "../profile/gameplay-replay"
+import { replayMutation } from "../profile/replay-gameplay"
 import { decodeAdmissionMetrics, MAX_ADMISSION_EVENTS, ADMISSION_EVENT_BYTES } from "../../../games/tf2/browser/src/admission-metrics"
 import { summarizeObserveStages } from "../profile/observe-stages"
 import { Session } from "node:inspector/promises"
@@ -47,6 +48,7 @@ let runtime: Awaited<ReturnType<typeof exactWasmReplayRuntime>> | undefined
 try {
   runtime = await exactWasmReplayRuntime(source, directory, 2)
   const e = await runtime.instantiate(await readFile(path.join(source, "tf2_wasm_bg.wasm")), 0)
+  if (replay.initialEquipment) replayMutation(e, 0, { kind: 9, bytes: Buffer.concat([Buffer.from([0]), replay.initialEquipment]) })
   const copy = (bytes: Uint8Array) => { const pointer = e.playsrc_alloc(bytes.length) >>> 0; new Uint8Array(e.memory.buffer, pointer, bytes.length).set(bytes); return pointer }
   const sections: { pointer: number; length: number }[] = []
   for (const descriptor of graph.chunks.filter(chunk => chunk.roles.includes("gameplay"))) {
@@ -91,12 +93,8 @@ try {
       const length = e.playsrc_simulation_output_length(handle), output = e.playsrc_simulation_output_pointer(handle) >>> 0
       publications.push(hash(new Uint8Array(e.memory.buffer, output, length)))
       observations.push({ index, active, milliseconds, bytes: length })
-    } else if (record.kind === 4) require(e.playsrc_team_select(handle, data.readUInt32LE(0)) === 1, "Team mutation failed")
-    else if (record.kind === 5 || record.kind === 6) {
-      const pointer = copy(data)
-      require(e[record.kind === 5 ? "playsrc_equipment_update" : "playsrc_jump_configure"](handle, pointer, data.length) === 1, "Mutation failed")
-      e.playsrc_free(pointer, data.length)
-    } else if (record.kind === 8) require(data.readUInt32LE(0) === 1, "Incomplete journal footer")
+    } else if ([4, 5, 6, 9, 10].includes(record.kind)) replayMutation(e, handle, record)
+    else if (record.kind === 8) require(data.readUInt32LE(0) === 1, "Incomplete journal footer")
     else require(record.kind === 2 || record.kind === 3, `Unsupported journal command ${record.kind}`)
   }
   const milliseconds = performance.now() - started, cpuMicroseconds = process.cpuUsage(cpu)

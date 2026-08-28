@@ -11,7 +11,7 @@ Get-Counter -Counter $counters -SampleInterval 1 -MaxSamples ($Seconds + 2) | Fo
     if ($sample.InstanceName -match '^pid_([0-9]+)_' -and $ids -contains [int]$Matches[1]) {
       $rows += [pscustomobject]@{
         at = $sample.Timestamp.ToUniversalTime().ToString('o')
-        timestamp100ns = [string]$sample.Timestamp100NS
+        timestamp100ns = [string]$sample.Timestamp100NSec
         instance = $sample.InstanceName
         pid = [int]$Matches[1]
         percent = $sample.CookedValue
