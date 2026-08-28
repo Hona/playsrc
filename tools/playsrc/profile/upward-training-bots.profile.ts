@@ -6,6 +6,7 @@ import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { applicationBuildIdentity } from "../src/build-identity"
 import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
 import { classInputViolations, prepareClassCapture } from "./class-input-sequence"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
@@ -71,7 +72,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity()
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
-  await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
   await page.addInitScript(() => {
     performance.setResourceTimingBufferSize(4096)
@@ -666,6 +667,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
           values: structuredClone((globalThis as any).__playsrcProfile.snapshotTransport ?? {}) as Record<string, number> },
       },
       capabilities: instrumentation.capabilities, gpuTimestamps: instrumentation.gpuTimestamps, losses: instrumentation.losses,
+      textureAllocation: (globalThis as any).__playsrcGpuTextureAccounting,
       gpuOperations: instrumentation.gpuOperations, gpuOperationsDropped: instrumentation.gpuOperationsDropped,
       deviceEvidence: { adapters: instrumentation.adapters, devices: instrumentation.devices, shaders: instrumentation.shaders,
         identitiesDropped: instrumentation.gpuIdentitiesDropped, shadersDropped: instrumentation.shadersDropped },
@@ -1065,6 +1067,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       compositorBackend: system?.gpu.auxAttributes?.displayType ?? system?.gpu.auxAttributes?.glImplementationParts ?? null,
       featureStatus: system?.gpu.featureStatus ?? null,
       timestamps: measurement.gpuTimestamps,
+      textureAllocation: measurement.textureAllocation,
       losses: measurement.losses,
       process: {
         id: gpuProcessAfter?.id ?? null,

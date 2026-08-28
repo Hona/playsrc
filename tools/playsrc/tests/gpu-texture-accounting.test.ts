@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { installGpuTextureAccounting } from "../profile/gpu-texture-accounting"
+import { installBrowserFrameProfiler } from "../profile/browser-frame-profiler"
 
 function fixture(serialized = false) {
   const calls = { create: 0, destroy: 0, write: 0 }
@@ -90,4 +91,18 @@ test("native failures and immutable normalized properties own accounting, not re
   expect(state.writeTextureCalls).toBe(0)
   fail(null); texture.destroy(); reconcile(state)
   expect(calls).toEqual({ create: 2, destroy: 2, write: 1 })
+})
+
+test("headed gameplay profiler chaining keeps active call counters separate from cumulative and live texture totals", () => {
+  const { state, device, queue, calls, host } = fixture(true)
+  const profile = installBrowserFrameProfiler({ ...host, performance: { now: () => 10 } })
+  const prior = device.createTexture({ size: [4, 4], format: "bc1-rgba-unorm" })
+  expect(profile.counters.textures).toBe(0)
+  profile.active = true
+  const next = device.createTexture({ size: [4, 4], format: "bc3-rgba-unorm" })
+  queue.writeTexture({ texture: next }, new Uint8Array(16), {}, {})
+  prior.destroy(); prior.destroy()
+  expect(profile.counters).toMatchObject({ textures: 1, textureWrites: 1, textureWriteBytes: 16, destroyedTextures: 2 })
+  expect(state).toMatchObject({ live: { textures: 1, compressedBytes: 16 }, created: { textures: 2, compressedBytes: 24 }, destroyedTextures: 1, writeTextureSourceBytes: 16 })
+  expect(calls).toEqual({ create: 2, destroy: 2, write: 1 }); reconcile(state)
 })
