@@ -33,6 +33,7 @@ export function writeParticleAppearance(
   arrays: ParticleAppearanceArrays,
   index: number,
   updates: readonly ParticleAttributeUpdate[],
+  tint = 1,
 ): void {
   const sheet = item.primarySheet!
   const current = sheet.current[0]!
@@ -45,10 +46,10 @@ export function writeParticleAppearance(
   const nextTop = Math.fround(next[1]!)
   const nextRight = Math.fround(next[2]!)
   const nextBottom = Math.fround(next[3]!)
-  const red = Math.fround(((item.color >> 16) & 255) / 255)
-  const green = Math.fround(((item.color >> 8) & 255) / 255)
-  const blue = Math.fround((item.color & 255) / 255)
-  const opacity = Math.fround(item.opacity)
+  const red = Math.fround(((item.color >> 16) & 255) / 255 * tint)
+  const green = Math.fround(((item.color >> 8) & 255) / 255 * tint)
+  const blue = Math.fround((item.color & 255) / 255 * tint)
+  const opacity = Math.fround(item.opacity * tint)
   const blend = Math.fround(sheet.blend)
 
   for (let vertex = 0; vertex < 4; vertex += 1) {

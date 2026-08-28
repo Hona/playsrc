@@ -2500,14 +2500,15 @@ fn operate(
                 }
             } else if operator.identity.eq_ignore_ascii_case("Rotation Basic") {
                 particle.roll += particle.roll_speed * dt.min(age) * strength;
-            } else if operator.identity.eq_ignore_ascii_case("Rotation Spin Roll") {
-                let stop = float_parameter(operator, "spin_stop_time", 0.0);
-                let rate = integer_parameter(operator, "spin_rate_degrees", 0) as f32
+            } else if operator.identity.eq_ignore_ascii_case("Rotation Spin Roll") || operator.identity.eq_ignore_ascii_case("Rotation Spin Yaw") {
+                let yaw = operator.identity.eq_ignore_ascii_case("Rotation Spin Yaw");
+                let stop = float_parameter(operator, if yaw { "yaw_stop_time" } else { "spin_stop_time" }, 0.0);
+                let rate = integer_parameter(operator, if yaw { "yaw_rate_degrees" } else { "spin_rate_degrees" }, 0) as f32
                     * std::f32::consts::PI
                     / 180.0
                     * std::f32::consts::TAU
                     * strength;
-                let minimum = integer_parameter(operator, "spin_rate_min", 0) as f32
+                let minimum = integer_parameter(operator, if yaw { "yaw_rate_min" } else { "spin_rate_min" }, 0) as f32
                     * std::f32::consts::PI
                     / 180.0
                     * std::f32::consts::TAU;
@@ -2516,8 +2517,11 @@ fn operate(
                 } else {
                     1.0
                 };
-                let delta = (rate * dt * fade).max(minimum * dt);
-                particle.roll = wrap_angle(particle.roll + delta);
+                if rate != 0.0 {
+                    let delta = if stop == 0.0 { (rate * dt) % std::f32::consts::TAU } else { rate * dt };
+                    let angle = if yaw { &mut particle.yaw } else { &mut particle.roll };
+                    *angle = wrap_angle(*angle + (delta * fade).max(minimum.abs() * dt));
+                }
             } else if operator.identity.eq_ignore_ascii_case("Movement Follow CP") {
                 let minimum = integer_parameter(operator, "starting control point", 0);
                 let maximum = integer_parameter(operator, "maximum end control point", 0);

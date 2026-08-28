@@ -16,6 +16,8 @@ export type ParticleQuad = Readonly<{
   radius: number
   rollRadians: number
   orientationType?: number
+  yawRadians?: number
+  materialShader?: "sprite-card" | "mesh-sprite"
 }>
 
 export type ParticleQuadCamera = Readonly<{
@@ -24,7 +26,7 @@ export type ParticleQuadCamera = Readonly<{
   pitchDegrees: number
 }>
 
-export type ParticleQuadWriter = (item: ParticleQuad, positions: Float32Array, offset: number) => void
+export type ParticleQuadWriter = (item: ParticleQuad, positions: Float32Array, offset: number) => number
 
 export function createParticleQuadWriter(camera: ParticleQuadCamera): ParticleQuadWriter {
   const yaw = camera.yawDegrees * DEGREES_TO_RADIANS
@@ -56,7 +58,7 @@ function writeQuad(
   cameraUpX: number,
   cameraUpY: number,
   cameraUpZ: number,
-): void {
+): number {
   const centerX = item.position[0]
   const centerY = item.position[1]
   const centerZ = item.position[2]
@@ -94,15 +96,32 @@ function writeQuad(
     positions[offset + 9] = firstX + deltaX
     positions[offset + 10] = firstY + deltaY
     positions[offset + 11] = firstZ + deltaZ
-    return
+    return 1
   }
 
   const worldOriented = item.orientationType === 2
-  const rightX = worldOriented ? 1 : cameraRightX
-  const rightY = worldOriented ? 0 : cameraRightY
-  const upX = worldOriented ? 0 : cameraUpX
-  const upY = worldOriented ? -1 : cameraUpY
-  const upZ = worldOriented ? 0 : cameraUpZ
+  let rightX = worldOriented ? 1 : cameraRightX
+  let rightY = worldOriented ? 0 : cameraRightY
+  let upX = worldOriented ? 0 : cameraUpX
+  let upY = worldOriented ? -1 : cameraUpY
+  let upZ = worldOriented ? 0 : cameraUpZ
+  let radius = item.radius, tint = 1
+  if (item.orientationType === 1) {
+    const mesh = item.materialShader === "mesh-sprite"
+    const deltaX = centerX - camera.position[0], deltaY = centerY - camera.position[1], deltaZ = centerZ - camera.position[2]
+    const distance = Math.hypot(deltaX, deltaY, deltaZ)
+    const basisX = mesh ? camera.position[0] : deltaX, basisY = mesh ? camera.position[1] : deltaY
+    const inverse = 1 / (Math.hypot(basisX, basisY) || 1)
+    const yaw = mesh ? 0 : item.yawRadians ?? 0, cosine = Math.cos(yaw), sine = Math.sin(yaw)
+    rightX = (-basisY * cosine + basisX * sine) * inverse
+    rightY = (basisX * cosine + basisY * sine) * inverse
+    upX = 0; upY = 0; upZ = mesh ? 1 : -1
+    if (mesh ? distance < radius * 0.5 : distance <= radius * 0.5) { radius = 0; tint = 0 }
+    else if (!mesh && radius > 0 && distance < radius * 2) {
+      const t = Math.min(1, (distance - radius * 0.5) / (radius * 0.5))
+      tint = t * t * (3 - 2 * t)
+    }
+  }
   const cosine = Math.cos(item.rollRadians)
   const sine = Math.sin(item.rollRadians)
   const rolledRightX = rightX * cosine + upX * sine
@@ -111,7 +130,6 @@ function writeQuad(
   const rolledUpX = upX * cosine - rightX * sine
   const rolledUpY = upY * cosine - rightY * sine
   const rolledUpZ = upZ * cosine
-  const radius = item.radius
 
   positions[offset] = centerX - rolledRightX * radius + rolledUpX * radius
   positions[offset + 1] = centerY - rolledRightY * radius + rolledUpY * radius
@@ -125,4 +143,5 @@ function writeQuad(
   positions[offset + 9] = centerX - rolledRightX * radius - rolledUpX * radius
   positions[offset + 10] = centerY - rolledRightY * radius - rolledUpY * radius
   positions[offset + 11] = centerZ - rolledRightZ * radius - rolledUpZ * radius
+  return tint
 }

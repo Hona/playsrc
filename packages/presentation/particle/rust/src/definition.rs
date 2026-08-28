@@ -669,6 +669,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Remap Distance to Control Point to Vector",
             "Rotation Basic",
             "Rotation Spin Roll",
+            "Rotation Spin Yaw",
             "Set Control Point Positions",
         ],
         FunctionCategory::Initializer => &[
@@ -790,6 +791,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "sequence_max",
             "spin_rate_min",
             "spin_rate_degrees",
+            "yaw_rate_degrees",
+            "yaw_rate_min",
             "oscillation field",
             "maximum emission per frame",
             "group id to affect",
@@ -892,7 +895,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             || (function
                 .identity
                 .eq_ignore_ascii_case("render_animated_sprites")
-                && (![0, 2].contains(&int_parameter(function, "orientation_type", 0))
+                && (!(0..=2).contains(&int_parameter(function, "orientation_type", 0))
                     || int_parameter(function, "orientation control point", -1) >= 0))
     } else if function
         .identity
@@ -1088,6 +1091,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "output minimum",
             "output maximum",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Rotation Spin Yaw") {
+        &["yaw_rate_degrees", "yaw_stop_time", "yaw_rate_min"]
     } else if function.identity.eq_ignore_ascii_case("Rotation Spin Roll") {
         &["spin_rate_degrees", "spin_stop_time", "spin_rate_min"]
     } else if function

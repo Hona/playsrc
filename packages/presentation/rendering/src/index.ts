@@ -4804,7 +4804,7 @@ class RendererOwner implements Renderer {
         || item.radius < 0
         || item.opacity < 0
         || item.opacity > 1
-        || (item.orientationType !== 0 && item.orientationType !== 2)
+        || !Number.isInteger(item.orientationType) || item.orientationType < 0 || item.orientationType > 2
         || !this.#active!.particleTextures.has(item.material.toLowerCase())
         || !item.primarySheet
       ) throw new RenderingError("MalformedInput", "particle draw item is invalid")
@@ -5229,8 +5229,8 @@ class RendererOwner implements Renderer {
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
       for (let vertex = 0; vertex < 4; vertex++) centers.set(item.position, index * 12 + vertex * 3)
-      writeParticleQuad(item, positions, index * 12)
-      writeParticleAppearance(item, arrays, index, updates)
+      const orientationTint = writeParticleQuad(item, positions, index * 12)
+      writeParticleAppearance(item, arrays, index, updates, orientationTint)
     }
     const vertices = (end - start) * 4
     const centerAttribute = geometry.getAttribute("particleCenter") as THREE.BufferAttribute
