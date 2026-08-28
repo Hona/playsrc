@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { assertWindowsConsole, assertWindowsIdle, parseWindowsDesktopState, type WindowsDesktopState } from "../profile/windows-desktop"
+import { assertWindowsConsole, assertWindowsIdle, consoleQueryDeadline, parseWindowsDesktopState, type WindowsDesktopState } from "../profile/windows-desktop"
 import { requireNativeDesktopPixels } from "../profile/native-startup"
 
 const unlocked: WindowsDesktopState = { consoleSessionId: 2, processSessionId: 2, level: 1, sessionId: 2, state: 0, flags: 1, protocol: 0, idleMilliseconds: 2_000 }
+
+test("an unresponsive console subprocess cannot block the supervisor's deadline", async () => {
+  await expect(consoleQueryDeadline(new Promise(() => {}), 5)).rejects.toThrow("admission deadline")
+  expect(await consoleQueryDeadline(Promise.resolve(unlocked), 50)).toBe(unlocked)
+})
 
 describe("read-only Windows headed admission", () => {
   test("native PNG receipts retain real capture bounds and reject substituted files or censored clocks", () => {

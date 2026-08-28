@@ -10,6 +10,7 @@ param(
   [string]$Target,
   [ValidateSet('wasm','producer','resources')][string]$Stage,
   [string]$Task,
+  [switch]$IncludeTrace,
   [switch]$Ready
 )
 $ErrorActionPreference = 'Stop'
@@ -79,6 +80,20 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
         if (![IO.Path]::GetFullPath($profileDirectory).StartsWith([IO.Path]::GetFullPath($config.sourceCacheDir), [StringComparison]::OrdinalIgnoreCase)) { throw 'Profiler report is outside the configured cache' }
         foreach ($artifact in Get-ChildItem -LiteralPath $profileDirectory -File | Where-Object { $_.Extension -in '.json','.png','.cpuprofile' -and $_.Length -le 16MB } | Sort-Object @{Expression={if ($_.Extension -eq '.png') {1} else {0}}},Name | Select-Object -First 64) {
           $files += @{name="profile/$($artifact.Name)";path=$artifact.FullName}
+        }
+        if ($IncludeTrace) {
+          $reportData = Get-Content -Raw (Join-Path $profileDirectory 'latest.json') | ConvertFrom-Json
+          $manifestName = $reportData.compositorEvidence.file
+          if ($manifestName -notmatch '^[a-f0-9]{64}\.manifest\.json$') { throw 'Invalid retained trace manifest' }
+          $kind = if ($reportData.entry -eq 'create-server') { '2fort-startup' } else { 'upward-training-bots' }
+          $evidence = Join-Path $config.sourceCacheDir "profiles/$kind/compositor-evidence"
+          $manifestPath = Join-Path $evidence $manifestName
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $files += @{name="evidence/$manifestName";path=$manifestPath}
+          foreach ($blob in @($manifest.trace,$manifest.probes)) {
+            if ($blob.file -notmatch '^[a-f0-9]{64}\.(trace|probes)\.json\.gz$' -or $blob.bytes -gt 64MB) { throw 'Invalid retained trace blob' }
+            $files += @{name="evidence/$($blob.file)";path=(Join-Path $evidence $blob.file)}
+          }
         }
       }
     }

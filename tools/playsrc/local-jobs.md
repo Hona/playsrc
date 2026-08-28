@@ -83,12 +83,18 @@ physical-console checks, headed browser, input/window guards, server, deadlines
 and evidence. A free loopback port avoids the developer's existing server.
 Profiles use native local builds and localhost, never a production URL, remote
 CDP connection, request-interception broker or controller-host asset relay.
+The invoking checkout supplies the profiler harness; `--application-root` binds
+the server and executable identity to the prepared checkout without editing it.
+See [frame delivery](profile/frame-delivery.md) for ordinary/traced comparisons.
 
 Read `command.log` and `result.json` in the returned run directory over SSH/SCP;
 ordinary profiler evidence stays in its normal configured cache directory.
 Exit failures and source/configuration changes fail the job. Overlapping runs
 in one checkout are rejected. A forcibly interrupted job leaves its `running`
 marker for inspection; do not remove it until its processes have stopped.
+`-Action Recover -Job <id> -Task <recorded-task>` retains an interruption record
+and removes that marker only for a recorded failed task with no live job process
+and no completed result. Admission is asynchronous so its deadline remains live.
 The next status read removes the recorded completed task from the launching
 account; the deliberately unelevated task does not unregister itself. A forced
 termination may require removing that exact returned task name after inspection.

@@ -35,7 +35,7 @@ import { requireStartupNative } from "./static-startup-gate"
 import { auditDrawPlaneParity } from "./draw-plane-parity"
 import { loadCommandWorkload, compareWorkloadJournal } from "./command-workload"
 import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } from "./workload-state"
-import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
+import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -429,7 +429,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       instrumentation: { app: Boolean((globalThis as any).__playsrcProfile), frame: Boolean((globalThis as any).__playsrcFrameProfiler) } }))
     const configuration = await (await page.request.get("/playsrc-config.json")).json()
     await writeFile(path.join(directory, "delivery-boundary.json"), JSON.stringify({ mode: deliveryMode, applicationCommit: sourceCommit.stdout.trim(),
-      sourceFingerprint, harnessRoot: repositoryRoot, browserVersion: context.browser()!.version(), configuration, capturePlan, boundary }, null, 2))
+      sourceFingerprint, harnessRoot: repositoryRoot, harnessFingerprint: process.env.PLAYSRC_PROFILE_HARNESS_FINGERPRINT,
+      browserVersion: context.browser()!.version(), configuration, capturePlan, boundary }, null, 2))
     await writeFile(path.join(directory, "delivery-before.png"), before)
   }
   if (deliveryMode === "ordinary") {
@@ -454,6 +455,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(nativeFailure).toBeUndefined()
     expect(sample.lifecycle).toEqual([])
     expect(sample.missedPublications).toBe(0)
+    expect(sample.ended - sample.started).toBeGreaterThanOrEqual(5000)
+    expect(sample.ended - sample.started).toBeLessThanOrEqual(10000)
     expect(sample.lastFrame).toBeGreaterThan(sample.firstFrame)
     expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
     return
@@ -1147,7 +1150,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }))
   const report = {
     nativeAdmission: nativeRecords(), replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
-    schema: "playsrc-tf2-upward-training-bots-profile-v3", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
+    schema: "playsrc-tf2-upward-training-bots-profile-v4", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },
@@ -1171,7 +1174,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     settings: await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality)),
     browser: { platform: await page.evaluate(() => navigator.platform), userAgent: await page.evaluate(() => navigator.userAgent), controllerPlatform: process.platform, origin: new URL(page.url()).origin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
     firstPlayableBoundary: "application-completed-frame-not-compositor",
-    frameIntervals: summarizeFrameTimes(intervals), frameWork: summarizeFrameTimes(completed.map(frame => frame.detail.total)),
+    frameIntervals: summarizeFrameTimes(intervals), ...summarizeDeliveryMeasurement(measurement),
     presentationDom: {
       ...measurement.dom,
       layers: {
@@ -1185,7 +1188,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       paint,
     },
     simulation: { ticks: measurement.lastTick - measurement.firstTick, hertz: Number(((measurement.lastTick - measurement.firstTick) / measurement.elapsed * 1000).toFixed(3)) },
-    botWork: summarizeDistribution(completed.map(frame => frame.detail.models)), worker,
+    worker,
     classSwitches: { requested: exercisedClasses, attacks: admittedAttacks,
       inputGuard: { unplanned: classInputViolations(measurement.lifecycle), captures: measurement.lifecycle.filter(event => event.phase === "pointer-capture").length, presses: measurement.lifecycle.filter(event => event.phase === "weapon-fire").length },
       lifecycle: measurement.lifecycle, timing: summarizeClassSwitchLifecycle(measurement.lifecycle), observed: measurement.classSwitches.map((item, index, values) => ({
@@ -1318,7 +1321,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       gpu: { devices: report.browser.gpu?.devices ?? null, featureStatus: report.browser.gpu?.featureStatus ?? null },
       storage: { ...report.browser.storage, navigation: undefined },
     },
-    frameIntervals: report.frameIntervals, frameWork: report.frameWork, presentationDom: report.presentationDom, simulation: report.simulation,
+    frameIntervals: report.frameIntervals, renderSubmissionElapsed: report.renderSubmissionElapsed, presentationDom: report.presentationDom, simulation: report.simulation,
     classSwitches: report.classSwitches,
     snapshotTransport: report.snapshotTransport,
     particleCombat: report.particleCombat,

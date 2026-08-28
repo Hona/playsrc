@@ -1,6 +1,25 @@
 import { describe, expect, test } from "bun:test"
 import { activeGameplayTraceWindow, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth } from "../profile/compositor-truth"
 
+test("known compositor streams with no in-window presentation retain zero buckets and full-window silence", () => {
+  const result = summarizeCompositorTruth([{ name: "Display::FrameDisplayed", pid: 1, tid: 2, ts: 0 },
+    { name: "Display::FrameDisplayed", pid: 1, tid: 2, ts: 8_000_000 }], 6000, { startedMicroseconds: 1_000_000, endedMicroseconds: 7_000_000 })
+  expect(result.presentedFrames).toBe(0)
+  expect(result.presentedFramesPerSecond).toBe(0)
+  expect(result.streams[0]!.delivery.buckets.map(bucket => bucket.count)).toEqual([0, 0, 0, 0, 0, 0])
+  expect(result.streams[0]!.delivery.maximumGapIncludingBoundaries).toBe(6000)
+})
+
+test("independent native compositor streams cannot be interleaved into a faster apparent frame rate", () => {
+  const value = summarizeCompositorTruth([{ name: "FramePresented", ts: 0, pid: 1, tid: 2 },
+    { name: "FramePresented", ts: 1000, pid: 3, tid: 4 }, { name: "FramePresented", ts: 2000, pid: 1, tid: 2 }], 5,
+  { startedMicroseconds: 0, endedMicroseconds: 5000 })
+  expect(value.evidence).toBe("ambiguous-compositor-streams")
+  expect(value.presentedFramesPerSecond).toBeNull()
+  expect(value.intervals).toBeNull()
+  expect(value.streams).toHaveLength(2)
+})
+
 describe("truthful compositor presentation evidence", () => {
   test("never mislabels animation callbacks, swaps, or application frames as presentation", () => {
     expect(summarizeCompositorTruth([{ name: "RequestAnimationFrame", ts: 1 }, { name: "SwapBuffers", ts: 2 }], 5000)).toMatchObject({ evidence: "unavailable", presentedFrames: null, presentedFramesPerSecond: null, intervals: null })
@@ -28,7 +47,7 @@ describe("truthful compositor presentation evidence", () => {
   })
 
   test("excludes compositor frames outside the real active gameplay window", () => {
-    expect(summarizeCompositorTruth([{ name: "Display::FrameDisplayed", ts: 99 }, { name: "Display::FrameDisplayed", ts: 100 }, { name: "Display::FrameDisplayed", ts: 200 }, { name: "Display::FrameDisplayed", ts: 201 }], 1000, { startedMicroseconds: 100, endedMicroseconds: 200 })).toMatchObject({ presentedFrames: 2 })
+    expect(summarizeCompositorTruth([{ name: "Display::FrameDisplayed", ts: 99 }, { name: "Display::FrameDisplayed", ts: 100 }, { name: "Display::FrameDisplayed", ts: 200 }, { name: "Display::FrameDisplayed", ts: 201 }], 1000, { startedMicroseconds: 100, endedMicroseconds: 200 })).toMatchObject({ presentedFrames: 1 })
     expect(() => summarizeCompositorTruth([], 1000, { startedMicroseconds: 2, endedMicroseconds: 1 })).toThrow("window is invalid")
   })
 
