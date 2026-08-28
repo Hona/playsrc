@@ -69,6 +69,7 @@ const PROFILES = Object.freeze({
   "2fort": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1" } },
   "2fort-full-match": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_MEMORY: "1", PROFILE_2FORT_FULL_ROSTER: "1" } },
   "2fort-startup": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_STARTUP_CREATE_SERVER: "1", PROFILE_UPWARD_TRAINING_WARM_RELOAD: "1" } },
+  "2fort-delivery": { config: "playwright.delivery-profile.config.ts", target: "ctf_2fort", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_STARTUP_CREATE_SERVER: "1" } },
   bots: { config: "playwright.bot-profile.config.ts", target: "pl_upward" },
   "2fort-bots": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_CTF_BOTS: "1" } },
   "2fort-visual": { config: "playwright.profile.config.ts", target: "ctf_2fort", environment: { PROFILE_2FORT_VISUAL: "1" } },
