@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Build','Status','Logs','Doctor','Wait')][string]$Action = 'Run',
+  [ValidateSet('Run','Build','Status','Result','Logs','Doctor','Wait')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Target,
@@ -41,7 +41,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
     $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
     $launchText = Get-Content -Raw -LiteralPath $launchFile
-    $taskState = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue | Select-Object TaskName,State
+    if ($Action -ne 'Result') { $taskState = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue | Select-Object TaskName,State }
   }
   $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
   if ($launchFile -and $latestRun -and $latestRun.CreationTimeUtc -lt (Get-Item -LiteralPath $launchFile).CreationTimeUtc) { $latestRun = $null }
@@ -53,6 +53,10 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
     try { if ($launchText) { $result = $launchText | ConvertFrom-Json } } catch { }
   } elseif ($latestRun -and (Test-Path (Join-Path $latestRun.FullName 'result.json'))) {
     $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
+  }
+  if ($Action -eq 'Result') {
+    @{result=$result;launchError=$(if (!$result) { $launchText } else { $null })} | ConvertTo-Json -Depth 8 -Compress
+    exit 0
   }
   if ($Action -eq 'Logs') {
     if ($launchText) { Write-Output $launchText }
