@@ -30,6 +30,7 @@ static SIMULATION_ERROR: AtomicU32 = AtomicU32::new(0);
 static SIMULATION_ERROR_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
 static GAME_ADVANCE_ERROR: AtomicU32 = AtomicU32::new(0);
 static GAME_ADVANCE_DETAIL: OnceLock<Mutex<String>> = OnceLock::new();
+static PRESENTATION_FAILURE_DETAIL: Mutex<String> = Mutex::new(String::new());
 static PRESENTATION_MODEL_CACHE_HITS: AtomicU32 = AtomicU32::new(0);
 static PRESENTATION_MODEL_CACHE_MISSES: AtomicU32 = AtomicU32::new(0);
 
@@ -748,7 +749,9 @@ impl playsrc_simulation::Simulation for Tf2Simulation {
             merged[42..44].copy_from_slice(&(bot | nextbot_stop).to_le_bytes());
             merged[44..48].copy_from_slice(&bot_configuration.to_le_bytes());
             merged[52..56].copy_from_slice(&objective_configuration.to_le_bytes());
+            let preferences = input.commands.iter().rev().find_map(|command| command.bytes.get(57).copied().filter(|value| *value != 0)).unwrap_or(0);
             merged[56..84].copy_from_slice(&control);
+            merged[57] = preferences;
             let merged = Arc::<[u8]>::from(merged);
             self.current_command = Some(continuation_command(&merged)?);
             merged
@@ -1085,6 +1088,7 @@ unsafe fn compile_map(
     configuration_sha256_pointer: *const u8,
     cached_presentation: Option<&[u8]>,
 ) -> u32 {
+    PRESENTATION_FAILURE_DETAIL.lock().unwrap().clear();
     PRESENTATION_MODEL_CACHE_HITS.store(0, Ordering::Relaxed);
     PRESENTATION_MODEL_CACHE_MISSES.store(0, Ordering::Relaxed);
     let mut metrics_clock = RuntimeMetricsClock::new();
@@ -12012,10 +12016,32 @@ fn encoded_model_authored_texture_length(
 }
 
 fn presentation_failure(stage: &str) {
+    let mut detail = PRESENTATION_FAILURE_DETAIL.lock().unwrap();
+    if detail.len() + stage.len() + 2 <= 4096 {
+        if !detail.is_empty() { detail.push_str("; "); }
+        detail.push_str(stage);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     eprintln!("TF2 presentation failed: {stage}");
-    #[cfg(target_arch = "wasm32")]
-    let _ = stage;
+}
+
+fn presentation_stage(stage: &str) {
+    let mut detail = PRESENTATION_FAILURE_DETAIL.lock().unwrap();
+    detail.clear();
+    detail.push_str(stage);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_presentation_failure_length() -> usize { PRESENTATION_FAILURE_DETAIL.lock().unwrap().len() }
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// The output must identify writable module memory for `capacity` bytes.
+pub unsafe extern "C" fn playsrc_presentation_failure_copy(output: *mut u8, capacity: usize) -> usize {
+    let detail = PRESENTATION_FAILURE_DETAIL.lock().unwrap();
+    if output.is_null() || capacity < detail.len() { return 0; }
+    unsafe { std::ptr::copy_nonoverlapping(detail.as_ptr(), output, detail.len()); }
+    detail.len()
 }
 
 fn control_point_model_roots(entity: &playsrc_entity::Entity) -> Result<Vec<String>, ()> {
@@ -13078,6 +13104,7 @@ fn compile_environment_artifact(
     visibility: &playsrc_visibility::World,
     collision: &playsrc_collision::World,
 ) -> Result<(Vec<u8>, RuntimeEnvironment), ()> {
+    presentation_stage("environment inputs");
     if materials.len() != canonical.materials.len() {
         return Err(());
     }
@@ -13140,12 +13167,13 @@ fn compile_environment_artifact(
     .map_err(|_| ())?;
     let mut dependencies = Vec::new();
     let mut sky_parameters = BTreeMap::new();
+    presentation_stage("sky metadata");
     for face in playsrc_map::CubeFace::ALL {
         let path = face.material_path(sky);
-        let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
-        let m = resolve_material_semantics(&path, bundle, material_environment(profile, false))?;
+        let source_sha256 = *resource_hashes.get(&path).ok_or_else(|| presentation_failure(&format!("sky material absent: {path}")))?;
+        let m = resolve_material_semantics(&path, bundle, material_environment(profile, false)).inspect_err(|_| presentation_failure(&format!("sky material: {path}")))?;
         let first_texture = m.textures.iter().find(|texture| m.selected_textures.contains(&texture.role)).and_then(|texture| texture.logical_path.as_deref()).ok_or(())?;
-        let format = decoders.metadata(&first_texture.to_ascii_lowercase())?.high_format;
+        let format = decoders.metadata(&first_texture.to_ascii_lowercase()).inspect_err(|_| presentation_failure(&format!("sky texture: {first_texture}")))?.high_format;
         let encoding = selected_sky_encoding(&m.selected_textures, format).ok_or(())?;
         let mut parameters = playsrc_material::sky_parameters(&m).map_err(|_| ())?;
         if matches!(m.selected_textures.as_slice(), [playsrc_material::TextureRole::Base | playsrc_material::TextureRole::HdrBase])
@@ -13200,6 +13228,7 @@ fn compile_environment_artifact(
         .filter_map(|path| path.strip_prefix("materials/maps/")?.strip_suffix(&leaf))
         .collect::<std::collections::BTreeSet<_>>();
     if map_names.len() != 1 {
+        presentation_failure(&format!("cubemap map identity count: {}", map_names.len()));
         return Err(());
     }
     let map_name = map_names.pop_first().ok_or(())?.to_owned();
@@ -13214,7 +13243,7 @@ fn compile_environment_artifact(
             "materials/maps/{map_name}/c{}_{}_{}{suffix}.vtf",
             r.origin[0], r.origin[1], r.origin[2]
         );
-        let m = decoders.metadata(&path)?;
+        let m = decoders.metadata(&path).inspect_err(|_| presentation_failure(&format!("cubemap texture: {path}")))?;
         let source_sha256 = *resource_hashes.get(&path).ok_or(())?;
         dependencies.push(playsrc_map::DependencyResponse {
             request: playsrc_map::DependencyRequest {
@@ -13231,6 +13260,7 @@ fn compile_environment_artifact(
             },
         })
     }
+    presentation_stage("decal metadata");
     let mut marks = BTreeMap::new();
     for e in &graph.entities {
         if !e
@@ -13280,6 +13310,7 @@ fn compile_environment_artifact(
                 state: m.decal,
             });
     }
+    presentation_stage("game decal metadata");
     for reference in [b"decals/decals_mod2x".as_slice(), b"VGUI/damageindicator"] {
         let reference = reference.to_vec();
         let path = dependency_path(&reference)?;
@@ -13346,6 +13377,7 @@ fn compile_environment_artifact(
             }
         })
         .collect();
+    presentation_stage("decal receivers");
     let receiver_snapshot = playsrc_collision::Snapshot::compile(
         collision,
         1,
@@ -13379,6 +13411,7 @@ fn compile_environment_artifact(
             })
             .collect::<Result<Vec<_>, ()>>()?,
     };
+    presentation_stage("environment graph");
     let env = playsrc_map::compile_environment_prepared(
         canonical,
         bsp,
@@ -13398,6 +13431,7 @@ fn compile_environment_artifact(
         visibility.identity,
     )
     .map_err(|error| {
+        presentation_failure(&format!("environment compilation: {error:?}"));
         #[cfg(not(target_arch = "wasm32"))]
         eprintln!("TF2 environment compilation failed: {error:?}");
         #[cfg(target_arch = "wasm32")]
@@ -13466,6 +13500,7 @@ fn compile_environment_artifact(
             }
         }
     }
+    presentation_stage("decal textures");
     let mut decal_textures = BTreeMap::new();
     for mark in &marks {
         if let Some(texture) = resolve_material(
@@ -13723,6 +13758,7 @@ fn compile_environment_artifact(
     for value in leaf_distances {
         out.extend_from_slice(&value.to_le_bytes());
     }
+    presentation_stage("water materials");
     let mut water_materials = Vec::new();
     for (index, material) in materials.iter().enumerate() {
         if material.water.is_some() {
@@ -13757,6 +13793,7 @@ fn compile_environment_artifact(
             overlay_paths.insert(overlay.logical_path.to_ascii_lowercase());
         }
     }
+    presentation_stage("overlay materials");
     let refract_materials = overlay_paths
         .into_iter()
         .map(|identity| {
@@ -13782,6 +13819,7 @@ fn compile_environment_artifact(
     for (identity, material) in &refract_materials {
         encode_refract_material(&mut out, identity, material)?;
     }
+    presentation_stage("world materials");
     let world_materials = canonical
         .materials
         .iter()
@@ -13822,6 +13860,7 @@ fn compile_environment_artifact(
     for (identity, map_material, material, output) in &world_materials {
         encode_world_material(&mut out, identity, *map_material, material, output)?;
     }
+    presentation_stage("environment texture paths");
     let mut environment_texture_paths = std::collections::BTreeSet::new();
     for (_, material) in &refract_materials {
         let overlay = playsrc_material::refract_material_output(material)
