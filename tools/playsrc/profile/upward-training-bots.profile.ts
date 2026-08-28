@@ -449,7 +449,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (deliveryMode) {
-    if (exerciseClasses || combat || capturePlan.interaction !== "forward-movement" || expectedBots !== 15) throw new Error("Delivery comparison requires the same 15-bot forward-movement scenario")
+    if (exerciseClasses || combat || capturePlan.interaction !== "forward-movement" || expectedBots !== (createServer ? 23 : 15)) throw new Error("Delivery comparison requires the authored 15-bot training or 23-bot Create Server forward-movement scenario")
     const boundary = await page.evaluate(() => ({ userAgent: navigator.userAgent, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio,
       canvasWidth: document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!.width, canvasHeight: document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!.height },
       state: { ...document.querySelector<HTMLElement>("main")!.dataset }, storage: { ...localStorage },

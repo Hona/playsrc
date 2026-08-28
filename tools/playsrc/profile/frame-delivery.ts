@@ -74,16 +74,19 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   equal(configuration(ordinaryBoundary.configuration), configuration(tracedBoundary.configuration), "configuration/content/quality")
   equal(ordinaryBoundary.boundary.instrumentation, { app: false, frame: false }, "ordinary instrumentation")
   equal(tracedBoundary.boundary.instrumentation, traced.mode === "presentation" ? { app: false, frame: false } : { app: true, frame: true }, "traced instrumentation")
+  const entry = ordinaryBoundary.capturePlan.entry
+  if (!["training", "create-server"].includes(entry) || ordinaryBoundary.capturePlan.target !== (entry === "create-server" ? "ctf_2fort" : "pl_upward")) throw new Error("Delivery scenario identity differs")
+  const expectedBots = entry === "create-server" ? 23 : 15
   const roster = (value: string) => {
     const actors = value.split("|").map(bot => bot.split(":").slice(0, 3).join(":"))
-    if (actors.length !== 15 || new Set(actors.map(actor => actor.split(":")[0])).size !== 15) throw new Error("Incomplete active bot roster")
+    if (actors.length !== expectedBots || new Set(actors.map(actor => actor.split(":")[0])).size !== expectedBots) throw new Error("Incomplete active bot roster")
     return actors
   }
   equal(roster(ordinary.sample.before.botProbe), roster(traced.sample.before.botProbe), "bot identity/team/class roster")
   for (const run of [ordinary, traced]) {
     const sample = run.sample, elapsed = sample.ended - sample.started
     if (elapsed < 5000 || elapsed > 10000 || sample.missedPublications || sample.lifecycle.length
-      || sample.before.bots !== 15 || sample.after.bots !== 15 || sample.lastFrame - sample.firstFrame !== sample.frames.length) throw new Error("Incomplete or changed comparison window")
+      || sample.before.bots !== expectedBots || sample.after.bots !== expectedBots || sample.lastFrame - sample.firstFrame !== sample.frames.length) throw new Error("Incomplete or changed comparison window")
     if (!run.nativeAdmission?.length || run.nativeAdmission.some((record: any) => {
       const native = record.native
       return !native || native.desktop.state !== 0 || native.desktop.flags !== 1 || native.desktop.protocol !== 0

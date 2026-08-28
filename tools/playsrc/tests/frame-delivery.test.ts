@@ -22,7 +22,7 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
     foreground: 12, windows: [{ id: 12, visible: true, minimized: false }] } }]
   const ordinary = { mode: "ordinary", applicationCommit: commit, sourceFingerprint: fingerprint, sample, nativeAdmission }
   const traced = { ...ordinary, mode: "traced" }
-  const boundary = { applicationCommit: commit, sourceFingerprint: fingerprint, browserVersion: "browser", capturePlan: { interaction: "forward-movement" },
+  const boundary = { applicationCommit: commit, sourceFingerprint: fingerprint, browserVersion: "browser", capturePlan: { interaction: "forward-movement", entry: "training", target: "pl_upward" },
     configuration: { assetOrigin: "http://127.0.0.1:4000", renderLevel: 0 }, boundary: { viewport: { width: 1280, height: 720, dpr: 1 },
       userAgent: "browser", storage: {}, state: { cameraPosition: "1,2,3", cameraYaw: "0" }, instrumentation: { app: false, frame: false } } }
   const traceBoundary = { ...boundary, boundary: { ...boundary.boundary, instrumentation: { app: true, frame: true } } }
@@ -40,6 +40,9 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
   ]) expect(() => compareDeliveryEvidence(ordinary, boundary, traced, changed)).toThrow()
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, botProbe: "2:3:9" } } }, traceBoundary)).toThrow("roster")
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, bots: 23 } } }, traceBoundary)).toThrow("changed comparison")
+  const fullSample = { ...sample, before: { ...sample.before, bots: 23, botProbe: Array.from({ length: 23 }, (_, index) => `${index + 2}:${2 + index % 2}:${1 + index % 9}`).join("|") }, after: { ...sample.after, bots: 23 } }
+  const fullBoundary = { ...boundary, capturePlan: { ...boundary.capturePlan, entry: "create-server", target: "ctf_2fort" } }
+  expect(compareDeliveryEvidence({ ...ordinary, sample: fullSample }, fullBoundary, { ...presentation, sample: fullSample }, fullBoundary).ordinary.ticks).toBe(10)
 })
 
 test("passive observer counts unchanged RAF surfaces separately and detects missed publications", () => {
