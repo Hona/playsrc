@@ -6,8 +6,8 @@ import { fileFingerprint } from "./file-fingerprint"
 import type { Tf2ContentBuildContract } from "@playsrc/game-tf2-browser/content-build"
 import { resolveMapTarget } from "./targets"
 
-export async function configuredProfileIdentity(config: LocalConfig, target: string): Promise<string> {
-  const content = JSON.parse(await readFile(path.join(repositoryRoot, "games/tf2/content-build.json"), "utf8")) as Tf2ContentBuildContract
+export async function configuredProfileIdentity(config: LocalConfig, target: string, root = repositoryRoot): Promise<string> {
+  const content = JSON.parse(await readFile(path.join(root, "games/tf2/content-build.json"), "utf8")) as Tf2ContentBuildContract
   const hash = createHash("sha256").update(JSON.stringify(config)).update(target)
   const inputs = [
     ["gameinfo.txt", content.gameinfoSha256],
