@@ -176,6 +176,7 @@ export function decodeParticleRenderOutput(
   }
   const bounds = boundsState === 0 ? null : Object.freeze({ minimum, maximum })
   const output: ParticleRenderItem[] = new Array(count)
+  const sheets = new SheetImagesCache(view)
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
     const primitive = bytes[offset + 14]
@@ -206,8 +207,8 @@ export function decodeParticleRenderOutput(
     const flags = view.getUint32(offset + 116, true)
     const secondarySequence = view.getInt32(offset + 120, true)
     const sheetFlags = view.getUint32(offset + 124, true)
-    const primarySheet = (sheetFlags & 1) === 0 ? null : sheetSample(view, offset + 128, offset + 132, offset + 196)
-    const secondarySheet = (sheetFlags & 2) === 0 ? null : sheetSample(view, offset + 260, offset + 264, offset + 328)
+    const primarySheet = (sheetFlags & 1) === 0 ? null : sheetSample(view, sheets, offset + 128, offset + 132, offset + 196)
+    const secondarySheet = (sheetFlags & 2) === 0 ? null : sheetSample(view, sheets, offset + 260, offset + 264, offset + 328)
     const materialShader = bytes[offset + 392]
     const colorSpace = bytes[offset + 393]
     const blendSource = blendFactor(bytes[offset + 394]!)
@@ -408,33 +409,60 @@ function finite3(value: readonly [number, number, number]): boolean {
 
 function sheetSample(
   view: DataView,
+  sheets: SheetImagesCache,
   blendOffset: number,
   currentOffset: number,
   nextOffset: number,
 ): ParticleSheetSample {
   const blend = view.getFloat32(blendOffset, true)
-  const current = sheetImages(view, currentOffset)
-  const next = sheetImages(view, nextOffset)
+  const current = sheets.read(currentOffset)
+  const next = sheets.read(nextOffset)
   if (!Number.isFinite(blend) || blend < 0 || blend > 1) {
     throw new ParticleAdapterError("MalformedOutput", "particle sheet blend is invalid")
   }
   return Object.freeze({ current, next, blend })
 }
 
-function sheetImages(view: DataView, offset: number): readonly (readonly [number, number, number, number])[] {
+type SheetImages = ParticleSheetSample["current"]
+
+/** Authored frame rectangles recur across particles. Intern only within this
+ * immutable packet: no global cache, retained packet, float canonicalization or
+ * hash-only equality. Returned arrays still own frozen copies of the values. */
+class SheetImagesCache {
+  readonly #view: DataView
+  readonly #buckets = new Map<number, Array<{ offset: number; images: SheetImages }>>()
+  #size = 0
+  constructor(view: DataView) { this.#view = view }
+  read(offset: number): SheetImages {
+    const view = this.#view
+    let hash = 0x811c9dc5
+    for (let at = 0; at < 64; at += 4) hash = Math.imul(hash ^ view.getUint32(offset + at, true), 0x01000193)
+    const bucket = this.#buckets.get(hash)
+    if (bucket) for (const entry of bucket) {
+      let equal = true
+      for (let at = 0; at < 64; at += 4) if (view.getUint32(offset + at, true) !== view.getUint32(entry.offset + at, true)) { equal = false; break }
+      if (equal) return entry.images
+    }
+    const images = sheetImages(view, offset)
+    if (this.#size < 512) {
+      if (bucket) bucket.push({ offset, images })
+      else this.#buckets.set(hash, [{ offset, images }])
+      this.#size++
+    }
+    return images
+  }
+}
+
+function sheetImages(view: DataView, offset: number): SheetImages {
   const output: (readonly [number, number, number, number])[] = new Array(4)
   for (let image = 0; image < 4; image += 1) {
     const start = offset + image * 16
-    const rectangle = Object.freeze([
-      view.getFloat32(start, true),
-      view.getFloat32(start + 4, true),
-      view.getFloat32(start + 8, true),
-      view.getFloat32(start + 12, true),
-    ]) as readonly [number, number, number, number]
-    if (!rectangle.every(Number.isFinite)) {
+    const left = view.getFloat32(start, true), top = view.getFloat32(start + 4, true)
+    const right = view.getFloat32(start + 8, true), bottom = view.getFloat32(start + 12, true)
+    if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
       throw new ParticleAdapterError("MalformedOutput", "particle sheet rectangle is invalid")
     }
-    output[image] = rectangle
+    output[image] = Object.freeze([left, top, right, bottom])
   }
   return Object.freeze(output)
 }

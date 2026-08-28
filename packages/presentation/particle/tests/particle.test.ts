@@ -82,6 +82,47 @@ test("retains authored reversed rain trail bounds instead of rejecting Source's 
   expect([item.trailMinLength, item.trailMaxLength]).toEqual([22, 20])
 })
 
+test("repeated sheet rectangles share frozen values without borrowing packet bytes or merging signed zero", () => {
+  const bytes = output({ count: 3 }), view = new DataView(bytes.buffer)
+  view.setUint32(40 + 2 * 436 + 132, 0x80000000, true)
+  const decoded = decodeParticleRenderOutput(bytes, ["smoke"])
+  const [first, second, third] = decoded.items.map(item => item.primarySheet!)
+  expect(first!.current).toBe(second!.current)
+  expect(first!.next).toBe(second!.next)
+  expect(third!.current).not.toBe(first!.current)
+  expect(Object.is(first!.current[0]![0], 0)).toBe(true)
+  expect(Object.is(third!.current[0]![0], -0)).toBe(true)
+  expect(Object.isFrozen(first!.current)).toBe(true)
+  expect(first!.current.every(Object.isFrozen)).toBe(true)
+  const retained = first!.next[0]![0]
+  bytes.fill(0)
+  expect(first!.next[0]![0]).toBe(retained)
+})
+
+test("sheet cache bounds do not omit unique rectangles or accept a nonfinite late record", () => {
+  const bytes = output({ count: 600 }), view = new DataView(bytes.buffer)
+  for (let index = 0; index < 600; index++) view.setFloat32(40 + index * 436 + 132, index, true)
+  expect(decodeParticleRenderOutput(bytes, ["smoke"]).items.at(-1)!.primarySheet!.current[0]![0]).toBe(599)
+  view.setFloat32(40 + 599 * 436 + 132, NaN, true)
+  expect(() => decodeParticleRenderOutput(bytes, ["smoke"])).toThrow("sheet rectangle is invalid")
+})
+
+test("sheet interning compares every binary32 word after a hash collision", () => {
+  const bytes = output({ count: 2 }), view = new DataView(bytes.buffer)
+  const first = 40 + 132, second = 40 + 436 + 132
+  let hash = 0x811c9dc5
+  for (let offset = 0; offset < 56; offset += 4) hash = Math.imul(hash ^ view.getUint32(first + offset, true), 0x01000193)
+  const original = view.getUint32(first + 56, true), changed = original ^ 1
+  const final = (Math.imul(hash ^ original, 0x01000193) ^ view.getUint32(first + 60, true) ^ Math.imul(hash ^ changed, 0x01000193)) >>> 0
+  view.setUint32(second + 56, changed, true); view.setUint32(second + 60, final, true)
+  expect(Number.isFinite(view.getFloat32(second + 60, true))).toBe(true)
+  const items = decodeParticleRenderOutput(bytes, ["smoke"]).items
+  expect(items[0]!.primarySheet!.current).not.toBe(items[1]!.primarySheet!.current)
+  expect(items[1]!.primarySheet!.current[3]).toEqual([
+    view.getFloat32(second + 48, true), view.getFloat32(second + 52, true), view.getFloat32(second + 56, true), view.getFloat32(second + 60, true),
+  ])
+})
+
 describe("Rust particle render-data adapter", () => {
   test("decodes bounded indexed rope geometry and rejects incomplete or invalid tails", () => {
     const bytes = new Uint8Array(40 + 436 + 8 + 4 * 24 + 6 * 4)
