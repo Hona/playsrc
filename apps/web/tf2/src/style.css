@@ -71,6 +71,9 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 }
 .tf2-application[data-bootstrap-loading="false"] .startup-loading-plaque { display: none; }
 .tf2-application:not([data-phase="Startup"]) .startup-layer { display: none; }
+.startup-gesture { display: none; position: absolute; inset: 0; place-content: center; text-align: center; font: 16px/1.5 Arial, Helvetica, sans-serif; }
+.tf2-application[data-startup-state="AwaitingGesture"] .startup-gesture { display: grid; }
+.startup-gesture button { padding: 8px 16px; font: inherit; cursor: pointer; }
 .loading-layer { z-index: 15; }
 .tf2-application:not([data-gameui="loading"]):not([data-gameui="failure"]) .loading-layer { display: none; }
 .gameui-layer { z-index: 10; }
@@ -98,7 +101,7 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   font: 16px/1.5 Arial, Helvetica, sans-serif;
   overflow: auto;
 }
-.tf2-application[data-phase="Failed"][data-bootstrap-loading="true"] .application-failure { display: block; }
+.tf2-application[data-phase="Failed"][data-boot-failure="true"] .application-failure { display: block; }
 .application-failure h1 { font-size: 24px; }
 .application-failure p { overflow-wrap: anywhere; }
 .application-failure button { padding: 8px 16px; font: inherit; cursor: pointer; }

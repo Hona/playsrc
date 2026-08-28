@@ -35,7 +35,7 @@ const attributes: readonly PublicationBinding[] = Object.freeze([
   attribute("menu-preparation", "menuPreparation"),
   attribute("bootstrap-loading", "bootstrapLoading", (view) => Boolean(view.bootstrapLoading)),
   attribute("bootstrap-progress", "bootstrapProgress", (view) => view.bootstrapProgress ?? 0),
-  attribute("startup-muted-fallback", "startupMutedFallback", (view) => Boolean(view.startupMutedFallback)),
+  attribute("boot-failure", "bootFailure", (view) => Boolean(view.bootFailure)),
   attribute("loading-progress", "loadingProgress"),
   attribute("loading-status", "loadingStatus"),
   attribute("loading-background", "loadingBackground"),

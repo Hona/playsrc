@@ -1,6 +1,6 @@
 import { copyFile, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { createDeployedBrowserConfiguration, parseTf2Release, TF2_APPLICATION_ORIGIN } from "../../../apps/web/tf2/src/deployment"
+import { createDeployedBrowserConfiguration, parseTf2Release, TF2_APPLICATION_ORIGIN, type Tf2Release } from "../../../apps/web/tf2/src/deployment"
 import { applyCloudflareInfrastructure, validateCloudflareInfrastructure } from "./cloudflare-infra"
 import { CLOUDFLARE_ASSET_ORIGIN, runWrangler, WRANGLER_CONFIG } from "./cloudflare"
 import { repositoryRoot } from "./config"
@@ -9,8 +9,10 @@ import { readTf2Release } from "./tf2-release"
 import { parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import type { BrowserConfiguration } from "../../../apps/web/tf2/src/config"
-import { readBundledGeneration } from "../../../apps/web/tf2/generation-plugin"
+import { assertStaticBundleGeneration } from "../../../apps/web/tf2/generation-plugin"
 import { assertWasmBindings, captureWasmBindings } from "./wasm-bindings"
+import { staticStartupPackage } from "../profile/static-startup-package"
+import { assertStaticStartupReceipt } from "../profile/static-startup-gate"
 
 const APP_DIRECTORY = path.join(repositoryRoot, "apps", "web", "tf2")
 const DIST_DIRECTORY = path.join(APP_DIRECTORY, "dist", "cloudflare")
@@ -23,8 +25,9 @@ export class DeploymentError extends Error {
   }
 }
 
-export async function buildStaticSite(target: string | undefined, approvedRelease = false): Promise<string> {
-  const sourceRelease = await readTf2Release(target)
+export async function buildStaticSite(target: string | undefined, options: { approved?: boolean; candidate?: Tf2Release } = {}): Promise<string> {
+  if (options.approved && options.candidate) throw new DeploymentError("An approved release cannot substitute a candidate descriptor")
+  const sourceRelease = options.candidate ? parseTf2Release(options.candidate) : await readTf2Release(target)
   const applicationBuild = await applicationBuildIdentity()
   const bindingsDirectory = path.join(repositoryRoot, "games/tf2/browser/src/wasm-generated")
   const compiledWasm = await readFile(path.join(bindingsDirectory, "tf2_wasm_bg.wasm"))
@@ -32,8 +35,8 @@ export async function buildStaticSite(target: string | undefined, approvedReleas
     kind: "derived-object", mediaType: "application/octet-stream", byteLength: String(compiledWasm.byteLength),
     sha256: new Bun.CryptoHasher("sha256").update(compiledWasm).digest("hex"),
   }
-  if (approvedRelease) await assertWasmBindings(bindingsDirectory, sourceRelease.wasmBindings)
-  const release = approvedRelease ? sourceRelease : parseTf2Release({ ...sourceRelease,
+  if (options.approved) await assertWasmBindings(bindingsDirectory, sourceRelease.wasmBindings)
+  const release = options.approved ? sourceRelease : parseTf2Release({ ...sourceRelease,
     objects: { ...sourceRelease.objects, wasm: compiledDescriptor },
     wasmBindings: await captureWasmBindings(bindingsDirectory, compiledDescriptor),
   })
@@ -46,6 +49,8 @@ export async function buildStaticSite(target: string | undefined, approvedReleas
     stderr: "inherit",
   })
   if (await child.exited !== 0) throw new DeploymentError("TF2 static application build failed")
+  await assertWasmBindings(bindingsDirectory, release.wasmBindings)
+  if (!options.approved) await captureWasmBindings(bindingsDirectory, compiledDescriptor)
   await Promise.all([
     copyFile(path.join(repositoryRoot, "apps", "web", "index.html"), path.join(DIST_DIRECTORY, "index.html")),
     copyFile(path.join(repositoryRoot, "apps", "web", "404.html"), path.join(DIST_DIRECTORY, "404.html")),
@@ -188,20 +193,20 @@ export async function verifyCloudflareDeployment(target: string | undefined): Pr
 }
 
 export async function deployCloudflare(target: string | undefined): Promise<void> {
-  const applicationBuild = await buildStaticSite(target, true)
+  const applicationBuild = await buildStaticSite(target, { approved: true })
+  const packaged = await staticStartupPackage(DIST_DIRECTORY)
+  let startup: unknown
+  try { startup = JSON.parse(process.env.PLAYSRC_STATIC_STARTUP_RECEIPT ?? "") }
+  catch { throw new DeploymentError("Approved release requires its exact headed static-package startup receipt") }
+  assertStaticStartupReceipt(startup, { packageSha256: packaged.sha256, wasmSha256: packaged.configuration.wasm.sha256 })
   await verifyRemoteObjects(target)
+  if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed after startup acceptance")
   await applyCloudflareInfrastructure()
+  if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed before deployment")
   const result = await runWrangler(["deploy", `--config=${WRANGLER_CONFIG}`])
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
   await waitForDeployment(target, applicationBuild)
   console.log(JSON.stringify({ target, applicationBuild, url: `${TF2_APPLICATION_ORIGIN}/tf2` }))
-}
-
-export function assertStaticBundleGeneration(source: string, configuration: BrowserConfiguration): void {
-  const generation = readBundledGeneration(source)
-  const expected = Object.fromEntries(configuration.targets.map(target => [target.target, target.objects.resources.sha256]))
-  if (generation.applicationBuild !== configuration.applicationBuild || generation.wasmSha256 !== configuration.wasm.sha256
-    || JSON.stringify(generation.resourceRoots) !== JSON.stringify(expected)) throw new DeploymentError("Static bundle/configuration generation differs")
 }
 
 export function assertReleaseWasmInterface(compiled: Uint8Array, approved: Uint8Array): void {
@@ -209,7 +214,7 @@ export function assertReleaseWasmInterface(compiled: Uint8Array, approved: Uint8
     const module = new WebAssembly.Module(bytes)
     return {
       imports: WebAssembly.Module.imports(module),
-      exports: WebAssembly.Module.exports(module).sort((a, b) => a.name.localeCompare(b.name)),
+      exports: WebAssembly.Module.exports(module).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
     }
   })
   if (JSON.stringify(contracts[0]) !== JSON.stringify(contracts[1])) {

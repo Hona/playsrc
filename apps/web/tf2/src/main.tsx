@@ -74,7 +74,7 @@ function App() {
       data-phase={initial.phase}
       data-bootstrap-loading="true"
       data-bootstrap-progress="0"
-      data-startup-muted-fallback="false"
+      data-boot-failure="false"
       data-detail={initial.detail}
       data-gameui={initial.gameUi}
       data-gameplay-initialized="false"
@@ -112,6 +112,10 @@ function App() {
         />
         <div ref={startupLoading} class="startup-loading-plaque" role="status" aria-live="polite">
           {tf2StartupLoadingLabel(initial.bootstrapProgress ?? 0)}
+        </div>
+        <div class="startup-gesture" role="status">
+          <p>Play the intro with sound</p>
+          <button type="button" onClick={() => runtime.current?.admitStartupGesture()}>Play intro</button>
         </div>
       </div>
       <div ref={loading} class="vgui-layer loading-layer" aria-label="TF2 map loading" />

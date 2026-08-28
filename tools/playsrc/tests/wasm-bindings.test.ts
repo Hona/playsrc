@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { descriptor } from "@playsrc/asset-store"
 import { captureWasmBindings, assertWasmBindings } from "../src/wasm-bindings"
-import { assertStaticBundleGeneration } from "../src/deploy"
+import { assertStaticBundleGeneration } from "../../../apps/web/tf2/generation-plugin"
 import { tf2ViteConfiguration } from "../../../apps/web/tf2/vite.config"
 
 test("approved binary and generated helper closure stay paired even with identical raw interfaces", async () => {
