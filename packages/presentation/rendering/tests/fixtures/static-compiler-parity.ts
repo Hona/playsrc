@@ -9,6 +9,7 @@ import { sourceFragmentColor } from "../../src/source-fragment-color"
 import { sourceStaticVertexLightingNode } from "../../src/source-model-lighting"
 import { createSourceWaterFogUniforms } from "../../src/source-water"
 import { installRenderObjectLifetime } from "../../src/render-object-lifetime"
+import { prepareReachablePipelineVisibility, pipelinePreparationIdentity } from "../../src/reachable-pipeline-visibility"
 
 export function createStaticCompilerParityOwner() {
   const equal=(a:unknown,b:unknown,label:string)=>{if(JSON.stringify(a)!==JSON.stringify(b))throw new Error(label)}
@@ -40,6 +41,8 @@ export function createStaticCompilerParityOwner() {
         oldColor=sourceFragmentColor(TSL.vec4(rgb,opacity.mul(fading?lighting.staticFade:fade)),state,waterFog,fading);oldColors.set(key,oldColor)}
       material.colorNode=graphs.vertex(graphs.template(base,state),state,unlit,fading,fade)
       const original=material.clone();original.colorNode=oldColor
+      const templateMaterial=material.clone();templateMaterial.colorNode=oldBase
+      material.userData.sourcePreparationIdentity=templateMaterial.customProgramCacheKey();templateMaterial.dispose()
       const mesh=new THREE.Mesh(geometry,material),before=new THREE.Mesh(geometry,original)
       bindStaticPropFade(mesh,fade);bindStaticPropFade(before,fade);root.add(mesh,before)
       const candidate=build(mesh),reference=build(before)
@@ -50,11 +53,20 @@ export function createStaticCompilerParityOwner() {
     },
     finish(){
       for(const item of retained.toReversed()){item.fade.value=item.fading?.75:1;if(build(item.mesh)!==item.candidate)throw new Error("Warm static state rebuilt");equal(values(item.candidate,item.mesh),values(item.reference,item.before),"reverse draw bindings")}
+      const beforeGroup=new THREE.Group(),afterGroup=new THREE.Group()
+      for(const item of retained){beforeGroup.add(item.before);afterGroup.add(item.mesh)}
+      root.add(beforeGroup,afterGroup)
+      const beforeAdmission=prepareReachablePipelineVisibility(beforeGroup),afterAdmission=prepareReachablePipelineVisibility(afterGroup)
+      const admission={before:beforeAdmission.variants,after:afterAdmission.variants}
+      const partition=(field:"mesh"|"before")=>{const first=new Map<string,number>();return retained.map((item,index)=>{const key=pipelinePreparationIdentity(item[field]);if(!first.has(key))first.set(key,index);return first.get(key)})}
+      equal(partition("before"),partition("mesh"),"Static resource equivalence classes differ")
+      equal(retained.map(item=>item.before.visible),retained.map(item=>item.mesh.visible),"Static resource admission differs")
+      beforeAdmission.restore();afterAdmission.restore()
       lifetime.release(root)
       if(lifetime.size||nodes.nodeBuilderCache.size)throw new Error("Retired static draws retain compiler states")
       for(const item of retained){item.mesh.material.dispose();item.before.material.dispose()}
       lifetime.restore();lighting.releaseDrawReferences()
-      return {draws:retained.length,dedicatedCompilerStates:oldStates.size,sharedCompilerStates:newStates.size,retiredCompilerStates:nodes.nodeBuilderCache.size,records}
+      return {draws:retained.length,dedicatedCompilerStates:oldStates.size,sharedCompilerStates:newStates.size,retiredCompilerStates:nodes.nodeBuilderCache.size,admission,records}
     },
   }
 }
