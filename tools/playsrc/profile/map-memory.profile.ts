@@ -172,6 +172,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     const response = await route.fetch()
     let source = instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1")
     if (aliasPixels) source = instrumentParticleAliasSource(source, false)
+    else if (process.env.PROFILE_MEMORY_ALIAS_REFERENCE === "1") source = instrumentParticleAliasSource(source, true, false)
     await route.fulfill({ response, body: source })
   })
 
