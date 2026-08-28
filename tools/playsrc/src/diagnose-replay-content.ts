@@ -21,4 +21,6 @@ for (const chunk of graph.chunks.filter(chunk => chunk.roles.includes("gameplay"
   }
   if (install) await verifyObject(config.assetDir, expected)
 }
-console.log(JSON.stringify({ graph: sha, present: true, target: graph.target, missing, localDiagnosticInputsVerified: install, productionChanged: false }))
+console.log(JSON.stringify({ graph: sha, present: true, target: graph.target, missing,
+  navigation: graph.chunks.filter(chunk => chunk.entries.some(entry => entry.logicalPath.endsWith(".nav"))).map(chunk => ({ encodedSha256: chunk.encodedSha256, decodedBytes: chunk.decodedByteLength, entries: chunk.entries })),
+  localDiagnosticInputsVerified: install, productionChanged: false }))
