@@ -28,3 +28,18 @@ fn map_recreation_links_forward_parents_before_activation_and_preserves_existing
     world.phase(2,&[WorldCommand::SetWorldTransform{entity:parent,transform:Transform{origin:[0.0,0.0,128.0],angles:[0.0;3]}}]).unwrap();
     assert_eq!(world.collision_state(child).unwrap().transform.origin,[10.0,0.0,128.0]);
 }
+
+#[test]
+fn initial_open_door_moves_children_after_parent_setup_not_before_it(){
+    let graph=parse(br#"{"classname""prop_dynamic""targetname""panel""model""models/door.mdl""parentname""door""origin""0 0 10""solid""6"}
+        {"classname""func_door""targetname""door""model""*1""origin""0 0 0""movedir""-90 0 0""spawnpos""1""speed""175""lip""0"}"#,Limits::default()).unwrap();
+    let config=EntityWorldConfig{model_bounds:vec![ModelBounds{model:1,mins:[-8.0,-8.0,0.0],maxs:[8.0,8.0,100.0]}],..Default::default()};
+    let mut world=EntityWorld::compile(&graph,config).unwrap().0;
+    for tick in 0..2{
+        let parent=world.resolve(b"door",None,None,None)[0];let child=world.resolve(b"panel",None,None,None)[0];
+        let root=world.collision_state(parent).unwrap().transform.origin;
+        assert!(root[2]>90.0);assert_eq!(world.entity(child).unwrap().local_transform.origin,[0.0,0.0,10.0]);
+        assert_eq!(world.collision_state(child).unwrap().transform.origin,[root[0],root[1],root[2]+10.0]);
+        if tick==0{world.phase(0,&[WorldCommand::Remove(parent)]).unwrap();world.phase(1,&[WorldCommand::SpawnMapEntities{definitions:graph.entities.clone(),excluded_sources:Vec::new()}]).unwrap();}
+    }
+}

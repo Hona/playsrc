@@ -1129,12 +1129,16 @@ impl EntityWorld {
     fn spawn_map_definitions(&mut self,definitions:&[Entity],excluded:&[usize],batch:&mut TransitionBatch)->Result<(),RuntimeFailure>{
         let mut skipped=template_prototype_indices(definitions)?;skipped.extend(excluded.iter().copied());
         let mut created=Vec::new();
-        for definition in ordered_definitions(definitions,&skipped,&self.config.spawn_priorities){created.push(self.spawn_definition(definition.clone(),batch)?);}
+        for definition in ordered_definitions(definitions,&skipped,&self.config.spawn_priorities){created.push(self.create_definition(definition.clone(),batch)?);}
         self.refresh_projected_fields();
         self.install_initial_attachments(&created)?;
-        self.resolve_initial_parents(&created,batch)?;
+        self.resolve_initial_parents(&created,false,batch)?;
         self.capture_templates(definitions,&created)?;
         self.link_path_nodes()?;
+        for &handle in &created {
+            self.resolve_initial_parents(&[handle],true,batch)?;
+            self.spawn_entity(handle,batch)?;
+        }
         for handle in created {
             self.entity_mut(handle).expect("spawned map entity").lifecycle=Lifecycle::Activated;
             self.push_transition(batch,Transition::Lifecycle{entity:handle,state:Lifecycle::Activated})?;
@@ -1271,6 +1275,7 @@ impl EntityWorld {
         let enabled=match &entity.behavior{
             BehaviorState::Brush(brush)=>match brush.solidity{BrushSolidity::Never=>false,BrushSolidity::Always=>true,BrushSolidity::Toggle=>brush.enabled},
             BehaviorState::DynamicProp(prop)=>prop.collision_enabled,
+            BehaviorState::Mover(mover)=>mover.solid,
             BehaviorState::Breakable(prop)=>!prop.broken,
             _=>true,
         };
@@ -1433,7 +1438,7 @@ impl EntityWorld {
             .is_some_and(|entity| entity.lifecycle != Lifecycle::PendingRemoval)
     }
 
-    fn spawn_definition(
+    fn create_definition(
         &mut self,
         definition: Entity,
         batch: &mut TransitionBatch,
@@ -1504,7 +1509,7 @@ impl EntityWorld {
             .filter(|name| !name.is_empty());
         let local_transform = Transform {
             origin: field_vector(&definition, b"origin", [0.0; 3])?,
-            angles: crate::sprite::spawn_angles(&classname,field_vector(&definition, b"angles", [0.0; 3])?),
+            angles: field_vector(&definition,b"angles",[0.0;3])?,
         };
         let (behavior, coverage) = self.behavior_for(&definition, local_transform)?;
         let mut render = render_state(&definition)?;
@@ -1568,7 +1573,7 @@ impl EntityWorld {
             }
         }
         let fields = self.project_fields(&definition, &classname);
-        let mut runtime_entity = RuntimeEntity {
+        let runtime_entity = RuntimeEntity {
             handle,
             source_index: definition.index,
             classname: classname.clone(),
@@ -1588,26 +1593,6 @@ impl EntityWorld {
             behavior,
             render,
         };
-        if let BehaviorState::Mover(mover) = &runtime_entity.behavior {
-            let endpoint = match mover.position {
-                MoverPosition::Closed => Some((mover.closed, mover.closed_angles)),
-                MoverPosition::Open => Some((mover.open, mover.open_angles)),
-                MoverPosition::Positioned(bits) => {
-                    let position = f32::from_bits(bits);
-                    Some((
-                        lerp(mover.closed, mover.open, position),
-                        lerp(mover.closed_angles, mover.open_angles, position),
-                    ))
-                }
-                MoverPosition::Opening | MoverPosition::Closing => None,
-            };
-            if let Some((origin, angles)) = endpoint {
-                runtime_entity.local_transform.origin = origin;
-                runtime_entity.local_transform.angles = angles;
-                runtime_entity.world_transform.origin = origin;
-                runtime_entity.world_transform.angles = angles;
-            }
-        }
         self.state.slots[slot_index].entity = Some(Arc::new(runtime_entity));
         self.state.creation_order.push(handle);
         self.state.next_creation_order += 1;
@@ -1619,6 +1604,26 @@ impl EntityWorld {
                 state: Lifecycle::Created,
             },
         )?;
+        Ok(handle)
+    }
+
+    fn spawn_definition(&mut self,definition:Entity,batch:&mut TransitionBatch)->Result<EntityHandle,RuntimeFailure>{
+        let handle=self.create_definition(definition,batch)?;self.spawn_entity(handle,batch)?;Ok(handle)
+    }
+
+    fn spawn_entity(&mut self,handle:EntityHandle,batch:&mut TransitionBatch)->Result<(),RuntimeFailure>{
+        let entity=self.entity_mut(handle).expect("created entity");
+        entity.local_transform.angles=crate::sprite::spawn_angles(&entity.classname,entity.local_transform.angles);
+        if let BehaviorState::Mover(mover)=&entity.behavior {
+            let endpoint=match mover.position{
+                MoverPosition::Closed=>Some((mover.closed,mover.closed_angles)),
+                MoverPosition::Open=>Some((mover.open,mover.open_angles)),
+                MoverPosition::Positioned(bits)=>{let position=f32::from_bits(bits);Some((lerp(mover.closed,mover.open,position),lerp(mover.closed_angles,mover.open_angles,position)))},
+                MoverPosition::Opening|MoverPosition::Closing=>None,
+            };
+            if let Some((origin,angles))=endpoint{entity.local_transform=Transform{origin,angles};}
+        }
+        self.recompute_subtree(handle,0)?;
         self.entity_mut(handle)
             .expect("new handle must resolve")
             .lifecycle = Lifecycle::Spawned;
@@ -1629,7 +1634,7 @@ impl EntityWorld {
                 state: Lifecycle::Spawned,
             },
         )?;
-        Ok(handle)
+        Ok(())
     }
 
     fn project_fields(&self, definition: &Entity, classname: &[u8]) -> Vec<TypedFieldState> {
@@ -2786,10 +2791,11 @@ impl EntityWorld {
     fn resolve_initial_parents(
         &mut self,
         created:&[EntityHandle],
+        deferred_attachment:bool,
         batch: &mut TransitionBatch,
     ) -> Result<(), RuntimeFailure> {
         let requests: Vec<_> = created
-            .iter()
+            .iter().rev()
             .filter_map(|handle| {
                 let entity = self.entity(*handle)?;
                 entity
@@ -2807,6 +2813,7 @@ impl EntityWorld {
                 .next()
                 .filter(|value| !value.is_empty())
                 .map(<[u8]>::to_vec);
+            if attachment.is_some()!=deferred_attachment{continue;}
             let matches = self.resolve_target(name, None, None, None)?;
             if matches.is_empty() {
                 self.push_transition(
