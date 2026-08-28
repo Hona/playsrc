@@ -26,6 +26,12 @@ export function swizzleModelTexture(sample: any, sourceFormat: number | null): a
  * Exposure/fog/device lifetime belongs to the supplied scene graph owner. */
 export function modelMaterialGraphKey(input: ModelMaterialGraphInput): string {
   const { state, textures, environment, baseTexture } = input
+  // Three's TextureNode.getUniformHash uses texture UUID: equal roles can
+  // collapse into one binding. Preserve that alias partition without keying
+  // the graph on the particular texture objects used by the first draw.
+  const roles = [input.shader === "eyes" || input.shader === "eye-refract" ? undefined : baseTexture?.texture,
+    textures?.warp, textures?.exponent, textures?.iris, textures?.ambientOcclusion, environment?.texture]
+  const aliases = roles.map(texture => texture ? roles.indexOf(texture) : -1)
   return JSON.stringify([input.shader, { ...state, phong: state.phong ? {
     maskSource: state.phong.maskSource, invertMask: state.phong.invertMask, albedoTint: state.phong.albedoTint,
     textureExponent: state.phong.exponent < 0, factorExponent: state.phong.exponentFactor !== 0,
@@ -33,7 +39,7 @@ export function modelMaterialGraphKey(input: ModelMaterialGraphInput): string {
   } : null }, input.fragment,
   input.shader === "eyes" || input.shader === "eye-refract" ? "iris" : baseTexture ? modelBaseTextureShape(baseTexture.texture, baseTexture.sourceFormat) : input.base.uuid,
   ...[textures?.warp, textures?.exponent, textures?.iris, textures?.ambientOcclusion].map(texture => texture ? modelBaseTextureShape(texture, 0) : "none"),
-  modelEnvironmentShape(environment?.texture), environment?.tint, environment?.scale])
+  modelEnvironmentShape(environment?.texture), environment?.tint, environment?.scale, aliases])
 }
 
 /** Used by real model admission/drawing and deterministic compiler acceptance. */
