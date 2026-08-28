@@ -3,17 +3,18 @@ import { installGpuTextureAccounting } from "../profile/gpu-texture-accounting"
 import { installBrowserFrameProfiler } from "../profile/browser-frame-profiler"
 import { installLightmapAllocationProbe } from "../profile/lightmap-allocation-probe"
 
-function fixture(serialized = false) {
+function fixture(serialized = false, traceOwners = false) {
   const calls = { create: 0, destroy: 0, write: 0 }
   let failure: "create" | "destroy" | "write" | null = null
   const error = new Error("native failure")
   class GPUTexture {
     width: number; height: number; depthOrArrayLayers: number
-    dimension: string; format: string; mipLevelCount: number; sampleCount: number
+    dimension: string; format: string; mipLevelCount: number; sampleCount: number; label: string
     constructor(descriptor: any) {
       const size = descriptor.size
       ;[this.width, this.height, this.depthOrArrayLayers] = Array.isArray(size) ? [size[0], size[1] ?? 1, size[2] ?? 1] : [size.width, size.height ?? 1, size.depthOrArrayLayers ?? 1]
       this.dimension = descriptor.dimension ?? "2d"; this.format = descriptor.format
+      this.label = descriptor.label ?? ""
       this.mipLevelCount = descriptor.mipLevelCount ?? 1; this.sampleCount = descriptor.sampleCount ?? 1
     }
     destroy() { calls.destroy++; if (failure === "destroy") throw error; return "destroyed" }
@@ -22,9 +23,24 @@ function fixture(serialized = false) {
   class GPUQueue { writeTexture(..._args: any[]) { calls.write++; if (failure === "write") throw error; return "written" } }
   const host = { GPUTexture, GPUDevice, GPUQueue }
   const install = serialized ? new Function(`return (${installGpuTextureAccounting.toString()})`)() as typeof installGpuTextureAccounting : installGpuTextureAccounting
-  const state = install(host), device = new GPUDevice(), queue = new GPUQueue()
+  const state = install(host, traceOwners), device = new GPUDevice(), queue = new GPUQueue()
   return { state, device, queue, calls, error, host, fail: (value: typeof failure) => { failure = value } }
 }
+
+test("opt-in owner records join native creation, uploads and retirement without double-counting shared objects", () => {
+  const { state, device, queue, host } = fixture(true, true)
+  const texture = device.createTexture({ label: "authored:normal:frame=0", size: [4, 4], format: "rgba8unorm" })
+  const shared = texture
+  queue.writeTexture({ texture: shared }, new Uint8Array(80).subarray(8, 72), {}, {})
+  texture.destroy(); shared.destroy()
+  const owners = (host as any).__playsrcTextureOwners
+  expect(owners.dropped).toBe(0)
+  expect(owners.records.map((record: any) => record.kind)).toEqual(["create", "upload", "destroy"])
+  expect(new Set(owners.records.map((record: any) => record.id)).size).toBe(1)
+  expect(owners.records[0]).toMatchObject({ owner: "authored:normal:frame=0", bytes: 64, width: 4, height: 4, mips: 1, samples: 1 })
+  expect(owners.records[1].bytes).toBe(state.writeTextureSourceBytes)
+  reconcile(state)
+})
 
 function reconcile(state: ReturnType<typeof installGpuTextureAccounting>) {
   for (const total of [state.live, state.created]) {

@@ -56,6 +56,7 @@ export class SourceCloakFramebuffer {
   get texture(): THREE.FramebufferTexture { return this.#texture }
   get samplerCount(): number { return this.#nodes.size }
   #configure(texture: THREE.FramebufferTexture): void {
+    texture.name = "cloak:framebuffer"
     texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter; texture.generateMipmaps = false
   }
   sample(): ReturnType<typeof TSL.texture> {

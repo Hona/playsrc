@@ -226,7 +226,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await route.fulfill({ response, body: `${prefix}\n${source}` })
   })
 
-  await page.addInitScript(({ memoryReplySource, textureAccountingSource, lightmapProbeSource }) => {
+  await page.addInitScript(({ memoryReplySource, textureAccountingSource, lightmapProbeSource, textureOwners }) => {
     const memoryReply = new Function(`return (${memoryReplySource})`)() as typeof mapMemoryReply
     const textureAccounting = new Function(`return (${textureAccountingSource})`)() as typeof installGpuTextureAccounting
     const state = {
@@ -238,7 +238,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       gpu: {
         bufferBytes: 0,
         peakBufferBytes: 0,
-        textureAllocation: textureAccounting(),
+        textureAllocation: textureAccounting(globalThis, textureOwners),
         lightmapAllocation: new Function(`return (${lightmapProbeSource})`)()(),
         uploadedBufferBytes: 0,
         stagingBytes: 0,
@@ -431,7 +431,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       queuedWrite(receiver, bytes)
       return result
     })
-  }, { memoryReplySource: mapMemoryReply.toString(), textureAccountingSource: installGpuTextureAccounting.toString(), lightmapProbeSource: installLightmapAllocationProbe.toString() })
+  }, { memoryReplySource: mapMemoryReply.toString(), textureAccountingSource: installGpuTextureAccounting.toString(), lightmapProbeSource: installLightmapAllocationProbe.toString(), textureOwners: process.env.PROFILE_MEMORY_TEXTURE_OWNERS === "1" })
 
   const maps: Record<string, unknown>[] = []
   try {
@@ -938,6 +938,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           .map((event) => ({ name: event.name, milliseconds: event.dur! / 1_000 })),
       })
       await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-partial.json`), `${JSON.stringify({ maps, timeline }, null, 2)}\n`)
+      if (process.env.PROFILE_MEMORY_TEXTURE_OWNERS === "1") await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-texture-owners.json`),
+        JSON.stringify(await page.evaluate(() => (globalThis as any).__playsrcTextureOwners), null, 2))
       await native()
       console.log(`PLAYSRC_MAP_MEMORY ${JSON.stringify({ target: identity, readyMilliseconds, peakResidentBytes: peak.residentBytes, wasmLinearBytes: (maps.at(-1) as any).memory.wasmLinearBytes })}`)
     }
