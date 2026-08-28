@@ -33,6 +33,11 @@ This uses normal `bun dev jump_beef --prepare-only`: build, verify local server
 readiness, close. It opens no browser. Cold compiler work does not need to consume
 the gameplay capture window.
 
+When SSH cannot traverse the user's configured toolchain mount, run the same
+build through `windows-job.ps1 -Action Build -Job <job-id> -Target jump_beef`.
+It uses the existing unelevated user session, opens no browser and changes no
+mount trust, security policy or toolchain installation.
+
 Run ordinary tests, directly or through SSH:
 
 ```sh
