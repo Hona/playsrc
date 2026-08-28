@@ -334,7 +334,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
   const forwardDistance = (after.position[0] - before.position[0]) * Math.cos(yaw) + (after.position[1] - before.position[1]) * Math.sin(yaw)
   expect(forwardDistance, "authored forward input moves along the selected spawn facing").toBeGreaterThan(16)
   await page.waitForFunction(() => !(globalThis as any).__playsrcProfile.round.waitingForPlayers
-    && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 40_000 })
+    && !(globalThis as any).__playsrcProfile.round.inSetup
+    && (globalThis as any).__playsrcProfile.round.state === 4, undefined, { timeout: 85_000 })
   const points = await page.evaluate(() => (globalThis as any).__playsrcProfile.controlPoints.points.map((point: any) => ({ identity: point.identity, position: point.position, owner: point.owner })))
   expect(points).toHaveLength(tf2MapMode(target) === "king-of-the-hill" ? 1 : 5)
   if (tf2MapMode(target) === "king-of-the-hill") await command("ent_fire team_control_point SetUnlockTime 1")
@@ -357,7 +358,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     profiler.active = false
     return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points,
       completedFrames: profiler.completedFrames, counters: profiler.counters, nodeBuilds: profiler.nodeBuilds,
-      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure,longTasks:profiler.longTasks }
+      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure,longTasks:profiler.longTasks,round:profile.round }
   })
   if(cpu){const result=await cpu.send("Profiler.stop");await writeFile(testInfo.outputPath(`${target}-main.cpuprofile`),JSON.stringify(result.profile));await cpu.detach()}
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
