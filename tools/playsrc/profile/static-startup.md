@@ -1,6 +1,7 @@
 # Exact static startup gate
 
-`bun run prepare:static-startup` prepares the three released-map **local candidate**
+`bun run prepare:static-startup` prepares a **local candidate** for the target table
+selected in `releases/current.json`, not additional executable-supported maps. It prepares
 objects and static site without changing `releases/current.json` or uploading
 anything. `bun run prepare:static-startup --approved` instead selects the committed
 approved release and verifies its generated-binding closure and WASM interface.
@@ -10,6 +11,7 @@ Run the cold headed phase with those absolute paths:
 
 ```sh
 PLAYSRC_STATIC_PACKAGE=/absolute/static-package \
+PLAYSRC_STATIC_EXPECT_PACKAGE=<SHA-256 printed by preparation> \
 PLAYSRC_STATIC_WASM=/absolute/selected.wasm \
 PLAYSRC_PREVIOUS_STATIC_PACKAGE=/absolute/retained-previous-package \
 PLAYSRC_STARTUP_CASE=cold \

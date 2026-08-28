@@ -8,6 +8,16 @@ import { createDeployedBrowserConfiguration, parseTf2Release } from "../../../ap
 import { staticStartupPackage, staticStartupRouter, startupDigest } from "../profile/static-startup-package"
 import { captureStaticStartupPhase, compactStaticStartupPhase, staticStartupReceipt, assertStaticStartupReceipt, startupPixelEvidence, type StartupObservation, type StaticStartupDriver } from "../profile/static-startup-gate"
 import { fetchImmutableObject } from "@playsrc/asset-store/browser"
+import { startupPreparationScope } from "../src/prepare-static-startup"
+import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
+
+test("startup preparation preserves the published target table when the executable knows more maps",()=>{
+  const selected=parseTf2Release(releaseJson)
+  expect(startupPreparationScope(selected)).toEqual(["jump_beef","pl_upward","ctf_2fort"])
+  expect(TF2_TARGET_NAMES).toContain("cp_dustbowl")
+  expect(TF2_TARGET_NAMES).toContain("cp_gorge")
+  expect(startupPreparationScope(selected)).not.toContain("cp_dustbowl")
+})
 
 // Synthetic PNGs are unit inputs only, never retained as browser evidence.
 function png(phase: number) {
@@ -35,7 +45,9 @@ test("exact static package catches a page/Worker/WASM mismatch before publicatio
     await writeFile(path.join(current,'_headers'),'/*\n  Cross-Origin-Embedder-Policy: require-corp\n  Cross-Origin-Opener-Policy: same-origin\n')
     await writeFile(path.join(previous,'tf2/index.html'),'<script src="/tf2/assets/index-previous.js"></script>')
     await writeFile(path.join(previous,'tf2/assets/index-previous.js'),'export const previous=true;')
-    const router=await staticStartupRouter({directory:current,previousDirectory:previous,assetDir:root,wasmFile})
+    const expectedSha256=(await staticStartupPackage(current)).sha256
+    await expect(staticStartupRouter({directory:current,previousDirectory:previous,assetDir:root,wasmFile,expectedSha256:'0'.repeat(64)})).rejects.toThrow('frozen candidate identity')
+    const router=await staticStartupRouter({directory:current,previousDirectory:previous,assetDir:root,wasmFile,expectedSha256})
     expect((await router.response('https://playsrc.online/tf2'))!.body.toString()).toContain('index-test')
     expect(router.upgradeNavigations).toBe(0)
     router.warmUpgrade()

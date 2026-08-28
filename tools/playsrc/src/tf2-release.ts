@@ -36,16 +36,17 @@ async function ensureLocalObject(root: string, expected: ObjectDescriptor, pathn
 
 export async function prepareTf2Release(config: LocalConfig, target: string | undefined): Promise<Tf2ReleaseArtifact> {
   if (target !== undefined) throw new Tf2ReleaseError("the current TF2 release does not accept a target argument")
-  const artifact = await buildTf2ReleaseCandidate(config)
+  const artifact = await buildTf2ReleaseCandidate(config, TF2_TARGET_NAMES)
   const catalog = artifact.files.get(artifact.release.objects.catalog.sha256)!
   await writeTf2Release(artifact.release, await readFile(catalog.pathname))
   return artifact
 }
 
 /** Prepare local candidate bytes without changing the approved release pointer. */
-export async function buildTf2ReleaseCandidate(config: LocalConfig): Promise<Tf2ReleaseArtifact> {
+export async function buildTf2ReleaseCandidate(config: LocalConfig, names: readonly (typeof TF2_TARGET_NAMES)[number][]): Promise<Tf2ReleaseArtifact> {
+  if (!names.length || names.some((name,index)=>!TF2_TARGET_NAMES.includes(name)||index>0&&TF2_TARGET_NAMES.indexOf(names[index-1]!)>=TF2_TARGET_NAMES.indexOf(name))) throw new Tf2ReleaseError("Candidate target scope is invalid")
   const wasm = buildTf2Wasm(config)
-  const maps = await Promise.all(TF2_TARGET_NAMES.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
+  const maps = await Promise.all(names.map(async (name) => Object.freeze({ name, map: await acquireMap(config, name) })))
   const prepared = [] as Array<Readonly<{ name: (typeof TF2_TARGET_NAMES)[number]; map: Awaited<ReturnType<typeof acquireMap>>; sourceBundle: Awaited<ReturnType<typeof buildSourceBundle>> }>>
   for (const { name, map } of maps) prepared.push(Object.freeze({ name, map, sourceBundle: await buildSourceBundle(config, name) }))
   const wasmPath = await wasm
