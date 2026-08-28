@@ -1,5 +1,7 @@
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
+import path from "node:path"
 import { loadLocalConfig, type LocalConfig } from "./config"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 import { rustBuildIdentity } from "./build-identity"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
@@ -30,6 +32,12 @@ export async function prepareLocalStage(config: LocalConfig, stage: LocalPrepara
 if (import.meta.main) {
   try {
     const stage = parseLocalPreparationStage(process.argv.slice(2))
-    console.log(JSON.stringify(await prepareLocalStage(await loadLocalConfig(), stage)))
+    const config = await loadLocalConfig()
+    // A native build must not contend with another lane's measured capture.
+    // The local-job owner still bounds the entire stage, including this wait.
+    const lockPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", "chromium-profile.lock")
+    const lock = await acquireHeadedProfileLock(lockPath, `prepare-${stage.kind}`)
+    try { console.log(JSON.stringify(await prepareLocalStage(config, stage))) }
+    finally { await releaseHeadedProfileLock(lockPath, lock.token) }
   } catch (error) { console.error(String(error)); process.exitCode = 1 }
 }
