@@ -1,0 +1,53 @@
+# Run the same checkout locally or on Windows
+
+The Windows development environment must already work (`git`, Bun, Node,
+configured TF2 content and toolchains). No remote browser service is needed.
+SSH transports commands and reads files. Git transports source. Task Scheduler
+is used only when a headed command must cross from SSH into the user's existing
+interactive console.
+
+From a configured checkout, prepare any commit reachable from an origin branch:
+
+```sh
+bun tools/playsrc/src/local-job.ts prepare refs/heads/my-branch <40-character-commit>
+```
+
+This makes a separate detached checkout in the configured `sourceCacheDir`,
+copies only the three local configuration roots and runs `bun install
+--frozen-lockfile`. It never modifies the original checkout, downloads a different
+toolchain, or transfers generated browser/WASM artifacts from another host.
+Keep the returned job ID. Preparation opens no window.
+
+Run ordinary tests, directly or through SSH:
+
+```sh
+bun tools/playsrc/src/local-job.ts run <job-id> test tools/playsrc/tests/windows-desktop.test.ts
+```
+
+In a physical Windows terminal, after a fresh hands-off agreement:
+
+```sh
+bun tools/playsrc/src/local-job.ts run <job-id> --ready profile gameplay
+```
+
+From SSH, the thin session bridge runs that same command:
+
+```powershell
+powershell.exe -NoProfile -File tools/playsrc/windows-job.ps1 -Job <job-id> -Profile gameplay -Ready
+```
+
+`--ready`/`-Ready` is explicit authorization for this attempt, not a way to
+override desktop admission. The ordinary profiler still owns the machine lock,
+physical-console checks, headed browser, input/window guards, server, deadlines
+and evidence. A free loopback port avoids the developer's existing server.
+Profiles use native local builds and localhost, never a production URL, remote
+CDP connection, request-interception broker or controller-host asset relay.
+
+Read `command.log` and `result.json` in the returned run directory over SSH/SCP;
+ordinary profiler evidence stays in its normal configured cache directory.
+Exit failures and source/configuration changes fail the job. Overlapping runs
+in one checkout are rejected. A forcibly interrupted job leaves its `running`
+marker for inspection; do not remove it until its processes have stopped.
+The session bridge removes its own task on normal completion; a forced task
+termination may require removing that exact returned task name after inspection.
+Do not delete another job's task, locks, browser profiles or user processes.
