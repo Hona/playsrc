@@ -488,6 +488,10 @@ pub enum PrimaryResult {
 }
 
 impl WeaponRuntime {
+    pub fn prefire_playback_rate(&self) -> f32 {
+        if self.weapon == Weapon::Minigun { 0.75 / self.spinup_seconds.max(0.00001) } else { 1.0 }
+    }
+
     pub fn full_with_attributes(weapon: Weapon, context: ProfileContext,
         mut query: impl FnMut(AttributeTarget, &str, f32) -> f32) -> Self {
         let mut base = WeaponProfile::configured(weapon);
@@ -996,6 +1000,17 @@ fn elapsed_seconds(begin: u64, tick: u64, tick_interval: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minigun_prefire_rate_uses_the_authored_spin_time_and_source_lower_bound() {
+        let mut weapon = WeaponRuntime::full(Weapon::Minigun);
+        assert_eq!(weapon.prefire_playback_rate(), 1.0);
+        weapon.spinup_seconds = 0.5;
+        assert_eq!(weapon.prefire_playback_rate(), 1.5);
+        weapon.spinup_seconds = 0.0;
+        assert_eq!(weapon.prefire_playback_rate(), 0.75 / 0.00001);
+        assert_eq!(WeaponRuntime::full(Weapon::RocketLauncher).prefire_playback_rate(), 1.0);
+    }
 
     #[test]
     fn shortstop_shove_has_independent_cooldown_and_does_not_consume_ammo() {

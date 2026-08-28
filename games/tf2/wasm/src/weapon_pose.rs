@@ -75,6 +75,16 @@ fn sequence(model: &PresentationModel, activity: &str) -> Option<usize> {
         })
 }
 
+fn apply_prefire_rate(request: &ModelPoseRequest, resolved: &mut ModelPoseRequest) -> Result<(), &'static str> {
+    // The viewmodel rate belongs to the publication that produced this pose.
+    // A later observe may already have replaced the owner's class/loadout.
+    let rate = request.prefire_playback_rate.filter(|rate| rate.is_finite() && *rate > 0.0)
+        .ok_or("minigun-prefire-rate")?;
+    resolved.elapsed *= rate;
+    resolved.previous_elapsed *= rate;
+    Ok(())
+}
+
 pub(super) fn prepare(
     request: &ModelPoseRequest,
     models: &BTreeMap<String, Arc<super::RetainedPresentationModel>>,
@@ -109,14 +119,7 @@ pub(super) fn prepare(
     }
     if item.item_class == "tf_weapon_minigun" && request.activity == "ACT_MP_ATTACK_STAND_PREFIRE"
         && !request.preparation && !request.model_panel && !resolved.world_item {
-        let gameplay = gameplay.ok_or("minigun-prefire-snapshot")?;
-        let weapon = if request.actor_identity <= 1 {
-            gameplay.loadout.iter().find(|weapon| weapon.weapon == playsrc_tf2::Weapon::Minigun)
-        } else {
-            gameplay.bots.iter().find(|bot| bot.identity == request.actor_identity).and_then(|bot| bot.weapon.as_ref())
-        }.ok_or("minigun-prefire-weapon")?;
-        resolved.elapsed *= weapon.prefire_playback_rate;
-        resolved.previous_elapsed *= weapon.prefire_playback_rate;
+        apply_prefire_rate(request, &mut resolved)?;
     }
     if item.item_class == "tf_weapon_minigun" && !request.preparation && !request.model_panel {
         let mut transient;
@@ -196,7 +199,7 @@ mod tests {
 
     fn request_bytes() -> (Vec<u8>, usize) {
         let mut bytes = b"PMRQ".to_vec();
-        for value in [12_u32, 1, 7, 1] {
+        for value in [13_u32, 1, 7, 1] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&[0; 24]);
@@ -222,11 +225,12 @@ mod tests {
         bytes.extend_from_slice(&i32::MIN.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
         bytes.extend_from_slice(&[0; 52]);
+        bytes.extend_from_slice(&0_f32.to_le_bytes());
         (bytes, phase)
     }
 
     #[test]
-    fn pose12_retains_cosmetic_flags_and_uses_explicit_definition_and_clock() {
+    fn pose13_retains_cosmetic_flags_and_uses_explicit_definition_and_clock() {
         let (mut bytes, phase) = request_bytes();
         let requests = super::super::decode_model_requests(&bytes).unwrap();
         let request = &requests[0];
@@ -262,7 +266,7 @@ mod tests {
         request.world_item = false;
         let models = BTreeMap::new();
         let mut states = BTreeMap::new();
-        assert_eq!(prepare(&request, &models, &mut states, None).unwrap_err(), "minigun-prefire-snapshot");
+        assert_eq!(prepare(&request, &models, &mut states, None).unwrap_err(), "minigun-prefire-rate");
         let metadata = BTreeMap::new();
         let mut particles = super::super::wearable::ParticleStates::default();
         let mut world = super::super::ModelPoseWorld {
@@ -272,7 +276,7 @@ mod tests {
         };
         let error = super::super::encode_model_poses(&models, &BTreeMap::new(), &mut BTreeMap::new(),
             &mut BTreeMap::new(), &mut states, &[request.clone()], &mut world, Vec::new()).unwrap_err();
-        assert!(error.starts_with("model pose minigun-prefire-snapshot: request=0 identity=7 actor=1 sample_tick=42 "), "{error}");
+        assert!(error.starts_with("model pose minigun-prefire-rate: request=0 identity=7 actor=1 sample_tick=42 "), "{error}");
         assert!(error.contains("definition=Some(15) activity=\"ACT_MP_ATTACK_STAND_PREFIRE\""), "{error}");
         assert!(error.ends_with("authority_tick=None authority_class=None"), "{error}");
         // Preparation has no live weapon owner: it must reach the independent
@@ -280,6 +284,35 @@ mod tests {
         request.preparation = true;
         assert_eq!(prepare(&request, &models, &mut states, None).unwrap_err(), "viewmodel-model");
         assert!(states.is_empty());
+    }
+
+    #[test]
+    fn delayed_prefire_uses_the_pose_publication_rate_without_a_live_weapon_owner() {
+        let (mut bytes, _) = request_bytes();
+        let end = bytes.len();
+        bytes[end - 4..].copy_from_slice(&1.5_f32.to_le_bytes());
+        let mut request = super::super::decode_model_requests(&bytes).unwrap().remove(0);
+        assert_eq!(request.prefire_playback_rate, Some(1.5));
+        request.model = PlayerClass::Heavy.data().hand_model.to_owned();
+        request.item_definition = Some(15);
+        request.activity = "ACT_MP_ATTACK_STAND_PREFIRE".into();
+        request.preparation = false;
+        request.model_panel = false;
+        request.world_item = false;
+        request.previous_elapsed = 0.25;
+        request.elapsed = 0.5;
+        let mut resolved = request.clone();
+        apply_prefire_rate(&request, &mut resolved).unwrap();
+        assert_eq!((resolved.previous_elapsed, resolved.elapsed), (0.375, 0.75));
+        // No latest gameplay snapshot is needed, including after its Minigun
+        // owner was replaced. Only the intentionally absent model rejects this.
+        assert_eq!(prepare(&request, &BTreeMap::new(), &mut BTreeMap::new(), None).unwrap_err(), "viewmodel-model");
+        for invalid in [-1.0_f32, f32::INFINITY, f32::NAN] {
+            bytes[end - 4..].copy_from_slice(&invalid.to_le_bytes());
+            assert!(super::super::decode_model_requests(&bytes).is_err());
+        }
+        bytes[4..8].copy_from_slice(&12_u32.to_le_bytes());
+        assert!(super::super::decode_model_requests(&bytes).is_err());
     }
 
     #[test]

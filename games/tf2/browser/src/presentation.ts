@@ -284,6 +284,7 @@ export function createViewmodelPresenter(artifacts: PresentationArtifacts, catal
         identity: 0x7fff_ff00 + snapshot.class * 4,
         model: identity, activity,
         itemDefinition: equipped.item.definitionIndex, activityStartTick: actionTick, allowIdleTransition: weapon.reload === 0,
+        prefirePlaybackRate: weapon.prefirePlaybackRate ?? undefined,
         previousElapsedSeconds: Math.min(previousElapsed, currentElapsed), elapsedSeconds: currentElapsed,
         currentTimeSeconds: now, frameTimeSeconds: frameTime, planarSpeed: Math.hypot(snapshot.velocity[0], snapshot.velocity[1]),
         screenAspectRatio: view.aspectRatio, worldFarPlane: view.farPlane,
@@ -326,6 +327,7 @@ function stable64(value: string) {
 export type ModelPoseRequest = Readonly<{
   itemDefinition?: number
   activityStartTick?: bigint
+  prefirePlaybackRate?: number
   allowIdleTransition?: boolean
   identity: number
   classSelection?: boolean
@@ -406,7 +408,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const model = poseText(request.model)
     const item = poseText(request.itemModel ?? "")
     const activity = poseText(request.activity)
-    length += 204 + model.length + item.length + activity.length +
+    length += 208 + model.length + item.length + activity.length +
       (request.bodygroups.length + (request.itemBodygroups?.length ?? 0)) * 4
     for (const item of request.equippedItems ?? []) length += 12 + item.attributes.length * 8
     return { request, model, item, activity }
@@ -414,7 +416,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
   if (length > 1024 * 1024) throw new ProjectilePresentationError("BoundExceeded", "model pose request bytes")
   const bytes = new Uint8Array(length), view = new DataView(bytes.buffer)
   bytes.set([0x50, 0x4d, 0x52, 0x51])
-  view.setUint32(4, 12, true)
+  view.setUint32(4, 13, true)
   view.setUint32(8, requests.length, true)
   let at = 12
   const text = (encoded: Uint8Array) => {
@@ -541,6 +543,11 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     view.setFloat32(at+40,lighting?.cameraAngles[1]??0,true)
     view.setFloat32(at+44,lighting?.cameraAngles[2]??0,true)
     at+=48
+    const rate = request.prefirePlaybackRate
+    if (rate !== undefined && (!Number.isFinite(Math.fround(rate)) || Math.fround(rate) <= 0)) {
+      throw new ProjectilePresentationError("MalformedFact", "viewmodel prefire playback rate")
+    }
+    view.setFloat32(at, rate ?? 0, true); at += 4
   }
   return bytes
 }

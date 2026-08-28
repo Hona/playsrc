@@ -246,6 +246,7 @@ export type WeaponState = Readonly<{
   chargeBeginTick: bigint | null
   firstPrimaryTick: bigint
   chargedDamage: number
+  prefirePlaybackRate: number | null
 }>
 
 export type FlamePoint = Readonly<{
@@ -1651,7 +1652,7 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
   const buffer = data.buffer as ArrayBuffer
   const base = data.byteOffset
   const view = new DataView(buffer, base, data.byteLength)
-  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 30)
+  if (data[0] !== 0x50 || data[1] !== 0x53 || data[2] !== 0x53 || data[3] !== 0x4e || view.getUint32(4, true) !== 31)
     throw new Tf2CodecError("snapshot identity is invalid")
   const tf2Class = data[16]
   const team = data[17]
@@ -1736,7 +1737,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
       reload > 3 ||
       data[item + 2] !== 0 ||
       data[item + 3] !== 0 ||
-      !Number.isFinite(view.getFloat32(item + 44, true)) || view.getFloat32(item + 44, true) < 0 || (tf2Class !== 8 && view.getFloat32(item + 44, true) > 150)
+      !Number.isFinite(view.getFloat32(item + 44, true)) || view.getFloat32(item + 44, true) < 0
+      || (itemWeapon === 9 ? view.getFloat32(item + 44, true) <= 0 : tf2Class !== 8 && view.getFloat32(item + 44, true) > 150)
     )
       throw new Tf2CodecError("loadout record is invalid")
     if (tf2Class === 8) {
@@ -1759,7 +1761,8 @@ export function decodeSnapshot(bytes: ArrayBuffer | Uint8Array, ranges?: Snapsho
         reloadDueTick: view.getBigUint64(item + 20, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 20, true),
         chargeBeginTick: view.getBigUint64(item + 28, true) === 0xffff_ffff_ffff_ffffn ? null : view.getBigUint64(item + 28, true),
         firstPrimaryTick: view.getBigUint64(item + 36, true),
-        chargedDamage: view.getFloat32(item + 44, true),
+        chargedDamage: itemWeapon === 9 ? 0 : view.getFloat32(item + 44, true),
+        prefirePlaybackRate: itemWeapon === 9 ? view.getFloat32(item + 44, true) : null,
       })
     loadout.push(ranges ? ranges.read("loadout", index, item, 48, readWeapon) : readWeapon())
   }

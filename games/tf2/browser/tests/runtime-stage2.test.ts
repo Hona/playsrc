@@ -13,12 +13,30 @@ import { tf2Audio } from "../src/presentation"
 import { configuredEquipmentSounds } from "../src/equipment/audio.generated"
 import { ReplyReader, ReplyWriter, REPLY_BYTES } from "../src/reply-transport"
 
+test("snapshot-bound Minigun prefire rates preserve attribute extremes without becoming charged damage", () => {
+  const bytes = snapshot(), view = new DataView(bytes), data = new Uint8Array(bytes)
+  data[16] = 6; data[18] = 9; data[276] = 9
+  for (const rate of [1, 1.5, Math.fround(0.75 / 0.00001)]) {
+    view.setFloat32(320, rate, true)
+    const weapon = decodeSnapshot(bytes).loadout[0]!
+    expect(weapon.prefirePlaybackRate).toBe(rate)
+    expect(weapon.chargedDamage).toBe(0)
+  }
+  for (const invalid of [0, -1, NaN, Infinity]) {
+    view.setFloat32(320, invalid, true)
+    expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
+  }
+  view.setFloat32(320, 1, true)
+  view.setUint32(4, 30, true)
+  expect(() => decodeSnapshot(bytes)).toThrow(Tf2CodecError)
+})
+
 function snapshot(): ArrayBuffer {
   const bytes = new ArrayBuffer(1405)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
-  view.setUint32(4, 30, true)
+  view.setUint32(4, 31, true)
   view.setFloat32(bytes.byteLength - 112, 1, true)
   view.setInt32(bytes.byteLength - 104, -1, true)
   view.setBigUint64(8, 7n, true)
