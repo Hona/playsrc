@@ -9,7 +9,7 @@ import { admitWorkerExecutionContext } from "./worker-runtime-admission"
 export class WorkerCdpSession extends EventEmitter {
   #next = 0
   #pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
-  constructor(readonly browser: CDPSession | WorkerCdpSession, readonly sessionId: string) {
+  constructor(readonly browser: CDPSession, readonly sessionId: string) {
     super()
     browser.on("Target.receivedMessageFromTarget", this.#receive)
     browser.on("Target.detachedFromTarget", this.#detached)

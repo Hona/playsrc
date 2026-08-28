@@ -9,7 +9,7 @@ import { captureStaticStartup, staticStartupReceipt, startupPixelEvidence, requi
 import { startupConsoleIdle, startupNativeReader, externalStartupNativeReader } from "./native-startup"
 import { WorkerCdpSession } from "./worker-cpu-profiler"
 import { admitWorkerExecutionContext } from "./worker-runtime-admission"
-import { installStaticWorkerRouting } from "./static-worker-routing"
+import { installStaticPackageRouting } from "./static-package-routing"
 
 test("exact static package: audible startup movie, menu and playable frame, cold and warm upgrade", async ({ playwright }, testInfo) => {
   if (process.env.PLAYSRC_PROFILE_MANAGED !== "1") throw new Error("Static startup must run under the checked machine-wide profile lock")
@@ -39,7 +39,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   const child = externalEndpoint?undefined:spawn(executable, [`--user-data-dir=${profile}`, `--remote-debugging-port=${address.port}`, "--no-first-run", "--window-position=0,40", `--window-size=${width},${height}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] })
   let launchError: unknown, browser: Awaited<ReturnType<typeof playwright.chromium.connectOverCDP>> | undefined
   let native: Awaited<ReturnType<typeof startupNativeReader>> | Awaited<ReturnType<typeof externalStartupNativeReader>> | undefined
-  let workerRouting: Awaited<ReturnType<typeof installStaticWorkerRouting>> | undefined
+  let packageRouting: Awaited<ReturnType<typeof installStaticPackageRouting>> | undefined
   child?.on("error", error => { launchError=error });child?.stderr!.on("data", data => { evidence.browserDiagnostics=((evidence.browserDiagnostics??"")+data).slice(-8192) })
   const terminate = () => child?.kill("SIGTERM")
   process.once("SIGTERM", terminate)
@@ -56,16 +56,15 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     if(context.pages().length!==1)throw new Error("Static startup requires its single fresh native page")
     if(!externalEndpoint)await page.bringToFront()
     native=externalEndpoint?await externalStartupNativeReader(page,process.env.PLAYSRC_STARTUP_NATIVE_ENDPOINT!,process.env.PLAYSRC_STARTUP_NATIVE_LOCK_TOKEN!):await startupNativeReader(page,config.sourceCacheDir)
-    let routingFailure: unknown
-    await context.route("**/*",async route=>{
-      try { const response=await router.response(route.request().url());if(response)await route.fulfill(response);else await route.continue() }
-      catch(error){routingFailure=error;await route.abort("failed")}
-    })
     evidence.console=[];evidence.errors=[];evidence.workers=[];evidence.responses=[]
     evidence.workerContexts=[]
     const workerBrowser=await browser.newBrowserCDPSession(),workerPage=await context.newCDPSession(page)
-    workerRouting=await installStaticWorkerRouting(workerPage,url=>router.response(url))
-    evidence.workerRouting=workerRouting.records
+    let unavailableConfiguration=false
+    packageRouting=await installStaticPackageRouting(workerBrowser,async url=>{
+      if(unavailableConfiguration&&url==="https://playsrc.online/tf2/playsrc-config.json")return {status:503,headers:{"content-type":"application/problem+json"},body:Buffer.from('{"title":"Startup gate unavailable configuration fixture"}')}
+      return router.response(url)
+    })
+    evidence.packageRouting=packageRouting.records
     await workerPage.send("Page.enable");await workerPage.send("Page.setLifecycleEventsEnabled",{enabled:true})
     evidence.navigations=[]
     const navigate=async(mode:"cold"|"warm-upgrade")=>{
@@ -141,8 +140,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
       native:()=>native!.read(path.join(directory,`native-${admission++}.png`)),
       navigate,
       read:async()=>{
-        if(routingFailure)throw routingFailure
-        workerRouting!.check()
+        packageRouting!.check()
         if(evidence.gpuFailures.length)throw new Error(`Static startup GPU failure: ${evidence.gpuFailures[0].message}`)
         const state=await page.evaluate(()=>{const main=document.querySelector<HTMLElement>("main"),video=document.querySelector<HTMLVideoElement>(".startup-movie"),canvas=document.querySelector<HTMLElement>("canvas.world-canvas");return {phase:main?.dataset.phase??"Absent",detail:main?.dataset.detail??"",startupState:main?.dataset.startupState,visible:document.visibilityState==="visible",focused:document.hasFocus(),timeOrigin:performance.timeOrigin,at:performance.now(),frame:Number(canvas?.dataset.displayFrame??0),cache:main?.dataset.cache,consoleVisible:main?.dataset.consoleVisible==="true",gameUi:main?.dataset.gameui,playerClass:Number(main?.dataset.hudProbe?.split(":")[1]??0),tick:main?.dataset.snapshotTick,teamSelection:main?.dataset.teamSelectionVisible==="true",classSelection:main?.dataset.classSelectionVisible==="true",unexpectedInput:(globalThis as any).__playsrcStartupInput?.unexpected.length??0,movie:video?{time:video.currentTime,paused:video.paused,muted:video.muted,width:video.videoWidth,height:video.videoHeight}:null} as StartupObservation})
         if(state.phase==="MainMenu"||state.phase==="Ready")await admitGameplayWorker()
@@ -168,7 +166,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     if(evidence.gpuFailures.length)throw new Error("Static startup encountered a GPU validation/device failure")
     // A declared network-failure fixture tests the independent boot UI. It does
     // not edit or relabel any package/WASM byte, and is not a successful boot.
-    await context.route("https://playsrc.online/tf2/playsrc-config.json",route=>route.fulfill({status:503,contentType:"application/problem+json",body:'{"title":"Startup gate unavailable configuration fixture"}'}))
+    unavailableConfiguration=true
     await page.goto("https://playsrc.online/tf2",{waitUntil:"domcontentloaded",timeout:20_000})
     await page.waitForFunction(()=>document.querySelector("main")?.getAttribute("data-phase")==="Failed",undefined,{timeout:10_000})
     const failurePanel=page.getByRole("alert",{name:"Application failure",exact:true})
@@ -180,7 +178,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     evidence.bootFailure=bootFailure
     if(evidence.gpuFailures.length||evidence.unexpectedInput.length)throw new Error("Static startup post-capture GPU/input guard failed")
     await router.verifyUnchanged()
-    await workerRouting.close();workerRouting=undefined
+    packageRouting.check();await packageRouting.close();packageRouting=undefined
     await Promise.all([workerPage.detach(),workerBrowser.detach()])
     evidence.capture=capture
     const receipt=staticStartupReceipt({packageSha256:router.admitted.sha256,wasmSha256:router.admitted.configuration.wasm.sha256,previousPackageSha256:router.previous.sha256,previousEntryUsed:router.previousEntryUsed,upgradeNavigations,bootFailure},capture)
@@ -190,6 +188,6 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   finally {
     evidence.reads=router.reads;evidence.native=native?.records;evidence.endedAt=Date.now()
     await writeFile(path.join(directory,"static-startup-evidence.json"),JSON.stringify(evidence))
-    try {await workerRouting?.close();await native?.close()} finally {try {await browser?.close()} finally {terminate();process.removeListener("SIGTERM",terminate)}}
+    try {await packageRouting?.close();await native?.close()} finally {try {await browser?.close()} finally {terminate();process.removeListener("SIGTERM",terminate)}}
   }
 })
