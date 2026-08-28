@@ -38,7 +38,7 @@ public static class StartupWindow {
 '@
 `
 
-let windowsProbe: {read(pid:number,capture?:string):Promise<any>;close():void}|undefined
+let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number}):Promise<any>;close():void}|undefined
 
 function openWindowsProbe() {
   const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+String.raw`
@@ -55,6 +55,12 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     if ($info.State -ne 0 -or $info.Flags -ne 1 -or $desktop.protocol -ne 0 -or $session -ne $desktop.processSessionId) {throw 'Native pixel console is not active and unlocked'}
     if (@($windows | Where-Object {$_.id -eq $foreground -and $_.visible -and !$_.minimized}).Count -ne 1) {throw 'Native pixel target is not foreground'}
     $x=[StartupWindow]::GetSystemMetrics(76);$y=[StartupWindow]::GetSystemMetrics(77);$w=[StartupWindow]::GetSystemMetrics(78);$h=[StartupWindow]::GetSystemMetrics(79)
+    if ($request.captureWindow) {
+     $expected=$request.captureWindow
+     $matches=@($windows | Where-Object {$_.bounds.Left -eq $expected.left -and $_.bounds.Top -eq $expected.top -and ($_.bounds.Right-$_.bounds.Left) -eq $expected.width -and ($_.bounds.Bottom-$_.bounds.Top) -eq $expected.height})
+     if ($matches.Count -ne 1 -or $matches[0].id -ne $foreground) {throw 'Pixel scope is not the complete foreground measured window'}
+     $x=$matches[0].bounds.Left;$y=$matches[0].bounds.Top;$w=$matches[0].bounds.Right-$x;$h=$matches[0].bounds.Bottom-$y
+    }
     if ($w -le 0 -or $h -le 0 -or $w*$h -gt 33554432) {throw 'Native pixel desktop bounds invalid'}
     $start=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $bitmap=New-Object System.Drawing.Bitmap($w,$h,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -88,13 +94,13 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       result.error?entry.reject(new Error(result.error)):entry.resolve(result)
     }
   })
-  return {read:(pid:number,capture?:string)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number})=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
 }
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
 
-async function windowsSnapshot(browserPid = 0, capture?: string) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture)
+async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -120,7 +126,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
   const records: any[] = []
   return {
     records,
-    async read(desktopScreenshot?: string): Promise<StartupNativeAdmission & { pixels?: NativeDesktopPixels }> {
+    async read(desktopScreenshot?: string, pixelScope: "desktop" | "window" = "desktop"): Promise<StartupNativeAdmission & { pixels?: NativeDesktopPixels }> {
       if (mac) {
         const record = await mac.read(desktopScreenshot); records.push(record); requireMacPageAdmission(record)
         const bounds=JSON.stringify(record.page!.bounds)
@@ -138,7 +144,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const boundsIdentity=JSON.stringify(facts.bounds)
       if(establishedBounds!==undefined&&establishedBounds!==boundsIdentity)throw new Error("Static startup native window geometry changed")
       establishedBounds=boundsIdentity
-       const native = await windowsSnapshot(browserPid,desktopScreenshot)
+       const native = await windowsSnapshot(browserPid,desktopScreenshot,pixelScope === "window" && desktopScreenshot ? facts.bounds as {left:number;top:number;width:number;height:number} : undefined)
        if (desktopScreenshot) requireNativeDesktopPixels(native.pixels, desktopScreenshot)
       const matches = native.windows.filter((w: any) => w.bounds.Left === facts.bounds.left && w.bounds.Top === facts.bounds.top
         && w.bounds.Right - w.bounds.Left === facts.bounds.width && w.bounds.Bottom - w.bounds.Top === facts.bounds.height)

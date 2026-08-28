@@ -89,7 +89,10 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   const capture = async () => {
     const file = `selection-${String(captures.length).padStart(3, "0")}.desktop.png`
     if (windows) {
-      const startedEpoch = Date.now(), admission = await windows.read(path.join(directory, file)), admissionAfter = await windows.read(), endedEpoch = Date.now()
+      // Full-desktop admission endpoints remain private. Active pixel sampling
+      // reads the entire authenticated window from the real screen, including
+      // its native chrome, rather than PNG-encoding unrelated monitors.
+      const startedEpoch = Date.now(), admission = await windows.read(path.join(directory, file), sampling ? "window" : "desktop"), admissionAfter = await windows.read(), endedEpoch = Date.now()
       requireStartupNative(admission); requireStartupNative(admissionAfter)
       if (!admission.pixels || admission.pixels.path !== path.join(directory, file)) throw new Error("Native Windows pixel capture missing")
       const bytes = await readFile(path.join(directory, file))
@@ -191,17 +194,20 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     const evidence = await page.evaluate(() => { const root = globalThis as any; root.__playsrcProfile.selectionSampling = false; root.__playsrcFrameProfiler.active = false
       return { inputs: root.__playsrcProfile.selectionInputs, owners: root.__playsrcProfile.selectionOwners, dropped: root.__playsrcProfile.selectionOwnersDropped ?? 0,
         frames: root.__playsrcFrameProfiler.completedFrames, worker: root.__playsrcFrameProfiler.worker, gpu: root.__playsrcFrameProfiler.counters,
+        gpuOperations: root.__playsrcFrameProfiler.gpuOperations, gpuOperationsDropped: root.__playsrcFrameProfiler.gpuOperationsDropped,
         modelPreparation: root.__playsrcFrameProfiler.modelPreparation, longTasks: root.__playsrcFrameProfiler.longTasks, longAnimationFrames: root.__playsrcFrameProfiler.longAnimationFrames,
         memorySamples: root.__playsrcProfile.selectionMemory,
         loading: document.querySelector<HTMLElement>("main")!.dataset.loadPerformanceProbe } })
     const heapAfter = await cdp.send("Runtime.getHeapUsage")
     const residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
+    await capture()
     await writeFile(path.join(directory, "selection-measurement.json"), JSON.stringify({ team, identity, warm, startedEpoch, endedEpoch, references, evidence, heapBefore, heapAfter, residentBefore, residentAfter, cpu: summarizeCpuProfile(profile) }, null, 2))
     expect(endedEpoch - startedEpoch).toBeGreaterThanOrEqual(5000)
     expect(endedEpoch - startedEpoch).toBeLessThanOrEqual(10000)
     expect(evidence.inputs).toHaveLength(2)
     expect(evidence.inputs.map((input: any) => input.name)).toEqual([team === "red" ? "teambutton1" : "teambutton0", classes[identity - 1]])
     expect(evidence.dropped).toBe(0)
+    expect(evidence.gpuOperationsDropped).toBe(0)
     const latencies = await analyzeNativeSelectionPixels(directory)
     await page.screenshot({ path: path.join(directory, "selection-world.page.png") })
     expect(errors).toEqual([])
