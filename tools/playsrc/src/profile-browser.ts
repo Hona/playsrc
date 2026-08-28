@@ -87,7 +87,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   const logPath = `${filename}.${token}.log`
   const log = openSync(logPath, "wx", 0o600)
   const child = spawn(process.execPath, [import.meta.filename, filename, token, JSON.stringify(launch)], {
-    cwd: repositoryRoot, detached: true, stdio: ["ignore", log, log],
+    cwd: repositoryRoot, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", log, log],
   })
   closeSync(log)
   if (!child.pid) throw new Error("Headed browser owner failed to start")
@@ -108,7 +108,7 @@ if (import.meta.main) {
   const [filename, token, encoded] = process.argv.slice(2)
   if (!filename || !path.isAbsolute(filename) || !token || !encoded) throw new Error("Missing headed browser lease")
   const launch = JSON.parse(encoded) as BrowserLaunch
-  const child = spawn(profileNodeExecutable(), [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { stdio: ["pipe", "pipe", "inherit"] })
+  const child = spawn(profileNodeExecutable(), [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { windowsHide: true, stdio: ["pipe", "pipe", "inherit"] })
   const exited = new Promise<void>((resolve, reject) => {
     child.once("error", reject)
     child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Headed browser server exited with ${code}`)))
