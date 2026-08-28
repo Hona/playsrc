@@ -1100,7 +1100,14 @@ function models(request: Extract<WorkerRequest, { kind: "models" }>): void {
   const transactMilliseconds = performance.now() - transactStarted
   value.exports.playsrc_free(pointer, request.batch.byteLength)
   if (ok !== 1) {
-    fail(request.id, "TransitionFailed",202)
+    const length = value.exports.playsrc_simulation_error_length()
+    const pointer = length ? value.exports.playsrc_alloc(length) >>> 0 : 0
+    const copied = pointer ? value.exports.playsrc_simulation_error_copy(pointer, length) : 0
+    const reason = copied === length && length
+      ? new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer, pointer, length).slice())
+      : undefined
+    if (pointer) value.exports.playsrc_free(pointer, length)
+    fail(request.id, "TransitionFailed", 202, reason)
     return
   }
   const length = value.exports.playsrc_model_output_length(value.handle)
