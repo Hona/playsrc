@@ -10,7 +10,7 @@ test("headed stock Spy cloak preserves world refraction through local arms and w
   page.setDefaultTimeout(10_000)
   const lifecycle = process.env.PROFILE_CLOAK_LIFECYCLE === "1"
   const team = lifecycle ? "blue" : "red"
-  if (process.env.PROFILE_CLOAK_HDR === "1") await page.route("**/playsrc-config.json", async route => {
+  if (process.env.PROFILE_CLOAK_HDR === "1") await page.route(url => url.pathname.endsWith("/playsrc-config.json"), async route => {
     const response = await route.fetch(), configuration = await response.json()
     await route.fulfill({ response, json: { ...configuration, renderLevel: 2 } })
   })

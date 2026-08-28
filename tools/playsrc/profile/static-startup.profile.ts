@@ -87,7 +87,7 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
     const workerBrowser=await browser.newBrowserCDPSession(),workerPage=await context.newCDPSession(page)
     let unavailableConfiguration=false
     packageRouting=await installStaticPackageRouting(workerBrowser,async url=>{
-      if(unavailableConfiguration&&url==="https://playsrc.online/tf2/playsrc-config.json")return {status:503,headers:{"content-type":"application/problem+json"},body:Buffer.from('{"title":"Startup gate unavailable configuration fixture"}')}
+      if(unavailableConfiguration&&new URL(url).origin==="https://playsrc.online"&&new URL(url).pathname==="/tf2/playsrc-config.json")return {status:503,headers:{"content-type":"application/problem+json"},body:Buffer.from('{"title":"Startup gate unavailable configuration fixture"}')}
       return router.response(url)
     })
     evidence.packageRouting=packageRouting.records

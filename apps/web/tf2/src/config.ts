@@ -125,9 +125,10 @@ function descriptor(value: unknown, kind: ObjectDescriptor["kind"], mediaType = 
   return Number.isSafeInteger(length) && length >= 1 && length <= 536_870_912
 }
 
-export async function loadBrowserConfiguration(): Promise<BrowserConfiguration> {
+export async function loadBrowserConfiguration(applicationBuild: string): Promise<BrowserConfiguration> {
+  if (!HASH.test(applicationBuild)) throw new BrowserConfigurationError("Application build identity is invalid")
   let response: Response
-  try { response = await fetch(`${import.meta.env.BASE_URL}playsrc-config.json`, { cache: "no-store", credentials: "same-origin", redirect: "error" }) }
+  try { response = await fetch(`${import.meta.env.BASE_URL}playsrc-config.json?v=${applicationBuild}`, { cache: "no-store", credentials: "same-origin", redirect: "error" }) }
   catch { throw new BrowserConfigurationError("Browser configuration request failed") }
   if (response.status !== 200 || response.redirected) throw new BrowserConfigurationError("Browser configuration response failed")
   let value: unknown
