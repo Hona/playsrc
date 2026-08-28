@@ -58,8 +58,10 @@ plane_writer!(u16_plane, u16);
 plane_writer!(u32_plane, u32);
 
 impl HashSink {
-    pub(crate) fn new() -> Self {
-        Self { hash: Sha256::new(), pending: Vec::with_capacity(HASH_BUFFER_BYTES), length: 0 }
+    pub(crate) fn new() -> Result<Self, std::collections::TryReserveError> {
+        let mut pending = Vec::new();
+        pending.try_reserve_exact(HASH_BUFFER_BYTES)?;
+        Ok(Self { hash: Sha256::new(), pending, length: 0 })
     }
 
     pub(crate) fn finish(mut self) -> [u8; 32] {
@@ -135,7 +137,7 @@ mod tests {
     fn hash_sink_preserves_all_write_boundaries_with_bounded_storage() {
         let bytes = (0..HASH_BUFFER_BYTES * 3 + 1).map(|index| index as u8).collect::<Vec<_>>();
         for stride in [1, 2, 4, 63, 64, 65, HASH_BUFFER_BYTES - 1, HASH_BUFFER_BYTES, HASH_BUFFER_BYTES + 1, bytes.len()] {
-            let mut sink = HashSink::new();
+            let mut sink = HashSink::new().unwrap();
             for part in bytes.chunks(stride) {
                 sink.extend_from_slice(part);
                 sink.extend_from_slice(&[]);
@@ -145,6 +147,6 @@ mod tests {
             assert_eq!(sink.len(), bytes.len());
             assert_eq!(sink.finish(), <[u8; 32]>::from(Sha256::digest(&bytes)));
         }
-        assert_eq!(HashSink::new().finish(), <[u8; 32]>::from(Sha256::digest([])));
+        assert_eq!(HashSink::new().unwrap().finish(), <[u8; 32]>::from(Sha256::digest([])));
     }
 }
