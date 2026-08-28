@@ -25,8 +25,9 @@ test.skipIf(process.platform !== "win32")("native UI Automation empty bounds rem
 })
 
 test("normal permission resolution is restricted to an owned temporary automation profile and exact observed control", () => {
-  expect(() => assertOwnedEphemeralBrowser(["--enable-automation", "--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"])).not.toThrow()
-  for (const args of [["--user-data-dir=C:\\Users\\User\\Chrome"], ["--enable-automation"], ["--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"]]) expect(() => assertOwnedEphemeralBrowser(args)).toThrow()
+  expect(() => assertOwnedEphemeralBrowser(["--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"], 12, 12)).not.toThrow()
+  for (const args of [["--user-data-dir=C:\\Users\\User\\Chrome"], ["--enable-automation"]]) expect(() => assertOwnedEphemeralBrowser(args, 12, 12)).toThrow()
+  expect(() => assertOwnedEphemeralBrowser(["--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"], 12, 13)).toThrow()
   expect(WINDOWS_LOCAL_PERMISSION).toContain("Access other apps and services on this device")
   expect(WINDOWS_LOCAL_PERMISSION).toContain("$matches.Count -ne 1")
   expect(WINDOWS_LOCAL_PERMISSION).toContain("GetRuntimeId()")
