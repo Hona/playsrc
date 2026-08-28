@@ -691,10 +691,13 @@ impl World {
         let center = scale(add(hull.mins, hull.maxs), 0.5);
         let extents = scale(sub(hull.maxs, hull.mins), 0.5);
         let point = dot(extents, extents) < 1.0e-6;
-        let mut pending = vec![(head_node, add(start, center), add(end, center), 0_usize)];
+        // The root is already the current traversal, not a deferred branch.
+        // Allocate pending storage only when a split actually needs it.
+        let mut current = Some((head_node, add(start, center), add(end, center), 0_usize));
+        let mut pending = Vec::new();
         let mut seen = BrushVisits::new();
         let mut ordered = Vec::new();
-        while let Some((mut child, first, mut second, depth)) = pending.pop() {
+        while let Some((mut child, first, mut second, depth)) = current {
             let mut traversal_depth = depth;
             while child >= 0 {
                 traversal_depth += 1;
@@ -745,6 +748,11 @@ impl World {
                 };
                 let near_end = interpolate(first, second, near_fraction);
                 let far_start = interpolate(first, second, far_fraction);
+                if pending.capacity() == 0 {
+                    // Preserve the one-entry initial capacity and subsequent
+                    // growth of the old root-initialized stack.
+                    pending.reserve_exact(1);
+                }
                 pending.push((node.children[side ^ 1], far_start, second, traversal_depth));
                 child = node.children[side];
                 second = near_end;
@@ -765,6 +773,7 @@ impl World {
                     ordered.push(*brush as usize);
                 }
             }
+            current = pending.pop();
         }
         Ok(ordered)
     }
@@ -1293,6 +1302,68 @@ mod tests {
         world.leaves.push(world.leaves[0].clone());
         world.leaf_brushes[0] = 0;
         assert!(query(&world, point).is_ok());
+    }
+
+    #[test]
+    fn traversal_pending_branches_keep_deep_order_and_depth_errors() {
+        let mut world = compile(&fixture()).unwrap();
+        let count = 1024;
+        world.models[0].head_node = 0;
+        let node = world.nodes[0].clone();
+        world.nodes = vec![node; count];
+        world.planes[world.nodes[0].plane_index as usize].distance = 0.0;
+        for (index, node) in world.nodes.iter_mut().enumerate() {
+            node.children = [if index + 1 == count { -(count as i32) - 1 } else { index as i32 + 1 }, -(index as i32) - 1];
+        }
+        world.leaves = vec![world.leaves[0].clone(); count + 1];
+        for (index, leaf) in world.leaves.iter_mut().enumerate() {
+            leaf.first_leaf_brush = index as u16;
+            leaf.leaf_brush_count = 1;
+        }
+        world.leaf_brushes = (0..=count as u16).collect();
+        let hull = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        let expected: Vec<_> = (0..=count).rev().collect();
+        for _ in 0..4 {
+            assert_eq!(world.ordered_brushes(0, [0.0; 3], [0.0; 3], hull).unwrap(), expected);
+        }
+        // A cycle must fail at the existing map-derived depth, not a scratch cap.
+        world.nodes[count - 1].children[0] = 0;
+        assert_eq!(world.ordered_brushes(0, [0.0; 3], [0.0; 3], hull), Err(error(ErrorCode::InvalidReference, None)));
+        world.nodes[count - 1].children[0] = -(count as i32) - 1;
+        assert_eq!(world.ordered_brushes(0, [0.0; 3], [0.0; 3], hull).unwrap(), expected);
+        // Far branches remain LIFO even when one contains an invalid leaf.
+        world.nodes[0].children[1] = i32::MIN;
+        assert_eq!(world.ordered_brushes(0, [0.0; 3], [0.0; 3], hull), Err(error(ErrorCode::InvalidReference, Some(i32::MAX as usize))));
+    }
+
+    #[test]
+    fn traversal_queries_are_independent_across_nested_and_concurrent_readers() {
+        let world = compile(&fixture()).unwrap();
+        let hull = Hull { mins: [-2.0; 3], maxs: [2.0; 3] };
+        let start = [-32.0, 0.0, 0.0];
+        let end = [32.0, 0.0, 0.0];
+        let expected = world.trace_hull(start, end, hull, 1).unwrap();
+        let snapshot = Snapshot::compile(&world, 1, vec![box_object(1, [-1.0; 3], [1.0; 3])], SnapshotLimits::default()).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let world = &world;
+                let snapshot = &snapshot;
+                scope.spawn(move || {
+                    for _ in 0..256 {
+                        assert_eq!(world.trace_hull(start, end, hull, 1).unwrap(), expected);
+                        let called = std::cell::Cell::new(false);
+                        world.trace_snapshot_hull(snapshot, SnapshotTraceRequest {
+                            start, end, hull, mask: 1, scope: TraceScope::EntitiesOnly, ignored: &[],
+                        }, |_| {
+                            called.set(true);
+                            assert_eq!(world.trace_hull(start, end, hull, 1).unwrap(), expected);
+                            true
+                        }).unwrap();
+                        assert!(called.get());
+                    }
+                });
+            }
+        });
     }
 
     fn box_object(identity: u64, minimum: [f32; 3], maximum: [f32; 3]) -> ObjectInput {
