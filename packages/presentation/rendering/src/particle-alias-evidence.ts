@@ -9,21 +9,35 @@ export function installParticleAliasEvidence() {
   const entries = new Map<string, { material: WeakRef<THREE.Material>; image: WeakRef<THREE.Texture>; geometry: WeakRef<THREE.BufferGeometry>; current: WeakRef<any>; next: WeakRef<any>; depth: WeakRef<any> }>()
   let owner: THREE.WebGPURenderer | undefined, grid: THREE.Scene | undefined, camera: THREE.PerspectiveCamera | undefined
   let display = false, inside = false
+  let gameplayScene: THREE.Scene | undefined
+  let gameplayRequest: { resolve(value: unknown): void; reject(error: unknown): void } | undefined
   const clones: THREE.Texture[] = [], meshes: THREE.Mesh[] = [], swaps: { current: any; next: any; image: THREE.Texture; separate: THREE.Texture }[] = []
   const materialNames: string[] = []
   const occluders: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicNodeMaterial>[] = []
   const pixels = installSkinningEvidence(draw => {
     for (const swap of swaps) { swap.current.value = swap.separate; swap.next.value = swap.separate }
     try { draw() } finally { for (const swap of swaps) { swap.current.value = swap.image; swap.next.value = swap.image } }
-  }, scene => scene === grid, true)
+  }, scene => scene === (gameplayScene ?? grid), true)
   const render = THREE.WebGPURenderer.prototype.render
   THREE.WebGPURenderer.prototype.render = function (scene, view) {
-    const value = render.call(this, scene, view)
-    if (inside || scene === grid || !view.layers.isEnabled(0)) return value
+    if (inside || scene === grid || !view.layers.isEnabled(0)) return render.call(this, scene, view)
     let world = false
     scene.traverseVisible(object => { if ((object as any).isBundleGroup && object.children.length) world = true })
-    if (!world) return value
+    if (!world) return render.call(this, scene, view)
     owner = this
+    if (gameplayRequest) {
+      const visible: { material: string; vertices: number }[] = []
+      scene.traverseVisible(object => {
+        if (!(object instanceof THREE.Mesh) || object.geometry.drawRange.count < 1) return
+        for (const name of materialNames) if (object.material === entries.get(name)?.material.deref()) visible.push({ material: name, vertices: object.geometry.drawRange.count })
+      })
+      if (visible.length) {
+        const request = gameplayRequest; gameplayRequest = undefined; gameplayScene = scene
+        void pixels.capture("particle-alias-gameplay", "*", true).then(result => request.resolve({ performanceSample: false, fixture: false, visible, result }), request.reject)
+          .finally(() => { gameplayScene = undefined })
+      }
+    }
+    const value = render.call(this, scene, view)
     if (display && grid && camera) {
       inside = true
       const autoClear = this.autoClear
@@ -95,12 +109,18 @@ export function installParticleAliasEvidence() {
         materials: materialNames, groups: 6, separateReferenceImages: clones.length, separateBackings, occluders: occluders.length, result }
     },
     hide() { display = false },
+    captureGameplay() {
+      prepare(); display = false
+      if (gameplayRequest || gameplayScene) throw new Error("Gameplay alias capture already pending")
+      return new Promise((resolve, reject) => { gameplayRequest = { resolve, reject } })
+    },
     dispose() {
       display = false; THREE.WebGPURenderer.prototype.render = render; pixels.dispose()
       for (const mesh of meshes) mesh.geometry.dispose()
       for (const mesh of occluders) { mesh.geometry.dispose(); mesh.material.dispose() }
       for (const texture of clones) texture.dispose()
       entries.clear(); owner = undefined; grid = undefined; camera = undefined
+      gameplayRequest?.reject(new Error("Gameplay alias capture disposed")); gameplayRequest = undefined; gameplayScene = undefined
     },
   }
 }

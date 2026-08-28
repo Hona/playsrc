@@ -594,6 +594,23 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
             await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, `particle-alias-pixels-${phase}.png`) })
             await native()
           }
+          await page.evaluate(() => {
+            ;(globalThis as any).__playsrcAliasGameplayCapture = (globalThis as any).__playsrcParticleAliasEvidence.captureGameplay()
+          })
+          await native()
+          await page.mouse.down({ button: "left" })
+          try {
+            const gameplay: any = await page.evaluate(async () => Promise.race([
+              (globalThis as any).__playsrcAliasGameplayCapture,
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Actual alias gameplay effect was not captured")), 8_000)),
+            ]))
+            records.push(gameplay)
+            await writeFile(path.join(output, "particle-alias-pixels.json"), JSON.stringify(records, null, 2))
+            expect(gameplay.visible.length).toBeGreaterThan(0)
+            for (const plane of gameplay.result.planes) { expect(plane.mismatches).toBe(0); expect(plane.identicalDrawOrder).toBe(true) }
+            await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, "particle-alias-gameplay.png") })
+          } finally { await page.mouse.up({ button: "left" }) }
+          await native()
         } finally { await page.evaluate(() => (globalThis as any).__playsrcParticleAliasEvidence.dispose()) }
         return
       }
