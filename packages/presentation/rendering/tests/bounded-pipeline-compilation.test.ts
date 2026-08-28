@@ -39,3 +39,38 @@ test("failed native compilation cannot publish readiness and restores the exact 
   expect(manager.getForRender).toBe(original)
   await withBoundedPipelineCompilation(manager, async () => {})
 })
+
+test("cancellation drains all admitted native work and preserves the first native failure", async () => {
+  const nativeFailure = new Error("first native pipeline"), cancelled = new Error("generation replaced")
+  const completions: { resolve(): void; reject(error: Error): void }[] = []
+  const manager = { getForRender(_object: unknown, promises?: Promise<unknown>[] | null) {
+    promises!.push(new Promise<void>((resolve, reject) => completions.push({ resolve, reject })))
+  } }
+  const descriptor = Object.getOwnPropertyDescriptor(manager, "getForRender")
+  let settled = false
+  const task = withBoundedPipelineCompilation(manager, async () => {
+    manager.getForRender({}, []); manager.getForRender({}, []); manager.getForRender({}, [])
+    throw cancelled
+  }).catch(error => { settled = true; return error })
+  await Promise.resolve()
+  completions[1]!.reject(new Error("later native pipeline"))
+  completions[0]!.reject(nativeFailure)
+  for (let index = 0; index < 10; index++) await Promise.resolve()
+  expect(settled).toBe(false)
+  await expect(withBoundedPipelineCompilation(manager, async () => {})).rejects.toThrow("owner")
+  completions[2]!.resolve()
+  expect(await task).toBe(nativeFailure)
+  expect(Object.getOwnPropertyDescriptor(manager, "getForRender")).toEqual(descriptor)
+  await expect(withBoundedPipelineCompilation(manager, async () => { throw cancelled })).rejects.toBe(cancelled)
+})
+
+test("ordinary rendering never acquires async preparation work", async () => {
+  const calls: unknown[] = []
+  const manager = { getForRender(object: object, promises?: Promise<unknown>[] | null) { calls.push(promises); return object } }
+  const object = {}
+  await withBoundedPipelineCompilation(manager, async () => {
+    expect(manager.getForRender(object)).toBe(object)
+    expect(manager.getForRender(object, null)).toBe(object)
+  })
+  expect(calls).toEqual([undefined, null])
+})

@@ -119,8 +119,9 @@ export async function verifyModelCompilerParity(file: string, labelIncludes?: st
           }
         }
       }
+      const preparation = await owner.verifyPreparation()
       const lifetime = owner.verifyLifetime()
-      summaries.push({ generation, ...lifetime, records: owner.records.map(record => ({ ...record,
+      summaries.push({ generation, preparation, ...lifetime, records: owner.records.map(record => ({ ...record,
         vertexShader: digest(record.vertexShader), fragmentShader: digest(record.fragmentShader) })) })
     } catch (error) {
       await writeFile(path.join(path.dirname(file), "compiler-failure.json"), JSON.stringify({ input: path.basename(file), current, generation, completed: owner.records.length, failure: String(error), last: owner.records.at(-1) }, null, 2))
