@@ -46,7 +46,7 @@ test("minimal native selection capture owner diagnostic", async ({ page, baseURL
 
 const classes = ["scout", "sniper", "soldier", "demoman", "medic", "heavyweapons", "pyro", "spy", "engineer"] as const
 
-for (const kind of ["model", "particle", "static"]) test(`selection ${kind} material color depth and draw ownership parity`, async ({ page, baseURL }) => {
+for (const kind of ["model", "particle"]) test(`selection ${kind} material color depth and draw ownership parity`, async ({ page, baseURL }) => {
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, { sourceCacheDir } = await loadLocalConfig()
   if (!directory || !baseURL || new URL(baseURL).hostname !== "127.0.0.1") throw new Error("Use the ordinary local native selection runner")
   const reader = await startupNativeReader(page, sourceCacheDir), observations: unknown[] = [], records: unknown[] = []

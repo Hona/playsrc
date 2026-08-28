@@ -3,7 +3,6 @@ import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import type { SpriteCardInput } from "./sprite-card"
 import { ParticleMaterialGraphs, bindParticleTexture } from "./particle-material-graphs"
-import { StaticMaterialGraphs } from "./static-material-graphs"
 import { SourceParticleDepth } from "./particle-depth"
 import { CombatDecals,type CombatDecalInput } from "./combat-decals"
 import { ProjectedMarkMaterials } from "./projected-mark-materials"
@@ -92,6 +91,7 @@ import { SourceExposureSampler } from "./source-exposure"
 import {
   createSourceModelLightingUniforms,
   createSourceModelEyeUniforms,
+  sourceStaticVertexLightingNode,
   sourceModelWorldNormal,
   updateSourceModelLightingUniforms,
   updateSourceModelEyeUniforms,
@@ -2964,7 +2964,6 @@ class RendererOwner implements Renderer {
       "float",
     )
     const waterFogUniforms = retained?.waterFogUniforms ?? createSourceWaterFogUniforms()
-    const staticMaterialGraphs = new StaticMaterialGraphs(waterFogUniforms, exposureUniform, modelLightingGraphs.staticFade)
     const directionalGpu = new Map<string, { input: DirectionalTextureInput; texture: THREE.Texture }>()
     const textureResidency = new SharedTextureResidency<THREE.Texture>(disposables, 4, () =>
       this.#backend.backend.device?.queue.onSubmittedWorkDone() ?? Promise.resolve(), retained?.textureResidency)
@@ -3712,12 +3711,7 @@ class RendererOwner implements Renderer {
           }
           SOURCE_MODEL_BASE_COLOR.set(geometry, base)
           SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
-          // Keep the exact material program's resource-admission equivalence,
-          // not its template UUID (which would admit additional duplicates).
-          const fragment = sourceFragmentColor(base, materialState, waterFogUniforms)
-          material.colorNode = fragment
-          material.userData.sourcePreparationIdentity = material.customProgramCacheKey()
-          material.colorNode = staticMaterialGraphs.template(base, materialState, fragment)
+          material.colorNode = sourceFragmentColor(base, materialState, waterFogUniforms)
           material.toneMapped = false
           disposables.add(material)
           resources.push(material)
@@ -3750,13 +3744,9 @@ class RendererOwner implements Renderer {
               const base=original.colorNode??TSL.vec4(1,1,1,1)
               const state=request.modelMaterials?.get(identity.toLowerCase())?.state as Readonly<{halfLambert?:boolean;phong?:unknown}>|undefined
               const halfLambert=Boolean(state?.phong)||state?.halfLambert===true
-              const materialState=materialStates.get(identity.toLowerCase())
-              if(lightingKind===0||unlit) material.colorNode=staticMaterialGraphs.vertex(base,materialState,unlit,fading,fadeUniform)
-              else {
-                const rgb=base.rgb.mul(runtimeStaticLightingNode(map,props,propIndex,halfLambert,modelLightingTextures.get(identity.toLowerCase())?.warp)).mul(exposureUniform)
-                const sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
-                material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fading?modelLightingGraphs.staticFade:fadeUniform)),materialState,waterFogUniforms,fading)
-              }
+              const rgb=unlit?base.rgb:base.rgb.mul(lightingKind===0?sourceStaticVertexLightingNode():runtimeStaticLightingNode(map,props,propIndex,halfLambert,modelLightingTextures.get(identity.toLowerCase())?.warp)).mul(exposureUniform)
+              const materialState=materialStates.get(identity.toLowerCase()),sourceOpacity=materialState?.alphaOwnership.opacity?base.a:TSL.float(1)
+              material.colorNode=sourceFragmentColor(TSL.vec4(rgb,sourceOpacity.mul(fading?modelLightingGraphs.staticFade:fadeUniform)),materialState,waterFogUniforms,fading)
               material.toneMapped=false
               disposables.add(material)
               if(sharingKey!==undefined)sharedStaticMaterials.set(sharingKey,material)
@@ -5768,9 +5758,6 @@ class RendererOwner implements Renderer {
             updateSourceModelEyeUniforms(eyeUniforms, eye)
             bindModelLighting(mesh, uniforms, eyeUniforms)
           }
-          // This draw now belongs to the dynamic model graph family, not the
-          // immutable template/VHV preparation family it was cloned from.
-          StaticMaterialGraphs.releasePreparationIdentity(material)
           material.colorNode = modelMaterialGraph(mesh, resources.graphs, { shader: authored.shader, state: state as typeof state & { halfLambert: boolean },
             fragment: resources.states.get(identity), base, baseTexture: baseTexture && { texture: baseTexture.texture, sourceFormat: baseTexture.input.sourceFormat },
             textures, environment, exposure: resources.exposure, waterFog: resources.waterFog }, () => this.#instrumentation?.dynamicModel("graphCreated"))

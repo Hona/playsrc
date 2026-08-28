@@ -1,10 +1,10 @@
 import * as THREE from "three/webgpu"
 
-export function pipelinePreparationIdentity(mesh: THREE.Mesh): string {
+function pipelineIdentity(mesh: THREE.Mesh): string {
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
   const shaders = materials.map(material => [
     material.customProgramCacheKey(), material.transparent, material.side, material.blending,
-    material.depthWrite, material.depthTest, material.alphaTest, material.userData.sourcePreparationIdentity ?? "",
+    material.depthWrite, material.depthTest, material.alphaTest,
   ].join(":"))
   const attributes = Object.entries(mesh.geometry.attributes)
     .map(([name, attribute]) => `${name}:${attribute.itemSize}:${attribute.normalized}:${attribute.array.constructor.name}`)
@@ -31,7 +31,7 @@ export function prepareReachablePipelineVisibility(
     if (hidden) hiddenParents.add(object)
     if (bundle.isBundleGroup === true) bundle.isBundleGroup = false
     if (object instanceof THREE.Mesh) {
-      const identity = hidden || skipped.has(object) || !eligible(object) ? null : pipelinePreparationIdentity(object)
+      const identity = hidden || skipped.has(object) || !eligible(object) ? null : pipelineIdentity(object)
       object.visible = identity !== null && !identities.has(identity)
       if (identity !== null) identities.add(identity)
       object.frustumCulled = false

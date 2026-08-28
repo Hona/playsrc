@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import { prepareReachablePipelineVisibility } from "../src/reachable-pipeline-visibility"
-import { StaticMaterialGraphs } from "../src/static-material-graphs"
 
 describe("reachable Source map pipeline preparation", () => {
   test("exposes hidden bundle meshes, deduplicates equivalent shaders, and restores authored visibility", () => {
@@ -45,26 +44,5 @@ describe("reachable Source map pipeline preparation", () => {
     staged.restore()
     expect(retained.visible).toBe(true)
     expect(prop.visible).toBe(true)
-  })
-
-  test("compiler reuse cannot merge distinct template resource admission", () => {
-    const root=new THREE.Group(),geometry=new THREE.BoxGeometry(),first=new THREE.MeshBasicNodeMaterial(),second=first.clone()
-    first.userData.sourcePreparationIdentity=first.uuid
-    second.userData.sourcePreparationIdentity=second.uuid
-    expect(first.customProgramCacheKey()).toBe(second.customProgramCacheKey())
-    const meshes=[new THREE.Mesh(geometry,first),new THREE.Mesh(geometry.clone(),second),new THREE.Mesh(geometry,first.clone())]
-    root.add(...meshes)
-    const staged=prepareReachablePipelineVisibility(root)
-    expect(staged.variants).toBe(2)
-    expect(meshes.map(mesh=>mesh.visible)).toEqual([true,true,false])
-    staged.restore()
-    expect(meshes.every(mesh=>mesh.visible)).toBe(true)
-    // Posed runtime lighting replaces the template shader family. Its existing
-    // dynamic graph equivalence must not inherit extra template admissions.
-    for(const mesh of meshes)StaticMaterialGraphs.releasePreparationIdentity(mesh.material)
-    const dynamic=prepareReachablePipelineVisibility(root)
-    expect(dynamic.variants).toBe(1)
-    dynamic.restore()
-    geometry.dispose();meshes[1]!.geometry.dispose();for(const mesh of meshes)mesh.material.dispose()
   })
 })
