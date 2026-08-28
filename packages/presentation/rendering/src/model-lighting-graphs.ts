@@ -4,6 +4,43 @@ import type { SourceModelEyeUniforms, SourceModelLightingUniforms } from "./sour
 
 const reference = (path: string, type: string) => TSL.reference(`userData.${path}.value`, type) as ReturnType<typeof TSL.uniform>
 
+const LIGHT_FIELDS = ["enabled", "kind", "color", "position", "direction", "attenuation", "falloff", "theta", "phi"] as const
+
+class DrawLightingEvent extends THREE.EventNode {
+  override build(builder: THREE.NodeBuilder): any {
+    // Node.before forwards its consumer's output type. An update-only event
+    // has no shader value, irrespective of that consumer's scalar/vector type.
+    return super.build(builder, "void")
+  }
+}
+
+/** All lighting members belong to the same drawn occurrence. Resolve that
+ * owner once per draw, not once per scalar/vector. This is NOT a value cache:
+ * every draw reads the current binding, including consecutive draws of the
+ * same object within a pass. Three still compares/uploads each used uniform.
+ * Each member declares the event dependency, so even a partial graph updates. */
+function drawLighting(): SourceModelLightingUniforms {
+  const event = new DrawLightingEvent("object", ({ object }: { object: THREE.Mesh }) => {
+    const source = object.userData.sourceLighting as SourceModelLightingUniforms
+    lighting.ambientEnabled.value = source.ambientEnabled.value
+    lighting.cameraPosition.value = source.cameraPosition.value
+    for (let side = 0; side < 6; side++) lighting.ambient[side]!.value = source.ambient[side]!.value
+    for (let index = 0; index < 4; index++) {
+      const target = lighting.local[index]!, light = source.local[index]!
+      for (const name of LIGHT_FIELDS) target[name].value = light[name].value
+    }
+  })
+  const member = (type: string) => TSL.uniform(null, type).before(event)
+  const lighting: SourceModelLightingUniforms = Object.freeze({
+    ambientEnabled: member("float"), cameraPosition: member("vec3"),
+    ambient: Object.freeze(Array.from({ length: 6 }, () => member("vec3"))) as SourceModelLightingUniforms["ambient"],
+    local: Object.freeze(Array.from({ length: 4 }, () => Object.freeze(Object.fromEntries(LIGHT_FIELDS.map(name =>
+      [name, member(["color", "position", "direction", "attenuation"].includes(name) ? "vec3" : "float")],
+    ))))) as unknown as SourceModelLightingUniforms["local"],
+  })
+  return lighting
+}
+
 /** One immutable graph family per scene/exposure/fog domain. Values are read
  * from the drawn primitive, not captured from the first actor using a shader.
  * The owner is scene-local, with an explicit handoff for an identical verified
@@ -13,15 +50,7 @@ export class ModelLightingGraphs {
   // Static VHV/unlit primitives share their material graph. Distance/screen
   // fade remains an occurrence binding, just like dynamic model lighting.
   readonly staticFade = reference("sourceStaticFade", "float")
-  readonly lighting: SourceModelLightingUniforms = Object.freeze({
-    ambientEnabled: reference("sourceLighting.ambientEnabled", "float"),
-    cameraPosition: reference("sourceLighting.cameraPosition", "vec3"),
-    ambient: Object.freeze(Array.from({ length: 6 }, (_, side) => reference(`sourceLighting.ambient.${side}`, "vec3"))) as SourceModelLightingUniforms["ambient"],
-    local: Object.freeze(Array.from({ length: 4 }, (_, index) => Object.freeze(Object.fromEntries(
-      ["enabled", "kind", "color", "position", "direction", "attenuation", "falloff", "theta", "phi"].map(name =>
-        [name, reference(`sourceLighting.local.${index}.${name}`, ["color", "position", "direction", "attenuation"].includes(name) ? "vec3" : "float")]),
-    )))) as unknown as SourceModelLightingUniforms["local"],
-  })
+  readonly lighting = drawLighting()
   readonly eyes = Object.freeze(Object.fromEntries(
     ["irisU", "irisV", "glintU", "glintV", "origin"].map(name =>
       [name, reference(`sourceEye.${name}`, name === "origin" ? "vec3" : "vec4")]),
@@ -40,9 +69,12 @@ export class ModelLightingGraphs {
   get size(): number { return this.#graphs.size }
 
   releaseDrawReferences(): void {
-    const references = [this.staticFade, this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
-      ...this.lighting.local.flatMap(light => Object.values(light)), ...Object.values(this.eyes)]
+    const references = [this.staticFade, ...Object.values(this.eyes)]
     for (const node of references) (node as unknown as { reference: object | null }).reference = null
+    // Vector identities are draw values too. Do not retain a retired occurrence's
+    // values through a verified graph handoff; the next draw binds them afresh.
+    for (const node of [this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
+      ...this.lighting.local.flatMap(light => Object.values(light))]) node.value = null
   }
 }
 

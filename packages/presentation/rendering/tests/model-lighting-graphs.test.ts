@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
+import NodeFrame from "three/src/nodes/core/NodeFrame.js"
 import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, bindStaticPropFade, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "../src/model-lighting-graphs"
 import { createSourceModelLightingUniforms, createSourceModelEyeUniforms, sourceModelSurfaceNode } from "../src/source-model-lighting"
 
@@ -16,6 +17,11 @@ test("one graph reads independent lighting and eye values in alternating object 
     bindModelLighting(actor, lighting, eyes)
   })
   const read = (node: any, object: THREE.Mesh) => {
+    if (node.isUniformNode) {
+      const frame = new NodeFrame(); frame.object = object
+      frame.updateNode(node._beforeNodes[0])
+      return node.value
+    }
     node.updateReference({ object }); node.updateValue()
     return node.node.value
   }
@@ -39,15 +45,17 @@ test("a verified graph handoff drops last-draw object references and rebinds wit
   fade.updateReference({ object: old }); fade.updateValue()
   expect(fade.node.value).toBe(.25)
   const node = graphs.lighting.ambientEnabled as any
-  node.updateReference({ object: old }); node.updateValue()
+  const frame = new NodeFrame(); frame.object = old
+  frame.updateNode(node._beforeNodes[0])
   const graph = graphs.get("exact", () => TSL.vec4(1))
-  expect(node.reference).toBe(old)
+  expect(graphs.lighting.cameraPosition.value).toBe(before.cameraPosition.value)
   graphs.releaseDrawReferences()
-  expect(node.reference).toBeNull()
+  expect(graphs.lighting.cameraPosition.value).toBeNull()
+  expect(node.value).toBeNull()
   expect(fade.reference).toBeNull()
   expect(graphs.get("exact", () => { throw new Error("rebuilt graph") })).toBe(graph)
-  node.updateReference({ object: next }); node.updateValue()
-  expect(node.node.value).toBe(1)
+  frame.object = next; frame.updateNode(node._beforeNodes[0])
+  expect(node.value).toBe(1)
   fade.updateReference({ object: next }); fade.updateValue()
   expect(fade.node.value).toBe(.75)
 })
