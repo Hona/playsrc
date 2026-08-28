@@ -29,6 +29,7 @@ export function workloadState(frame: any) {
     actors: { bots: frame.detail.bots, buildings: frame.detail.buildings, pickups: frame.detail.pickups },
     particles: { items: frame.detail.particleItems, batches: frame.detail.particleBatches, inputs: frame.particleInputs },
     models: frame.modelInputs,
+    scene: frame.sceneInputs,
   } })
 }
 export function assertMatchingWorkloadState(expected: unknown, actual: unknown) {
