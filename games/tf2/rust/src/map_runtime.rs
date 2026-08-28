@@ -2155,17 +2155,6 @@ impl MapRuntime {
         self.world.entity(*self.source_handles.get(&identity)?).map(|entity| entity.world_transform)
     }
 
-    pub fn entity_collision_state(&self, identity:u32) -> Option<(Transform,bool)> {
-        let entity=self.world.entity(*self.source_handles.get(&identity)?)?;
-        let solid=match &entity.behavior {
-            BehaviorState::DynamicProp(prop)=>prop.collision_enabled,
-            BehaviorState::Mover(mover)=>mover.solid,
-            BehaviorState::Brush(brush)=>match brush.solidity {playsrc_entity::BrushSolidity::Always=>true,playsrc_entity::BrushSolidity::Never=>false,playsrc_entity::BrushSolidity::Toggle=>brush.enabled},
-            _=>true,
-        };
-        Some((entity.world_transform,solid))
-    }
-
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
         let Some(handle) = self.source_handles.get(&identity) else { return false; };
         let Some(ancestor) = self.source_handles.get(&ancestor) else { return false; };
