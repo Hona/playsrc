@@ -1748,14 +1748,24 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         command[48..52].copy_from_slice(&(gameplay_protocol::HEADER_BYTES as u32).to_le_bytes());
         command[32..36].copy_from_slice(&(3_u32 | (2 << 16)).to_le_bytes());
         command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
-        for batch in 0..189 {
-            if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), if batch == 0 { 1 } else if batch == 188 { 31 } else { 64 }) } == 0 {
+        let mut budget_ticks=12_000_u32;
+        let mut advanced=0;
+        while advanced<budget_ticks {
+            let steps=if advanced==0 {1}else{64.min(budget_ticks-advanced)};
+            if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), steps) } == 0 {
                 let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").clone();
                 return Err(format!("gameplay transaction failed: {}{detail}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
             }
             command[32..36].fill(0); command[42..44].fill(0);
             let values = slots().lock().expect("TF2 slots");
             let snapshot = values[index].latest_game_snapshot.as_ref().ok_or("missing gameplay snapshot")?;
+            if advanced==0 && let Some(timers)=snapshot.round.koth_timers {
+                // Leave the authored clock untouched. KOTH must also run its
+                // full team timer, in addition to the traversal/capture budget.
+                let seconds=timers.iter().map(|timer|timer.remaining).fold(0.0_f32,f32::max);
+                budget_ticks+=(seconds/0.015).ceil() as u32;
+            }
+            advanced+=steps;
             observe(snapshot);
             if snapshot.round.winning_team == Some(playsrc_tf2::PlayerTeam::Red) { return Ok(()); }
         }
@@ -1767,6 +1777,14 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
             let yaw=bot.yaw_degrees.to_radians();let end=[bot.position[0]+yaw.cos()*96.0,bot.position[1]+yaw.sin()*96.0,bot.position[2]];
             let trace=playsrc_movement::Tracer::trace(world,bot.position,end,hull,playsrc_movement::Configuration::default().solid_mask);
             collision_detail.push_str(&format!("\nforward collision={trace:?}"));
+            for side in [-50.0,0.0,50.0] {
+                for height in [0.0,36.0,72.0] {
+                    let start=[bot.position[0]-yaw.sin()*side,bot.position[1]+yaw.cos()*side,bot.position[2]+height];
+                    let end=[start[0]+yaw.cos()*96.0,start[1]+yaw.sin()*96.0,start[2]];
+                    let trace=playsrc_movement::Tracer::trace(world,start,end,hull,playsrc_movement::Configuration::default().solid_mask);
+                    collision_detail.push_str(&format!("\nledge probe side={side} height={height}: {trace:?}"));
+                }
+            }
             for template in values[index].collision_templates.iter().filter(|template|template.runtime_transform){
                 let Some(state)=u32::try_from(template.input.identity).ok().and_then(|source|session.map_collision_entity(source))else{continue;};
                 if state.transform.origin.iter().zip(bot.position).map(|(a,b)|(a-b)*(a-b)).sum::<f32>()<512.0*512.0{
@@ -1774,7 +1792,7 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
                 }
             }
         }
-        Err(format!("walking bots did not complete the control-point round within 180 simulation seconds: {}{collision_detail}", paths.join("\n")))
+        Err(format!("walking bots did not complete the control-point round within {} simulation seconds: {}{collision_detail}",budget_ticks as f32*0.015, paths.join("\n")))
     })();
     playsrc_dispose(handle);
     result
