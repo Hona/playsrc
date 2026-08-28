@@ -17,6 +17,7 @@ import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
 import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
+import { instrumentWaterTargetSceneSource } from "./water-target-scene-route"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -129,7 +130,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
 
   if (lightmapAudit) await page.route(/\/packages\/presentation\/rendering\/src\/index\.ts(?:\?|$)/u, async route => {
     const response = await route.fetch()
-    await route.fulfill({ response, body: instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1") })
+    let body = instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1")
+    if (process.env.PROFILE_MEMORY_TEXTURE_OWNERS === "1") body = instrumentWaterTargetSceneSource(body, process.env.PROFILE_MEMORY_WATER_TARGET_REFERENCE === "1")
+    await route.fulfill({ response, body })
   })
 
   await page.route(/gameplay-worker\.ts(?:\?|$)/u, async (route) => {
@@ -807,6 +810,21 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       lightmapTeardown = await page.evaluate(() => (globalThis as any).__playsrcMemoryProfile.gpu.textureAllocation)
       expect((lightmapTeardown as any).live.formats.rgba32float.knownBytes).toBe(0)
       expect((lightmapTeardown as any).created.textures - (lightmapTeardown as any).destroyedTextures).toBe((lightmapTeardown as any).live.textures)
+      if (process.env.PROFILE_MEMORY_TEXTURE_OWNERS === "1") {
+        const teardown = await page.evaluate(() => {
+          const owners = (globalThis as any).__playsrcTextureOwners
+          owners.records.push({ kind: "snapshot", at: performance.now(), generation: -1,
+            counters: structuredClone((globalThis as any).__playsrcMemoryProfile.gpu.textureAllocation) })
+          return owners
+        })
+        const water = new Set<number>()
+        for (const record of teardown.records) if (record.owner?.startsWith("playsrc-water-")) {
+          if (record.kind === "create") water.add(record.id)
+          if (record.kind === "destroy") water.delete(record.id)
+        }
+        expect(teardown.dropped).toBe(0); expect(water.size).toBe(0)
+        await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-texture-teardown.json`), JSON.stringify(teardown, null, 2))
+      }
       await native()
     }
     const sampled = await pageCdp.send("HeapProfiler.stopSampling")

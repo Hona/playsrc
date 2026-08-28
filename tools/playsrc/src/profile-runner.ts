@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget } from "../profile/profile-target"
@@ -11,6 +11,7 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as i
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
+import { writeProfileLease as writeLease } from "./profile-lease"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -58,6 +59,7 @@ const PROFILES = Object.freeze({
   "map-memory": { config: "playwright.map-memory-profile.config.ts", target: "jump_beef" },
   "lightmap-replacement": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "lightmap-replacement", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
   "texture-owners": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "texture-owners", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_TEXTURE_OWNERS: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
+  "texture-owners-reference": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "texture-owners-reference", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_TEXTURE_OWNERS: "1", PROFILE_MEMORY_WATER_TARGET_REFERENCE: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
   "lightmap-replacement-reference": { config: "playwright.map-memory-profile.config.ts", target: "pl_upward", environment: { PROFILE_MEMORY_SEQUENCE: "pl_upward,pl_upward", PROFILE_MEMORY_LABEL: "lightmap-reference", PROFILE_MEMORY_LIGHTMAP_AUDIT: "1", PROFILE_MEMORY_LIGHTMAP_REFERENCE: "1", PROFILE_MEMORY_INPUT: "1", PROFILE_SAMPLE_SECONDS: "10" }, minimumRemainingMilliseconds: 100_000 },
   "map-sanity": { config: "playwright.map-sanity-profile.config.ts", target: "jump_beef" },
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
@@ -131,17 +133,6 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
     else if (option !== "--headed") playwright.push(option)
   }
   return Object.freeze({ profile: profile as HeadedProfile, fresh, playwright: Object.freeze(playwright) })
-}
-
-async function writeLease(metadataPath: string, token: string, milliseconds: number): Promise<void> {
-  const destination = `${metadataPath}.lease`
-  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporary, `${JSON.stringify({ schema: "playsrc-profile-owner-lease-v1", token, expiresAt: Date.now() + milliseconds })}\n`)
-    await rename(temporary, destination)
-  } finally {
-    await rm(temporary, { force: true })
-  }
 }
 
 async function readOwner(metadataPath: string): Promise<OwnerMetadata | null> {
