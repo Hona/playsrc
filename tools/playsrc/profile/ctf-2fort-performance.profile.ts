@@ -26,10 +26,10 @@ function intervalUnion(intervals: readonly (readonly [number, number])[]): numbe
 }
 
 function processMemory(processes: readonly BrowserProcess[]) {
-  const ids = [...new Set(processes.map((process) => process.id).filter((id) => id > 0))]
+  const ids = [...new Set(processes.map((process) => process.id).filter((id) => Number.isSafeInteger(id) && id > 0))]
   if (ids.length === 0) return { processes: [], roles: {}, residentBytes: 0 }
   const command = process.platform === "win32"
-    ? spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process -Id ${ids.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64 | ConvertTo-Json -Compress`], { encoding: "utf8", timeout: 10_000 })
+    ? spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process -Id ${ids.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64 | ConvertTo-Json -Compress`], { encoding: "utf8", timeout: 10_000, windowsHide: true })
     : spawnSync("ps", ["-o", "pid=,rss=", "-p", ids.join(",")], { encoding: "utf8", timeout: 10_000 })
   if (command.status !== 0) return { processes: [], roles: {}, residentBytes: 0, error: command.stderr.trim() }
   const values = process.platform === "win32"

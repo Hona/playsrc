@@ -13,12 +13,21 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'windows-readback.ps1')
 if ($Job -notmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$') { throw 'Invalid job ID' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
+if($Action -in 'Wait','Status','Result','Logs','Artifacts') {
+ $invocation=[Environment]::CommandLine
+ if($MyInvocation.InvocationName -eq '.' -or $invocation -notmatch '(?i)\s-File\s' -or $invocation -notmatch '(?i)\s-NonInteractive(?:\s|$)' -or $invocation -match '(?i)\s-NoExit(?:\s|$)'){throw 'Readback requires its own noninteractive -File helper'}
+ $heldFile=Join-Path $config.sourceCacheDir 'evidence/tf2-browser-performance/chromium-profile.lock'
+ if((Test-Path -LiteralPath $heldFile) -and (Get-Content -Raw -LiteralPath $heldFile|ConvertFrom-Json).pid -eq $PID){throw 'Readback helper must not own the profiler lock'}
+ Add-Type -Path (Join-Path $PSScriptRoot 'windows-readback-guard.cs')
+ [PlaysrcReadbackGuard]::Start($(if($Action -eq 'Wait'){175000}else{15000}),536870912,(Join-Path $directory "readback-$PID-fault.json"))
+}
 function OwnedRunner([string]$ownerFile) {
  if(!(Test-Path -LiteralPath $ownerFile)){return $null}
  $identity=Get-Content -Raw -LiteralPath $ownerFile|ConvertFrom-Json
@@ -29,6 +38,7 @@ function OwnedRunner([string]$ownerFile) {
  return $process
 }
 if ($Action -eq 'Wait') {
+  [PlaysrcReadbackGuard]::Stage='owned-process-wait'
   if($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$'){throw 'Wait requires this job current recorded task'}
   $launch=Join-Path $directory "$($Matches[1])-launch.log"
   if(!(Test-Path -LiteralPath $launch)){throw 'Task is not recorded for this job'}
@@ -53,6 +63,7 @@ if ($Action -eq 'Doctor') {
   exit $LASTEXITCODE
 }
 if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
+  [PlaysrcReadbackGuard]::Stage='exact-task-query'
   $tasks = if ($Action -eq 'Status' -and $Task) { @(Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
   $launchFile = $null
@@ -60,7 +71,8 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   if ($Task) {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
     $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
-    $launchText = Get-Content -Raw -LiteralPath $launchFile
+    [PlaysrcReadbackGuard]::Stage='launch-log-read'
+    $launchText = Read-PlainJobText $launchFile
     $taskState = $tasks | Where-Object TaskName -eq $Task | Select-Object TaskName,State
   }
   $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
@@ -70,18 +82,21 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   if ($Task) {
     # A rejected launch may never create a command.log. Never report the prior
     # build/test's success as this task's outcome.
+    [PlaysrcReadbackGuard]::Stage='result-readback'
     $readback = & $bun (Join-Path $root 'tools/playsrc/src/local-job.ts') result $Job $Task
     if ($LASTEXITCODE) { throw 'Cannot read the recorded task result' }
+    [PlaysrcReadbackGuard]::Stage='result-decode'
     $result = ($readback | ConvertFrom-Json).result
   } elseif ($latestRun -and (Test-Path (Join-Path $latestRun.FullName 'result.json'))) {
     $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
   }
   if ($Action -eq 'Result') {
-    $bootstrap=if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Get-Content -Raw -LiteralPath "$launchFile.bootstrap.log"}else{$null}
+    $bootstrap=if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){Read-PlainJobText "$launchFile.bootstrap.log"}else{$null}
     @{result=$result;launchError=$(if (!$result) { "$launchText$bootstrap" } else { $null })} | ConvertTo-Json -Depth 8 -Compress
     exit 0
   }
   if ($Action -eq 'Artifacts') {
+    [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
     if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
@@ -113,6 +128,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       if ($build) { Get-Content -LiteralPath $build.Matches[0].Groups[1].Value -Tail 30 }
     }
   } else {
+    [PlaysrcReadbackGuard]::Stage='owned-process-query'
     $owned=if($launchFile){OwnedRunner ([IO.Path]::ChangeExtension($launchFile,'owner.json'))}else{$null}
     $processes=@(if($owned -and !$owned.HasExited){@{ProcessId=$owned.Id;role='owned-local-job'}})
     if($owned){$owned.Dispose()}
@@ -128,6 +144,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       }
     }
     $summary = if ($result) { $result | Select-Object commit,outcome,startedAt,finishedAt,run } else { $null }
+    [PlaysrcReadbackGuard]::Stage='status-serialize'
     @{job=$Job;task=$taskState;running=$running;processes=$processes;log=$latest.FullName;launchLog=$launchFile;launchError=$(if (!$result) { $launchText } else { $null });result=$summary} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
