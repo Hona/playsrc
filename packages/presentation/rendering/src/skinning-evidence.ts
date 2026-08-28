@@ -7,13 +7,13 @@ import { sourceModelBoneCount } from "./source-model-skinning"
 
 type Request = { label: string; pass: string; allowRigid: boolean; resolve(value: unknown): void; reject(error: unknown): void }
 
-export function unpackGpuRgbaRows(data: Uint8Array | Float32Array, width: number, height: number): Uint8Array | Float32Array {
+export function unpackGpuRgbaRows(data: Uint8Array | Uint16Array | Float32Array, width: number, height: number): Uint8Array | Uint16Array | Float32Array {
   if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) throw new Error("GPU capture dimensions are invalid")
   const row = width * 4
   if (data.length === row * height) return data
   const stride = Math.ceil(row * data.BYTES_PER_ELEMENT / 256) * 256 / data.BYTES_PER_ELEMENT
   if (data.length !== (height - 1) * stride + row) throw new Error("GPU capture row layout differs")
-  const output = data instanceof Float32Array ? new Float32Array(row * height) : new Uint8Array(row * height)
+  const output = data instanceof Float32Array ? new Float32Array(row * height) : data instanceof Uint16Array ? new Uint16Array(row * height) : new Uint8Array(row * height)
   for (let y = 0; y < height; y += 1) output.set(data.subarray(y * stride, y * stride + row), y * row)
   return output
 }
@@ -63,6 +63,7 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
     capturing = true
     const renderer = this
     const originalTarget = renderer.getRenderTarget()
+    const samples = includeRigidMeshes ? (originalTarget?.samples ?? renderer.samples) : 0
     const size = originalTarget ? new THREE.Vector2(originalTarget.width, originalTarget.height) : renderer.getDrawingBufferSize(new THREE.Vector2())
     if (targetOwner !== renderer || targetSize !== `${size.x}:${size.y}`) {
       for (const target of targets.values()) target.dispose()
@@ -89,8 +90,11 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
     scene.traverse(object => { if ((object as any).isBundleGroup) bundles.push(object) })
     const read = (target: THREE.RenderTarget) => withImmediateGpuSubmissions(
       (renderer.backend as any).device.queue,
-      () => renderer.readRenderTargetPixelsAsync(target, 0, 0, size.x, size.y) as Promise<Uint8Array | Float32Array>,
-    ).then(data => unpackGpuRgbaRows(data, size.x, size.y))
+      () => renderer.readRenderTargetPixelsAsync(target, 0, 0, size.x, size.y) as Promise<Uint8Array | Uint16Array | Float32Array>,
+    ).then(data => {
+      const packed = unpackGpuRgbaRows(data, size.x, size.y)
+      return packed instanceof Uint16Array ? Float32Array.from(packed, THREE.DataUtils.fromHalfFloat) : packed
+    })
     try {
       renderer.autoClear = true
       renderer.autoClearColor = true
@@ -131,12 +135,12 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
           finally { backend.draw = original; backend.addBundle = addBundle; drawOrders.push(order); bundleEncodes.push(encoded) }
         }
         for (const reference of [false, true]) {
-          const key = `${plane}:${size.x}:${size.y}`
+          const key = `${plane}:${size.x}:${size.y}:${samples}`
           let target = targets.get(key)
           if (!target) {
             target = new THREE.RenderTarget(size.x, size.y, {
-              type: plane === "color" ? THREE.UnsignedByteType : THREE.FloatType,
-              format: THREE.RGBAFormat, depthBuffer: true,
+              type: plane === "color" ? THREE.UnsignedByteType : includeRigidMeshes ? THREE.HalfFloatType : THREE.FloatType,
+              format: THREE.RGBAFormat, depthBuffer: true, samples,
             })
             target.texture.name = `playsrc-skinning-evidence-${plane}`
             targets.set(key, target)
@@ -153,10 +157,10 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
           }
         }
         if (plane === "color") {
-          const key = `absent:${size.x}:${size.y}`
+          const key = `absent:${size.x}:${size.y}:${samples}`
           let absent = targets.get(key)
           if (!absent) {
-            absent = new THREE.RenderTarget(size.x, size.y, { depthBuffer: true })
+            absent = new THREE.RenderTarget(size.x, size.y, { depthBuffer: true, samples })
             absent.texture.name = "playsrc-skinning-evidence-absent"
             targets.set(key, absent)
           }
@@ -211,7 +215,7 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
     }
     const timestamps = withImmediateGpuSubmissions((renderer.backend as any).device.queue, () => renderer.resolveTimestampsAsync("render"))
     void Promise.all([Promise.all(reads), timestamps]).then(([planes]) => request.resolve({
-      label: request.label, pass, width: size.x, height: size.y, planes,
+      label: request.label, pass, width: size.x, height: size.y, samples, planes,
       meshes: meshes.length,
       materials: meshes.map(mesh => String(mesh.userData.materialIdentity ?? "")),
       palettes: [...new Set(meshes.filter(mesh => mesh instanceof THREE.SkinnedMesh).map(mesh => (mesh as THREE.SkinnedMesh).skeleton))].map(skeleton => ({ authored: sourceModelBoneCount(skeleton), capacity: skeleton.bones.length, sourceBytes: sourceModelBoneCount(skeleton) * 48, gpuBytes: skeleton.boneMatrices.byteLength })),
