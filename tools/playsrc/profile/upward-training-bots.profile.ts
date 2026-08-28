@@ -89,7 +89,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
-  const replay = exerciseClasses || capturePlan.gameplayReplay === "required"
+  const replay = deliveryMode === "traced" || exerciseClasses || capturePlan.gameplayReplay === "required"
     ? await startGameplayReplayLifecycle(page, evidenceDirectory, evidenceLabel, capturePlan.warmReload, capturePlan.replacement ? 2 : 1, workload?.entropyHex, workload?.workClock) : undefined
   const replayIdentity = () => page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.applicationGeneration))
   const stopReplay = async (complete: boolean) => replay?.stop(await replayIdentity().catch(error => { if (complete) throw error; return null }), complete)
