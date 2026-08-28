@@ -16,6 +16,7 @@ import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
 import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
+import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -128,15 +129,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
 
   if (lightmapAudit) await page.route(/\/packages\/presentation\/rendering\/src\/index\.ts(?:\?|$)/u, async route => {
     const response = await route.fetch()
-    let source = await response.text()
-    if (process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1") {
-      const borrow = /const borrowedLightmap = borrowWorldLightmapTextures\(lightmap, retained\?\.lightmapTextures\);?/gu
-      if ([...source.matchAll(borrow)].length !== 1) throw new Error("Fresh-lightmap reference route differs from the checked owner")
-      source = source.replace(borrow, "const borrowedLightmap = undefined;")
-    }
-    const pattern = /(const lightmapTextures = [^\n]*createWorldLightmapTextures\(lightmap, disposables\);?)/gu
-    if ([...source.matchAll(pattern)].length !== 1) throw new Error("Lightmap registration route differs from the checked scene owner")
-    await route.fulfill({ response, body: source.replace(pattern, "$1\nglobalThis.__playsrcLightmapEvidence?.register(lightmapTextures);") })
+    await route.fulfill({ response, body: instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1") })
   })
 
   await page.route(/gameplay-worker\.ts(?:\?|$)/u, async (route) => {
@@ -779,6 +772,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     }
     clearInterval(sampler)
     let lightmapEvidence: unknown = null
+    let lightmapTeardown: unknown = null
     if (lightmapAudit) {
       await native()
       try {
@@ -796,6 +790,15 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       } finally {
         await page.evaluate(() => { (globalThis as any).__playsrcLightmapEvidence.dispose(); delete (globalThis as any).__playsrcLightmapEvidence })
       }
+      await native()
+      if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+      const command = page.locator("[aria-label='Console command']")
+      await command.fill("disconnect"); await command.press("Enter")
+      await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 10_000 })
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcMemoryProfile.gpu.lightmapAllocation.liveBytes)).toBe(0)
+      lightmapTeardown = await page.evaluate(() => (globalThis as any).__playsrcMemoryProfile.gpu.textureAllocation)
+      expect((lightmapTeardown as any).live.formats.rgba32float.knownBytes).toBe(0)
+      expect((lightmapTeardown as any).created.textures - (lightmapTeardown as any).destroyedTextures).toBe((lightmapTeardown as any).live.textures)
       await native()
     }
     const sampled = await pageCdp.send("HeapProfiler.stopSampling")
@@ -857,6 +860,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       gpu: system.gpu ?? null,
       maps,
       lightmapEvidence,
+      lightmapTeardown,
       lightmapReference: process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1",
       nativeAdmission: nativeReader?.records,
       timeline,
