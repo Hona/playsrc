@@ -197,7 +197,10 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     // DOM/owner acknowledgements sequence the requested inputs only. None of
     // these waits is counted as a visibly responsive frame.
     await page.locator(`.team-selection-layer [data-vgui-name='${team === "red" ? "teambutton1" : "teambutton0"}']`).click()
-    await page.waitForFunction(() => (globalThis as any).__playsrcProfile.selectionOwners?.filter((entry: any) => entry.kind === "draw-complete").at(-1)?.detail.scene === "class", undefined, { timeout: 8500, polling: 50 })
+    await page.waitForFunction(team => {
+      const draw = (globalThis as any).__playsrcProfile.selectionOwners?.filter((entry: any) => entry.kind === "draw-complete").at(-1)
+      return draw?.detail.scene === "class" && draw.detail.team === team
+    }, team === "red" ? 2 : 3, { timeout: 8500, polling: 50 })
     const reference = async (scene: string, selector: string) => {
       const facts = await page.locator(selector).evaluate(element => ({ bounds: element.getBoundingClientRect().toJSON(),
         screenX, screenY, outerWidth, outerHeight, innerWidth, innerHeight, timeOrigin: performance.timeOrigin,
@@ -208,12 +211,14 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
       }
       references.push({ scene, index, facts })
     }
-    await reference("class", ".class-selection-layer [data-vgui-name='ClassMenuSelect']")
+    // Source hides ClassMenuSelect on reopen; use the visible authored loadout
+    // label in that case, never a hidden panel's still-retained layout bounds.
+    await reference("class", `.class-selection-layer [data-vgui-name='${warm ? "EditLoadoutButton" : "ClassMenuSelect"}']`)
     await page.locator(`.class-selection-layer [data-vgui-name='${classes[identity - 1]}']`).click()
     await expect.poll(() => page.evaluate(({ identity, team }) => {
       const profile = (globalThis as any).__playsrcProfile, input = profile.selectionInputs.at(-1)
       const draw = profile.selectionOwners.filter((entry: any) => entry.kind === "draw-complete").at(-1)
-      return draw?.detail.scene === "world" && draw.detail.class === identity && draw.detail.team === team && draw.at > input.processing
+      return draw?.detail.scene === "world" && draw.detail.class === identity && draw.detail.team === team && draw.detail.lifecycle === 1 && draw.at > input.processing
     }, { identity, team: team === "red" ? 2 : 3 }), { timeout: 5000 }).toBe(true)
     await reference("world", ".hud-layer [data-vgui-name='PlayerStatusHealthValue']")
     actionsComplete = true

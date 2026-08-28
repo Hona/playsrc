@@ -10,6 +10,10 @@ test("loading controls require exact input and completed transfer evidence, not 
     pressure: [{ epoch: 0, cpus: [{ user: 0, sys: 0, idle: 0 }] }, { epoch: 1000, freeBytes: 100, totalBytes: 1000, cpus: [{ user: 10, sys: 10, idle: 80 }] }] }
   expect(selectionLoadingInputs(measurement, control).transfers[0].encodedBytes).toBe(100)
   expect(selectionLoadingPressure(control)[0]!.busyFraction).toBe(.2)
+  const invalid = selectionLoadingPressure({ pressure: [control.pressure[1], { ...control.pressure[1], epoch: 1200,
+    cpus: [{ user: 10, sys: 10, idle: 79 }] }] })
+  expect(invalid[0]!.busyFraction).toBeNull()
+  expect(invalid[0]!.counterFault).toBe(true)
   expect(() => selectionLoadingInputs({ evidence: {} }, control)).toThrow("not retained")
   expect(() => selectionLoadingInputs(measurement, { requests: [{ ...control.requests[0], finished: undefined }] })).toThrow("incomplete")
 })

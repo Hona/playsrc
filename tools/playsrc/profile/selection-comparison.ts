@@ -43,7 +43,8 @@ export function selectionLoadingPressure(control: any) {
       return { total, busy: total - cpu.idle! + prior.idle! }
     })
     const total = delta.reduce((sum, cpu) => sum + cpu.total, 0)
+    const counterFault = delta.some(cpu => !Number.isFinite(cpu.total) || cpu.total < 0 || cpu.busy < 0 || cpu.busy > cpu.total)
     return { startedEpoch: previous.epoch, endedEpoch: next.epoch, freeBytes: next.freeBytes, totalBytes: next.totalBytes,
-      busyFraction: total > 0 ? delta.reduce((sum, cpu) => sum + cpu.busy, 0) / total : null }
+      counterFault, busyFraction: !counterFault && total > 0 ? delta.reduce((sum, cpu) => sum + cpu.busy, 0) / total : null }
   })
 }
