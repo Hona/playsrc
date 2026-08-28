@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Build','Status','Logs','Doctor')][string]$Action = 'Run',
+  [ValidateSet('Run','Build','Status','Logs','Doctor','Wait')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Target,
@@ -15,6 +15,11 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
+if ($Action -eq 'Wait') {
+  $runner = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*" }
+  foreach ($process in $runner) { Wait-Process -Id $process.ProcessId -Timeout 175 -ErrorAction SilentlyContinue }
+  $Action = 'Status'
+}
 if ($Action -eq 'Doctor') {
   $cargo = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo/bin/cargo.exe'
   $env:CARGO_HOME = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo'
