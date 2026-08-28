@@ -894,6 +894,9 @@ export type ModelGeometryEvidence = Readonly<{
   }>[]
 }>
 
+export type MaterialDepthEvidence=Readonly<{id:number;name:string;identity?:string;depthTest:boolean;depthWrite:boolean;depthFunc:number;transparent:boolean;renderOrder:number}>
+export type ParticleBatchEvidence=Readonly<{key:string;visible:boolean;sky:boolean;count:number;positions:number[];material:string;depthTest:boolean;depthWrite:boolean;depthFunc:number}>
+
 export interface Renderer {
   takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[]
   captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]>
@@ -918,6 +921,8 @@ export interface Renderer {
   captureGeometryEvidence(camera: Camera, ownership?: "main" | "sky3d"): GeometryEvidence
   captureViewModelEvidence(camera: Camera): ModelGeometryEvidence
   captureWorldModelEvidence(camera: Camera): ModelGeometryEvidence
+  captureParticleBatchEvidence(): ParticleBatchEvidence[]
+  captureMaterialDepthEvidence(): MaterialDepthEvidence[]
   captureWaterTargetEvidence(x: number, y: number): Promise<WaterTargetEvidence>
   resize(cssWidth: number, cssHeight: number, devicePixelRatio: number): ResizeResult
   startFramePacing(callback: FramePacingCallback): void
@@ -5403,7 +5408,7 @@ class RendererOwner implements Renderer {
   }
 
   captureMaterialDepthEvidence() {
-    const materials=new Map<number,unknown>()
+    const materials=new Map<number,MaterialDepthEvidence>()
     this.#scene.traverseVisible(object=>{
       if(!(object instanceof THREE.Mesh))return
       for(const material of Array.isArray(object.material)?object.material:[object.material])materials.set(material.id,{id:material.id,name:material.name,identity:object.userData.materialIdentity,depthTest:material.depthTest,depthWrite:material.depthWrite,depthFunc:material.depthFunc,transparent:material.transparent,renderOrder:object.renderOrder})
