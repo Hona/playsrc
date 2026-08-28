@@ -68,7 +68,7 @@ test("configured Granary mixed PCM, soundscape transitions, pause and map owners
     let binary = ""
     for (let at = 0; at < raw.length; at += 8192) binary += String.fromCharCode(...raw.subarray(at, at + 8192))
     return { before, after, frames, seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick,
-      captured: { frames: captured.frames, differingSamples: captured.differingSamples, uncoveredSamples: captured.uncoveredSamples, underruns: captured.underruns, sampleRate: captured.sampleRate }, pcm: btoa(binary) }
+      captured: { sampleFormat: captured.sampleFormat, frames: captured.frames, differingSamples: captured.differingSamples, uncoveredSamples: captured.uncoveredSamples, underruns: captured.underruns, sampleRate: captured.sampleRate }, pcm: btoa(binary) }
   })
   await page.waitForFunction(() => {
     const profile = (globalThis as any).__playsrcProfile
@@ -93,16 +93,16 @@ test("configured Granary mixed PCM, soundscape transitions, pause and map owners
   expect(sample.ticks / sample.seconds).toBeGreaterThan(63)
   const pcm = Buffer.from(sample.pcm, "base64")
   let nonzero = 0, peak = 0, stereoDifferences = 0
-  for (let at = 0; at < pcm.length; at += 4) {
-    const left = pcm.readInt16LE(at), right = pcm.readInt16LE(at + 2)
+  for (let at = 0; at < pcm.length; at += 8) {
+    const left = pcm.readFloatLE(at), right = pcm.readFloatLE(at + 4)
     nonzero += Number(left !== 0 || right !== 0); peak = Math.max(peak, Math.abs(left), Math.abs(right)); stereoDifferences += Number(left !== right)
   }
   expect(nonzero).toBeGreaterThan(44100)
   expect(stereoDifferences).toBeGreaterThan(0)
   const header = Buffer.alloc(44)
   header.write("RIFF"); header.writeUInt32LE(pcm.length + 36, 4); header.write("WAVEfmt ", 8); header.writeUInt32LE(16, 16)
-  header.writeUInt16LE(1, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(44100, 24); header.writeUInt32LE(176400, 28)
-  header.writeUInt16LE(4, 32); header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40)
+  header.writeUInt16LE(3, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(44100, 24); header.writeUInt32LE(352800, 28)
+  header.writeUInt16LE(8, 32); header.writeUInt16LE(32, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40)
   const audioPath = testInfo.outputPath("granary-mixed.wav")
   await writeFile(audioPath, Buffer.concat([header, pcm]))
   await testInfo.attach("mixed-owned-audio", { path: audioPath, contentType: "audio/wav" })

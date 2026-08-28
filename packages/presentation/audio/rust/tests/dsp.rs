@@ -35,6 +35,10 @@ fn one_second_integer_response_vectors_and_quantum_partition_equivalence() {
             spec(2, &[80.0, 30.0, 4.0, 0.85, 1.1, 4000.0, 1.0]),
             "2b4fe2b4bb6f88a9909173bbe3b1ef6f7ea9138b09732d8642d8a74792d41952",
         ),
+        (
+            spec(11, &[2.0, 0.1, 1.0]),
+            "96c3818de62138037073b8b8ab0e1f4d2b03b7b18fd4a6b4e54afbd32770e159",
+        ),
     ] {
         let mut processor = Processor::new(&spec).unwrap();
         let mut samples = vec![0; 44100];
@@ -128,4 +132,18 @@ fn amplifier_distortion_and_integer_gain_preserve_threshold_boundaries() {
     assert_eq!(clipped.sample(-16384, &mut NoRandom), -6552);
     let mut clean = Processor::new(&spec(11, &[2.0, 0.2, 1.0])).unwrap();
     assert_eq!(clean.sample(16384, &mut NoRandom), 32768);
+}
+
+#[test]
+fn device_floats_preserve_the_configured_master_gain_without_sixteen_bit_requantization() {
+    let mut hash = Sha256::new();
+    for frame in 0..512 {
+        for sample in [(frame * 379) % 65535 - 32767, (frame * 997) % 65535 - 32767] {
+            hash.update(playsrc_audio::output::device_sample(sample, 0.37).to_le_bytes());
+        }
+    }
+    assert_eq!(
+        format!("{:x}", hash.finalize()),
+        "e763621d543d56de1d7ebbcd81bb9e7cd3ad80dec28046cd1bf01899ce3fad7a"
+    );
 }

@@ -64,7 +64,7 @@ test("Lakeside trigger entries and exits change real mixed audio including under
     profile.waterCaptureStart = before.renderedFrames
     const captured = await audio.capture(308700), after = audio.stats(), bytes = new Uint8Array(captured.pcm)
     let binary = ""; for (let at = 0; at < bytes.length; at += 8192) binary += String.fromCharCode(...bytes.subarray(at, at + 8192))
-    return { before, after, captured: { differingSamples: captured.differingSamples, uncoveredSamples: captured.uncoveredSamples, underruns: captured.underruns, frames: captured.frames }, pcm: btoa(binary) }
+    return { before, after, captured: { sampleFormat: captured.sampleFormat, differingSamples: captured.differingSamples, uncoveredSamples: captured.uncoveredSamples, underruns: captured.underruns, frames: captured.frames }, pcm: btoa(binary) }
   })
   await page.waitForFunction(() => {
     const profile = (globalThis as any).__playsrcProfile
@@ -91,15 +91,15 @@ test("Lakeside trigger entries and exits change real mixed audio including under
   const pcm = Buffer.from(captured.pcm, "base64")
   let nonzero = 0, waterStereoDifferences = 0
   for (let frame = 0; frame < 176400; frame++) {
-    const left = pcm.readInt16LE(frame * 4), right = pcm.readInt16LE(frame * 4 + 2)
+    const left = pcm.readFloatLE(frame * 8), right = pcm.readFloatLE(frame * 8 + 4)
     nonzero += Number(left !== 0 || right !== 0); waterStereoDifferences += Number(left !== right)
   }
   expect(nonzero).toBeGreaterThan(44100)
   expect(waterStereoDifferences).toBe(0)
   const header = Buffer.alloc(44)
   header.write("RIFF"); header.writeUInt32LE(pcm.length + 36, 4); header.write("WAVEfmt ", 8); header.writeUInt32LE(16, 16)
-  header.writeUInt16LE(1, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(44100, 24); header.writeUInt32LE(176400, 28)
-  header.writeUInt16LE(4, 32); header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40)
+  header.writeUInt16LE(3, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(44100, 24); header.writeUInt32LE(352800, 28)
+  header.writeUInt16LE(8, 32); header.writeUInt16LE(32, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40)
   const audioPath = testInfo.outputPath("lakeside-mixed.wav")
   await writeFile(audioPath, Buffer.concat([header, pcm]))
   await testInfo.attach("owned-underwater-audio", { path: audioPath, contentType: "audio/wav" })

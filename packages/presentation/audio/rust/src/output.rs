@@ -147,51 +147,39 @@ impl MonoEffect {
     }
 }
 
-/// Quantize each bus before sampling. A dry-decorated voice bypasses room and
-/// player processing; ordinary zero-room voices still belong to the facing bus.
+/// Quantize the bus multiplier, retaining fractional channel gains until the
+/// sample conversion. Dry voices bypass room/player processing entirely.
 pub fn split_volume(
-    volume: [u8; 2],
+    volume: [f32; 2],
     send: f32,
     dsp_volume: f32,
     room_off: bool,
-) -> ([u8; 2], [u8; 2]) {
+) -> ([f32; 2], [f32; 2]) {
     let send = if room_off { 0.0 } else { send };
-    let wet = (send * dsp_volume).min(1.0);
+    let send = send * 256.0;
+    let wet = ((send * dsp_volume) as i32).min(256);
     let dry = if dsp_volume < 1.0 {
         send * dsp_volume
     } else {
         send
     };
     (
-        volume.map(|v| (v as f32 * wet) as u8),
-        volume.map(|v| (f64::from(v) * (1.0 - f64::from(dry))) as u8),
+        volume.map(|v| (v * wet as f32 * (1.0 / 256.0)).clamp(0.0, 255.0)),
+        volume.map(|v| (v * (256.0 - dry) as i32 as f32 * (1.0 / 256.0)).clamp(0.0, 255.0)),
     )
 }
 
-pub fn sample16(sample: i16, volume: u8) -> i32 {
-    (i32::from(sample) * i32::from(volume)) >> 8
+pub fn sample16(sample: i16, volume: f32) -> i32 {
+    (f32::from(sample) * volume * (1.0 / 256.0)) as i32
 }
-pub fn sample8(sample: i8, volume: u8) -> i32 {
-    i32::from(sample) * i32::from(volume & !1)
+pub fn sample8(sample: i8, volume: f32) -> i32 {
+    i32::from(sample) * ((volume as i32) & !1)
 }
 
-pub fn finish(wet: &[Frame], facing: &[Frame], dry: &[Frame], output: &mut [i16]) {
-    assert_eq!(wet.len(), facing.len());
-    assert_eq!(wet.len(), dry.len());
-    assert_eq!(wet.len() * 2, output.len());
-    for (((wet, facing), dry), out) in wet
-        .iter()
-        .zip(facing)
-        .zip(dry)
-        .zip(output.chunks_exact_mut(2))
-    {
-        for channel in 0..2 {
-            out[channel] = wet[channel]
-                .wrapping_add(facing[channel])
-                .wrapping_add(dry[channel])
-                .clamp(-32768, 32767) as i16;
-        }
-    }
+/// Paint compression precedes the device's floating master gain. Keep that
+/// fractional gain through the browser boundary instead of requantizing PCM.
+pub fn device_sample(sample: i32, master: f32) -> f32 {
+    sample.clamp(-32767, 32767) as f32 * master * (1.0 / 32768.0)
 }
 
 #[cfg(test)]
@@ -239,19 +227,23 @@ mod tests {
         assert!(!effect.is_off());
     }
     #[test]
-    fn bus_integer_boundaries_and_eight_bit_gain_steps_are_preserved() {
+    fn bus_scale_quantization_and_fractional_channel_gain_are_preserved() {
+        let (wet, facing) = split_volume([254.0, 254.0], 0.33, 1.0, false);
+        assert_eq!(wet.map(f32::to_bits), [0x42a6b000; 2]);
+        assert_eq!(facing.map(f32::to_bits), [0x4329aa00; 2]);
         assert_eq!(
-            split_volume([255, 127], 0.3, 1.0, false),
-            ([76, 38], [178, 88])
+            split_volume([255.0, 127.0], 0.3, 1.0, false),
+            ([75.703125, 37.703125], [178.30078, 88.80078])
         );
         assert_eq!(
-            split_volume([255, 127], 0.3, 1.0, true),
-            ([0, 0], [255, 127])
+            split_volume([255.0, 127.0], 0.3, 1.0, true),
+            ([0.0, 0.0], [255.0, 127.0])
         );
-        assert_eq!(sample16(-1, 1), -1);
-        assert_eq!(sample8(-128, 255), -32512);
-        let mut output = [0; 2];
-        finish(&[[32767, -32768]], &[[1, -1]], &[[0; 2]], &mut output);
-        assert_eq!(output, [32767, -32768]);
+        assert_eq!(sample16(-1, 1.0), 0);
+        assert_eq!(sample16(-1000, 128.5), -501);
+        assert_eq!(sample8(-128, 255.0), -32512);
+        assert_eq!(device_sample(-32768, 1.0), -32767.0 / 32768.0);
+        assert_eq!(device_sample(32768, 1.0), 32767.0 / 32768.0);
+        assert_eq!(device_sample(1, 0.5), 0.5 / 32768.0);
     }
 }

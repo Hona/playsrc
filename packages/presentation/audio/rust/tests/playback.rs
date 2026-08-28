@@ -101,6 +101,15 @@ fn controls(master_volume: f32) -> playsrc_audio::playback::Frame {
     }
 }
 
+fn paint_units(playback: &mut Playback) -> Vec<i32> {
+    playback
+        .paint(4, &mut NoRandom)
+        .unwrap()
+        .iter()
+        .map(|value| (value * 32768.0) as i32)
+        .collect()
+}
+
 #[test]
 fn extra_paints_use_committed_controls_and_do_not_consume_unspatialized_voices() {
     let mut playback = setup(44100, Some(1));
@@ -109,11 +118,11 @@ fn extra_paints_use_committed_controls_and_do_not_consume_unspatialized_voices()
     playback.paint(4, &mut NoRandom).unwrap();
     playback.frame(controls(0.0), &mut NoRandom).unwrap();
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [2976, 2976, 1984, 1984, 2976, 2976, 1984, 1984]
     );
     playback.spatialize(&[], false).unwrap();
-    assert_eq!(playback.paint(4, &mut NoRandom).unwrap(), [0; 8]);
+    assert_eq!(paint_units(&mut playback), [0; 8]);
 
     let mut playback = setup(44100, Some(1));
     playback.start(start()).unwrap();
@@ -126,7 +135,7 @@ fn extra_paints_use_committed_controls_and_do_not_consume_unspatialized_voices()
     playback.paint(4, &mut NoRandom).unwrap();
     playback.spatialize(&[], false).unwrap();
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [3968, 3968, 3968, 3968, 5952, 5952, 3968, 3968]
     );
 }
@@ -154,12 +163,12 @@ fn entity_sources_follow_current_origins_and_missing_entities_become_inaudible()
             .paint(4, &mut NoRandom)
             .unwrap()
             .iter()
-            .any(|value| *value != 0)
+            .any(|value| *value != 0.0)
     );
     playback.frame(controls(1.0), &mut NoRandom).unwrap();
     assert!(playback.obstruction_requests().is_empty());
     playback.spatialize(&[], false).unwrap();
-    assert_eq!(playback.paint(4, &mut NoRandom).unwrap(), [0; 8]);
+    assert_eq!(paint_units(&mut playback), [0; 8]);
     assert_eq!(playback.active_count(), 1);
 }
 
@@ -169,7 +178,7 @@ fn cue_loops_preserve_pcm_position_and_stops_are_source_scoped() {
     playback.start(start()).unwrap();
     frame(&mut playback);
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [992, 992, 1984, 1984, 2976, 2976, 1984, 1984]
     );
     assert_eq!(playback.active_external().collect::<Vec<_>>(), [17]);
@@ -180,7 +189,7 @@ fn cue_loops_preserve_pcm_position_and_stops_are_source_scoped() {
     assert!(playback.start(invalid).is_err());
     assert_eq!(playback.active_external().collect::<Vec<_>>(), [17]);
     playback.stop(17);
-    assert_eq!(playback.paint(4, &mut NoRandom).unwrap(), [0; 8]);
+    assert_eq!(paint_units(&mut playback), [0; 8]);
 }
 
 #[test]
@@ -189,11 +198,11 @@ fn integer_upsampling_keeps_previous_bus_sample_across_paint_calls() {
     playback.start(start()).unwrap();
     frame(&mut playback);
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [496, 496, 992, 992, 1488, 1488, 1984, 1984]
     );
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [2480, 2480, 2976, 2976, 1984, 1984, 992, 992]
     );
 }
@@ -204,10 +213,21 @@ fn end_of_wave_zero_padding_retires_at_the_next_paint_block() {
     playback.start(start()).unwrap();
     frame(&mut playback);
     assert_eq!(
-        playback.paint(4, &mut NoRandom).unwrap(),
+        paint_units(&mut playback),
         [992, 992, 1984, 1984, 2976, 2976, 0, 0]
     );
     assert_eq!(playback.active_count(), 1);
-    assert_eq!(playback.paint(4, &mut NoRandom).unwrap(), [0; 8]);
+    assert_eq!(paint_units(&mut playback), [0; 8]);
     assert_eq!(playback.active_count(), 0);
+}
+
+#[test]
+fn device_gain_keeps_fractional_paint_units() {
+    let mut playback = setup(44100, None);
+    playback.start(start()).unwrap();
+    playback.frame(controls(0.37), &mut NoRandom).unwrap();
+    playback.spatialize(&[], false).unwrap();
+    let pcm = playback.paint(4, &mut NoRandom).unwrap();
+    assert_eq!(pcm[0].to_bits(), (992.0_f32 * 0.37 / 32768.0).to_bits());
+    assert_ne!(pcm[0] * 32768.0, (pcm[0] * 32768.0).trunc());
 }

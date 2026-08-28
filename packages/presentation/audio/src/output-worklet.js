@@ -24,7 +24,7 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
       if (!Number.isInteger(data.captureId) || data.captureId < 1 || data.captureId > 0xffff_ffff || !Number.isInteger(data.captureFrames) || data.captureFrames < 1 || data.captureFrames > 441000 || this.capture) {
         this.port.postMessage({ captureId: data.captureId, error: "Invalid audio capture request" }); return
       }
-      this.capture = { id: data.captureId, samples: new Int16Array(data.captureFrames * 2), at: 0,
+      this.capture = { id: data.captureId, samples: new Float32Array(data.captureFrames * 2), at: 0,
         startRead: Atomics.load(this.control, 0) >>> 0, epoch: Atomics.load(this.control, 2) >>> 0,
         gaps: new Uint32Array(8192), gapCount: 0, missing: 0 }
     }
@@ -82,8 +82,8 @@ registerProcessor("playsrc-output", class extends AudioWorkletProcessor {
         capture.missing += missing
       }
       for (let frame = 0; frame < frames; frame++) {
-        capture.samples[(capture.at + frame) * 2] = left[frame] * 32768
-        capture.samples[(capture.at + frame) * 2 + 1] = right[frame] * 32768
+        capture.samples[(capture.at + frame) * 2] = left[frame]
+        capture.samples[(capture.at + frame) * 2 + 1] = right[frame]
       }
       capture.at += frames
       if (capture.at * 2 === capture.samples.length) {

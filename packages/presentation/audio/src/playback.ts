@@ -5,7 +5,7 @@ export type PcmResource = Readonly<{ identity: string; sampleRate: number; numbe
 export type SoundscapeSelection = Readonly<{ entity: number; soundscape: number; positionBits: number; positions: readonly (readonly [number, number, number])[] }>
 export type AudioRandom = Readonly<{ nextUnit(): number; nextInteger(low: number, high: number): number }>
 export type AudioEntity = Readonly<{ domain: 1 | 2; identity: number; origin: readonly [number, number, number] }>
-export type AudioCapture = Readonly<{ pcm: ArrayBuffer; frames: number; differingSamples: number; uncoveredSamples: number; underruns: number; sampleRate: number }>
+export type AudioCapture = Readonly<{ pcm: ArrayBuffer; sampleFormat: "f32le"; frames: number; differingSamples: number; uncoveredSamples: number; underruns: number; sampleRate: number }>
 type Exports = WebAssembly.Exports & {
   memory: WebAssembly.Memory
   playsrc_audio_alloc(length: number): number
@@ -79,7 +79,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
   let closed = false, failure: Error | undefined, epoch = 0, previousTime: number | undefined, pending = false, ready = false
   let inventory = new Map<string, PcmResource>()
   const queued: Array<{ voice: NeutralVoice; source: SoundSource } | { stop: number }> = []
-  let capture: { id: number; base: number; parts: Int16Array[]; frames: number; resolve(value: AudioCapture): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
+  let capture: { id: number; base: number; parts: Uint32Array[]; frames: number; resolve(value: AudioCapture): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
   let captureSequence = 0
   const metrics = { paintCalls: 0, extraPaintCalls: 0, paintedFrames: 0, paintMilliseconds: 0, maximumPaintMilliseconds: 0 }
   const lifecycle: Record<string, unknown>[] = []
@@ -179,12 +179,12 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     const started = performance.now(); check(wasm.playsrc_audio_paint(frames), "Paint audio")
     const count = wasm.playsrc_audio_pcm_count()
     if (count !== frames * 2) throw new AudioError("BrowserFailure", "Audio paint frame count differs")
-    const pcm = new Int16Array(wasm.memory.buffer, wasm.playsrc_audio_pcm_data() >>> 0, count)
-    if (capture) capture.parts.push(pcm.slice())
-    for (let frame = 0; frame < frames; frame++) {
-      const at = ((write + frame) & (CAPACITY - 1)) * 2
-      samples[at] = pcm[frame * 2]! / 32768; samples[at + 1] = pcm[frame * 2 + 1]! / 32768
-    }
+    const pcm = new Float32Array(wasm.memory.buffer, wasm.playsrc_audio_pcm_data() >>> 0, count)
+    if (capture) capture.parts.push(new Uint32Array(pcm.buffer, pcm.byteOffset, pcm.length).slice())
+    const offset = (write & (CAPACITY - 1)) * 2
+    const first = Math.min(count, samples.length - offset)
+    samples.set(pcm.subarray(0, first), offset)
+    if (first < count) samples.set(pcm.subarray(first), 0)
     Atomics.store(control, 1, (write + frames) | 0); Atomics.store(control, 4, 1)
     if (diagnostics) {
       const now = context.currentTime
@@ -200,10 +200,10 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     const current = capture
     if (!current || data.captureId !== current.id) return
     capture = undefined; clearTimeout(current.timer)
-    if (data.error || !(data.capture instanceof ArrayBuffer) || data.epoch !== epoch || data.capture.byteLength !== current.frames * 4) {
+    if (data.error || !(data.capture instanceof ArrayBuffer) || data.epoch !== epoch || data.capture.byteLength !== current.frames * 8) {
       current.reject(new AudioError("BrowserFailure", data.error ?? "Audio capture framing differs")); return
     }
-    const actual = new Int16Array(data.capture), offset = (((data.startRead >>> 0) - current.base) >>> 0) * 2
+    const actual = new Uint32Array(data.capture), offset = (((data.startRead >>> 0) - current.base) >>> 0) * 2
     if (!(data.gaps instanceof ArrayBuffer) || !Number.isInteger(data.gapCount) || data.gapCount < 0 || data.gapCount % 2 !== 0 || data.gapCount * 4 > data.gaps.byteLength) {
       current.reject(new AudioError("BrowserFailure", "Audio capture gaps are malformed")); return
     }
@@ -226,7 +226,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
         else differingSamples += Number(current.parts[part]![cursor++] !== actual[frame * 2 + channel])
       }
     }
-    current.resolve(Object.freeze({ pcm: data.capture, frames: current.frames, differingSamples, uncoveredSamples, underruns: data.underruns, sampleRate: 44100 }))
+    current.resolve(Object.freeze({ pcm: data.capture, sampleFormat: "f32le", frames: current.frames, differingSamples, uncoveredSamples, underruns: data.underruns, sampleRate: 44100 }))
   }
 
   try { replace(resources) }
@@ -304,8 +304,8 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     capture(frames = 220500): Promise<AudioCapture> {
       if (closed || context.state !== "running" || capture || captureSequence >= 0xffff_ffff || (Atomics.load(control, 6) >>> 0) !== epoch || !Number.isInteger(frames) || frames < 1 || frames > 441000) return Promise.reject(new AudioError("MalformedEvent", "Audio capture is unavailable"))
       const base = Atomics.load(control, 0) >>> 0, end = Atomics.load(control, 1) >>> 0, buffered = (end - base) >>> 0
-      const initial = new Int16Array(buffered * 2)
-      for (let frame = 0; frame < buffered; frame++) { const at = ((base + frame) & (CAPACITY - 1)) * 2; initial[frame * 2] = samples[at]! * 32768; initial[frame * 2 + 1] = samples[at + 1]! * 32768 }
+      const initial = new Float32Array(buffered * 2)
+      for (let frame = 0; frame < buffered; frame++) { const at = ((base + frame) & (CAPACITY - 1)) * 2; initial[frame * 2] = samples[at]!; initial[frame * 2 + 1] = samples[at + 1]! }
       return new Promise((resolve, reject) => {
         const id = ++captureSequence
         const timer = setTimeout(() => {
@@ -313,7 +313,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
           capture = undefined; output.port.postMessage({ cancelCapture: id })
           reject(new AudioError("BrowserFailure", "Audio capture timed out"))
         }, 12_000)
-        capture = { id, base, parts: [initial], frames, resolve, reject, timer }
+        capture = { id, base, parts: [new Uint32Array(initial.buffer)], frames, resolve, reject, timer }
         output.port.postMessage({ captureId: capture.id, captureFrames: frames })
       })
     },
