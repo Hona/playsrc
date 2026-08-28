@@ -1515,7 +1515,11 @@ impl BotWorld {
             }
             bot.objective = objective_kind;
             bot.goal = goal;
-            if tick >= bot.next_repath_tick || bot.path.is_empty() {
+            // Payload Push/Guard start their repath timer even when Compute
+            // fails. PathFollower::Update returns for an invalid path; an empty
+            // result does not invalidate the action's timer on every tick.
+            let payload = matches!(bot.objective, ObjectiveKind::PayloadPush | ObjectiveKind::PayloadGuard);
+            if tick >= bot.next_repath_tick || (!payload && bot.path.is_empty()) {
                 let start = bot.current_area;
                 let goal = mesh.nearest_area(bot.goal).map(|area| area.identity);
                 if let (Some(start), Some(goal)) = (start, goal) {
@@ -5574,6 +5578,34 @@ mod tests {
         assert!(world.apply_damage(identity, 100.0));
         assert_eq!(world.snapshots()[0].lifecycle, PlayerLifecycle::Dying);
         assert_eq!(world.snapshots()[0].health, 0);
+    }
+
+    #[test]
+    fn failed_payload_searches_do_not_bypass_the_action_repath_timer() {
+        for team in [PlayerTeam::Red, PlayerTeam::Blue] {
+            let mut mesh = fixture_mesh();
+            for area in &mut mesh.areas {
+                for connections in &mut area.connections { connections.clear(); }
+            }
+            let mut world = BotWorld::new(mesh, &fixture_graph(), &Floor, 0.015, None).unwrap();
+            let mut random = UniformRandomStream::from_seed(0).unwrap();
+            world.apply(Request { operation: Operation::Add, count: 1, class: Some(PlayerClass::Soldier),
+                team: Some(team), difficulty: Difficulty::Normal }, team, PlayerClass::Soldier, &mut random).unwrap();
+            let human = Human { team, class: PlayerClass::Soldier, alive: false, position: [0.0; 3], velocity: [0.0; 3] };
+            world.advance(&Floor, 0, human, &[], &mut random, None).unwrap();
+            let bot = world.bots.values().next().unwrap();
+            assert!(bot.path.is_empty());
+            let due = bot.next_repath_tick;
+            assert!(due > 1);
+            world.advance(&Floor, 1, human, &[], &mut random, None).unwrap();
+            assert_eq!(world.bots.values().next().unwrap().next_repath_tick, due);
+            world.advance(&Floor, due, human, &[], &mut random, None).unwrap();
+            assert!(world.bots.values().next().unwrap().next_repath_tick > due);
+            // Explicit action invalidation still causes an immediate search.
+            world.bots.values_mut().next().unwrap().next_repath_tick = 0;
+            world.advance(&Floor, due + 1, human, &[], &mut random, None).unwrap();
+            assert!(world.bots.values().next().unwrap().next_repath_tick > due + 1);
+        }
     }
 
     #[test]

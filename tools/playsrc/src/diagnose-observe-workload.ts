@@ -40,10 +40,10 @@ require(hash(bsp) === replay.bspSha256, "BSP hash differs")
 const directory = path.join(config.sourceCacheDir, "observe-diagnostics", "workload-" + randomUUID())
 await mkdir(directory, { recursive: true })
 const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
-const lock = await acquireHeadedProfileLock(lockPath, "observe-content-experiment", 5000)
+const deadline = setTimeout(() => process.exit(124), 170_000)
+const lock = await acquireHeadedProfileLock(lockPath, "observe-content-experiment", 60_000)
 const restore = installNodeWorkerHost()
 let runtime: Awaited<ReturnType<typeof exactWasmReplayRuntime>> | undefined
-const deadline = setTimeout(() => process.exit(124), 170_000)
 try {
   runtime = await exactWasmReplayRuntime(source, directory, 2)
   const e = await runtime.instantiate(await readFile(path.join(source, "tf2_wasm_bg.wasm")), 0)
