@@ -6,6 +6,7 @@ import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admissio
 import { summarizeFrameTimes } from "./profile-window"
 import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
 import { observeSetupObjectiveContacts } from "./setup-objective-evidence"
+import { sampleSetupFrames } from "./setup-frame-sample"
 
 test("authentic setup countdown reaches a live local round with configured audio", async ({ page }, testInfo) => {
   const { sourceCacheDir } = await loadLocalConfig()
@@ -79,6 +80,7 @@ test("authentic setup countdown reaches a live local round with configured audio
     },1000)
   })
   await page.addInitScript(`(${observeSetupObjectiveContacts.toString()})(globalThis.__playsrcProfile ??= {})`)
+  await page.addInitScript(`(globalThis.__playsrcProfile ??= {}).setupSampleFrames = (${sampleSetupFrames.toString()})`)
   const command = async (text: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
     const input = page.locator("[aria-label='Console command']")
@@ -180,12 +182,12 @@ test("authentic setup countdown reaches a live local round with configured audio
     await page.keyboard.down("KeyW"); await page.mouse.down()
     const sample = await page.evaluate(async () => {
       const d = document.querySelector<HTMLElement>("main")!.dataset, p = (globalThis as any).__playsrcProfile
-      const tick = Number(d.snapshotTick), at = performance.now(), before = d.cameraPosition, bots = structuredClone(p.bots)
-      const frames: number[] = []; let previous = at
-      await new Promise<void>(resolve => { const frame = (now: number) => { frames.push(now-previous); previous=now; if(now-at>=5000)resolve();else requestAnimationFrame(frame) }; requestAnimationFrame(frame) })
-      return {seconds:(performance.now()-at)/1000,ticks:Number(d.snapshotTick)-tick,before,after:d.cameraPosition,botsBefore:bots,botsAfter:p.bots,frames,round:p.round,points:p.controlPoints,audio:d.audioStarts}
+      const tick = Number(d.snapshotTick), before = d.cameraPosition, bots = structuredClone(p.bots)
+      const timing = await p.setupSampleFrames()
+      return {...timing,ticks:Number(d.snapshotTick)-tick,before,after:d.cameraPosition,botsBefore:bots,botsAfter:p.bots,round:p.round,points:p.controlPoints,audio:d.audioStarts}
     })
     await page.keyboard.up("KeyW"); await page.mouse.up()
+    await save("live-sample-raw",sample)
     await save("live-sample",{...sample,summary:summarizeFrameTimes(sample.frames)})
     // Look back over the traversed route for the endpoint pixels, rather than
     // leaving the camera against the obstacle reached by the forward input.
