@@ -2691,6 +2691,7 @@ class RendererOwner implements Renderer {
       await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
         if (owner.particlePipelineMeshes.children.length) await backend.compileAsync(owner.particlePipelineMeshes, this.#camera, this.#scene)
         await this.#particleVisibility.prepare()
+        if("legacyVisuals" in owner&&owner.legacyVisuals?.length)await owner.legacyVisuals[0]!.prepareMaterials(backend,this.#camera,this.#scene)
       })
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
@@ -3836,7 +3837,7 @@ class RendererOwner implements Renderer {
             const exposure=program.gammaExposure?exposureUniform.pow(1/2.2):exposureUniform
             const value=TSL.vec4(rgb.mul(TSL.vec3(...program.modulation.slice(0,3))).mul(hdr).mul(exposure),alpha.mul(program.modulation[3]))
             material.colorNode=legacyFog(sourceFragmentColor(value,state),state.fog,this.#viewFogUniforms,waterFogUniforms)
-            material.fog=false;material.toneMapped=false;material.name=`legacy:${input.material}:${frame}`
+            material.fog=false;material.toneMapped=false;material.forceSinglePass=true;material.name=`legacy:${input.material}:${frame}`
             return material
           })
         })

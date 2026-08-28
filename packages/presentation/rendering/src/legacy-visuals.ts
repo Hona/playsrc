@@ -46,6 +46,12 @@ export class PixelFeedbackLedger {
 type Hook = { original: (...args: any[]) => any; owners: number; depth: GPUTexture | null }
 const HOOKS = new WeakMap<object, Hook>()
 
+function quadGeometry():THREE.BufferGeometry{
+  const geometry=new THREE.BufferGeometry()
+  for(const [name,size] of [["position",3],["legacyColor",4],["legacyHdr",1],["legacyFog",1],["uv",2]] as const)geometry.setAttribute(name,new THREE.BufferAttribute(new Float32Array(4*size),size).setUsage(THREE.DynamicDrawUsage))
+  geometry.setIndex([0,2,1,0,3,2]);return geometry
+}
+
 /** Per-map, per-view legacy overlay pool. Native code owns all geometry/fading;
  * this pool submits exactly the prepared quads and feeds actual raster counts
  * back to that owner. Unpresented prepared frames never acknowledge a query.
@@ -87,6 +93,13 @@ export class LegacyVisuals {
   }
 
   async prepare(): Promise<void> { await Promise.all([this.#counter.prepare(1,"r8unorm"), this.#counter.prepare(4,"r8unorm")]) }
+  async prepareMaterials(renderer:THREE.WebGPURenderer,camera:THREE.Camera,world:THREE.Scene):Promise<void>{
+    const geometry=quadGeometry(),group=new THREE.Group()
+    for(const material of this.#materials.flat()){const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;group.add(mesh)}
+    try{
+      if(group.children.length){await renderer.compileAsync(group,camera,world);await renderer.compileAsync(group,camera,this.noDepth);await renderer.compileAsync(group,camera,this.group)}
+    }finally{group.clear();geometry.dispose()}
+  }
   feedback(): readonly PixelVisibilityFeedback[] { return this.#feedback.consume() }
   evidence() { return { samples:this.#samples,quads:this.#frame?.quads??[],queries:this.#feedback.snapshot() } }
   finishFrame(): void { const read=this.#afterSubmit; this.#afterSubmit=null; read?.() }
@@ -100,13 +113,7 @@ export class LegacyVisuals {
       const material = this.#materials[quad.material]?.[quad.frame]
       if (!material) throw new Error("Legacy visual material is not admitted")
       if (!mesh) {
-        const geometry = new THREE.BufferGeometry()
-        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(12),3).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("legacyColor", new THREE.BufferAttribute(new Float32Array(16),4).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("legacyHdr",new THREE.BufferAttribute(new Float32Array(4),1).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("legacyFog",new THREE.BufferAttribute(new Float32Array(4),1).setUsage(THREE.DynamicDrawUsage))
-        geometry.setAttribute("uv",new THREE.BufferAttribute(new Float32Array(8),2).setUsage(THREE.DynamicDrawUsage))
-        geometry.setIndex([0,2,1,0,3,2])
+        const geometry=quadGeometry()
         mesh = new THREE.Mesh(geometry,material); mesh.frustumCulled = false
         this.#meshes.push(mesh)
       }
