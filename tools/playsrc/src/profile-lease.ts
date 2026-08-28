@@ -14,12 +14,13 @@ export async function writeProfileLease(metadataPath: string, token: string, mil
       try { await fs.rename(temporary, destination); return }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 2) throw error
+        console.error(`[performance] transient owned lease rename failure; retry=${attempt + 1}/2`)
+        await fs.pause()
         const current = await fs.readFile(destination, "utf8").catch(error => {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
           throw error
         })
         if (current !== null && JSON.parse(current).token !== token) throw new Error("Shared development lease changed during publication")
-        await fs.pause()
       }
     }
   } finally { await fs.rm(temporary, { force: true }) }
