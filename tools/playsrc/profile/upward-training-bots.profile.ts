@@ -92,6 +92,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const sourceFingerprint = process.env.PLAYSRC_PROFILE_SOURCE_FINGERPRINT ?? await applicationBuildIdentity(applicationRoot)
   const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: applicationRoot, encoding: "utf8" })
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
+  if (deliveryMode) expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
   if (deliveryMode !== "ordinary") await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
