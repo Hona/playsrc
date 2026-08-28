@@ -19,7 +19,8 @@ import {
   type ToneOperator,
 } from "./color-output"
 import { applyParticleDepthState, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
-import { createWorldLightmapTextures, replaceWorldLightmapData } from "./world-lightmap-textures"
+import { borrowWorldLightmapTextures, createWorldLightmapTextures, replaceWorldLightmapData } from "./world-lightmap-textures"
+import { retainedSceneSource } from "./scene-resource-handoff"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
@@ -1132,7 +1133,7 @@ type SceneResources = {
   modelBaseSamples: Map<string, any>
   modelTemplateResources: Map<string, (THREE.BufferGeometry | THREE.Material)[]>
   modelPipelineKeys: Set<string>
-  borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[]
+  borrowedResources: (THREE.BufferGeometry | THREE.Material | THREE.Texture)[]
   modelLightingTextures: ReadonlyMap<string, ModelLightingTextures>
   modelLightingGraphs: ModelLightingGraphs
   modelPanelLightingGraphs: ModelLightingGraphs
@@ -2507,8 +2508,8 @@ class RendererOwner implements Renderer {
       this.#checkAbort(request.signal, ordinal)
 
       const prior = this.#active
-      staged.textureResidency.commitTransfers(staged.borrowedModelResources)
-      staged.borrowedModelResources.length = 0
+      staged.textureResidency.commitTransfers(staged.borrowedResources)
+      staged.borrowedResources.length = 0
       this.#clearDynamic(this.#effects)
       this.#dynamicModelInstances.clear()
       this.#dynamicBrushInstances.clear()
@@ -2858,14 +2859,11 @@ class RendererOwner implements Renderer {
     // An exact same-world/resource replacement still builds a fresh world and
     // resets every occurrence. Only immutable samples/graphs and pinned texture
     // objects cross the successful generation handoff, never old poses/entities.
-    const retained = request.resourceIdentity && HASH.test(request.resourceIdentity)
-      && this.#active?.disposables.deviceGeneration === this.#deviceGeneration
-      && this.#active?.payloadSha256 === payloadSha256 && this.#active.loadRequest.resourceIdentity === request.resourceIdentity
-      ? this.#active : undefined
+    const retained = retainedSceneSource(this.#active, this.#deviceGeneration, payloadSha256, request.resourceIdentity)
     const modelTemplates = new Map<string, THREE.Group>()
     const modelTemplateResources = new Map<string, (THREE.BufferGeometry | THREE.Material)[]>()
     const modelPipelineKeys = new Set<string>()
-    const borrowedModelResources: (THREE.BufferGeometry | THREE.Material)[] = []
+    const borrowedResources: (THREE.BufferGeometry | THREE.Material | THREE.Texture)[] = []
     const handoffProfile = browserFrameProfiler()
     if (handoffProfile) handoffProfile.counters.retainedModelTemplates = 0
     const modelBaseSamples = retained?.modelBaseSamples ?? new Map<string, any>()
@@ -2921,10 +2919,13 @@ class RendererOwner implements Renderer {
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
     if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
-    const lightmapTextures = createWorldLightmapTextures(lightmap, disposables)
+    const borrowedLightmap = borrowWorldLightmapTextures(lightmap, retained?.lightmapTextures)
+    const lightmapTextures = borrowedLightmap ?? createWorldLightmapTextures(lightmap, disposables)
+    if (borrowedLightmap) borrowedResources.push(borrowedLightmap[0])
     const lightmapProfile = (globalThis as typeof globalThis & { __playsrcProfile?: { lightmapStages?: object[] } }).__playsrcProfile
     if (lightmapProfile?.lightmapStages && lightmapProfile.lightmapStages.length < 256) lightmapProfile.lightmapStages.push({ at: performance.now(), generation: sceneGeneration,
       retainedSource: !!retained, samePlane: retained?.lightmapTextures[0].image.data === lightmap.flat,
+      borrowed: !!borrowedLightmap,
       bytes: lightmap.flat.byteLength * (lightmap.directional ? 4 : 1), textureIds: lightmapTextures.map(texture => texture!.id) })
     const exposureUniform = retained?.exposureUniform ?? TSL.uniform(
       this.configuration.lightingProfile === "hdr" ? this.#exposure.snapshot().current : 1,
@@ -3544,7 +3545,7 @@ class RendererOwner implements Renderer {
           if (handoffProfile) handoffProfile.counters.retainedModelTemplates += 1
           modelTemplateResources.set(model.logicalPath, resources)
           modelPipelineKeys.add(model.logicalPath)
-          borrowedModelResources.push(...resources)
+          borrowedResources.push(...resources)
           for (const material of model.materials) {
             const identity = material.logicalPath.toLowerCase(), textures = retained!.modelLightingTextures.get(identity)
             if (textures) modelLightingTextures.set(identity, { ...textures,
@@ -3982,7 +3983,7 @@ class RendererOwner implements Renderer {
       modelBaseSamples,
       modelTemplateResources,
       modelPipelineKeys,
-      borrowedModelResources,
+      borrowedResources,
       modelLightingTextures,
       modelLightingGraphs,
       modelPanelLightingGraphs,

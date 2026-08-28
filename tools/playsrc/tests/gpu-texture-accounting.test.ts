@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { installGpuTextureAccounting } from "../profile/gpu-texture-accounting"
 import { installBrowserFrameProfiler } from "../profile/browser-frame-profiler"
+import { installLightmapAllocationProbe } from "../profile/lightmap-allocation-probe"
 
 function fixture(serialized = false) {
   const calls = { create: 0, destroy: 0, write: 0 }
@@ -36,6 +37,28 @@ function reconcile(state: ReturnType<typeof installGpuTextureAccounting>) {
   }
   expect(state.created.textures - state.destroyedTextures).toBe(state.live.textures)
 }
+
+test("lightmap upload windows reconcile with the authoritative counters without owning textures", () => {
+  const { state, host, device, queue, fail, error } = fixture(true)
+  const probe = new Function(`return (${installLightmapAllocationProbe.toString()})`)()(host) as ReturnType<typeof installLightmapAllocationProbe>
+  const old = device.createTexture({ size: [8, 4, 4], dimension: "3d", format: "rgba32float", mipLevelCount: 4 })
+  const bytes = (128 + 16 + 2 + 1) * 16
+  queue.writeTexture({ texture: old }, new Uint8Array(bytes), {}, {})
+  const next = device.createTexture({ size: [8, 4, 4], dimension: "3d", format: "rgba32float", mipLevelCount: 4 })
+  expect(probe.peakBytes).toBe(bytes * 2)
+  fail("write"); expect(() => queue.writeTexture({ texture: next }, new Uint8Array(bytes), {}, {})).toThrow(error)
+  fail("destroy"); expect(() => old.destroy()).toThrow(error)
+  expect(probe.liveBytes).toBe(bytes * 2)
+  fail(null); queue.writeTexture({ texture: next }, new Uint8Array(bytes), {}, {})
+  old.destroy(); old.destroy()
+  const other = device.createTexture({ size: [4, 4], format: "bc1-rgba-unorm" })
+  queue.writeTexture({ texture: other }, new Uint8Array(8), {}, {})
+  expect(probe.liveBytes).toBe(state.live.formats.rgba32float!.knownBytes)
+  expect(probe.uploadBytes).toBe(state.writeTextureSourceBytes - 8)
+  expect(probe.events.map(event => event.kind)).toEqual(["create", "upload", "create", "upload", "destroy"])
+  next.destroy(); other.destroy(); reconcile(state)
+  expect(probe.liveBytes).toBe(0); expect(probe.createdBytes).toBe(probe.destroyedBytes)
+})
 
 test("serialized authoritative owner reconciles replacement, cancellation and repeated destruction without clearing cumulative totals", () => {
   const { state, device, queue, calls, host } = fixture(true)

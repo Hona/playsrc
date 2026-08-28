@@ -8,12 +8,14 @@ import { expect, test } from "./application-test"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
-import { loadLocalConfig } from "../src/config"
+import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { macosProcessMemorySampler } from "./process-memory-macos"
 import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { mapMemoryReply } from "./map-memory-reply"
 import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
+import { startupNativeReader } from "./native-startup"
+import { requireStartupNative } from "./static-startup-gate"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -76,6 +78,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const sampleSeconds = profileSampleSeconds()
   const sampleWindows = divideProfileWindow(sampleSeconds, targets.length)
   const output = path.join((await loadLocalConfig()).sourceCacheDir, "profiles", "map-memory")
+  const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
+  const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
+  const native = async () => { if (nativeReader) requireStartupNative(await nativeReader.read()) }
   const macosSampler = await macosProcessMemorySampler((await loadLocalConfig()).sourceCacheDir)
   await mkdir(output, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
@@ -120,6 +125,19 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     }
   }
   const sampler = setInterval(() => { void sample() }, 175)
+
+  if (lightmapAudit) await page.route(/\/packages\/presentation\/rendering\/src\/index\.ts(?:\?|$)/u, async route => {
+    const response = await route.fetch()
+    let source = await response.text()
+    if (process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1") {
+      const borrow = /const borrowedLightmap = borrowWorldLightmapTextures\(lightmap, retained\?\.lightmapTextures\);?/gu
+      if ([...source.matchAll(borrow)].length !== 1) throw new Error("Fresh-lightmap reference route differs from the checked owner")
+      source = source.replace(borrow, "const borrowedLightmap = undefined;")
+    }
+    const pattern = /(const lightmapTextures = [^\n]*createWorldLightmapTextures\(lightmap, disposables\);?)/gu
+    if ([...source.matchAll(pattern)].length !== 1) throw new Error("Lightmap registration route differs from the checked scene owner")
+    await route.fulfill({ response, body: source.replace(pattern, "$1\nglobalThis.__playsrcLightmapEvidence?.register(lightmapTextures);") })
+  })
 
   await page.route(/gameplay-worker\.ts(?:\?|$)/u, async (route) => {
     const response = await route.fetch()
@@ -369,6 +387,11 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     const root = page.locator("main")
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
+    await native()
+    if (lightmapAudit) await page.evaluate(async url => {
+      const module = await import(/* @vite-ignore */ url)
+      ;(globalThis as any).__playsrcLightmapEvidence = module.installLightmapUploadEvidence()
+    }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/lightmap-upload-evidence.ts`)
     let configuration = await (await page.request.get("/playsrc-config.json")).json() as {
       assetOrigin: string
       targets: { target: string; objects: { bsp: { byteLength: string }; resources: { sha256: string } } }[]
@@ -428,6 +451,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       })
       const started = performance.now()
       phase = "loading"
+      await native()
       await command.press("Enter")
       if (index === 1 && process.env.PROFILE_MEMORY_CANCEL_REPLACEMENT === "1") {
         await expect(root).toHaveAttribute("data-phase", "Replacing")
@@ -501,6 +525,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         await page.keyboard.press("Backquote")
       }
       phase = "ready"
+      await native()
       await sample()
       const heap = await pageCdp.send("Runtime.getHeapUsage")
       const revision = index + 1
@@ -560,6 +585,26 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       if (index === 1 && targets.length > 1) expect(observed.load.client.modelCacheHits).toBeGreaterThan(0)
       expect(Math.max(0, ...observed.worker.map((record: any) => record.memory?.resourceSections?.length ?? 0))).toBeLessThanOrEqual(2)
       const gpuAdmission = observed.owners.find((entry: any) => entry.phase === "gpu-admitted")
+      if (lightmapAudit) {
+        const allocation = observed.gpu.textureAllocation
+        for (const total of [allocation.live, allocation.created]) {
+          const formats = Object.values(total.formats) as { textures: number; knownBytes: number; unknownByteTextures: number }[]
+          expect(formats.reduce((sum, value) => sum + value.knownBytes, 0)).toBe(total.knownBytes)
+          expect(formats.reduce((sum, value) => sum + value.textures, 0)).toBe(total.textures)
+          expect(formats.reduce((sum, value) => sum + value.unknownByteTextures, 0)).toBe(total.unknownByteTextures)
+          expect(total.compressedBytes).toBeLessThanOrEqual(total.knownBytes)
+        }
+        expect(allocation.created.textures - allocation.destroyedTextures).toBe(allocation.live.textures)
+        expect(observed.gpu.lightmapAllocation.liveBytes).toBe(allocation.live.formats.rgba32float.knownBytes)
+        if (index === 1) {
+          const stages = observed.lightmapStages
+          expect(stages).toHaveLength(2)
+          expect(stages[1]).toMatchObject({ retainedSource: true, samePlane: true, borrowed: process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE !== "1" })
+          const bytes = stages[1].bytes
+          const multiplier = process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1" ? 2 : 1
+          expect(observed.gpu.lightmapAllocation).toMatchObject({ liveBytes: bytes, peakBytes: bytes * multiplier, createdBytes: bytes * multiplier, uploadBytes: bytes * multiplier })
+        }
+      }
       if (gpuAdmission) {
         const persisted = observed.owners.find((entry: any) => entry.phase === "cache-write-complete")
         expect(persisted).toBeDefined()
@@ -695,6 +740,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           modelSourceSectionBytes: Math.max(0, ...observed.worker.filter((record: any) => record.kind === "loaded").map((record: any) => Number(record.memory?.modelSourceSectionBytes ?? 0))),
         },
         gpu: observed.gpu,
+        lightmapStages: observed.lightmapStages,
         indexedDb: observed.indexedDb,
         requests: observed.requests,
         hashes: observed.hashes,
@@ -728,9 +774,30 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           .map((event) => ({ name: event.name, milliseconds: event.dur! / 1_000 })),
       })
       await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-partial.json`), `${JSON.stringify({ maps, timeline }, null, 2)}\n`)
+      await native()
       console.log(`PLAYSRC_MAP_MEMORY ${JSON.stringify({ target: identity, readyMilliseconds, peakResidentBytes: peak.residentBytes, wasmLinearBytes: (maps.at(-1) as any).memory.wasmLinearBytes })}`)
     }
     clearInterval(sampler)
+    let lightmapEvidence: unknown = null
+    if (lightmapAudit) {
+      await native()
+      try {
+        lightmapEvidence = await page.evaluate(async () => Promise.race([
+          (globalThis as any).__playsrcLightmapEvidence.capture(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Lightmap GPU correctness capture exceeded 15 seconds")), 15_000)),
+        ]))
+        for (const plane of (lightmapEvidence as any).planes) { expect(plane.mismatches).toBe(0); expect(plane.sha256).toBe(plane.canonicalSha256) }
+        for (const plane of (lightmapEvidence as any).parity.planes) { expect(plane.mismatches).toBe(0); expect(plane.sha256).toBe(plane.referenceSha256) }
+        expect((lightmapEvidence as any).referenceUploadBytes).toBeGreaterThanOrEqual((lightmapEvidence as any).planes[0].bytes)
+        expect((lightmapEvidence as any).parity.planes.find((plane: any) => plane.plane === "depth").channels[0]).toBeGreaterThan(1)
+        expect((lightmapEvidence as any).parity.planes.find((plane: any) => plane.plane === "color").channels.some((channel: number) => channel > 3)).toBe(true)
+        expect((lightmapEvidence as any).planes).toHaveLength(1)
+        expect((lightmapEvidence as any).parity.planes).toHaveLength(3)
+      } finally {
+        await page.evaluate(() => { (globalThis as any).__playsrcLightmapEvidence.dispose(); delete (globalThis as any).__playsrcLightmapEvidence })
+      }
+      await native()
+    }
     const sampled = await pageCdp.send("HeapProfiler.stopSampling")
     const allocations = new Map<string, number>()
     const visit = (node: any): void => {
@@ -789,6 +856,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       architecture: process.arch,
       gpu: system.gpu ?? null,
       maps,
+      lightmapEvidence,
+      lightmapReference: process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1",
+      nativeAdmission: nativeReader?.records,
       timeline,
       allocations: [...allocations].sort((left, right) => right[1] - left[1]).slice(0, 30)
         .map(([identity, bytes]) => ({ identity, bytes })),
@@ -817,6 +887,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     throw error
   } finally {
     clearInterval(sampler)
+    await nativeReader?.close()
     await browserCdp.detach().catch(() => {})
   }
 })
