@@ -7,7 +7,7 @@ import { profileNodeExecutable } from "./profile-browser"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 
 const started=Date.now(),config=await loadLocalConfig()
-requireWindowsProfileConsole()
+await requireWindowsProfileConsole()
 const lockPath=path.join(config.sourceCacheDir,"evidence/tf2-browser-performance/chromium-profile.lock")
 const lock=await acquireHeadedProfileLock(lockPath,"static-startup",15_000)
 try {

@@ -163,10 +163,10 @@ async function readOwner(metadataPath: string): Promise<OwnerMetadata | null> {
   }
 }
 
-async function verifyOwner(metadata: OwnerMetadata, identity: string, target: string): Promise<boolean> {
-  if (!isAlive(metadata.pid) || metadata.identity !== identity || metadata.target !== target || metadata.repository !== repositoryRoot) return false
+async function verifyOwner(metadata: OwnerMetadata, identity: string, target: string, root = repositoryRoot): Promise<boolean> {
+  if (!isAlive(metadata.pid) || metadata.identity !== identity || metadata.target !== target || path.resolve(metadata.repository) !== path.resolve(root)) return false
   try {
-    if (metadata.generatedIdentity !== await generatedProfileIdentity()) return false
+    if (metadata.generatedIdentity !== await generatedProfileIdentity(root)) return false
     return await ownerEndpointMatches(metadata)
   } catch { return false }
 }
@@ -245,11 +245,11 @@ export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, m
   }
 }
 
-async function prepareOwner(config: LocalConfig, identity: string, target: string, fresh: boolean, metadataPath: string, remaining: () => number): Promise<OwnerState> {
+async function prepareOwner(config: LocalConfig, identity: string, target: string, fresh: boolean, metadataPath: string, remaining: () => number, root = repositoryRoot): Promise<OwnerState> {
   const started = Date.now()
   const current = await readOwner(metadataPath)
   const lease = JSON.parse(await readFile(`${metadataPath}.lease`, "utf8").catch(() => "null"))
-  if (current && !fresh && lease?.token === current.token && lease.expiresAt > Date.now() + 1_000 && await verifyOwner(current, identity, target)) {
+  if (current && !fresh && lease?.token === current.token && lease.expiresAt > Date.now() + 1_000 && await verifyOwner(current, identity, target, root)) {
     await writeLease(metadataPath, current.token, MAX_RUN_MILLISECONDS)
     return Object.freeze({ metadata: current, reused: true, milliseconds: Date.now() - started })
   }
@@ -259,8 +259,8 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
   const logPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", `profile-owner-${token}.log`)
   console.error(`[performance] development build log=${logPath}`)
   const log = openSync(logPath, "a")
-  const child = spawn(process.execPath, [path.join(repositoryRoot, "tools", "playsrc", "src", "profile-owner.ts"), target], {
-    cwd: repositoryRoot,
+  const child = spawn(process.execPath, [path.join(root, "tools", "playsrc", "src", "profile-owner.ts"), target], {
+    cwd: root,
     env: { ...process.env, PLAYSRC_PROFILE_SOURCE_IDENTITY: identity, PLAYSRC_PROFILE_OWNER_TOKEN: token, PLAYSRC_PROFILE_OWNER_PATH: metadataPath },
     detached: process.platform !== "win32",
     windowsHide: true,
@@ -276,7 +276,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
       throw new Error(`Shared headed profile development owner exited before readiness:\n${logs.slice(-6_000)}`)
     }
     const metadata = await readOwner(metadataPath)
-    if (metadata?.token === token && await verifyOwner(metadata, identity, target)) {
+    if (metadata?.token === token && await verifyOwner(metadata, identity, target, root)) {
       return Object.freeze({ metadata, reused: false, milliseconds: Date.now() - started })
     }
     await Bun.sleep(100)
@@ -288,11 +288,11 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
   throw new Error("Shared headed profile development owner exceeded the bounded profile runtime")
 }
 
-export async function runHeadedProfile(arguments_: readonly string[]): Promise<number> {
+export async function runHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> {
   const started = Date.now()
   const { profile, fresh, freshBrowser, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()
-  const config = await loadLocalConfig()
+  const config = await loadLocalConfig(root)
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
   const runId = `${profile}-${new Date(started).toISOString().replaceAll(":", "-")}-${randomUUID()}`
   const runDirectory = path.join(evidence, "runs", runId)
@@ -344,7 +344,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   let browserMilliseconds = 0
   let browserStarted: number | undefined
   let playwrightPhases: unknown = null
-  let windowsConsole: ReturnType<typeof requireWindowsProfileConsole> = null
+  let windowsConsole: Awaited<ReturnType<typeof requireWindowsProfileConsole>> = null
   const timingPath = path.join(runDirectory, "playwright-phases.json")
   const terminate = (signal: NodeJS.Signals) => {
     if (child?.pid && !childExited) {
@@ -358,7 +358,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   const deadline = setTimeout(() => { timedOut = true; cancel() }, remaining())
   const hardDeadline = setTimeout(() => terminate("SIGKILL"), Math.max(1, MAX_RUN_MILLISECONDS - (Date.now() - started)))
   try {
-    windowsConsole = requireWindowsProfileConsole(remaining())
+    windowsConsole = await requireWindowsProfileConsole(remaining())
     // Preserve the full release matrix's earlier admission deadline.
     // Queue only while the selected workflow can still fit. Admission must not
     // spend its startup/sample/retention reservation waiting for another owner.
@@ -372,15 +372,15 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     })
     progress = setInterval(() => console.error(`[performance] ${profile} phase=${currentPhase} total=${Date.now() - started}ms queued=${lock!.milliseconds}ms remaining=${remaining()}ms`), 10_000)
     const identityStarted = Date.now()
-    identity = await measure("source-identity", () => applicationBuildIdentity())
-    configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target))
+    identity = await measure("source-identity", () => applicationBuildIdentity(root))
+    configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target, root))
     sourceIdentityMilliseconds = Date.now() - identityStarted
     const ownerIdentity = createHash("sha256").update(identity).update(configuredIdentity).update(process.env.PLAYSRC_DEV_PORT ?? "4173").digest("hex")
     if (!process.env.PLAYSRC_PROFILE_ORIGIN) {
-      owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining))
-      generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity())
+      owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining, root))
+      generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity(root))
     }
-    if (process.platform === "win32") windowsConsole = requireWindowsProfileConsole(remaining())
+    if (process.platform === "win32") windowsConsole = await requireWindowsProfileConsole(remaining())
     checkBrowserBudget()
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const began = Date.now()
@@ -406,7 +406,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? profileNodeExecutable(),
       path.join(repositoryRoot, "node_modules", "@playwright", "test", "cli.js"),
       "test",
-      `--config=${plan.config}`,
+      `--config=${path.join(repositoryRoot, plan.config)}`,
       "--headed",
       ...(playwright.some((value) => value === "--output" || value.startsWith("--output="))
         ? []
@@ -415,7 +415,7 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
       ...playwright,
     ]
     child = spawn(command[0]!, command.slice(1), {
-      cwd: repositoryRoot,
+      cwd: root,
       detached: process.platform !== "win32",
       windowsHide: true,
       env: {
@@ -443,8 +443,8 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
     }
     cancellation.signal.throwIfAborted()
     const verificationStarted = Date.now()
-    if (identity !== await applicationBuildIdentity() || configuredIdentity !== await configuredProfileIdentity(config, target)
-      || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity()) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
+    if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
+      || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity(root)) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
     sourceVerificationMilliseconds = Date.now() - verificationStarted
     outcome = exitCode === 0 ? "passed" : "failed"
   } catch (error) {
@@ -487,7 +487,8 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
           runId,
           profile,
           command: ["bun", "tools/playsrc/src/profile-runner.ts", ...arguments_],
-          repository: repositoryRoot,
+          repository: root,
+          harnessRepository: repositoryRoot,
           sourceFingerprint: identity,
           configuredIdentity,
           generatedIdentity,
@@ -530,7 +531,10 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
 
 if (import.meta.main) {
   try {
-    process.exitCode = await runHeadedProfile(process.argv.slice(2))
+    const args = process.argv.slice(2)
+    const root = args[0] === "--application-root" ? args.splice(0, 2)[1] : repositoryRoot
+    if (!root || !path.isAbsolute(root)) throw new Error("Application checkout must be an absolute path")
+    process.exitCode = await runHeadedProfile(args, root)
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1

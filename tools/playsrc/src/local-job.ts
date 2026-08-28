@@ -6,7 +6,6 @@ import { finished } from "node:stream/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
-import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 import { parseLocalPreparationStage } from "./prepare-local-stage"
 
@@ -190,11 +189,13 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
   await mkdir(run)
   await phase("reserve-ports")
   const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
-  const command = [process.execPath, ...plan.command]
+  const command = plan.interactive
+    ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", checkout, ...plan.command.slice(1)]
+    : [process.execPath, ...plan.command]
   let failure: string | null = null
   try {
-    await phase("console-admission")
-    if (plan.interactive) requireWindowsProfileConsole()
+    // The shared profiler owns physical admission and its deadline. Do not
+    // block this supervisor in a second synchronous console query.
     await phase("command")
     await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
     await phase("verify-source")

@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import os from "node:os"
 
 // Read-only WTSInfoEx prefix. Its union is eight-byte aligned because level 1
@@ -74,24 +75,25 @@ export function assertWindowsIdle(state: WindowsDesktopState): void {
   if (!Number.isSafeInteger(state.idleMilliseconds) || state.idleMilliseconds < 2_000 || state.idleMilliseconds > 0xffff_ffff) throw new Error("Windows physical console requires two seconds of genuine idle before profiling")
 }
 
-export function queryWindowsDesktop(timeout = 10_000): WindowsDesktopState {
+export async function queryWindowsDesktop(timeout = 10_000): Promise<WindowsDesktopState> {
   if (process.platform !== "win32") throw new Error("Windows desktop evidence must be collected on the Windows host")
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 10_000) throw new Error("Windows desktop query deadline is invalid")
-  return parseWindowsDesktopState(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(WINDOWS_DESKTOP_QUERY, "utf16le").toString("base64")], { encoding: "utf8", timeout, maxBuffer: 64 * 1024, windowsHide: true }))
+  const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(WINDOWS_DESKTOP_QUERY, "utf16le").toString("base64")], { encoding: "utf8", timeout, maxBuffer: 64 * 1024, windowsHide: true })
+  return parseWindowsDesktopState(stdout)
 }
 
-export function requireWindowsProfileConsole(remaining = 10_000): WindowsDesktopState | null {
+export async function requireWindowsProfileConsole(remaining = 10_000): Promise<WindowsDesktopState | null> {
   if (process.platform !== "win32") return null
   const deadline = Date.now() + Math.min(10_000, remaining)
   let state: WindowsDesktopState
   do {
-    state = queryWindowsDesktop(Math.max(1, deadline - Date.now()))
+    state = await queryWindowsDesktop(Math.max(1, deadline - Date.now()))
     assertWindowsConsole(state, os.release())
     if (state.idleMilliseconds >= 2_000 || Date.now() + 100 >= deadline) break
     // Only wait for actual GetLastInputInfo aging; never send input, reset its
     // clock, or suppress the user's events to manufacture admission.
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    await new Promise(resolve => setTimeout(resolve, 100))
   } while (Date.now() < deadline)
   assertWindowsIdle(state)
   return state
@@ -99,7 +101,7 @@ export function requireWindowsProfileConsole(remaining = 10_000): WindowsDesktop
 
 if (import.meta.main) {
   try {
-    const state = queryWindowsDesktop()
+    const state = await queryWindowsDesktop()
     let blocker: string | null = null
     try { assertWindowsConsole(state, os.release()) } catch (error) { blocker = String(error) }
     console.log(JSON.stringify({ state, release: os.release(), blocker }))
