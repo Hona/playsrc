@@ -12,6 +12,7 @@ pub struct View {
     pub up: [f32; 3],
     pub world_to_clip: [[f32; 4]; 4],
     pub height: u32,
+    pub far:f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,7 +44,7 @@ impl View {
             [a[0], a[1], a[2], offset - (a[0]*origin[0]+a[1]*origin[1]+a[2]*origin[2])]
         };
         let sy = 1.0 / (fov.to_radians() * 0.5).tan();
-        Self { origin, forward, right, up, height, world_to_clip: [row(right,sy/aspect,0.0),row(up,sy,0.0),row(forward,far/(far-near),-near*far/(far-near)),row(forward,1.0,0.0)] }
+        Self { origin, forward, right, up, height,far, world_to_clip: [row(right,sy/aspect,0.0),row(up,sy,0.0),row(forward,far/(far-near),-near*far/(far-near)),row(forward,1.0,0.0)] }
     }
     fn clip(&self, point: [f32; 3]) -> [f32; 4] {
         self.world_to_clip.map(|row| row[0] * point[0] + row[1] * point[1] + row[2] * point[2] + row[3])
@@ -144,7 +145,7 @@ mod tests {
 
     fn view() -> View {
         View { origin: [0.0; 3], forward: [1.0, 0.0, 0.0], right: [0.0, -1.0, 0.0], up: [0.0, 0.0, 1.0],
-            world_to_clip: [[0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, -1.0], [1.0, 0.0, 0.0, 0.0]], height: 1000 }
+            world_to_clip: [[0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, -1.0], [1.0, 0.0, 0.0, 0.0]], height: 1000,far:30000.0 }
     }
 
     #[test]

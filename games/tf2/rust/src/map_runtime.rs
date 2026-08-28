@@ -412,6 +412,9 @@ pub struct MapRuntime {
     particle_systems: playsrc_entity::particle_system::Systems,
     smokestacks: playsrc_entity::smokestack::Systems,
     sprites: playsrc_entity::sprite::Sprites,
+    suns:playsrc_entity::sun::Suns,
+    spotlights:Vec<playsrc_entity::spotlight::Beam>,
+    spotlight_ends:std::sync::Arc<BTreeMap<u32,[f32;3]>>,
     sprite_models: std::sync::Arc<BTreeMap<Vec<u8>,u32>>,
     game_filters: BTreeMap<Vec<u8>, GameFilter>,
     objectives: Option<crate::ctf::World>,
@@ -656,6 +659,8 @@ impl MapRuntime {
         } else { graph };
         config.external_classes.extend(playsrc_entity::soundscape::bindings());
         config.external_classes.extend(playsrc_entity::sprite::bindings());
+        config.external_classes.push(playsrc_entity::sun::binding());
+        config.external_classes.extend(playsrc_entity::spotlight::bindings());
         let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
             for (identity, name) in [(koth.blue_timer, "zz_blue_koth_timer"), (koth.red_timer, "zz_red_koth_timer")] {
@@ -961,6 +966,7 @@ impl MapRuntime {
         });
         let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.as_ref().clone())).collect()));
         let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
+        let suns=playsrc_entity::sun::Suns::from_world(&world).map_err(|source|invalid(source as usize))?;
         let mut smokestacks = playsrc_entity::smokestack::Systems::default();
         smokestacks.synchronize(&world).map_err(|_| invalid(0))?;
         Ok(Self {
@@ -969,6 +975,8 @@ impl MapRuntime {
             soundscapes: playsrc_entity::soundscape::Systems::default(),
             soundscape_player: playsrc_entity::soundscape::Player::default(),
             sprites: playsrc_entity::sprite::Sprites::default(),
+            suns,
+            spotlights:Vec::new(),spotlight_ends:std::sync::Arc::default(),
             sprite_models: std::sync::Arc::default(),
             world,
             player,
@@ -1460,6 +1468,19 @@ impl MapRuntime {
     }
 
     pub fn sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.sprites.presentation(&self.world,source) }
+    pub fn sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.suns.get(&self.world,source)}
+    pub fn install_spotlights(&mut self,mut trace:impl FnMut([f32;3],[f32;3])->Result<[f32;3],()>)->Result<MapPhase,RuntimeFailure>{
+        let mut ends=BTreeMap::new();
+        let (seeds,commands)=playsrc_entity::spotlight::prepare(&self.world,|source,start,end,ignore|{
+            let end=if ignore{end}else{trace(start,end)?};ends.insert(source,end);Ok(end)
+        }).map_err(|source|invalid(source as usize))?;
+        let batch=self.world.phase(self.world.current_tick(),&commands)?;
+        self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
+        self.spotlight_ends=std::sync::Arc::new(ends);self.consume(batch)
+    }
+    pub fn spotlight_state(&self,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{
+        playsrc_entity::spotlight::presentation(&self.world,self.spotlights.iter().find(|beam|beam.source==source)?)
+    }
 
     pub fn round_configuration(&self) -> crate::round::Configuration {
         self.round_configuration.clone()
@@ -1550,8 +1571,12 @@ impl MapRuntime {
         self.prop_animations.clear();
         self.payload_watchers=crate::payload::Watcher::from_entities(&definitions);
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
-        self.sprites=playsrc_entity::sprite::Sprites::from_world(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied())
-            .map_err(|source|invalid(source as usize))?;
+        self.sprites.reconcile(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied()).map_err(|source|invalid(source as usize))?;
+        self.suns.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
+        let (seeds,commands)=playsrc_entity::spotlight::prepare(&self.world,|source,_,_,_|self.spotlight_ends.get(&source).copied().ok_or(())).map_err(|source|invalid(source as usize))?;
+        let beams=self.world.phase(tick,&commands)?;
+        self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
+        result.append(self.consume(beams)?);
         if let Some(models) = self.restart_models.clone() { self.install_studio_models(&models)?; }
         result.append(self.consume(spawned)?);
         Ok(result)
@@ -1798,8 +1823,9 @@ impl MapRuntime {
                 pickup.respawn_tick = None;
             }
         }
-        let output=self.consume(batch).map_err(MapError::from)?;
-        self.sprites.advance(input.tick as f32*self.tick_interval);
+        let mut output=self.consume(batch).map_err(MapError::from)?;
+        let commands=self.sprites.advance(&self.world,input.tick as f32*self.tick_interval);
+        if !commands.is_empty() {let batch=self.world.phase(input.tick,&commands)?;output.append(self.consume(batch)?);}
         Ok(output)
     }
 
@@ -2390,11 +2416,20 @@ impl MapRuntime {
                         }
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
-                        if let Some(color)=self.sprites.input(&self.world,entity,&input,&value,self.world.current_tick() as f32*self.tick_interval) {
-                            let color_batch=self.world.phase(self.world.current_tick(),&[WorldCommand::Input(InputRecord{
-                                target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:Variant::Color(color),activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence,
-                            })])?;
-                            self.next_producer_sequence+=1;output.append(self.consume(color_batch)?);
+                        if input.eq_ignore_ascii_case(b"Width")&&let Some(beam)=self.spotlights.iter_mut().find(|beam|beam.entity==entity)&&let Some(width)=value.as_float(){beam.width=width.min(102.3);beam.end_width=beam.width;}
+                        if let Some(color)=self.suns.input(&self.world,entity,&input,&value){
+                            let changed=self.world.phase(self.world.current_tick(),&[WorldCommand::Input(InputRecord{target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:color,activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence})])?;
+                            self.next_producer_sequence+=1;output.append(self.consume(changed)?);
+                        }
+                        if let Some(change)=self.sprites.input(&self.world,entity,&input,&value,self.world.current_tick() as f32*self.tick_interval) {
+                            let command=match change {
+                                playsrc_entity::sprite::Change::Effects(effects)=>WorldCommand::SetRenderEffects{entity,effects},
+                                playsrc_entity::sprite::Change::Color(color)=>WorldCommand::Input(InputRecord{
+                                    target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:Variant::Color(color),activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence,
+                                }),
+                            };
+                            let changed=self.world.phase(self.world.current_tick(),&[command])?;
+                            self.next_producer_sequence+=1;output.append(self.consume(changed)?);
                         }
                         let mut point_events = Vec::new();
                         if input.eq_ignore_ascii_case(b"RoundActivate")

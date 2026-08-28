@@ -20,6 +20,17 @@ pub struct References {
     pub smoke_series: BTreeSet<String>,
 }
 
+pub fn sun_materials(entity:&Entity)->Result<[String;2],std::str::Utf8Error>{
+    let mut result=[String::new(),String::new()];
+    for (index,key) in [b"material".as_slice(),b"overlaymaterial"].into_iter().enumerate(){
+        let mut model=text(entity,key)?.to_owned();
+        if model.is_empty(){model="sprites/light_glow02_add_noz.vmt".into();}
+        else if !model.rsplit(['/', '\\']).next().unwrap_or_default().contains('.') {model.push_str(".vmt");}
+        result[index]=sprite_material(&model).expect("nonempty sun material");
+    }
+    Ok(result)
+}
+
 pub fn from_graph(graph: &Graph) -> Result<References, std::str::Utf8Error> {
     from_entities(&graph.entities)
 }
@@ -35,12 +46,7 @@ pub fn from_entities<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> Resu
         } else if class.eq_ignore_ascii_case(b"point_spotlight") {
             output.materials.extend(["materials/sprites/light_glow03.vmt".into(), "materials/sprites/glow_test02.vmt".into()]);
         } else if class.eq_ignore_ascii_case(b"env_sun") {
-            for key in [b"material".as_slice(), b"overlaymaterial"] {
-                let mut model = text(entity, key)?.to_owned();
-                if model.is_empty() { model = "sprites/light_glow02_add_noz.vmt".into(); }
-                else if !model.to_ascii_lowercase().ends_with(".vmt") { model.push_str(".vmt"); }
-                if let Some(path) = sprite_material(&model) { output.materials.insert(path); }
-            }
+            output.materials.extend(sun_materials(entity)?);
         } else if class.eq_ignore_ascii_case(b"env_smokestack") {
             let mut model = text(entity, b"SmokeMaterial")?.to_owned();
             let explicit = !model.is_empty();

@@ -5,7 +5,7 @@ import { combatPoseSelection } from "./combat-pose-selection"
 import { createSourceAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld, type PcmResource } from "@playsrc/audio"
 import { tf2AudioModuleUrl } from "@playsrc/game-tf2-browser/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
-import { encodeLegacyVisualQuery,decodeLegacyVisualViews } from "@playsrc/game-tf2-browser/legacy-visuals"
+import { encodeLegacyVisualQuery,decodeLegacyVisualViews,type LegacyVisualView } from "@playsrc/game-tf2-browser/legacy-visuals"
 import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
@@ -4782,10 +4782,20 @@ export class Tf2Application {
       const started = performance.now()
       this.#wasmCalls.particles++
       const hasVisuals=this.#artifacts.legacyVisualTextures.length>0
-      const visualPayload=hasVisuals?encodeLegacyVisualQuery([
-        {...camera,aspectRatio,presentationTimeSeconds,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(false)},
-        ...(sky3d&&skyController?[{...sky3d.camera,aspectRatio,presentationTimeSeconds,visibilityPosition:skyController.origin,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(true)}]:[]),
-      ]):new Uint8Array()
+      const visualViews:LegacyVisualView[]=[]
+      if(hasVisuals){
+        if(sky3d&&skyController)visualViews.push({...sky3d.camera,kind:1,aspectRatio,presentationTimeSeconds,visibilityPosition:skyController.origin,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(1)})
+        if(this.#artifacts.legacyVisualTextures.some(texture=>texture.program.worldRenderable)){
+          for(const pass of visibility.water.passes){
+            if(!pass.drawEntities)continue
+            const kind=pass.kind==="reflection"?2:pass.kind==="refraction"?3:pass.kind==="intersection"?4:0
+            visualViews.push({...camera,kind,position:pass.origin,yawDegrees:pass.angles[1],pitchDegrees:pass.angles[0],aspectRatio,presentationTimeSeconds,viewportHeight:renderer.legacyVisualViewport(kind).height,pixelVisibility:renderer.pixelVisibilityFeedback(kind)})
+          }
+        }
+        if(!visualViews.some(view=>view.kind===0))visualViews.push({...camera,kind:0,aspectRatio,presentationTimeSeconds,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(0)})
+      }
+      const visualPayload=hasVisuals?encodeLegacyVisualQuery(visualViews):new Uint8Array()
+      if(profile?.legacyVisualProbe)profile.legacyVisualViews=visualViews
       const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio },visualPayload))
       if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer || this.#classSelection?.state().visible || this.#teamSelection?.state().visible
         || !currentPresentedCamera(presentedCamera,{generation:this.#generation,viewportRevision:this.#presentationViewport?.revision??-1,viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision})) return

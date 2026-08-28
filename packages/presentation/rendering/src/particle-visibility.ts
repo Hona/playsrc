@@ -66,14 +66,14 @@ export class ParticleVisibilityQueries {
     const color: GPUTexture = context.renderTarget ? backend.get(context.textures[0]).texture : backend.context.getCurrentTexture()
     const selected = [...proxies.values()].filter(proxy => proxy.clipFraction > 0)
     if (!selected.length) return
-    const matrix = new THREE.Matrix4().multiplyMatrices(view.camera.projectionMatrix, view.camera.matrixWorldInverse)
-    const point = new THREE.Vector4(), vertices = new Float32Array(selected.length * 20)
+    const matrices=new Float32Array(32);matrices.set(view.camera.matrixWorldInverse.elements);matrices.set(view.camera.projectionMatrix.elements,16)
+    const vertices = new Float32Array(selected.length * 20)
     for (let index = 0; index < selected.length; index++) for (let vertex = 0; vertex < 5; vertex++) {
       const source = selected[index]!.vertices, at = vertex * 3
-      point.set(source[at]!, source[at + 1]!, source[at + 2]!, 1).applyMatrix4(matrix).toArray(vertices, index * 20 + vertex * 4)
+      vertices.set([source[at]!,source[at+1]!,source[at+2]!,1],index*20+vertex*4)
     }
     state.currentPass.end()
-    const read = counter.issue(state.encoder, depth, vertices, color.format, attachment)
+    const read = counter.issue(state.encoder, depth, vertices, matrices, color.format, {...attachment,loadOp:"load",storeOp:"store"})
     for (const color of state.descriptor.colorAttachments) color.loadOp = "load"
     state.descriptor.depthStencilAttachment.depthLoadOp = "load"
     if (context.stencil) state.descriptor.depthStencilAttachment.stencilLoadOp = "load"

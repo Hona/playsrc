@@ -42,8 +42,8 @@ import { WebGpuFramePresentation, type FramePresentationBackend } from "./webgpu
 import { WebGpuUploadBatch, type UploadBatchBackend } from "./webgpu-upload-batch"
 import { requestCoreWebGpuDevice } from "./webgpu-core-device"
 import { prepareReachablePipelineVisibility } from "./reachable-pipeline-visibility"
-import { LegacyVisuals, type LegacyVisualFrame, type PixelVisibilityFeedback } from "./legacy-visuals"
-export type { LegacyVisualFrame, PixelVisibilityFeedback } from "./legacy-visuals"
+import { LegacyVisuals,legacyFog, type LegacyVisualFrame, type PixelVisibilityFeedback,type LegacyVisualProgram,type LegacyVisualFrameSet,type LegacyViewKind } from "./legacy-visuals"
+export type { LegacyVisualFrame, PixelVisibilityFeedback,LegacyVisualProgram,LegacyVisualFrameSet,LegacyViewKind } from "./legacy-visuals"
 import { withBoundedPipelineCompilation } from "./bounded-pipeline-compilation"
 import { installWebGpuBufferNames, type BufferNamingBackend } from "./webgpu-buffer-names"
 import { RetainedLeafVisibility, RetainedVisibilityError, RetainedWorldVisibility } from "./retained-visibility"
@@ -422,7 +422,7 @@ export type Frame = Readonly<{
   effects: readonly Effect[]
   shadows?: readonly ShadowInput[]
   particles?: readonly ParticleItem[]
-  legacyVisuals?:readonly LegacyVisualFrame[]
+  legacyVisuals?:LegacyVisualFrameSet
   combatDecals?: readonly Readonly<{
     identity: number
     face: number
@@ -715,7 +715,7 @@ export type MapLoadRequest = Readonly<{
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null; additiveSprite?: AdditiveSpriteInput | null }>)[]
-  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string }>)[]
+  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string;program:LegacyVisualProgram }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -1153,7 +1153,7 @@ type SceneResources = {
   particleTextures: Map<string, THREE.Texture>
   particleBatchMaterials: Map<string, THREE.MeshBasicNodeMaterial>
   particleDepth: SourceParticleDepth
-  legacyVisuals: readonly [LegacyVisuals, LegacyVisuals] | null
+  legacyVisuals: readonly LegacyVisuals[] | null
   particlePipelineMeshes: THREE.Group
   materialStates: ReadonlyMap<string, MaterialStateInput>
   disposables: OwnedResourceGeneration
@@ -2713,7 +2713,11 @@ class RendererOwner implements Renderer {
   requestParticleDepthEvidence(): void { this.#active?.particleDepth.requestEvidence() }
   takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[] { return this.#particleVisibility.takeSamples() }
   captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]> { return this.#particleVisibility.evidence() }
-  pixelVisibilityFeedback(sky = false): readonly PixelVisibilityFeedback[] { return this.#active?.legacyVisuals?.[Number(sky)]?.feedback() ?? [] }
+  pixelVisibilityFeedback(view:LegacyViewKind=0):readonly PixelVisibilityFeedback[] {return this.#active?.legacyVisuals?.[view]?.feedback()??[]}
+  legacyVisualViewport(view:LegacyViewKind):Readonly<{width:number;height:number}>{
+    if(view===2||view===3){const target=view===2?this.#active?.reflectionTarget:this.#active?.refractionTarget;if(!target)throw new RenderingError("MissingInput","Legacy water view target is unavailable");return {width:target.width,height:target.height}}
+    const size=this.#backend.getDrawingBufferSize(new THREE.Vector2());return {width:size.x,height:size.y}
+  }
   captureLegacyVisualEvidence() { return this.#active?.legacyVisuals?.map(view=>view.evidence()) ?? [] }
   readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
 
@@ -2872,7 +2876,7 @@ class RendererOwner implements Renderer {
     const materialStates = new Map(request.materialStates ?? [])
     const disposables = new OwnedResourceGeneration(this.#deviceGeneration, sceneGeneration)
     const particleDepth = disposables.add(new SourceParticleDepth(this.#backend.backend))
-    let legacyVisuals: readonly [LegacyVisuals, LegacyVisuals] | null = null
+    let legacyVisuals: readonly LegacyVisuals[] | null = null
     const attributeBackend = this.#backend.backend as unknown as ConstructorParameters<typeof PersistentWorldDraws>[1]
     const attributes = (this.#backend as unknown as {
       _geometries: { attributes: { delete(attribute: THREE.BufferAttribute): unknown } }
@@ -3816,17 +3820,27 @@ class RendererOwner implements Renderer {
       }
       this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes, exposureUniform, map.lighting.profile === "hdr")
       if (request.legacyVisualTextures?.length) {
+        const textures=new Map<string,THREE.Texture>()
         const materials = request.legacyVisualTextures.map(input => {
           const state = materialStates.get(input.material.toLowerCase())
           if (!state) throw new RenderingError("MissingInput", `Legacy visual material state ${input.material} is unavailable`)
-          const texture = disposables.add(textureFromAuthored(input, THREE.SRGBColorSpace, 0, this.textureQuality))
-          const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
-          const sampled=TSL.texture(texture,TSL.uv()), color=TSL.attribute("legacyColor","vec4")
-          material.colorNode=sourceFragmentColor(TSL.vec4(sampled.rgb.mul(color.rgb).mul(TSL.attribute("legacyHdr","float")).mul(exposureUniform),sampled.a.mul(color.a)),state,waterFogUniforms)
-          material.toneMapped=false; material.name=`legacy:${input.material}`
-          return material
+          return Array.from({length:input.frameCount},(_,frame)=>{
+            const program=input.program,key=`${input.sourceSha256}:${frame}:${program.srgb}`
+            let texture=textures.get(key)
+            if(!texture){texture=disposables.add(textureFromAuthored(input,program.srgb?THREE.SRGBColorSpace:THREE.NoColorSpace,frame,this.textureQuality));textures.set(key,texture)}
+            const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
+            const sampled=TSL.texture(texture,TSL.uv()), raw=TSL.attribute("legacyColor","vec4"), color=program.vertexGamma?raw.pow(2.2):raw
+            const rgb=program.vertexRgb?sampled.rgb.mul(color.rgb):sampled.rgb
+            const alpha=program.vertexAlpha?sampled.a.mul(color.a):sampled.a
+            const hdr=this.configuration.lightingProfile==="hdr"?TSL.attribute("legacyHdr","float"):TSL.float(1)
+            const exposure=program.gammaExposure?exposureUniform.pow(1/2.2):exposureUniform
+            const value=TSL.vec4(rgb.mul(TSL.vec3(...program.modulation.slice(0,3))).mul(hdr).mul(exposure),alpha.mul(program.modulation[3]))
+            material.colorNode=legacyFog(sourceFragmentColor(value,state),state.fog,this.#viewFogUniforms,waterFogUniforms)
+            material.fog=false;material.toneMapped=false;material.name=`legacy:${input.material}:${frame}`
+            return material
+          })
         })
-        legacyVisuals = [disposables.add(new LegacyVisuals(this.#backend.backend,materials)),disposables.add(new LegacyVisuals(this.#backend.backend,materials))]
+        legacyVisuals=Array.from({length:5},(_,index)=>{const view=disposables.add(new LegacyVisuals(this.#backend.backend,materials));view.world.visible=index===0;group.add(view.world);return view})
       }
     } catch (error) {
       const failed = {
@@ -4381,10 +4395,11 @@ class RendererOwner implements Renderer {
       let worldMilliseconds=0,viewModelMilliseconds=0
       if (!this.#suspended) {
         this.#framePresentation?.begin()
+        if(this.#active?.legacyVisuals&&frame.legacyVisuals){for(const [index,view] of Object.entries(frame.legacyVisuals))this.#active.legacyVisuals[Number(index)]?.update(view)}
         const worldStarted=performance.now()
         sky3dPass=this.#renderSky3dPass(frame)
         const waterResult=this.#renderWaterPasses(frame,sky3dPass!==undefined)
-        this.#renderLegacyVisuals(frame.legacyVisuals?.[0], false)
+        this.#renderLegacyVisuals(frame.legacyVisuals?.[0], 0)
         worldMilliseconds=performance.now()-worldStarted
         waterPasses = waterResult.passes
         waterPassTimings = waterResult.timings
@@ -4960,6 +4975,7 @@ class RendererOwner implements Renderer {
       scene.skyStaticProps.visible = true
       scene.mainModelOccurrences.visible = false
       scene.projectedMarkGroup.visible = false
+      if(scene.legacyVisuals){for(let i=0;i<5;i++)scene.legacyVisuals[i]!.world.visible=i===1}
       for (const water of scene.waterMeshes) water.mesh.visible = false
       this.#effects.visible = false
       this.#particles.visible = false
@@ -4968,7 +4984,8 @@ class RendererOwner implements Renderer {
       this.#setSceneFog(this.#fog(sky.fog))
       this.#backend.autoClear = true
       this.#drawPass("sky3d", this.#scene, this.#camera)
-      this.#renderLegacyVisuals(frame.legacyVisuals?.[1], true)
+      this.#renderLegacyNoDepth(frame.legacyVisuals?.[1],1)
+      this.#renderLegacyVisuals(frame.legacyVisuals?.[1],1)
       rendered = true
       this.#resetDepth("sky-depth-reset")
     } finally {
@@ -4983,6 +5000,7 @@ class RendererOwner implements Renderer {
       scene.skyStaticProps.visible = skyVisible
       scene.mainModelOccurrences.visible = modelOccurrencesVisible
       scene.projectedMarkGroup.visible = marksVisible
+      if(scene.legacyVisuals){for(let i=0;i<5;i++)scene.legacyVisuals[i]!.world.visible=i===0}
       for (let index = 0; index < scene.waterMeshes.length; index += 1) {
         scene.waterMeshes[index]!.mesh.visible = waterVisibility[index] ?? false
       }
@@ -5007,17 +5025,27 @@ class RendererOwner implements Renderer {
     })
   }
 
-  #renderLegacyVisuals(frame: LegacyVisualFrame | undefined, sky: boolean): void {
-    const owner=this.#active?.legacyVisuals?.[Number(sky)]
+  #renderLegacyVisuals(frame: LegacyVisualFrame | undefined, view:LegacyViewKind): void {
+    const owner=this.#active?.legacyVisuals?.[view]
     if (!owner || !frame) return
-    owner.update(frame)
-    owner.capture()
+    owner.capture(this.#camera)
     if (!frame.quads.length) return
     const autoClear=this.#backend.autoClear
-    owner.group.fog=this.#scene.fog
+    // CGlowOverlay is drawn after the world view disables fog.
+    owner.group.fog=null
     this.#backend.autoClear=false
-    try { this.#drawPass(sky?"sky-legacy-overlays":"legacy-overlays",owner.group,this.#camera) }
+    try {
+      if(frame.quads.some(quad=>quad.layer===2))this.#drawPass(view===1?"sky-legacy-overlays":"legacy-overlays",owner.group,this.#camera)
+    }
     finally { this.#backend.autoClear=autoClear }
+  }
+
+  #renderLegacyNoDepth(frame:LegacyVisualFrame|undefined,view:LegacyViewKind):void {
+    const owner=this.#active?.legacyVisuals?.[view]
+    if(!owner||!frame?.quads.some(quad=>quad.layer===1))return
+    const clear=this.#backend.autoClear;this.#backend.autoClear=false
+    owner.noDepthClip.enabled=this.#waterClipping.enabled;owner.noDepthClip.clippingPlanes=this.#waterClipping.clippingPlanes
+    try{this.#drawPass(view===1?"sky-legacy-no-depth":"legacy-no-depth",owner.noDepth,this.#camera)}finally{this.#backend.autoClear=clear}
   }
 
   #renderWaterPasses(
@@ -5034,6 +5062,7 @@ class RendererOwner implements Renderer {
     if (!plan) {
       this.#backend.autoClear = !preserveColor
       this.#drawPass("main", this.#scene, this.#camera)
+      this.#renderLegacyNoDepth(frame.legacyVisuals?.[0],0)
       this.#backend.autoClear = true
       return Object.freeze({ passes: Object.freeze(["main"] as const), timings: Object.freeze([]), restored: true })
     }
@@ -5048,6 +5077,7 @@ class RendererOwner implements Renderer {
       this.#scene.background = soleMain.drawSky2d ? background : null
       try {
         this.#drawPass("main", this.#scene, this.#camera)
+        this.#renderLegacyNoDepth(frame.legacyVisuals?.[0],0)
       } finally {
         this.#scene.background = background
       }
@@ -5073,6 +5103,7 @@ class RendererOwner implements Renderer {
     const previousClearAlpha = this.#backend.getClearAlpha()
     const effectsVisible = this.#effects.visible
     const particlesVisible = this.#particles.visible
+    const legacyVisible=scene.legacyVisuals?.map(view=>view.world.visible)
     const skyVisible = scene.skyGroup?.visible ?? false
     const completed: ("reflection" | "refraction" | "main" | "intersection")[] = []
     const timings: WaterPassTiming[] = []
@@ -5080,6 +5111,7 @@ class RendererOwner implements Renderer {
 
     try {
       for (const pass of plan.passes) {
+        const legacyView:LegacyViewKind=pass.kind==="reflection"?2:pass.kind==="refraction"?3:pass.kind==="intersection"?4:0
         const passStarted = performance.now()
         this.#setWorldVisibility(pass.surfaces)
         const visibilityMilliseconds = performance.now() - passStarted
@@ -5093,6 +5125,7 @@ class RendererOwner implements Renderer {
         if (scene.skyGroup) scene.skyGroup.visible = pass.drawSky2d
         this.#effects.visible = pass.drawEntities
         this.#particles.visible = pass.drawEntities
+        if(scene.legacyVisuals)for(let index=0;index<5;index++)scene.legacyVisuals[index]!.world.visible=pass.drawEntities&&index===legacyView
         this.#scene.background = pass.drawSky2d ? background : null
         this.#setWaterCamera(pass, frame.camera)
 
@@ -5138,6 +5171,7 @@ class RendererOwner implements Renderer {
           this.#backend.autoClear = pass.kind === "main" && preserveColor ? false : pass.kind !== "intersection"
           const renderStarted = performance.now()
           this.#drawPass(pass.kind, this.#scene, this.#camera)
+          if(pass.drawEntities){this.#renderLegacyNoDepth(frame.legacyVisuals?.[legacyView],legacyView);if(legacyView!==0)this.#renderLegacyVisuals(frame.legacyVisuals?.[legacyView],legacyView)}
           renderMilliseconds = performance.now() - renderStarted
           completed.push(pass.kind)
         } finally {
@@ -5161,6 +5195,7 @@ class RendererOwner implements Renderer {
       this.#scene.background = background
       this.#effects.visible = effectsVisible
       this.#particles.visible = particlesVisible
+      if(scene.legacyVisuals)scene.legacyVisuals.forEach((view,index)=>{view.world.visible=legacyVisible?.[index]??false})
       if (scene.skyGroup) scene.skyGroup.visible = skyVisible
       this.#setWorldVisibility(frame.visibility!.surfaces)
       for (const decal of scene.combatDecalMeshes.values()) decal.mesh.visible = scene.worldVisibility.has(decal.face)

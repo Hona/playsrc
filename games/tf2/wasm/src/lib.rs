@@ -14,6 +14,7 @@ mod wearable;
 mod map_particles;
 mod smokestack;
 mod legacy_visuals;
+mod legacy_materials;
 pub mod static_prop_artifact;
 
 #[cfg(target_arch = "wasm32")]
@@ -1171,7 +1172,7 @@ unsafe fn compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
-        let legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph).map_err(|_| 9_u32)?);
+        let legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph,&resources,&decoders,profile).map_err(|_| 9_u32)?);
         let collision_world = playsrc_collision::compile(&bsp).map_err(|_| 3_u32)?;
         let visibility_world = playsrc_visibility::compile(&bsp).map_err(|_| 3_u32)?;
         let mut canonical =
@@ -1484,6 +1485,7 @@ unsafe fn compile_map(
             sprite_models.insert(model.to_vec(),u32::from(metadata.frame_count));
         }
         map.install_sprite_models(sprite_models).map_err(|_|9_u32)?;
+        map.install_spotlights(|start,end|playsrc_movement::Tracer::trace(&gameplay_world,start,end,playsrc_collision::Hull{mins:[0.0;3],maxs:[0.0;3]},0x400b).map(|trace|trace.end).map_err(|_|())).map_err(|_|9_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity
@@ -2165,6 +2167,11 @@ pub extern "C" fn playsrc_legacy_particle_frames(handle: u32) -> u32 {
 pub extern "C" fn playsrc_legacy_visual_output_length(handle: u32) -> usize {
     with(handle, |slot| slot.legacy_visual_output.len()).unwrap_or(0)
 }
+
+#[cfg(not(target_arch="wasm32"))]
+pub fn map_sun_presentation(handle:u32,source:u32)->Option<playsrc_entity::sun::Presentation>{with(handle,|slot|slot.session.as_ref()?.map_sun_state(source)).flatten()}
+#[cfg(not(target_arch="wasm32"))]
+pub fn map_spotlight_presentation(handle:u32,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{with(handle,|slot|slot.session.as_ref()?.map_spotlight_state(source)).flatten()}
 
 /// Select a real, PVS-admitted opaque-world occluder for the headed map probe.
 /// This does not mutate entities, collision, render depth, or particle state.
@@ -10489,15 +10496,22 @@ fn encode_material_states(
             false,
         )?;
     }
-    for identity in legacy_visuals::World::compile(graph)?.materials() {
-        insert_material_state_target(&mut targets, identity.to_owned(), identity.to_owned(), false)?;
+    let legacy=legacy_materials::compile(graph,bundle,decoders,profile)?;
+    for asset in &legacy.materials {
+        // CEngineSprite creates separate render-mode materials from one VMT.
+        // Their explicit compiled states are distinct from ordinary path aliases.
+        if let Some(existing)=targets.get(&asset.identity) {
+            if existing!=&(asset.source.clone(),false) {return Err(());}
+        } else {targets.insert(asset.identity.clone(),(asset.source.clone(),false));}
     }
     let start = out.len();
     out.extend_from_slice(b"PMST");
     out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&u32::try_from(targets.len()).map_err(|_| ())?.to_le_bytes());
     for (identity, (source, model)) in targets {
-        if let Some(particle) = particle_materials.get(&identity) {
+        if let Some(asset)=legacy.materials.iter().find(|asset|asset.identity==identity) {
+            encode_resolved_material_state(out,&identity,&asset.state,Some(decoders.metadata(&asset.texture)?))?;
+        } else if let Some(particle) = particle_materials.get(&identity) {
             encode_resolved_material_state(
                 out,
                 &identity,

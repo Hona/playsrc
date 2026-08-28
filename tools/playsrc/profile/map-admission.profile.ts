@@ -16,6 +16,7 @@ test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return
   const evidence = await page.evaluate(() => ({ failure: (globalThis as any).__playsrcProfile?.failure,
     legacyVisuals: (globalThis as any).__playsrcProfile?.legacyVisualEvidence,
+    legacyViews:(globalThis as any).__playsrcProfile?.legacyVisualViews,
     frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
     simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
     dataset: { ...document.querySelector<HTMLElement>("main")?.dataset } })).catch(() => null)
@@ -93,16 +94,63 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
-  if (process.env.PROFILE_MAP_LEGACY_GLOW === "1") {
+  if(process.env.PROFILE_MAP_SPOTLIGHT==="1"){
+    const beam=facts.legacyVisuals.find((entity:any)=>entity.classname==="point_spotlight"&&Math.hypot(...entity.end.map((v:number,i:number)=>v-entity.position[i]))>1)
+    expect(beam).toBeTruthy()
+    const delta=beam.end.map((v:number,i:number)=>v-beam.position[i]),length=Math.hypot(...delta),direction=delta.map((v:number)=>v/length)
+    let right=[direction[1],-direction[0],0],rightLength=Math.hypot(...right);right=rightLength>0?right.map(v=>v/rightLength):[1,0,0]
+    const position=beam.position.map((v:number,i:number)=>v+direction[i]*Math.min(128,length*0.5)+right[i]*Math.max(96,beam.width*2))
+    const aim=beam.position.map((v:number,i:number)=>v-position[i])
+    const camera={position,yawDegrees:Math.atan2(aim[1],aim[0])*180/Math.PI,pitchDegrees:-Math.atan2(aim[2],Math.hypot(aim[0],aim[1]))*180/Math.PI}
+    await page.evaluate(camera=>{const profile=(globalThis as any).__playsrcProfile;profile.legacyVisualProbe=true;profile.displacementCameraOverride=camera},camera)
+    await writeFile(testInfo.outputPath(`${target}-spotlight-camera.json`),json({beam,camera}))
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.filter((quad:any)=>quad.source===source).length===2,beam.identity,{timeout:10000})
+    const state=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
+    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-spotlight-on.png`)}))
+    await command("ent_fire beam Kill");await closeConsole()
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),beam.identity)
+    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-spotlight-off.png`)}))
+    let changed=0
+    for(let y=Math.floor(before.height/2)-96;y<before.height/2+96;y++)for(let x=Math.floor(before.width/2)-96;x<before.width/2+96;x++){
+      const at=(y*before.width+x)*before.channels;if([0,1,2].some(c=>before.pixels[at+c]!==after.pixels[at+c]))changed++
+    }
+    await writeFile(testInfo.outputPath(`${target}-spotlight.json`),json({beam,camera,state,changed}))
+    expect(changed).toBeGreaterThan(16);expect(errors).toEqual([]);return
+  }
+  if(process.env.PROFILE_MAP_SUN==="1"){
+    const sun=facts.legacyVisuals.find((entity:any)=>entity.classname==="env_sun")
+    expect(sun).toBeTruthy()
+    await page.waitForFunction(()=>(globalThis as any).__playsrcProfile.controlPoints?.points.length>0)
+    const point=await page.evaluate(()=>(globalThis as any).__playsrcProfile.controlPoints.points.find((point:any)=>point.owner===0).position)
+    const direction=sun.direction
+    const camera={position:[point[0],point[1],point[2]+96],yawDegrees:Math.atan2(direction[1],direction[0])*180/Math.PI,pitchDegrees:-Math.atan2(direction[2],Math.hypot(direction[0],direction[1]))*180/Math.PI}
+    await page.evaluate(camera=>{const profile=(globalThis as any).__playsrcProfile;profile.legacyVisualProbe=true;profile.displacementCameraOverride=camera},camera)
+    await command("ent_fire env_sun TurnOn");await closeConsole()
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.filter((quad:any)=>quad.source===source).length===2,sun.identity,{timeout:10000})
+    const state=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
+    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-sun-on.png`)}))
+    await command("ent_fire env_sun TurnOff");await closeConsole()
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),sun.identity)
+    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-sun-off.png`)}))
+    let changed=0
+    for(let y=Math.floor(before.height/2)-96;y<before.height/2+96;y++)for(let x=Math.floor(before.width/2)-96;x<before.width/2+96;x++){
+      const at=(y*before.width+x)*before.channels;if([0,1,2].some(c=>before.pixels[at+c]!==after.pixels[at+c]))changed++
+    }
+    await writeFile(testInfo.outputPath(`${target}-sun.json`),json({sun,camera,state,changed}))
+    expect(changed).toBeGreaterThan(16);expect(errors).toEqual([]);return
+  }
+  if (process.env.PROFILE_MAP_LEGACY_GLOW === "1" || process.env.PROFILE_MAP_LEGACY_SPRITE === "1") {
+    const spriteProbe=process.env.PROFILE_MAP_LEGACY_SPRITE === "1",probe=spriteProbe?"sprite":"glow"
     await page.waitForFunction(() => (globalThis as any).__playsrcProfile.player?.camera)
     const camera = await page.evaluate(() => (globalThis as any).__playsrcProfile.player.camera)
-    const candidates = facts.legacyVisuals.filter((entity: any) => entity.classname === "env_lightglow").map((entity: any) => {
+    const candidates = facts.legacyVisuals.filter((entity: any) => (spriteProbe?["env_sprite","env_sprite_oriented","env_glow"].includes(entity.classname):entity.classname === "env_lightglow")
+      && (!process.env.PROFILE_MAP_SPRITE_MODE||Number(entity.renderMode)===Number(process.env.PROFILE_MAP_SPRITE_MODE))).map((entity: any) => {
       const delta = camera.position.map((value: number,axis: number)=>value-entity.position[axis])
       const pitch=entity.angles[0]*Math.PI/180,yaw=entity.angles[1]*Math.PI/180
       const facing=delta[0]*Math.cos(pitch)*Math.cos(yaw)+delta[1]*Math.cos(pitch)*Math.sin(yaw)-delta[2]*Math.sin(pitch)
       return { ...entity,distance:Math.hypot(...delta),facing }
     }).filter((entity: any)=>entity.distance>Number(entity.minimumDistance??0)
-      && (!(Number(entity.spawnflags)&1)||entity.facing>=0)
+      && (spriteProbe||!(Number(entity.spawnflags)&1)||entity.facing>=0)
       && (Number(entity.outerMaximumDistance??0)<=Number(entity.maximumDistance??0)||entity.distance<Number(entity.outerMaximumDistance)))
       .sort((left: any,right: any)=>left.distance-right.distance)
     const glow=candidates[0]
@@ -116,22 +164,40 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const delta=glow.position.map((value: number,axis: number)=>value-camera.position[axis])
     camera.yawDegrees=Math.atan2(delta[1],delta[0])*180/Math.PI
     camera.pitchDegrees=-Math.atan2(delta[2],Math.hypot(delta[0],delta[1]))*180/Math.PI
-    await writeFile(testInfo.outputPath(`${target}-legacy-glow-camera.json`),json({glow,camera,candidates}))
+    await writeFile(testInfo.outputPath(`${target}-legacy-${probe}-camera.json`),json({glow,camera,candidates}))
     await page.evaluate(camera=>{const profile=(globalThis as any).__playsrcProfile;profile.legacyVisualProbe=true;profile.displacementCameraOverride=camera},camera)
-    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.some((quad: any)=>quad.source===source),glow.identity,{timeout:10000})
+    const selector=JSON.stringify(glow.name||glow.classname)
+    if(spriteProbe){await command(`ent_fire ${selector} ShowSprite`);await closeConsole()}
+    const attempts:unknown[]=[]
+    if(spriteProbe){
+      let found=false
+      for(const offset of [[128,-64,0],[-128,64,0],[0,128,64],[0,-128,64],[64,0,128],[-64,0,128]]){
+        camera.position=glow.position.map((value:number,axis:number)=>value+offset[axis]!)
+        const delta=glow.position.map((value:number,axis:number)=>value-camera.position[axis])
+        camera.yawDegrees=Math.atan2(delta[1],delta[0])*180/Math.PI;camera.pitchDegrees=-Math.atan2(delta[2],Math.hypot(delta[0],delta[1]))*180/Math.PI
+        const selected=++revision
+        await page.evaluate(({camera,revision})=>{const profile=(globalThis as any).__playsrcProfile;profile.displacementCameraOverride=camera;profile.geometryEvidenceRevision=revision},{camera,revision:selected})
+        await page.waitForFunction(revision=>(globalThis as any).__playsrcProfile.geometryEvidence?.revision===revision,selected)
+        found=await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.some((quad:any)=>quad.source===source),glow.identity,{timeout:1500}).then(()=>true,()=>false)
+        attempts.push({camera:structuredClone(camera),found,evidence:await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)})
+        if(found)break
+      }
+      await writeFile(testInfo.outputPath(`${target}-legacy-sprite-views.json`),json(attempts))
+      expect(found,"an actual raster-visible view of the authored sprite").toBe(true)
+    }else await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.some((quad: any)=>quad.source===source),glow.identity,{timeout:10000})
     const beforeState=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)
-    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-glow-on.png`)}))
-    await command('ent_fire env_lightglow Color "0 0 0"');await closeConsole()
-    await page.waitForFunction(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.length===0,undefined,{timeout:5000})
-    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-glow-off.png`)}))
+    const before=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-${probe}-on.png`)}))
+    await command(spriteProbe?`ent_fire ${selector} HideSprite`:'ent_fire env_lightglow Color "0 0 0"');await closeConsole()
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.quads.every((quad:any)=>quad.source!==source),glow.identity,{timeout:5000})
+    const after=decodeScreenshot(await page.locator("canvas.world-canvas").screenshot({path:testInfo.outputPath(`${target}-legacy-${probe}-off.png`)}))
     let changed=0
     for(let y=Math.floor(before.height/2)-64;y<before.height/2+64;y++)for(let x=Math.floor(before.width/2)-64;x<before.width/2+64;x++){
       const at=(y*before.width+x)*before.channels
       if([0,1,2].some(channel=>before.pixels[at+channel]!==after.pixels[at+channel]))changed++
     }
-    await writeFile(testInfo.outputPath(`${target}-legacy-glow-pixels.json`),json({glow,camera,changed,beforeState,afterState:await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)}))
-    expect(changed,"authored Color input removes visible glow pixels in the fixed central ROI").toBeGreaterThan(8)
-    expect(beforeState[0].queries.some((query: any)=>query.source===glow.identity&&query.possible>0)).toBe(true)
+    await writeFile(testInfo.outputPath(`${target}-legacy-${probe}-pixels.json`),json({glow,camera,changed,beforeState,afterState:await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence)}))
+    expect(changed,"authored entity input removes visible effect pixels in the fixed central ROI").toBeGreaterThan(8)
+    if(!spriteProbe||[3,9].includes(Number(glow.renderMode)))expect(beforeState[0].queries.some((query: any)=>query.source===glow.identity&&query.possible>0)).toBe(true)
     expect(errors).toEqual([])
     return
   }
