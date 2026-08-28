@@ -54,6 +54,8 @@ export async function analyzeNativeSelectionPixels(directory: string) {
     if (mask.length <= 16 || mask.length >= width * height * 0.5) throw new Error(`${reference.scene} lacks distinct authored native glyph pixels`)
     const input = evidence.inputs[index], drawEpoch = facts.timeOrigin + facts.draw.at
     if (!input?.trusted || facts.draw.detail.scene !== reference.scene) throw new Error("Selection input/scene ownership is incomplete")
+    if (reference.scene === "world" && (facts.draw.detail.lifecycle !== 1 || facts.draw.detail.class !== measurement.identity
+      || facts.draw.detail.team !== (measurement.team === "red" ? 2 : 3))) throw new Error("World pixels do not belong to the selected alive player")
     const result = selectionVisibleLatency(input.inputEpoch, endedEpoch, captures.map((capture: any, at: number) => {
       const sampled = images[at]!, rectangle = rectangles[at]!
       const pixelsMatch = mask.filter(offset => {
