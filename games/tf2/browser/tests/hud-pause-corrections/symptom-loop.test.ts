@@ -191,16 +191,16 @@ function resources(): Tf2VguiResources {
 
 function compact(
   tick: bigint,
-  classIdentity: 3 | 4,
+  classIdentity: 1 | 3 | 4,
   team: 2 | 3,
-  weapon: 1 | 2 | 3,
+  weapon: 1 | 2 | 3 | 4 | 17,
   clip: number,
   reserve: number,
   reload: 0 | 1 | 2 | 3 = 0,
   conditions: readonly [number, number, number, number, number] = Object.freeze([0, 0, 0, 0, 0]),
 ): SessionSimulationPublication {
-  const maximumClip = weapon === 3 ? 8 : 4
-  const maximumReserve = weapon === 3 ? 24 : 20
+  const maximumClip = weapon === 17 ? 0 : weapon === 4 ? 6 : weapon === 3 ? 8 : 4
+  const maximumReserve = weapon === 17 ? 0 : weapon === 4 ? 32 : weapon === 3 ? 24 : 20
   const snapshot = Object.freeze({
     tick,
     class: classIdentity,
@@ -450,14 +450,14 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(visible(hud.snapshot().vgui.panels, ["PlayerStatusClassImage", "classmodelpanel"])).toEqual(["PlayerStatusClassImage"])
     expect(hud.modelPanel()).toBeNull()
 
-    const secondBinding = hud.publish(compact(2n, 4, 3, 3, 7, 24, 2), context)
+    const secondBinding = hud.publish(compact(2n, 1, 3, 4, 5, 24, 2), context)
     const second = hud.snapshot().vgui.panels
-    expect(second.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_demoblue")
+    expect(second.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_scoutblue")
     expect(second.filter((panel) => /class_.*red/iu.test(panel.state.image ?? "") && panel.effectivelyVisible)).toEqual([])
     expect(second.filter((panel) => panel.name === "HudWeaponAmmo" && panel.effectivelyVisible)).toHaveLength(1)
     expect(second.find((panel) => panel.name === "HudWeaponAmmoBG")?.state.image).toBe("../hud/ammo_blue_bg")
     expect(second.find((panel) => panel.name === "HudWeaponAmmo")?.state.scalarProperties.reloadPhase).toBe(2)
-    expect(secondBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Stickybomb Launcher" } })
+    expect(secondBinding.values).toContainEqual({ kind: "dialog-variable", panel: "classmodelpanel", variable: "weaponName", value: { kind: "available", value: "Scattergun" } })
 
     const modelBinding = hud.publish(compact(3n, 3, 3, 1, 4, 20), contextWithModel(true))
     const model = hud.snapshot().vgui.panels
@@ -479,7 +479,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
       { tick: 9n, classIdentity: 4 as const, team: 3 as const, model: true, image: "../hud/class_demoblue", identity: "models/player/demo.mdl", skin: 1 },
     ]
     for (const item of remaining) {
-      const binding = hud.publish(compact(item.tick, item.classIdentity, item.team, item.classIdentity === 3 ? 1 : 3, 4, 20), contextWithModel(item.model))
+      const binding = hud.publish(compact(item.tick, item.classIdentity, item.team, item.classIdentity === 3 ? 1 : 17, item.classIdentity === 3 ? 4 : 0, item.classIdentity === 3 ? 20 : 0), contextWithModel(item.model))
       const panels = hud.snapshot().vgui.panels
       expect(visible(panels, ["PlayerStatusClassImage", "classmodelpanel"]), `${item.classIdentity}:${item.team}:${item.model}`).toEqual([item.model ? "classmodelpanel" : "PlayerStatusClassImage"])
       if (item.model) {
@@ -499,7 +499,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     hud.reset("map-replaced")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo", "PlayerStatusClassImage", "classmodelpanel"])).toEqual([])
     expect(hud.action({ kind: "select-weapon", weapon: 1 })).toEqual({ kind: "unavailable", reason: "initial" })
-    hud.publish(compact(1n, 4, 2, 3, 8, 24), contextWithModel(false))
+    hud.publish(compact(1n, 4, 2, 17, 0, 0), contextWithModel(false))
     expect(hud.snapshot().vgui.panels.find((panel) => panel.name === "PlayerStatusClassImage")?.state.image).toBe("../hud/class_demored")
     hud.reset("disconnect")
     expect(visible(hud.snapshot().vgui.panels, ["HudPlayerStatus", "HudWeaponAmmo"])).toEqual([])
@@ -790,7 +790,7 @@ describe("TF2 HUD and pause headed symptom loop", () => {
     expect(element.dataset.crosshairStyle).toBe("stock")
     hud.reset("map-replaced")
     expect(element.style.display).toBe("none")
-    hud.publish(compact(1n, 4, 3, 3, 8, 24), context)
+    hud.publish(compact(1n, 4, 3, 17, 0, 0), context)
     expect(element.dataset.sourceTexture).toBe("materials/sprites/crosshairs.vtf")
     expect(element.style.display).toBe("block")
     hud.destroy()

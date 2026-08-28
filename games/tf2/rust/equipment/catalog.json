@@ -19,7 +19,7 @@
   {"definitionIndex":17,"weapon":"SyringeGun"},
   {"definitionIndex":18,"weapon":"RocketLauncher"},
   {"definitionIndex":19,"weapon":"GrenadeLauncher","implemented":false},
-  {"definitionIndex":20,"weapon":"StickybombLauncher"},
+  {"definitionIndex":20,"weapon":"StickybombLauncher","implemented":false},
   {"definitionIndex":21,"weapon":"Flamethrower"},
   {"definitionIndex":22,"weapon":"EngineerPistol"},
   {"definitionIndex":23,"weapon":"Pistol"},

@@ -16,6 +16,7 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await mkdir(directory, { recursive: true })
   const errors: string[] = []
   page.on("pageerror", error => { errors.push(error.message); console.error(error.message) })
+  page.on("console", message => { if (message.type() === "error") console.error(message.text()) })
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureEquipment: false, equipmentFrames: [] } })
   const sample = async () => page.evaluate(async () => {
     const profile = (globalThis as any).__playsrcProfile
@@ -38,6 +39,14 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 15_000 })
   const stock = process.env.PLAYSRC_EQUIPMENT_UI_ONLY ? undefined : await sample()
   await equipment.locator("[data-vgui-name='BackpackButton']").click()
+  const visibleItems = () => equipment.locator("[data-vgui-name^='Itemitem-']").evaluateAll(nodes => nodes.map(node => Number((node as HTMLElement).dataset.vguiName!.slice("Itemitem-".length))))
+  const firstPage = await visibleItems()
+  await equipment.locator("[data-vgui-name='NextPage']").click()
+  const inventoryDefinitions = [...firstPage, ...await visibleItems()]
+  expect(new Set(inventoryDefinitions).size).toBe(52)
+  expect(inventoryDefinitions.sort((a, b) => a - b)).toEqual(nativeEquipment.inventory.map(entry => entry.item.definitionIndex).sort((a, b) => a - b))
+  for (const unavailable of [19, 20, 735, 513]) expect(inventoryDefinitions).not.toContain(unavailable)
+  await equipment.locator("[data-vgui-name='PrevPage']").click()
   await expect(equipment.locator("[data-vgui-name='Itemitem-378']")).toBeVisible()
   const capture = await page.screenshot({ path: path.join(directory, "backpack.png") })
   const pixels = decodeScreenshot(capture)
@@ -95,6 +104,10 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   }
   expect(modelPixels, "the standalone loadout must show actual RED Soldier pixels").toBeGreaterThan(1000)
   const unusual = process.env.PLAYSRC_EQUIPMENT_UI_ONLY ? undefined : await sample()
+  if (stock && unusual) await writeFile(path.join(directory, "equipment-samples.json"), JSON.stringify({
+    stock: { seconds: stock.seconds, browser: summarizeFrameTimes(stock.frames), equipment: summarizeFrameTimes(stock.equipmentFrames) },
+    unusual: { seconds: unusual.seconds, browser: summarizeFrameTimes(unusual.frames), equipment: summarizeFrameTimes(unusual.equipmentFrames) },
+  }, null, 2))
   await page.reload({ waitUntil: "domcontentloaded" })
   await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
   await page.locator("[data-vgui-name='CharacterSetupButton']").click()
@@ -115,6 +128,8 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await expect(page.locator("main")).toHaveAttribute("data-class-selection-visible", "false")
   await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready")
   await page.evaluate(() => { (globalThis as any).__playsrcProfile.captureWeaponPoses = true })
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.weaponPose?.class)).toBe(6)
+  await page.bringToFront()
   await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 400 } })
   await expect(page.locator("main")).toHaveAttribute("data-pointer-locked", "true")
   await page.mouse.down({ button: "right" })
@@ -137,9 +152,9 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   await page.mouse.up({ button: "left" }); await page.mouse.up({ button: "right" })
   await expect(page.locator("main")).toHaveAttribute("data-viewmodel-activity", "ACT_PRIMARY_ATTACK_STAND_POSTFIRE")
   await page.evaluate(() => { (globalThis as any).__playsrcProfile.captureWeaponPoses = false })
-  await writeFile(path.join(directory, "minigun-bones.json"), JSON.stringify({ firstBarrel, secondBarrel, firstRotation, secondRotation }))
+  await writeFile(path.join(directory, "minigun-bones.json"), JSON.stringify({ firstBarrel, secondBarrel, firstRotation, secondRotation }, (_, value) => typeof value === "bigint" ? String(value) : value))
   expect(errors).toEqual([])
-  const report = { platform: process.platform, tooltipPixels, purplePixels: purple, modelPixels, storageBytes: 692, mapAdmission: true, errors,
+  const report = { platform: process.platform, inventoryDefinitions, tooltipPixels, purplePixels: purple, modelPixels, storageBytes: 692, mapAdmission: true, errors,
     stock: stock && { seconds: stock.seconds, browser: summarizeFrameTimes(stock.frames), equipment: summarizeFrameTimes(stock.equipmentFrames) },
     unusual: unusual && { seconds: unusual.seconds, browser: summarizeFrameTimes(unusual.frames), equipment: summarizeFrameTimes(unusual.equipmentFrames) } }
   if (stock) expect(stock.equipmentFrames.length).toBeGreaterThan(30)
