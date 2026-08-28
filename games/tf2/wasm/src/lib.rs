@@ -2,6 +2,11 @@ mod gameplay_protocol;
 mod admission_metrics;
 mod gameplay_replay;
 mod memory;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod encoding_allocations;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[global_allocator]
+static TEST_ALLOCATOR: encoding_allocations::Allocator = encoding_allocations::Allocator;
 mod reply_output;
 mod soundscapes;
 mod acoustic_scene;
@@ -5942,15 +5947,6 @@ fn encode_snapshot(
     extensions: SnapshotExtensions<'_>,
 ) -> Option<Vec<u8>> {
     const MAX: usize = 64 * 1024 * 1024;
-    let movement = snapshot.movement.snapshot_bytes();
-    let jump = match snapshot.jump.as_ref() {
-        Some(value) => encode_jump(value)?,
-        None => Vec::new(),
-    };
-    let random_state = encode_random_state(extensions.random_state)?;
-    let entity_presentation = encode_entity_presentation(extensions.entity_presentation)?;
-    let mut movement_tick_bytes = Vec::new();
-    encode_movement_tick(&mut movement_tick_bytes, movement_tick, MAX)?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
     u32_field(&mut out, 30, MAX)?;
@@ -6019,8 +6015,10 @@ fn encode_snapshot(
         MAX,
     )?;
     u32_field(&mut out, u32::try_from(snapshot.events.len()).ok()?, MAX)?;
-    u32_field(&mut out, u32::try_from(jump.len()).ok()?, MAX)?;
-    u32_field(&mut out, u32::try_from(movement.len()).ok()?, MAX)?;
+    let jump_length = out.len();
+    u32_field(&mut out, 0, MAX)?;
+    let movement_length = out.len();
+    u32_field(&mut out, 0, MAX)?;
     for count in [
         producer.activities.len(),
         producer.lifecycle_events.len(),
@@ -6041,12 +6039,15 @@ fn encode_snapshot(
         extensions.rocket_results.len(),
         extensions.mover_results.len(),
         extensions.collision_snapshot.len(),
-        random_state.len(),
-        entity_presentation.len(),
-        movement_tick_bytes.len(),
     ] {
         u32_field(&mut out, u32::try_from(count).ok()?, MAX)?;
     }
+    let random_length = out.len();
+    u32_field(&mut out, 0, MAX)?;
+    let entity_length = out.len();
+    u32_field(&mut out, 0, MAX)?;
+    let movement_tick_length = out.len();
+    u32_field(&mut out, 0, MAX)?;
     u32_field(&mut out, producer.player_flags, MAX)?;
     u32_field(&mut out, snapshot.movement.water_type, MAX)?;
     u32_field(
@@ -6060,7 +6061,10 @@ fn encode_snapshot(
         MAX,
     )?;
     u32_field(&mut out, u32::from(producer.flame_firing), MAX)?;
-    extend(&mut out, &movement, MAX)?;
+    snapshot_section(&mut out, movement_length, |out| {
+        snapshot.movement.append_snapshot(out);
+        (out.len() <= MAX).then_some(())
+    })?;
     for state in &producer.weapons {
         let profile = state.profile();
         extend(
@@ -6383,7 +6387,9 @@ fn encode_snapshot(
     if extensions.payload_constraint_blocked {
         extend(&mut out, &[3, 1, 0, 0], MAX)?;
     }
-    extend(&mut out, &random_state, MAX)?;
+    snapshot_section(&mut out, random_length, |out| {
+        encode_random_state(out, extensions.random_state, MAX)
+    })?;
     for draw in extensions.random_draws {
         encode_random_draw(&mut out, *draw, MAX)?;
     }
@@ -6397,9 +6403,18 @@ fn encode_snapshot(
         encode_mover_result(&mut out, *result, MAX)?;
     }
     extend(&mut out, extensions.collision_snapshot, MAX)?;
-    extend(&mut out, &jump, MAX)?;
-    extend(&mut out, &movement_tick_bytes, MAX)?;
-    extend(&mut out, &entity_presentation, MAX)?;
+    snapshot_section(&mut out, jump_length, |out| {
+        match snapshot.jump.as_ref() {
+            Some(value) => encode_jump(out, value, MAX),
+            None => Some(()),
+        }
+    })?;
+    snapshot_section(&mut out, movement_tick_length, |out| {
+        encode_movement_tick(out, movement_tick, MAX)
+    })?;
+    snapshot_section(&mut out, entity_length, |out| {
+        encode_entity_presentation(out, extensions.entity_presentation, MAX)
+    })?;
     u32_field(&mut out, u32::try_from(snapshot.bots.len()).ok()?, MAX)?;
     for bot in &snapshot.bots {
         u32_field(&mut out, bot.identity, MAX)?;
@@ -7069,12 +7084,32 @@ fn encode_objectives(
     Some(())
 }
 
+// Section lengths come from the same writes as their payload, never a second
+// schema/size authority. This vector is private to the transaction until all
+// writes and length patches succeed; outstanding publication leases are untouched.
+fn snapshot_section(
+    out: &mut Vec<u8>,
+    length_field: usize,
+    encode: impl FnOnce(&mut Vec<u8>) -> Option<()>,
+) -> Option<()> {
+    let start = out.len();
+    encode(out)?;
+    let length = u32::try_from(out.len().checked_sub(start)?).ok()?;
+    out.get_mut(length_field..length_field.checked_add(4)?)?
+        .copy_from_slice(&length.to_le_bytes());
+    Some(())
+}
+
 fn encode_entity_presentation(
+    output: &mut Vec<u8>,
     snapshot: &playsrc_tf2::EntityPresentationSnapshot,
-) -> Option<Vec<u8>> {
-    const MAX: usize = 8 * 1024 * 1024;
+    limit: usize,
+) -> Option<()> {
+    #[allow(non_snake_case)]
+    let MAX = output.len().checked_add(8 * 1024 * 1024)?.min(limit);
     let e = &snapshot.entities;
-    let mut out = b"PEBP".to_vec();
+    let mut out = output;
+    extend(&mut out, b"PEBP", MAX)?;
     u32_field(&mut out, 3, MAX)?;
     for value in [
         e.source_identity,
@@ -7211,11 +7246,13 @@ fn encode_entity_presentation(
         floats(&mut out, animation.bounds.into_iter().flatten(), MAX)?;
         extend(&mut out, &animation.sequence, MAX)?;
     }
-    Some(out)
+    Some(())
 }
 
-fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
-    let mut output = b"PRNG".to_vec();
+fn encode_random_state(output: &mut Vec<u8>, state: playsrc_tf2::Tf2RandomState, limit: usize) -> Option<()> {
+    let start = output.len();
+    if start.checked_add(364)? > limit { return None; }
+    output.extend_from_slice(b"PRNG");
     output.extend_from_slice(&3_u32.to_le_bytes());
     for stream in [state.authority, state.predicted_presentation] {
         output.extend_from_slice(&stream.current.to_le_bytes());
@@ -7263,7 +7300,7 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         state.sound_selection.projectile_unlock_available[5],
         0,
     ]);
-    (output.len() == 364).then_some(output)
+    (output.len().checked_sub(start)? == 364).then_some(())
 }
 
 fn encode_random_draw(
@@ -7868,9 +7905,10 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
     floats(output, values, limit)
 }
 
-fn encode_jump(output: &playsrc_tf2::jump::TickOutput) -> Option<Vec<u8>> {
-    const MAX: usize = 4 * 1024 * 1024;
-    let mut bytes = Vec::new();
+fn encode_jump(bytes: &mut Vec<u8>, output: &playsrc_tf2::jump::TickOutput, limit: usize) -> Option<()> {
+    #[allow(non_snake_case)]
+    let MAX = bytes.len().checked_add(4 * 1024 * 1024)?.min(limit);
+    let mut bytes = bytes;
     extend(&mut bytes, b"PJOF", MAX)?;
     u32_field(&mut bytes, 1, MAX)?;
     match &output.run {
@@ -7952,7 +7990,7 @@ fn encode_jump(output: &playsrc_tf2::jump::TickOutput) -> Option<Vec<u8>> {
             }
         }
     }
-    Some(bytes)
+    Some(())
 }
 
 fn bundle(bytes: &[u8]) -> Result<BTreeMap<String, &[u8]>, ()> {
@@ -16646,7 +16684,7 @@ mod tests {
                 models: Vec::new(),
             },
         };
-        let encoded = encode_snapshot(
+        let (encoded, metrics) = encoding_allocations::measure(|| Arc::<[u8]>::from(encode_snapshot(
             &snapshot,
             &producer,
             2,
@@ -16666,7 +16704,11 @@ mod tests {
                 combat_decals: &[],
             },
         )
-        .unwrap();
+        .unwrap()));
+        eprintln!("snapshot encoding: bytes={} {metrics:?} sha256={:x}", encoded.len(), Sha256::digest(&encoded));
+        assert!(metrics.requests <= 10 && metrics.bytes <= 5368, "snapshot encoder retains redundant staging/growth");
+        assert_eq!(metrics.live, 1280);
+        let expected_hash = format!("{:x}", Sha256::digest(&encoded));
         assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
         assert_eq!(encoded.len(), 1264);
         assert_eq!(&encoded[1128..1144], &[0; 16]);
@@ -16724,6 +16766,46 @@ mod tests {
         );
         assert_eq!(&constrained[556..564], b"PRNG\x03\0\0\0");
         assert_eq!(constrained.len(), encoded.len() + 4);
+
+        // Exercise growth boundaries while holding every older immutable lease.
+        // Collision bytes are an opaque, already-authenticated section here.
+        let mut leases = Vec::new();
+        for size in [0, 1, 4095, 65536, 1024 * 1024] {
+            let collision = vec![0xa5; size];
+            let (lease, metrics) = encoding_allocations::measure(|| Arc::<[u8]>::from(encode_snapshot(
+                &snapshot, &producer, 2, None, SnapshotExtensions {
+                    random_state, random_draws: &[], audio_events: &[], soundscape: playsrc_entity::soundscape::Selection {
+                        entity: 9, soundscape: 7, position_bits: 0x81, positions: [[1.0, 2.0, 3.0]; 8],
+                    }, rocket_results: &[], mover_results: &[],
+                    collision_snapshot: &collision, entity_presentation: &entity_presentation,
+                    payload_constraint_blocked: false, combat_decals: &[],
+                }).unwrap()));
+            assert_eq!(lease.len(), encoded.len() - collision_snapshot.len() + size);
+            assert_eq!(u32::from_le_bytes(lease[144..148].try_into().unwrap()) as usize, size);
+            assert_eq!(&lease[916..916 + size], collision);
+            assert_eq!(&lease[..144], &encoded[..144]);
+            assert_eq!(&lease[148..916], &encoded[148..916]);
+            assert_eq!(&lease[916 + size..], &encoded[916 + collision_snapshot.len()..]);
+            assert!(metrics.requests <= 11, "section staging must not return: {metrics:?}");
+            assert_eq!(metrics.live as usize, (lease.len() + 16).next_multiple_of(8));
+            eprintln!("snapshot collision_bytes={size} output_bytes={} {metrics:?}", lease.len());
+            leases.push(lease);
+        }
+        assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
+        for (lease, size) in leases.iter().zip([0, 1, 4095, 65536, 1024 * 1024]) {
+            assert!(lease[916..916 + size].iter().all(|byte| *byte == 0xa5));
+        }
+        let oversized = vec![0; 64 * 1024 * 1024];
+        let (failed, metrics) = encoding_allocations::measure(|| encode_snapshot(
+            &snapshot, &producer, 2, None, SnapshotExtensions {
+                random_state, random_draws: &[], audio_events: &[], soundscape: playsrc_entity::soundscape::Selection {
+                    entity: 9, soundscape: 7, position_bits: 0x81, positions: [[1.0, 2.0, 3.0]; 8],
+                }, rocket_results: &[], mover_results: &[],
+                collision_snapshot: &oversized, entity_presentation: &entity_presentation,
+                payload_constraint_blocked: false, combat_decals: &[],
+            }));
+        assert!(failed.is_none()); assert_eq!(metrics.live, 0);
+        assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
     }
 
     #[test]

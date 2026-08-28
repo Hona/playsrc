@@ -528,7 +528,14 @@ impl State {
     }
 
     pub fn snapshot_bytes(self) -> Vec<u8> {
-        let mut bytes = b"PMOV".to_vec();
+        let mut bytes = Vec::new();
+        self.append_snapshot(&mut bytes);
+        bytes
+    }
+
+    /// Append the canonical movement record to its enclosing transaction.
+    pub fn append_snapshot(self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(b"PMOV");
         bytes.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
         bytes.push(self.mode as u8);
         bytes.push(self.crouch.phase as u8);
@@ -565,7 +572,6 @@ impl State {
         {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes
     }
 }
 

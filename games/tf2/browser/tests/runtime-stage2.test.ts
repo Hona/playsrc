@@ -11,6 +11,7 @@ import {
 import type { WorkerRequest, WorkerResponse } from "../src/protocol"
 import { tf2Audio } from "../src/presentation"
 import { configuredEquipmentSounds } from "../src/equipment/audio.generated"
+import { ReplyReader, ReplyWriter, REPLY_BYTES } from "../src/reply-transport"
 
 function snapshot(): ArrayBuffer {
   const bytes = new ArrayBuffer(1401)
@@ -1199,6 +1200,54 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(stream.metrics.retainedBaselineBytes).toBe(0)
     expect(() => stream.decode(snapshotPacket(4n, [third]))).toThrow("Closed")
     expect(c.bots[0]!.identity).toBe(2)
+  })
+
+  test("shared simulation publication copies exactly its lease before decode and survives growth, reuse and close", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 16, shared: true })
+    const shared = { memory, mailbox: new SharedArrayBuffer(REPLY_BYTES), modelOwnership: new SharedArrayBuffer(256) }
+    const writer = new ReplyWriter(shared.mailbox), stream = new SimulationSnapshotStream()
+    const retained: Array<{ snapshot: ReturnType<typeof decodeSnapshot>; expected: ReturnType<typeof decodeSnapshot> }> = []
+    let complete!: () => void, packet!: ArrayBuffer, copiedBytes = 0, released = 0
+    const reader = new ReplyReader(shared, response => {
+      if (response.kind !== "simulation") throw new Error("Unexpected publication")
+      expect(response.generation).toBe(17)
+      expect(response.output).not.toBe(memory.buffer)
+      expect(response.output.byteLength).toBe(packet.byteLength)
+      expect(new Uint8Array(response.output)).toEqual(new Uint8Array(packet))
+      copiedBytes += response.output.byteLength
+      const value = stream.decode(response.output)[0]!.snapshot
+      retained.push({ snapshot: value, expected: decodeSnapshot(current) })
+      complete()
+    })
+    const run = reader.run()
+    let current!: Uint8Array, previous: Uint8Array | undefined, wireBytes = 0
+    try {
+      for (let i = 0; i < 6; i++) {
+        current = rosterSnapshot(BigInt(i + 7), i < 3 ? 15 : 23, 512)
+        packet = snapshotPacket(BigInt(i + 1), [current], previous)
+        wireBytes += packet.byteLength
+        const oldBuffer = memory.buffer
+        memory.grow(1)
+        const pointer = oldBuffer.byteLength - 1024 // range crosses the old Memory boundary
+        const pages = Math.ceil((pointer + packet.byteLength - memory.buffer.byteLength) / 65536)
+        if (pages > 0) memory.grow(pages)
+        new Uint8Array(memory.buffer, pointer, packet.byteLength).set(new Uint8Array(packet))
+        const delivered = new Promise<void>(resolve => { complete = resolve })
+        writer.shared({ id: i + 1, kind: "simulation", generation: 17, ranges: [{ pointer, length: packet.byteLength }],
+          timings: { queueMilliseconds: 0, inputCopyMilliseconds: 0, transactMilliseconds: 0, outputCopyMilliseconds: 0, totalMilliseconds: 0 } }, () => {
+          released++
+          new Uint8Array(memory.buffer, pointer, packet.byteLength).fill(0xcc)
+        })
+        await delivered
+        writer.reclaim(); writer.reclaim()
+        expect(released).toBe(i + 1)
+        previous = current
+      }
+      expect(copiedBytes).toBe(wireBytes)
+      expect(stream.metrics.retainedBaselineBytes).toBe(current.byteLength)
+    } finally { reader.close(); await run; stream.close() }
+    expect(stream.metrics.retainedBaselineBytes).toBe(0)
+    for (const value of retained) expect(value.snapshot).toEqual(value.expected)
   })
 
   test("malformed, stale, NaN, cross-section and truncated responses roll back the entire decode", () => {
