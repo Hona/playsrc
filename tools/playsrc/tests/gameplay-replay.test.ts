@@ -218,10 +218,12 @@ test("requested warm reload authenticates two distinct Worker journals and prese
   const full = fixture()
   const setup = Buffer.concat([full.subarray(0, 780), ...parseGameplayReplay(full).records.filter(record => record.kind !== 7).map(value => record(value.kind, value.bytes))])
   const identity = { target: "pl_upward", resourceRoot: "a".repeat(64), bsp: "0".repeat(64), mapGeneration: 1, contentBuild: "24245096" }
+  const armed: any[] = [], workClock = { hex: "000000000000f03f", endedAt: 5 }
   function worker(bytes: Buffer) {
     let closed: (() => void) | undefined
     return { url: () => "http://local/gameplay-worker.ts", on(_event: string, fn: () => void) { closed = fn }, close() { closed!() },
       async evaluate(_fn: unknown, args: any) {
+        if (args?.mapOrdinal) armed.push(args)
         if (!args || args.mapOrdinal || typeof args === "number") return
         return { checkpoint: { configurationSha256: "b".repeat(64), configurationBytes: 12, profile: 1, generation: 1 },
           mapOrdinal: 1, offset: args.offset, length: bytes.length, complete: args.stop, base64: bytes.subarray(args.offset).toString("base64"),
@@ -229,13 +231,15 @@ test("requested warm reload authenticates two distinct Worker journals and prese
       } }
   }
   try {
-    const capture = await startGameplayReplayLifecycle(page as any, directory, "warm", true)
+    const capture = await startGameplayReplayLifecycle(page as any, directory, "warm", true, 1, "abcd", workClock)
     const cold = worker(setup); for (const fn of listeners) fn(cold)
     await expect(capture.ready()).rejects.toThrow("navigation missing")
     await capture.beforeReload(identity)
     cold.close()
     const warm = worker(full); for (const fn of listeners) fn(warm)
     await capture.ready(); await capture.mark(0); await capture.mark(1)
+    expect(armed).toEqual([{ mapOrdinal: 1, entropyHex: undefined, workClock: undefined },
+      { mapOrdinal: 1, entropyHex: "abcd", workClock }])
     const result = await capture.stop(identity)
     expect(await capture.stop(identity)).toBe(result)
     const manifest = JSON.parse(await readFile(path.join(directory, result.lifecycle.file), "utf8"))
