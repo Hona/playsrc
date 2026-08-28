@@ -49,7 +49,7 @@ mod native_tests {
         for definition in SoundDefinition::NATIVE {
             assert!(codes.insert(definition.code()));
             assert_eq!(SoundDefinition::from_code(definition.code()), Some(*definition));
-            assert!((1..=8).contains(&definition.wave_count()));
+            assert!((1..=16).contains(&definition.wave_count()));
         }
         assert_eq!(SoundDefinition::MedigunHealing.code(), 71);
         assert_eq!(SoundDefinition::MedigunCharged.code(), 73);
@@ -67,6 +67,24 @@ mod native_tests {
             assert_eq!(SoundDefinition::from_code(definition.code()), Some(definition));
         }
         for (_, code) in MELEE_CRITICAL_SOUNDS { assert!(SoundDefinition::from_code(*code).is_some()); }
+    }
+
+    #[test]
+    fn payload_alerts_cycle_all_ten_waves_and_restore_without_truncation() {
+        let mut sounds = SoundSelection::new();
+        for definition in [SoundDefinition::CartWarning,SoundDefinition::CartFinalWarning] {
+            for ordinal in 0..10 { assert_eq!(sounds.original_ordinal(definition,0,true),ordinal); }
+            assert_eq!(sounds.available_count(definition),10);
+            for ordinal in 0..7 { assert_eq!(sounds.original_ordinal(definition,0,true),ordinal); }
+        }
+        let state=sounds.state();
+        assert_eq!(state.payload_warning_available,[0x380;2]);
+        let mut restored=SoundSelection::new();
+        assert!(restored.restore(state));
+        assert_eq!(restored.original_ordinal(SoundDefinition::CartWarning,1,true),8);
+        assert_eq!(restored.original_ordinal(SoundDefinition::CartFinalWarning,2,true),9);
+        let mut invalid=state;invalid.payload_warning_available[0]=0x400;
+        assert!(!restored.restore(invalid));
     }
 }
 
@@ -93,7 +111,8 @@ impl SoundDefinition {
             | Self::PointSuccess | Self::PointFailure | Self::PointCaptured | Self::PointContested | Self::PointContestedNeutral
             | Self::PointEnabled | Self::RoundBegins5 | Self::RoundBegins4 | Self::RoundBegins3 | Self::RoundBegins2
             | Self::RoundBegins1 | Self::Stalemate | Self::CaptureWarn | Self::HologramStart | Self::HologramStop | Self::HologramMove | Self::HologramInterrupted
-            | Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::EndRoundScored)
+            | Self::RoundBegins60 | Self::RoundBegins30 | Self::RoundBegins10 | Self::RoundStartSiren | Self::TimeAdded | Self::TimeAddedForEnemy | Self::TimeAwardedForTeam | Self::EndRoundScored
+            | Self::CartWarning | Self::CartFinalWarning | Self::CartAlarm | Self::CartAlarmSingle)
     }
     pub fn configured(name: &str) -> Option<Self> {
         Self::NATIVE.iter().find(|definition| definition.identity() == name).copied()
@@ -187,6 +206,7 @@ pub struct AudioEvent {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SoundSelectionState {
+    pub payload_warning_available: [u16; 2],
     pub configured_available: [u8; 64],
     pub projectile_unlock_available: [u8; 6],
     pub rocket_explosion_available: u8,
@@ -217,18 +237,12 @@ pub struct SoundSelectionState {
     pub control_point_available: u16,
 }
 
+macro_rules! wave_cycle {
+($name:ident, $mask:ty) => {
 #[derive(Clone, Copy)]
-struct WaveCycle {
-    available: u8,
-    all: u8,
-}
-
-impl WaveCycle {
-    const FOUR: u8 = 0b1111;
-    const THREE: u8 = 0b111;
-    const TWO: u8 = 0b011;
-
-    const fn new(all: u8) -> Self {
+struct $name { available: $mask, all: $mask }
+impl $name {
+    const fn new(all: $mask) -> Self {
         Self {
             available: all,
             all,
@@ -245,8 +259,8 @@ impl WaveCycle {
     fn original_ordinal(&mut self, rank: u8, consume: bool) -> u8 {
         self.available_count();
         let mut remaining = rank;
-        for ordinal in 0..8 {
-            let bit = 1_u8 << ordinal;
+        for ordinal in 0..<$mask>::BITS as u8 {
+            let bit = (1 as $mask) << ordinal;
             if self.available & bit == 0 {
                 continue;
             }
@@ -261,9 +275,19 @@ impl WaveCycle {
         unreachable!("rank came from the available wave count")
     }
 }
+};
+}
+wave_cycle!(WaveCycle, u8);
+wave_cycle!(WideWaveCycle, u16);
+impl WaveCycle {
+    const FOUR: u8 = 0b1111;
+    const THREE: u8 = 0b111;
+    const TWO: u8 = 0b011;
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct SoundSelection {
+    payload_warnings: [WideWaveCycle; 2],
     configured: [WaveCycle; 64],
     projectile_unlock: [WaveCycle; 6],
     rocket_explosion: WaveCycle,
@@ -291,12 +315,13 @@ pub(crate) struct SoundSelection {
     bonesaw_hit_flesh: WaveCycle,
     bonesaw_hit_world: WaveCycle,
     overtime: WaveCycle,
-    control_point: [WaveCycle; 5],
+    control_point: [WaveCycle; 6],
 }
 
 impl SoundSelection {
     pub(crate) fn new() -> Self {
         Self {
+            payload_warnings: [WideWaveCycle::new(0x3ff); 2],
             configured: std::array::from_fn(|index| WaveCycle::new(CONFIGURED_SOUNDS.get(index).map_or(0, |(_, _, count)| ((1_u16 << count) - 1) as u8))),
             projectile_unlock: [WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::THREE),
                 WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::THREE),
@@ -326,12 +351,13 @@ impl SoundSelection {
             bonesaw_hit_flesh: WaveCycle::new(WaveCycle::THREE),
             bonesaw_hit_world: WaveCycle::new(WaveCycle::TWO),
             overtime: WaveCycle::new(WaveCycle::FOUR),
-            control_point: [WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::FOUR), WaveCycle::new(WaveCycle::TWO)],
+            control_point: [WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::FOUR), WaveCycle::new(WaveCycle::TWO), WaveCycle::new(WaveCycle::THREE)],
         }
     }
 
     pub(crate) fn state(self) -> SoundSelectionState {
         SoundSelectionState {
+            payload_warning_available: self.payload_warnings.map(|cycle| cycle.available),
             configured_available: self.configured.map(|cycle| cycle.available),
             projectile_unlock_available: self.projectile_unlock.map(|cycle| cycle.available),
             rocket_explosion_available: self.rocket_explosion.available,
@@ -359,11 +385,12 @@ impl SoundSelection {
             bonesaw_hit_flesh_available: self.bonesaw_hit_flesh.available,
             bonesaw_hit_world_available: self.bonesaw_hit_world.available,
             overtime_available: self.overtime.available,
-            control_point_available: u16::from(self.control_point[0].available) | (u16::from(self.control_point[1].available)<<2) | (u16::from(self.control_point[2].available)<<5) | (u16::from(self.control_point[3].available)<<7) | (u16::from(self.control_point[4].available)<<11),
+            control_point_available: u16::from(self.control_point[0].available) | (u16::from(self.control_point[1].available)<<2) | (u16::from(self.control_point[2].available)<<5) | (u16::from(self.control_point[3].available)<<7) | (u16::from(self.control_point[4].available)<<11) | (u16::from(self.control_point[5].available)<<13),
         }
     }
 
     pub(crate) fn restore(&mut self, state: SoundSelectionState) -> bool {
+        if state.payload_warning_available.iter().any(|mask| mask & !0x3ff != 0) { return false; }
         if self.configured.iter().zip(state.configured_available).any(|(cycle, value)| value & !cycle.all != 0) { return false; }
         if state.projectile_unlock_available.into_iter().enumerate().any(|(index, available)|
             available & !(if index == 4 { WaveCycle::FOUR } else { WaveCycle::THREE }) != 0)
@@ -391,10 +418,10 @@ impl SoundSelection {
             || state.bonesaw_hit_flesh_available & !WaveCycle::THREE != 0
             || state.bonesaw_hit_world_available & !WaveCycle::TWO != 0
             || state.overtime_available & !WaveCycle::FOUR != 0
-            || state.control_point_available & !0x1fff != 0
         {
             return false;
         }
+        for (cycle, mask) in self.payload_warnings.iter_mut().zip(state.payload_warning_available) { cycle.available = mask; }
         self.rocket_explosion.available = state.rocket_explosion_available;
         for (cycle, available) in self.projectile_unlock.iter_mut().zip(state.projectile_unlock_available) {
             cycle.available = available;
@@ -424,7 +451,7 @@ impl SoundSelection {
         self.bonesaw_hit_flesh.available = state.bonesaw_hit_flesh_available;
         self.bonesaw_hit_world.available = state.bonesaw_hit_world_available;
         self.overtime.available = state.overtime_available;
-        for (index, (shift, mask)) in [(0,3),(2,7),(5,3),(7,15),(11,3)].into_iter().enumerate() {
+        for (index, (shift, mask)) in [(0,3),(2,7),(5,3),(7,15),(11,3),(13,7)].into_iter().enumerate() {
             self.control_point[index].available = ((state.control_point_available >> shift) & mask) as u8;
         }
         for (cycle, value) in self.configured.iter_mut().zip(state.configured_available) { cycle.available = value; }
@@ -432,6 +459,9 @@ impl SoundSelection {
     }
 
     pub(crate) fn available_count(&mut self, definition: SoundDefinition) -> u8 {
+        if matches!(definition, SoundDefinition::CartWarning | SoundDefinition::CartFinalWarning) {
+            return self.payload_warnings[usize::from(definition == SoundDefinition::CartFinalWarning)].available_count();
+        }
         self.cycle(definition).available_count()
     }
 
@@ -441,6 +471,9 @@ impl SoundSelection {
         rank: u8,
         consume: bool,
     ) -> u8 {
+        if matches!(definition, SoundDefinition::CartWarning | SoundDefinition::CartFinalWarning) {
+            return self.payload_warnings[usize::from(definition == SoundDefinition::CartFinalWarning)].original_ordinal(rank, consume);
+        }
         self.cycle(definition).original_ordinal(rank, consume)
     }
 
@@ -484,6 +517,7 @@ impl SoundSelection {
             SoundDefinition::PointContestedNeutral => &mut self.control_point[2],
             SoundDefinition::PointEnabled => &mut self.control_point[3],
             SoundDefinition::CaptureWarn => &mut self.control_point[4],
+            SoundDefinition::TimeAwardedForTeam => &mut self.control_point[5],
             _ => unreachable!("only configured random-wave definitions have selection state"),
         }
     }

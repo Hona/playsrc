@@ -1,5 +1,6 @@
 pub mod attribute;
 pub mod audio;
+pub mod payload;
 pub mod ballistics;
 pub mod bot;
 pub mod admission_metrics;
@@ -918,6 +919,8 @@ pub struct Session<W: GameplayWorld + Clone> {
     team_selection: team_selection::TeamSelection,
     pending_team_change: Option<PlayerTeam>,
     pending_control_point_events: Vec<control_point::Event>,
+    pending_payload_events: Vec<payload::Event>,
+    payload_events: Vec<payload::Event>,
     weapon: Option<Weapon>,
     last_weapon: Option<Weapon>,
     secondary_last_weapon: Option<Weapon>,
@@ -1108,6 +1111,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             },
             pending_team_change: None,
             pending_control_point_events: Vec::new(),
+            pending_payload_events: Vec::new(),
+            payload_events: Vec::new(),
             weapon: Some(Weapon::RocketLauncher),
             weapon_preferences: WeaponPreferences::default(),
             active_weapon_prior_to_death: None,
@@ -1689,6 +1694,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         &self.audio_events
     }
 
+    pub fn payload_events(&self) -> &[payload::Event] { &self.payload_events }
+
     pub fn mover_requests(&self) -> &[MoverRequest] {
         &self.mover_requests
     }
@@ -1838,10 +1845,18 @@ impl<W: GameplayWorld + Clone> Session<W> {
         // entity outputs. Keep that entire rollback owner, but do not checkpoint
         // unrelated bots, equipment and projectiles for each ordered record.
         // All Session publication below is infallible and follows map success.
+        let capture_actor=if self.map.control_points().is_some() {
+            let policy=MovementPolicy {class:self.class,modifiers:MovementModifiers::default()}.resolve();
+            Some(self.capture_actor(self.movement.active_hull(policy)))
+        } else {None};
         let mut map = self.map.clone();
+        if let (Some(points),Some(actor))=(map.control_points_mut(),capture_actor) {
+            points.set_capture_actors(std::iter::once(actor).chain(self.bots.iter().flat_map(|bots|bots.control_point_actors())));
+        }
         let mut phase = map.apply_mover_results(self.tick, results)?;
         self.map = map;
         self.pending_control_point_events.append(&mut phase.control_point_events);
+        self.pending_payload_events.append(&mut phase.payload_events);
         self.movement.position = add(self.movement.position, phase.carry);
         self.mover_requests.retain(|request| {
             !results.iter().any(|result| {
@@ -1861,6 +1876,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let mut candidate = self.clone();
         let mut phase = candidate.map.input(candidate.tick, source, input, value)?;
         candidate.pending_control_point_events.append(&mut phase.control_point_events);
+        candidate.pending_payload_events.append(&mut phase.payload_events);
         merge_mover_requests(&mut candidate.mover_requests, &phase.mover_requests);
         *self = candidate;
         Ok(phase)
@@ -1899,7 +1915,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             )
             .map_err(Error::Bot)?,
         );
-        if let Some(points) = self.map.control_points() {
+        if let Some(points) = self.map.control_points().filter(|points| !points.is_payload()) {
             self.bots.as_mut().unwrap().configure_control_points(points).map_err(Error::Bot)?;
         }
         Ok(())
@@ -1908,6 +1924,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     pub fn fire_entity_input(&mut self, target: &[u8], input: &[u8], value: &[u8], delay: f32) -> Result<(), Error> {
         let mut phase = self.map.fire_input(self.tick, target, input, value, delay)?;
         self.pending_control_point_events.append(&mut phase.control_point_events);
+        self.pending_payload_events.append(&mut phase.payload_events);
         merge_mover_requests(&mut self.mover_requests, &phase.mover_requests);
         Ok(())
     }
@@ -1979,6 +1996,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.entity_world_transform(identity)
     }
 
+    pub fn entity_collision_state(&self, identity:u32) -> Option<(playsrc_entity::Transform,bool)> {
+        self.map.entity_collision_state(identity)
+    }
+
     pub fn entity_descends_from(&self, identity: u32, ancestor: u32) -> bool {
         self.map.entity_descends_from(identity, ancestor)
     }
@@ -2037,6 +2058,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.raw_view_angles = [command.pitch_degrees, command.movement.yaw_degrees, 0.0];
         admission_metrics::begin_tick(self.tick);
         self.map.set_control_point_facts(self.control_point_facts());
+        self.refresh_capture_actor_facts();
         let critical_time = self.tick as f32 * self.movement_configuration.tick_interval;
         self.critical_history.advance(critical_time).map_err(Error::Damage)?;
         if let Some(bots) = self.bots.as_mut() {
@@ -2126,6 +2148,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             &mut events,
         )?;
         map_phase.control_point_events.splice(0..0, std::mem::take(&mut self.pending_control_point_events));
+        map_phase.payload_events.splice(0..0, std::mem::take(&mut self.pending_payload_events));
         self.emit_due_regenerate_model_closes();
         self.apply_selection(command, &mut events, &mut projectile_events);
         if std::mem::take(&mut self.equipment_respawn_requested)
@@ -2287,7 +2310,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     && self.health > 0
                     && roster.local_team == PlayerTeam::Blue,
             ),
-            objective_contested: self.map.control_points().is_some_and(control_point::World::contested),
+            objective_contested: self.map.control_points().is_some_and(control_point::World::contested) || !self.map.payload_timer_may_expire(),
             flag_away_from_home: self.map.objectives().is_some_and(|objectives| {
                 objectives
                     .flags()
@@ -2318,6 +2341,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
         let round_phase = self.map.emit_round_outputs(self.tick, &round_events)?;
         map_phase.append(round_phase);
+        if round_events.iter().any(|event|matches!(event,round::Event::OvertimeChanged{active:true})) {
+            map_phase.append(self.map.payload_overtime_started(self.tick).map_err(Error::Entity)?);
+        }
         for event in &round_events {
             let sound = match *event {
                 round::Event::TimerWarning { seconds, setup: true, .. } => match seconds {
@@ -2334,7 +2360,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 },
                 round::Event::OvertimeChanged { active: true } => Some(SoundDefinition::Overtime),
                 round::Event::SetupFinished { timer } if self.round.timer().is_some_and(|t| t.configuration.identity == timer && t.configuration.show_in_hud && t.configuration.auto_countdown && !t.paused) => Some(SoundDefinition::RoundStartSiren),
-                _ => None,
+                _ => event.timer_sound(self.team_selection.local_team()),
             };
             if let Some(sound) = sound { self.emit_objective_sound(PLAYER_IDENTITY, sound, self.movement.position); }
         }
@@ -2383,7 +2409,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             map_phase.control_point_events.extend(point_events);
             if self.map.control_points().is_some() {
                 map_phase.append(self.map.activate_control_point_round(self.tick, facts, &mut self.authority_random)?);
-                if let Some(bots) = &mut self.bots { bots.control_point_round_spawn(self.map.control_points().unwrap(), self.tick as f32 * self.movement_configuration.tick_interval); }
+                if let (Some(bots), Some(points)) = (&mut self.bots, self.map.control_points().filter(|points| !points.is_payload())) { bots.control_point_round_spawn(points, self.tick as f32 * self.movement_configuration.tick_interval); }
             }
             if self.round.take_team_switch() {
                 self.team_selection.switch_teams();
@@ -2448,6 +2474,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_policy.maximum_speed *= if winner == self.team_selection.local_team() { 1.1 } else { 0.9 };
         }
         let hull = self.movement.active_hull(movement_policy);
+        self.refresh_capture_actor_facts();
         let begin_phase = self.map.begin_tick(
             &self.collision,
             BeginTickInput {
@@ -2594,7 +2621,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 Some(bot::Objectives {
                     rules: &self.round,
                     flags: self.map.objectives(),
-                    points: self.map.control_points(),
+                    points: self.map.control_points().filter(|points| !points.is_payload()),
                     in_setup: self.round.snapshot(Vec::new()).in_setup,
                     in_overtime: self.round.snapshot(Vec::new()).in_overtime,
                     time_left: self.round.bot_capture_time_left(),
@@ -2728,19 +2755,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             objective_events.extend(current);
         }
         self.apply_pickup_contacts(movement_policy, &mut events, &mut map_phase)?;
-        if self.map.control_points().is_some() {
+        if self.map.control_points().is_some_and(|points| !points.is_payload() || !self.map.payload_constraint_blocked()) {
             let facts = self.control_point_facts();
             self.map.set_control_point_facts(facts);
-            let mut actor = control_point::Actor::active(PLAYER_IDENTITY, self.team_selection.local_team(), self.class, self.movement.position, self.movement.active_hull(movement_policy));
-            actor.alive = self.lifecycle == PlayerLifecycle::Active && self.health > 0;
-            actor.invulnerable = [5_u8, 51, 52, 57].into_iter().any(|c| self.condition_word_contains(c));
-            actor.stealthed = [4_u8, 64, 66].into_iter().any(|c| self.condition_word_contains(c));
-            actor.control_stunned = self.conditions.is_control_stunned();
-            actor.megaheal = self.condition_word_contains(28);
-            actor.phased = self.condition_word_contains(14);
-            actor.enemy_disguise = self.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != actor.team);
-            let base_capture_value = actor.capture_value(self.map.control_points().unwrap().configuration().scales_with_players);
-            actor.capture_value_bonus = self.equipped_player_attribute(PLAYER_IDENTITY, "add_player_capturevalue", base_capture_value as f32) as i32 - base_capture_value;
+            self.map.sync_capture_area_transforms();
+            let actor = self.capture_actor(self.movement.active_hull(movement_policy));
             let mut actors = vec![actor];
             if let Some(bots) = &self.bots {
                 actors.extend(bots.control_point_actors());
@@ -3200,6 +3219,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.emit_objective_sound(identity, definition, position);
             }
         }
+        let capture_has_won=map_phase.control_point_events.iter().any(|event|matches!(event,control_point::Event::RoundWon{..}));
+        map_phase.append(self.map.advance_payload(self.tick,self.round.state()==round::State::Running&&!capture_has_won,self.round.in_overtime()).map_err(Error::Entity)?);
         if let Some(points) = self.map.control_points() {
             let team = |identity| if identity == PLAYER_IDENTITY { self.team_selection.local_team() } else { self.bots.as_ref().and_then(|bots| bots.team(identity)).unwrap_or(PlayerTeam::Unassigned) };
             for event in &events {
@@ -3245,8 +3266,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.map.apply_round_inputs(&mut self.round, self.tick as f32 * self.movement_configuration.tick_interval);
         let input_events = self.round.take_events();
         for event in &input_events {
-            if matches!(event, round::Event::TimerTimeAdded { .. }) && self.round.state() == round::State::Running && self.round.koth_configuration().is_none() {
-                self.emit_objective_sound(PLAYER_IDENTITY, SoundDefinition::TimeAdded, self.movement.position);
+            if let Some(sound) = event.timer_sound(self.team_selection.local_team()) {
+                self.emit_objective_sound(PLAYER_IDENTITY, sound, self.movement.position);
             }
             if let round::Event::RoundWon { team, .. } = event {
                 self.enter_bonus_round(*team);
@@ -3256,7 +3277,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         map_phase.append(self.map.emit_round_outputs(self.tick, &input_events)?);
         round_events.extend(input_events);
         if let Some(bots) = &mut self.bots { bots.synchronize_respawn_times(&self.round); }
-        if let (Some(bots), Some(points)) = (&mut self.bots, self.map.control_points()) { bots.control_point_events(points, &map_phase.control_point_events, self.tick as f32 * self.movement_configuration.tick_interval); }
+        if let (Some(bots), Some(points)) = (&mut self.bots, self.map.control_points().filter(|points| !points.is_payload())) { bots.control_point_events(points, &map_phase.control_point_events, self.tick as f32 * self.movement_configuration.tick_interval); }
         if self.bots.is_some() {
             if self.lifecycle != PlayerLifecycle::Dying { self.death_tick = None; }
             self.respawn_tick = self.death_tick.and_then(|death| self.round.player_respawn_time(self.team_selection.local_team(), death as f32 * self.movement_configuration.tick_interval)).map(|time| (time / self.movement_configuration.tick_interval).ceil().max(0.0) as u64);
@@ -3290,6 +3311,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             hitscan::ambassador_crosshair_scale(self.tick as f32 * self.movement_configuration.tick_interval
                 - self.loadout[&Weapon::Revolver].hitscan.last_accuracy_tick as f32 * self.movement_configuration.tick_interval)
         } else { 1.0 };
+        self.payload_events=std::mem::take(&mut map_phase.payload_events);
         Ok(Snapshot {
             weapon_crosshair_scale,
             equipped_items: self.active_equipment.equipped_items(self.class),
@@ -3322,7 +3344,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 .map
                 .objectives()
                 .map(|objectives| objectives.snapshot(objective_events)),
-            control_points: self.map.control_points().map(|points| points.snapshot(map_phase.control_point_events)),
+            control_points: self.map.control_points().filter(|points| !points.is_payload()).map(|points| points.snapshot(map_phase.control_point_events)),
             round,
             jump: jump_output,
             events,
@@ -3350,6 +3372,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
             self.conditions.words[1] |= 1 << (38 - 32);
         }
         if let Some(bots) = &mut self.bots { bots.set_round_winner(winner, self.round.bonus_round_seconds() + 1.0); }
+    }
+
+    fn capture_actor(&mut self, hull: playsrc_collision::Hull) -> control_point::Actor {
+        let mut actor = control_point::Actor::active(PLAYER_IDENTITY, self.team_selection.local_team(), self.class, self.movement.position, hull);
+        actor.alive = self.lifecycle == PlayerLifecycle::Active && self.health > 0;
+        actor.invulnerable = [5_u8,51,52,57].into_iter().any(|c| self.condition_word_contains(c));
+        actor.stealthed = [4_u8,64,66].into_iter().any(|c| self.condition_word_contains(c));
+        actor.control_stunned = self.conditions.is_control_stunned();
+        actor.megaheal = self.condition_word_contains(28);
+        actor.phased = self.condition_word_contains(14);
+        actor.enemy_disguise = self.spy.and_then(|s| s.disguise).is_some_and(|d| d.team != actor.team);
+        let base = actor.capture_value(self.map.control_points().unwrap().configuration().scales_with_players);
+        actor.capture_value_bonus = self.equipped_player_attribute(PLAYER_IDENTITY,"add_player_capturevalue",base as f32) as i32-base;
+        actor
+    }
+
+    fn refresh_capture_actor_facts(&mut self) {
+        if self.map.control_points().is_none() { return; }
+        let policy = MovementPolicy { class:self.class, modifiers:MovementModifiers::default() }.resolve();
+        let actor = self.capture_actor(self.movement.active_hull(policy));
+        self.map.control_points_mut().unwrap().set_capture_actors(std::iter::once(actor).chain(self.bots.iter().flat_map(|bots| bots.control_point_actors())));
     }
 
     fn control_point_facts(&self) -> control_point::Facts {
@@ -11880,7 +11923,8 @@ mod tests {
                 bonesaw_hit_flesh_available: 0b111,
                 bonesaw_hit_world_available: 0b11,
                 overtime_available: 0b1111,
-                control_point_available: 0x1fff,
+                control_point_available: 0xffff,
+                payload_warning_available: [0x3ff;2],
             }
         );
 
@@ -11935,7 +11979,8 @@ mod tests {
                 bonesaw_hit_flesh_available: 0b111,
                 bonesaw_hit_world_available: 0b11,
                 overtime_available: 0b1111,
-                control_point_available: 0x1fff,
+                control_point_available: 0xffff,
+                payload_warning_available: [0x3ff;2],
             }
         );
     }

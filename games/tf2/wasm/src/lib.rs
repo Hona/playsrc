@@ -414,6 +414,11 @@ impl playsrc_tf2::GameplayWorld for SharedWorld {
                 )
             })
     }
+
+    fn overlaps_transformed_model_hull(&self, model:usize, transform:playsrc_entity::Transform, position:[f32;3], hull:playsrc_collision::Hull) -> Result<bool,playsrc_movement::Error> {
+        self.world.overlaps_transformed_model_hull(model,playsrc_collision::Transform {origin:transform.origin,angles:transform.angles},position,hull)
+            .map_err(|_|playsrc_movement::Error::new(playsrc_movement::Operation::Trace,playsrc_movement::FailureKind::Malformed,"transformed capture-area overlap"))
+    }
 }
 
 #[derive(Clone)]
@@ -5331,7 +5336,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &prior_collision,
             templates,
             current_revision,
-            Some(&|identity| candidate.entity_world_transform(identity)),
+            Some(&|identity| candidate.entity_collision_state(identity)),
             &transforms,
             &velocities,
         ) {
@@ -5342,7 +5347,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 current_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_world_transform(identity)),
+                Some(&|identity| candidate.entity_collision_state(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -5459,7 +5464,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 collision_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_world_transform(identity)),
+                Some(&|identity| candidate.entity_collision_state(identity)),
                 &transforms,
                 &velocities,
             ) {
@@ -7263,9 +7268,9 @@ fn encode_entity_presentation(
 
 fn encode_random_state(output: &mut Vec<u8>, state: playsrc_tf2::Tf2RandomState, limit: usize) -> Option<()> {
     let start = output.len();
-    if start.checked_add(364)? > limit { return None; }
+    if start.checked_add(368)? > limit { return None; }
     output.extend_from_slice(b"PRNG");
-    output.extend_from_slice(&3_u32.to_le_bytes());
+    output.extend_from_slice(&4_u32.to_le_bytes());
     for stream in [state.authority, state.predicted_presentation] {
         output.extend_from_slice(&stream.current.to_le_bytes());
         output.extend_from_slice(&stream.shuffled.to_le_bytes());
@@ -7312,7 +7317,8 @@ fn encode_random_state(output: &mut Vec<u8>, state: playsrc_tf2::Tf2RandomState,
         state.sound_selection.projectile_unlock_available[5],
         0,
     ]);
-    (output.len().checked_sub(start)? == 364).then_some(())
+    for mask in state.sound_selection.payload_warning_available { output.extend_from_slice(&mask.to_le_bytes()); }
+    (output.len().checked_sub(start)? == 368).then_some(())
 }
 
 fn encode_random_draw(
@@ -8969,14 +8975,14 @@ fn collision_object_templates(
 // collision pose. Removed entities must not leave a solid at the authored pose.
 fn collision_template_transform(
     template: &CollisionObjectTemplate,
-    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
+    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
     overrides: &BTreeMap<u64, playsrc_collision::Transform>,
 ) -> (bool, playsrc_collision::Transform) {
     let mut enabled = template.input.enabled;
     let mut transform = template.input.transform;
     if template.runtime_transform && let Some(resolve) = entity_transform {
         match u32::try_from(template.input.identity).ok().and_then(resolve) {
-            Some(value) => transform = playsrc_collision::Transform { origin: value.origin, angles: value.angles },
+            Some((value,solid)) => { transform = playsrc_collision::Transform { origin: value.origin, angles: value.angles }; enabled=solid || template.input.volume_contents; },
             None => enabled = false,
         }
     }
@@ -8990,7 +8996,7 @@ fn compile_collision_snapshot(
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
-    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
+    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
@@ -9043,7 +9049,7 @@ fn retain_collision_snapshot(
     previous: &playsrc_collision::Snapshot,
     templates: &[CollisionObjectTemplate],
     revision: u64,
-    entity_transform: Option<&dyn Fn(u32) -> Option<playsrc_entity::Transform>>,
+    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Option<playsrc_collision::Snapshot> {
@@ -9093,13 +9099,22 @@ fn setup_gate_child_collision_follows_parent_and_invalidates_retention() {
         kind: playsrc_tf2::MoverResultKind::Completed, transform: playsrc_entity::Transform { origin: [0.0,0.0,128.0], angles: [0.0;3] }, carry: [0.0;3] }]).unwrap();
     assert!(map.entity_descends_from(1,0));
     assert!(!map.entity_descends_from(0,1));
-    let resolve = |identity| map.entity_world_transform(identity);
+    let resolve = |identity| map.entity_collision_state(identity);
     assert!(retain_collision_snapshot(&closed, &templates, 2, Some(&resolve), &transforms, &velocities).is_none(), "moving a gate child must invalidate the static collision cache");
     let opened = compile_collision_snapshot(Some(&closed), &world, &templates, 2, None, Some(&resolve), &transforms, &velocities).unwrap();
     let child = map.entity_world_transform(1).unwrap();
     assert!(child.origin[2] > 120.0);
     assert_eq!(opened.records()[0].transform.origin, child.origin);
     assert!(retain_collision_snapshot(&opened, &templates, 3, Some(&resolve), &transforms, &velocities).is_some());
+    map.input(2,1,b"DisableCollision",playsrc_entity::Variant::Void).unwrap();
+    let resolve=|identity|map.entity_collision_state(identity);
+    assert!(retain_collision_snapshot(&opened,&templates,4,Some(&resolve),&transforms,&velocities).is_none());
+    let disabled=compile_collision_snapshot(Some(&opened),&world,&templates,4,None,Some(&resolve),&transforms,&velocities).unwrap();
+    assert!(!disabled.records()[0].enabled,"checkpoint sign collision inputs reach collision, not just rendering");
+    map.input(3,1,b"EnableCollision",playsrc_entity::Variant::Void).unwrap();
+    let resolve=|identity|map.entity_collision_state(identity);
+    let enabled=compile_collision_snapshot(Some(&disabled),&world,&templates,5,None,Some(&resolve),&transforms,&velocities).unwrap();
+    assert!(enabled.records()[0].enabled);
     let removed = |_| None;
     assert!(retain_collision_snapshot(&opened, &templates, 4, Some(&removed), &transforms, &velocities).is_none());
     let removed = compile_collision_snapshot(Some(&opened), &world, &templates, 4, None, Some(&removed), &transforms, &velocities).unwrap();
@@ -11511,17 +11526,19 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     ];
     let has_class = |name: &[u8]| graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(name)));
     let flags = has_class(b"item_teamflag");
-    let control_points = has_class(b"team_control_point_master") && !has_class(b"team_train_watcher");
+    let control_points = has_class(b"team_control_point_master");
     let koth = has_class(b"tf_logic_koth");
     let timer_audio = koth || graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"team_round_timer")) && entity_scalar(entity, b"show_in_hud") == Some(b"1"));
     let mut voice_targets = Vec::new();
     if flags { voice_targets.extend_from_slice(&flag_targets); }
     if timer_audio { voice_targets.extend_from_slice(playsrc_tf2::audio::TIMER_VOICE_SOUNDS); }
     if control_points { voice_targets.extend(playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|definition| definition.identity())); }
+    if has_class(b"team_train_watcher") { voice_targets.extend_from_slice(playsrc_tf2::payload::VOICE_SOUNDS); }
     if !voice_targets.is_empty() { documents.push(("scripts/game_sounds_vo.txt", &voice_targets)); }
     let mut round_targets = if flags || timer_audio { item_and_round_targets.to_vec() } else { item_targets.to_vec() };
     if timer_audio { round_targets.extend_from_slice(playsrc_tf2::audio::TIMER_GENERAL_SOUNDS); }
     if control_points { round_targets.extend(playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|definition| definition.identity())); }
+    if has_class(b"team_train_watcher") { round_targets.extend_from_slice(playsrc_tf2::payload::GENERAL_SOUNDS); }
     documents.push(("scripts/game_sounds.txt", &round_targets));
     for (_, path, _) in playsrc_tf2::audio::CONFIGURED_SOUNDS {
         if !documents.iter().any(|(current, _)| current == path) { documents.push((path, &[])); }
@@ -11611,7 +11628,7 @@ fn sound_precache_absences(bundle: &BTreeMap<String, &[u8]>) -> Result<Vec<Strin
 
 #[cfg(test)]
 #[test]
-fn payload_timer_audio_includes_setup_countdown_without_control_point_audio() {
+fn payload_timer_audio_includes_setup_and_checkpoint_contracts() {
     let scripts = playsrc_tf2::SoundDefinition::NATIVE.iter().map(|sound| sound.identity())
         .chain(playsrc_tf2::audio::CONFIGURED_SOUNDS.iter().map(|(name, _, _)| *name))
         .chain(["Announcer.TimeAddedForEnemy", "Announcer.TimeAwardedForTeam"])
@@ -11635,7 +11652,7 @@ fn payload_timer_audio_includes_setup_countdown_without_control_point_audio() {
         for name in ["Announcer.RoundBegins60Seconds", "Announcer.RoundBegins1Seconds", "Announcer.RoundEnds60seconds", "Ambient.Siren"] {
             assert_eq!(bytes.windows(name.len()).any(|value| value == name.as_bytes()), timer, "{name}");
         }
-        assert!(!bytes.windows(b"Hud.PointCaptured".len()).any(|value| value == b"Hud.PointCaptured"));
+        assert_eq!(bytes.windows(b"Hud.PointCaptured".len()).any(|value| value == b"Hud.PointCaptured"), timer);
     }
 }
 
@@ -16677,7 +16694,8 @@ mod tests {
                 bonesaw_hit_flesh_available: 7,
                 bonesaw_hit_world_available: 3,
                 overtime_available: 15,
-                control_point_available: 0x1fff,
+                control_point_available: 0xffff,
+                payload_warning_available: [0x3ff;2],
             },
         };
         let mut collision_snapshot = b"CSNP".to_vec();
@@ -16723,16 +16741,16 @@ mod tests {
         let expected_hash = "ab86a94b607e9d76a9d778e01818e0358658eee5f3f2f19131573c69fffa5aeb";
         assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
         assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
-        assert_eq!(encoded.len(), 1264);
-        assert_eq!(&encoded[1128..1144], &[0; 16]);
-        assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 800);
-        assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 35);
-        assert_eq!(f32::from_le_bytes(encoded[1152..1156].try_into().unwrap()), 1.0);
-        assert_eq!(&encoded[1012..1016], b"PCPN");
-        assert_eq!(&encoded[1024..1032], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[1060..1068], b"PGRL\x04\0\0\0");
-        assert_eq!(&encoded[1156..1168], &[9, 0, 0, 0, 7, 0, 0, 0, 0x81, 0, 0, 0]);
-        for position in encoded[1168..].chunks_exact(12) {
+        assert_eq!(encoded.len(), 1268);
+        assert_eq!(&encoded[1132..1148], &[0; 16]);
+        assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 800);
+        assert_eq!(i32::from_le_bytes(encoded[1152..1156].try_into().unwrap()), 35);
+        assert_eq!(f32::from_le_bytes(encoded[1156..1160].try_into().unwrap()), 1.0);
+        assert_eq!(&encoded[1016..1020], b"PCPN");
+        assert_eq!(&encoded[1028..1036], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[1064..1072], b"PGRL\x04\0\0\0");
+        assert_eq!(&encoded[1160..1172], &[9, 0, 0, 0, 7, 0, 0, 0, 0x81, 0, 0, 0]);
+        for position in encoded[1172..].chunks_exact(12) {
             assert_eq!(f32::from_le_bytes(position[8..12].try_into().unwrap()), 3.0);
         }
         assert_eq!(
@@ -16746,9 +16764,10 @@ mod tests {
         assert_eq!(&encoded[328..332], &[1, 3, 17, 32]);
         assert_eq!(&encoded[408..412], &[22, 1, 3, 0]);
         assert_eq!(&encoded[544..552], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[552..560], b"PRNG\x03\0\0\0");
-        assert_eq!(&encoded[552 + 293..552 + 296], &[15, 255, 31]);
+        assert_eq!(&encoded[552..560], b"PRNG\x04\0\0\0");
+        assert_eq!(&encoded[552 + 293..552 + 296], &[15, 255, 255]);
         assert_eq!(&encoded[552 + 360..552 + 364], &[255, 255, 7, 0]);
+        assert_eq!(&encoded[552 + 364..552 + 368], &[255, 3, 255, 3]);
 
         let constrained = encode_snapshot(
             &snapshot,
@@ -16777,7 +16796,7 @@ mod tests {
             &constrained[544..556],
             &[1, 1, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0]
         );
-        assert_eq!(&constrained[556..564], b"PRNG\x03\0\0\0");
+        assert_eq!(&constrained[556..564], b"PRNG\x04\0\0\0");
         assert_eq!(constrained.len(), encoded.len() + 4);
 
         // Exercise growth boundaries while holding every older immutable lease.

@@ -14,7 +14,7 @@ import { configuredEquipmentSounds } from "../src/equipment/audio.generated"
 import { ReplyReader, ReplyWriter, REPLY_BYTES } from "../src/reply-transport"
 
 function snapshot(): ArrayBuffer {
-  const bytes = new ArrayBuffer(1401)
+  const bytes = new ArrayBuffer(1405)
   const data = new Uint8Array(bytes)
   const view = new DataView(bytes)
   data.set([0x50, 0x53, 0x53, 0x4e])
@@ -37,7 +37,7 @@ function snapshot(): ArrayBuffer {
   view.setUint32(88, 1, true)
   view.setUint32(124, 2, true)
   view.setUint32(144, 52, true)
-  view.setUint32(148, 364, true)
+  view.setUint32(148, 368, true)
   view.setUint32(152,60,true);view.setUint32(156,12,true)
 
   view.setUint32(160, 0x101, true)
@@ -105,9 +105,10 @@ function snapshot(): ArrayBuffer {
   data.set([1, 1, 0, 0, 2, 1, 0, 0], at)
   at += 8
   data.set([0x50, 0x52, 0x4e, 0x47], at)
-  view.setUint32(at + 4, 3, true)
+  view.setUint32(at + 4, 4, true)
   data.set([7, 7, 3, 31, 3, 3, 7, 31, 15, 3, 7, 7, 3, 0, 0, 0], at + 280)
-  at += 364
+  view.setUint16(at+364,0x3ff,true); view.setUint16(at+366,0x3ff,true)
+  at += 368
   data.set([0x43, 0x53, 0x4e, 0x50], at)
   view.setUint32(at + 4, 3, true)
   data.fill(1,at+8,at+40)
@@ -170,7 +171,7 @@ test("control point and overtime events admit every declared wave variant", () =
   const source = new Uint8Array(snapshot())
   const at = Buffer.from(source).indexOf("CSNP")
   expect(at).toBeGreaterThan(0)
-  for (const [definition, waves] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2]]) {
+  for (const [definition, waves] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2], [119,10], [120,10], [121,1], [122,1], [158,1], [159,3]]) {
     for (let wave = 0; wave <= waves!; wave++) {
       const bytes = new Uint8Array(source.length + 52)
       bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)
@@ -258,7 +259,7 @@ test("round codec keeps two independent KOTH timer records and rejects malformed
   expect(() => decodeSnapshot(bytes.buffer)).toThrow("KOTH timer is invalid")
 })
 test("critical draws preserve separate authority and predicted-presentation records", () => {
-  const source = new Uint8Array(snapshot()), at = 981
+  const source = new Uint8Array(snapshot()), at = 985
   const data = new Uint8Array(source.length + 32), view = new DataView(data.buffer)
   data.set(source.subarray(0, at)); data.set(source.subarray(at), at + 32)
   view.setUint32(128, 2, true)
@@ -295,12 +296,23 @@ test("native crosshair scale follows counters and rejects non-finite values", ()
 test("projectile wave cycles do not overwrite main objective or configured sound masks", () => {
   const bytes = new Uint8Array(snapshot()), view = new DataView(bytes.buffer), random = 617
   bytes[random + 293] = 15
-  view.setUint16(random + 294, 0x1fff, true)
+  view.setUint16(random + 294, 0xffff, true)
   bytes.set([255, 255, 7, 0], random + 360)
-  expect(decodeSnapshot(bytes).randomState).toMatchObject({ overtimeAvailable: 15, controlPointAvailable: 0x1fff,
+  expect(decodeSnapshot(bytes).randomState).toMatchObject({ overtimeAvailable: 15, controlPointAvailable: 0xffff,
     projectileUnlockAvailable: [7, 7, 7, 7, 15, 7] })
   bytes[random + 363] = 1
   expect(() => decodeSnapshot(bytes)).toThrow("TF2 sound selection state is invalid")
+})
+
+test("payload alert masks preserve ordinals eight and nine and reject old random-state framing", () => {
+  const bytes = snapshot(), view = new DataView(bytes), random = 617
+  view.setUint16(random+364,0x380,true)
+  expect(decodeSnapshot(bytes).randomState.payloadWarningAvailable).toEqual([0x380,0x3ff])
+  view.setUint16(random+366,0x400,true)
+  expect(()=>decodeSnapshot(bytes)).toThrow("TF2 sound selection state is invalid")
+  view.setUint16(random+366,0x3ff,true)
+  view.setUint32(random+4,3,true)
+  expect(()=>decodeSnapshot(bytes)).toThrow("TF2 random state identity is invalid")
 })
 
 test("flare radius damage preserves its native kind and rejects nonexplosive syringe requests", () => {
@@ -316,7 +328,7 @@ test("flare radius damage preserves its native kind and rejects nonexplosive syr
 
 test("studio occurrence revision bytes retain closed, moving, blocked, reversed and restored transforms", () => {
   const source = new Uint8Array(snapshot())
-  const insert = 1101
+  const insert = 1105
   const states = [320, 360, 444, 400, 400, 420, 320].map(z => {
     const bytes = new Uint8Array(source.length + 32)
     bytes.set(source.subarray(0, insert))
@@ -488,7 +500,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
   })
   test("accepts every authored KOTH and capture announcer wave ordinal, rejecting the first out-of-range wave", () => {
     for (const [definition, waveCount] of [[85, 4], [86, 2], [89, 3], [90, 2], [91, 4], [98, 2], [103, 1], [104, 1], [105, 1], [106, 1], [107, 1], [108, 1]] as const) {
-      const source = rosterSnapshot(1n, 0, 0), at = 981
+      const source = rosterSnapshot(1n, 0, 0), at = 985
       const bytes = new Uint8Array(source.length + 52), view = new DataView(bytes.buffer)
       bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)
       view.setUint32(132, 1, true)
@@ -516,7 +528,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
   })
 
   test("configured sound identities and bounded cycle masks survive the native wire", () => {
-    const source = new Uint8Array(snapshot()), at = 981
+    const source = new Uint8Array(snapshot()), at = 985
     const bytes = new Uint8Array(source.length + 52), view = new DataView(bytes.buffer)
     bytes.set(source.subarray(0, at)); bytes.set(source.subarray(at), at + 52)
     view.setUint32(132, 1, true)
@@ -533,7 +545,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
   test("Worker snapshot deltas and coalescing retain ordered sound patch starts, destruction and re-press", () => {
     const frame = (tick: bigint, events: readonly (readonly [number, number, number])[]) => {
-      const base = rosterSnapshot(tick, 0, 0), at = 981
+      const base = rosterSnapshot(tick, 0, 0), at = 985
       const bytes = new Uint8Array(base.length + events.length * 52), view = new DataView(bytes.buffer)
       bytes.set(base.subarray(0, at)); bytes.set(base.subarray(at), at + events.length * 52)
       view.setUint32(132, events.length, true)
@@ -557,15 +569,15 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     expect(requests[0]!.fadeSeconds).toBe(3.5)
     expect(new Set(requests.map(request => request.voiceIdentity)).size).toBe(9)
     const pitched = first.slice()
-    pitched[981 + 11] = 115; pitched[981 + 15] = 4
-    new DataView(pitched.buffer).setFloat32(981 + 48, 92, true)
+    pitched[985 + 11] = 115; pitched[985 + 15] = 4
+    new DataView(pitched.buffer).setFloat32(985 + 48, 92, true)
     expect(tf2Audio(decodeSnapshot(pitched))[0]).toMatchObject({ definition: "Weapon_Minigun.FireCrit", action: "play", overrides: { pitch: 92 } })
     for (const invalid of [5, 255]) {
-      const bad = first.slice(); bad[981 + 15] = invalid
+      const bad = first.slice(); bad[985 + 15] = invalid
       expect(() => decodeSnapshot(bad.buffer)).toThrow(Tf2CodecError)
     }
     const invalidDuration = first.slice()
-    new DataView(invalidDuration.buffer).setFloat32(981 + 48, NaN, true)
+    new DataView(invalidDuration.buffer).setFloat32(985 + 48, NaN, true)
     expect(() => decodeSnapshot(invalidDuration.buffer)).toThrow(Tf2CodecError)
   })
 
@@ -1139,7 +1151,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       const count = 1 + random() % 4, states: Uint8Array[] = []
       for (let i = 0; i < count; i++) {
         const state = rosterSnapshot(tick + BigInt(i) + 6n, frame < 30 ? 31 : frame < 60 ? 23 : 15)
-        const view = new DataView(state.buffer), brushHeader = 1045
+        const view = new DataView(state.buffer), brushHeader = 1049
         view.setFloat32(204, random() % 1000 - 500, true)
         view.setFloat32(20, random() % 201, true)
         const brush = random() % 512
@@ -1190,7 +1202,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
     a.collisionSnapshot.bytes.fill(0)
     expect(b.collisionSnapshot.bytes[0]).toBe(67)
     const third = second.slice(), thirdView = new DataView(third.buffer)
-    thirdView.setBigUint64(8, 9n, true); thirdView.setFloat32(1045 + 52 + 40, -0, true)
+    thirdView.setBigUint64(8, 9n, true); thirdView.setFloat32(1049 + 52 + 40, -0, true)
     const c = stream.decode(snapshotPacket(3n, [third], second))[0]!.snapshot
     expect(Object.is(c.entityPresentation.models[0]!.worldPosition[0], -0)).toBe(true)
     expect(Object.is(a.entityPresentation.models[0]!.worldPosition[0], 0)).toBe(true)
@@ -1265,15 +1277,15 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
       expect(() => stream.decode(valid.slice(0, size))).toThrow()
       expect(stream.tick).toBe(1n)
     }
-    for (const offset of [20, 204, 1045 + 52 + 40]) {
+    for (const offset of [20, 204, 1049 + 52 + 40]) {
       const malformed = second.slice(); new DataView(malformed.buffer).setFloat32(offset, NaN, true)
       expect(() => stream.decode(snapshotPacket(2n, [malformed], first))).toThrow()
     }
     const reordered = second.slice(), reorderedView = new DataView(reordered.buffer)
-    reorderedView.setUint32(1109 + 128, 1, true)
+    reorderedView.setUint32(1113 + 128, 1, true)
     expect(() => stream.decode(snapshotPacket(2n, [reordered], first))).toThrow()
     const mismatchedClass = second.slice()
-    mismatchedClass[1109 + 128 + 4] = 6
+    mismatchedClass[1113 + 128 + 4] = 6
     expect(() => stream.decode(snapshotPacket(2n, [mismatchedClass], first))).toThrow("scoreboard roster")
     const third = rosterSnapshot(9n, 31, 1)
     new DataView(third.buffer).setFloat32(20, NaN, true)
@@ -1288,7 +1300,7 @@ describe("TF2 canonical gameplay command and snapshot contract", () => {
 
   test("identical objective events are retained once for each exact tick, not deduplicated with state", () => {
     const withObjective = (tick: bigint) => {
-      const base = rosterSnapshot(tick, 31, 1), at = 1121 + 128 + 31 * 128
+      const base = rosterSnapshot(tick, 31, 1), at = 1125 + 128 + 31 * 128
       const bytes = new Uint8Array(base.length + 48), view = new DataView(bytes.buffer)
       bytes.set(base.subarray(0, at + 12)); bytes.set(base.subarray(at + 12), at + 60)
       bytes[at + 8] = 1; view.setUint32(at + 32, 1, true)

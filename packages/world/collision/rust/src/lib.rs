@@ -614,6 +614,10 @@ impl World {
         .map(|trace| trace.start_solid)
     }
 
+    pub fn overlaps_transformed_model_hull(&self, model:usize, transform:Transform, position:[f32;3], hull:Hull) -> Result<bool,Error> {
+        self.trace_model_hull(model,ObjectTraceRequest {identity:0,transform,start:position,end:position,hull,mask:u32::MAX},0,ObjectRole::Entity).map(|trace|trace.start_solid)
+    }
+
     pub(crate) fn trace_model_hull(
         &self,
         model: usize,

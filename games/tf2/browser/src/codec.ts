@@ -59,6 +59,7 @@ export type RandomStreamState = Readonly<{
   table: readonly number[]
 }>
 export type Tf2RandomState = Readonly<{
+  payloadWarningAvailable: readonly [number, number]
   configuredAvailable: readonly number[]
   projectileUnlockAvailable: readonly number[]
   authority: RandomStreamState
@@ -1590,9 +1591,9 @@ function validateProjectileTransitions(events: readonly ProjectileEvent[]): void
 }
 
 function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): Tf2RandomState {
-  if (length !== 364) throw new Tf2CodecError("TF2 random state length is invalid")
+  if (length !== 368) throw new Tf2CodecError("TF2 random state length is invalid")
   const data = new Uint8Array(bytes, offset, length), view = new DataView(bytes, offset, length)
-  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 3) {
+  if (new TextDecoder().decode(data.subarray(0, 4)) !== "PRNG" || view.getUint32(4, true) !== 4) {
     throw new Tf2CodecError("TF2 random state identity is invalid")
   }
   let at = 8
@@ -1618,7 +1619,7 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     || (fistAndBonesawFlesh & ~31) !== 0 || (fistAndBonesawWorld & ~15) !== 0 || (fistHitFleshAvailable & ~7) !== 0
     || (flagEnemyStolenAvailable & ~15) !== 0 || (flagEnemyDroppedAvailable & ~3) !== 0
     || (flagEnemyCapturedAvailable & ~7) !== 0 || (flagEnemyReturnedAvailable & ~7) !== 0 || (flagTeamDroppedAvailable & ~3) !== 0
-    || data[at + 13]! > 15 || view.getUint16(at + 14, true) > 0x1fff || (data[362]! & ~7) !== 0 || data[363] !== 0) {
+    || data[at + 13]! > 15 || (data[362]! & ~7) !== 0 || data[363] !== 0 || view.getUint16(364,true)>0x3ff || view.getUint16(366,true)>0x3ff) {
     throw new Tf2CodecError("TF2 sound selection state is invalid")
   }
   const configuredAvailable = Object.freeze(Array.from(data.subarray(296, 360)))
@@ -1628,7 +1629,7 @@ function decodeRandomState(bytes: ArrayBuffer, offset: number, length: number): 
     (data[360]! >> 6) | ((data[361]! & 1) << 2),
     (data[361]! >> 1) & 7, data[361]! >> 4, data[362]!,
   ])
-  return Object.freeze({ configuredAvailable, authority, predictedPresentation, projectileUnlockAvailable, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
+  return Object.freeze({ payloadWarningAvailable: Object.freeze([view.getUint16(364,true),view.getUint16(366,true)]) as readonly [number,number], configuredAvailable, authority, predictedPresentation, projectileUnlockAvailable, rocketExplosionAvailable: rocketSelections & 7, stickyExplosionAvailable: stickySelections & 7, batHitWorldAvailable, shovelHitWorldAvailable: shovelSelections & 3, shovelHitFleshAvailable: (shovelSelections >> 2) & 7, knifeHitFleshAvailable: shovelSelections >> 5, fistMissAvailable: fistAndBonesawFlesh & 3, fistHitWorldAvailable: fistAndBonesawWorld & 3, fistHitFleshAvailable, bonesawHitFleshAvailable: fistAndBonesawFlesh >> 2, bonesawHitWorldAvailable: fistAndBonesawWorld >> 2, kukriHitFleshAvailable: kukriSelections & 7, kukriHitWorldAvailable: (kukriSelections >> 3) & 3, wrenchHitFleshAvailable: kukriSelections >> 5, fireAxeHitWorldAvailable: rocketSelections >> 3, fireAxeHitFleshAvailable: stickySelections >> 3, flagEnemyStolenAvailable, flagEnemyDroppedAvailable, flagEnemyCapturedAvailable, flagEnemyReturnedAvailable, flagTeamDroppedAvailable, bottleHitFleshAvailable: (batSelections >> 2) & 7, bottleHitWorldAvailable: batSelections >> 5, overtimeAvailable: data[at + 13]!, controlPointAvailable: view.getUint16(at + 14, true) })
 }
 
 function decodeCollisionSnapshot(bytes: ArrayBuffer, offset: number, length: number): CollisionSnapshot {

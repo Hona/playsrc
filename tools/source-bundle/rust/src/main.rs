@@ -3230,7 +3230,7 @@ fn main() -> Result<(), String> {
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case(b"item_teamflag"))
     });
-    let control_points = graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point_master")) && !graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_train_watcher"));
+    let control_points = graph.entities.iter().any(|e| e.classname.as_deref() == Some(b"team_control_point_master"));
     resolver.required("scripts/dsp_presets.txt", "audio-dsp")?;
     let soundscapes = playsrc_audio::soundscape::Registry::load(&target, |path| resolver.optional(path, "soundscape-script"))?;
     if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|class|
@@ -3264,6 +3264,10 @@ fn main() -> Result<(), String> {
     if control_points {
         round_scripts.push(("scripts/game_sounds_vo.txt", playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|d| d.identity()).collect()));
         round_scripts.push(("scripts/game_sounds.txt", playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|d| d.identity()).collect()));
+    }
+    if graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(b"team_train_watcher"))) {
+        round_scripts.push(("scripts/game_sounds_vo.txt", playsrc_tf2::payload::VOICE_SOUNDS.to_vec()));
+        round_scripts.push(("scripts/game_sounds.txt", playsrc_tf2::payload::GENERAL_SOUNDS.to_vec()));
     }
     let mut sound_precache_absences = BTreeSet::new();
     for (script, targets) in round_scripts {
