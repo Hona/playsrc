@@ -22,6 +22,7 @@ import { chooseTf2Team } from "./team-selection-evidence"
 import { startWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
+import { startGpuEngineCapture } from "./process-gpu"
 import { acceptStockLoadouts } from "./stock-loadout-acceptance"
 import { startGameplayReplayLifecycle } from "./gameplay-replay"
 import { assertUpwardProfile, assertWorkerInstrumentation } from "./upward-profile-gates"
@@ -447,6 +448,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const processBefore = await presentationCdp?.send("SystemInfo.getProcessInfo")
     const processBoundaryStarted = performance.now()
     const memoryBefore = processBefore ? await captureProcessMemory(processBefore.processInfo) : undefined
+    const gpuEngines = processBefore && process.platform === "win32" ? await startGpuEngineCapture(processBefore.processInfo, seconds) : undefined
     if (presentationCdp) {
       const available = (await presentationCdp.send("Tracing.getCategories")).categories
       expect(presentationCategories.every(category => available.includes(category))).toBe(true)
@@ -460,13 +462,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
     try {
       sample = await page.evaluate(async ({ seconds, presented, startMark, endMark }) => {
         const owner = (globalThis as any).__playsrcDeliveryObserver
-        const started = performance.now()
+        const started = performance.now(), startedEpoch = performance.timeOrigin + started
         owner.start(started)
         if (presented) performance.mark(startMark, { startTime: started })
         await new Promise(resolve => setTimeout(resolve, seconds * 1000))
         const ended = performance.now()
         if (presented) performance.mark(endMark, { startTime: ended })
-        return owner.stop(ended)
+        return { ...owner.stop(ended), startedEpoch, endedEpoch: performance.timeOrigin + ended }
       }, { seconds, presented: Boolean(presentationCdp), startMark: TRACE_START, endMark: TRACE_END })
     } finally { monitoring = false; await page.keyboard.up("w"); await monitor }
     await checkNativeWindow()
@@ -497,7 +499,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await writeFile(path.join(directory, "delivery-presentation.json"), JSON.stringify({ evidence: evidence.artifact, complete: evidence.manifest.complete, compositor,
         nativeDelivery: evidence.analysis, processes: { before: processBefore, after: processAfter, started: processBoundaryStarted, ended: processBoundaryEnded,
           scope: "Unprorated process CPU counters bracket sampling and boundary readback; not active-only CPU or GPU device time" },
-        memory: { before: memoryBefore, after: memoryAfter, scope: "Boundary process residency/commit, not active peaks or deduplicated physical RAM" } }, null, 2))
+        memory: { before: memoryBefore, after: memoryAfter, scope: "Boundary process residency/commit, not active peaks or deduplicated physical RAM" },
+        gpuEngines: gpuEngines ? { ...await gpuEngines.finished, scope: gpuEngines.scope, startedEpoch: sample.startedEpoch, endedEpoch: sample.endedEpoch } : null }, null, 2))
       expect(evidence.manifest.complete).toBe(true)
       expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
       await presentationCdp.detach()
