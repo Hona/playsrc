@@ -83,8 +83,16 @@ export function queryWindowsDesktop(timeout = 10_000): WindowsDesktopState {
 
 export function requireWindowsProfileConsole(remaining = 10_000): WindowsDesktopState | null {
   if (process.platform !== "win32") return null
-  const state = queryWindowsDesktop(Math.min(10_000, remaining))
-  assertWindowsConsole(state, os.release())
+  const deadline = Date.now() + Math.min(10_000, remaining)
+  let state: WindowsDesktopState
+  do {
+    state = queryWindowsDesktop(Math.max(1, deadline - Date.now()))
+    assertWindowsConsole(state, os.release())
+    if (state.idleMilliseconds >= 2_000 || Date.now() + 100 >= deadline) break
+    // Only wait for actual GetLastInputInfo aging; never send input, reset its
+    // clock, or suppress the user's events to manufacture admission.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+  } while (Date.now() < deadline)
   assertWindowsIdle(state)
   return state
 }
