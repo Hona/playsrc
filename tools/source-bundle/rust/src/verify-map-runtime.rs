@@ -150,9 +150,9 @@ fn main() -> Result<(), String> {
     }
     // Exercise real map-authored systems through the same single-call particle
     // boundary as gameplay. This catches operators that fail only on emission.
-    let mut particle_request = [0_u8; 32];
+    let mut particle_request = [0_u8; 40];
     particle_request[..4].copy_from_slice(b"PPTX");
-    particle_request[4..8].copy_from_slice(&4_u32.to_le_bytes());
+    particle_request[4..8].copy_from_slice(&5_u32.to_le_bytes());
     particle_request[12..16].copy_from_slice(&1.0_f32.to_le_bytes());
     if let Some(camera) = smoke_camera {
         for (axis, value) in camera.into_iter().enumerate() { particle_request[16 + axis * 4..20 + axis * 4].copy_from_slice(&value.to_le_bytes()); }
@@ -170,7 +170,7 @@ fn main() -> Result<(), String> {
         let position=smoke_camera.unwrap_or([0.0;3]);
         for value in position.into_iter().chain(position).chain([90.0,5.0,75.0,16.0/9.0,1.0,30_000.0]) {visual.extend_from_slice(&value.to_le_bytes());}
         let mut frame = vec![0_u8; 64];
-        frame[..32].copy_from_slice(&particle_request);
+        frame[..32].copy_from_slice(&particle_request[..32]);
         frame[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
         frame[32..36].copy_from_slice(&(1.0_f32 / 60.0).to_le_bytes());
         frame[60..64].copy_from_slice(&(visual.len() as u32).to_le_bytes());frame.extend_from_slice(&visual);
@@ -186,7 +186,10 @@ fn main() -> Result<(), String> {
     let particle_bytes = playsrc_tf2_wasm::playsrc_particle_output_length(handle);
     let mut particle_output = vec![0; particle_bytes];
     unsafe { playsrc_tf2_wasm::playsrc_particle_output_copy(handle, particle_output.as_mut_ptr(), particle_bytes); }
-    let sky_particles = particle_output[40..].chunks_exact(436).filter(|record| record[15] == 1).count();
+    if particle_output.len()<40||&particle_output[..4]!=b"PSPR"||u32::from_le_bytes(particle_output[4..8].try_into().unwrap())!=5{return Err("native particle output header differs".into());}
+    let records=u32::from_le_bytes(particle_output[8..12].try_into().unwrap()) as usize;
+    let record_end=records.checked_mul(436).and_then(|bytes|bytes.checked_add(40)).filter(|end|*end<=particle_output.len()).ok_or("native particle output record range")?;
+    let sky_particles = particle_output[40..record_end].chunks_exact(436).filter(|record| record[15] == 1).count();
     let output = config.source_cache_dir.join("evidence/map-runtime");
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
     fs::write(output.join(format!("{target}.psmp")), &payload)
