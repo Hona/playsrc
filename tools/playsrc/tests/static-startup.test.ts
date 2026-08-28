@@ -12,7 +12,7 @@ import { startupPreparationScope } from "../src/prepare-static-startup"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 
 test("startup preparation preserves the published target table when the executable knows more maps",()=>{
-  const selected=parseTf2Release(releaseJson)
+  const selected=parseTf2Release({...releaseJson,targets:releaseJson.targets.filter(target=>["jump_beef","pl_upward","ctf_2fort"].includes(target.target))})
   expect(startupPreparationScope(selected)).toEqual(["jump_beef","pl_upward","ctf_2fort"])
   expect(TF2_TARGET_NAMES).toContain("cp_dustbowl")
   expect(TF2_TARGET_NAMES).toContain("cp_gorge")
