@@ -921,14 +921,15 @@ export async function verifyTf2Wasm(
   const originalFire=advance(encodeCommand({forward:0,side:0,yawDegrees:0,pitchDegrees:0,jump:false,crouch:false,fire:true,detonate:false}),1).projectileEvents.find(event=>event.type==="fire"&&event.kind===1)
   require(!!originalFire&&Math.abs(originalFire.position[1]-originalEye[1]!)<0.05,"Original rocket source is not centered")
   const definition = new TextEncoder().encode("rockettrail"),
-    particleBatch = new Uint8Array(100 + definition.length),
+    particleBatch = new Uint8Array(108 + definition.length),
     particleView = new DataView(particleBatch.buffer)
   particleBatch.set([0x50, 0x50, 0x54, 0x58])
-  particleView.setUint32(4, 2, true)
+  particleView.setUint32(4, 5, true)
   particleView.setFloat32(12, 0.1, true)
   ;[5328, 3376, -3052].forEach((value, index) => particleView.setFloat32(16 + index * 4, value, true))
   particleView.setUint32(28, 1, true)
   particleBatch[32] = 1
+  particleBatch[34] = 1
   particleView.setBigUint64(36, 1n, true)
   particleView.setUint32(48, 1, true)
   particleView.setBigUint64(52, 7n, true)
@@ -952,7 +953,7 @@ export async function verifyTf2Wasm(
   const particleOutput = new Uint8Array(exports.memory.buffer, particleOutputPointer, particleOutputLength).slice()
   const particleOutputView = new DataView(particleOutput.buffer)
   require(new TextDecoder().decode(particleOutput.subarray(0, 4)) === "PSPR" &&
-    particleOutputView.getUint32(4,true)===4&&particleOutputView.getUint32(8,true)>0,
+    particleOutputView.getUint32(4,true)===5&&particleOutputView.getUint32(8,true)>0,
   "configured rockettrail render output identity differs")
   require((particleOutputView.getUint32(40+124,true)&1)!==0,
     "configured rockettrail render output omitted its primary sheet sample")

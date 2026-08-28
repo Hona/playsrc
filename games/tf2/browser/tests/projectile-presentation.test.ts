@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   createProjectilePresentationMapper,
+  createParticleBatchEncoder,
   projectileFrame,
   ProjectilePresentationError,
   sourceViewOrientation,
@@ -24,6 +25,11 @@ const systems = new Set([
   "muzzle_pipelauncher",
   "ExplosionCore_Wall",
   "ExplosionCore_MidAir",
+  "rockettrail_airstrike", "rockettrail_airstrike_line", "rockettrail_RocketJumper", "rockettrail_underwater",
+  "critical_rocket_red", "critical_rocket_blue", "ExplosionCore_Wall_Jumper", "ExplosionCore_MidAir_underwater",
+  "flaregun_trail_red", "flaregun_trail_crit_red", "scorchshot_trail_blue", "scorchshot_trail_crit_blue",
+  "drg_manmelter_projectile", "drg_manmelter_muzzleflash", "muzzle_shotgun", "flaregun_destroyed",
+  "Explosions_MA_FlyingEmbers", "ExplosionCore_MidAir_Flare",
 ])
 
 function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileResourceCatalog {
@@ -31,18 +37,20 @@ function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileReso
     models: new Set([
       "models/weapons/w_models/w_rocket.mdl",
       "models/weapons/w_models/w_stickybomb.mdl",
+      "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl",
+      "models/weapons/w_models/w_flaregun_shell.mdl",
     ]),
     systems: suppliedSystems,
     attachments: new Map([
       [7, new Set(["trail"])],
-      [20, new Set(["backblast"])],
+      [20, new Set(["backblast", "muzzle"])],
       [21, new Set(["muzzle"])],
     ]),
     attachmentTransforms: new Map([
       [7, new Map([["trail", { position: [2, 3, 4] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
     ]),
     fireAttachmentTransforms: new Map([
-      [7, new Map([["backblast", { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
+      [7, new Map(["backblast", "muzzle"].map(name => [name, { position: [5, 6, 7] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]))],
       [9, new Map([["muzzle", { position: [8, 9, 10] as Vector3, orientation: [0, 0, 0, 1] as Quaternion }]])],
     ]),
   })
@@ -50,6 +58,8 @@ function catalog(suppliedSystems: ReadonlySet<string> = systems): ProjectileReso
 
 function rocket(overrides: Partial<ProjectileFact> = {}): ProjectileFact {
   return Object.freeze({
+    weapon: 1, critical: false, trail: 0, miniRocket: false, practiceExplosion: false,
+    selfBlastOnly: false, modelVisible: true, airBurst: false, underwaterExplosion: false,
     identity: 7,
     kind: "rocket",
     team: "blue",
@@ -68,6 +78,8 @@ function rocket(overrides: Partial<ProjectileFact> = {}): ProjectileFact {
 
 function sticky(state: "flying" | "stuck-unarmed" | "stuck-armed", team: "red" | "blue" = "red"): ProjectileFact {
   return Object.freeze({
+    weapon: 3, critical: false, trail: 0, miniRocket: false, practiceExplosion: false,
+    selfBlastOnly: false, modelVisible: true, airBurst: false, underwaterExplosion: false,
     identity: 9,
     kind: "sticky",
     team,
@@ -85,6 +97,9 @@ function sticky(state: "flying" | "stuck-unarmed" | "stuck-armed", team: "red" |
 
 function event(fact: ProjectileFact, kind: ProjectileEvent["kind"], tick: bigint): ProjectileEvent {
   return Object.freeze({
+    weapon: fact.weapon, critical: fact.critical, trail: fact.trail, miniRocket: fact.miniRocket,
+    practiceExplosion: fact.practiceExplosion, selfBlastOnly: fact.selfBlastOnly,
+    airBurst: fact.airBurst, underwaterExplosion: fact.underwaterExplosion,
     kind,
     projectileKind: fact.kind,
     projectileIdentity: fact.identity,
@@ -135,6 +150,76 @@ function timeline(...ticks: readonly ProjectileTick[]): ProjectileFrame {
 }
 
 describe("TF2 projectile presentation contract", () => {
+  test("uses native visibility and mini model with both Air Strike jumping trails and critical overlay", () => {
+    const mapper = createProjectilePresentationMapper(catalog())
+    const fact = rocket({ weapon: 94, miniRocket: true, trail: 3, critical: true, modelVisible: false })
+    const initial = mapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
+    expect(initial.models).toEqual([])
+    expect(initial.particles.filter(p => p.kind === "start").map(p => p.system)).toEqual([
+      "rockettrail_airstrike", "rockettrail_airstrike_line", "critical_rocket_blue", "rocketbackblast",
+    ])
+    const visible = mapper.map(frame(2n, [{ ...fact, modelVisible: true }], []))
+    expect(visible.models[0]?.model).toBe("models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl")
+    const gone = mapper.map(frame(3n, [], [event(fact, "explode", 3n)]))
+    expect(gone.particles.filter(p => p.kind === "stop")).toHaveLength(3)
+  })
+
+  test("retains rocket base trails but replaces the critical overlay on reflection, even in its fire tick", () => {
+    const mapper = createProjectilePresentationMapper(catalog())
+    const original = rocket({ weapon: 94, miniRocket: true, trail: 3, critical: true })
+    const reflected = { ...original, team: "red" as const, ownerIdentity: 12, launcherIdentity: 15, trail: 0 }
+    const result = mapper.map(frame(1n, [reflected], [event(original, "fire", 1n), event(reflected, "deflect", 1n)]))
+    expect(result.models[0]?.model).toBe("models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl")
+    expect(result.particles.filter(p => p.kind === "stop").map(p => p.effectIdentity)).toEqual(["projectile:7:critical:0"])
+    expect(result.particles.filter(p => p.kind === "start").map(p => p.system)).toContain("critical_rocket_red")
+    expect(mapper.map(frame(2n, [], [event(reflected, "explode", 2n)])).particles.filter(p => p.kind === "stop")).toHaveLength(4)
+  })
+
+  test("maps each flare trail and shell then replaces its trail after an ordered reflection", () => {
+    for (const [weapon, trail, critical, team, expected] of [
+      [95, 0, false, "red", "flaregun_trail_red"], [96, 0, true, "red", "flaregun_trail_crit_red"],
+      [97, 5, true, "blue", "scorchshot_trail_crit_blue"], [98, 6, false, "red", "drg_manmelter_projectile"],
+    ] as const) {
+      const mapper = createProjectilePresentationMapper(catalog())
+      const fact = rocket({ kind: "flare", weapon, trail, critical, team })
+      const fired = mapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
+      expect(fired.models[0]?.model).toBe("models/weapons/w_models/w_flaregun_shell.mdl")
+      expect(fired.particles.filter(p => p.kind === "start")[0]?.system).toBe(expected)
+      const reflected = { ...fact, ownerIdentity: 12, launcherIdentity: 15, team: "red" as const, trail: 0 }
+      const result = mapper.map(frame(2n, [reflected], [event(reflected, "deflect", 2n)]))
+      expect(result.particles.filter(p => p.kind === "stop")).toHaveLength(1)
+      expect(result.particles.filter(p => p.kind === "start")[0]?.system).toBe(critical ? "flaregun_trail_crit_red" : "flaregun_trail_red")
+    }
+  })
+
+  test("dispatches authored flare weapon colors through sparse control points without changing the start wire", () => {
+    for (const team of ["red", "blue"] as const) {
+      const mapper = createProjectilePresentationMapper(catalog())
+      const fact = rocket({ kind: "flare", weapon: 98, trail: 6, team })
+      const result = mapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
+      const colors = result.particles.filter(request => request.kind === "set-control-point" && request.controlPoint.index >= 9)
+      expect(colors.map(request => request.controlPoint)).toEqual((team === "red"
+        ? [[0.72, 0.22, 0.23], [0.5, 0.18, 0.125]] : [[0.345, 0.52, 0.635], [0.145, 0.427, 0.55]])
+        .map((position, index) => ({ index: 9 + index, position, orientation: [0, 0, 0, 1], ownerIdentity: 0xffff_ffff })))
+      expect(() => createParticleBatchEncoder().encode(1n, [0, 0, 0], result.particles)).not.toThrow()
+    }
+  })
+
+  test("selects native practice, underwater and flare airburst effects without current-weapon inference", () => {
+    for (const [overrides, expected] of [
+      [{ practiceExplosion: true, underwaterExplosion: true }, ["ExplosionCore_Wall_Jumper"]],
+      [{ underwaterExplosion: true }, ["ExplosionCore_MidAir_underwater"]],
+      [{ kind: "flare", weapon: 96, airBurst: true, selfBlastOnly: true }, ["flaregun_destroyed", "Explosions_MA_FlyingEmbers"]],
+      [{ kind: "flare", weapon: 96, airBurst: true }, ["flaregun_destroyed", "ExplosionCore_MidAir_Flare"]],
+    ] as readonly [Partial<ProjectileFact>, readonly string[]][]) {
+      const mapper = createProjectilePresentationMapper(catalog())
+      const fact = rocket({ team: "red", ...overrides })
+      mapper.map(frame(1n, [fact], [event(fact, "fire", 1n)]))
+      const end = mapper.map(frame(2n, [], [event(fact, "explode", 2n)]))
+      expect(end.particles.filter(p => p.kind === "start").map(p => p.system)).toEqual(expected)
+    }
+  })
+
   test("preserves axis-aligned and arbitrary transported rocket quaternions", () => {
     const orientations: readonly Quaternion[] = [
       [0, 0, 0, 1],
@@ -224,6 +309,8 @@ describe("TF2 projectile presentation contract", () => {
     const rawFact = Object.freeze({
       identity: flying.identity,
       kind: 2 as const,
+      weapon: 3 as const, critical: false, trail: 0 as const, miniRocket: false, practiceExplosion: false,
+      selfBlastOnly: false, modelVisible: true, airBurst: false, underwaterExplosion: false,
       team: 2 as const,
       ownerIdentity: flying.ownerIdentity,
       launcherIdentity: flying.launcherIdentity,
@@ -239,6 +326,8 @@ describe("TF2 projectile presentation contract", () => {
       type: "impact" as const,
       projectile: flying.identity,
       kind: 2 as const,
+      weapon: 3 as const, critical: false, trail: 0 as const, miniRocket: false, practiceExplosion: false,
+      selfBlastOnly: false, airBurst: false, underwaterExplosion: false,
       ownerIdentity: flying.ownerIdentity,
       launcherIdentity: flying.launcherIdentity,
       team: 2 as const,
@@ -277,6 +366,8 @@ describe("TF2 projectile presentation contract", () => {
     const rawFact = Object.freeze({
       identity: fired.identity,
       kind: 1 as const,
+      weapon: 1 as const, critical: false, trail: 0 as const, miniRocket: false, practiceExplosion: false,
+      selfBlastOnly: false, modelVisible: true, airBurst: false, underwaterExplosion: false,
       team: 2 as const,
       ownerIdentity: fired.ownerIdentity,
       launcherIdentity: fired.launcherIdentity,
@@ -292,6 +383,8 @@ describe("TF2 projectile presentation contract", () => {
       type,
       projectile: fired.identity,
       kind: 1 as const,
+      weapon: 1 as const, critical: false, trail: 0 as const, miniRocket: false, practiceExplosion: false,
+      selfBlastOnly: false, airBurst: false, underwaterExplosion: false,
       ownerIdentity: fired.ownerIdentity,
       launcherIdentity: fired.launcherIdentity,
       team: 2 as const,
@@ -402,7 +495,7 @@ describe("TF2 projectile presentation contract", () => {
     const orientation = Object.freeze([0.1825741858, 0.3651483717, 0.5477225575, 0.7302967433]) as Quaternion
     const hidden = sticky("flying")
     const mapper = createProjectilePresentationMapper(catalog())
-    expect(mapper.map(frame(1n, [{ ...hidden, orientation, ageSeconds: 0.099 }], [
+    expect(mapper.map(frame(1n, [{ ...hidden, orientation, ageSeconds: 0.099, modelVisible: false }], [
       event({ ...hidden, orientation }, "fire", 1n),
     ])).models).toEqual([])
     const visible = Object.freeze({ ...hidden, orientation, ageSeconds: 0.1 })

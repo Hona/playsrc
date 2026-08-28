@@ -11,7 +11,7 @@ function output(overrides: Readonly<{ count?: number; material?: number; radius?
   const bytes = new Uint8Array(40 + count * 436)
   const view = new DataView(bytes.buffer)
   view.setUint32(0, 0x5250_5350, true)
-  view.setUint32(4, 4, true)
+  view.setUint32(4, 5, true)
   view.setUint32(8, count, true)
   view.setUint32(12, 1, true)
   ;[-4, -5, -6, 4, 5, 6].forEach((value, component) => {
@@ -83,6 +83,27 @@ test("retains authored reversed rain trail bounds instead of rejecting Source's 
 })
 
 describe("Rust particle render-data adapter", () => {
+  test("decodes bounded indexed rope geometry and rejects incomplete or invalid tails", () => {
+    const bytes = new Uint8Array(40 + 436 + 8 + 4 * 24 + 6 * 4)
+    bytes.set(output()); bytes[54] = 2
+    const view = new DataView(bytes.buffer), at = 40 + 436
+    view.setUint32(at, 4, true); view.setUint32(at + 4, 6, true)
+    for (let index = 0; index < 12; index++) view.setFloat32(at + 8 + index * 4, index / 2, true)
+    bytes.fill(127, at + 8 + 80, at + 8 + 96)
+    ;[0, 1, 2, 1, 3, 2].forEach((value, index) => view.setUint32(at + 8 + 96 + index * 4, value, true))
+    const item = decodeParticleRenderOutput(bytes, ["effects/beam.vmt"]).items[0]!
+    expect(item.primitive).toBe("rope")
+    expect([...item.mesh!.positions]).toEqual(Array.from({ length: 12 }, (_, index) => index / 2))
+    expect([...item.mesh!.indices]).toEqual([0, 1, 2, 1, 3, 2])
+    expect([...item.mesh!.colors]).toEqual(Array(16).fill(127))
+    expect(() => decodeParticleRenderOutput(bytes.subarray(0, bytes.length - 1), ["effects/beam.vmt"])).toThrow()
+    view.setUint32(bytes.length - 4, 4, true)
+    expect(() => decodeParticleRenderOutput(bytes, ["effects/beam.vmt"])).toThrow()
+    view.setUint32(bytes.length - 4, 2, true); view.setFloat32(at + 8, NaN, true)
+    expect(() => decodeParticleRenderOutput(bytes, ["effects/beam.vmt"])).toThrow()
+    view.setFloat32(at + 8, 0, true); view.setUint32(at, 0xffff_ffff, true)
+    expect(() => decodeParticleRenderOutput(bytes, ["effects/beam.vmt"])).toThrow()
+  })
   test("decodes bounded renderer-neutral sprite and trail records", () => {
     expect(decodeParticleRenderOutput(output(), ["effects/rocketrailsmoke.vmt"])).toEqual({
       bounds: { minimum: [-4, -5, -6], maximum: [4, 5, 6] },

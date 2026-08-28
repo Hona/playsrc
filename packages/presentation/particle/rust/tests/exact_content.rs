@@ -211,6 +211,7 @@ fn material(
     sheet: ParticleSheet,
 ) -> ParticleMaterial {
     ParticleMaterial {
+        mapping_height: 1,
         shader,
         blend: ParticleBlendState {
             source: ParticleBlendFactor::SourceAlpha,

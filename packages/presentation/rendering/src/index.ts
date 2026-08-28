@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu"
+import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
 import { SourceParticleDepth } from "./particle-depth"
 export type { SpriteCardInput } from "./sprite-card"
@@ -330,7 +331,9 @@ export type ModelItem = Readonly<{
 export type ParticleItem = Readonly<{
   sky: boolean
   identity: number
-  primitive: "sprite" | "trail"
+  primitive: "sprite" | "trail" | "rope"
+  visibility?: Readonly<{ identity: bigint; vertices: Float32Array; clipFraction: number }>
+  mesh?: Readonly<{ positions: Float32Array; uv: Float32Array; colors: Uint8Array; indices: Uint32Array }>
   material: string
   position: readonly [number, number, number]
   previousPosition: readonly [number, number, number]
@@ -635,6 +638,7 @@ export type MaterialStateInput = Readonly<{
     reference: number
   }>
 }>
+export type AdditiveSpriteInput = Readonly<{ srgb: boolean; vertexColor: boolean; color: readonly [number, number, number]; hdrColorScale: number }>
 export type ModelMaterialInput = Readonly<{
   identity: string
   cloakProxy: number
@@ -701,7 +705,7 @@ export type MapLoadRequest = Readonly<{
   directionalTextures?: readonly DirectionalTextureInput[]
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
-  particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null }>)[]
+  particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null; additiveSprite?: AdditiveSpriteInput | null }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -880,6 +884,8 @@ export type ModelGeometryEvidence = Readonly<{
 }>
 
 export interface Renderer {
+  takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[]
+  captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]>
   readonly configuration: RenderConfiguration
   readonly sampleCount: 1 | 4
   readonly capabilities: Readonly<{ sampleCounts: readonly [1, 4]; presentationSynchronization: false }>
@@ -1604,6 +1610,7 @@ class RendererOwner implements Renderer {
   #effects = new THREE.Group()
   #particles = new THREE.Group()
   #skyParticles = new THREE.Group()
+  #particleVisibility = new ParticleVisibilityQueries()
   #viewModels = new THREE.Group()
   #cloakFramebuffer = new SourceCloakFramebuffer()
   #camera = new THREE.PerspectiveCamera(75, 1, 1, 32_768)
@@ -1802,6 +1809,7 @@ class RendererOwner implements Renderer {
 
   completeFrameProfile(): RendererFrameProfile | undefined {
     if (this.#framePresentation?.begun) this.#pass("frame-output", () => this.#framePresentation!.finish())
+    this.#particleVisibility.flushReads()
     this.#pendingDepthReset = false
     const result = this.#instrumentation?.complete()
     this.#renderOwnerProbe?.complete()
@@ -1826,9 +1834,15 @@ class RendererOwner implements Renderer {
     return this.#instrumentation ? this.#instrumentation.pass(identity, callback) : callback()
   }
 
+  #drawScene(identity: string, scene: THREE.Scene, camera: THREE.Camera): void {
+    this.#particleVisibility.beginPass(identity, this.#backend, camera)
+    try { this.#pass(identity, () => this.#backend.render(scene, camera)) }
+    finally { this.#particleVisibility.endPass() }
+  }
+
   #drawPass(identity: string, scene: THREE.Scene, camera: THREE.Camera): void {
     if (!this.#pendingDepthReset) {
-      this.#pass(identity, () => this.#backend.render(scene, camera))
+      this.#drawScene(identity, scene, camera)
       return
     }
     const autoClear = this.#backend.autoClear
@@ -1841,7 +1855,7 @@ class RendererOwner implements Renderer {
     this.#backend.autoClearDepth = true
     this.#backend.autoClearStencil = false
     try {
-      this.#pass(identity, () => this.#backend.render(scene, camera))
+      this.#drawScene(identity, scene, camera)
     } finally {
       this.#backend.autoClear = autoClear
       this.#backend.autoClearColor = autoClearColor
@@ -2099,6 +2113,7 @@ class RendererOwner implements Renderer {
       throw new RenderingError("UnsupportedFeature", "preferred WebGPU canvas format differs from the required format")
     }
     this.#backend = await this.#createBackend()
+    this.#particleVisibility.attach(this.#backend)
     this.#deviceGeneration = 1
     this.#lifecycle = "Ready"
     return this
@@ -2285,7 +2300,7 @@ class RendererOwner implements Renderer {
           if (!Number.isSafeInteger(frame) || frame < 0 || frame >= input.frameCount) throw new RenderingError("MalformedInput", "model frame")
           return residency.select(`${input.sourceSha256}:${space}`, frame, consumer, () => textureFromAuthored(input, space, frame, this.textureQuality), input.frameCount)
         } }), modelLightingTextures: lightingTextures, modelPanelMaterialAnimations: animations, modelTemplates: templates, modelBaseSamples: new Map(), waterFogUniforms: waterFog })
-      this.#buildParticleMaterials(request.particleTextures ?? [], states, disposables, waterFog, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes)
+      this.#buildParticleMaterials(request.particleTextures ?? [], states, disposables, waterFog, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes, TSL.float(1), false)
       if (active) {
         for (const [key, template] of templates) active.modelTemplates.set(key, template)
         active.modelLookup = new Map([...active.modelLookup, ...models.map((model) => [model.logicalPath, model] as const)])
@@ -2589,11 +2604,19 @@ class RendererOwner implements Renderer {
     try {
       this.#setCamera(camera)
       for (const { item, pass, unposedPanel } of models) {
-        const model = modelKey(item.model, item.skin ?? 0, item.body ?? 0), key = `${pass}:${model}`
+        const unposedWorld = pass === "world" && !item.pose && !item.modelLighting
+        const model = modelKey(item.model, item.skin ?? 0, item.body ?? 0), key = `${unposedWorld ? "world-bind" : pass}:${model}`
         if (keys.has(key)) continue
         keys.add(key)
         const template = assets.modelTemplates.get(model)
-        if (!template || !item.pose || !item.modelLighting) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
+        if (!template || !unposedWorld && (!item.pose || !item.modelLighting)) throw new RenderingError("MissingInput", `model pipeline preparation inputs unavailable: ${model}`)
+        if (unposedWorld) {
+          const instance = template.clone(true)
+          restoreVisibility.push(prepareReachablePipelineVisibility(instance).restore)
+          staged.push({ key, retained: { model, instance } })
+          world.add(instance)
+          continue
+        }
         if (unposedPanel) {
           if (pass !== "panel") throw new RenderingError("MalformedInput", "unposed model preparation requires a panel")
           const bindKey = `panel-bind:${model}`
@@ -2617,7 +2640,7 @@ class RendererOwner implements Renderer {
         // Use the same palette, flex, primitive ordering and world/panel depth
         // state owner as drawing. Standalone viewmodel metadata is not a weapon
         // composition, so its pass uses the authored material classification.
-        retained.meshes = this.#applyPose(instance, { ...item.pose, flex: undefined }, false)
+        retained.meshes = this.#applyPose(instance, { ...item.pose!, flex: undefined }, false)
         if (pass === "view") for (const [index, mesh] of retained.meshes.entries()) {
           const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
           for (const [slot, material] of materials.entries()) Object.assign(material, authoredViewState[index]![slot]!)
@@ -2681,6 +2704,7 @@ class RendererOwner implements Renderer {
       // attributes and main-pass attachments. compileAsync submits no pixels.
       await withBoundedPipelineCompilation((backend as any)._pipelines, async () => {
         if (owner.particlePipelineMeshes.children.length) await backend.compileAsync(owner.particlePipelineMeshes, this.#camera, this.#scene)
+        await this.#particleVisibility.prepare()
       })
       this.#checkAbort(undefined, ordinal)
       this.#requireReady()
@@ -2701,6 +2725,8 @@ class RendererOwner implements Renderer {
   }
 
   requestParticleDepthEvidence(): void { this.#active?.particleDepth.requestEvidence() }
+  takeParticleVisibilitySamples(): readonly ParticleVisibilitySample[] { return this.#particleVisibility.takeSamples() }
+  captureParticleVisibilityEvidence(): ReturnType<ParticleVisibilityQueries["evidence"]> { return this.#particleVisibility.evidence() }
   readParticleDepthEvidence(): ReturnType<SourceParticleDepth["readEvidence"]> { return this.#active?.particleDepth.readEvidence() ?? Promise.resolve(null) }
 
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
@@ -3804,7 +3830,7 @@ class RendererOwner implements Renderer {
         modelOccurrenceInstances.set(occurrence.entity,instance)
         mainModelOccurrences.add(instance)
       }
-      this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes)
+      this.#buildParticleMaterials(request.particleTextures ?? [], materialStates, disposables, waterFogUniforms, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes, exposureUniform, map.lighting.profile === "hdr")
     } catch (error) {
       const failed = {
         group,
@@ -5173,14 +5199,15 @@ class RendererOwner implements Renderer {
   }
 
   #buildParticleMaterials(inputs: NonNullable<MapLoadRequest["particleTextures"]>, states: ReadonlyMap<string, MaterialStateInput>, disposables: OwnedResourceGeneration,
-    waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.Texture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group): void {
+    waterFog: SourceWaterFogUniforms, depth: SourceParticleDepth, textures: Map<string, THREE.Texture>, materials: Map<string, THREE.MeshBasicNodeMaterial>, pipelines: THREE.Group, exposure: any, hdr: boolean): void {
     const depthNode = depth.sample()
     for (const texture of inputs) {
       const state = states.get(texture.material.toLowerCase())
       if (!state) throw new RenderingError("MissingInput", `Particle material state ${texture.material} is unavailable`)
       const key = particlePipelineKey(particlePipelineVariant(texture.material, state))
       if (materials.has(key)) continue
-      const value = textureFromAuthored(texture, THREE.SRGBColorSpace, 0, this.textureQuality)
+      const additive = texture.additiveSprite
+      const value = textureFromAuthored(texture, additive && !additive.srgb ? THREE.NoColorSpace : THREE.SRGBColorSpace, 0, this.textureQuality)
       textures.set(texture.material.toLowerCase(), value); disposables.add(value)
       const material = new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath: texture.material, width: texture.width, height: texture.height, shader: 7, features: 1, textureRole: 0 }, state))
       disposables.add(material); applyParticleDepthState(material, state)
@@ -5191,6 +5218,23 @@ class RendererOwner implements Renderer {
       if (sprite) { material.positionNode = sprite.position; material.forceSinglePass = true }
       material.userData.sourceParticleDepth = texture.spriteCard?.depthBlend === true
       material.colorNode = sourceFragmentColor(sprite?.color ?? TSL.vec4(sampled.rgb.mul(color.rgb), sampled.a.mul(color.a)), state, waterFog)
+      if (additive) {
+        const tint = TSL.vec3(...additive.color.map(value => additive.srgb ? Math.pow(value, 2.2) : value) as [number, number, number])
+        let rgb = current.rgb.mul(tint), alpha = current.a.mul(state.alphaModulation)
+        if (additive.vertexColor) { rgb = rgb.mul(additive.srgb ? color.rgb.pow(2.2) : color.rgb); alpha = alpha.mul(color.a) }
+        if (hdr) rgb = rgb.mul(additive.srgb ? Math.pow(additive.hdrColorScale, 2.2) : additive.hdrColorScale)
+        rgb = rgb.mul(additive.srgb ? exposure : exposure.pow(1 / 2.2))
+        const fog = this.#viewFogUniforms
+        const fogFactor = TSL.positionView.z.negate().sub(fog.start).div(fog.end.sub(fog.start)).clamp(0, fog.maximumDensity)
+        if (state.fog !== 2) {
+          const waterFraction = waterFog.waterHeight.sub(TSL.positionWorld.z).div(waterFog.eyeHeight.sub(TSL.positionWorld.z)).clamp(0, 1)
+          const waterDepth = waterFraction.mul(TSL.clipSpace.z).mul(waterFog.inverseFogRange).clamp(0, 1)
+          const factor = waterFog.enabled.greaterThan(0).select(waterDepth, fog.enabled.greaterThan(0).select(fogFactor, 0))
+          rgb = rgb.mul(TSL.float(1).sub(factor))
+        }
+        material.colorNode = TSL.vec4(additive.srgb ? rgb : rgb.max(0).pow(2.2), alpha)
+        material.fog = false
+      }
       material.toneMapped = false; material.name = `particle:${texture.material.toLowerCase()}`
       material.blending = THREE.CustomBlending; material.transparent = true
       materials.set(key, material)
@@ -5217,6 +5261,41 @@ class RendererOwner implements Renderer {
     end: number,
     camera: Camera,
   ): void {
+    const first = items[start]!
+    if (first.primitive === "rope") {
+      if (end !== start + 1 || !first.mesh) throw new RenderingError("MalformedInput", "rope batch requires its native mesh")
+      const mesh = first.mesh, vertices = mesh.positions.length / 3
+      for (const name of ["position", "particleCenterOrientation", "uv", "particleUvNext", "particleSheetBlend", "particleColor"] as const) {
+        const attribute = geometry.getAttribute(name) as THREE.BufferAttribute
+        const array = attribute.array as Float32Array
+        if (name === "position") array.set(mesh.positions)
+        else if (name === "particleCenterOrientation") for (let vertex = 0; vertex < vertices; vertex++) {
+          array[vertex * 4] = mesh.positions[vertex * 3]!
+          array[vertex * 4 + 1] = mesh.positions[vertex * 3 + 1]!
+          array[vertex * 4 + 2] = mesh.positions[vertex * 3 + 2]!
+          array[vertex * 4 + 3] = 0
+        }
+        else if (name === "uv" || name === "particleUvNext") array.set(mesh.uv)
+        else if (name === "particleSheetBlend") array.fill(0, 0, vertices)
+        else for (let component = 0; component < vertices * 4; component++) array[component] = mesh.colors[component]! / 255
+        const count = vertices * attribute.itemSize
+        attribute.clearUpdateRanges(); attribute.addUpdateRange(0, count); attribute.needsUpdate = true
+        if (this.#uploadEvidence) { this.#uploadEvidence.particleUploadBytes += count * 4; this.#uploadEvidence.particleFullUploadBytes += count * 4; this.#uploadEvidence.particleUploadWrites++ }
+      }
+      const indices = geometry.getIndex()!
+      indices.array.set(mesh.indices); indices.clearUpdateRanges(); indices.addUpdateRange(0, mesh.indices.length); indices.needsUpdate = true
+      if (this.#uploadEvidence) { const bytes = mesh.indices.length * indices.array.BYTES_PER_ELEMENT; this.#uploadEvidence.particleUploadBytes += bytes; this.#uploadEvidence.particleFullUploadBytes += bytes; this.#uploadEvidence.particleUploadWrites++ }
+      geometry.userData.ropeIndices = true
+      geometry.setDrawRange(0, mesh.indices.length)
+      return
+    }
+    if (geometry.userData.ropeIndices) {
+      const indices = geometry.getIndex()!, array = indices.array
+      writeParticleQuadIndices(array as Uint16Array | Uint32Array)
+      indices.clearUpdateRanges(); indices.addUpdateRange(0, array.length); indices.needsUpdate = true
+      if (this.#uploadEvidence) { this.#uploadEvidence.particleUploadBytes += array.byteLength; this.#uploadEvidence.particleFullUploadBytes += array.byteLength; this.#uploadEvidence.particleUploadWrites++ }
+      geometry.userData.ropeIndices = false
+    }
     const positions = (geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array
     const centers = (geometry.getAttribute("particleCenterOrientation") as THREE.BufferAttribute).array as Float32Array
     const uv = (geometry.getAttribute("uv") as THREE.BufferAttribute).array as Float32Array
@@ -5229,6 +5308,7 @@ class RendererOwner implements Renderer {
     const arrays = { uv, uvNext, sheetBlend, colors }
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
+      if (item.primitive === "rope") throw new RenderingError("MalformedInput", "rope geometry cannot share a sprite batch")
       for (let vertex = 0; vertex < 4; vertex++) {
         const offset = index * 16 + vertex * 4
         centers.set(item.position, offset)
@@ -5260,6 +5340,8 @@ class RendererOwner implements Renderer {
   }
 
   #clearParticleBatches():void{
+    this.#framePresentation?.abandon()
+    this.#particleVisibility.reset()
     for(const retained of this.#particleBatchMeshes){retained.mesh.removeFromParent();retained.mesh.geometry.dispose()}
     this.#particleBatchMeshes=[];this.#particleBatchCount=0
     for (const pool of this.#panelParticlePools.values()) { pool.group.clear(); for (const entry of pool.meshes) entry.mesh.geometry.dispose() }
@@ -5280,6 +5362,7 @@ class RendererOwner implements Renderer {
     skyCamera?: Camera,
   ): void {
     const assets = this.#active ?? this.#panelAssets
+    if (!pool) this.#particleVisibility.stage(items)
     const meshes = pool?.meshes ?? this.#particleBatchMeshes, ranges = pool?.ranges ?? this.#particleBatchRanges, group = pool?.group ?? this.#particles
     const count = fillParticleBatchRanges(items, ranges)
     if (!pool) this.#particleBatchCount = count
@@ -5287,7 +5370,7 @@ class RendererOwner implements Renderer {
       const batch = ranges[index]!
       const first = items[batch.start]!
       const key = particlePipelineKey(first)
-      const required = batch.end - batch.start
+      const required = first.primitive === "rope" ? Math.max(Math.ceil((first.mesh?.positions.length ?? 0) / 12), (first.mesh?.indices.length ?? 0) / 6) : batch.end - batch.start
       let retained = meshes[index]
       if (retained && (retained.key !== key || retained.capacity < required)) {
         const reusable = meshes.findIndex((candidate, candidateIndex) =>
@@ -5760,7 +5843,8 @@ class RendererOwner implements Renderer {
           }
           const cached = this.#retainedModels.take(`world:${item.identity}:${key}`)
           this.#instrumentation?.dynamicModel(cached ? "reused" : "created")
-          const prepared = !cached && item.pose && item.modelLighting ? this.#preparedModelInstances.take(`world:${model}`) : undefined
+          const prepared = !cached && item.pose && item.modelLighting ? this.#preparedModelInstances.take(`world:${model}`)
+            : !cached && !item.pose && !item.modelLighting ? this.#preparedModelInstances.take(`world-bind:${model}`) : undefined
           retained = cached ?? (prepared ? { ...prepared, model: key, seen: revision } : { model: key, instance: this.#active!.modelTemplates.get(model)!.clone(true), seen: revision })
           this.#dynamicModelInstances.set(item.identity, retained)
         }
@@ -5776,7 +5860,9 @@ class RendererOwner implements Renderer {
         if (coldProfile?.captureModelPrograms && !retained.instance.userData.coldModelObserved) {
           retained.instance.userData.coldModelObserved = true
           let observed = false
-          for (const mesh of retained.meshes ?? []) {
+          const observedMeshes = retained.meshes ?? []
+          if (!retained.meshes) retained.instance.traverse(object => { if (object instanceof THREE.Mesh) observedMeshes.push(object) })
+          for (const mesh of observedMeshes) {
             const original = mesh.onBeforeRender
             mesh.onBeforeRender = function (...args) {
               original.apply(this, args)
@@ -6035,6 +6121,7 @@ class RendererOwner implements Renderer {
       this.#exposureSampler = undefined
       oldBackend.dispose()
       this.#backend = await this.#createBackend()
+      this.#particleVisibility.attach(this.#backend)
       this.#deviceGeneration += 1
       if (active) {
         const directional = validateDirectionalInputs(active.loadRequest.directionalTextures ?? [])
@@ -6110,6 +6197,7 @@ class RendererOwner implements Renderer {
     this.#loadOrdinal += 1
     this.stopFramePacing()
     this.#framePresentation?.abandon()
+    this.#particleVisibility.dispose()
     this.#clearDynamic(this.#effects)
     this.#dynamicModelInstances.clear()
     this.#dynamicBrushInstances.clear()

@@ -4,7 +4,7 @@ pub const GAME_FILES: &[&str] = &[
     "particles/muzzle_flash.pcf", "particles/explosion.pcf", "particles/flamethrower.pcf",
     "particles/nailtrails.pcf", "particles/medicgun_beam.pcf", "particles/blood_impact.pcf",
     "particles/bullet_tracers.pcf", "particles/impact_fx.pcf", "particles/crit.pcf",
-    "particles/item_fx.pcf",
+    "particles/item_fx.pcf", "particles/drg_pyro.pcf", "particles/drg_bison.pcf",
 ];
 
 pub const GAME_SYSTEMS: &[&str] = &[
@@ -30,13 +30,14 @@ pub const SOURCE_LIST: &str = "derived/particle-sources.txt";
 
 pub fn roots(graph: &playsrc_entity::Graph) -> Vec<&str> {
     let mut roots = GAME_SYSTEMS.to_vec();
+    roots.extend_from_slice(crate::projectile_weapon::PARTICLE_ROOTS);
     for entity in &graph.entities {
         if entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"info_particle_system"))
             && let Some(name) = entity.pairs.iter().find(|pair| pair.key.eq_ignore_ascii_case(b"effect_name"))
             && let Ok(name) = std::str::from_utf8(&name.value)
             && !name.is_empty()
         {
-            roots.push(name);
+            if !roots.contains(&name) { roots.push(name); }
         }
     }
     roots

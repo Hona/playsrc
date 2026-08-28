@@ -35,6 +35,22 @@
       "player/crit_hit_mini5.wav"
     ]
   ],
+  "Weapon_Airstrike.AltFire": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/airstrike_fire_01.wav",
+      ")weapons/airstrike_fire_02.wav",
+      ")weapons/airstrike_fire_03.wav"
+    ]
+  ],
+  "Weapon_Airstrike.Explosion": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/airstrike_small_explosion_01.wav",
+      ")weapons/airstrike_small_explosion_02.wav",
+      ")weapons/airstrike_small_explosion_03.wav"
+    ]
+  ],
   "Weapon_Ambassador.Single": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -135,6 +151,24 @@
       "weapons/fist_swing_crit.wav"
     ]
   ],
+  "Weapon_Detonator.Detonate": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\flare_detonator_explode.wav"
+    ]
+  ],
+  "Weapon_Detonator.DetonateWorld": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\flare_detonator_explode_world.wav"
+    ]
+  ],
+  "Weapon_Detonator.Fire": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons\\flare_detonator_launch.wav"
+    ]
+  ],
   "Weapon_Enforcer.Single": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -230,6 +264,18 @@
       "weapons/push_impact.wav"
     ]
   ],
+  "Weapon_Liberty_Launcher.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_ll_shoot.wav"
+    ]
+  ],
+  "Weapon_Liberty_Launcher.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_ll_shoot_crit.wav"
+    ]
+  ],
   "Weapon_Machete.HitFlesh": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -300,6 +346,56 @@
       ")weapons/minifun_wind_up.wav"
     ]
   ],
+  "Weapon_QuakeRPG.Draw": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\quake_ammo_pickup_remastered.wav"
+    ]
+  ],
+  "Weapon_QuakeRPG.Explode": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\quake_explosion_remastered.wav"
+    ]
+  ],
+  "Weapon_QuakeRPG.Reload": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\quake_rpg_reload_remastered.wav"
+    ]
+  ],
+  "Weapon_QuakeRPG.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\quake_rpg_fire_remastered.wav"
+    ]
+  ],
+  "Weapon_QuakeRPG.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      "weapons\\quake_rpg_fire_remastered_crit.wav"
+    ]
+  ],
+  "Weapon_RPG_BlackBox.Explode": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_blackbox_explode1.wav",
+      ")weapons/rocket_blackbox_explode2.wav",
+      ")weapons/rocket_blackbox_explode3.wav"
+    ]
+  ],
+  "Weapon_RPG_BlackBox.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_blackbox_shoot.wav"
+    ]
+  ],
+  "Weapon_RPG_BlackBox.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_blackbox_shoot_crit.wav"
+    ]
+  ],
   "Weapon_Reserve_Shooter.Single": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -318,6 +414,18 @@
       ")weapons\\reserve_shooter_04_crit.wav"
     ]
   ],
+  "Weapon_Rocket_Jumper.Explode": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_jumper_explode1.wav"
+    ]
+  ],
+  "Weapon_Rocket_Jumper.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/rocket_jumper_shoot.wav"
+    ]
+  ],
   "Weapon_Scatter_Gun_Double.Single": [
     "scripts/game_sounds_weapons.txt",
     [
@@ -328,6 +436,18 @@
     "scripts/game_sounds_weapons.txt",
     [
       ")weapons/scatter_gun_double_shoot_crit.wav"
+    ]
+  ],
+  "Weapon_ScorchShot.Single": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/doom_flare_gun.wav"
+    ]
+  ],
+  "Weapon_ScorchShot.SingleCrit": [
+    "scripts/game_sounds_weapons.txt",
+    [
+      ")weapons/doom_flare_gun_crit.wav"
     ]
   ],
   "Weapon_Short_Stop.Reload": [

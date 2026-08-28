@@ -3,6 +3,7 @@ export type ParticleBatchInput = Readonly<{
   material: string
   blendSource: string
   blendDestination: string
+  primitive?: string
 }>
 
 export type ParticleBatchRange = Readonly<{ start: number; end: number }>
@@ -20,6 +21,8 @@ export function fillParticleBatchRanges(
     let end = start + 1
     while (
       end < items.length
+      && first.primitive !== "rope"
+      && items[end]!.primitive !== "rope"
       && items[end]!.material.toLowerCase() === material
       && items[end]!.blendSource === first.blendSource
       && items[end]!.blendDestination === first.blendDestination

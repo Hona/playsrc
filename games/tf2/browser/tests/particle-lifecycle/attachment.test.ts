@@ -14,6 +14,8 @@ const orientation = Object.freeze([0, 0, 0, 1]) as Quaternion
 function rocket(tick: bigint): Readonly<{ fact: ProjectileFact; event: ProjectileEvent }> {
   const position = Object.freeze([1, 2, 3]) as Vector3
   const fact: ProjectileFact = Object.freeze({
+    weapon: 1, critical: false, trail: 0, miniRocket: false, practiceExplosion: false,
+    selfBlastOnly: false, modelVisible: false, airBurst: false, underwaterExplosion: false,
     identity: 9,
     kind: "rocket",
     team: "red",
@@ -28,6 +30,9 @@ function rocket(tick: bigint): Readonly<{ fact: ProjectileFact; event: Projectil
     ageSeconds: 0,
   })
   const event: ProjectileEvent = Object.freeze({
+    weapon: fact.weapon, critical: fact.critical, trail: fact.trail, miniRocket: fact.miniRocket,
+    practiceExplosion: fact.practiceExplosion, selfBlastOnly: fact.selfBlastOnly,
+    airBurst: fact.airBurst, underwaterExplosion: fact.underwaterExplosion,
     kind: "fire",
     projectileKind: "rocket",
     projectileIdentity: fact.identity,

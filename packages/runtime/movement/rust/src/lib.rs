@@ -310,6 +310,7 @@ pub struct Policy {
     pub backward_speed_factor: f32,
     pub backward_speed_minimum: f32,
     pub ground_detach_speed: f32,
+    pub ground_detach_relative_to_support: bool,
     pub jump_impulse: f32,
     pub air_dash_impulse: Option<f32>,
     pub surface_friction: f32,
@@ -339,6 +340,7 @@ impl Default for Policy {
             backward_speed_factor: 1.0,
             backward_speed_minimum: 0.0,
             ground_detach_speed: 140.0,
+            ground_detach_relative_to_support: true,
             jump_impulse: 268.328_16,
             air_dash_impulse: None,
             surface_friction: 1.0,
@@ -901,6 +903,7 @@ pub struct WishState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepResult {
+    pub ground_detach_by_upward_speed: bool,
     pub state: State,
     pub selected_hull: Hull,
     pub wish_state: WishState,

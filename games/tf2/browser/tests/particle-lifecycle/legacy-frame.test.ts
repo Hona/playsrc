@@ -8,7 +8,7 @@ test("legacy frames acknowledge only accepted draws, independent of publication 
   const first = clock.prepare(10), bytes = encodeLegacyParticleFrame(1, first, camera)
   const header = new DataView(bytes.buffer)
   expect(bytes.byteLength).toBe(64)
-  expect(header.getUint32(4, true)).toBe(4)
+  expect(header.getUint32(4, true)).toBe(5)
   expect(header.getUint32(28, true)).toBe(0x8000_0000)
   expect(header.getFloat32(32, true)).toBe(0)
   expect(header.getUint32(60, true)).toBe(0)

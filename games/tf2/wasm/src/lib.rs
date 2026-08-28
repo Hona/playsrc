@@ -1976,7 +1976,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
-    let Ok((mut events, request, legacy_frame)) = decode_particle_transaction(bytes) else {
+    let Ok((mut events, request, legacy_frame, visibility_view, visibility_samples)) = decode_particle_transaction(bytes) else {
         *SIMULATION_ERROR_DETAIL
             .get_or_init(|| Mutex::new(String::new()))
             .lock()
@@ -2052,8 +2052,8 @@ pub unsafe extern "C" fn playsrc_particle_transact(
         });
         let sky_position = sky.map(|(_, origin, scale)| std::array::from_fn(|axis| origin[axis] + request.camera_position[axis] / scale.max(1) as f32));
         let mut map_collision = ParticleCollision { world: collision.world.clone(), visibility, lighting, lighting_cache: BTreeMap::new() };
-        world.transact(&events, &wearable_controls, request, &mut collision, |game_items, game_bounds| {
-            map_world.transact_views(&map_events, &attached, request,
+        world.transact(&events, &wearable_controls, &visibility_samples, visibility_view, request, &mut collision, |game_items, game_bounds| {
+            map_world.transact_views(&map_events, &attached, &visibility_samples, visibility_view, request,
                 |identity| if candidate.is_sky(identity) { sky_position.expect("sky effect controller") } else { request.camera_position },
                 &mut map_collision, |mut items, map_bounds| {
                 candidate.classify(&mut items);
@@ -2069,7 +2069,7 @@ pub unsafe extern "C" fn playsrc_particle_transact(
             })
         }).inspect(|_| *map_state = candidate)
     } else {
-        world.transact(&events, &wearable_controls, request, &mut collision, encode)
+        world.transact(&events, &wearable_controls, &visibility_samples, visibility_view, request, &mut collision, encode)
     };
     let output = match result {
         Ok(output) => output,
@@ -3512,12 +3512,13 @@ fn encode_model_pose_part(
         let authored_index = authored_selection.iter().position(|entry| entry.primitive == selected.primitive);
         out.extend_from_slice(&[u8::from(authored_index.is_some_and(|index| index >= opaque_count)), u8::from(authored_index.is_some()), 0, 0]);
     }
+    let attachments = named_attachments(&pose.attachments, |attachment| &attachment.name);
     out.extend_from_slice(
-        &u32::try_from(pose.attachments.len())
+        &u32::try_from(attachments.clone().count())
             .map_err(|_| ())?
             .to_le_bytes(),
     );
-    for attachment in &pose.attachments {
+    for attachment in attachments {
         pbytes(out, &attachment.name)?;
         out.extend_from_slice(&[u8::from(attachment.world_aligned), 0, 0, 0]);
         let matrix = if let Some((eye, orientation)) = request.fire_view {
@@ -6027,10 +6028,16 @@ fn encode_snapshot(
         extend(
             &mut out,
             &[
-                projectile_code(projectile.kind),
+                projectile_visual_code(projectile.kind, projectile.mini_rocket, projectile.trail, projectile.practice_explosion),
                 team_code(projectile.team),
-                projectile.state as u8,
-                u8::from(projectile.contact_normal.is_some()),
+                projectile.state as u8 | ((weapon_code(projectile.weapon) & 31) << 3),
+                u8::from(projectile.contact_normal.is_some()) | (u8::from(projectile.critical) << 1)
+                    | ((weapon_code(projectile.weapon) >> 5) << 2)
+                    | (u8::from(projectile.self_blast_only) << 4)
+                    | (u8::from(projectile.model_visible) << 5)
+                    | (u8::from(projectile.air_burst) << 6)
+                    | (u8::from(projectile.underwater_explosion) << 7),
+                    // Model visibility is a Source spawn-age rule, not a browser timer.
             ],
             MAX,
         )?;
@@ -6053,11 +6060,16 @@ fn encode_snapshot(
         extend(
             &mut out,
             &[
-                event.kind as u8,
-                projectile_code(event.projectile_kind),
+                event.kind as u8 | ((weapon_code(event.weapon) & 31) << 3),
+                projectile_visual_code(event.projectile_kind, event.mini_rocket, event.trail, event.practice_explosion),
                 team_code(event.team),
                 u8::from(event.contact_normal.is_some())
-                    | (u8::from(event.launcher_pose.is_some()) << 1),
+                    | (u8::from(event.launcher_pose.is_some()) << 1)
+                    | (u8::from(event.critical) << 2)
+                    | ((weapon_code(event.weapon) >> 5) << 3)
+                    | (u8::from(event.self_blast_only) << 5)
+                    | (u8::from(event.underwater_explosion) << 6)
+                    | (u8::from(event.air_burst) << 7),
             ],
             MAX,
         )?;
@@ -7110,7 +7122,7 @@ fn encode_entity_presentation(
 
 fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
     let mut output = b"PRNG".to_vec();
-    output.extend_from_slice(&2_u32.to_le_bytes());
+    output.extend_from_slice(&3_u32.to_le_bytes());
     for stream in [state.authority, state.predicted_presentation] {
         output.extend_from_slice(&stream.current.to_le_bytes());
         output.extend_from_slice(&stream.shuffled.to_le_bytes());
@@ -7147,7 +7159,17 @@ fn encode_random_state(state: playsrc_tf2::Tf2RandomState) -> Option<Vec<u8>> {
         (state.sound_selection.control_point_available >> 8) as u8,
     ]);
     output.extend_from_slice(&state.sound_selection.configured_available);
-    (output.len() == 360).then_some(output)
+    output.extend_from_slice(&[
+        state.sound_selection.projectile_unlock_available[0]
+            | state.sound_selection.projectile_unlock_available[1] << 3
+            | (state.sound_selection.projectile_unlock_available[2] & 3) << 6,
+        state.sound_selection.projectile_unlock_available[2] >> 2
+            | state.sound_selection.projectile_unlock_available[3] << 1
+            | state.sound_selection.projectile_unlock_available[4] << 4,
+        state.sound_selection.projectile_unlock_available[5],
+        0,
+    ]);
+    (output.len() == 364).then_some(output)
 }
 
 fn encode_random_draw(
@@ -7189,6 +7211,9 @@ fn encode_random_draw(
         playsrc_tf2::RandomDecision::WeaponCritical => (14, 0, playsrc_tf2::SoundQueryPhase::Inspect),
         playsrc_tf2::RandomDecision::EnemySpeedOnHit => (64, 0, playsrc_tf2::SoundQueryPhase::Inspect),
         playsrc_tf2::RandomDecision::BulletSpread => (65, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::ScorchShotBounceVelocity => (11, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::ScorchShotBounceAngle => (12, 0, playsrc_tf2::SoundQueryPhase::Inspect),
+        playsrc_tf2::RandomDecision::ScorchShotBounceSign => (13, 0, playsrc_tf2::SoundQueryPhase::Inspect),
     };
     extend(
         output,
@@ -7510,7 +7535,12 @@ fn projectile_code(kind: playsrc_tf2::ProjectileKind) -> u8 {
         playsrc_tf2::ProjectileKind::Rocket => 1,
         playsrc_tf2::ProjectileKind::Sticky => 2,
         playsrc_tf2::ProjectileKind::Syringe => 3,
+        playsrc_tf2::ProjectileKind::Flare => 4,
     }
+}
+
+fn projectile_visual_code(kind: playsrc_tf2::ProjectileKind, mini: bool, trail: playsrc_tf2::ProjectileTrail, practice: bool) -> u8 {
+    projectile_code(kind) | (u8::from(mini) << 3) | ((trail as u8) << 4) | (u8::from(practice) << 7)
 }
 
 fn extend(output: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Option<()> {
@@ -7736,6 +7766,7 @@ fn encode_game_event(output: &mut Vec<u8>, event: &playsrc_tf2::Event, limit: us
         playsrc_tf2::Event::PlayerRespawned { player, team } => {
             (19, team_code(*team), *player, 0, [0.0; 4])
         }
+        playsrc_tf2::Event::ProjectileWeaponEffect { weapon, effect } => (24, weapon_code(*weapon), *effect as u32, 0, [0.0; 4]),
     };
     extend(output, &[kind, detail, 0, 0], limit)?;
     u32_field(output, subject, limit)?;
@@ -11149,12 +11180,21 @@ fn rgba_texture(path: &str, decoders: &TextureDecoders<'_>) -> Result<DecodedTex
     decoded_texture(path, decoders)
 }
 
+/// Named attachment consumers follow Studio_FindAttachment's first match;
+/// the StudioModel and sampled pose retain every authored indexed attachment.
+fn named_attachments<T>(items: &[T], name: fn(&T) -> &[u8]) -> impl Iterator<Item = &T> + Clone {
+    items.iter().enumerate().filter(move |(index, value)|
+        !items[..*index].iter().any(|prior| name(prior).eq_ignore_ascii_case(name(value))))
+        .map(|(_, value)| value)
+}
+
 fn encode_particle_textures(
     out: &mut Vec<u8>,
     materials: &BTreeMap<String, CompiledParticlePresentation>,
+    roots: &[playsrc_particle::DefinitionLookup<'_>],
 ) -> Result<(), ()> {
     out.extend_from_slice(b"PPTM");
-    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&4u32.to_le_bytes());
     out.extend_from_slice(
         &u32::try_from(materials.len())
             .map_err(|_| ())?
@@ -11170,8 +11210,19 @@ fn encode_particle_textures(
             out.extend_from_slice(&u32::from(state.blend_frames.value).to_le_bytes());
             for value in [state.add_self.value, state.overbright_factor.value, state.depth_blend_scale.value,
                 state.minimum_size.value, state.start_fade_size.value, state.end_fade_size.value, state.maximum_size.value,
-                state.maximum_distance.value, state.far_fade_interval.value] { out.extend_from_slice(&value.to_le_bytes()); }
+                 state.maximum_distance.value, state.far_fade_interval.value] { out.extend_from_slice(&value.to_le_bytes()); }
         }
+        out.extend_from_slice(&u32::from(material.additive_sprite.is_some()).to_le_bytes());
+        if let Some(state) = &material.additive_sprite {
+            out.extend_from_slice(&u32::from(state.srgb).to_le_bytes());
+            out.extend_from_slice(&u32::from(state.vertex_color).to_le_bytes());
+            for value in state.color.into_iter().chain([state.hdr_color_scale]) { out.extend_from_slice(&value.to_le_bytes()); }
+        }
+    }
+    out.extend_from_slice(&u32::try_from(roots.len()).map_err(|_| ())?.to_le_bytes());
+    for root in roots {
+        let playsrc_particle::DefinitionLookup::Name(name) = root else { return Err(()); };
+        pbytes(out, name.as_bytes())?;
     }
     Ok(())
 }
@@ -11753,6 +11804,8 @@ fn load_cached_presentation(
     let model_headers = cached_presentation_models(presentation).map_err(|_| 2_u32)?;
     let mut expected = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
+        "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl".to_owned(),
+        "models/weapons/w_models/w_flaregun_shell.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
@@ -12075,6 +12128,8 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
     phase_started = phase_finished;
     let mut roots = std::collections::BTreeSet::from([
         "models/weapons/w_models/w_rocket.mdl".to_owned(),
+        "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl".to_owned(),
+        "models/weapons/w_models/w_flaregun_shell.mdl".to_owned(),
         "models/weapons/w_models/w_stickybomb.mdl".to_owned(),
         "models/weapons/w_models/w_syringe_proj.mdl".to_owned(),
         "models/weapons/c_models/c_soldier_arms.mdl".to_owned(),
@@ -12387,8 +12442,9 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
                     .to_le_bytes(),
             );
         }
+        let attachments = named_attachments(&a.model.attachments, |attachment| &attachment.name);
         out.extend_from_slice(
-            &u32::try_from(a.model.attachments.len())
+            &u32::try_from(attachments.clone().count())
                 .map_err(|_| ())?
                 .to_le_bytes(),
         );
@@ -12408,7 +12464,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
             },
         )
         .map_err(|_| ())?;
-        for v in &a.model.attachments {
+        for v in attachments {
             pbytes(&mut out, &v.name)?;
             let sampled = attachment_pose
                 .attachments
@@ -12555,7 +12611,7 @@ fn compile_presentation(inputs: PresentationInputs<'_, '_>) -> Result<MeasuredPr
         &prepared_model_materials,
         particle_presentation,
     )?;
-    encode_particle_textures(&mut out, particle_presentation)?;
+    encode_particle_textures(&mut out, particle_presentation, &playsrc_tf2::particle_resources::roots(graph).into_iter().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>())?;
     encode_audio_documents(&mut out, bundle, graph).inspect_err(|_| presentation_failure("audio documents"))?;
     encode_model_occurrence_matrices(
         &mut out,
@@ -14320,6 +14376,7 @@ type CompiledParticles = (
 struct CompiledParticlePresentation {
     source_path: String,
     sprite_card: Option<playsrc_material::ParticleMaterialState>,
+    additive_sprite: Option<playsrc_material::AdditiveSpriteState>,
     state: playsrc_material::StaticState,
     metadata: playsrc_vtf::Metadata,
     texture_path: String,
@@ -14363,6 +14420,19 @@ fn compile_cosmetic_particles(b: &BTreeMap<String, &[u8]>, decoders: &TextureDec
     compile_particle_materials(&registry, &[playsrc_particle::DefinitionLookup::Name("superrare_burning1")], b, decoders, &[])
 }
 
+fn particle_material_dependencies(registry: &playsrc_particle::Registry, roots: &[playsrc_particle::DefinitionLookup<'_>]) -> Result<Vec<String>, ()> {
+    let closure = registry.dependency_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?;
+    let mut materials = std::collections::BTreeSet::new();
+    for index in closure.definitions {
+        let definition = registry.definition_at(index).ok_or(())?;
+        if !definition.material.is_empty() && definition.functions.iter().any(|function|
+            function.category == playsrc_particle::FunctionCategory::Renderer || function.identity.eq_ignore_ascii_case("Lifetime From Sequence")) {
+            materials.insert(definition.material.clone());
+        }
+    }
+    Ok(materials.into_iter().collect())
+}
+
 fn compile_particle_materials(
     registry: &playsrc_particle::Registry,
     roots: &[playsrc_particle::DefinitionLookup<'_>],
@@ -14372,7 +14442,7 @@ fn compile_particle_materials(
 ) -> Result<CompiledParticles, ()> {
     // Precache is dependency admission, not execution. ParticleWorld validates
     // an effect's operator closure transactionally when that effect starts.
-    let mut materials = registry.dependency_closure(roots).map_err(|error| { eprintln!("Particle admission: {error}"); })?.materials;
+    let mut materials = particle_material_dependencies(registry, roots)?;
     materials.extend_from_slice(legacy_materials);
     materials.sort();
     materials.dedup();
@@ -14418,7 +14488,8 @@ fn compile_particle_materials(
                 identity.clone(),
                 (
                     playsrc_particle::ParticleMaterial {
-                        shader: if material.shader == playsrc_material::Shader::Sprite {
+                        mapping_height: u32::from(metadata.height),
+                        shader: if material.particle.is_some() {
                             playsrc_particle::ParticleMaterialShader::SpriteCard
                         } else {
                             playsrc_particle::ParticleMaterialShader::MeshSprite
@@ -14434,6 +14505,7 @@ fn compile_particle_materials(
                     CompiledParticlePresentation {
                         source_path: material_path,
                         sprite_card: material.particle.clone(),
+                        additive_sprite: playsrc_material::additive_sprite_state(&material).map_err(|_| ())?,
                         state,
                         metadata: metadata.clone(),
                         texture_path,
@@ -14485,6 +14557,10 @@ fn decode_particle_sheet(
             )]),
         });
     };
+    decode_particle_sheet_data(resource)
+}
+
+fn decode_particle_sheet_data(resource: &[u8]) -> Result<playsrc_particle::ParticleSheet, ()> {
     let mut reader = ParticleReader {
         bytes: resource,
         at: 0,
@@ -14500,14 +14576,10 @@ fn decode_particle_sheet(
     let mut sequences = BTreeMap::new();
     for _ in 0..sequence_count {
         let identity = i32::from_le_bytes(reader.take(4)?.try_into().map_err(|_| ())?);
-        if !(0..64).contains(&identity) || sequences.contains_key(&identity) {
+        if !(0..64).contains(&identity) {
             return Err(());
         }
-        let clamp = match reader.u32()? {
-            0 => false,
-            1 => true,
-            _ => return Err(()),
-        };
+        let clamp = reader.u32()? != 0;
         let frame_count = reader.u32()? as usize;
         if frame_count == 0 || frame_count > 1_024 {
             return Err(());
@@ -14797,11 +14869,13 @@ fn decode_particle_transaction(
         Vec<playsrc_particle::Event>,
         playsrc_particle::AdvanceRequest,
         Option<LegacyParticleFrame<'_>>,
+        Option<playsrc_particle::VisibilityView>,
+        Vec<playsrc_particle::VisibilitySample>,
     ),
     (),
 > {
     let mut r = ParticleReader { bytes, at: 0 };
-    if r.take(4)? != b"PPTX" || r.u32()? != 4 {
+    if r.take(4)? != b"PPTX" || r.u32()? != 5 {
         return Err(());
     }
     let from = r.f32()?;
@@ -14817,7 +14891,7 @@ fn decode_particle_transaction(
         let visual_payload = r.take(visual_length)?;
         if from < 0.0 || from != to || frame_seconds < 0.0 || accepted >= identity || view[2] <= 0.0 || view[2] >= 180.0 || view[3] <= 0.0 || r.at != bytes.len() { return Err(()); }
         return Ok((Vec::new(), playsrc_particle::AdvanceRequest { from_seconds: from, to_seconds: to,
-            maximum_step_seconds: 1.0 / 60.0, camera_position }, Some(LegacyParticleFrame { seconds: frame_seconds, accepted, identity, view, visual_payload })));
+            maximum_step_seconds: 1.0 / 60.0, camera_position }, Some(LegacyParticleFrame { seconds: frame_seconds, accepted, identity, view, visual_payload }), None, Vec::new()));
     }
     if count > 4096 || from < 0.0 || to < from {
         return Err(());
@@ -14831,7 +14905,7 @@ fn decode_particle_transaction(
         if r.u8()? != 0
             || (kind != 3 && mode != 0)
             || (kind == 1 && !(1..=2).contains(&controls))
-            || (kind == 2 && controls > 1)
+            || (kind == 2 && controls > 30)
             || (kind == 3 && controls != 0)
         {
             return Err(());
@@ -14888,6 +14962,27 @@ fn decode_particle_transaction(
             command,
         });
     }
+    let visibility_view = match r.u32()? {
+        0 => None,
+        1 => {
+            let view = playsrc_particle::VisibilityView { yaw_degrees: r.f32()?, pitch_degrees: r.f32()?, vertical_fov_degrees: r.f32()?, width: r.f32()?, height: r.f32()? };
+            if !view.valid() { return Err(()); }
+            Some(view)
+        },
+        _ => return Err(()),
+    };
+    let sample_count = r.u32()? as usize;
+    if sample_count > 4096 || (sample_count > 0 && visibility_view.is_none()) { return Err(()); }
+    let mut visibility_samples = Vec::with_capacity(sample_count);
+    for _ in 0..sample_count {
+        let identity = r.u64()?;
+        let visible_pixels = r.u32()? as i32;
+        let possible_pixels = r.u32()? as i32;
+        let clip_fraction = r.f32()?;
+        if visibility_samples.last().is_some_and(|prior: &playsrc_particle::VisibilitySample| prior.identity >= identity)
+            || visible_pixels < -1 || possible_pixels < -1 || !(0.0..=1.0).contains(&clip_fraction) { return Err(()); }
+        visibility_samples.push(playsrc_particle::VisibilitySample { identity, visible_pixels, possible_pixels, clip_fraction });
+    }
     if r.at != bytes.len() {
         return Err(());
     }
@@ -14900,6 +14995,8 @@ fn decode_particle_transaction(
             camera_position,
         },
         None,
+        visibility_view,
+        visibility_samples,
     ))
 }
 
@@ -14941,6 +15038,15 @@ fn with<T>(handle: u32, read: impl FnOnce(&Slot) -> T) -> Option<T> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn named_attachment_projection_keeps_first_case_insensitive_match_without_changing_indices() {
+        let attachments = [(b"muzzle".to_vec(), 0), (b"MUZZLE".to_vec(), 1), (b"shell".to_vec(), 2)];
+        let selected = named_attachments(&attachments, |attachment| attachment.0.as_slice());
+        assert_eq!(selected.clone().count(), 2);
+        assert_eq!(selected.map(|attachment| attachment.1).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(attachments[1].1, 1);
+    }
+
     #[test]
     fn damage_event_wire_preserves_full_and_mini_critical_kinds() {
         for (crit, code) in [(playsrc_tf2::damage::CritKind::None, 0.0), (playsrc_tf2::damage::CritKind::Full, 1.0), (playsrc_tf2::damage::CritKind::Mini, 2.0)] {
@@ -15219,54 +15325,35 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the exact configured Pyro source graph"]
+    #[ignore = "requires the exact configured projectile graph and map BSP"]
     fn configured_pyro_particle_materials_compile() {
         let graph = std::env::var("PLAYSRC_PYRO_GRAPH").expect("configured Pyro graph path");
         let bytes =
-            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), None).unwrap();
+            playsrc_asset_graph::read_resource_set(std::path::Path::new(&graph), Some("gameplay")).unwrap();
         let resources = bundle(&bytes).unwrap();
         let decoders = TextureDecoders::new(&resources);
-        let paths = [
-            "particles/rockettrail.pcf",
-            "particles/rocketbackblast.pcf",
-            "particles/stickybomb.pcf",
-            "particles/muzzle_flash.pcf",
-            "particles/explosion.pcf",
-            "particles/flamethrower.pcf",
-        ];
-        let sources = paths.map(|path| playsrc_particle::PcfSource {
+        let sources = std::str::from_utf8(resources[playsrc_tf2::particle_resources::SOURCE_LIST]).unwrap().lines().map(|path| playsrc_particle::PcfSource {
             logical_path: path,
             bytes: resources[path],
-        });
+        }).collect::<Vec<_>>();
         let registry = playsrc_particle::Registry::from_pcf(
             &sources,
             playsrc_particle::RegistryLimits::default(),
         )
         .unwrap();
-        let roots = [
-            "rockettrail",
-            "rocketbackblast",
-            "stickybombtrail_red",
-            "stickybombtrail_blue",
-            "stickybomb_pulse_red",
-            "stickybomb_pulse_blue",
-            "muzzle_pipelauncher",
-            "ExplosionCore_Wall",
-            "ExplosionCore_MidAir",
-            "new_flame",
-            "new_flame_crit_red",
-            "new_flame_crit_blue",
-            "flamethrower_underwater",
-            "pyro_blast",
-            "muzzle_shotgun",
-        ]
-        .map(playsrc_particle::DefinitionLookup::Name);
-        for identity in registry.target_closure(&roots).unwrap().materials {
+        let bsp_bytes = std::fs::read(std::env::var("PLAYSRC_PYRO_BSP").expect("configured map BSP path")).unwrap();
+        let bsp = playsrc_bsp::parse(&bsp_bytes, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).unwrap();
+        let entities = playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default()).unwrap();
+        let names = playsrc_tf2::particle_resources::roots(&entities);
+        let roots = names.iter().copied().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
+        let legacy = smokestack_materials(&entities).unwrap();
+        for identity in particle_material_dependencies(&registry, &roots).unwrap().into_iter().chain(legacy.iter().cloned()) {
+            eprintln!("compiling selected particle material {identity}");
             let path = dependency_path(identity.as_bytes()).unwrap();
             let material = resolve_material_semantics(
                 &path,
                 &resources,
-                playsrc_material::SelectionEnvironment::default(),
+                playsrc_material::SelectionEnvironment { sprite_card_default_depth_blend: Some(true), ..Default::default() },
             )
             .unwrap_or_else(|_| panic!("material {identity}"));
             let (selected, _, metadata) =
@@ -15277,8 +15364,8 @@ mod tests {
                     )
                 });
             let texture = selected.logical_path.as_ref().unwrap().to_ascii_lowercase();
-            rgba_texture(&texture, &decoders)
-                .unwrap_or_else(|_| panic!("rgba texture {identity}: {texture}"));
+            let hashes = BTreeMap::from([(texture.clone(), <[u8;32]>::from(Sha256::digest(resources[&texture])))]);
+            model_authored_texture(&texture, &decoders, &hashes, true).unwrap_or_else(|_| panic!("authored texture {identity}: {texture}"));
             playsrc_material::static_state(
                 &material,
                 playsrc_material::TextureAlphaFacts {
@@ -15289,7 +15376,7 @@ mod tests {
             decode_particle_sheet(metadata)
                 .unwrap_or_else(|_| panic!("particle sheet {identity}: {texture}"));
         }
-        assert!(compile_particles(&resources, &decoders, playsrc_tf2::particle_resources::GAME_SYSTEMS, &[]).is_ok());
+        assert!(compile_particles(&resources, &decoders, &names, &legacy).is_ok());
     }
 
     #[test]
@@ -15483,7 +15570,7 @@ mod tests {
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"PPTX");
-        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&5_u32.to_le_bytes());
         bytes.extend_from_slice(&0.0_f32.to_le_bytes());
         bytes.extend_from_slice(&0.015_f32.to_le_bytes());
         bytes.extend_from_slice(&[0; 12]);
@@ -15492,6 +15579,7 @@ mod tests {
         bytes.extend_from_slice(&7_u64.to_le_bytes());
         bytes.extend_from_slice(&0.015_f32.to_le_bytes());
         bytes.extend_from_slice(&9_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
         bytes
     }
 
@@ -15499,7 +15587,7 @@ mod tests {
     fn legacy_frame_envelope_owns_one_clock_ack_and_exact_visual_payload_range() {
         let mut bytes = vec![0_u8; 68];
         bytes[..4].copy_from_slice(b"PPTX");
-        bytes[4..8].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&5_u32.to_le_bytes());
         bytes[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&0.3_f32.to_le_bytes());
         bytes[36..40].copy_from_slice(&7_u32.to_le_bytes());
@@ -15508,7 +15596,7 @@ mod tests {
         bytes[56..60].copy_from_slice(&(16.0_f32 / 9.0).to_le_bytes());
         bytes[60..64].copy_from_slice(&4_u32.to_le_bytes());
         bytes[64..].copy_from_slice(b"PLVQ");
-        let (events, request, frame) = decode_particle_transaction(&bytes).unwrap();
+        let (events, request, frame, _, _) = decode_particle_transaction(&bytes).unwrap();
         assert!(events.is_empty());
         assert_eq!(request.from_seconds, request.to_seconds);
         let frame = frame.unwrap();
@@ -15526,9 +15614,10 @@ mod tests {
             (1, playsrc_particle::StopMode::Immediate),
         ] {
             let bytes = particle_stop_transaction(mode);
-            let (events, request, legacy) = decode_particle_transaction(&bytes)
+            let (events, request, legacy, view, samples) = decode_particle_transaction(&bytes)
                 .expect("current particle transaction must decode");
             assert!(legacy.is_none());
+            assert!(view.is_none() && samples.is_empty());
             assert_eq!(request.from_seconds, 0.0);
             assert_eq!(request.to_seconds, 0.015);
             assert_eq!(
@@ -15538,6 +15627,62 @@ mod tests {
                     mode: expected,
                 }
             );
+        }
+    }
+
+    #[test]
+    fn particle_sheets_apply_later_authored_sequence_records_to_the_same_slot() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        for span in [1.0_f32, 2.0] {
+            for value in [3u32, 1, 1] { bytes.extend_from_slice(&value.to_le_bytes()); }
+            bytes.extend_from_slice(&span.to_le_bytes());
+            bytes.extend_from_slice(&span.to_le_bytes());
+            for _ in 0..4 { for value in [0.0_f32, 0.0, 1.0, 1.0] { bytes.extend_from_slice(&value.to_le_bytes()); } }
+        }
+        let sheet = decode_particle_sheet_data(&bytes).unwrap();
+        assert_eq!(sheet.sequences.len(), 1);
+        assert_eq!(sheet.sequences[&3].duration_seconds, 2.0);
+        assert_eq!(sheet.sequences[&3].frames[0].duration_seconds, 2.0);
+        for length in 0..bytes.len() { assert!(decode_particle_sheet_data(&bytes[..length]).is_err()); }
+    }
+
+    #[test]
+    fn executable_particle_roots_publish_once_including_projectile_unlocks() {
+        let graph = playsrc_entity::parse(b"{\"classname\"\"worldspawn\"}\0", playsrc_entity::Limits::default()).unwrap();
+        let roots = playsrc_tf2::particle_resources::roots(&graph).into_iter().map(playsrc_particle::DefinitionLookup::Name).collect::<Vec<_>>();
+        let mut names = std::collections::BTreeSet::new();
+        for root in &roots { let playsrc_particle::DefinitionLookup::Name(name) = root else { panic!("named native root"); }; assert!(names.insert(*name), "duplicate {name}"); }
+        for name in playsrc_tf2::projectile_weapon::PARTICLE_ROOTS { assert!(names.contains(name)); }
+        assert!(names.contains("muzzle_revolver"));
+        let mut bytes = Vec::new();
+        encode_particle_textures(&mut bytes, &BTreeMap::new(), &roots).unwrap();
+        assert_eq!(&bytes[..4], b"PPTM");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize, roots.len());
+        let mut reader = ParticleReader { bytes: &bytes, at: 16 };
+        for root in roots { let playsrc_particle::DefinitionLookup::Name(name) = root else { unreachable!() }; assert_eq!(reader.text().unwrap(), name); }
+        assert_eq!(reader.at, bytes.len());
+    }
+
+    #[test]
+    fn particle_color_control_points_keep_sparse_indices_and_no_entity_binding() {
+        for index in [9, 10] {
+            let mut bytes = particle_stop_transaction(0);
+            bytes.truncate(bytes.len() - 8);
+            bytes[32] = 2;
+            bytes[34] = index;
+            for value in [0.72_f32, 0.22, 0.23, 0.0, 0.0, 0.0, 1.0] { bytes.extend_from_slice(&value.to_le_bytes()); }
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&[0; 8]);
+            let (events, _, _, _, _) = decode_particle_transaction(&bytes).unwrap();
+            let playsrc_particle::EventCommand::SetControlPoint { control_point, .. } = &events[0].command else { panic!("expected sparse control point"); };
+            assert_eq!(control_point.index, index);
+            assert_eq!(control_point.position, [0.72, 0.22, 0.23]);
+            assert_eq!(control_point.object_identity, None);
+            bytes[34] = 31;
+            assert!(decode_particle_transaction(&bytes).is_err());
         }
     }
 
@@ -16103,7 +16248,21 @@ mod tests {
             playsrc_movement::Policy::default(),
         );
         let projectile = playsrc_tf2::Projectile {
+            air_burst: false,
+            underwater_explosion: false,
+            model_visible: true,
+            trail: playsrc_tf2::ProjectileTrail::Standard,
+            mini_rocket: false,
+            practice_explosion: false,
             source_weapon: None,
+            launcher_source: None,
+            launcher_weapon: playsrc_tf2::Weapon::Original,
+            weapon: playsrc_tf2::Weapon::Original,
+            critical: false,
+            damage: 90.0,
+            deflected: false,
+            original_owner_identity: 1,
+            self_blast_only: false,
             identity: 12,
             kind: playsrc_tf2::ProjectileKind::Rocket,
             team: playsrc_tf2::PlayerTeam::Blue,
@@ -16145,6 +16304,14 @@ mod tests {
             conditions: 0,
             projectiles: vec![projectile.clone()],
             projectile_events: vec![playsrc_tf2::ProjectileEvent {
+                air_burst: false,
+                underwater_explosion: false,
+                trail: playsrc_tf2::ProjectileTrail::Standard,
+                mini_rocket: false,
+                practice_explosion: false,
+                weapon: playsrc_tf2::Weapon::Original,
+                critical: false,
+                self_blast_only: false,
                 kind: playsrc_tf2::ProjectileEventKind::Explode,
                 projectile: 12,
                 projectile_kind: playsrc_tf2::ProjectileKind::Rocket,
@@ -16201,6 +16368,8 @@ mod tests {
                 discard_chambered_on_reload: false,
                 generation: 0,
                 critical: playsrc_tf2::critical::WeaponState::default(),
+                last_flare_deny_time: 0.0,
+                last_extinguish_time: 0.0,
                 resolved_profile: playsrc_tf2::weapon::WeaponProfile::configured(playsrc_tf2::Weapon::Original),
                 weapon: playsrc_tf2::Weapon::Original,
                 clip: 3,
@@ -16249,6 +16418,7 @@ mod tests {
             predicted_presentation: authority,
             sound_selection: playsrc_tf2::SoundSelectionState {
                 configured_available: [0; 64],
+                projectile_unlock_available: [7, 7, 7, 7, 15, 7],
                 rocket_explosion_available: 7,
                 sticky_explosion_available: 7,
                 bat_hit_world_available: 3,
@@ -16312,14 +16482,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&encoded[..8], b"PSSN\x1d\0\0\0");
-        assert_eq!(encoded.len(), 1152);
-        assert_eq!(&encoded[1124..1140], &[0; 16]);
-        assert_eq!(i32::from_le_bytes(encoded[1140..1144].try_into().unwrap()), 800);
-        assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 35);
-        assert_eq!(f32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 1.0);
-        assert_eq!(&encoded[1008..1012], b"PCPN");
-        assert_eq!(&encoded[1020..1028], b"PCTF\x01\0\0\0");
-        assert_eq!(&encoded[1056..1064], b"PGRL\x04\0\0\0");
+        assert_eq!(encoded.len(), 1156);
+        assert_eq!(&encoded[1128..1144], &[0; 16]);
+        assert_eq!(i32::from_le_bytes(encoded[1144..1148].try_into().unwrap()), 800);
+        assert_eq!(i32::from_le_bytes(encoded[1148..1152].try_into().unwrap()), 35);
+        assert_eq!(f32::from_le_bytes(encoded[1152..1156].try_into().unwrap()), 1.0);
+        assert_eq!(&encoded[1012..1016], b"PCPN");
+        assert_eq!(&encoded[1024..1032], b"PCTF\x01\0\0\0");
+        assert_eq!(&encoded[1060..1068], b"PGRL\x04\0\0\0");
         assert_eq!(
             u32::from_le_bytes(encoded[160..164].try_into().unwrap()),
             playsrc_tf2::FL_CLIENT | playsrc_tf2::FL_INWATER
@@ -16328,9 +16498,12 @@ mod tests {
         assert_eq!(u32::from_le_bytes(encoded[60..64].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(encoded[64..68].try_into().unwrap()), 1);
         assert_eq!(&encoded[324..328], &[12, 0, 0, 0]);
-        assert_eq!(&encoded[408..412], &[6, 1, 3, 0]);
+        assert_eq!(&encoded[328..332], &[1, 3, 17, 32]);
+        assert_eq!(&encoded[408..412], &[22, 1, 3, 0]);
         assert_eq!(&encoded[544..552], &[1, 1, 0, 0, 2, 1, 0, 0]);
-        assert_eq!(&encoded[552..560], b"PRNG\x02\0\0\0");
+        assert_eq!(&encoded[552..560], b"PRNG\x03\0\0\0");
+        assert_eq!(&encoded[552 + 293..552 + 296], &[15, 255, 31]);
+        assert_eq!(&encoded[552 + 360..552 + 364], &[255, 255, 7, 0]);
 
         let constrained = encode_snapshot(
             &snapshot,
@@ -16358,7 +16531,7 @@ mod tests {
             &constrained[544..556],
             &[1, 1, 0, 0, 2, 1, 0, 0, 3, 1, 0, 0]
         );
-        assert_eq!(&constrained[556..564], b"PRNG\x02\0\0\0");
+        assert_eq!(&constrained[556..564], b"PRNG\x03\0\0\0");
         assert_eq!(constrained.len(), encoded.len() + 4);
     }
 

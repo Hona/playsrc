@@ -55,6 +55,7 @@ pub(super) fn step(
     let mover_result = apply_mover(&mut context, &mut state, selected_hull, configuration)?;
 
     let mut result = StepResult {
+        ground_detach_by_upward_speed: false,
         state,
         selected_hull,
         wish_state: WishState::default(),
@@ -93,6 +94,7 @@ pub(super) fn step(
             policy,
             &mut result.contacts,
             &mut result.events,
+            &mut result.ground_detach_by_upward_speed,
         )?;
     } else if result.state.velocity[2] > 250.0 {
         set_ground(
@@ -939,6 +941,7 @@ fn full_walk(
             policy,
             &mut result.contacts,
             &mut result.events,
+            &mut result.ground_detach_by_upward_speed,
         )?;
         if result.state.ground.is_some() {
             result.state.velocity[2] = 0.0;
@@ -1035,6 +1038,7 @@ fn full_walk(
         policy,
         &mut result.contacts,
         &mut result.events,
+        &mut result.ground_detach_by_upward_speed,
     )?;
     clamp_velocity(&mut result.state.velocity, configuration.maximum_velocity);
     let swimming = if policy.water.refresh_before_walk {
@@ -1515,6 +1519,7 @@ fn categorize_position(
     policy: Policy,
     contacts: &mut Vec<Contact>,
     events: &mut Vec<Event>,
+    detached_by_upward_speed: &mut bool,
 ) -> Result<(), Error> {
     state.surface_friction = 1.0;
     check_water(context, state, configuration, policy)?;
@@ -1524,12 +1529,13 @@ fn categorize_position(
     if state.mode == Mode::Ladder && state.velocity[2] > 0.0 {
         return set_ground(context, state, None, contacts, events);
     }
-    let support_velocity_z = if let Some(support) = state.ground.and_then(|ground| ground.support) {
+    let support_velocity_z = if policy.ground_detach_relative_to_support && let Some(support) = state.ground.and_then(|ground| ground.support) {
         context.tracer.support_velocity(support)?[2]
     } else {
         0.0
     };
     if state.velocity[2] - support_velocity_z > policy.ground_detach_speed {
+        *detached_by_upward_speed = true;
         return set_ground(context, state, None, contacts, events);
     }
 

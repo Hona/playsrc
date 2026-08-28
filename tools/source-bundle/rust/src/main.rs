@@ -2687,6 +2687,8 @@ fn main() -> Result<(), String> {
     );
     for path in [
         "models/weapons/w_models/w_rocket.mdl",
+        "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl",
+        "models/weapons/w_models/w_flaregun_shell.mdl",
         "models/weapons/w_models/w_stickybomb.mdl",
         "models/weapons/w_models/w_syringe_proj.mdl",
         "models/weapons/c_models/c_soldier_arms.mdl",

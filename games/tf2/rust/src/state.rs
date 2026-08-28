@@ -906,8 +906,12 @@ impl CoreState {
             state.afterburn,
             class,
             attacker,
-            21,
+            crate::Weapon::Flamethrower,
+            "flamethrower",
+            None,
             now,
+            crate::pyro::FLAME_INITIAL_AFTERBURN,
+            crate::pyro::FLAME_AFTERBURN_PER_HIT,
         ));
         if initial {
             if let Some(event) = state

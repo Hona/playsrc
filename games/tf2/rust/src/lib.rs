@@ -21,6 +21,7 @@ pub mod particle_resources;
 pub mod medic;
 pub mod melee;
 pub mod pickup;
+pub mod projectile_weapon;
 pub mod pyro;
 pub mod random;
 pub mod round;
@@ -151,6 +152,7 @@ impl MovementPolicy {
             backward_speed_factor: 0.9,
             backward_speed_minimum: 100.0,
             ground_detach_speed: 250.0,
+            ground_detach_relative_to_support: false,
             jump_impulse: 289.0
                 * self.modifiers.condition_jump_factor
                 * self.modifiers.item_jump_factor,
@@ -231,6 +233,26 @@ pub enum Weapon {
     SyringeGun = 19,
     MediGun = 20,
     Bonesaw = 21,
+    DirectHit = 90,
+    BlackBox = 91,
+    LibertyLauncher = 92,
+    RocketJumper = 93,
+    AirStrike = 94,
+    FlareGun = 95,
+    Detonator = 96,
+    ScorchShot = 97,
+    Manmelter = 98,
+}
+
+impl Weapon {
+    pub const fn is_rocket_launcher(self) -> bool {
+        matches!(self, Self::RocketLauncher | Self::Original | Self::DirectHit | Self::BlackBox
+            | Self::LibertyLauncher | Self::RocketJumper | Self::AirStrike)
+    }
+
+    pub const fn is_flare_gun(self) -> bool {
+        matches!(self, Self::FlareGun | Self::Detonator | Self::ScorchShot | Self::Manmelter)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,6 +336,19 @@ pub enum ProjectileKind {
     Rocket = 1,
     Sticky = 2,
     Syringe = 3,
+    Flare = 4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ProjectileTrail {
+    Standard = 0,
+    RocketJumper = 1,
+    AirStrike = 2,
+    AirStrikeJump = 3,
+    Underwater = 4,
+    ScorchShot = 5,
+    Manmelter = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,8 +457,22 @@ impl StickyLaunchRandom {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Projectile {
+    pub air_burst: bool,
+    pub underwater_explosion: bool,
+    pub model_visible: bool,
+    pub trail: ProjectileTrail,
+    pub mini_rocket: bool,
+    pub practice_explosion: bool,
     pub source_weapon: Option<weapon::WeaponSource>,
+    pub launcher_source: Option<weapon::WeaponSource>,
+    pub launcher_weapon: Weapon,
     pub identity: u32,
+    pub weapon: Weapon,
+    pub critical: bool,
+    pub damage: f32,
+    pub deflected: bool,
+    pub original_owner_identity: u32,
+    pub self_blast_only: bool,
     pub kind: ProjectileKind,
     pub team: PlayerTeam,
     pub owner_identity: u32,
@@ -441,6 +490,10 @@ pub struct Projectile {
 struct LiveProjectile {
     presentation: Projectile,
     killing_weapon: &'static str,
+    gravity_scale: f32,
+    flare_debris: bool,
+    flare_impact_time: Option<f32>,
+    flare_angles: [f32; 3],
     armed: bool,
     creation_tick: u64,
     arm_tick: u64,
@@ -459,6 +512,7 @@ pub enum ProjectileEventKind {
     Arm = 4,
     Fizzle = 5,
     Explode = 6,
+    Deflect = 7,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -469,7 +523,15 @@ pub struct ProjectileLauncherPose {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileEvent {
+    pub air_burst: bool,
+    pub underwater_explosion: bool,
+    pub trail: ProjectileTrail,
+    pub mini_rocket: bool,
+    pub practice_explosion: bool,
     pub kind: ProjectileEventKind,
+    pub weapon: Weapon,
+    pub critical: bool,
+    pub self_blast_only: bool,
     pub projectile: u32,
     pub projectile_kind: ProjectileKind,
     pub owner_identity: u32,
@@ -493,6 +555,7 @@ pub struct ProjectileEvent {
     Disguised = 3,
     Stealthed = 4,
     Invulnerable = 5,
+    CritBoosted = 11,
     StealthedBlink = 9,
     Phase = 14,
     Stunned = 15,
@@ -510,6 +573,7 @@ pub struct ProjectileEvent {
     BlastJumping = 81,
     Plague = 112,
     KnockedIntoAir = 115,
+    HealingDebuff = 118,
     Gas = 123,
 }
 
@@ -641,6 +705,7 @@ pub struct PlayerRestrictions {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    ProjectileWeaponEffect { weapon: Weapon, effect: projectile_weapon::WeaponEffect },
     ClassChanged(PlayerClass),
     TeamChanged(PlayerTeam),
     WeaponChanged(Weapon),
@@ -878,6 +943,10 @@ pub struct Session<W: GameplayWorld + Clone> {
     movement_modifiers: MovementModifiers,
     last_movement: Option<MovementStepResult>,
     health: i32,
+    afterburn: Option<pyro::Afterburn>,
+    pending_weapon_effects: Vec<Event>,
+    next_manmelter_effect_tick: Option<u64>,
+    manmelter_ready: bool,
     spy: Option<spy::SpyState>,
     conditions: ConditionSet,
     lifecycle: PlayerLifecycle,
@@ -1076,6 +1145,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_modifiers,
             last_movement: None,
             health: PlayerClass::Soldier.data().maximum_health,
+            afterburn: None,
+            pending_weapon_effects: Vec::new(),
+            next_manmelter_effect_tick: None,
+            manmelter_ready: false,
             spy: None,
             conditions: ConditionSet::default(),
             lifecycle: PlayerLifecycle::Active,
@@ -1275,6 +1348,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn apply_equipment(&mut self) {
+        let detached_manmelter = self.loadout.contains_key(&Weapon::Manmelter)
+            && !self.equipment.weapons(self.class).any(|weapon| weapon == Weapon::Manmelter);
+        if detached_manmelter { self.set_revenge_crits(0); self.stop_manmelter_charge(); }
         let old_items = self.active_equipment.equipped_items(self.loadout_class);
         let old_loadout = std::mem::take(&mut self.loadout);
         let same_class = self.loadout_class == self.class;
@@ -1286,7 +1362,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 decapitations: self.decapitations,
                 ammo: weapon_ammo_kind(weapon),
                 gun: weapon_ammo_kind(weapon).is_some(),
-                blast_impact: matches!(weapon, Weapon::RocketLauncher | Weapon::Original | Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
+                blast_impact: weapon.is_rocket_launcher() || matches!(weapon, Weapon::GrenadeLauncher | Weapon::StickybombLauncher),
                 ..Default::default()
             };
             let mut runtime = WeaponRuntime::full_with_attributes(weapon, context, |target, hook, input| match target {
@@ -1935,11 +2011,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.critical_history.advance(critical_time).map_err(Error::Damage)?;
         if let Some(bots) = self.bots.as_mut() {
             bots.advance_critical_histories(critical_time).map_err(Error::Damage)?;
+            bots.update_water_flags();
         }
         match self.movement.water_level {
             0 => self.in_water = false,
             1 | 2 => self.in_water = true,
             _ => {}
+        }
+        if self.movement.ground.is_some() || self.movement.water_level != 0 {
+            self.conditions.remove(Condition::BlastJumping);
         }
 
         if self
@@ -2379,8 +2459,6 @@ impl<W: GameplayWorld + Clone> Session<W> {
         let (move_forward, move_side) = self.movement_stuns.command(self.tick as f32 * self.movement_configuration.tick_interval,
             command.movement.forward, -command.movement.side);
 
-        if self.blast_since_movement && self.movement.velocity[2] > 250.0 { self.conditions.insert(Condition::BlastJumping); }
-        self.blast_since_movement = false;
         let movement_result = step(
             &self.collision,
             self.movement,
@@ -2405,6 +2483,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             movement_policy,
         )?;
         self.movement = movement_result.state;
+        if self.blast_since_movement && movement_result.ground_detach_by_upward_speed {
+            self.conditions.insert(Condition::BlastJumping);
+        }
+        self.blast_since_movement = false;
         if self.movement.ground.is_some() {
             self.air_dashes = 0;
             self.scattergun_jumped = false;
@@ -2463,6 +2545,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 events.push(Event::WeaponChanged(Weapon::Wrench));
             }
         }
+        self.advance_afterburn(&mut events)?;
         let bot_attacks = if command.nextbot_stop {
             self.bots.as_mut().map_or_else(Vec::new, |bots| bots.due_melee_attacks(self.tick))
         } else if let Some(bots) = &mut self.bots {
@@ -2567,6 +2650,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.movement.active_hull(movement_policy),
             );
             actor.alive = self.lifecycle == PlayerLifecycle::Active && self.health > 0;
+            actor.allowed_to_pick_up = self.equipped_player_attribute(PLAYER_IDENTITY,
+                "cannot_pick_up_intelligence", 0.0).round_ties_even() as i32 == 0;
             actor.invulnerable = [5_u8, 8, 51, 52, 57]
                 .into_iter()
                 .any(|condition| self.condition_word_contains(condition));
@@ -2665,10 +2750,15 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.push_shortstop(command.pitch_degrees, command.movement.yaw_degrees, &mut events)?;
             }
             let released_primary = !command.fire && self.fire_was_held;
+            if active_weapon.is_rocket_launcher() || active_weapon.is_flare_gun() {
+                self.refresh_projectile_weapon_profile(active_weapon);
+            }
             let previous_minigun_state = self.loadout[&active_weapon].minigun_state;
             let primary = if active_weapon == Weapon::Flamethrower {
-                self.advance_flamethrower(Command { fire: command.fire && attack_allowed, detonate: command.detonate && attack_allowed, ..command }, &mut ammo_events, &mut events)?;
+                self.advance_flamethrower(Command { fire: command.fire && attack_allowed, detonate: command.detonate && attack_allowed, ..command }, &mut ammo_events, &mut events, &mut projectile_events)?;
                 PrimaryResult::None
+            } else if active_weapon.is_flare_gun() {
+                self.advance_flare_weapon(command, attack_allowed, &mut events)?
             } else {
                 let state = self
                     .loadout
@@ -2698,6 +2788,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if let PrimaryResult::Fired { charge_seconds } = primary {
                 self.fire_on_empty = false;
+                if active_weapon.is_rocket_launcher() || active_weapon.is_flare_gun() {
+                    self.calculate_projectile_critical(PLAYER_IDENTITY, active_weapon)?;
+                }
                 if ballistics::HitscanProfile::configured(active_weapon).is_some() {
                     let phase = self.fire_hitscan(
                         active_weapon,
@@ -3143,6 +3236,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             bots.record_point_combat(self.tick, fired);
         }
         self.publish_melee_condition_audio();
+        self.advance_manmelter_effects();
+        events.append(&mut self.pending_weapon_effects);
         self.tick += 1;
         merge_mover_requests(&mut self.mover_requests, &map_phase.mover_requests);
         self.map_effects = map_phase.effects.clone();
@@ -3727,6 +3822,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
             && weapon != Weapon::InvisibilityWatch
             && Some(weapon) != self.weapon
         {
+            if self.weapon == Some(Weapon::Manmelter) {
+                self.stop_manmelter_charge();
+                if self.revenge_crits > 0 { self.conditions.remove(Condition::CritBoosted); }
+            }
             if let Some(active_weapon) = self.weapon
                 && let Some(previous) = self.loadout.get_mut(&active_weapon)
             {
@@ -3742,6 +3841,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.buildings.request(building::Request::Cancel, self.class, self.ammo.metal);
             }
             self.weapon = Some(weapon);
+            if weapon == Weapon::Manmelter && self.revenge_crits > 0 { self.conditions.insert(Condition::CritBoosted); }
             self.fire_on_empty = false;
             self.loadout
                 .entry(weapon)
@@ -4007,6 +4107,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
     }
 
     fn regenerate(&mut self, entity: u32, associated_model: Option<u32>, events: &mut Vec<Event>) {
+        self.stop_manmelter_charge();
         if !self.equipment.class_matches(&self.active_equipment, self.class) { self.apply_equipment(); }
         let maximum = self.maximum_health();
         self.health = if self.health > maximum {
@@ -4313,10 +4414,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if attack.phase == bot::AttackPhase::MeleeSmack && attack.weapon != Weapon::Knife {
             return self.resolve_melee_actor(attack.attacker, attack.weapon, attack.pitch_degrees, attack.yaw_degrees, events);
         }
-        if matches!(
-            attack.weapon,
-            Weapon::RocketLauncher | Weapon::Original | Weapon::SyringeGun
-        ) {
+        if attack.weapon.is_rocket_launcher() || attack.weapon.is_flare_gun()
+            || attack.weapon == Weapon::SyringeGun {
+            if attack.weapon != Weapon::SyringeGun {
+                self.calculate_projectile_critical(attack.attacker, attack.weapon)?;
+            }
             return self.fire_projectile(
                 attack.pitch_degrees,
                 attack.yaw_degrees,
@@ -4447,11 +4549,11 @@ impl<W: GameplayWorld + Clone> Session<W> {
             events.push(Event::Damaged {
                 amount: result.health_damage as f32,
                 health: after as f32,
-                origin: self
+                origin: if input.attacker == input.victim { Some(input.position) } else { self
                     .bots
                     .as_ref()
                     .and_then(|bots| bots.combat_player(input.attacker))
-                    .map(|attacker| attacker.world_center),
+                    .map(|attacker| attacker.world_center) },
             });
             if let Some(bots) = &mut self.bots {
                 bots.record_human_hit(
@@ -4504,6 +4606,17 @@ impl<W: GameplayWorld + Clone> Session<W> {
             if after == 0 {
                 self.scoreboard.local_kill();
             }
+        }
+        if after == 0 && input.attacker != input.victim && input.weapon == Weapon::AirStrike
+            && let Some(source) = input.source_weapon.filter(|source| self.source_weapon_is_live(*source, input.weapon)) {
+            let stolen = if input.victim == PLAYER_IDENTITY { self.decapitations }
+                else { self.bots.as_ref().map_or(0, |bots| bots.decapitations(input.victim)) };
+            // OnPlayerKill is dispatched to info.GetWeapon(), whose owner can
+            // differ from the credited attacker after a rocket is reflected.
+            if source.owner == PLAYER_IDENTITY {
+                self.decapitations = self.decapitations.saturating_add(1).saturating_add(stolen);
+                self.refresh_projectile_weapon_profile(Weapon::AirStrike);
+            } else if let Some(bots) = self.bots.as_mut() { bots.add_decapitations(source.owner, 1 + stolen); }
         }
         if after == 0 {
             let curtime = self.tick as f32 * self.movement_configuration.tick_interval;
@@ -4596,11 +4709,213 @@ impl<W: GameplayWorld + Clone> Session<W> {
         }
     }
 
+    fn advance_afterburn(&mut self, events: &mut Vec<Event>) -> Result<(), Error> {
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        if self.conditions.contains(Condition::HealthBuff) && let Some(burn) = self.afterburn.as_mut() {
+            burn.duration -= 2.0 * self.movement_configuration.tick_interval;
+        }
+        if self.afterburn.is_some_and(|burn| now >= burn.healing_debuff_end) { self.conditions.remove(Condition::HealingDebuff); }
+        let mut hits = self.bots.as_mut().map_or_else(Vec::new, |bots| bots.afterburn_damage(now));
+        if self.lifecycle != PlayerLifecycle::Active || self.health <= 0 || self.movement.water_level >= 2
+            || !self.conditions.contains(Condition::Burning)
+            || self.afterburn.is_some_and(|burn| burn.duration <= 0.0) {
+            self.afterburn = None;
+            self.conditions.remove(Condition::Burning);
+            self.conditions.remove(Condition::HealingDebuff);
+        } else if let Some(burn) = self.afterburn.as_mut()
+            && let Some(amount) = burn.advance(now) {
+            hits.push(bot::Damage {
+                source_weapon: burn.source_weapon,
+                damage_type: damage::DamageType::BURN | damage::DamageType::PREVENT_FORCE,
+                force: [0.0; 3], modifiers: damage::DamageModifiers::default(), killing_weapon: Some(burn.killing_weapon),
+                attacker: burn.attacker, victim: PLAYER_IDENTITY, weapon: burn.weapon,
+                amount, position: self.movement.position, crit: damage::CritKind::None,
+                range_multiplier: 1.0, custom: damage::CustomDamage::Burning,
+            });
+        }
+        for mut hit in hits {
+            let live = hit.source_weapon.is_some_and(|source| self.source_weapon_is_live(source, hit.weapon));
+            hit.amount = self.source_weapon_attribute(hit.source_weapon, hit.weapon, "mult_wpn_burndmg", hit.amount);
+            if live && hit.weapon.is_flare_gun() && hit.weapon != Weapon::Manmelter {
+                hit.custom = damage::CustomDamage::Other(8);
+                hit.killing_weapon = Some(self.owned_projectile_icon(hit.attacker, projectile_weapon::WeaponId::FlareGun).unwrap_or("flaregun"));
+            } else {
+                hit.custom = damage::CustomDamage::Burning;
+                let original_icon = if live {
+                    hit.source_weapon.and_then(|source| equipment::presentation(source.definition_index))
+                        .and_then(|item| item.death_notice_icon)
+                } else { None };
+                hit.killing_weapon = Some(original_icon.or_else(|| self.equipped_weapon_definition(hit.attacker, Weapon::Flamethrower)
+                    .and_then(equipment::presentation).and_then(|item| item.death_notice_icon)).unwrap_or("flamethrower"));
+            }
+            let team = if hit.attacker == PLAYER_IDENTITY { Some(self.team_selection.local_team()) }
+                else { self.bots.as_ref().and_then(|bots| bots.team(hit.attacker)) };
+            if team.is_none() { hit.attacker = 0; }
+            self.apply_actor_damage(hit, team.unwrap_or(PlayerTeam::Unassigned), events)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_projectile_weapon_profile(&mut self, weapon: Weapon) {
+        let context = weapon::ProfileContext {
+            ammo: weapon_ammo_kind(weapon), gun: true, blast_impact: weapon.is_rocket_launcher(),
+            decapitations: self.decapitations, health_fraction: self.health as f32 / self.maximum_health() as f32,
+            blast_jumping: self.conditions.contains(Condition::BlastJumping), ..Default::default()
+        };
+        let profile = weapon::WeaponProfile::configured(weapon).with_attributes(context, |target, hook, input| match target {
+            weapon::AttributeTarget::Weapon => self.equipment_attributes.weapon(weapon, hook, input),
+            weapon::AttributeTarget::Player => self.equipment_attributes.player(hook, input),
+        });
+        self.loadout.get_mut(&weapon).expect("equipped projectile weapon").resolved_profile = profile;
+    }
+
+    fn calculate_projectile_critical(&mut self, owner: u32, weapon: Weapon) -> Result<(), Error> {
+        let team = if owner == PLAYER_IDENTITY { Some(self.team_selection.local_team()) }
+            else { self.bots.as_ref().and_then(|bots| bots.team(owner)) };
+        let boosted = if owner == PLAYER_IDENTITY {
+            condition::all_weapon_crit_boost(|condition| self.condition_word_contains(condition.value()))
+        } else { self.bots.as_ref().and_then(|bots| bots.conditions(owner)).is_some_and(|conditions| conditions.is_crit_boosted()) };
+        let raw_damage = self.equipped_weapon_attribute(owner, weapon, "mult_dmg", if weapon.is_flare_gun() { 30.0 } else { 90.0 });
+        let projectiles_per_shot = self.equipped_weapon_attribute(owner, weapon, "mult_bullets_per_shot", 1.0).trunc();
+        self.check_weapon_critical(owner, weapon, critical::Shot {
+            command_number: self.tick as u32,
+            launcher_identity: if owner == PLAYER_IDENTITY { weapon as u32 } else { 0x4000_0000 + owner },
+            kind: if weapon.is_flare_gun() { damage::WeaponCritKind::RapidFire } else { damage::WeaponCritKind::SingleShot },
+            raw_damage, projectiles_per_shot, fire_delay: weapon::WeaponProfile::configured(weapon).fire_delay,
+            can_fire_critical: true, guaranteed_critical: boosted || team.is_some() && self.restrictions.team_win == team,
+            random_crits_enabled: true,
+        })?;
+        Ok(())
+    }
+
+    pub fn set_revenge_crits(&mut self, value: i32) {
+        if value.clamp(0, 35) > self.revenge_crits && self.loadout.contains_key(&Weapon::Manmelter) {
+            self.pending_weapon_effects.push(Event::ProjectileWeaponEffect { weapon: Weapon::Manmelter, effect: projectile_weapon::WeaponEffect::Absorb });
+        }
+        self.revenge_crits = value.clamp(0, 35);
+        if self.weapon == Some(Weapon::Manmelter) {
+            if self.revenge_crits > 0 { self.conditions.insert(Condition::CritBoosted); }
+            else { self.conditions.remove(Condition::CritBoosted); }
+        }
+    }
+
+    fn stop_manmelter_charge(&mut self) {
+        if let Some(state) = self.loadout.get_mut(&Weapon::Manmelter)
+            && state.charge_begin_tick.take().is_some() {
+            self.pending_weapon_effects.push(Event::ProjectileWeaponEffect { weapon: Weapon::Manmelter, effect: projectile_weapon::WeaponEffect::ChargeStop });
+            self.push_audio_event(AudioEvent {
+                action: AudioAction::Stop, tick: self.tick, ordinal: 0,
+                identity: AudioEventIdentity::WeaponSingle, definition: SoundDefinition::ManmelterVacuum,
+                source_kind: AudioSourceKind::Entity, source_identity: PLAYER_IDENTITY,
+                owner_identity: Some(PLAYER_IDENTITY), position: self.movement.position,
+                samples: SoundSamples { volume: 0.0, pitch: 0.0, wave: 0, sound_level: 0.0 },
+            });
+        }
+    }
+
+    fn advance_flare_weapon(&mut self, command: Command, can_attack: bool, events: &mut Vec<Event>) -> Result<PrimaryResult, Error> {
+        let weapon = self.weapon.expect("active flare weapon");
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        let secondary_blocks = command.detonate && self.tick >= self.loadout[&weapon].next_secondary_tick;
+        if secondary_blocks && weapon == Weapon::Manmelter {
+            let state = self.loadout.get_mut(&weapon).unwrap();
+            let begin = state.charge_begin_tick.is_none();
+            if begin { state.charge_begin_tick = Some(self.tick); }
+            state.next_secondary_tick = weapon::source_deadline_tick(self.tick, 0.5, self.movement_configuration.tick_interval);
+            if begin {
+                self.emit_flare_client_sound(SoundDefinition::ManmelterVacuum, SoundQueryPhase::Inspect);
+                self.pending_weapon_effects.push(Event::ProjectileWeaponEffect { weapon, effect: projectile_weapon::WeaponEffect::ChargeStart });
+            }
+        }
+        let mut result = PrimaryResult::None;
+        let state = self.loadout[&weapon];
+        if command.fire && !secondary_blocks && self.tick >= state.next_primary_tick && can_attack {
+            if weapon != Weapon::Manmelter && state.reserve == 0 {
+                if now > state.last_flare_deny_time {
+                    self.loadout.get_mut(&weapon).unwrap().last_flare_deny_time = now + 0.5;
+                    self.emit_weapon_sound(SoundDefinition::FlareEmpty, self.movement.position);
+                }
+            } else {
+                if state.charge_begin_tick.is_none() {
+                    if weapon == Weapon::Manmelter { self.manmelter_ready = false; }
+                    if self.movement.water_level == 3 {
+                        if now > state.last_flare_deny_time {
+                            self.loadout.get_mut(&weapon).unwrap().last_flare_deny_time = now + 1.0;
+                            self.emit_weapon_sound(SoundDefinition::FlareDeny, self.movement.position);
+                        }
+                    } else {
+                        result = self.loadout.get_mut(&weapon).unwrap().primary(self.tick,
+                            self.movement_configuration.tick_interval, true, false, &mut self.activity_events);
+                    }
+                }
+                // Successful shots consume the revenge crit after FireProjectile captures it.
+                if weapon == Weapon::Manmelter && !matches!(result, PrimaryResult::Fired { .. }) {
+                    self.set_revenge_crits(self.revenge_crits - 1);
+                }
+            }
+        }
+        if weapon == Weapon::Manmelter && self.loadout[&weapon].charge_begin_tick.is_some() {
+            if !command.detonate { self.stop_manmelter_charge(); }
+            else if now > self.loadout[&weapon].last_extinguish_time + 0.5 {
+                let eye = add(self.movement.position, self.movement.view_offset);
+                let direction = angle_vectors(command.pitch_degrees, command.movement.yaw_degrees, 0.0).0;
+                let trace = self.collision.trace(eye, add(eye, scale(direction, 256.0)),
+                    Hull { mins: [-16.0; 3], maxs: [16.0; 3] }, MASK_SOLID)?;
+                if let Some((target, _, _)) = self.bot_intersection(eye, trace.end, 16.0, 1.0, false)
+                    && target.team == self.team_selection.local_team() && target.burning {
+                    let burner = self.bots.as_ref().and_then(|bots| bots.burn_attacker(target.identity));
+                    let enemy_burner = burner.is_some_and(|attacker| {
+                        if attacker == PLAYER_IDENTITY { false }
+                        else { self.bots.as_ref().and_then(|bots| bots.team(attacker)).is_some_and(|team| team.is_enemy(target.team)) }
+                    });
+                    if self.bots.as_mut().unwrap().extinguish(target.identity) {
+                        self.loadout.get_mut(&weapon).unwrap().last_extinguish_time = now;
+                        if enemy_burner {
+                            self.set_revenge_crits(self.revenge_crits + 1);
+                            if self.equipped_weapon_attribute(PLAYER_IDENTITY, weapon, "extinguish_restores_health", 0.0).round_ties_even() > 0.0 {
+                                self.heal_projectile_actor(PLAYER_IDENTITY, 20.0, events)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn advance_manmelter_effects(&mut self) {
+        if self.lifecycle != PlayerLifecycle::Active || self.weapon != Some(Weapon::Manmelter) {
+            self.next_manmelter_effect_tick = None;
+            self.manmelter_ready = false;
+            return;
+        }
+        let next = self.next_manmelter_effect_tick.get_or_insert_with(|| weapon::source_deadline_tick(self.tick, 0.25, self.movement_configuration.tick_interval));
+        if self.tick < *next { return; }
+        *next = weapon::source_deadline_tick(self.tick, 0.25, self.movement_configuration.tick_interval);
+        if self.tick >= self.loadout[&Weapon::Manmelter].next_primary_tick {
+            self.pending_weapon_effects.push(Event::ProjectileWeaponEffect { weapon: Weapon::Manmelter, effect: projectile_weapon::WeaponEffect::Idle });
+            if !self.manmelter_ready {
+                self.manmelter_ready = true;
+                self.emit_flare_client_sound(SoundDefinition::ManmelterReady, SoundQueryPhase::Emit);
+            }
+        }
+    }
+
+    fn emit_flare_client_sound(&mut self, definition: SoundDefinition, phase: SoundQueryPhase) {
+        // SoundCreate resolves its script once; CSoundPatch subsequently emits
+        // that selected WAV rather than querying the script a second time.
+        let samples = self.sample_sound(RandomContext::PredictedPresentation, definition, phase);
+        self.push_audio_event(AudioEvent { action: AudioAction::Play, tick: self.tick, ordinal: 0,
+            identity: AudioEventIdentity::WeaponSingle, definition, source_kind: AudioSourceKind::Entity,
+            source_identity: PLAYER_IDENTITY, owner_identity: Some(PLAYER_IDENTITY), position: self.movement.position, samples });
+    }
+
     fn advance_flamethrower(
         &mut self,
         command: Command,
         ammo_events: &mut Vec<weapon::AmmoEvent>,
         events: &mut Vec<Event>,
+        projectile_events: &mut Vec<ProjectileEvent>,
     ) -> Result<(), Error> {
         let interval = self.movement_configuration.tick_interval;
         let now = self.tick as f32 * interval;
@@ -4657,7 +4972,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     )?
                     .end;
                 let player_team = self.team_selection.local_team();
+                let deflector_source = self.weapon_source(PLAYER_IDENTITY, Weapon::Flamethrower);
+                let deflector_critical = condition::all_weapon_crit_boost(|condition| self.condition_word_contains(condition.value()));
+                let deflector_mini = self.source_weapon_attribute(deflector_source, Weapon::Flamethrower, "mini_rockets", 0.0).round_ties_even() != 0.0;
+                let deflector_practice = self.source_weapon_attribute(deflector_source, Weapon::Flamethrower, "no_self_blast_dmg", 0.0).round_ties_even() != 0.0;
+                let deflector_jumping = self.conditions.contains(Condition::BlastJumping);
                 for projectile in &mut self.projectiles {
+                    if !matches!(projectile.presentation.kind, ProjectileKind::Rocket | ProjectileKind::Flare) { continue; }
                     let delta = sub(projectile.presentation.position, eye);
                     let distance = length(delta);
                     if projectile.presentation.team == player_team
@@ -4684,10 +5005,25 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     projectile.presentation.orientation = quaternion_from_direction(direction);
                     projectile.presentation.team = player_team;
                     projectile.presentation.owner_identity = PLAYER_IDENTITY;
+                    projectile.presentation.deflected = true;
                     projectile.presentation.launcher_identity = Weapon::Flamethrower as u32;
+                    projectile.presentation.launcher_weapon = Weapon::Flamethrower;
+                    projectile.presentation.launcher_source = deflector_source;
+                    projectile.presentation.critical |= deflector_critical;
+                    projectile.presentation.trail = match projectile.presentation.kind {
+                        ProjectileKind::Rocket => {
+                            if self.collision.point_contents(projectile.presentation.position)? & 0x30 != 0 { ProjectileTrail::Underwater }
+                            else if deflector_mini && deflector_jumping { ProjectileTrail::AirStrikeJump }
+                            else if deflector_mini { ProjectileTrail::AirStrike }
+                            else if deflector_practice { ProjectileTrail::RocketJumper }
+                            else { ProjectileTrail::Standard }
+                        }
+                        _ => ProjectileTrail::Standard,
+                    };
                     projectile.presentation.contact_normal = None;
                     projectile.motion_enabled = true;
                     projectile.direct_target = None;
+                    projectile_events.push(projectile_event(ProjectileEventKind::Deflect, &projectile.presentation, self.tick));
                 }
                 let targets: Vec<_> = self.bots.as_ref().map_or_else(Vec::new, |bots| {
                     bots.combat_targets()
@@ -4845,9 +5181,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 })
             })
             .collect();
+        let source_weapon = self.weapon_source(PLAYER_IDENTITY, Weapon::Flamethrower);
         if let Some(bots) = self.bots.as_mut() {
             for (target, position, damage) in contacts {
-                if bots.apply_flame_contact(target, PLAYER_IDENTITY, now, damage) {
+                if bots.apply_flame_contact(target, PLAYER_IDENTITY, source_weapon, now, damage) {
                     events.push(Event::HitscanImpact {
                         weapon: Weapon::Flamethrower,
                         target: Some(target),
@@ -5311,7 +5648,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         if rules.is_some_and(|rules| rules.knockback && hitscan::knockback_allowed(amount, dot(distance, distance), rules.knockback_multiplier)) && impulse[2] < 0.0 { impulse[2] = 0.0; }
         impulse = scale(impulse, self.equipped_damage_push_multiplier(victim));
         if victim == PLAYER_IDENTITY { self.movement.velocity = add(self.movement.velocity, impulse); }
-        else if let Some(bots) = &mut self.bots { bots.apply_damage_impulse(victim, impulse); }
+        else if let Some(bots) = &mut self.bots { bots.apply_damage_impulse(victim, impulse, false); }
         Ok(())
     }
 
@@ -6085,7 +6422,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
             || add(self.movement.position, self.movement.view_offset),
             |attack| attack.eye_position,
         );
+        let critical_state = if owner == PLAYER_IDENTITY { self.loadout.get(&weapon).map(|state| state.critical) }
+            else { self.bots.as_ref().and_then(|bots| bots.weapon_runtime(owner, weapon)).map(|runtime| runtime.critical) };
+        let critical = critical_state.filter(|state| state.last_tick == Some(self.tick))
+            .and_then(|state| state.result).is_some_and(|result| result.kind == damage::CritKind::Full);
         let definition = match weapon {
+            Weapon::DirectHit => SoundDefinition::DirectHitSingle,
+            Weapon::BlackBox => SoundDefinition::BlackBoxSingle,
+            Weapon::LibertyLauncher => SoundDefinition::LibertyLauncherSingle,
+            Weapon::RocketJumper => SoundDefinition::RocketJumperSingle,
+            Weapon::AirStrike => SoundDefinition::AirStrikeSingle,
+            Weapon::FlareGun => SoundDefinition::FlareSingle,
+            Weapon::Detonator => SoundDefinition::DetonatorSingle,
+            Weapon::ScorchShot => SoundDefinition::ScorchShotSingle,
+            Weapon::Manmelter => SoundDefinition::ManmelterSingle,
             Weapon::RocketLauncher => SoundDefinition::RocketSingle,
             Weapon::Original => SoundDefinition::OriginalSingle,
             Weapon::StickybombLauncher => SoundDefinition::StickySingle,
@@ -6121,6 +6471,19 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::SyringeGun => SoundDefinition::SyringeSingle,
             Weapon::MediGun | Weapon::Bonesaw => return Err(Error::InvalidProjectilePhysics),
         };
+        let definition = if critical {
+            match weapon {
+                Weapon::RocketLauncher | Weapon::RocketJumper | Weapon::AirStrike => SoundDefinition::RocketCrit,
+                Weapon::Original => SoundDefinition::OriginalCrit,
+                Weapon::DirectHit => SoundDefinition::DirectHitCrit,
+                Weapon::BlackBox => SoundDefinition::BlackBoxCrit,
+                Weapon::LibertyLauncher => SoundDefinition::LibertyLauncherCrit,
+                Weapon::FlareGun | Weapon::Detonator => SoundDefinition::FlareCrit,
+                Weapon::ScorchShot => SoundDefinition::ScorchShotCrit,
+                Weapon::Manmelter => SoundDefinition::ManmelterCrit,
+                _ => definition,
+            }
+        } else { definition };
         let sound_samples = self.sample_weapon_sound(definition);
         self.push_audio_event(AudioEvent {
             action: AudioAction::Play,
@@ -6138,7 +6501,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             return Err(Error::ProjectileLimit);
         }
         let kind = match weapon {
-            Weapon::RocketLauncher | Weapon::Original => ProjectileKind::Rocket,
+            Weapon::RocketLauncher | Weapon::Original | Weapon::DirectHit | Weapon::BlackBox
+            | Weapon::LibertyLauncher | Weapon::RocketJumper | Weapon::AirStrike => ProjectileKind::Rocket,
+            Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot | Weapon::Manmelter => ProjectileKind::Flare,
             Weapon::StickybombLauncher => ProjectileKind::Sticky,
             Weapon::Scattergun
             | Weapon::HandgunScoutPrimary
@@ -6172,7 +6537,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
             Weapon::SyringeGun => ProjectileKind::Syringe,
             Weapon::MediGun | Weapon::Bonesaw => return Err(Error::InvalidProjectilePhysics),
         };
-        let profile = weapon::WeaponProfile::configured(weapon);
+        let profile = self.loadout.get(&weapon).map_or_else(
+            || weapon::WeaponProfile::configured(weapon), |runtime| runtime.profile());
         let (mut direction, right, up) = angle_vectors(pitch, yaw, 0.0);
         let viewmodel_flipped = profile.flip_viewmodel != self.flip_viewmodels;
         let (position, orientation) = if kind == ProjectileKind::Sticky {
@@ -6304,19 +6670,40 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             let speed = if kind == ProjectileKind::Syringe {
                 medic::SYRINGE_SPEED
+            } else if kind == ProjectileKind::Flare {
+                self.equipped_weapon_attribute(owner, weapon, "mult_projectile_speed", projectile_weapon::FLARE_SPEED)
             } else {
-                1_100.0
+                self.equipped_weapon_attribute(owner, weapon, "mult_projectile_speed", projectile_weapon::ROCKET_SPEED)
             };
             (scale(direction, speed), [0.0; 3])
         };
         let identity = self.next_projectile;
         self.next_projectile = self.next_projectile.wrapping_add(1).max(1);
         let tick_interval = self.movement_configuration.tick_interval;
-        let projectile = LiveProjectile {
+        let mut projectile = LiveProjectile {
             killing_weapon: self.killing_weapon_name(owner, weapon),
             presentation: Projectile {
+                air_burst: false,
+                underwater_explosion: false,
+                model_visible: kind == ProjectileKind::Syringe,
+                trail: ProjectileTrail::Standard,
+                mini_rocket: kind == ProjectileKind::Rocket && self.equipped_weapon_attribute(owner, weapon, "mini_rockets", 0.0).round_ties_even() != 0.0,
+                practice_explosion: false,
                 source_weapon: self.weapon_source(owner, weapon),
+                launcher_source: self.weapon_source(owner, weapon),
+                launcher_weapon: weapon,
                 identity,
+                weapon,
+                critical,
+                deflected: false,
+                original_owner_identity: owner,
+                self_blast_only: false,
+                damage: self.equipped_weapon_attribute(owner, weapon, "mult_dmg", match kind {
+                    ProjectileKind::Rocket => 90.0,
+                    ProjectileKind::Sticky => 120.0,
+                    ProjectileKind::Syringe => medic::SYRINGE_DAMAGE as f32,
+                    ProjectileKind::Flare => 30.0,
+                }),
                 kind,
                 team,
                 owner_identity: owner,
@@ -6333,6 +6720,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 contact_normal: None,
                 age_seconds: 0.0,
             },
+            gravity_scale: if kind == ProjectileKind::Flare {
+                self.equipped_weapon_attribute(owner, weapon, "mult_projectile_speed", projectile_weapon::FLARE_GRAVITY)
+            } else if kind == ProjectileKind::Syringe { medic::SYRINGE_GRAVITY_SCALE } else { 0.0 },
+            flare_debris: false,
+            flare_impact_time: None,
+            flare_angles: [pitch, yaw, 0.0],
             armed: false,
             creation_tick: self.tick,
             arm_tick: self.tick.saturating_add(ticks(0.8, tick_interval)),
@@ -6341,6 +6734,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
             motion_enabled: true,
             direct_target: None,
         };
+        projectile.presentation.trail = self.projectile_trail(&projectile.presentation)?;
         let mut fire = projectile_event(
             ProjectileEventKind::Fire,
             &projectile.presentation,
@@ -6372,6 +6766,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
         }
         self.projectiles.push(projectile);
+        if owner == PLAYER_IDENTITY && weapon == Weapon::Manmelter {
+            self.set_revenge_crits(self.revenge_crits - 1);
+        }
         Ok(())
     }
 
@@ -6494,7 +6891,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 projectile.presentation.identity == result.projectile
                     && matches!(
                         projectile.presentation.kind,
-                        ProjectileKind::Rocket | ProjectileKind::Syringe
+                        ProjectileKind::Rocket | ProjectileKind::Syringe | ProjectileKind::Flare
                     )
                     && projectile.presentation.state == ProjectileState::Flying
             }) else {
@@ -6513,7 +6910,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 result.direct_target = Some(identity);
             }
             let mut projectile = self.projectiles.remove(index);
-            let mut actor_hit = self.bots.as_ref().and_then(|bots| {
+            let mut actor_hit = self.bots.as_ref().filter(|_| !projectile.flare_debris).and_then(|bots| {
                 bots.intersect_enemy(
                     projectile.presentation.team,
                     request.start,
@@ -6523,6 +6920,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 )
             });
             if self.lifecycle == PlayerLifecycle::Active
+                && !projectile.flare_debris
                 && projectile
                     .presentation
                     .team
@@ -6548,7 +6946,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 result.normal = Some(scale(normalized(projectile.presentation.velocity), -1.0));
             }
             projectile.presentation.position = result.end;
-            projectile.direct_target = result.direct_target;
+            if !projectile.flare_debris || projectile.direct_target.is_none() {
+                projectile.direct_target = result.direct_target;
+            }
             if result.sky {
                 projectile_events.push(projectile_event(
                     ProjectileEventKind::Fizzle,
@@ -6559,13 +6959,27 @@ impl<W: GameplayWorld + Clone> Session<W> {
             }
             if result.solid {
                 let normal = normalized(result.normal.expect("validated solid normal"));
-                projectile.presentation.position = add(result.end, scale(normal, 1.0));
+                projectile.presentation.position = if projectile.presentation.kind == ProjectileKind::Flare {
+                    result.end
+                } else { add(result.end, scale(normal, 1.0)) };
                 projectile.presentation.contact_normal = Some(normal);
                 projectile_events.push(projectile_event(
                     ProjectileEventKind::Impact,
                     &projectile.presentation,
                     self.tick,
                 ));
+                if projectile.presentation.kind == ProjectileKind::Flare {
+                    if let Some(target) = result.direct_target
+                        && target != PLAYER_IDENTITY
+                        && !self.bots.as_ref().is_some_and(|bots| bots.contains(target))
+                        && projectile.presentation.damage > 0.0 {
+                        map_phase.append(self.map.damage(self.tick, target)?);
+                    }
+                    if let Some(retained) = self.flare_touch(projectile, result.direct_target, projectile_events, events)? {
+                        self.projectiles.push(retained);
+                    }
+                    continue;
+                }
                 if projectile.presentation.kind == ProjectileKind::Syringe {
                     projectile_events.push(projectile_event(
                         ProjectileEventKind::Fizzle,
@@ -6596,8 +7010,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     continue;
                 }
                 if let Some(target) = result.direct_target {
-                    let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events);
-                    if target != PLAYER_IDENTITY
+                    let deals_damage = projectile.presentation.damage > 0.0;
+                    let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events)?;
+                    if deals_damage && target != PLAYER_IDENTITY
                         && !self.bots.as_ref().is_some_and(|bots| bots.contains(target))
                     {
                         map_phase.append(self.map.damage(self.tick, target)?);
@@ -6613,6 +7028,90 @@ impl<W: GameplayWorld + Clone> Session<W> {
         Ok(map_phase)
     }
 
+    fn emit_projectile_sound(&mut self, definition: SoundDefinition, projectile: &Projectile) {
+        let samples = self.sample_sound(RandomContext::PredictedPresentation, definition, SoundQueryPhase::Emit);
+        self.push_audio_event(AudioEvent {
+            action: AudioAction::Play, tick: self.tick, ordinal: 0,
+            identity: AudioEventIdentity::ExplosionSpecial1, definition,
+            source_kind: AudioSourceKind::Entity, source_identity: projectile.identity,
+            owner_identity: Some(projectile.owner_identity), position: projectile.position, samples,
+        });
+    }
+
+    fn flare_touch(&mut self, mut projectile: LiveProjectile, target: Option<u32>,
+        projectile_events: &mut Vec<ProjectileEvent>, events: &mut Vec<Event>) -> Result<Option<LiveProjectile>, Error> {
+        let now = self.tick as f32 * self.movement_configuration.tick_interval;
+        let victim = target.and_then(|identity| self.projectile_target(identity));
+        let kind = self.flare_type(&projectile.presentation);
+        let outcome = projectile_weapon::flare_impact(kind, now, victim.is_some(),
+            victim.is_some_and(|victim| victim.burning),
+            victim.is_some_and(|victim| projectile.presentation.team.is_enemy(victim.team)),
+            victim.is_some_and(|victim| victim.condition(28) || victim.condition(130)),
+            victim.is_some_and(|victim| victim.condition(115)), projectile.presentation.velocity);
+        if let Some(victim) = victim {
+            self.apply_projectile_damage(&projectile.presentation, projectile.killing_weapon, victim.identity,
+                projectile.presentation.damage, matches!(outcome, projectile_weapon::FlareImpact::Bounce { .. }), false, events)?;
+        }
+        match outcome {
+            projectile_weapon::FlareImpact::Bounce { push, stun, velocity } => {
+                if push != [0.0; 3] && let Some(victim) = victim {
+                    let horizontal = self.equipped_player_attribute(victim.identity, "airblast_vulnerability_multiplier", 1.0);
+                    let vertical = self.equipped_player_attribute(victim.identity, "airblast_vertical_vulnerability_multiplier", 1.0);
+                    if victim.identity == PLAYER_IDENTITY {
+                        let force = combat::generic_push_impulse(push, self.movement.ground.is_some(), horizontal, vertical);
+                        self.movement.velocity = add(self.movement.velocity, force);
+                        self.movement.ground = None;
+                        self.conditions.insert(Condition::KnockedIntoAir);
+                        if stun {
+                            self.movement_stuns.add(now, 0.5, 1.0, false);
+                            self.conditions.insert(Condition::Stunned);
+                        }
+                    } else if let Some(bots) = self.bots.as_mut() {
+                        if stun { bots.stun_movement(victim.identity, projectile.presentation.owner_identity, now, 0.5, 1.0, false).map_err(Error::Bot)?; }
+                        bots.generic_push(victim.identity, projectile.presentation.owner_identity, push, horizontal, vertical).map_err(Error::Bot)?;
+                    }
+                }
+                projectile.flare_debris = true;
+                projectile.presentation.velocity = velocity;
+                for axis in 0..3 {
+                    projectile.presentation.velocity[axis] += self.draw_random_float(RandomContext::Authority,
+                        RandomDecision::ScorchShotBounceVelocity, -2.0, 2.0);
+                }
+                projectile.flare_angles = [(-velocity[2]).atan2(velocity[0].hypot(velocity[1])).to_degrees(),
+                    velocity[1].atan2(velocity[0]).to_degrees(), 0.0];
+                projectile.presentation.orientation = quaternion_from_angles(projectile.flare_angles[0], projectile.flare_angles[1], 0.0);
+                for axis in 0..3 {
+                    projectile.presentation.angular_velocity[axis] = self.draw_random_float(RandomContext::Authority,
+                        RandomDecision::ScorchShotBounceAngle, 180.0, 720.0);
+                }
+                for axis in 0..3 {
+                    if self.draw_random_int(RandomContext::Authority, RandomDecision::ScorchShotBounceSign, 0, 1) != 0 {
+                        projectile.presentation.angular_velocity[axis] *= -1.0;
+                    }
+                }
+                self.emit_projectile_sound(SoundDefinition::ScorchShotBounce, &projectile.presentation);
+                Ok(Some(projectile))
+            }
+            projectile_weapon::FlareImpact::Remove => {
+                self.emit_projectile_sound(SoundDefinition::FlarePlayerImpact, &projectile.presentation);
+                projectile_events.push(projectile_event(ProjectileEventKind::Fizzle, &projectile.presentation, self.tick));
+                Ok(None)
+            }
+            projectile_weapon::FlareImpact::Detonate { self_only } => {
+                projectile.presentation.self_blast_only = self_only;
+                self.explode(projectile, projectile_events, events)?;
+                Ok(None)
+            }
+            projectile_weapon::FlareImpact::Embed { effect_due } => {
+                projectile.motion_enabled = false;
+                projectile.presentation.velocity = [0.0; 3];
+                projectile.flare_impact_time = Some(effect_due);
+                projectile.next_think_tick = self.tick;
+                Ok(Some(projectile))
+            }
+        }
+    }
+
     fn advance_projectiles(
         &mut self,
         tick_interval: f32,
@@ -6623,6 +7122,23 @@ impl<W: GameplayWorld + Clone> Session<W> {
         for mut projectile in std::mem::take(&mut self.projectiles) {
             projectile.presentation.age_seconds =
                 self.tick.saturating_sub(projectile.creation_tick) as f32 * tick_interval;
+            projectile.presentation.model_visible = projectile.presentation.age_seconds >= match projectile.presentation.kind {
+                ProjectileKind::Rocket | ProjectileKind::Flare => 0.2,
+                ProjectileKind::Sticky => 0.1,
+                ProjectileKind::Syringe => 0.0,
+            };
+            if let Some(impact_time) = projectile.flare_impact_time {
+                if self.tick >= projectile.next_think_tick {
+                    if self.tick as f32 * tick_interval > impact_time {
+                        self.emit_projectile_sound(SoundDefinition::FlareExplosion, &projectile.presentation);
+                        projectile_events.push(projectile_event(ProjectileEventKind::Explode, &projectile.presentation, self.tick));
+                        continue;
+                    }
+                    projectile.next_think_tick = weapon::source_deadline_tick(self.tick, 0.1, tick_interval);
+                }
+                retained.push(projectile);
+                continue;
+            }
             if projectile.presentation.kind == ProjectileKind::Sticky
                 && !projectile.armed
                 && self.tick >= projectile.arm_tick
@@ -6669,6 +7185,23 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 retained.push(projectile);
                 continue;
             }
+            if projectile.presentation.kind == ProjectileKind::Flare {
+                let half_gravity = self.movement_configuration.gravity * projectile.gravity_scale * tick_interval * 0.5;
+                projectile.presentation.velocity[2] -= half_gravity;
+                let end = add(projectile.presentation.position, scale(projectile.presentation.velocity, tick_interval));
+                projectile.presentation.velocity[2] -= half_gravity;
+                if projectile.flare_debris {
+                    for axis in 0..3 { projectile.flare_angles[axis] += projectile.presentation.angular_velocity[axis] * tick_interval; }
+                    projectile.presentation.orientation = quaternion_from_angles(projectile.flare_angles[0], projectile.flare_angles[1], projectile.flare_angles[2]);
+                }
+                self.rocket_trace_requests.push(RocketTraceRequest {
+                    projectile: projectile.presentation.identity, tick: self.tick,
+                    start: projectile.presentation.position, end,
+                    mask: rocket_flight_mask(projectile.presentation.team),
+                });
+                retained.push(projectile);
+                continue;
+            }
             let end = add(
                 projectile.presentation.position,
                 scale(projectile.presentation.velocity, tick_interval),
@@ -6703,7 +7236,13 @@ impl<W: GameplayWorld + Clone> Session<W> {
             let detonatable = self.tick.saturating_sub(projectile.creation_tick) as f32
                 * self.movement_configuration.tick_interval
                 >= 0.8;
-            if projectile.presentation.kind == ProjectileKind::Sticky && detonatable {
+            let flare = self.weapon == Some(Weapon::Detonator)
+                && projectile.presentation.kind == ProjectileKind::Flare
+                && projectile.presentation.weapon == Weapon::Detonator
+                && projectile.presentation.source_weapon.is_some()
+                && projectile.presentation.source_weapon == self.weapon_source(PLAYER_IDENTITY, Weapon::Detonator);
+            if flare || projectile.presentation.kind == ProjectileKind::Sticky && detonatable
+                && projectile.presentation.owner_identity == PLAYER_IDENTITY {
                 self.explode(projectile, projectile_events, events)?;
             } else {
                 retained.push(projectile);
@@ -6720,7 +7259,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
         let direct = projectile.direct_target;
-        let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events);
+        let (presentation, killing_weapon) = self.publish_explosion(projectile, projectile_events)?;
         self.apply_blast(&presentation, killing_weapon, direct, events)
     }
 
@@ -6731,12 +7270,10 @@ impl<W: GameplayWorld + Clone> Session<W> {
         direct: Option<u32>,
         events: &mut Vec<Event>,
     ) -> Result<(), Error> {
-        let weapon = if projectile.kind != ProjectileKind::Rocket { Weapon::StickybombLauncher }
-            else if projectile.owner_identity == PLAYER_IDENTITY && projectile.launcher_identity == Weapon::Original as u32 { Weapon::Original }
-            else { Weapon::RocketLauncher };
-        if projectile.owner_identity == PLAYER_IDENTITY {
-            self.apply_self_blast(projectile, weapon, killing_weapon, events);
-        } else if projectile.team.is_enemy(self.team_selection.local_team())
+        let mut hits = projectile_weapon::RadiusHits::default();
+        let kind = self.projectile_blast_kind(projectile);
+        if projectile.owner_identity != PLAYER_IDENTITY
+            && projectile.team.is_enemy(self.team_selection.local_team())
             && self.lifecycle == PlayerLifecycle::Active
         {
             let center = add(self.movement.position, [0.0, 0.0, 41.0]);
@@ -6752,15 +7289,14 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     MASK_SOLID_BRUSH_ONLY,
                 )
                 .is_ok_and(|trace| trace.fraction >= 1.0 || trace.start_solid);
-            let kind = if projectile.kind == ProjectileKind::Rocket {
-                combat::BlastKind::Rocket
-            } else {
-                combat::BlastKind::Sticky
-            };
             if let Some(damage) = combat::player_blast_damage(
                 kind,
                 projectile.position,
                 combat::PlayerBlastTarget {
+                    nearest_distance: {
+                        let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+                        combat::nearest_hull_distance(projectile.position, self.movement.position, hull.mins, hull.maxs)
+                    },
                     origin: self.movement.position,
                     world_center: center,
                     direct_hit: direct == Some(PLAYER_IDENTITY),
@@ -6768,35 +7304,20 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self_damage: false,
                 },
             ) {
-                self.apply_actor_damage(
-                    bot::Damage {
-                        source_weapon: projectile.source_weapon,
-                        damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
-                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
-                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
-                        attacker: projectile.owner_identity,
-                        victim: PLAYER_IDENTITY,
-                        weapon,
-                        amount: damage.damage,
-                        position: projectile.position,
-                    },
-                    projectile.team,
-                    events,
-                )?;
+                let accepted = self.apply_projectile_damage(projectile, killing_weapon, PLAYER_IDENTITY, damage.damage, false, true, events)?;
+                hits.record(accepted, true);
             }
         }
         let victims = self
             .bots
             .as_ref()
-            .map_or_else(Vec::new, |bots| bots.snapshots());
+            .map_or_else(Vec::new, |bots| bots.combat_targets().collect::<Vec<_>>());
         for victim in victims {
-            if victim.lifecycle != PlayerLifecycle::Active
-                || !(projectile.team.is_enemy(victim.team)
-                    || victim.identity == projectile.owner_identity)
+            if !projectile.team.is_enemy(victim.team) || victim.identity == projectile.owner_identity
             {
                 continue;
             }
-            let center = add(victim.position, [0.0, 0.0, 41.0]);
+            let center = victim.world_center();
             let visible = self
                 .collision
                 .trace(
@@ -6809,15 +7330,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     MASK_SOLID_BRUSH_ONLY,
                 )
                 .is_ok_and(|trace| trace.fraction >= 1.0 || trace.start_solid);
-            let kind = if projectile.kind == ProjectileKind::Rocket {
-                combat::BlastKind::Rocket
-            } else {
-                combat::BlastKind::Sticky
-            };
-            if let Some(mut damage) = combat::player_blast_damage(
+            if let Some(damage) = combat::player_blast_damage(
                 kind,
                 projectile.position,
                 combat::PlayerBlastTarget {
+                    nearest_distance: combat::nearest_hull_distance(projectile.position, victim.position,
+                        victim.hull.mins, victim.hull.maxs),
                     origin: victim.position,
                     world_center: center,
                     direct_hit: direct == Some(victim.identity),
@@ -6825,51 +7343,206 @@ impl<W: GameplayWorld + Clone> Session<W> {
                     self_damage: victim.identity == projectile.owner_identity,
                 },
             ) {
-                if victim.identity == projectile.owner_identity
-                    && victim.class == PlayerClass::Soldier
-                {
-                    damage = combat::apply_self_damage_rules(
-                        damage,
-                        combat::BlastClass::Soldier,
-                        victim.velocity[2] == 0.0,
-                        false,
-                    );
-                }
-                self.apply_actor_damage(
-                    bot::Damage {
-                        source_weapon: projectile.source_weapon,
-                        damage_type: bot::weapon_damage_type(if projectile.kind == ProjectileKind::Rocket { Weapon::RocketLauncher } else { Weapon::StickybombLauncher }).unwrap(),
-                        force: [0.0; 3], crit: damage::CritKind::None, range_multiplier: 1.0,
-                        custom: damage::CustomDamage::None, modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
-                        attacker: projectile.owner_identity,
-                        victim: victim.identity,
-                        weapon,
-                        amount: damage.damage,
-                        position: projectile.position,
-                    },
-                    projectile.team,
-                    events,
-                )?;
+                let accepted = self.apply_projectile_damage(projectile, killing_weapon, victim.identity, damage.damage, false, true, events)?;
+                hits.record(accepted, projectile.team.is_enemy(victim.team));
             }
         }
+        let maximum_heal = self.source_weapon_attribute(projectile.source_weapon, projectile.weapon,
+            "add_health_on_radius_damage", 0.0).round_ties_even() as i32;
+        let script_damage = if projectile.kind == ProjectileKind::Flare { 30.0 } else { 90.0 };
+        let healing = hits.healing(maximum_heal, script_damage);
+        if healing > 0 { self.heal_projectile_actor(projectile.owner_identity, healing as f32, events)?; }
+        self.apply_self_blast(projectile, killing_weapon, hits.enemy_players, events)?;
         Ok(())
+    }
+
+    fn projectile_target(&self, identity: u32) -> Option<bot::CombatTarget> {
+        if identity == PLAYER_IDENTITY {
+            (self.lifecycle == PlayerLifecycle::Active).then(|| bot::CombatTarget {
+                blast_jump_state: self.conditions.contains(Condition::BlastJumping),
+                crouched: self.movement.crouch.uses_crouched_hull(), in_water: self.in_water,
+                identity, class: self.class, team: self.team_selection.local_team(),
+                position: self.movement.position, velocity: self.movement.velocity,
+                burning: self.conditions.contains(Condition::Burning),
+                hull: self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve()),
+                grounded: self.movement.ground.is_some(), water_level: self.movement.water_level,
+                conditions: self.conditions.words(),
+            })
+        } else {
+            self.bots.as_ref()?.combat_targets().find(|actor| actor.identity == identity)
+        }
+    }
+
+    fn actor_center(&self, identity: u32) -> Option<[f32; 3]> {
+        if identity == PLAYER_IDENTITY {
+            let hull = self.movement.active_hull(MovementPolicy { class: self.class, modifiers: self.movement_modifiers }.resolve());
+            Some(add(self.movement.position, scale(add(hull.mins, hull.maxs), 0.5)))
+        } else { self.bots.as_ref()?.actor_center(identity) }
+    }
+
+    fn flare_type(&mut self, projectile: &Projectile) -> projectile_weapon::FlareType {
+        if !projectile.launcher_weapon.is_flare_gun() { return projectile_weapon::FlareType::Standard; }
+        let mode = self.source_weapon_attribute(projectile.launcher_source,
+            projectile.launcher_weapon, "set_weapon_mode", 0.0).round_ties_even() as i32;
+        projectile_weapon::FlareType::from_attribute(mode).expect("supported flare mode")
+    }
+
+    fn apply_projectile_damage(&mut self, projectile: &Projectile, killing_weapon: &'static str, victim: u32,
+        amount: f32, prevent_force: bool, explosion: bool, events: &mut Vec<Event>) -> Result<i32, Error> {
+        if amount <= 0.0 { return Ok(0); }
+        let Some(target) = self.projectile_target(victim) else { return Ok(0); };
+        let Some(attacker_center) = self.actor_center(projectile.owner_identity) else { return Ok(0); };
+        let (damage_weapon, source_weapon) = if projectile.kind == ProjectileKind::Flare {
+            (projectile.launcher_weapon, projectile.launcher_source)
+        } else { (projectile.weapon, projectile.source_weapon) };
+        let mut crit = if projectile.critical { damage::CritKind::Full }
+            else if projectile.deflected { damage::CritKind::Mini } else { damage::CritKind::None };
+        if projectile.kind == ProjectileKind::Flare && !prevent_force {
+            crit = self.flare_type(projectile).direct_crit(crit, target.burning);
+        }
+        let burning_crit = self.source_weapon_attribute(source_weapon, damage_weapon,
+            "or_minicrit_vs_playercond_burning", 0.0).round_ties_even() as i32;
+        let airborne_crit = self.source_weapon_attribute(source_weapon, damage_weapon,
+            "mini_crit_airborne", 0.0).round_ties_even() as i32;
+        crit = projectile_weapon::conditional_minicrit(crit, target.burning,
+            target.in_air_due_to_explosion(), burning_crit, airborne_crit);
+        let range_multiplier = if projectile.kind == ProjectileKind::Rocket && victim != projectile.owner_identity {
+            projectile_weapon::rocket_distance_multiplier(length(sub(target.world_center(), attacker_center)))
+        } else { 1.0 };
+        let custom = if projectile.kind != ProjectileKind::Flare || prevent_force { damage::CustomDamage::None }
+            else { damage::CustomDamage::Other(if explosion { 44 } else { 8 }) };
+        let killing_weapon = if projectile.kind == ProjectileKind::Flare && explosion {
+            if projectile.deflected { "deflect_flare_detonator" } else { "detonator" }
+        } else if projectile.kind == ProjectileKind::Flare && !prevent_force {
+            if projectile.deflected { "deflect_flare" } else if damage_weapon == Weapon::Manmelter { killing_weapon } else { "flaregun" }
+        } else if projectile.kind == ProjectileKind::Rocket && projectile.deflected { "deflect_rocket" } else { killing_weapon };
+        let killing_weapon = self.projectile_death_icon(projectile, custom, killing_weapon);
+        let result = self.apply_actor_damage(bot::Damage {
+            source_weapon,
+            custom,
+            damage_type: bot::weapon_damage_type(projectile.weapon).expect("projectile weapon damage type")
+                | if projectile.kind == ProjectileKind::Flare && explosion { damage::DamageType::HALF_FALLOFF } else { damage::DamageType::GENERIC }
+                | if prevent_force { damage::DamageType::PREVENT_FORCE } else { damage::DamageType::GENERIC },
+            force: [0.0; 3], modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
+            attacker: projectile.owner_identity, victim, weapon: damage_weapon,
+            amount, position: projectile.position, crit, range_multiplier,
+        }, projectile.team, events)?;
+        let accepted = result.as_ref().filter(|result| result.admitted).map_or(0, |result| result.final_damage as i32);
+        if !prevent_force && !target.condition(3) && !target.condition(28) && !target.condition(130)
+            && let Some(result) = result.filter(|result| result.admitted || matches!(result.denial,
+                Some(damage::DamageDenial::Invulnerable | damage::DamageDenial::Phased))) {
+            let force_damage = amount * match result.crit {
+                damage::CritKind::Full => 3.0,
+                damage::CritKind::Mini => range_multiplier.max(1.0) * 1.35,
+                damage::CritKind::None => range_multiplier,
+            };
+            let impulse = combat::damage_impulse(sub(target.hull.maxs, target.hull.mins),
+                target.world_center(), projectile.position, force_damage, 6.0).impulse;
+            let impulse = if target.class == PlayerClass::Heavy { scale(impulse, 0.5) } else { impulse };
+            let impulse = scale(impulse, self.equipped_damage_push_multiplier(victim));
+            let enemy_blast = victim != projectile.owner_identity && matches!(projectile.kind, ProjectileKind::Rocket | ProjectileKind::Sticky);
+            if victim == PLAYER_IDENTITY {
+                self.movement.velocity = add(self.movement.velocity, impulse);
+                self.blast_since_movement |= enemy_blast;
+            } else if let Some(bots) = self.bots.as_mut() { bots.apply_damage_impulse(victim, impulse, enemy_blast); }
+        }
+        if accepted > 0 && projectile.kind == ProjectileKind::Flare && victim != projectile.owner_identity {
+            let now = self.tick as f32 * self.movement_configuration.tick_interval;
+            let live = source_weapon.is_some_and(|source| self.source_weapon_is_live(source, damage_weapon));
+            let initial = if live { pyro::FLAME_INITIAL_AFTERBURN } else { 0.0 };
+            let rate = if !live { 0.0 } else if damage_weapon.is_flare_gun() { 7.5 } else { pyro::FLAME_AFTERBURN_PER_HIT };
+            let rate = self.source_weapon_attribute(source_weapon, damage_weapon, "mult_wpn_burntime", rate);
+            if victim == PLAYER_IDENTITY && self.health > 0 {
+                let starting = self.afterburn.is_none();
+                self.afterburn = Some(pyro::Afterburn::ignite(self.afterburn, self.class,
+                    projectile.owner_identity, damage_weapon, killing_weapon, source_weapon, now, initial, rate));
+                self.conditions.insert(Condition::Burning);
+                if starting && initial > 0.0 { self.conditions.insert(Condition::HealingDebuff); }
+            } else if let Some(bots) = self.bots.as_mut() {
+                bots.ignite_projectile(victim, projectile.owner_identity, damage_weapon, killing_weapon, source_weapon, now, initial, rate);
+            }
+        }
+        Ok(accepted)
+    }
+
+    fn projectile_death_icon(&self, projectile: &Projectile, custom: damage::CustomDamage, captured: &'static str) -> &'static str {
+        use projectile_weapon::WeaponId;
+        let (id, base) = match projectile.kind {
+            ProjectileKind::Rocket => if projectile.weapon == Weapon::DirectHit {
+                (WeaponId::RocketLauncherDirectHit, if projectile.deflected { "deflect_rocket" } else { "rocketlauncher_directhit" })
+            } else { (WeaponId::RocketLauncher, if projectile.deflected { "deflect_rocket" } else { "tf_projectile_rocket" }) },
+            ProjectileKind::Flare => match custom.source_code() {
+                44 => (WeaponId::FlareGun, if projectile.deflected { "deflect_flare_detonator" } else { "detonator" }),
+                8 if projectile.launcher_weapon == Weapon::Manmelter && projectile.launcher_source.is_some_and(|source| self.source_weapon_is_live(source, Weapon::Manmelter)) => (WeaponId::FlareGunRevenge, captured),
+                8 => (WeaponId::FlareGun, if projectile.deflected { "deflect_flare" } else { "flaregun" }),
+                _ => (WeaponId::FlareGun, "tf_projectile_flare"),
+            },
+            _ => return captured,
+        };
+        self.owned_projectile_icon(projectile.owner_identity, id).unwrap_or(base)
+    }
+
+    fn owned_projectile_icon(&self, owner: u32, id: projectile_weapon::WeaponId) -> Option<&'static str> {
+        let matches = |weapon: &Weapon| projectile_weapon::weapon_id(*weapon) == Some(id);
+        let weapon = if owner == PLAYER_IDENTITY { self.loadout.keys().copied().find(matches) }
+            else { self.bots.as_ref().and_then(|bots| bots.weapons(owner).find(matches)) };
+        weapon.and_then(|weapon| self.equipped_weapon_definition(owner, weapon))
+            .and_then(equipment::presentation).and_then(|item| item.death_notice_icon)
+    }
+
+    fn projectile_trail(&mut self, projectile: &Projectile) -> Result<ProjectileTrail, Error> {
+        Ok(match projectile.kind {
+            ProjectileKind::Rocket => {
+                if self.collision.point_contents(projectile.position)? & 0x30 != 0 || projectile.team == PlayerTeam::Unassigned { ProjectileTrail::Underwater }
+                else if self.source_weapon_attribute(projectile.launcher_source, projectile.launcher_weapon, "mini_rockets", 0.0).round_ties_even() != 0.0 {
+                    let jumping = if projectile.owner_identity == PLAYER_IDENTITY { self.conditions.contains(Condition::BlastJumping) }
+                        else { self.bots.as_ref().and_then(|bots| bots.conditions(projectile.owner_identity)).is_some_and(|conditions| conditions.contains(condition::ConditionId::new(81).unwrap())) };
+                    if jumping { ProjectileTrail::AirStrikeJump } else { ProjectileTrail::AirStrike }
+                } else if self.source_weapon_attribute(projectile.launcher_source, projectile.launcher_weapon, "no_self_blast_dmg", 0.0).round_ties_even() != 0.0 { ProjectileTrail::RocketJumper }
+                else { ProjectileTrail::Standard }
+            }
+            ProjectileKind::Flare => match self.flare_type(projectile) {
+                projectile_weapon::FlareType::ScorchShot => ProjectileTrail::ScorchShot,
+                projectile_weapon::FlareType::Manmelter => ProjectileTrail::Manmelter,
+                _ => ProjectileTrail::Standard,
+            },
+            _ => ProjectileTrail::Standard,
+        })
     }
 
     fn publish_explosion(
         &mut self,
-        projectile: LiveProjectile,
+        mut projectile: LiveProjectile,
         projectile_events: &mut Vec<ProjectileEvent>,
-    ) -> (Projectile, &'static str) {
-        let definition = match (
-            projectile.presentation.kind,
-            projectile.presentation.launcher_identity,
-        ) {
-            (ProjectileKind::Rocket, launcher) if launcher == Weapon::Original as u32 => {
-                SoundDefinition::OriginalExplosion
-            }
+    ) -> Result<(Projectile, &'static str), Error> {
+        projectile.presentation.air_burst = projectile.presentation.kind == ProjectileKind::Flare;
+        projectile.presentation.underwater_explosion = self.collision.point_contents(projectile.presentation.position)? & 0x30 != 0;
+        if projectile.presentation.kind == ProjectileKind::Rocket {
+            projectile.presentation.practice_explosion = self.source_weapon_attribute(projectile.presentation.source_weapon,
+                projectile.presentation.weapon, "no_self_blast_dmg", 0.0).round_ties_even() != 0.0;
+        }
+        let sound_weapon = if projectile.presentation.kind == ProjectileKind::Rocket
+            && projectile.presentation.weapon != Weapon::DirectHit
+            && !projectile.presentation.source_weapon.is_some_and(|source| self.source_weapon_is_live(source, projectile.presentation.weapon)) {
+            Weapon::RocketLauncher
+        } else { projectile.presentation.weapon };
+        let definition = match (projectile.presentation.kind, sound_weapon) {
+            (ProjectileKind::Rocket, Weapon::Original) => SoundDefinition::OriginalExplosion,
+            (ProjectileKind::Rocket, Weapon::DirectHit) => SoundDefinition::DirectHitExplosion,
+            (ProjectileKind::Rocket, Weapon::BlackBox) => SoundDefinition::BlackBoxExplosion,
+            (ProjectileKind::Rocket, Weapon::RocketJumper) => SoundDefinition::RocketJumperExplosion,
+            (ProjectileKind::Rocket, Weapon::AirStrike) => SoundDefinition::AirStrikeExplosion,
             (ProjectileKind::Rocket, _) => SoundDefinition::RocketExplosion,
             (ProjectileKind::Sticky, _) => SoundDefinition::StickyExplosion,
             (ProjectileKind::Syringe, _) => unreachable!("syringes do not explode"),
+            (ProjectileKind::Flare, _) => {
+                let active = if projectile.presentation.owner_identity == PLAYER_IDENTITY { self.weapon }
+                    else { self.bots.as_ref().and_then(|bots| bots.active_weapon(projectile.presentation.owner_identity)) };
+                if active == Some(Weapon::Detonator) {
+                    if projectile.presentation.self_blast_only { SoundDefinition::DetonatorWorldExplosion }
+                    else { SoundDefinition::DetonatorExplosion }
+                } else { SoundDefinition::FlareExplosion }
+            },
         };
         let sound_samples = self.sample_sound(
             RandomContext::PredictedPresentation,
@@ -6889,9 +7562,12 @@ impl<W: GameplayWorld + Clone> Session<W> {
             samples: sound_samples,
         });
         let (base_damage, radius, self_radius) = match projectile.presentation.kind {
-            ProjectileKind::Rocket => (90.0, 146.0, 121.0),
+            ProjectileKind::Rocket => (projectile.presentation.damage,
+                self.projectile_radius(&projectile.presentation), 121.0),
             ProjectileKind::Sticky => (120.0, 146.0, 146.0),
             ProjectileKind::Syringe => unreachable!("syringes do not cause blast damage"),
+            ProjectileKind::Flare => (projectile.presentation.damage,
+                self.projectile_radius(&projectile.presentation), 100.0),
         };
         self.radius_damage_requests.push(RadiusDamageRequest {
             projectile: projectile.presentation.identity,
@@ -6912,25 +7588,80 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 &projectile,
                 self.tick,
             ));
+        } else {
+            self.rocket_trace_requests.retain(|request| request.projectile != projectile.presentation.identity);
         }
         projectile_events.push(projectile_event(
             ProjectileEventKind::Explode,
             &projectile.presentation,
             self.tick,
         ));
-        (projectile.presentation, projectile.killing_weapon)
+        Ok((projectile.presentation, projectile.killing_weapon))
     }
 
-    fn apply_self_blast(&mut self, projectile: &Projectile, weapon: Weapon, killing_weapon: &'static str, events: &mut Vec<Event>) {
-        let policy = MovementPolicy {
-            class: self.class,
-            modifiers: self.movement_modifiers,
+    fn projectile_radius(&mut self, projectile: &Projectile) -> f32 {
+        let base = match projectile.kind {
+            ProjectileKind::Rocket | ProjectileKind::Sticky => 146.0,
+            ProjectileKind::Flare => {
+                if projectile.self_blast_only {
+                    return 0.0;
+                }
+                110.0
+            }
+            ProjectileKind::Syringe => return 0.0,
+        };
+        let radius = self.source_weapon_attribute(projectile.launcher_source,
+            projectile.launcher_weapon, "mult_explosion_radius", base);
+        if projectile.kind == ProjectileKind::Rocket {
+            let blast_jumping = projectile.owner_identity == PLAYER_IDENTITY
+                && self.conditions.contains(Condition::BlastJumping);
+            let rate = self.equipped_player_attribute(projectile.owner_identity,
+                "rocketjump_attackrate_bonus", 1.0);
+            projectile_weapon::rocket_radius(radius, blast_jumping, rate)
+        } else {
+            radius
         }
-        .resolve();
-        let hull = self.movement.active_hull(policy);
+    }
+
+    fn projectile_blast_kind(&mut self, projectile: &Projectile) -> combat::BlastKind {
+        match projectile.kind {
+            ProjectileKind::Rocket => combat::BlastKind::ModifiedRocket {
+                damage: projectile.damage, radius: self.projectile_radius(projectile),
+            },
+            ProjectileKind::Flare => combat::BlastKind::Flare {
+                damage: projectile.damage, radius: self.projectile_radius(projectile),
+            },
+            ProjectileKind::Sticky => combat::BlastKind::Sticky,
+            ProjectileKind::Syringe => unreachable!("syringes have no blast"),
+        }
+    }
+
+    fn heal_projectile_actor(&mut self, actor: u32, amount: f32, events: &mut Vec<Event>) -> Result<i32, Error> {
+        let active = if actor == PLAYER_IDENTITY { self.weapon } else { self.bots.as_ref().and_then(|bots| bots.active_weapon(actor)) };
+        let multiplier = active.map_or(1.0, |weapon| self.equipped_weapon_attribute(actor, weapon, "mult_healing_received", 1.0));
+        if actor != PLAYER_IDENTITY { return self.bots.as_mut().map_or(Ok(0), |bots| bots.take_health(actor, amount, multiplier).map_err(Error::Bot)); }
+        if self.health <= 0 { return Ok(0); }
+        let mut health = health::HealthState::spawn(self.class, 0.0, 0.0).map_err(|_| Error::Bot(bot::Error::Damage))?;
+        health.current = self.health;
+        health.maximum = self.maximum_health();
+        let conditions = condition::ConditionState::from_active_words(self.conditions.words()).map_err(|_| Error::Bot(bot::Error::Damage))?;
+        let healed = health.take_health(amount, false, multiplier, &conditions).map_err(|_| Error::Bot(bot::Error::Damage))?;
+        self.health = health.current;
+        if healed > 0 { events.push(Event::Healed { amount: healed as f32, health: self.health as f32, trigger: 0 }); }
+        Ok(healed)
+    }
+
+    fn apply_self_blast(&mut self, projectile: &Projectile, killing_weapon: &'static str, damaged_enemies: u32, events: &mut Vec<Event>) -> Result<(), Error> {
+        let owner = projectile.owner_identity;
+        let Some(target) = self.projectile_target(owner) else { return Ok(()); };
+        let weapon = if projectile.kind == ProjectileKind::Flare { projectile.launcher_weapon } else { projectile.weapon };
+        let source_weapon = if projectile.kind == ProjectileKind::Flare { projectile.launcher_source } else { projectile.source_weapon };
+        let custom = if projectile.kind == ProjectileKind::Flare { damage::CustomDamage::Other(44) } else { damage::CustomDamage::None };
+        let killing_weapon = self.projectile_death_icon(projectile, custom, killing_weapon);
+        let hull = target.hull;
         let size = sub(hull.maxs, hull.mins);
         let center = add(
-            self.movement.position,
+            target.position,
             scale(add(hull.mins, hull.maxs), 0.5),
         );
         let visible = self
@@ -6945,62 +7676,69 @@ impl<W: GameplayWorld + Clone> Session<W> {
                 self.movement_configuration.solid_mask,
             )
             .is_ok_and(|trace| trace.fraction == 1.0 || trace.start_solid);
-        let kind = if projectile.kind == ProjectileKind::Rocket {
-            combat::BlastKind::Rocket
-        } else {
-            combat::BlastKind::Sticky
-        };
-        let grounded = self.movement.ground.is_some();
-        let class = match self.class {
+        let kind = self.projectile_blast_kind(projectile);
+        let grounded = target.grounded;
+        let class = match target.class {
             PlayerClass::Soldier => combat::BlastClass::Soldier,
             PlayerClass::Demoman => combat::BlastClass::Demoman,
-            _ => return,
+            PlayerClass::Pyro if projectile.kind == ProjectileKind::Flare => combat::BlastClass::Pyro,
+            _ => combat::BlastClass::Other,
         };
         if let Some(base_damage) = combat::player_blast_damage(
             kind,
             projectile.position,
             combat::PlayerBlastTarget {
-                origin: self.movement.position,
+                nearest_distance: combat::nearest_hull_distance(projectile.position, target.position, hull.mins, hull.maxs),
+                origin: target.position,
                 world_center: center,
                 direct_hit: false,
                 visible,
                 self_damage: true,
             },
         ) {
-            let damage =
-                combat::apply_self_damage_rules(base_damage, class, grounded, self.in_water);
-            let health_before = self.health;
-            self.health = self.health.saturating_sub(damage.health_points).max(0);
-            events.push(Event::Damaged {
-                amount: damage.health_points as f32,
-                health: self.health as f32,
-                origin: Some(projectile.position),
-            });
-            if health_before > 0 && self.health == 0 {
-                events.push(Event::PlayerKilled { attacker: PLAYER_IDENTITY, victim: PLAYER_IDENTITY,
-                    weapon: Some(weapon), killing_weapon,
-                    assister: 0, damage_bits: 64, critical: false, custom: 0 });
+            let mut damage =
+                combat::apply_self_damage_rules(base_damage, class, grounded, target.in_water);
+            if damaged_enemies == 0 {
+                damage.damage = self.equipped_player_attribute(owner,
+                    "rocket_jump_dmg_reduction", damage.damage);
             }
+            if self.source_weapon_attribute(source_weapon, weapon,
+                "no_self_blast_dmg", 0.0).round_ties_even() as i32 == 2 {
+                damage.damage = 0.0;
+            }
+            damage.damage = self.source_weapon_attribute(source_weapon, weapon,
+                "blast_dmg_to_self", damage.damage);
+            let health_before = if owner == PLAYER_IDENTITY { self.health } else { self.bots.as_ref().and_then(|bots| bots.health(owner)).unwrap_or(0) };
+            self.apply_actor_damage(bot::Damage {
+                source_weapon, attacker: owner, victim: owner, weapon,
+                amount: damage.damage, position: projectile.position,
+                damage_type: if projectile.kind == ProjectileKind::Flare {
+                    damage::DamageType::BULLET | damage::DamageType::IGNITE | damage::DamageType::HALF_FALLOFF
+                        | if projectile.self_blast_only { damage::DamageType::BLAST } else { damage::DamageType::GENERIC }
+                } else { damage::DamageType::BLAST }, force: [0.0; 3], crit: damage::CritKind::None,
+                range_multiplier: 1.0, custom,
+                modifiers: damage::DamageModifiers::default(), killing_weapon: Some(killing_weapon),
+            }, target.team, events)?;
             let impulse = combat::self_blast_impulse(
                 class,
                 grounded,
-                self.movement.crouch.uses_crouched_hull(),
+                target.crouched,
                 size,
                 center,
                 projectile.position,
                 damage.damage_for_force,
             );
-            if class != combat::BlastClass::Soldier
-                || grounded
-                || health_before as f32 - damage.damage > 0.0
-            {
-                self.conditions.insert(Condition::BlastJumping);
-            }
-            self.movement.velocity = add(self.movement.velocity, impulse.impulse);
-            events.push(Event::BlastImpulse {
-                velocity: self.movement.velocity,
-            });
+            let push_multiplier = self.source_weapon_attribute(source_weapon, weapon, "mult_dmgself_push_force", 1.0);
+            let blast_jumping = class == combat::BlastClass::Demoman && !grounded && !target.in_water || class == combat::BlastClass::Soldier
+                && (grounded || health_before as f32 - damage.damage > 0.0);
+            let impulse = scale(impulse.impulse, push_multiplier * self.equipped_damage_push_multiplier(owner));
+            if owner == PLAYER_IDENTITY {
+                if blast_jumping { self.conditions.insert(Condition::BlastJumping); }
+                self.movement.velocity = add(self.movement.velocity, impulse);
+                events.push(Event::BlastImpulse { velocity: self.movement.velocity });
+            } else if let Some(bots) = self.bots.as_mut() { bots.apply_self_blast_impulse(owner, impulse, blast_jumping); }
         }
+        Ok(())
     }
 
     fn fizzle_projectiles(&mut self, events: &mut Vec<ProjectileEvent>, all_owners: bool) {
@@ -7034,6 +7772,9 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     fn die(&mut self, projectile_events: &mut Vec<ProjectileEvent>) {
         self.save_weapon_selection(true);
+        self.stop_manmelter_charge();
+        self.afterburn = None;
+        self.revenge_crits = 0;
         self.stop_flame(false);
         self.equipment_attributes.set_active(None);
         self.melee.reset_victim(PLAYER_IDENTITY);
@@ -7076,6 +7817,8 @@ impl<W: GameplayWorld + Clone> Session<W> {
         self.revenge_crits = 0;
         self.melee.reset_victim(PLAYER_IDENTITY);
         self.critical_history.reset_for_spawn();
+        self.stop_manmelter_charge();
+        self.afterburn = None;
         self.fizzle_projectiles(projectile_events, false);
         self.damagers = deathnotice::DamagerHistory::default();
         self.health = self.maximum_health();
@@ -7154,6 +7897,8 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
     match weapon {
         Weapon::RocketLauncher
         | Weapon::Original
+        | Weapon::DirectHit | Weapon::BlackBox | Weapon::LibertyLauncher
+        | Weapon::RocketJumper | Weapon::AirStrike
         | Weapon::Scattergun
         | Weapon::HandgunScoutPrimary
         | Weapon::Minigun
@@ -7163,6 +7908,7 @@ pub(crate) const fn weapon_ammo_kind(weapon: Weapon) -> Option<class::AmmoType> 
         | Weapon::Flamethrower
         | Weapon::SyringeGun => Some(class::AmmoType::Primary),
         Weapon::StickybombLauncher
+        | Weapon::FlareGun | Weapon::Detonator | Weapon::ScorchShot | Weapon::Manmelter
         | Weapon::Pistol
         | Weapon::Shotgun
         | Weapon::HeavyShotgun
@@ -7231,6 +7977,14 @@ fn projectile_event_with_contact(
     contact_normal: Option<[f32; 3]>,
 ) -> ProjectileEvent {
     ProjectileEvent {
+        air_burst: projectile.air_burst,
+        underwater_explosion: projectile.underwater_explosion,
+        trail: projectile.trail,
+        mini_rocket: projectile.mini_rocket,
+        practice_explosion: projectile.practice_explosion,
+        weapon: projectile.weapon,
+        critical: projectile.critical,
+        self_blast_only: projectile.self_blast_only,
         kind,
         projectile: projectile.identity,
         projectile_kind: projectile.kind,
@@ -7476,6 +8230,36 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn equipped_rocket_launchers_use_schema_providers_for_native_launch_and_ammunition() {
+        for (definition, weapon, clip, reserve, speed, damage, radius) in [
+            (127, Weapon::DirectHit, 4, 20, 1980.0, 112.5, 146.0 * 0.3),
+            (228, Weapon::BlackBox, 3, 20, 1100.0, 90.0, 146.0),
+            (237, Weapon::RocketJumper, 4, 60, 1100.0, 0.0, 146.0),
+            (414, Weapon::LibertyLauncher, 5, 20, 1540.0, 67.5, 146.0),
+            (513, Weapon::Original, 4, 20, 1100.0, 90.0, 146.0),
+            (1104, Weapon::AirStrike, 4, 20, 1100.0, 76.5, 146.0 * 0.9),
+        ] {
+            let mut session = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+            session.equip_item(PlayerClass::Soldier, schema::LoadoutPosition::Primary, Some(definition)).unwrap();
+            session.advance(Command { respawn: true, ..Command::default() }).unwrap();
+            let state = session.weapon_runtime(weapon).unwrap();
+            assert_eq!((state.clip, state.reserve), (clip, reserve));
+            assert_eq!(session.weapon, Some(weapon));
+            for _ in 0..35 { session.advance(Command::default()).unwrap(); }
+            let fired = session.advance(Command { fire: true, ..Command::default() }).unwrap();
+            assert_eq!(fired.projectiles.len(), 1);
+            let projectile = &fired.projectiles[0];
+            assert_eq!(projectile.weapon, weapon);
+            assert!((length(projectile.velocity) - speed).abs() < 0.001);
+            assert_eq!(projectile.damage, damage);
+            assert!((session.projectile_radius(projectile) - radius).abs() < 0.001);
+            assert_eq!(session.weapon_runtime(weapon).unwrap().clip, clip - 1);
+            assert_eq!(session.weapon_runtime(weapon).unwrap().reserve, reserve);
+            assert_eq!(session.ammo.primary, reserve);
         }
     }
 
@@ -9484,9 +10268,27 @@ mod tests {
         };
         let create = |identity, team| LiveProjectile {
             killing_weapon: "tf_projectile_rocket",
+            gravity_scale: 0.0,
+            flare_debris: false,
+            flare_impact_time: None,
+            flare_angles: [0.0; 3],
             presentation: Projectile {
+                air_burst: false,
+                underwater_explosion: false,
+                model_visible: true,
+                trail: ProjectileTrail::Standard,
+                mini_rocket: false,
+                practice_explosion: false,
                 source_weapon: None,
+                launcher_source: None,
+                launcher_weapon: Weapon::RocketLauncher,
                 identity,
+                weapon: Weapon::RocketLauncher,
+                critical: false,
+                damage: 90.0,
+                deflected: false,
+                original_owner_identity: 30,
+                self_blast_only: false,
                 kind: ProjectileKind::Rocket,
                 team,
                 owner_identity: 30,
@@ -9515,6 +10317,7 @@ mod tests {
                     detonate: true,
                     ..Command::default()
                 },
+                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
             )
@@ -9857,9 +10660,37 @@ mod tests {
     fn explosive(kind: ProjectileKind, position: [f32; 3]) -> LiveProjectile {
         LiveProjectile {
             killing_weapon: if kind == ProjectileKind::Rocket { "tf_projectile_rocket" } else { "tf_projectile_pipe_remote" },
+            gravity_scale: 0.0,
+            flare_debris: false,
+            flare_impact_time: None,
+            flare_angles: [0.0; 3],
             presentation: Projectile {
+                air_burst: false,
+                underwater_explosion: false,
+                model_visible: true,
+                trail: ProjectileTrail::Standard,
+                mini_rocket: false,
+                practice_explosion: false,
                 source_weapon: None,
+                launcher_source: None,
+                launcher_weapon: if kind == ProjectileKind::Sticky { Weapon::StickybombLauncher } else if kind == ProjectileKind::Flare { Weapon::Detonator } else { Weapon::RocketLauncher },
                 identity: 99,
+                weapon: match kind {
+                    ProjectileKind::Rocket => Weapon::RocketLauncher,
+                    ProjectileKind::Sticky => Weapon::StickybombLauncher,
+                    ProjectileKind::Syringe => Weapon::SyringeGun,
+                    ProjectileKind::Flare => Weapon::Detonator,
+                },
+                critical: false,
+                deflected: false,
+                original_owner_identity: PLAYER_IDENTITY,
+                self_blast_only: false,
+                damage: match kind {
+                    ProjectileKind::Rocket => 90.0,
+                    ProjectileKind::Sticky => 120.0,
+                    ProjectileKind::Syringe => 10.0,
+                    ProjectileKind::Flare => 30.0,
+                },
                 kind,
                 team: PlayerTeam::Red,
                 owner_identity: PLAYER_IDENTITY,
@@ -9867,6 +10698,7 @@ mod tests {
                     ProjectileKind::Rocket => Weapon::RocketLauncher as u32,
                     ProjectileKind::Sticky => Weapon::StickybombLauncher as u32,
                     ProjectileKind::Syringe => Weapon::SyringeGun as u32,
+                    ProjectileKind::Flare => Weapon::Detonator as u32,
                 },
                 state: ProjectileState::Flying,
                 position,
@@ -9991,11 +10823,14 @@ mod tests {
 
         let (stock, traces) = launch(Weapon::RocketLauncher, false, false);
         assert_eq!(stock.position, [23.5, -12.0, 65.0]);
-        assert_eq!(traces.len(), 2);
+        assert_eq!(traces.len(), 3);
         assert_eq!(traces[0].3, MASK_SOLID);
         assert_eq!(traces[0].2.mins, [0.0; 3]);
         assert_eq!(traces[1].3, MASK_SOLID_BRUSH_ONLY);
         assert_eq!(traces[1].1, stock.position);
+        assert_eq!(traces[2].0, stock.position);
+        assert_eq!(traces[2].1, stock.position);
+        assert_eq!(traces[2].3, u32::MAX);
         assert_eq!(
             stock.orientation,
             quaternion_from_direction(normalized(stock.velocity))
@@ -10015,6 +10850,22 @@ mod tests {
             rocket_flight_mask(PlayerTeam::Blue),
             MASK_SOLID | CONTENTS_RED_TEAM
         );
+    }
+
+    #[test]
+    fn enemy_blast_airborne_state_is_created_by_ground_categorization_and_cleared_on_landing() {
+        for blasted in [false, true] {
+            let mut session = Session::new(Floor, [0.0, 0.0, 1.0], MapRuntime::empty(0.015));
+            session.movement.velocity = [0.0, 0.0, 300.0];
+            session.blast_since_movement = blasted;
+            session.advance(Command::default()).unwrap();
+            assert_eq!(session.conditions.contains(Condition::BlastJumping), blasted);
+            assert!(!session.blast_since_movement);
+            session.movement = MovementState::from_player(Player { position: [0.0, 0.0, 1.0], velocity: [0.0; 3], grounded: true,
+                crouched: false, jump_latched: false }, MovementPolicy { class: PlayerClass::Soldier, modifiers: MovementModifiers::default() }.resolve());
+            session.advance(Command::default()).unwrap();
+            assert!(!session.conditions.contains(Condition::BlastJumping));
+        }
     }
 
     #[test]
@@ -10973,6 +11824,7 @@ mod tests {
             session.random_state().sound_selection,
             SoundSelectionState {
                 configured_available: SoundSelection::new().state().configured_available,
+                projectile_unlock_available: [7, 7, 7, 7, 15, 7],
                 rocket_explosion_available: 0,
                 sticky_explosion_available: 0b111,
                 bat_hit_world_available: 0b11,
@@ -11027,6 +11879,7 @@ mod tests {
             session.random_state().sound_selection,
             SoundSelectionState {
                 configured_available: SoundSelection::new().state().configured_available,
+                projectile_unlock_available: [7, 7, 7, 7, 15, 7],
                 rocket_explosion_available: 0b101,
                 sticky_explosion_available: 0b110,
                 bat_hit_world_available: 0b11,

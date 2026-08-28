@@ -13,6 +13,7 @@ pub struct Shot {
     pub kind: WeaponCritKind,
     pub raw_damage: f32,
     pub projectiles_per_shot: f32,
+    /// Unmodified script TimeFireDelay, not attribute-adjusted attack cadence.
     pub fire_delay: f32,
     pub can_fire_critical: bool,
     pub guaranteed_critical: bool,

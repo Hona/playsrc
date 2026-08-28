@@ -650,7 +650,7 @@ fn validate_limits(limits: RegistryLimits) -> Result<(), Error> {
 
 fn supported(category: FunctionCategory, identity: &str) -> bool {
     let names: &[&str] = match category {
-        FunctionCategory::Renderer => &["render_animated_sprites", "render_sprite_trail"],
+        FunctionCategory::Renderer => &["render_animated_sprites", "render_sprite_trail", "render_rope"],
         FunctionCategory::Operator => &[
             "Alpha Fade and Decay",
             "Alpha Fade Out Random",
@@ -692,6 +692,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Radius Random",
             "Remap Control Point to Vector",
             "Remap Initial Scalar",
+            "Remap Initial Distance to Control Point to Scalar",
             "Remap Scalar to Vector",
             "Rotation Random",
             "Rotation Speed Random",
@@ -701,10 +702,11 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Velocity Noise",
         ],
         FunctionCategory::Emitter => &["emit_continuously", "emit_instantaneously"],
-        FunctionCategory::Force => &["random force", "twist around axis"],
+        FunctionCategory::Force => &["random force", "twist around axis", "Pull towards control point"],
         FunctionCategory::Constraint => &[
             "Collision via traces",
             "Constrain distance to path between two control points",
+            "Prevent passing through a plane",
         ],
     };
     names
@@ -766,6 +768,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "set cp density for particles",
             "set cp velocity for particles",
             "set cp radius for particles",
+            "global origin",
+            "global normal",
         ]
         .contains(&name.as_str())
             || (name == "absolute value"
@@ -778,6 +782,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "visibility proxy input control point number",
             "orientation control point",
             "max constraint passes",
+            "subdivision_count",
             "create in model",
             "control_point_number",
             "control point number",
@@ -835,6 +840,8 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "max force",
             "control point offset for fast collisions",
             "twist axis",
+            "plane point",
+            "plane normal",
             "spatial coordinate offset",
             "invert abs value",
         ]
@@ -898,7 +905,11 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
     let unsupported = if function.identity.eq_ignore_ascii_case("Color Light From Control Point") {
         !crate::control_point_light::supported(function)
     } else if function.category == FunctionCategory::Renderer {
-        int_parameter(function, "Visibility Proxy Input Control Point Number", -1) >= 0
+        int_parameter(function, "Visibility Proxy Input Control Point Number", -1) > 30
+            || (int_parameter(function, "Visibility Proxy Input Control Point Number", -1) >= 0
+                && (!function.identity.eq_ignore_ascii_case("render_animated_sprites")
+                    || float_parameter(function, "Visibility Proxy Radius", 1.0) <= 0.0
+                    || float_parameter(function, "Visibility Camera Depth Bias", 0.0) != 0.0))
             || (function
                 .identity
                 .eq_ignore_ascii_case("render_animated_sprites")
@@ -912,11 +923,6 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
     } else if function.identity.eq_ignore_ascii_case("Remap Noise to Scalar") {
         !matches!(int_parameter(function, "output field", 3), 1 | 3 | 4 | 5 | 7 | 9 | 10 | 12 | 13 | 21)
             || float_parameter(function, "world time noise coordinate scale", 0.0) != 0.0
-    } else if function
-        .identity
-        .eq_ignore_ascii_case("Movement Lock to Control Point")
-    {
-        float_parameter(function, "distance fade range", 0.0) != 0.0
     } else if function.identity.eq_ignore_ascii_case("Set child control points from particle positions") {
         ["set cp orientation for particles", "set cp density for particles", "set cp velocity for particles", "set cp radius for particles"].into_iter().any(|name| bool_parameter(function, name, false)) || int_parameter(function, "first particle to copy", 0) < 0
     } else if function.identity.eq_ignore_ascii_case("emit_continuously") {
@@ -931,6 +937,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
         .eq_ignore_ascii_case("Collision via traces")
     {
         !matches!(int_parameter(function, "collision mode", 0), 0..=3)
+    } else if function.identity.eq_ignore_ascii_case("Remap Initial Distance to Control Point to Scalar") {
+        bool_parameter(function, "ensure line of sight", false)
+            || !matches!(int_parameter(function, "output field", 3), 1 | 3 | 4 | 7 | 16)
     } else if function
         .identity
         .eq_ignore_ascii_case("Remap Initial Scalar")
@@ -1039,6 +1048,10 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
           "third control point number", "third control point parent", "third control point location",
           "fourth control point number", "fourth control point parent", "fourth control point location",
           "set positions in world space", "control point to offset positions from"]
+    } else if function.identity.eq_ignore_ascii_case("render_rope") {
+        &["subdivision_count", "texel_size", "texture_scroll_rate"]
+    } else if function.identity.eq_ignore_ascii_case("Pull towards control point") {
+        &["amount of force", "falloff power", "control point number"]
     } else if function.identity.eq_ignore_ascii_case("Movement Basic") {
         &["gravity", "drag", "max constraint passes"]
     } else if function
@@ -1148,6 +1161,7 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
     } else if function
         .identity
         .eq_ignore_ascii_case("Remap Distance to Control Point to Scalar")
+        || function.identity.eq_ignore_ascii_case("Remap Initial Distance to Control Point to Scalar")
     {
         &[
             "distance minimum",
@@ -1390,6 +1404,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
             "bulge control 0=random 1=orientation of start pnt 2=orientation of end point",
             "mid point position",
         ]
+    } else if function.identity.eq_ignore_ascii_case("Prevent passing through a plane") {
+        &["control point number", "plane point", "plane normal", "global origin", "global normal"]
     } else if function
         .identity
         .eq_ignore_ascii_case("remap initial scalar")

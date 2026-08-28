@@ -4,13 +4,14 @@ import path from "node:path"
 import { test, expect } from "./application-test"
 import { loadLocalConfig } from "../src/config"
 import { decodeScreenshot } from "./screenshot-pixels"
-import { summarizeFrameTimes } from "./profile-window"
 import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { summarizeFrameTimes } from "./profile-window"
 
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 })
 
 test("authored backpack native equip and browser restart persistence", async ({ page }) => {
-  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX === "1" || process.env.PLAYSRC_EQUIPMENT_LIFECYCLE === "1")
+  test.skip(process.env.PLAYSRC_HITSCAN_MATRIX === "1" || process.env.PLAYSRC_EQUIPMENT_LIFECYCLE === "1" || process.env.PLAYSRC_PROJECTILE_MATRIX === "1")
   test.setTimeout(100_000)
   const local = await loadLocalConfig(), directory = path.join(local.sourceCacheDir, "profiles/equipment")
   await mkdir(directory, { recursive: true })
@@ -391,4 +392,160 @@ test("remember active and last weapon settings survive real death and browser pe
   }
   await page.screenshot({ path: path.join(directory, "restored-preferences.png") })
   await writeFile(path.join(directory, "lifecycle.json"), JSON.stringify({ records, persisted: true }, null, 2))
+})
+
+test("projectile unlocks equip through the authored loadout and fire their native models", async ({ page }) => {
+  test.skip(process.env.PLAYSRC_PROJECTILE_MATRIX !== "1")
+  test.setTimeout(140_000)
+  const perf = process.env.PLAYSRC_PROJECTILE_PERF === "1"
+  const directory = path.join((await loadLocalConfig()).sourceCacheDir, perf ? "profiles/equipment/projectile-performance" : "profiles/equipment/projectiles")
+  await mkdir(directory, { recursive: true })
+  const errors: string[] = [], records: unknown[] = []
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.message) })
+  page.on("console", message => {
+    if (message.type() !== "error") return
+    const url = message.location().url
+    // Chromium probes this optional browser icon even though the page declares none.
+    if (url && new URL(url).pathname === "/favicon.ico") return
+    const detail = `${message.text()} (${url})`
+    errors.push(detail); console.error(detail)
+  })
+  if (perf) await page.addInitScript(installBrowserFrameProfiler)
+  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true, captureProjectileQueries: true, captureProjectileGameplay: true } })
+  const main = page.locator("main"), equipment = page.locator(".equipment-layer")
+  const command = async (text: string) => {
+    if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+    await page.locator("[aria-label='Console command']").fill(text); await page.keyboard.press("Enter")
+    if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+  }
+  const actual = () => page.evaluate(() => (globalThis as any).__playsrcProfile.weaponPose as { model: string; definition: number; class: number; ammo: { clip: number; reserve: number } } | null)
+  const aim = async (pitch: number) => {
+    await page.evaluate(pitch => {
+      const canvas = document.querySelector<HTMLElement>("canvas.world-canvas")!
+      const yaw = Number(canvas.dataset.displayCameraYaw), currentPitch = Number(canvas.dataset.displayCameraPitch)
+      const event = new MouseEvent("mousemove", { bubbles: true })
+      Object.defineProperties(event, { movementX: { value: (((yaw + 180) % 360 + 360) % 360 - 180) / 0.066 }, movementY: { value: (pitch - currentPitch) / 0.066 } })
+      dispatchEvent(event)
+    }, pitch)
+    await expect.poll(async () => Math.abs(Number(await page.locator("canvas.world-canvas").getAttribute("data-display-camera-pitch")) - pitch)).toBeLessThan(0.1)
+  }
+  await page.goto("/", { waitUntil: "domcontentloaded" })
+  await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 20_000 })
+  await command("map pl_upward")
+  await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 45_000 })
+  await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+  await page.locator(".class-selection-layer [data-vgui-name='soldier']").click()
+  await expect(main).toHaveAttribute("data-phase", "Ready")
+  await command("tf_remember_activeweapon 1")
+  if (perf) {
+    await command("tf_bot_quota_mode fill"); await command("tf_bot_quota 24")
+    await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.projectileState?.bots)).toBe(23)
+  }
+  const subset = process.env.PLAYSRC_PROJECTILE_ITEMS?.split(",").map(Number)
+  const requested = (perf ? [18, 1104] : [127, 228, 237, 414, 513, 1104, 39, 351, 740, 595]).filter(value => !subset || subset.includes(value))
+  expect(requested.length).toBeGreaterThan(0)
+  for (const definition of requested) {
+    const metadata = nativeEquipment.inventory.find(item => item.item.definitionIndex === definition)!
+    const pyro = [39, 351, 740, 595].includes(definition), playerClass = pyro ? 7 : 3, className = pyro ? "pyro" : "soldier", slot = pyro ? 1 : 0
+    await command(`joinclass ${className}`)
+    await expect.poll(async () => (await actual())?.class).toBe(playerClass)
+    await page.keyboard.press("Comma")
+    await page.locator(".class-selection-layer [data-vgui-name='EditLoadoutButton']").click()
+    await equipment.locator(`[data-vgui-name='Itemslot-${slot}']`).click()
+    await equipment.locator(`[data-vgui-name='Itemitem-${definition}']`).click()
+    await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible()
+    await page.screenshot({ path: path.join(directory, `${definition}-equipped.png`) })
+    await equipment.locator("[data-vgui-name='BackButton']").click(); await equipment.locator("[data-vgui-name='BackButton']").click()
+    await expect(equipment).toBeHidden()
+    await command("joinclass scout"); await expect.poll(async () => (await actual())?.class).toBe(1)
+    await command(`joinclass ${className}`); await expect.poll(async () => (await actual())?.class).toBe(playerClass)
+    const selection = metadata.classSlots.find(value => value.class === playerClass)!.selectionSlot
+    await page.keyboard.press(`Digit${selection + 1}`)
+    await expect.poll(async () => (await actual())?.definition).toBe(definition)
+    await expect.poll(async () => (await actual())?.model).toBe(metadata.modelPlayer)
+    if (perf) {
+      await page.evaluate(() => { const profile = (globalThis as any).__playsrcProfile; profile.captureProjectileHistory = true; profile.projectileHistory = []; profile.projectileHistoryKey = "" })
+      // Configured Upward NAV area95: standing hull ground and900unit overhead
+      // clearance across a192unit square are admitted against its exact BSP.
+      await command("setpos 2025 800 257.03125")
+      await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 400 } })
+      await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.projectileState.grounded)).toBe(true)
+      await aim(89)
+      await expect.poll(async () => page.evaluate(() => {
+        const pose = (globalThis as any).__playsrcProfile.weaponPose
+        return pose && BigInt(pose.tick) >= pose.ammo.nextPrimaryTick
+      })).toBe(true)
+      await page.keyboard.down("Space"); await page.keyboard.down("Control")
+    }
+    const before = (await actual())!, fires = Number(await main.getAttribute("data-fire-events"))
+    if (!perf) await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 400 } })
+    await page.mouse.down({ button: "left" })
+    await expect.poll(async () => Number(await main.getAttribute("data-fire-events"))).toBeGreaterThan(fires)
+    await page.mouse.up({ button: "left" })
+    if (definition === 595) {
+      expect((await actual())?.ammo).toMatchObject({ clip: before.ammo.clip, reserve: before.ammo.reserve })
+    } else {
+      await expect.poll(async () => { const pose = await actual(); return pose ? pose.ammo.clip + pose.ammo.reserve : Infinity }).toBeLessThan(before.ammo.clip + before.ammo.reserve)
+    }
+    let performanceSample: unknown
+    if (perf) {
+      await page.keyboard.up("Space"); await page.keyboard.up("Control")
+      await expect.poll(async () => page.evaluate(() => ((globalThis as any).__playsrcProfile.projectileState.conditions[2] & (1 << 17)) !== 0)).toBe(true)
+      await aim(-60)
+      await page.mouse.down({ button: "left" })
+      if (definition === 1104) {
+        try { await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.projectileState.ropeItems), { timeout: 8000 }).toBeGreaterThan(0) }
+        catch (error) {
+          await writeFile(path.join(directory, "airstrike-jump-timeline.json"), JSON.stringify(await page.evaluate(() => (globalThis as any).__playsrcProfile.projectileHistory), null, 2))
+          throw error
+        }
+        await page.screenshot({ path: path.join(directory, "airborne-rope.png") })
+      }
+      const sampled = await page.evaluate(async () => {
+        const root = globalThis as any, state = root.__playsrcFrameProfiler, profile = root.__playsrcProfile
+        const startFrame = state.completedFrames.length, startWorker = state.worker.length
+        const before = { ...state.counters }, uploads = { ...profile.modelParticleUploads }, tick = Number(profile.projectileState.tick)
+        const heap = (performance as any).memory?.usedJSHeapSize ?? null
+        const started = performance.now(), intervals: number[] = []
+        let previous = started, nextInput = 1000
+        state.active = true
+        await new Promise<void>(resolve => requestAnimationFrame(function frame(now) {
+          intervals.push(now - previous); previous = now
+          if (now - started >= nextInput && nextInput < 5000) {
+            const event = new MouseEvent("mousemove", { bubbles: true }); Object.defineProperty(event, "movementX", { value: 1 }); dispatchEvent(event); nextInput += 1000
+          }
+          now - started >= 5000 ? resolve() : requestAnimationFrame(frame)
+        }))
+        const ended = performance.now(); state.active = false
+        const frames = state.completedFrames.slice(startFrame)
+        return { seconds: (ended - started) / 1000, tickRate: (Number(profile.projectileState.tick) - tick) / ((ended - started) / 1000), heapBefore: heap,
+          intervals, frames: frames.map((frame: any) => ({ at: frame.at, mouseRevision: frame.mouseRevision, ...frame.detail })), input: state.input.filter((input: any) => input.at >= started && input.at <= ended),
+          worker: state.worker.slice(startWorker).map((record: any) => ({ kind: record.kind, sentBytes: record.bytes, receivedBytes: record.receivedBytes, sharedBytes: record.sharedBytes })),
+          counters: Object.fromEntries(Object.entries(state.counters).map(([name, value]) => [name, Number(value) - Number(before[name] ?? 0)])),
+          uploads: Object.fromEntries(Object.entries(profile.modelParticleUploads).map(([name, value]) => [name, Number(value) - Number(uploads[name] ?? 0)])) }
+      })
+      await page.mouse.up({ button: "left" })
+      const memory = await page.evaluate(() => ({ heapAfter: (performance as any).memory?.usedJSHeapSize ?? null, assets: (globalThis as any).__playsrcProfile.memoryAssets }))
+      expect(sampled.tickRate).toBeGreaterThan(60)
+      expect(sampled.frames.length).toBeGreaterThan(30)
+      expect(sampled.frames.every((frame: any) => frame.bots === 23)).toBe(true)
+      performanceSample = { ...sampled, ...memory, browser: summarizeFrameTimes(sampled.intervals), completed: summarizeFrameTimes(sampled.frames.map((frame: any) => frame.total)) }
+    }
+    await page.screenshot({ path: path.join(directory, `${definition}-fired.png`) })
+    const after = (await actual())!
+    if (definition === 595) {
+      await expect.poll(async () => page.evaluate(() => (globalThis as any).__playsrcProfile.projectileQueries?.maxPossiblePixels ?? 0)).toBeGreaterThan(1)
+      await page.mouse.down({ button: "right" })
+      await expect.poll(() => main.getAttribute("data-audio-starts")).toContain("Weapon_ManMelter.altfire_lp")
+      await page.screenshot({ path: path.join(directory, "595-vacuum.png") })
+      await page.mouse.up({ button: "right" })
+    }
+    records.push({ definition, model: after.model, before: { clip: before.ammo.clip, reserve: before.ammo.reserve },
+      after: { clip: after.ammo.clip, reserve: after.ammo.reserve }, audio: await main.getAttribute("data-audio-starts"),
+      visibilityQueries: await page.evaluate(() => (globalThis as any).__playsrcProfile.projectileQueries), performance: performanceSample })
+    await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ requested, complete: false, records, errors }, null, 2))
+    await command("-attack")
+  }
+  expect(errors).toEqual([])
+  await writeFile(path.join(directory, "matrix.json"), JSON.stringify({ requested, complete: true, records, errors }, null, 2))
 })

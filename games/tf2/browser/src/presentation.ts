@@ -137,7 +137,16 @@ export function projectileFrame(snapshot: Snapshot): ProjectileFrame {
       tick: entry.tick,
       projectiles: Object.freeze(entry.projectiles.map((projectile) => Object.freeze({
         identity: projectile.identity,
-        kind: projectile.kind === 1 ? "rocket" : projectile.kind === 2 ? "sticky" : "syringe",
+        kind: projectile.kind === 1 ? "rocket" : projectile.kind === 2 ? "sticky" : projectile.kind === 3 ? "syringe" : "flare",
+        weapon: projectile.weapon,
+        critical: projectile.critical,
+        trail: projectile.trail,
+        miniRocket: projectile.miniRocket,
+        practiceExplosion: projectile.practiceExplosion,
+        selfBlastOnly: projectile.selfBlastOnly,
+        modelVisible: projectile.modelVisible,
+        airBurst: projectile.airBurst,
+        underwaterExplosion: projectile.underwaterExplosion,
         team: projectile.team === 2 ? "red" : "blue",
         ownerIdentity: projectile.ownerIdentity,
         launcherIdentity: projectile.launcherIdentity,
@@ -172,7 +181,15 @@ function projectileTimelineEvents(
   ) => {
     output.push(Object.freeze({
       kind,
-      projectileKind: event.kind === 1 ? "rocket" : event.kind === 2 ? "sticky" : "syringe",
+      projectileKind: event.kind === 1 ? "rocket" : event.kind === 2 ? "sticky" : event.kind === 3 ? "syringe" : "flare",
+      weapon: event.weapon,
+      critical: event.critical,
+      trail: event.trail,
+      miniRocket: event.miniRocket,
+      practiceExplosion: event.practiceExplosion,
+      selfBlastOnly: event.selfBlastOnly,
+      airBurst: event.airBurst,
+      underwaterExplosion: event.underwaterExplosion,
       projectileIdentity: event.projectile,
       ownerIdentity: event.ownerIdentity,
       launcherIdentity: event.launcherIdentity,
@@ -190,7 +207,7 @@ function projectileTimelineEvents(
     append(event, event.type, sourceEventOrdinal)
     if (event.type === "impact") {
       const outcome = nextKind[sourceEventOrdinal]
-      if (outcome !== "stick" && outcome !== "explode") {
+      if (outcome !== "stick" && outcome !== "explode" && (event.kind === 2 || event.kind === 4 && event.trail === 5 && outcome !== "fizzle")) {
         append(event, "bounce", sourceEventOrdinal)
       }
     } else if (event.type === "fizzle" || event.type === "explode") {
@@ -666,11 +683,16 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
 }
+export type ParticleVisibilityFrame = Readonly<{
+  yawDegrees: number; pitchDegrees: number; verticalFovDegrees: number; width: number; height: number
+  samples: readonly Readonly<{ identity: bigint; visiblePixels: number; possiblePixels: number; clipFraction: number }>[]
+}>
+
 export function createParticleBatchEncoder() {
   let previousTick = 0n
   let previousTime = 0
   return Object.freeze({
-    encode(tick: bigint, camera: Vector3, requests: readonly ProjectileParticleRequest[]) {
+    encode(tick: bigint, camera: Vector3, requests: readonly ProjectileParticleRequest[], visibility?: ParticleVisibilityFrame) {
       if (
         typeof tick !== "bigint"
         || tick < previousTick
@@ -687,7 +709,15 @@ export function createParticleBatchEncoder() {
         throw new ProjectilePresentationError("TimeReversed", "particle transaction range or input is invalid")
       }
 
-      let length = 32
+      if (visibility && (![visibility.yawDegrees, visibility.pitchDegrees, visibility.verticalFovDegrees, visibility.width, visibility.height].every(Number.isFinite)
+        || visibility.verticalFovDegrees <= 0 || visibility.verticalFovDegrees >= 180 || visibility.width <= 0 || visibility.height <= 0
+        || visibility.samples.length > 4096 || visibility.samples.some((sample, index) => typeof sample.identity !== "bigint" || sample.identity < 0n || sample.identity > 0xffff_ffff_ffff_ffffn
+          || index > 0 && sample.identity <= visibility.samples[index - 1]!.identity
+          || ![sample.visiblePixels, sample.possiblePixels].every(value => Number.isInteger(value) && value >= -1 && value <= 0x7fff_ffff)
+          || !Number.isFinite(sample.clipFraction) || sample.clipFraction < 0 || sample.clipFraction > 1))) {
+        throw new ProjectilePresentationError("MalformedFact", "particle visibility feedback is invalid")
+      }
+      let length = 40 + (visibility ? 20 + visibility.samples.length * 20 : 0)
       let previousRequestTick = previousTick
       const systems = new Map<string, Uint8Array>()
       const identities = new Set<bigint>()
@@ -774,7 +804,7 @@ export function createParticleBatchEncoder() {
       const bytes = new Uint8Array(length)
       const view = new DataView(bytes.buffer)
       bytes.set([0x50, 0x50, 0x54, 0x58])
-      view.setUint32(4, 4, true)
+      view.setUint32(4, 5, true)
       view.setFloat32(8, previousTime, true)
       view.setFloat32(12, to, true)
       camera.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
@@ -822,6 +852,12 @@ export function createParticleBatchEncoder() {
           at+=60
         }
       }
+      view.setUint32(at, visibility ? 1 : 0, true); at += 4
+      if (visibility) for (const value of [visibility.yawDegrees, visibility.pitchDegrees, visibility.verticalFovDegrees, visibility.width, visibility.height]) { view.setFloat32(at, value, true); at += 4 }
+      view.setUint32(at, visibility?.samples.length ?? 0, true); at += 4
+      for (const sample of visibility?.samples ?? []) {
+        view.setBigUint64(at, sample.identity, true); view.setInt32(at + 8, sample.visiblePixels, true); view.setInt32(at + 12, sample.possiblePixels, true); view.setFloat32(at + 16, sample.clipFraction, true); at += 20
+      }
       previousTick = tick
       previousTime = to
       return bytes
@@ -840,7 +876,7 @@ export function encodeLegacyParticleFrame(timeSeconds: number,
   }
   if (!(visualPayload instanceof Uint8Array) || visualPayload.byteLength > 4 * 1024 * 1024 - 64) throw new ProjectilePresentationError("BoundExceeded", "legacy visual frame payload is invalid")
   const bytes = new Uint8Array(64 + visualPayload.byteLength), view = new DataView(bytes.buffer)
-  bytes.set([0x50, 0x50, 0x54, 0x58]); view.setUint32(4, 4, true)
+  bytes.set([0x50, 0x50, 0x54, 0x58]); view.setUint32(4, 5, true)
   view.setFloat32(8, timeSeconds, true); view.setFloat32(12, timeSeconds, true)
   camera.position.forEach((value, index) => view.setFloat32(16 + index * 4, value, true))
   view.setUint32(28, 0x8000_0000, true); view.setFloat32(32, frame.clientFrameSeconds, true)
@@ -911,7 +947,14 @@ export function particleEffects(items: readonly ParticleRenderItem[]): readonly 
   )
 }
 
-export type ProjectileKind = "rocket" | "sticky" | "syringe"
+export type ProjectileKind = "rocket" | "sticky" | "syringe" | "flare"
+export function projectileModelPath(kind: ProjectileKind | Snapshot["projectiles"][number]["kind"], miniRocket: boolean): ProjectileModelRequest["model"] {
+  if (kind === "rocket" || kind === 1) return miniRocket
+    ? "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl" : "models/weapons/w_models/w_rocket.mdl"
+  if (kind === "sticky" || kind === 2) return "models/weapons/w_models/w_stickybomb.mdl"
+  if (kind === "syringe" || kind === 3) return "models/weapons/w_models/w_syringe_proj.mdl"
+  return "models/weapons/w_models/w_flaregun_shell.mdl"
+}
 export type ProjectileTeam = "red" | "blue"
 export type ProjectileState = "flying" | "stuck-unarmed" | "stuck-armed"
 export type ProjectileEventKind =
@@ -923,10 +966,20 @@ export type ProjectileEventKind =
   | "fizzle"
   | "explode"
   | "destroy"
+  | "deflect"
 export type Vector3 = readonly [number, number, number]
 export type Quaternion = readonly [number, number, number, number]
 
 export type ProjectileFact = Readonly<{
+  airBurst: boolean
+  underwaterExplosion: boolean
+  weapon: number
+  critical: boolean
+  trail: number
+  miniRocket: boolean
+  practiceExplosion: boolean
+  selfBlastOnly: boolean
+  modelVisible: boolean
   identity: number
   kind: ProjectileKind
   team: ProjectileTeam
@@ -942,6 +995,14 @@ export type ProjectileFact = Readonly<{
 }>
 
 export type ProjectileEvent = Readonly<{
+  airBurst: boolean
+  underwaterExplosion: boolean
+  weapon: number
+  critical: boolean
+  trail: number
+  miniRocket: boolean
+  practiceExplosion: boolean
+  selfBlastOnly: boolean
   kind: ProjectileEventKind
   projectileKind: ProjectileKind
   projectileIdentity: number
@@ -969,7 +1030,7 @@ export type ProjectileFrame = Readonly<{
 export type ProjectileModelRequest = Readonly<{
   identity: number
   projectileIdentity: number
-  model: "models/weapons/w_models/w_rocket.mdl" | "models/weapons/w_models/w_stickybomb.mdl" | "models/weapons/w_models/w_syringe_proj.mdl"
+  model: "models/weapons/w_models/w_rocket.mdl" | "models/weapons/w_models/w_rocket_airstrike/w_rocket_airstrike.mdl" | "models/weapons/w_models/w_flaregun_shell.mdl" | "models/weapons/w_models/w_stickybomb.mdl" | "models/weapons/w_models/w_syringe_proj.mdl"
   skin: 0 | 1
   materialVariant: ProjectileTeam
   position: Vector3
@@ -990,6 +1051,17 @@ export type ParticleControlPoint = Readonly<{
   orientation: Quaternion
   ownerIdentity: number
 }>
+
+export function weaponParticleColorRequests(start: Extract<ProjectileParticleRequest, { kind: "start" }>): readonly ProjectileParticleRequest[] {
+  const colors: readonly Vector3[] = start.team === "red" ? [[0.72, 0.22, 0.23], [0.5, 0.18, 0.125]]
+    : [[0.345, 0.52, 0.635], [0.145, 0.427, 0.55]]
+  return Object.freeze(colors.map((position, index) => Object.freeze({ kind: "set-control-point" as const,
+    identity: `${start.identity}:color:${9 + index}`, effectIdentity: start.effectIdentity, eventIdentity: start.eventIdentity,
+    tick: start.tick, projectileIdentity: start.projectileIdentity,
+    controlPoint: Object.freeze({ index: 9 + index, position: Object.freeze([...position]) as Vector3,
+      orientation: Object.freeze([0, 0, 0, 1]) as Quaternion, ownerIdentity: UINT32_MAX }),
+  })))
+}
 export type FlameControlPoint = Readonly<{
   index: number
   position: Vector3
@@ -1196,6 +1268,13 @@ export class ProjectilePresentationError extends Error {
 }
 
 type TrackedProjectile = Readonly<{
+  weapon: number
+  miniRocket: boolean
+  trail: number
+  critical: boolean
+  revision: number
+  baseTrails: readonly string[]
+  criticalTrail: string | null
   kind: ProjectileKind
   team: ProjectileTeam
   ownerIdentity: number
@@ -1207,6 +1286,12 @@ type TrackedProjectile = Readonly<{
 }>
 
 type ProjectileSource = Readonly<{
+  weapon: number
+  critical: boolean
+  trail: number
+  miniRocket: boolean
+  practiceExplosion: boolean
+  selfBlastOnly: boolean
   identity: number
   kind: ProjectileKind
   team: ProjectileTeam
@@ -1272,6 +1357,8 @@ export function createProjectilePresentationMapper(
           facts.set(fact.identity, fact)
         }
         const startedControls = new Map<number, ParticleControlPoint>()
+        const lastDeflection = new Map<number, number>()
+        timeline.events.forEach((event, index) => { if (event.kind === "deflect") lastDeflection.set(event.projectileIdentity, index) })
         for (let eventIndex = 0; eventIndex < timeline.events.length; eventIndex += 1) {
           const event = timeline.events[eventIndex]!
           const previousEvent = timeline.events[eventIndex - 1]
@@ -1281,8 +1368,8 @@ export function createProjectilePresentationMapper(
           const eventIdentity = `${event.tick}:${event.sourceEventOrdinal}:${event.kind}:${event.projectileIdentity}`
           if (event.kind === "fire") {
             if (prior) throw transition("fire targets an existing projectile")
-            if (fact && event.tick === timeline.tick) matchEvent(event, fact)
-            else if (fact && (event.projectileKind !== fact.kind || event.team !== fact.team || event.ownerIdentity !== fact.ownerIdentity || event.launcherIdentity !== fact.launcherIdentity)) throw transition("delayed fire immutable identity fields changed")
+            if (fact && (lastDeflection.get(event.projectileIdentity) ?? -1) <= eventIndex) matchEvent(event, fact)
+            else if (fact && (event.projectileKind !== fact.kind || event.weapon !== fact.weapon)) throw transition("delayed fire immutable identity fields changed")
             const source = eventFact(event)
             const trail = trailSystem(source)
             requireSystem(catalog, trail)
@@ -1312,8 +1399,23 @@ export function createProjectilePresentationMapper(
               event.tick,
             )
             push(particles, limits, trailStart)
+            const baseTrails = [trailEffect(source.identity)]
+            if (source.kind === "rocket" && source.trail === 3) {
+              const effect = `${trailEffect(source.identity)}:line:0`
+              requireSystem(catalog, "rockettrail_airstrike_line")
+              push(particles, limits, startRequest(eventIdentity, effect, source, "rockettrail_airstrike_line", trailAttachment,
+                initialTransform.position, initialTransform.orientation, event.tick))
+              baseTrails.push(effect)
+            }
+            const criticalTrail = source.kind === "rocket" && source.critical ? `projectile:${source.identity}:critical:0` : null
+            if (criticalTrail) {
+              const system = `critical_rocket_${source.team}`
+              requireSystem(catalog, system)
+              push(particles, limits, startRequest(eventIdentity, criticalTrail, source, system, null, event.position, event.orientation, event.tick))
+            }
             startedControls.set(source.identity, trailStart.controlPoints[0]!)
-            const muzzle = source.kind === "rocket" ? "rocketbackblast" : source.kind === "syringe" ? "muzzle_syringe" : "muzzle_pipelauncher"
+            const muzzle = source.kind === "rocket" ? "rocketbackblast" : source.kind === "syringe" ? "muzzle_syringe"
+              : source.kind === "flare" ? source.trail === 6 ? "drg_manmelter_muzzleflash" : "muzzle_shotgun" : "muzzle_pipelauncher"
             if (!(source.kind === "rocket" && source.ownerIdentity === catalog.localOwnerIdentity)) {
               const attachment = requireAttachment(
                 catalog,
@@ -1322,10 +1424,7 @@ export function createProjectilePresentationMapper(
               )
               const muzzleTransform = requireFireAttachmentTransform(catalog, event, attachment)
               requireSystem(catalog, muzzle)
-              push(
-                particles,
-                limits,
-                startRequest(
+              const muzzleRequest = startRequest(
                   eventIdentity,
                   oneShotEffect(eventIdentity),
                   source,
@@ -1334,12 +1433,15 @@ export function createProjectilePresentationMapper(
                   muzzleTransform.position,
                   muzzleTransform.orientation,
                   event.tick,
-                ),
-              )
+                )
+              push(particles, limits, muzzleRequest)
+              if (source.kind === "flare") for (const color of weaponParticleColorRequests(muzzleRequest)) push(particles, limits, color)
             }
             next.set(
               source.identity,
               Object.freeze({
+                weapon: source.weapon, miniRocket: source.miniRocket, trail: source.trail, critical: source.critical,
+                revision: 0, baseTrails: Object.freeze(baseTrails), criticalTrail,
                 kind: source.kind,
                 team: source.team,
                 ownerIdentity: source.ownerIdentity,
@@ -1352,9 +1454,43 @@ export function createProjectilePresentationMapper(
             )
           } else {
             if (!prior) throw transition(`${event.kind} targets an unknown projectile`)
-            if (fact) matchEvent(event, fact)
-            matchTracked(event, prior)
-            if (event.kind === "impact") {
+            if (fact && (lastDeflection.get(event.projectileIdentity) ?? -1) <= eventIndex) matchEvent(event, fact)
+            if (event.kind !== "deflect") matchTracked(event, prior)
+            if (event.kind === "deflect") {
+              if (prior.kind !== event.projectileKind || prior.weapon !== event.weapon || !["rocket", "flare"].includes(prior.kind)) {
+                throw transition("deflection changes the projectile class or original weapon")
+              }
+              const source = eventFact(event), revision = prior.revision + 1
+              const baseTrails = prior.kind === "rocket" ? [...prior.baseTrails] : []
+              if (prior.kind === "flare") for (const effect of prior.baseTrails) {
+                push(particles, limits, stopRequest(eventIdentity, effect, source.identity, event.tick, false))
+              }
+              if (prior.criticalTrail) push(particles, limits, stopRequest(eventIdentity, prior.criticalTrail, source.identity, event.tick, false))
+              const attachment = source.kind === "rocket" ? requireAttachment(catalog, source.identity, "trail") : null
+              const transform = prior.trailLocalTransform
+                ? applyAttachmentTransform(prior.trailLocalTransform, event.position, event.orientation)
+                : Object.freeze({ position: event.position, orientation: event.orientation })
+              const effect = `${trailEffect(source.identity)}:${revision}`
+              const system = trailSystem(source)
+              requireSystem(catalog, system)
+              push(particles, limits, startRequest(eventIdentity, effect, source, system, attachment, transform.position, transform.orientation, event.tick))
+              baseTrails.push(effect)
+              if (source.kind === "rocket" && source.trail === 3) {
+                const line = `${effect}:line`
+                requireSystem(catalog, "rockettrail_airstrike_line")
+                push(particles, limits, startRequest(eventIdentity, line, source, "rockettrail_airstrike_line", attachment, transform.position, transform.orientation, event.tick))
+                baseTrails.push(line)
+              }
+              const criticalTrail = source.kind === "rocket" && source.critical ? `projectile:${source.identity}:critical:${revision}` : null
+              if (criticalTrail) {
+                const system = `critical_rocket_${source.team}`
+                requireSystem(catalog, system)
+                push(particles, limits, startRequest(eventIdentity, criticalTrail, source, system, null, event.position, event.orientation, event.tick))
+              }
+              next.set(source.identity, Object.freeze({ ...prior, team: source.team, ownerIdentity: source.ownerIdentity,
+                launcherIdentity: source.launcherIdentity, trail: source.trail, critical: source.critical,
+                revision, baseTrails: Object.freeze(baseTrails), criticalTrail }))
+            } else if (event.kind === "impact") {
               if (prior.state !== "flying") throw transition("impact requires a flying projectile")
             } else if (event.kind === "bounce") {
               if (
@@ -1401,20 +1537,15 @@ export function createProjectilePresentationMapper(
               }))
             } else if (event.kind === "fizzle" || event.kind === "explode") {
               if (prior.trailActive) {
-                push(
-                  particles,
-                  limits,
-                  stopRequest(
-                    eventIdentity,
-                    trailEffect(event.projectileIdentity),
-                    event.projectileIdentity,
-                    event.tick,
-                    false,
-                  ),
-                )
+                for (const effect of [...prior.baseTrails, ...(prior.criticalTrail ? [prior.criticalTrail] : [])]) {
+                  push(particles, limits, stopRequest(eventIdentity, effect, event.projectileIdentity, event.tick, false))
+                }
               }
               if (event.kind === "explode") {
-                const system = event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
+                const system = event.projectileKind === "flare" ? "flaregun_destroyed"
+                  : event.practiceExplosion ? "ExplosionCore_Wall_Jumper"
+                    : event.underwaterExplosion ? "ExplosionCore_MidAir_underwater"
+                      : event.contactNormal === null ? "ExplosionCore_MidAir" : "ExplosionCore_Wall"
                 requireSystem(catalog, system)
                 push(
                   particles,
@@ -1430,6 +1561,12 @@ export function createProjectilePresentationMapper(
                     event.tick,
                   ),
                 )
+                if (event.projectileKind === "flare" && event.airBurst) {
+                  const extra = event.selfBlastOnly ? "Explosions_MA_FlyingEmbers" : "ExplosionCore_MidAir_Flare"
+                  requireSystem(catalog, extra)
+                  push(particles, limits, startRequest(eventIdentity, `${oneShotEffect(eventIdentity)}:air`, eventFact(event), extra,
+                    null, event.position, explosionOrientation(event.contactNormal), event.tick))
+                }
               }
             } else if (event.kind === "destroy") {
               if (
@@ -1459,6 +1596,7 @@ export function createProjectilePresentationMapper(
             || fact.team !== state.team
             || fact.ownerIdentity !== state.ownerIdentity
             || fact.launcherIdentity !== state.launcherIdentity
+            || fact.weapon !== state.weapon || fact.miniRocket !== state.miniRocket || fact.trail !== state.trail || fact.critical !== state.critical
           ) {
             throw transition("projectile immutable identity fields changed")
           }
@@ -1469,20 +1607,21 @@ export function createProjectilePresentationMapper(
             const control = controlPoint(transform.position, transform.orientation, fact.ownerIdentity)
             const started = startedControls.get(identity)
             if (!started || !sameControlPoint(started, control)) {
-              push(
-                particles,
-                limits,
-                Object.freeze({
+              for (const effect of state.baseTrails) push(particles, limits, Object.freeze({
                   kind: "set-control-point",
-                  identity: `${timeline.tick}:follow:${identity}`,
-                  effectIdentity: trailEffect(identity),
+                  identity: effect === trailEffect(identity) ? `${timeline.tick}:follow:${identity}` : `${timeline.tick}:follow:${identity}:${effect}`,
+                  effectIdentity: effect,
                   eventIdentity: `${timeline.tick}:follow`,
                   tick: timeline.tick,
                   projectileIdentity: identity,
                   controlPoint: control,
-                }),
-              )
+                }))
             }
+            if (state.criticalTrail) push(particles, limits, Object.freeze({
+              kind: "set-control-point", identity: `${timeline.tick}:critical-follow:${identity}`,
+              effectIdentity: state.criticalTrail, eventIdentity: `${timeline.tick}:follow`, tick: timeline.tick,
+              projectileIdentity: identity, controlPoint: controlPoint(fact.position, fact.orientation, fact.ownerIdentity),
+            }))
           }
         }
         for (const identity of facts.keys()) {
@@ -1492,12 +1631,8 @@ export function createProjectilePresentationMapper(
         mappedTick = timeline.tick
       }
 
-      const models = [...finalFacts.values()].filter((fact) => fact.kind !== "sticky" || fact.ageSeconds >= 0.1).map((fact) => {
-        const model = fact.kind === "rocket"
-          ? ("models/weapons/w_models/w_rocket.mdl" as const)
-          : fact.kind === "sticky"
-            ? ("models/weapons/w_models/w_stickybomb.mdl" as const)
-            : ("models/weapons/w_models/w_syringe_proj.mdl" as const)
+      const models = [...finalFacts.values()].filter((fact) => fact.modelVisible).map((fact) => {
+        const model = projectileModelPath(fact.kind, fact.miniRocket)
         if (!catalog.models.has(model)) {
           throw new ProjectilePresentationError("MissingModel", `projectile model ${model} is missing`)
         }
@@ -1542,7 +1677,8 @@ function validateFact(fact: ProjectileFact): void {
     !uint32(fact.identity) ||
     !uint32(fact.ownerIdentity) ||
     !uint32(fact.launcherIdentity) ||
-    (fact.kind !== "rocket" && fact.kind !== "sticky" && fact.kind !== "syringe") ||
+    (fact.kind !== "rocket" && fact.kind !== "sticky" && fact.kind !== "syringe" && fact.kind !== "flare") ||
+    !Number.isInteger(fact.trail) || fact.trail < 0 || fact.trail > 6 || typeof fact.modelVisible !== "boolean" ||
     (fact.team !== "red" && fact.team !== "blue") ||
     (fact.state !== "flying" && fact.state !== "stuck-unarmed" && fact.state !== "stuck-armed") ||
     !finite(fact.position) ||
@@ -1552,7 +1688,7 @@ function validateFact(fact: ProjectileFact): void {
     !Number.isFinite(fact.ageSeconds) ||
     fact.ageSeconds < 0 ||
     (fact.contactNormal !== null && !normal(fact.contactNormal)) ||
-    (fact.state === "flying" && fact.contactNormal !== null) ||
+    (fact.state === "flying" && fact.contactNormal !== null && fact.kind !== "flare") ||
     (fact.state !== "flying" && fact.contactNormal === null) ||
     (fact.kind === "rocket" && fact.state !== "flying")
   ) {
@@ -1562,8 +1698,9 @@ function validateFact(fact: ProjectileFact): void {
 
 function validateEvent(event: ProjectileEvent, frameTick: bigint, earliestTick: bigint, sourceOrdinal: number): void {
   if (
-    !["fire", "impact", "bounce", "stick", "arm", "fizzle", "explode", "destroy"].includes(event.kind) ||
-    (event.projectileKind !== "rocket" && event.projectileKind !== "sticky" && event.projectileKind !== "syringe") ||
+    !["fire", "impact", "bounce", "stick", "arm", "fizzle", "explode", "destroy", "deflect"].includes(event.kind) ||
+    (event.projectileKind !== "rocket" && event.projectileKind !== "sticky" && event.projectileKind !== "syringe" && event.projectileKind !== "flare") ||
+    !Number.isInteger(event.trail) || event.trail < 0 || event.trail > 6 ||
     !uint32(event.projectileIdentity) ||
     !uint32(event.ownerIdentity) ||
     !uint32(event.launcherIdentity) ||
@@ -1659,7 +1796,10 @@ function controlPoint(position: Vector3, orientation: Quaternion, ownerIdentity:
 }
 
 function trailSystem(fact: ProjectileSource): string {
-  if (fact.kind === "rocket") return "rockettrail"
+  if (fact.kind === "rocket") return fact.trail === 4 ? "rockettrail_underwater"
+    : fact.trail === 1 ? "rockettrail_RocketJumper" : fact.trail === 2 || fact.trail === 3 ? "rockettrail_airstrike" : "rockettrail"
+  if (fact.kind === "flare") return fact.trail === 6 ? "drg_manmelter_projectile"
+    : `${fact.trail === 5 ? "scorchshot" : "flaregun"}_trail_${fact.critical ? "crit_" : ""}${fact.team}`
   if (fact.kind === "syringe") return fact.team === "red" ? "nailtrails_medic_red" : "nailtrails_medic_blue"
   return fact.team === "red" ? "stickybombtrail_red" : "stickybombtrail_blue"
 }
@@ -1732,6 +1872,8 @@ function authoredProjectileOrientation(orientation: Quaternion): Quaternion {
 
 function eventFact(event: ProjectileEvent): ProjectileSource {
   return Object.freeze({
+    weapon: event.weapon, critical: event.critical, trail: event.trail, miniRocket: event.miniRocket,
+    practiceExplosion: event.practiceExplosion, selfBlastOnly: event.selfBlastOnly,
     identity: event.projectileIdentity,
     kind: event.projectileKind,
     team: event.team,

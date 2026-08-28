@@ -84,7 +84,7 @@ export type StaticMaterialState = Readonly<{
     reference: number
   }>
 }>
-export type ParticleTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string; materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null }>
+export type ParticleTextureArtifact = AuthoredTextureArtifact & Readonly<{ material: string; materialPath: string; spriteCard: import("@playsrc/rendering").SpriteCardInput | null; additiveSprite: import("@playsrc/rendering").AdditiveSpriteInput | null }>
 export type SoundScriptNode = Readonly<{ key: string; value: string | readonly SoundScriptNode[] }>
 export type AudioArtifact = Readonly<{
   unavailable: ReadonlySet<string>
@@ -414,6 +414,7 @@ export type EnvironmentArtifact = Readonly<{
 export type PresentationArtifacts = Readonly<{
   models: ReadonlyMap<string, ModelArtifact>
   particleMaterials: readonly string[]
+  particleSystems: readonly string[]
   materialStates: ReadonlyMap<string, StaticMaterialState>
   particleTextures: readonly ParticleTextureArtifact[]
   audio: AudioArtifact
@@ -984,8 +985,8 @@ function parseMaterialStates(r: Reader): ReadonlyMap<string, StaticMaterialState
   return states
 }
 
-function parseParticleTextures(r: Reader, resources: ReadonlyMap<string, Uint8Array>, sharedTextures: Map<string, AuthoredTextureArtifact>): readonly ParticleTextureArtifact[] {
-  if (r.decode(r.take(4)) !== "PPTM" || r.u32() !== 3) throw new ArtifactError("PPTM identity")
+function parseParticleTextures(r: Reader, resources: ReadonlyMap<string, Uint8Array>, sharedTextures: Map<string, AuthoredTextureArtifact>, systems: string[]): readonly ParticleTextureArtifact[] {
+  if (r.decode(r.take(4)) !== "PPTM" || r.u32() !== 4) throw new ArtifactError("PPTM identity")
   const output: ParticleTextureArtifact[] = []
   const identities = new Set<string>()
   for (let count = r.u32(); count > 0; count--) {
@@ -1002,7 +1003,23 @@ function parseParticleTextures(r: Reader, resources: ReadonlyMap<string, Uint8Ar
       spriteCard = Object.freeze({ depthBlend: depthBlend === 1, blendFrames: blendFrames === 1,
         addSelf: r.f32(), overbright: r.f32(), depthBlendScale: r.f32(), minimumSize: r.f32(), startFadeSize: r.f32(), endFadeSize: r.f32(), maximumSize: r.f32(), maximumDistance: r.f32(), farFadeInterval: r.f32() })
     }
-    output.push(Object.freeze({ ...texture, material, materialPath, spriteCard }))
+    const spritePresent = r.u32()
+    if (spritePresent > 1 || (spritePresent && present)) throw new ArtifactError("Sprite presence")
+    let additiveSprite: ParticleTextureArtifact["additiveSprite"] = null
+    if (spritePresent) {
+      const srgb = r.u32(), vertexColor = r.u32()
+      if (srgb > 1 || vertexColor > 1) throw new ArtifactError("Sprite flags")
+      additiveSprite = Object.freeze({ srgb: srgb === 1, vertexColor: vertexColor === 1, color: Object.freeze([r.f32(), r.f32(), r.f32()] as const), hdrColorScale: r.f32() })
+    }
+    output.push(Object.freeze({ ...texture, material, materialPath, spriteCard, additiveSprite }))
+  }
+  const count = r.u32()
+  if (count > 4096) throw new ArtifactError("particle system count")
+  const names = new Set<string>()
+  for (let index = 0; index < count; index++) {
+    const name = r.text()
+    if (!name || names.has(name)) throw new ArtifactError("particle system identity")
+    names.add(name); systems.push(name)
   }
   return Object.freeze(output)
 }
@@ -1380,7 +1397,7 @@ function parseStaticProps(r: Reader, expectedModelCount: number,models:readonly 
   if(vhv.length!==count*2-runtimeLightingCount*2)throw new ArtifactError("static prop VHV closure")
   return Object.freeze({aggregateSha256,modelCount,count,source,dictionaryModel,presentationModel,transform,skin,body,lod,fades,flags,solidity,ownership,lightingKind,lightingOrigin,leafOffsets,leaves:Uint16Array.from(leafValues),areas:Uint16Array.from(areaValues),vhvObjects,runtimeAmbient,runtimeLightOffsets,runtimeLights:Object.freeze(runtimeLights),models:Object.freeze([...models]),vhv,runtimeLightingCount})
 }
-export type EquipmentModelArtifacts = Pick<PresentationArtifacts, "models" | "materialStates" | "modelMaterials" | "authoredTextures" | "particleMaterials" | "particleTextures"> & Readonly<{ geometry: readonly import("@playsrc/rendering/runtime-map").RuntimeModel[] }>
+export type EquipmentModelArtifacts = Pick<PresentationArtifacts, "models" | "materialStates" | "modelMaterials" | "authoredTextures" | "particleMaterials" | "particleTextures" | "particleSystems"> & Readonly<{ geometry: readonly import("@playsrc/rendering/runtime-map").RuntimeModel[] }>
 
 export function parseEquipmentModelArtifacts(bytes: Uint8Array, resources: ReadonlyMap<string, Uint8Array>): EquipmentModelArtifacts {
   const r = new Reader(bytes)
@@ -1394,13 +1411,14 @@ export function parseEquipmentModelArtifacts(bytes: Uint8Array, resources: Reado
   const count = r.u32()
   if (count > 4096) throw new ArtifactError("equipment particle material count")
   const particleMaterials = Object.freeze(Array.from({ length: count }, () => r.text()))
-  const particleTextures = parseParticleTextures(r, resources, sharedTextures)
+  const particleSystems: string[] = []
+  const particleTextures = parseParticleTextures(r, resources, sharedTextures, particleSystems)
   for (const texture of particleTextures) {
     if (!materialStates.has(texture.material.toLowerCase())) throw new ArtifactError("equipment particle material state")
   }
   if (r.offset !== bytes.byteLength) throw new ArtifactError("equipment model trailing bytes")
   for (const material of modelMaterials.values()) if (material.bindings.some((binding) => !authoredTextures.has(binding.logicalPath))) throw new ArtifactError("equipment texture binding")
-  return Object.freeze({ models, materialStates, modelMaterials, authoredTextures, geometry, particleMaterials, particleTextures })
+  return Object.freeze({ models, materialStates, modelMaterials, authoredTextures, geometry, particleMaterials, particleTextures, particleSystems: Object.freeze(particleSystems) })
 }
 
 function parseModelHeaders(r: Reader, modelCount: number): ReadonlyMap<string, ModelArtifact> {
@@ -1520,7 +1538,8 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
   if (r.decode(r.bytes.subarray(r.offset, r.offset + 4)) !== "PPTM") {
     throw new ArtifactError(`material state boundary ${r.offset}:${hex(r.bytes.subarray(r.offset, r.offset + 16))}`)
   }
-  const particleTextures = parseParticleTextures(r, resources, sharedTextures)
+  const particleSystems: string[] = []
+  const particleTextures = parseParticleTextures(r, resources, sharedTextures, particleSystems)
   for (const texture of particleTextures) {
     if (!materialStates.has(texture.material.toLowerCase())) {
       throw new ArtifactError(`particle material state ${texture.material}`)
@@ -1547,6 +1566,7 @@ export async function parsePresentationArtifacts(bytes: Uint8Array, resources: R
     particleMaterials,
     materialStates,
     particleTextures,
+    particleSystems: Object.freeze(particleSystems),
     audio,
     modelOccurrences,
     modelMaterials,

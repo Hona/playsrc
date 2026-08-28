@@ -19,7 +19,7 @@ test("partial pixel visibility counts real covered MSAA samples", async ({ page 
     const counter = new SourcePixelVisibility(device)
     const results: unknown[] = []
     for (const samples of [1, 4]) {
-      await counter.prepare(samples)
+      await counter.prepare(samples, format)
       const depth = device.createTexture({ size: [64, 64], sampleCount: samples, format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING })
       const color = samples === 1 ? null : device.createTexture({ size: [64, 64], sampleCount: samples, format, usage: GPUTextureUsage.RENDER_ATTACHMENT })
       const module = device.createShaderModule({ code: `
@@ -34,11 +34,12 @@ test("partial pixel visibility counts real covered MSAA samples", async ({ page 
       const pipeline = await device.createRenderPipelineAsync({ layout: "auto", vertex: { module, entryPoint: "vertex" }, fragment: { module, entryPoint: "fragment", targets: [{ format }] }, depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "always" }, multisample: { count: samples } })
       const encoder = device.createCommandEncoder()
       const output = context.getCurrentTexture().createView()
-      const pass = encoder.beginRenderPass({ colorAttachments: [{ view: color?.createView() ?? output, ...(color ? { resolveTarget: output } : {}), loadOp: "clear", storeOp: "store" }], depthStencilAttachment: { view: depth.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } })
+      const attachment = { view: color?.createView() ?? output, ...(color ? { resolveTarget: output } : {}), loadOp: "load" as const, storeOp: "store" as const }
+      const pass = encoder.beginRenderPass({ colorAttachments: [{ ...attachment, loadOp: "clear" }], depthStencilAttachment: { view: depth.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } })
       pass.setPipeline(pipeline); pass.draw(3); pass.end()
       const vertices = new Float32Array([0.1, 0.5, 0.9].flatMap(z => [0,0,z,1, -.5,.5,z,1, .5,.5,z,1, .5,-.5,z,1, -.5,-.5,z,1]))
-      const read = counter.issue(encoder, depth, vertices)!
-      if (counter.issue(encoder, depth, vertices) !== null) throw new Error("Pending query overwritten")
+      const read = counter.issue(encoder, depth, vertices, format, attachment)!
+      if (counter.issue(encoder, depth, vertices, format, attachment) !== null) throw new Error("Pending query overwritten")
       device.queue.submit([encoder.finish()])
       const counts = [...await read()]
       results.push({ samples, counts })

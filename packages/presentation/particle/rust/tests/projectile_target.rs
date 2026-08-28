@@ -485,6 +485,7 @@ fn create_event(control_points: Vec<ControlPoint>) -> Event {
 
 fn material(sheet: ParticleSheet) -> ParticleMaterial {
     ParticleMaterial {
+        mapping_height: 1,
         shader: ParticleMaterialShader::MeshSprite,
         blend: ParticleBlendState {
             source: ParticleBlendFactor::SourceAlpha,
@@ -1018,6 +1019,51 @@ fn sphere_local_velocity_uses_source_forward_right_up_basis() {
 }
 
 #[test]
+fn planar_constraints_project_radius_in_authored_spaces_without_rewriting_history() {
+    struct NoQueries;
+    impl CollisionQuery for NoQueries {
+        fn trace_batch(&mut self, _: &[TraceRequest]) -> Result<Vec<CollisionResult>, Error> { panic!("a plane constraint does not trace the world"); }
+    }
+    for (global_origin, global_normal, orientation, expected) in [
+        (false, false, [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        (false, true, [0.0, 0.0, 0.0, 1.0], [15.0, 0.0, 0.0]),
+        (true, true, [0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0]),
+        (false, false, [0.0, 0.0, 1.0, 0.0], [0.0, 22.0, 0.0]),
+        (true, false, [0.0, 0.0, 1.0, 0.0], [0.0, 5.0, 0.0]),
+        (false, true, [0.0, 0.0, 1.0, 0.0], [9.0, 0.0, 0.0]),
+    ] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/plane.vmt")), ("radius", TestValue::Float(2.0)),
+                ("initial_particles", TestValue::Int(1)), ("max_particles", TestValue::Int(4)),
+                ("renderers", TestValue::Refs(vec![2])), ("operators", TestValue::Refs(vec![3])), ("constraints", TestValue::Refs(vec![4])),
+            ] },
+            element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+            element("Movement Basic", 3, vec![("functionName", TestValue::Text("Movement Basic")), ("gravity", TestValue::Vector([0.0; 3]))]),
+            element("Prevent passing through a plane", 4, vec![
+                ("functionName", TestValue::Text("Prevent passing through a plane")), ("control point number", TestValue::Int(0)),
+                ("plane point", TestValue::Vector([0.0, 3.0, 0.0])), ("plane normal", TestValue::Vector([2.0, 0.0, 0.0])),
+                ("global origin", TestValue::Bool(global_origin)), ("global normal", TestValue::Bool(global_normal)),
+            ]),
+        ]);
+        let registry = registry(&bytes);
+        registry.target_closure(&[DefinitionLookup::Name("rockettrail")]).unwrap();
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let mut point = control([10.0, 20.0, 0.0], [100.0, 200.0, 0.0]);
+        point.orientation = orientation;
+        world.advance(&[create_event(vec![point])], AdvanceRequest { from_seconds: 0.0, to_seconds: 0.0,
+            maximum_step_seconds: 0.015, camera_position: [0.0; 3] }, &mut NoQueries).unwrap();
+        let (particles, _) = world.advance(&[], AdvanceRequest { from_seconds: 0.0, to_seconds: 0.015,
+            maximum_step_seconds: 0.015, camera_position: [0.0; 3] }, &mut NoQueries).unwrap();
+        assert_eq!(particles.len(), 1);
+        assert_eq!(particles[0].previous_position, [0.0; 3]);
+        for axis in 0..3 { assert!((particles[0].position[axis] - expected[axis]).abs() < 0.0001,
+            "origin={global_origin} normal={global_normal} orientation={orientation:?}: {:?}", particles[0].position); }
+    }
+}
+
+#[test]
 fn first_frame_creates_only_authored_initial_particles_before_emitters() {
     let bytes = fixture(false);
     let registry = registry(&bytes);
@@ -1046,6 +1092,117 @@ fn first_frame_creates_only_authored_initial_particles_before_emitters() {
         assert!((bounds.minimum[component] - (items[0].position[component] - 10.0)).abs() < 1.0e-6);
         assert!((bounds.maximum[component] - (items[0].position[component] + 10.0)).abs() < 1.0e-6);
     }
+}
+
+#[test]
+fn initial_distance_alpha2_uses_current_control_point_after_initial_position() {
+    for (distance, expected) in [(0.0, 0.0), (5.0, 128.0 / 255.0), (10.0, 1.0), (20.0, 1.0)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/test.vmt")), ("initial_particles", TestValue::Int(1)),
+                ("renderers", TestValue::Refs(vec![2])), ("initializers", TestValue::Refs(vec![3])),
+            ] },
+            element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+            element("Remap Initial Distance to Control Point to Scalar", 3, vec![
+                ("functionName", TestValue::Text("Remap Initial Distance to Control Point to Scalar")),
+                ("distance minimum", TestValue::Float(0.0)), ("distance maximum", TestValue::Float(10.0)),
+                ("output field", TestValue::Int(16)), ("output minimum", TestValue::Float(0.0)), ("output maximum", TestValue::Float(1.0)),
+                ("control point", TestValue::Int(0)), ("ensure line of sight", TestValue::Bool(false)),
+            ]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let (items, _) = world.advance(&[create_event(vec![control([distance, 0.0, 0.0], [100.0; 3])])], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.015, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].opacity, expected);
+    }
+}
+
+#[test]
+fn control_point_pull_uses_quarter_power_distance_falloff_and_zero_distance_mask() {
+    for (distance, falloff, amount, expected) in [(10.0, 0.0, 100.0, 1.0), (10.0, 2.0, 100.0, 0.01),
+        (10.0, 2.0, -100.0, -0.01), (0.0, 2.0, 100.0, 0.0)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/test.vmt")), ("initial_particles", TestValue::Int(1)),
+                ("renderers", TestValue::Refs(vec![2])), ("operators", TestValue::Refs(vec![3])), ("forces", TestValue::Refs(vec![4])),
+            ] },
+            element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+            element("Movement Basic", 3, vec![("functionName", TestValue::Text("Movement Basic"))]),
+            element("Pull towards control point", 4, vec![("functionName", TestValue::Text("Pull towards control point")),
+                ("amount of force", TestValue::Float(amount)), ("falloff power", TestValue::Float(falloff)), ("control point number", TestValue::Int(0))]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+        let request = |from_seconds, to_seconds| AdvanceRequest { from_seconds, to_seconds, maximum_step_seconds: 0.1, camera_position: [0.0; 3] };
+        world.advance(&[create_event(vec![control([distance, 0.0, 0.0], [distance, 0.0, 0.0])])], request(0.0, 0.0), &mut NoHit).unwrap();
+        let (items, _) = world.advance(&[], request(0.0, 0.1), &mut NoHit).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!((items[0].position[0] - expected).abs() < 0.00001, "{distance}/{falloff}/{amount}: {:?}", items[0].position);
+        assert_eq!(&items[0].position[1..], &[0.0, 0.0]);
+    }
+}
+
+#[test]
+fn distance_faded_control_lock_biases_translation_without_rewriting_velocity() {
+    let bytes = encode(&[
+        TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+            ("material", TestValue::Text("effects/test.vmt")), ("initial_particles", TestValue::Int(1)),
+            ("renderers", TestValue::Refs(vec![2])), ("operators", TestValue::Refs(vec![3])),
+        ] },
+        element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+        element("Movement Lock to Control Point", 3, vec![("functionName", TestValue::Text("Movement Lock to Control Point")),
+            ("control_point_number", TestValue::Int(0)), ("distance fade range", TestValue::Float(100.0))]),
+    ]);
+    let registry = registry(&bytes);
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), WorldLimits::default()).unwrap();
+    let request = |from_seconds, to_seconds| AdvanceRequest { from_seconds, to_seconds, maximum_step_seconds: 0.1, camera_position: [0.0; 3] };
+    world.advance(&[create_event(vec![control([50.0, 0.0, 0.0], [50.0, 0.0, 0.0])])], request(0.0, 0.1), &mut NoHit).unwrap();
+    let event = Event { identity: 2, timestamp_seconds: 0.1, source_order: 0, command: EventCommand::SetControlPoint {
+        effect_identity: 7, control_point: control([60.0, 0.0, 0.0], [50.0, 0.0, 0.0]),
+    } };
+    let (items, _) = world.advance(&[event], request(0.1, 0.2), &mut NoHit).unwrap();
+    assert!((items[0].position[0] - 8.0).abs() < 0.00001, "{:?}", items[0].position);
+    assert_eq!(items[0].position, items[0].previous_position);
+}
+
+#[test]
+fn visibility_feedback_keeps_zero_alpha_proxies_and_rolls_back_rejected_output() {
+    use playsrc_particle::{VisibilitySample, VisibilityView};
+    let bytes = encode(&[
+        TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+            ("material", TestValue::Text("effects/test.vmt")), ("initial_particles", TestValue::Int(1)), ("renderers", TestValue::Refs(vec![2])),
+        ] },
+        element("render_animated_sprites", 2, vec![("functionName", TestValue::Text("render_animated_sprites")),
+            ("Visibility Proxy Input Control Point Number", TestValue::Int(0)), ("Visibility Proxy Radius", TestValue::Float(1.0))]),
+    ]);
+    let registry = registry(&bytes);
+    let sheet = ParticleSheet { sequences: BTreeMap::from([(0, SheetSequence { clamp: true, duration_seconds: 1.0,
+        frames: vec![SheetFrame { duration_seconds: 1.0, images: [[0.0, 0.0, 1.0, 1.0]; 4] }] })]) };
+    let mut binding = material(sheet); binding.shader = ParticleMaterialShader::MeshSprite;
+    let materials = BTreeMap::from([("effects/test.vmt".to_owned(), binding)]);
+    let names = vec!["effects/test.vmt".to_owned()];
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &materials, WorldLimits::default()).unwrap();
+    let view = Some(VisibilityView { yaw_degrees: 0.0, pitch_degrees: 0.0, vertical_fov_degrees: 90.0, width: 100.0, height: 100.0 });
+    let request = |from_seconds, to_seconds| AdvanceRequest { from_seconds, to_seconds, maximum_step_seconds: 0.1, camera_position: [0.0; 3] };
+    let first = world.transact_render_output(&[create_event(vec![control([10.0, 0.0, 0.0], [10.0, 0.0, 0.0])])], &[], &[], view,
+        request(0.0, 0.0), &mut NoHit, &materials, &names, 4096).unwrap();
+    assert_eq!(first.len(), 40 + 436 + 72);
+    assert_eq!(first[55], 2, "the visibility bit is independent from the sky bit");
+    let identity = u64::from_le_bytes(first[476..484].try_into().unwrap());
+    assert_eq!(f32::from_le_bytes(first[112..116].try_into().unwrap()), 0.0);
+    let sample = VisibilitySample { identity, visible_pixels: 1, possible_pixels: 2, clip_fraction: 0.5 };
+    let before = world.clone();
+    assert!(world.transact_render_output(&[], &[], &[sample], view, request(0.0, 0.0625), &mut NoHit, &materials, &names, 1).is_err());
+    assert_eq!(world, before);
+    let output = world.transact_render_output(&[], &[], &[sample], view, request(0.0, 0.0625), &mut NoHit, &materials, &names, 4096).unwrap();
+    assert_eq!(f32::from_le_bytes(output[112..116].try_into().unwrap()), 64.0 / 255.0);
 }
 
 #[test]
@@ -1380,6 +1537,7 @@ fn resolves_shader_blend_sheet_and_derived_trail_output() {
         (
             root_material.clone(),
             ParticleMaterial {
+                mapping_height: 1,
                 shader: ParticleMaterialShader::SpriteCard,
                 blend: ParticleBlendState {
                     source: ParticleBlendFactor::SourceAlpha,
@@ -1450,6 +1608,8 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
             .transact_render_output(
                 std::slice::from_ref(&event),
                 &[],
+                &[],
+                None,
                 request,
                 &mut NoHit,
                 &BTreeMap::new(),
@@ -1466,6 +1626,8 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
             .transact_render_output(
                 std::slice::from_ref(&event),
                 &[],
+                &[],
+                None,
                 request,
                 &mut NoHit,
                 &materials,
@@ -1482,6 +1644,8 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
         .transact_render_output(
             &[event],
             &[],
+            &[],
+            None,
             request,
             &mut NoHit,
             &materials,
@@ -1493,12 +1657,12 @@ fn complete_render_transaction_rolls_back_missing_materials_and_output_limits() 
     let event_count = world.event_identity_count();
     let control_request = AdvanceRequest { from_seconds: world.time(), to_seconds: world.time(), ..request };
     for _ in 0..1000 {
-        world.transact_render_output(&[], &[(7, control([3.0; 3], [3.0; 3]))], control_request,
+        world.transact_render_output(&[], &[(7, control([3.0; 3], [3.0; 3]))], &[], None, control_request,
             &mut NoHit, &materials, &material_names, 1024 * 1024).unwrap();
     }
     assert_eq!(world.event_identity_count(), event_count, "attached transforms must not grow the event ledger");
     let before = world.clone();
-    assert!(world.transact_render_output(&[], &[(8, control([0.0; 3], [0.0; 3]))], control_request,
+    assert!(world.transact_render_output(&[], &[(8, control([0.0; 3], [0.0; 3]))], &[], None, control_request,
         &mut NoHit, &materials, &material_names, 1024 * 1024).is_err());
     assert_eq!(world, before);
     assert_eq!(world.time(), 0.5);
@@ -1757,6 +1921,7 @@ fn sequence_lifetime_overrides_random_lifetime_after_sequence_initialization() {
         ]);
         let registry = registry(&bytes);
         let materials = BTreeMap::from([("effects/test.vmt".to_owned(), ParticleMaterial {
+            mapping_height: 1,
             shader: ParticleMaterialShader::SpriteCard,
             blend: ParticleBlendState { source: ParticleBlendFactor::One, destination: ParticleBlendFactor::OneMinusSourceAlpha },
             color_space: ParticleColorSpace::SrgbTextureLinearTint,

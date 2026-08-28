@@ -1,13 +1,17 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BlastKind {
     Rocket,
     Sticky,
+    ModifiedRocket { damage: f32, radius: f32 },
+    Flare { damage: f32, radius: f32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlastClass {
     Soldier,
     Demoman,
+    Pyro,
+    Other,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,6 +21,7 @@ pub struct PlayerBlastTarget {
     pub direct_hit: bool,
     pub visible: bool,
     pub self_damage: bool,
+    pub nearest_distance: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,6 +50,10 @@ pub fn player_blast_damage(
     let (base_damage, ordinary_radius, self_radius) = match kind {
         BlastKind::Rocket => (90.0_f32, 146.0_f32, 121.0_f32),
         BlastKind::Sticky => (120.0_f32, 146.0_f32, 146.0_f32),
+        BlastKind::ModifiedRocket { damage, radius } => (
+            if target.self_damage { 90.0 } else { damage }, radius, 121.0),
+        BlastKind::Flare { damage, radius } => (
+            if target.self_damage { 30.0 } else { damage }, radius, 100.0),
     };
     let radius = if target.self_damage {
         self_radius
@@ -56,7 +65,7 @@ pub fn player_blast_damage(
     } else {
         length(sub(explosion, target.world_center)).min(length(sub(explosion, target.origin)))
     };
-    if distance > radius {
+    if target.nearest_distance > radius || !target.self_damage && radius <= 0.0 {
         return None;
     }
     let fraction = (distance / radius).clamp(0.0, 1.0);
@@ -100,12 +109,23 @@ pub fn self_blast_impulse(
     if crouched_hull {
         size[2] = 55.0;
     }
-    let volume = size[0] * size[1] * size[2];
     let scale = match class {
         BlastClass::Soldier if grounded => 5.0,
         BlastClass::Soldier => 10.0,
-        BlastClass::Demoman => 9.0,
+        BlastClass::Demoman | BlastClass::Other => 9.0,
+        BlastClass::Pyro => 8.5,
     };
+    damage_impulse(size, player_world_center, inflictor_world_center, damage_for_force, scale)
+}
+
+pub fn damage_impulse(
+    size: [f32; 3],
+    player_world_center: [f32; 3],
+    inflictor_world_center: [f32; 3],
+    damage_for_force: f32,
+    scale: f32,
+) -> BlastImpulse {
+    let volume = size[0] * size[1] * size[2];
     let magnitude = if volume > 0.0 {
         (damage_for_force * ((48.0 * 48.0 * 82.0) / volume) * scale).min(1000.0)
     } else {
@@ -122,6 +142,13 @@ pub fn self_blast_impulse(
     }
 }
 
+pub fn generic_push_impulse(impulse: [f32; 3], grounded: bool, horizontal: f32, vertical: f32) -> [f32; 3] {
+    let mut force = impulse.map(|value| value * horizontal);
+    if grounded { force[2] = force[2].max(268.328_16); }
+    force[2] *= vertical;
+    force
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -132,6 +159,11 @@ fn scale_vector(value: [f32; 3], scale: f32) -> [f32; 3] {
 
 fn length(value: [f32; 3]) -> f32 {
     (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
+}
+
+pub fn nearest_hull_distance(source: [f32; 3], origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> f32 {
+    let nearest = std::array::from_fn(|axis| source[axis].clamp(origin[axis] + mins[axis], origin[axis] + maxs[axis]));
+    length(sub(source, nearest))
 }
 
 fn normalize(value: [f32; 3]) -> [f32; 3] {
@@ -149,6 +181,7 @@ mod tests {
 
     fn target(distance: f32, self_damage: bool) -> PlayerBlastTarget {
         PlayerBlastTarget {
+            nearest_distance: distance,
             origin: [distance, 0.0, 0.0],
             world_center: [distance, 0.0, 41.0],
             direct_hit: false,

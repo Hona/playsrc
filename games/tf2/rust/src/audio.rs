@@ -5,6 +5,7 @@ macro_rules! native_sound_definitions {
         impl SoundDefinition {
             pub const NATIVE: &'static [Self] = &[$(Self::$name,)*];
             pub const fn code(self) -> u8 { match self { Self::Configured(index) => 160 + index, $(Self::$name => $code,)* } }
+            pub fn from_code(code: u8) -> Option<Self> { match code { $($code => Some(Self::$name),)* code if code >= 160 && usize::from(code - 160) < CONFIGURED_SOUNDS.len() => Some(Self::Configured(code - 160)), _ => None } }
             pub const fn identity(self) -> &'static str { match self { Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].0, $(Self::$name => $identity,)* } }
             pub const fn wave_count(self) -> u8 { match self { Self::Configured(index) => CONFIGURED_SOUNDS[index as usize].2, $(Self::$name => $waves,)* } }
         }
@@ -34,6 +35,7 @@ mod native_tests {
         let mut codes = std::collections::BTreeSet::new();
         for definition in SoundDefinition::NATIVE {
             assert!(codes.insert(definition.code()));
+            assert_eq!(SoundDefinition::from_code(definition.code()), Some(*definition));
             assert!((1..=8).contains(&definition.wave_count()));
         }
         assert_eq!(SoundDefinition::MedigunHealing.code(), 71);
@@ -42,6 +44,16 @@ mod native_tests {
         assert_eq!(SoundDefinition::SyringeReload.code(), 76);
         assert_eq!(SoundDefinition::MinigunCritical.code(), 115);
         assert_eq!(SoundDefinition::HologramInterrupted.code(), 102);
+    }
+    #[test]
+    fn configured_overrides_reuse_native_scripts_without_a_second_wave_cycle() {
+        assert!(CONFIGURED_SOUNDS.len() <= 64);
+        for (index, (name, _, _)) in CONFIGURED_SOUNDS.iter().enumerate() {
+            assert!(SoundDefinition::NATIVE.iter().all(|definition| definition.identity() != *name));
+            let definition = SoundDefinition::Configured(index as u8);
+            assert_eq!(SoundDefinition::from_code(definition.code()), Some(definition));
+        }
+        for (_, code) in MELEE_CRITICAL_SOUNDS { assert!(SoundDefinition::from_code(*code).is_some()); }
     }
 }
 
@@ -102,7 +114,7 @@ impl SoundDefinition {
     }
 
     pub fn melee_critical(definition: u32) -> Option<Self> {
-        MELEE_CRITICAL_SOUNDS.iter().find(|(item, _)| *item == definition).map(|(_, index)| Self::Configured(*index))
+        MELEE_CRITICAL_SOUNDS.iter().find(|(item, _)| *item == definition).and_then(|(_, code)| Self::from_code(*code))
     }
 }
 
@@ -163,6 +175,7 @@ pub struct AudioEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SoundSelectionState {
     pub configured_available: [u8; 64],
+    pub projectile_unlock_available: [u8; 6],
     pub rocket_explosion_available: u8,
     pub sticky_explosion_available: u8,
     pub bat_hit_world_available: u8,
@@ -239,6 +252,7 @@ impl WaveCycle {
 #[derive(Clone, Copy)]
 pub(crate) struct SoundSelection {
     configured: [WaveCycle; 64],
+    projectile_unlock: [WaveCycle; 6],
     rocket_explosion: WaveCycle,
     sticky_explosion: WaveCycle,
     bat_hit_world: WaveCycle,
@@ -271,6 +285,9 @@ impl SoundSelection {
     pub(crate) fn new() -> Self {
         Self {
             configured: std::array::from_fn(|index| WaveCycle::new(CONFIGURED_SOUNDS.get(index).map_or(0, |(_, _, count)| ((1_u16 << count) - 1) as u8))),
+            projectile_unlock: [WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::THREE),
+                WaveCycle::new(WaveCycle::THREE), WaveCycle::new(WaveCycle::THREE),
+                WaveCycle::new(WaveCycle::FOUR), WaveCycle::new(WaveCycle::THREE)],
             rocket_explosion: WaveCycle::new(WaveCycle::THREE),
             sticky_explosion: WaveCycle::new(WaveCycle::THREE),
             bat_hit_world: WaveCycle::new(WaveCycle::TWO),
@@ -303,6 +320,7 @@ impl SoundSelection {
     pub(crate) fn state(self) -> SoundSelectionState {
         SoundSelectionState {
             configured_available: self.configured.map(|cycle| cycle.available),
+            projectile_unlock_available: self.projectile_unlock.map(|cycle| cycle.available),
             rocket_explosion_available: self.rocket_explosion.available,
             sticky_explosion_available: self.sticky_explosion.available,
             bat_hit_world_available: self.bat_hit_world.available,
@@ -334,7 +352,9 @@ impl SoundSelection {
 
     pub(crate) fn restore(&mut self, state: SoundSelectionState) -> bool {
         if self.configured.iter().zip(state.configured_available).any(|(cycle, value)| value & !cycle.all != 0) { return false; }
-        if state.rocket_explosion_available & !WaveCycle::THREE != 0
+        if state.projectile_unlock_available.into_iter().enumerate().any(|(index, available)|
+            available & !(if index == 4 { WaveCycle::FOUR } else { WaveCycle::THREE }) != 0)
+            || state.rocket_explosion_available & !WaveCycle::THREE != 0
             || state.sticky_explosion_available & !WaveCycle::THREE != 0
             || state.bat_hit_world_available & !WaveCycle::TWO != 0
             || state.shovel_hit_world_available & !WaveCycle::TWO != 0
@@ -363,6 +383,9 @@ impl SoundSelection {
             return false;
         }
         self.rocket_explosion.available = state.rocket_explosion_available;
+        for (cycle, available) in self.projectile_unlock.iter_mut().zip(state.projectile_unlock_available) {
+            cycle.available = available;
+        }
         self.sticky_explosion.available = state.sticky_explosion_available;
         self.bat_hit_world.available = state.bat_hit_world_available;
 
@@ -411,6 +434,12 @@ impl SoundSelection {
     fn cycle(&mut self, definition: SoundDefinition) -> &mut WaveCycle {
         match definition {
             SoundDefinition::Configured(index) => &mut self.configured[index as usize],
+            SoundDefinition::DirectHitExplosion => &mut self.projectile_unlock[0],
+            SoundDefinition::BlackBoxExplosion => &mut self.projectile_unlock[1],
+            SoundDefinition::AirStrikeSingle => &mut self.projectile_unlock[2],
+            SoundDefinition::AirStrikeExplosion => &mut self.projectile_unlock[3],
+            SoundDefinition::FlareExplosion => &mut self.projectile_unlock[4],
+            SoundDefinition::FlarePlayerImpact => &mut self.projectile_unlock[5],
             SoundDefinition::RocketExplosion => &mut self.rocket_explosion,
             SoundDefinition::StickyExplosion => &mut self.sticky_explosion,
             SoundDefinition::BatHitWorld => &mut self.bat_hit_world,
