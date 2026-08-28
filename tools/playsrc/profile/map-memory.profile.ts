@@ -788,13 +788,15 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         expect((lightmapEvidence as any).parity.planes.find((plane: any) => plane.plane === "color").channels.some((channel: number) => channel > 3)).toBe(true)
         expect((lightmapEvidence as any).planes).toHaveLength(1)
         expect((lightmapEvidence as any).parity.planes).toHaveLength(3)
+        await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-lightmap-parity.json`), JSON.stringify(lightmapEvidence, null, 2))
       } finally {
         await page.evaluate(() => { (globalThis as any).__playsrcLightmapEvidence.dispose(); delete (globalThis as any).__playsrcLightmapEvidence })
       }
       await native()
-      if (await root.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
-      const command = page.locator("[aria-label='Console command']")
-      await command.fill("disconnect"); await command.press("Enter")
+      if (await root.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+      await page.keyboard.press("Escape")
+      await expect(root).toHaveAttribute("data-gameui", "pause")
+      await page.locator("[data-vgui-name='DisconnectButton']").click()
       await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 10_000 })
       await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcMemoryProfile.gpu.lightmapAllocation.liveBytes)).toBe(0)
       lightmapTeardown = await page.evaluate(() => (globalThis as any).__playsrcMemoryProfile.gpu.textureAllocation)
