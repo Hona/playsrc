@@ -528,7 +528,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       const raw = await drainTraceStream(presentationCdp, completion.stream!)
       const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(completion.dataLossOccurred), mainCpu,
         categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter: await applicationBuildIdentity(applicationRoot), sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint, origin: new URL(page.url()).origin,
-          mode: deliveryMode, nativeAdmission: nativeRecords(), applicationGeneration: (await (await page.request.get("/playsrc-config.json")).json()),
+          mode: deliveryMode, nativeAdmission: nativeRecords(), applicationConfiguration: (await (await page.request.get("/playsrc-config.json")).json()),
           instrumentation: diagnosticCpu ? "CPU diagnosis only: main/Worker samplers plus native display marks; not ordinary acceptance" : "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
         probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.missedPublications } })
       const compositor = summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined)
