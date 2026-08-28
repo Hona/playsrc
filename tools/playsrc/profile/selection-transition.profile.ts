@@ -100,7 +100,15 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   const admitLoading = async () => {
     const record = windows ? await windows.read() : await native!.read()
     loadingAdmissions.push(record)
-    if (windows) requireStartupNative(record as Awaited<ReturnType<typeof windows.read>>)
+    if (windows) {
+      try {requireStartupNative(record as Awaited<ReturnType<typeof windows.read>>)}
+      catch(error) {
+        // Diagnostic only: retain the actual secondary-window pixels without
+        // admitting an invalid loading sample or guessing a permission prompt.
+        await windows.read(path.join(directory,"loading-admission-failure.desktop.png")).catch(diagnosticError=>windows.records.push({at:Date.now(),diagnosticFailure:String(diagnosticError)}))
+        throw error
+      }
+    }
     else requireMacPageAdmission(record as Awaited<ReturnType<NonNullable<typeof native>["read"]>>)
   }
   page.on("pageerror", error => errors.push(error.message))
