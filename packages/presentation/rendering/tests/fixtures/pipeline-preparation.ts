@@ -5,7 +5,7 @@ import { withBoundedPipelineCompilation } from "../../src/bounded-pipeline-compi
  * already compiled render objects. Deferred native completions are test inputs,
  * not a GPU benchmark. Shader and backend feature keys stay authoritative. */
 export async function verifyPipelinePreparation(objects: readonly any[], backend: any) {
-  const run = async (bounded: boolean) => {
+  const run = async (capacity: number) => {
     const descriptors: unknown[] = [], pending = new Set<() => void>()
     let maximum = 0, ready = false
     const pipelines = new Pipelines({
@@ -34,7 +34,7 @@ export async function verifyPipelinePreparation(objects: readonly any[], backend
       }
     }
     try {
-      if (bounded) await withBoundedPipelineCompilation(pipelines, compile)
+      if (capacity > 1) await withBoundedPipelineCompilation(pipelines, compile, capacity)
       else await compile()
       if (pending.size) throw new Error("Preparation published before native readiness")
       ready = true
@@ -49,9 +49,10 @@ export async function verifyPipelinePreparation(objects: readonly any[], backend
       if (pipelines.caches.size || pipelines.programs.vertex.size || pipelines.programs.fragment.size) throw new Error("Preparation retained retired pipelines/programs")
     }
   }
-  const serial = await run(false), bounded = await run(true)
+  const serial = await run(1), bounded = await run(4), world = await run(2)
   if (JSON.stringify(serial.descriptors) !== JSON.stringify(bounded.descriptors)) throw new Error("Preparation changed shader/feature keys or native submission order")
   if (!serial.cold || serial.maximum !== 1 || bounded.maximum !== Math.min(4, bounded.cold)) throw new Error("Preparation did not remove the serial native ownership barrier")
+  if (JSON.stringify(serial.descriptors) !== JSON.stringify(world.descriptors) || world.maximum !== Math.min(2, world.cold)) throw new Error("World preparation changed readiness, ordering or its two-job bound")
   return { pipelines: serial.cold, serialMaximum: serial.maximum, boundedMaximum: bounded.maximum,
-    warmBuilds: bounded.warm, ready: bounded.ready, descriptorsEqual: true }
+    worldMaximum: world.maximum, warmBuilds: bounded.warm + world.warm, ready: bounded.ready && world.ready, descriptorsEqual: true }
 }
