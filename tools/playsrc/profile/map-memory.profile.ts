@@ -147,7 +147,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     busy = true
     try {
       const snapshot = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
-      const processes = await residentProcesses(snapshot.processInfo, macosSampler, windowsSampler, hostSamples)
+      const processes = await residentProcesses(snapshot.processInfo, macosSampler, windowsSampler, hostSamples).catch(error => {
+        samplerFailure = String(error); throw error
+      })
       const [js, browserState] = await Promise.all([
         pageCdp.send("Runtime.getHeapUsage"),
         page.evaluate(() => {
@@ -170,7 +172,6 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           ? processes.reduce((total, entry) => total + entry.privateBytes!, 0) : null,
       }))
     } catch (error) {
-      samplerFailure = String(error)
       if (timeline.length === 0) console.error(`[map-memory] process sampler: ${String(error)}`)
     } finally {
       busy = false
