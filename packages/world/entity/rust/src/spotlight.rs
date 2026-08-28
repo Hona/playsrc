@@ -7,13 +7,15 @@ use crate::{EntityHandle,EntityWorld,ExternalClassBinding,WorldCommand,Variant,p
 pub struct Beam {pub source:u32,pub entity:EntityHandle,pub start:[f32;3],pub end:[f32;3],pub width:f32,pub end_width:f32,pub fade_length:f32,pub hdr_scale:f32,pub minimum_dx_level:i32}
 #[derive(Clone,Debug)]
 pub struct Seed {source:u32,generated:usize,start:[f32;3],end:[f32;3],width:f32,end_width:f32,fade_length:f32,hdr_scale:f32,minimum_dx_level:i32}
+#[derive(Clone,Copy,Debug,Eq,PartialEq,Ord,PartialOrd)]
+pub enum TraceTarget { Beam, LightEndpoint }
 
 pub fn bindings()->impl Iterator<Item=ExternalClassBinding>{[
     ExternalClassBinding{classname:b"point_spotlight".to_vec(),inputs:vec![b"LightOn".to_vec(),b"LightOff".to_vec()]},
     ExternalClassBinding{classname:b"beam".to_vec(),inputs:vec![b"Width".to_vec()]},
 ].into_iter()}
 
-pub fn prepare(world:&EntityWorld,mut trace:impl FnMut(u32,[f32;3],[f32;3],bool)->Result<[f32;3],()>)->Result<(Vec<Seed>,Vec<WorldCommand>),u32>{
+pub fn prepare(world:&EntityWorld,mut trace:impl FnMut(u32,TraceTarget,[f32;3],[f32;3],bool)->Result<[f32;3],()>)->Result<(Vec<Seed>,Vec<WorldCommand>),u32>{
     let mut seeds=Vec::new();let mut commands=Vec::new();
     for handle in world.live_handles(){
         let entity=world.entity(handle).expect("live spotlight");if !entity.classname.eq_ignore_ascii_case(b"point_spotlight"){continue;}
@@ -27,9 +29,15 @@ pub fn prepare(world:&EntityWorld,mut trace:impl FnMut(u32,[f32;3],[f32;3],bool)
             let length=number(b"SpotlightLength")?;let length=if length<=0.0{500.0}else{length};
             let width=number(b"SpotlightWidth")?;let width=if width<=0.0{10.0}else{width.min(102.3)};
             let angles=entity.world_transform.angles;let (sp,cp)=angles[0].to_radians().sin_cos();let (sy,cy)=angles[1].to_radians().sin_cos();let direction=[cp*cy,cp*sy,-sp];
-            let start=entity.world_transform.origin;let destination=std::array::from_fn(|axis|start[axis]+direction[axis]*2.0*length);
-            let end=trace(source,start,destination,integer(b"IgnoreSolid")!=0).map_err(|_|source)?;
-            let distance=end.iter().zip(start).map(|(a,b)|(a-b)*(a-b)).sum::<f32>().sqrt();
+            let start=entity.world_transform.origin;
+            // PointsInit copies the first trace endpoint into the beam. Efficient
+            // activation then moves only the temporary light endpoint, not the
+            // already independent beam, when calculating fade length/end width.
+            let destination=std::array::from_fn(|axis|start[axis]+direction[axis]*length);
+            let end=trace(source,TraceTarget::Beam,start,destination,integer(b"IgnoreSolid")!=0).map_err(|_|source)?;
+            let destination=std::array::from_fn(|axis|start[axis]+direction[axis]*2.0*length);
+            let light_end=trace(source,TraceTarget::LightEndpoint,start,destination,integer(b"IgnoreSolid")!=0).map_err(|_|source)?;
+            let distance=light_end.iter().zip(start).map(|(a,b)|(a-b)*(a-b)).sum::<f32>().sqrt();
             let generated=0x6000_0000usize+entity.source_index;
             let color=entity.render.color;
             let mut definition=parse(format!("{{\"classname\"\"beam\"\"model\"\"sprites/glow_test02.vmt\"\"origin\"\"{} {} {}\"\"rendermode\"\"2\"\"renderamt\"\"64\"\"rendercolor\"\"{} {} {}\"}}",start[0],start[1],start[2],color[0],color[1],color[2]).as_bytes(),Limits::default()).map_err(|_|source)?.entities.remove(0);
@@ -62,8 +70,10 @@ mod tests{
     fn efficient_controller_removes_itself_but_its_beam_remains_an_entity(){
         let graph=parse(br#"{"classname" "point_spotlight" "origin" "0 0 10" "angles" "0 0 0" "spawnflags" "3" "SpotlightLength" "100" "SpotlightWidth" "10"}"#,Limits::default()).unwrap();
         let mut world=EntityWorld::compile(&graph,EntityWorldConfig{external_classes:bindings().collect(),..Default::default()}).unwrap().0;
-        let (seeds,commands)=prepare(&world,|_,start,end,ignore|{assert!(!ignore);assert_eq!(start,[0.0,0.0,10.0]);assert_eq!(end,[200.0,0.0,10.0]);Ok([50.0,0.0,10.0])}).unwrap();
-        world.phase(0,&commands).unwrap();let beams=bind(&world,seeds).unwrap();assert_eq!(beams.len(),1);assert_eq!(beams[0].end_width,5.0);
+        let mut phases=Vec::new();
+        let (seeds,commands)=prepare(&world,|_,phase,start,end,ignore|{phases.push(phase);assert!(!ignore);assert_eq!(start,[0.0,0.0,10.0]);assert_eq!(end,[if phase==TraceTarget::Beam {100.0}else{200.0},0.0,10.0]);Ok(end)}).unwrap();
+        assert_eq!(phases,[TraceTarget::Beam,TraceTarget::LightEndpoint]);
+        world.phase(0,&commands).unwrap();let beams=bind(&world,seeds).unwrap();assert_eq!(beams.len(),1);assert_eq!(beams[0].end_width,20.0);assert_eq!(beams[0].end,[100.0,0.0,10.0]);assert_eq!(beams[0].fade_length,100.0);
         assert!(world.resolve(b"point_spotlight",None,None,None).is_empty());assert_eq!(world.resolve(b"beam",None,None,None),vec![beams[0].entity]);
         world.phase(1,&[WorldCommand::Input(InputRecord{target:EventTarget::Expression(b"beam".to_vec()),input:b"Kill".to_vec(),value:Variant::Void,activator:None,caller:None,output_action:None,producer_sequence:0})]).unwrap();assert!(world.entity(beams[0].entity).is_none());
     }

@@ -1485,7 +1485,7 @@ unsafe fn compile_map(
             sprite_models.insert(model.to_vec(),u32::from(metadata.frame_count));
         }
         map.install_sprite_models(sprite_models).map_err(|_|9_u32)?;
-        map.install_spotlights(|start,end|playsrc_movement::Tracer::trace(&gameplay_world,start,end,playsrc_collision::Hull{mins:[0.0;3],maxs:[0.0;3]},0x400b).map(|trace|trace.end).map_err(|_|())).map_err(|_|9_u32)?;
+        map.install_spotlights(Arc::clone(&collision),collision_templates.iter().map(|template|template.input.clone()).collect()).map_err(|_|9_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity
