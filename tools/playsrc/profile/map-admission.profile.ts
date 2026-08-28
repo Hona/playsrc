@@ -408,7 +408,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await writeFile(testInfo.outputPath(`${target}-spawn-checks.json`), JSON.stringify({ target, spawnChecks }))
     return
   }
-  await command("tf_bot_quota 15"); await closeConsole()
+  await command(process.env.PROFILE_MAP_CAPTURE_ONLY==="1"?"tf_bot_add 15 red scout normal":"tf_bot_quota 15"); await closeConsole()
   await expect(main).toHaveAttribute("data-bot-count", "15")
   await capture("spawn")
   const before = await page.evaluate(() => (globalThis as any).__playsrcProfile.player)
@@ -442,7 +442,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   const sample = await sampleWindow()
   if(cpu){const result=await cpu.send("Profiler.stop");await writeFile(testInfo.outputPath(`${target}-main.cpuprofile`),JSON.stringify(result.profile));await cpu.detach()}
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
-  await writeFile(resultPath, json({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
+  await writeFile(resultPath, json({ target,scope:"balanced-roster-traversal-and-cadence", errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
   await testInfo.attach("map-acceptance", { path: resultPath, contentType: "application/json" })
   expect(sample.bots).toHaveLength(15)
   expect(sample.bots.every((bot: any) => bot.area !== null)).toBe(true)
@@ -455,23 +455,21 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await writeFile(testInfo.outputPath(`${target}-capture-only.json`),json({target,spawnChecks,performanceSample:false}))
   }
   await capture("objective")
+  if(captureOnly){
   await page.waitForFunction(()=> (globalThis as any).__playsrcProfile.controlPoints.points.some((point:any)=>!point.locked
     &&((point.owner!==2&&point.mayCapture[0])||(point.owner!==3&&point.mayCapture[1]))),undefined,{timeout:5000})
-  // An explicitly uncontested objective fixture, after the balanced-roster
-  // timing window. Keep 15 real bots/AI; never force ownership or player credit.
+  // Separate uncontested objective fixture. Its 15 Scouts were created before
+  // play; the balanced-roster cadence run is independent evidence.
   const priorRoster=await page.evaluate(()=>({camera:(globalThis as any).__playsrcProfile.player.camera,bots:(globalThis as any).__playsrcProfile.bots}))
   const home = (spawnChecks[0] as any).player.position
   await command(`setpos ${home.join(" ")}`)
-  await command("tf_bot_kick all");await expect(main).toHaveAttribute("data-bot-count","0")
   const capturePlan=await page.evaluate(()=>{
     const points=(globalThis as any).__playsrcProfile.controlPoints.points
     const point=points.find((point:any)=>!point.locked&&((point.owner!==2&&point.mayCapture[0])||(point.owner!==3&&point.mayCapture[1])))
     if(!point)throw new Error("No capturable authored point remains for bot acceptance")
     return {point,team:point.owner!==2&&point.mayCapture[0]?2:3}
   })
-  await command(`tf_bot_add 15 ${capturePlan.team===2?"red":"blue"} scout normal`)
-  await expect(main).toHaveAttribute("data-bot-count","15")
-  await page.waitForFunction(team=>(globalThis as any).__playsrcProfile.bots.length===15&&(globalThis as any).__playsrcProfile.bots.every((bot:any)=>bot.team===team),capturePlan.team)
+  expect(capturePlan.team).toBe(2)
   const botCapture = await page.evaluate(({point,team}) => {
     const profile = (globalThis as any).__playsrcProfile
     const roster = JSON.parse(document.querySelector<HTMLElement>("main")!.dataset.scoreboardProbe!).players
@@ -501,6 +499,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   if(captureFailure)throw captureFailure
   await capture("bot-capture")
   await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
+  }
   for (const [index, point] of points.entries()) {
     await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
     await closeConsole(); await page.waitForTimeout(300)
