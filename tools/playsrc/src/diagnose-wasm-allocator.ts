@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { loadLocalConfig } from "./config"
 import { readWasmManifest } from "./tf2-wasm-build"
 import { exactWasmReplayRuntime } from "../profile/exact-wasm-replay"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 const [job, wanted, wantedClosure] = process.argv.slice(2)
 if (!job || !/^[a-f0-9-]{36}$/.test(job) || [wanted, wantedClosure].some(value => value && !/^[a-f0-9]{64}$/.test(value))) throw new Error("Expected native job and optional exact retained WASM/closure SHA")
 const config = await loadLocalConfig()
@@ -31,6 +32,8 @@ if (!await readWasmManifest(source, manifest.identity)) throw new Error("Retaine
 const directory = path.join(config.sourceCacheDir, "observe-diagnostics", randomUUID())
 await mkdir(directory, { recursive: true })
 const runtime = await exactWasmReplayRuntime(source, directory, 2)
+const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
+const lock = await acquireHeadedProfileLock(lockPath, "allocator-offline-diagnostic", 5000)
 try {
   const e = await runtime.instantiate(await readFile(path.join(source, "tf2_wasm_bg.wasm")), 0)
   const results = []
@@ -46,5 +49,5 @@ try {
   const result = { source, manifest, engine: process.versions, threads: 2, visibleFpsEvidence: false, results }
   await writeFile(path.join(directory, "allocator.json"), JSON.stringify(result, null, 2))
   console.log(JSON.stringify({ directory, results }))
-} finally { await runtime.close() }
+} finally { await runtime.close(); await releaseHeadedProfileLock(lockPath, lock.token) }
 process.exit(0)
