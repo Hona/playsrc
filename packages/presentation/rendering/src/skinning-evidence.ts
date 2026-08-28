@@ -100,23 +100,32 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
         scene.background = plane === "color" ? previous.background : null
         const pair: Promise<Uint8Array | Float32Array>[] = []
         const drawOrders: number[][][] = []
+        const bundleEncodes: number[] = []
         const drawPair = () => {
           if (!referenceRender) return render.call(renderer, scene, camera)
           const backend = renderer.backend as any, original = backend.draw
           const addBundle = backend.addBundle
           const order: number[][] = []
+          let encoded = 0
+          const describe = (draw: any) => {
+            const geometry = draw.geometry
+            return [draw.object.id, draw.material.id, geometry.id, geometry.drawRange.start, geometry.drawRange.count,
+              geometry.index?.version ?? -1, geometry.index?.count ?? 0, geometry.attributes.position?.version ?? -1, geometry.attributes.position?.count ?? 0]
+          }
           backend.addBundle = function (context: any, bundle: any) {
             order.push([-1, bundle.bundleGroup.id, bundle.camera.id, bundle.renderContext.id])
+            // Expand the authoritative bundle draw list on BOTH first use and
+            // cached execution. Encoding callbacks are not additional draws.
+            for (const draw of backend.get(bundle).renderObjects) order.push(describe(draw))
             return addBundle.call(this, context, bundle)
           }
           backend.draw = function (draw: any, ...args: any[]) {
-            const geometry = draw.geometry
-            order.push([draw.object.id, draw.material.id, geometry.id, geometry.drawRange.start, geometry.drawRange.count,
-              geometry.index?.version ?? -1, geometry.index?.count ?? 0, geometry.attributes.position?.version ?? -1, geometry.attributes.position?.count ?? 0])
+            if ((renderer as any)._currentRenderBundle) encoded++
+            else order.push(describe(draw))
             return original.call(this, draw, ...args)
           }
           try { return render.call(renderer, scene, camera) }
-          finally { backend.draw = original; backend.addBundle = addBundle; drawOrders.push(order) }
+          finally { backend.draw = original; backend.addBundle = addBundle; drawOrders.push(order); bundleEncodes.push(encoded) }
         }
         for (const reference of [false, true]) {
           const key = `${plane}:${size.x}:${size.y}`
@@ -132,10 +141,6 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
           configure(target)
           renderer.setRenderTarget(target)
           renderer.setViewport(0, 0, size.x, size.y)
-          // A new diagnostic target initially encodes static bundles. Admit it
-          // before both draws: compare bundle execution with bundle execution,
-          // not first-use encoding callbacks with later cached execution.
-          if (referenceRender && !reference) render.call(renderer, scene, camera)
           if (reference) (referenceRender ?? (draw => withReferenceGpuUploads(renderer.backend as unknown as UploadBatchBackend, draw)))(drawPair)
           else drawPair()
           pair.push(read(target))
@@ -162,6 +167,8 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
         reads.push(Promise.all(pair).then(async ([optimized, reference, repeatedReference, absent]) => {
           if (optimized.length !== reference.length) throw new Error("skinning parity plane lengths differ")
           let maximumAbsolute = 0, mismatches = 0, actorPixels = 0, referenceMismatches = 0, minimumValue = Infinity, maximumValue = -Infinity
+          let repeatedReferenceMismatches = 0
+          const firstDifferences: { index: number; optimized: number; reference: number; repeatedReference?: number }[] = []
           const channels = [0, 0, 0, 0]
           for (let index = 0; index < optimized.length; index += 1) {
             if (!Number.isFinite(optimized[index]) || !Number.isFinite(reference[index])) throw new Error(`non-finite ${plane} pixel`)
@@ -171,14 +178,17 @@ export function installSkinningEvidence(referenceRender?: (draw: () => void) => 
             channels[index % 4] = Math.max(channels[index % 4]!, Math.abs(optimized[index]!))
             maximumAbsolute = Math.max(maximumAbsolute, difference)
             if (difference !== 0) mismatches += 1
+            if (difference !== 0 && firstDifferences.length < 32) firstDifferences.push({ index, optimized: optimized[index]!, reference: reference[index]!, repeatedReference: repeatedReference?.[index] })
             if (repeatedReference && repeatedReference[index] !== reference[index]) referenceMismatches += 1
+            if (repeatedReference && repeatedReference[index] !== optimized[index]) repeatedReferenceMismatches += 1
             if (plane === "depth" && index % 4 === 1 && optimized[index]! > 0.5) actorPixels += 1
             if (absent && index % 4 === 0 && (optimized[index] !== absent[index] || optimized[index + 1] !== absent[index + 1] || optimized[index + 2] !== absent[index + 2])) actorPixels += 1
           }
           const digest = async (values: Uint8Array | Float32Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", values as BufferSource)), byte => byte.toString(16).padStart(2, "0")).join("")
           const [sha256, referenceSha256] = await Promise.all([digest(optimized), digest(reference)])
           return { plane, values: optimized.length, mismatches, maximumAbsolute, actorPixels, referenceMismatches, minimumValue, maximumValue, channels, sha256, referenceSha256,
-            ...(referenceRender ? { drawOrders, identicalDrawOrder: drawOrders.slice(1).every(order => JSON.stringify(order) === JSON.stringify(drawOrders[0])) } : {}) }
+            ...(referenceRender ? { drawOrders, bundleEncodes, firstDifferences, repeatedReferenceMismatches,
+              identicalDrawOrder: drawOrders.slice(1).every(order => JSON.stringify(order) === JSON.stringify(drawOrders[0])) } : {}) }
         }))
       }
     } catch (error) {
