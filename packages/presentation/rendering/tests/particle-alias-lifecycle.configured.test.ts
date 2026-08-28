@@ -64,6 +64,7 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_PARTICLE_ALIAS !== "1")("exact particle 
     // New map owner always constructs independent textures, even on this device.
     const replacement = owner.offlineBuildScene(device.renderer, map, payload, request.payloadSha256, request)
     expect([...replacement.particleTextures.values()].every(texture => !unique.includes(texture))).toBe(true)
+    device.phase("map-teardown")
     replacement.disposables.dispose(); scene.disposables.dispose(); expect(live()).toHaveLength(0)
     device.renderer.dispose()
     const imageBytes = new Map(unique.map(texture => [texture.name, texture.mipmaps.reduce((sum: number, mip: any) => sum + mip.data.byteLength, 0)]))
@@ -80,7 +81,7 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_PARTICLE_ALIAS !== "1")("exact particle 
     expect(liveBytes).toBe(0)
     results.push({ mode: index ? "candidate" : "reference", sourceSha256: loaded.sourceSha256, logicalMaterials: values.length,
       uniqueImages: unique.length, coldCreated: cold.length, coldUploadBytes: firstWrites.reduce((sum: number, write: any) => sum + write.bytes, 0),
-      coldLiveAfterPreparation: 0, liveAfterFirstBinding: 1, liveAfterCancellation: 1, terminalLive: 0, phases, materials, pipelineOrder, aliases, programs, allocations: device.allocations })
+      coldLiveAfterPreparation: 0, liveAfterFirstBinding: 1, liveAfterCancellation: 1, liveAfterEffectStop: 1, terminalLive: 0, phases, materials, pipelineOrder, aliases, programs, allocations: device.allocations })
   }
   const [reference, candidate] = results
   expect(reference.logicalMaterials).toBe(42); expect(candidate.logicalMaterials).toBe(42)
