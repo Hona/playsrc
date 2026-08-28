@@ -4790,7 +4790,7 @@ export class Tf2Application {
         const timeline = profile.meleeTimeline as unknown[]
         let recorded = BigInt(String(profile.meleeRecordedTick))
         for (const batch of prepared.publication.eventBatches) if (batch.snapshot.tick > recorded) {
-          for (const event of batch.snapshot.events) if ([14, 15, 17, 18, 19].includes(event.kind) || profile.captureHitscan && (event.kind === 12 || event.kind === 13)) timeline.push({ tick: batch.snapshot.tick.toString(), ...event })
+          for (const event of batch.snapshot.events) if ([14, 15, 17, 18, 19].includes(event.kind) || profile.captureHitscan && (event.kind === 12 || event.kind === 13) || profile.captureDamageIndicators && event.kind === 6) timeline.push({ tick: batch.snapshot.tick.toString(), ...event })
           recorded = batch.snapshot.tick
         }
         profile.meleeRecordedTick = recorded.toString()
