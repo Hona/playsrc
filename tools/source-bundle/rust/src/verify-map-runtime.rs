@@ -18,7 +18,7 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention"].contains(&arguments[2].as_str()) || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention", "--texture-owner-scene", "--texture-owner-models"].contains(&arguments[2].as_str()) || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
             "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --payload-retention]".to_owned(),
@@ -102,7 +102,9 @@ fn main() -> Result<(), String> {
         println!("{}", serde_json::json!({"target": target, "graphSha256": arguments[1], "bspSha256": hash, "profiles": profiles}));
         return Ok(());
     }
-    if arguments.len() == 3 {
+    let owner_models = arguments.get(2).is_some_and(|option| option == "--texture-owner-models");
+    let owner_scene = owner_models || arguments.get(2).is_some_and(|option| option == "--texture-owner-scene");
+    if arguments.len() == 3 && !owner_scene {
         let mut frames = Vec::new();
         let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, |snapshot| {
             frames.push(serde_json::json!({"tick":snapshot.tick,"state":snapshot.round.state as u8,"winner":snapshot.round.winning_team.map(|team|team as u8),"points":snapshot.control_points.as_ref().map(|points|points.points.iter().map(|p|p.owner as u8).collect::<Vec<_>>()),"bots":snapshot.bots.iter().map(|bot|serde_json::json!({"identity":bot.identity,"position":bot.position,"area":bot.area,"path":bot.remaining_path_areas,"captures":bot.captures})).collect::<Vec<_>>() }));
@@ -114,7 +116,7 @@ fn main() -> Result<(), String> {
     }
     let section = playsrc_tf2_wasm::ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let resource_hash: [u8; 32] = Sha256::digest(&resources).into();
-    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, resource_hash.as_ptr(), 1) };
+    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), u32::from(!owner_scene), &section, 1, resource_hash.as_ptr(), 1) };
     struct OwnedHandle(u32);
     impl Drop for OwnedHandle { fn drop(&mut self) { playsrc_tf2_wasm::playsrc_dispose(self.0); } }
     let _owner = OwnedHandle(handle);
@@ -136,6 +138,49 @@ fn main() -> Result<(), String> {
         Ok(payload)
     })();
     let payload = result?;
+    if owner_scene {
+        let output = config.source_cache_dir.join("evidence/tf2-browser-performance/texture-replacement/offline-scene");
+        fs::create_dir_all(&output).map_err(|error| error.to_string())?;
+        let command = fs::read(output.join("initial-command.bin")).map_err(|error|error.to_string())?;
+        // Ordinary baseline then one exact Source tick, not a performance sample.
+        for now in [0.0, 0.015] {
+            if unsafe { playsrc_tf2_wasm::playsrc_simulation_observe(handle, now, command.as_ptr(), command.len(), 0, 0) } != 1 { return Err("offline initial publication failed".into()); }
+        }
+        if owner_models {
+            let requests = fs::read(output.join("models-request.bin")).map_err(|error|error.to_string())?;
+            if unsafe { playsrc_tf2_wasm::playsrc_model_transact(handle, requests.as_ptr(), requests.len()) } != 1 { return Err("offline model request failed".into()); }
+            let mut poses = vec![0; playsrc_tf2_wasm::playsrc_model_output_length(handle)];
+            if unsafe { playsrc_tf2_wasm::playsrc_model_output_copy(handle, poses.as_mut_ptr(), poses.len()) } != poses.len() { return Err("offline model output failed".into()); }
+            fs::write(output.join("models-output.bin"), &poses).map_err(|error|error.to_string())?;
+            let request = fs::read(output.join("visibility-request.bin")).map_err(|error|error.to_string())?;
+            if request.len() != 56 { return Err("offline visibility input size".into()); }
+            let values = request.chunks_exact(4).map(|bytes|f32::from_le_bytes(bytes.try_into().unwrap())).collect::<Vec<_>>();
+            if unsafe { playsrc_tf2_wasm::playsrc_visibility_query(handle, values.as_ptr()) } != 1 { return Err("offline visibility query failed".into()); }
+            let visibility = unsafe { std::slice::from_raw_parts(playsrc_tf2_wasm::playsrc_visibility_output_pointer(handle), playsrc_tf2_wasm::playsrc_visibility_output_length(handle)) };
+            fs::write(output.join("visibility-output.bin"), visibility).map_err(|error|error.to_string())?;
+            println!("{}", serde_json::json!({"posesBytes":poses.len(),"posesSha256":hex_hash(&poses),"visibilityBytes":visibility.len(),"visibilitySha256":hex_hash(visibility)}));
+            return Ok(());
+        }
+        let mut snapshot = vec![0; playsrc_tf2_wasm::playsrc_snapshot_length(handle)];
+        if snapshot.is_empty() || unsafe { playsrc_tf2_wasm::playsrc_snapshot_copy(handle, snapshot.as_mut_ptr(), snapshot.len()) } != snapshot.len() { return Err("offline snapshot unavailable".into()); }
+        let mut equipment = vec![0; 65536];
+        let equipment_length = unsafe { playsrc_tf2_wasm::playsrc_equipment_state_copy(handle, equipment.as_mut_ptr(), equipment.len()) };
+        if equipment_length == 0 { return Err("offline equipment unavailable".into()); }
+        equipment.truncate(equipment_length);
+        let mut spawn = vec![0; 40];
+        if unsafe { playsrc_tf2_wasm::playsrc_spawn_copy(handle, spawn.as_mut_ptr(), spawn.len()) } != spawn.len() { return Err("offline spawn unavailable".into()); }
+        let mut presentation = vec![0; playsrc_tf2_wasm::playsrc_presentation_length(handle)];
+        if unsafe { playsrc_tf2_wasm::playsrc_presentation_copy(handle, presentation.as_mut_ptr(), presentation.len()) } != presentation.len() { return Err("presentation copy failed".into()); }
+        let mut records = Vec::new();
+        for (name, data) in [("map.psmp", &payload), ("presentation.pspr", &presentation), ("resources.psdb", &resources), ("initial-snapshot.bin", &snapshot), ("equipment.bin", &equipment), ("spawn.bin", &spawn)] {
+            fs::write(output.join(name), data).map_err(|error| error.to_string())?;
+            records.push(serde_json::json!({"name":name,"bytes":data.len(),"sha256":hex_hash(data)}));
+        }
+        let record = serde_json::json!({"target":target,"graphSha256":arguments[1],"files":records});
+        fs::write(output.join("manifest.json"),serde_json::to_vec_pretty(&record).unwrap()).map_err(|error|error.to_string())?;
+        println!("{record}");
+        return Ok(());
+    }
     let smoke_occlusion = playsrc_tf2_wasm::smokestack_occlusion_probe(handle)
         .map(|(identity, position, angles, fraction)| serde_json::json!({"identity":identity,"position":position,"yawDegrees":angles[0],"pitchDegrees":angles[1],"worldFraction":fraction}));
     let parsed = playsrc_bsp::parse(&bsp, playsrc_bsp::Profile::Source2013V20, playsrc_bsp::Limits::default()).map_err(|error| error.to_string())?;
