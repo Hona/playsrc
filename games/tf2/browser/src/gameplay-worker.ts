@@ -2,7 +2,6 @@
 
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
-import { retireTransferredInputs } from "./transferred-input"
 import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
 import { reclaimModelReads } from "./model-read-ownership"
 import { ReplyWriter, REPLY_BYTES, type SharedReply, type ReplyRange } from "./reply-transport"
@@ -388,7 +387,6 @@ function decodeResources(request: Extract<WorkerRequest, { kind: "decode-resourc
       bytes.set(new Uint8Array(chunk.bytes), offset)
       offset += chunk.bytes.byteLength
     }
-    retireTransferredInputs(request.chunks.flatMap(chunk => [chunk.descriptor, chunk.bytes]))
     // The application transfers immutable objects acquired by their authenticated
     // graph descriptors; Rust still checks every decoded entry's exact digest.
     decoded = exports.playsrc_resource_decode_authenticated(input, batchLength)
@@ -611,7 +609,6 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     return
   }
   const inputCopyStarted = performance.now()
-  const bspLength = request.bsp.byteLength
   const bspPointer = allocateCopy(exports, request.bsp)
   const configurationPointer = sectionTable(exports, configuration.sections)
   const configurationHashPointer = exports.playsrc_alloc(32) >>> 0
@@ -619,15 +616,12 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
     Array.from({ length: 32 }, (_, index) => Number.parseInt(request.configurationSha256.slice(index * 2, index * 2 + 2), 16)),
   )
   const presentationPointer = request.presentation ? allocateCopy(exports, request.presentation) : 0
-  // Cached presentation bytes are returned to the client; their backing store
-  // is still live. BSP bytes have no remaining JS consumer after the WASM copy.
-  if (request.bsp !== request.presentation) retireTransferredInputs([request.bsp])
   const inputCopyMilliseconds = performance.now() - inputCopyStarted
   const compileStarted = performance.now()
   const candidate = request.presentation
     ? exports.playsrc_compile_map_cached(
         bspPointer,
-        bspLength,
+        request.bsp.byteLength,
         request.profile,
         configurationPointer,
         configuration.sections.length,
@@ -638,7 +632,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       )
     : exports.playsrc_compile_map(
         bspPointer,
-        bspLength,
+        request.bsp.byteLength,
         request.profile,
         configurationPointer,
         configuration.sections.length,
@@ -647,7 +641,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       )
   const compileMilliseconds = performance.now() - compileStarted
   const resultStarted = performance.now()
-  exports.playsrc_free(bspPointer, bspLength)
+  exports.playsrc_free(bspPointer, request.bsp.byteLength)
   exports.playsrc_free(configurationPointer, configuration.sections.length * 8)
   exports.playsrc_free(configurationHashPointer, 32)
   if (request.presentation) exports.playsrc_free(presentationPointer, request.presentation.byteLength)
