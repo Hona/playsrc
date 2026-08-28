@@ -28,6 +28,8 @@ test("only complete canonical mip-view and normalized upload state can alias an 
     const changed = texture(); alter(changed); expect(particleTextureAlias(changed, [owned])).toBeUndefined()
   }
   expect(particleTextureAlias(new THREE.DataTexture(data[0], 4, 4), [owned])).toBeUndefined()
+  const placeholder = texture(); placeholder.version = 0
+  expect(particleTextureAlias(candidate, [placeholder])).toBeUndefined()
 })
 
 test("aliases share only the image; material blend, UV nodes and sprite-sheet animation remain independent", () => {
