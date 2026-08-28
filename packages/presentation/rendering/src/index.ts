@@ -3649,9 +3649,6 @@ class RendererOwner implements Renderer {
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#")[0]!.toLowerCase())!),
            })
-           // Sharing compiler graphs must not remove a template's existing
-           // geometry/texture admission work from the pre-Ready traversal.
-           material.userData.sourcePreparationIdentity = material.uuid
            let sampled=baseTexture?TSL.texture(baseTexture.texture,TSL.uv()):undefined
            if(sampled&&baseTexture?.input.sourceFormat===1)sampled=sampled.abgr
            else if(sampled&&baseTexture?.input.sourceFormat===11)sampled=sampled.gbar
@@ -3715,7 +3712,12 @@ class RendererOwner implements Renderer {
           }
           SOURCE_MODEL_BASE_COLOR.set(geometry, base)
           SOURCE_MODEL_BASE_COLOR.set(bindGeometry, base)
-          material.colorNode = staticMaterialGraphs.template(base, materialState)
+          // Keep the exact material program's resource-admission equivalence,
+          // not its template UUID (which would admit additional duplicates).
+          const fragment = sourceFragmentColor(base, materialState, waterFogUniforms)
+          material.colorNode = fragment
+          material.userData.sourcePreparationIdentity = material.customProgramCacheKey()
+          material.colorNode = staticMaterialGraphs.template(base, materialState, fragment)
           material.toneMapped = false
           disposables.add(material)
           resources.push(material)

@@ -18,10 +18,10 @@ export class StaticMaterialGraphs {
   get size() { return this.#static.size }
   constructor(readonly waterFog: SourceWaterFogUniforms, readonly exposure: any, readonly staticFade: any) {}
 
-  template(base: any, state?: MaterialStateInput) {
+  template(base: any, state?: MaterialStateInput, created?: any) {
     const key=JSON.stringify([base.uuid,fragmentKey(state)])
     let color=this.#templates.get(key)
-    if(!color){color=sourceFragmentColor(base,state,this.waterFog);this.#templates.set(key,color)}
+    if(!color){color=created??sourceFragmentColor(base,state,this.waterFog);this.#templates.set(key,color)}
     return color
   }
 

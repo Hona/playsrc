@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu"
 
-function pipelineIdentity(mesh: THREE.Mesh): string {
+export function pipelinePreparationIdentity(mesh: THREE.Mesh): string {
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
   const shaders = materials.map(material => [
     material.customProgramCacheKey(), material.transparent, material.side, material.blending,
@@ -31,7 +31,7 @@ export function prepareReachablePipelineVisibility(
     if (hidden) hiddenParents.add(object)
     if (bundle.isBundleGroup === true) bundle.isBundleGroup = false
     if (object instanceof THREE.Mesh) {
-      const identity = hidden || skipped.has(object) || !eligible(object) ? null : pipelineIdentity(object)
+      const identity = hidden || skipped.has(object) || !eligible(object) ? null : pipelinePreparationIdentity(object)
       object.visible = identity !== null && !identities.has(identity)
       if (identity !== null) identities.add(identity)
       object.frustumCulled = false
