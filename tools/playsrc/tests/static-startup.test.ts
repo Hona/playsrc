@@ -66,15 +66,17 @@ test("startup gate rejects the real silent-failure shape even with no console ex
 })
 
 test("receipt requires advancing movie pixels, menu and completed game frames for cold and warm upgrade", async()=>{
-  let tick=0,playing=false,image=0,cache="stored"
+  let tick=0,playing=false,image=0,cache="stored",loadingAt:number|undefined
+  const actions:string[]=[]
   const capture=await captureStaticStartup({
     native:async()=>({at:Date.now(),physical:true,unlocked:true,foreground:true,visible:true,minimized:false,idleMilliseconds:2500,browserPid:1,windowId:2,targetId:'test'}),
-    navigate:async mode=>{tick=0;playing=false;cache=mode==='cold'?'stored':'hit'},
-    read:async()=>({phase:playing?'Ready':tick>3?'MainMenu':'Startup',detail:'fixture',startupState:tick>3?'Completed':'Playing',visible:true,focused:true,timeOrigin:1,at:tick,frame:playing?tick:0,cache,consoleVisible:false,gameUi:playing?'in-game':'main-menu',playerClass:playing?3:0,tick:String(tick+1),teamSelection:false,classSelection:false,unexpectedInput:0,movie:playing?null:{time:4.9+tick*.6,paused:false,muted:false,width:1440,height:1080}} as StartupObservation),
-    screenshot:async()=>png(++image),action:async action=>{if(action==='open-map')playing=true},wait:async()=>{tick++;await new Promise(r=>setTimeout(r,1))},
+    navigate:async mode=>{tick=0;playing=false;loadingAt=undefined;cache=mode==='cold'?'stored':'hit'},
+    read:async()=>({phase:playing?'Ready':loadingAt!==undefined?'Loading':tick>3?'MainMenu':'Startup',detail:'fixture',startupState:tick>3?'Completed':'Playing',visible:true,focused:true,timeOrigin:1,at:tick,frame:playing?tick:0,cache,consoleVisible:loadingAt!==undefined&&!playing,gameUi:playing?'in-game':'main-menu',playerClass:playing?3:0,tick:String(tick+1),teamSelection:loadingAt!==undefined&&!playing&&tick>=loadingAt+2,classSelection:false,unexpectedInput:0,movie:playing?null:{time:4.9+tick*.6,paused:false,muted:false,width:1440,height:1080}} as StartupObservation),
+    screenshot:async()=>png(++image),action:async action=>{actions.push(action);if(action==='open-map')loadingAt=tick;else if(action==='choose-team')playing=true;else if(action==='close-console')throw new Error('Console focus was removed before the team transition')},wait:async()=>{tick++;await new Promise(r=>setTimeout(r,1))},
   },'jump_beef')
   const identity={packageSha256:'a'.repeat(64),wasmSha256:'b'.repeat(64),previousPackageSha256:'c'.repeat(64),previousEntryUsed:true,upgradeNavigations:2,bootFailure:{phase:'Failed',visible:true,text:'Unavailable configuration',pixels:startupPixelEvidence(png(20)),native:capture.native[0]!}}
   const receipt=staticStartupReceipt(identity,capture)
+  expect(actions).toEqual(['open-map','choose-team','open-map','choose-team'])
   assertStaticStartupReceipt(receipt,identity)
   for(const change of [
     (r:any)=>r.packageSha256='d'.repeat(64),

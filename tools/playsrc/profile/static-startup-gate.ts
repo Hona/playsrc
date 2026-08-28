@@ -88,7 +88,9 @@ export async function captureStaticStartup(driver: StaticStartupDriver, target: 
       let team = false, playerClass = false, consoleClosed = false, firstFrame: StartupObservation | undefined, playable: StartupObservation | undefined
       while (Date.now() < mapDeadline) {
         const state = await read(); run.states.push(state)
-        if(state.consoleVisible&&!consoleClosed){await driver.action("close-console");consoleClosed=true;await driver.wait(100);continue}
+        // Keep the console's focused input through loading. The authored team
+        // selection transition closes it immediately before choosing a team.
+        if(state.phase==="Ready"&&!state.teamSelection&&!state.classSelection&&state.consoleVisible&&!consoleClosed){await driver.action("close-console");consoleClosed=true;await driver.wait(100);continue}
         if (state.teamSelection && !team) { await driver.action("choose-team"); team = true }
         if (state.classSelection && !playerClass) { await driver.action("choose-class"); playerClass = true }
         if (state.phase === "Ready" && Number.isSafeInteger(state.frame) && state.frame > 0 && state.gameUi === "in-game" && !state.consoleVisible && !state.teamSelection && !state.classSelection

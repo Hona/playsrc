@@ -131,7 +131,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
         const key=(event as KeyboardEvent).code,button=(event as PointerEvent).button
         if(type==="mousemove"&&!(event as MouseEvent).movementX&&!(event as MouseEvent).movementY)return
         const planned=state.action!=="none"&&event.isTrusted&&(type==="mousemove"||type==="pointerdown"&&button===0
-          ||type==="keydown"&&(state.action==="open-map"&&["Backquote","Enter"].includes(key)||state.action==="close-console"&&key==="Backquote"||state.action==="choose-class"&&key==="Digit2"))
+          ||type==="keydown"&&(state.action==="open-map"&&["Backquote","Enter"].includes(key)||(state.action==="close-console"||state.action==="choose-team")&&key==="Backquote"||state.action==="choose-class"&&key==="Digit2"))
         if(!planned){const detail={at:performance.now(),timeOrigin:performance.timeOrigin,type,key,button,trusted:event.isTrusted,action:state.action};state.unexpected.push(detail);void(globalThis as any).__playsrcUnexpectedStartupInput(detail)}
       },{capture:true,passive:true})
     })
@@ -154,8 +154,11 @@ test("exact static package: audible startup movie, menu and playable frame, cold
         try {
           if(action==="play-intro")await page.getByRole("button",{name:"Play intro",exact:true}).click()
           else if(action==="open-map") {await page.keyboard.press("Backquote");await page.getByRole("textbox",{name:"Console command",exact:true}).click();await page.keyboard.insertText(`map ${target}`);await page.keyboard.press("Enter")}
-          else if(action==="close-console")await page.keyboard.press("Backquote")
-          else if(action==="choose-team")await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+          else if(action==="close-console"){await page.keyboard.press("Backquote");await page.locator("canvas.world-canvas").focus()}
+          else if(action==="choose-team"){
+            if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote")
+            await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+          }
           else await page.keyboard.press("Digit2")
         } finally {await page.evaluate(()=>{(globalThis as any).__playsrcStartupInput.action="none"})}
       },
@@ -184,7 +187,14 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     const receipt=staticStartupReceipt({packageSha256:router.admitted.sha256,wasmSha256:router.admitted.configuration.wasm.sha256,previousPackageSha256:router.previous.sha256,previousEntryUsed:router.previousEntryUsed,upgradeNavigations,bootFailure},capture)
     await writeFile(path.join(directory,"startup-receipt.json"),JSON.stringify(receipt))
     console.log(`PLAYSRC_STATIC_STARTUP_RECEIPT ${JSON.stringify(receipt)}`)
-  } catch(error) {evidence.failure=String(error);evidence.capture=(error as any).startupEvidence;throw error}
+  } catch(error) {
+    evidence.failure=String(error);evidence.capture=(error as any).startupEvidence
+    // Read only: distinguish OS/window loss from document focus loss without
+    // reactivating, clicking, retrying, or collecting a hidden page screenshot.
+    try {evidence.failureNative=await native?.read(path.join(directory,"native-failure.png"))}
+    catch(readback){evidence.failureNativeError=String(readback)}
+    throw error
+  }
   finally {
     evidence.reads=router.reads;evidence.native=native?.records;evidence.endedAt=Date.now()
     await writeFile(path.join(directory,"static-startup-evidence.json"),JSON.stringify(evidence))
