@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { replaceProfileLeaseFile } from "./profile-lease-rename"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "./config"
 import { startDevelopment } from "./dev"
@@ -79,7 +80,7 @@ try {
     const temporary = `${metadataPath}.${process.pid}.tmp`
     try {
       await writeFile(temporary, `${JSON.stringify(metadata)}\n`)
-      await rename(temporary, metadataPath)
+      await replaceProfileLeaseFile(temporary, metadataPath)
     } finally {
       await rm(temporary, { force: true })
     }
