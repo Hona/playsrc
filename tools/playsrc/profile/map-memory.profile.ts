@@ -594,12 +594,18 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
             await page.locator("canvas.world-canvas").screenshot({ path: path.join(output, `particle-alias-pixels-${phase}.png`) })
             await native()
           }
+          await native()
+          await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 360 } })
+          await expect(root).toHaveAttribute("data-pointer-locked", "true")
+          await native()
+          const fires = Number(await root.getAttribute("data-fire-events"))
           await page.evaluate(() => {
             ;(globalThis as any).__playsrcAliasGameplayCapture = (globalThis as any).__playsrcParticleAliasEvidence.captureGameplay()
           })
           await native()
           await page.mouse.down({ button: "left" })
           try {
+            await expect.poll(async () => Number(await root.getAttribute("data-fire-events")), { timeout: 3_000 }).toBeGreaterThan(fires)
             const gameplay: any = await page.evaluate(async () => Promise.race([
               (globalThis as any).__playsrcAliasGameplayCapture,
               new Promise((_, reject) => setTimeout(() => reject(new Error("Actual alias gameplay effect was not captured")), 8_000)),
