@@ -46,6 +46,9 @@ const stop = async (): Promise<void> => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
   } finally { clearTimeout(deadline) }
+  // close() may resolve while a dependency still owns a referenced watcher or
+  // worker. This dedicated lease owner is finished, not a reusable application.
+  process.exit(0)
 }
 
 const fail = (error: unknown): void => {
