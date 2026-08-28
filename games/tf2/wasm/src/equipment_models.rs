@@ -128,8 +128,8 @@ pub unsafe extern "C" fn playsrc_equipment_models_copy(output: *mut u8, capacity
     panel.admission.len()
 }
 
-pub(super) fn transact(requests: &[ModelPoseRequest]) -> Result<(), ()> {
-    if requests.iter().any(|request| !(request.model_panel || request.class_selection || request.world_item) || request.cloak.is_some()) { return Err(()); }
+pub(super) fn transact(requests: &[ModelPoseRequest]) -> Result<(), String> {
+    if requests.iter().any(|request| !(request.model_panel || request.class_selection || request.world_item) || request.cloak.is_some()) { return Err("equipment model request kind".into()); }
     let requests: Vec<_> = requests.iter().cloned().map(|mut request| { request.model_panel = true; request }).collect();
     let mut panel = panel().lock().unwrap();
     let mut bob = panel.bob.clone();

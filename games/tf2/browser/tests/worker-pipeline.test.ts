@@ -936,4 +936,17 @@ describe("TF2 Worker transport ownership", () => {
     await expect(client.visibility(99, VIEW)).rejects.toBeInstanceOf(Tf2WorkerError)
     expect(worker.terminated).toBe(true)
   })
+
+  test("preserves the model rejection stage and snapshot owner in the application failure", async () => {
+    const worker = new PipelineWorker(await digest(MAP))
+    const reason = "model pose minigun-prefire-weapon: request=0 identity=7 actor=1 sample_tick=42 authority_tick=43 authority_class=Some(Pyro)"
+    worker.failure = { id: 0, kind: "failure", code: "TransitionFailed", detail: 202, reason }
+    const client = new Tf2WorkerClient(worker, new MemoryCache(), BUILD)
+    await expect(client.models(2, new Uint8Array(12))).rejects.toMatchObject({
+      code: "TransitionFailed", message: `TransitionFailed:202:${reason}`,
+    })
+    worker.failure = undefined
+    await client.shutdown()
+    expect(worker.terminated).toBe(true)
+  })
 })

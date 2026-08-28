@@ -2449,6 +2449,12 @@ struct ModelPoseWorld<'a> {
     wearable_particles: &'a mut wearable::ParticleStates,
 }
 
+fn model_failure(reason: String) -> u32 {
+    *SIMULATION_ERROR_DETAIL.get_or_init(|| Mutex::new(String::new()))
+        .lock().expect("model error detail") = reason;
+    0
+}
+
 #[unsafe(no_mangle)]
 /// # Safety
 /// `pointer` must identify exactly `length` readable model-pose request bytes.
@@ -2458,38 +2464,40 @@ pub unsafe extern "C" fn playsrc_model_transact(
     length: usize,
 ) -> u32 {
     if !(12..=1024 * 1024).contains(&length) {
-        return 0;
+        return model_failure("model request byte bound".into());
     }
     let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
     let Ok(requests) = decode_model_requests(bytes) else {
-        return 0;
+        return model_failure("model request decode".into());
     };
-    if handle == 0 { return u32::from(equipment_models::transact(&requests).is_ok()); }
+    if handle == 0 { return match equipment_models::transact(&requests) {
+        Ok(()) => 1, Err(reason) => model_failure(reason),
+    }; }
     let Some((index, generation)) = decode(handle) else {
-        return 0;
+        return model_failure("model handle decode".into());
     };
     let mut slots = slots().lock().expect("TF2 slots");
     let Some(slot) = slots.get_mut(index) else {
-        return 0;
+        return model_failure("model slot unavailable".into());
     };
     if slot.generation != generation {
-        return 0;
+        return model_failure("model generation mismatch".into());
     }
     let Some(gameplay) = slot.gameplay_world.as_ref() else {
-        return 0;
+        return model_failure("model gameplay world unavailable".into());
     };
     let snapshot = gameplay.snapshot();
     let Some(lighting) = slot.model_lighting_world.as_mut() else {
-        return 0;
+        return model_failure("model lighting world unavailable".into());
     };
     let Some(visibility) = slot.visibility.as_ref() else {
-        return 0;
+        return model_failure("model visibility unavailable".into());
     };
     let Some(collision) = slot.collision.as_ref() else {
-        return 0;
+        return model_failure("model collision unavailable".into());
     };
     let Some(environment) = slot.environment.as_ref() else {
-        return 0;
+        return model_failure("model environment unavailable".into());
     };
     let mut wearable_particles = slot.wearable_particles.clone();
     let mut weapon_animations = slot.weapon_animations.clone();
@@ -2505,7 +2513,7 @@ pub unsafe extern "C" fn playsrc_model_transact(
         particle_inputs: slot.particles.as_ref().map(|template| wearable::ParticleInputs { template, materials: &slot.particle_sheets, identities: &slot.particle_materials }),
         wearable_particles: &mut wearable_particles,
     };
-    let Ok(output) = encode_model_poses(
+    let output = match encode_model_poses(
         &slot.studio_models,
         &slot.model_material_opacity,
         &mut slot.viewmodel_bob,
@@ -2514,8 +2522,9 @@ pub unsafe extern "C" fn playsrc_model_transact(
         &requests,
         &mut world,
         std::mem::take(&mut slot.model_output),
-    ) else {
-        return 0;
+    ) {
+        Ok(output) => output,
+        Err(reason) => return model_failure(reason),
     };
     slot.model_output = output;
     slot.wearable_particles = wearable_particles;
@@ -2964,7 +2973,7 @@ fn encode_model_poses(
     requests: &[ModelPoseRequest],
     world: &mut ModelPoseWorld<'_>,
     mut out: Vec<u8>,
-) -> Result<Vec<u8>, ()> {
+) -> Result<Vec<u8>, String> {
     out.clear();
     out.extend_from_slice(b"PMPO");
     out.extend_from_slice(&11u32.to_le_bytes());
@@ -2972,7 +2981,9 @@ fn encode_model_poses(
     let mut output_count = 0_u32;
     let mut sampled_poses =
         BTreeMap::<(String, usize, u32, u32, Vec<u32>, Option<u32>), playsrc_studio_model::SampledPose>::new();
-    for original in requests {
+    for (request_index, original) in requests.iter().enumerate() {
+        let mut stage = "class-scene";
+        let result = (|| -> Result<(), ()> {
         let mut scene_request;
         let mut scene_event_clock = None;
         let request = if original.class_selection {
@@ -2993,11 +3004,13 @@ fn encode_model_poses(
             &scene_request
         } else { original };
         let resolved_weapon;
-        let request = if let Some(resolved) = weapon_pose::prepare(request, models, weapon_animations, world.gameplay)? {
+        let request = if let Some(resolved) = weapon_pose::prepare(request, models, weapon_animations, world.gameplay).map_err(|reason| { stage = reason; })? {
             resolved_weapon = resolved;
             &resolved_weapon
         } else { request };
+        stage = "model-resource";
         let model = models.get(&request.model).ok_or(())?;
+        stage = "control-point";
         let control_point = if let Some(identity) = request.control_point {
             let points = world.gameplay.and_then(|g| g.control_points.as_ref()).ok_or(())?;
             let point = points.points.iter().find(|p| p.identity == identity).ok_or(())?;
@@ -3005,6 +3018,7 @@ fn encode_model_poses(
             let area = points.areas.iter().rev().find(|a| a.point == point.index);
             Some((point,area,points.configuration))
         } else { None };
+        stage = "bodygroups";
         let mut bodygroups = if let Some(body) = request.packed_body {
             model
                 .body_parts
@@ -3030,6 +3044,7 @@ fn encode_model_poses(
                 bodygroups[index] = 1;
             }
         }
+        stage = "sequence";
         let sequence =
             playsrc_studio_model::sequences_for_activity_name(model, request.activity.as_bytes())
                 .first()
@@ -3063,12 +3078,14 @@ fn encode_model_poses(
                 playsrc_studio_model::Float32(value.to_bits())
             })
             .collect::<Vec<_>>();
+        stage = "sequence-timing";
         let timing = playsrc_studio_model::sequence_timing(model, sequence, &pose_parameters)
             .map_err(|_| ())?;
         let previous_cycle = pose_cycle(request.previous_elapsed, timing);
         let cycle = pose_cycle(request.elapsed, timing);
         let class_pose_parameters = request.class_selection.then(|| pose_parameters.clone());
         if let Some(item_identity) = request.item.as_ref().filter(|_| !request.world_item) {
+            stage = "viewmodel-frame";
             let item = models.get(item_identity).ok_or(())?;
             let frame = playsrc_studio_model::produce_viewmodel_frame(
                 model,
@@ -3216,6 +3233,7 @@ fn encode_model_poses(
             }
             output_count = output_count.checked_add(part_count).ok_or(())?;
         } else {
+            stage = "world-model-pose";
             let pose_key = (
                 request.model.clone(),
                 sequence,
@@ -3251,6 +3269,7 @@ fn encode_model_poses(
                 entry.insert(pose);
             }
             let pose = sampled_poses.get(&pose_key).ok_or(())?;
+            stage = "world-model-primitives";
             let selected = playsrc_studio_model::select_primitives(
                 model,
                 &bodygroups,
@@ -3261,6 +3280,7 @@ fn encode_model_poses(
                 request.lod,
             )
             .map_err(|_| ())?;
+            stage = "world-model-events";
             let events = if request.class_selection {
                 if let Some((label, elapsed)) = scene_event_clock {
                     let event_sequence = model.sequences.iter().find(|sequence| sequence.label.eq_ignore_ascii_case(label.as_bytes())).ok_or(())?;
@@ -3276,6 +3296,7 @@ fn encode_model_poses(
                 playsrc_studio_model::Float32(cycle.to_bits()),
             )
             .map_err(|_| ())? };
+            stage = "world-model-frame";
             let legacy_view = if let playsrc_studio_model::PresentationDescriptor::ViewModel {
                 default_horizontal_fov_4_by_3,
                 ..
@@ -3430,7 +3451,19 @@ fn encode_model_poses(
             }
         }
         if out.len() > 64 * 1024 * 1024 {
+            stage = "output-byte-bound";
             return Err(());
+        }
+        Ok(())
+        })();
+        if result.is_err() {
+            return Err(format!(
+                "model pose {stage}: request={request_index} identity={} actor={} sample_tick={:?} model={:?} item={:?} definition={:?} activity={:?} preparation={} panel={} world_item={} authority_tick={:?} authority_class={:?}",
+                original.identity, original.actor_identity, original.sample_tick, original.model,
+                original.item, original.item_definition, original.activity,
+                original.preparation, original.model_panel, original.world_item,
+                world.gameplay.map(|snapshot| snapshot.tick), world.gameplay.map(|snapshot| snapshot.class),
+            ));
         }
     }
     out[8..12].copy_from_slice(&output_count.to_le_bytes());

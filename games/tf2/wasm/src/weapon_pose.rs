@@ -80,14 +80,14 @@ pub(super) fn prepare(
     models: &BTreeMap<String, Arc<super::RetainedPresentationModel>>,
     states: &mut BTreeMap<u32, AnimationState>,
     gameplay: Option<&playsrc_tf2::Snapshot>,
-) -> Result<Option<ModelPoseRequest>, ()> {
+) -> Result<Option<ModelPoseRequest>, &'static str> {
     let actor = gameplay.and_then(|snapshot| snapshot.bots.iter().find(|bot| bot.identity == request.actor_identity));
     let automatic = actor.filter(|bot| request.item_definition.is_none() && !request.model_panel && !request.class_selection
         && bot.lifecycle == playsrc_tf2::PlayerLifecycle::Active && request.model == bot.class.data().model);
     let Some(definition) = request.item_definition.or_else(|| automatic.and_then(|bot| bot.weapon_definition)) else {
         return Ok(None);
     };
-    let item = equipment::schema().definition(definition).ok_or(())?;
+    let item = equipment::schema().definition(definition).ok_or("weapon-definition")?;
     let class = PlayerClass::ALL
         .into_iter()
         .find(|class| {
@@ -97,24 +97,24 @@ pub(super) fn prepare(
                 || request.model == data.hwm_model
         })
         .or_else(|| (item.usable_by.len() == 1).then(|| *item.usable_by.first().unwrap()))
-        .ok_or(())?;
+        .ok_or("weapon-model-class")?;
     let mut resolved = request.clone();
     if let Some(bot) = automatic {
-        let presentation = equipment::presentation(definition).ok_or(())?;
+        let presentation = equipment::presentation(definition).ok_or("world-weapon-presentation")?;
         resolved.item_definition = Some(definition);
         resolved.item = presentation.model_for_class(bot.class).filter(|model| !model.is_empty()).map(str::to_owned);
-        resolved.item_bodygroups = if let Some(item) = &resolved.item { vec![0; models.get(item).ok_or(())?.body_parts.len()] } else { Vec::new() };
+        resolved.item_bodygroups = if let Some(item) = &resolved.item { vec![0; models.get(item).ok_or("world-weapon-model")?.body_parts.len()] } else { Vec::new() };
         resolved.world_item = true;
         resolved.activity = if request.activity.starts_with("ACT_MP_RUN_") { "ACT_MP_RUN" } else { "ACT_MP_STAND_IDLE" }.to_owned();
     }
     if item.item_class == "tf_weapon_minigun" && request.activity == "ACT_MP_ATTACK_STAND_PREFIRE"
         && !request.preparation && !request.model_panel && !resolved.world_item {
-        let gameplay = gameplay.ok_or(())?;
+        let gameplay = gameplay.ok_or("minigun-prefire-snapshot")?;
         let weapon = if request.actor_identity <= 1 {
             gameplay.loadout.iter().find(|weapon| weapon.weapon == playsrc_tf2::Weapon::Minigun)
         } else {
             gameplay.bots.iter().find(|bot| bot.identity == request.actor_identity).and_then(|bot| bot.weapon.as_ref())
-        }.ok_or(())?;
+        }.ok_or("minigun-prefire-weapon")?;
         resolved.elapsed *= weapon.prefire_playback_rate;
         resolved.previous_elapsed *= weapon.prefire_playback_rate;
     }
@@ -131,21 +131,21 @@ pub(super) fn prepare(
     }
     if resolved.world_item || request.model_panel || request.class_selection {
         resolved.activity =
-            weapon_presentation::world_activity(definition, class, &resolved.activity).ok_or(())?;
+            weapon_presentation::world_activity(definition, class, &resolved.activity).ok_or("world-weapon-activity")?;
         return Ok(Some(resolved));
     }
-    let model = models.get(&request.model).ok_or(())?;
+    let model = models.get(&request.model).ok_or("viewmodel-model")?;
     resolved.activity =
-        weapon_presentation::viewmodel_activity(definition, class, &request.activity).ok_or(())?;
+        weapon_presentation::viewmodel_activity(definition, class, &request.activity).ok_or("viewmodel-activity")?;
     if request.activity == "ACT_VM_SWINGHARD" && sequence(model, &resolved.activity).is_none() {
         resolved.activity =
             weapon_presentation::viewmodel_activity(definition, class, "ACT_VM_HITCENTER")
-                .ok_or(())?;
+                .ok_or("viewmodel-melee-activity")?;
     }
-    let selected = sequence(model, &resolved.activity).ok_or(())?;
+    let selected = sequence(model, &resolved.activity).ok_or("viewmodel-sequence")?;
     let parameters = vec![playsrc_studio_model::Float32(0); model.pose_parameters.len()];
     let timing =
-        playsrc_studio_model::sequence_timing(model, selected, &parameters).map_err(|_| ())?;
+        playsrc_studio_model::sequence_timing(model, selected, &parameters).map_err(|_| "viewmodel-sequence-timing")?;
     let duration = f32::from_bits(timing.duration_seconds.0);
     let finished = request.phase != Some(ViewModelPhase::Idle)
         && !timing.looping
@@ -158,7 +158,7 @@ pub(super) fn prepare(
     };
     let idle = state.idle_start(
         definition,
-        request.activity_start_tick.ok_or(())?,
+        request.activity_start_tick.ok_or("viewmodel-activity-clock")?,
         &request.activity,
         request.current_time,
         finished,
@@ -166,9 +166,9 @@ pub(super) fn prepare(
     );
     if let Some(started) = idle {
         resolved.activity =
-            weapon_presentation::viewmodel_activity(definition, class, "ACT_VM_IDLE").ok_or(())?;
+            weapon_presentation::viewmodel_activity(definition, class, "ACT_VM_IDLE").ok_or("viewmodel-idle-activity")?;
         if sequence(model, &resolved.activity).is_none() {
-            return Err(());
+            return Err("viewmodel-idle-sequence");
         }
         resolved.elapsed = (request.current_time - started).max(0.0);
         resolved.previous_elapsed = (resolved.elapsed - request.frame_time).max(0.0);
@@ -248,6 +248,38 @@ mod tests {
         assert!(requests[0].allow_idle_transition);
         bytes[56..60].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
         assert!(super::super::decode_model_requests(&bytes).is_err());
+    }
+
+    #[test]
+    fn model_failure_identifies_the_rejected_request_and_weapon_owner() {
+        let (bytes, _) = request_bytes();
+        let mut request = super::super::decode_model_requests(&bytes).unwrap().remove(0);
+        request.model = PlayerClass::Heavy.data().hand_model.to_owned();
+        request.item_definition = Some(15);
+        request.activity = "ACT_MP_ATTACK_STAND_PREFIRE".into();
+        request.preparation = false;
+        request.model_panel = false;
+        request.world_item = false;
+        let models = BTreeMap::new();
+        let mut states = BTreeMap::new();
+        assert_eq!(prepare(&request, &models, &mut states, None).unwrap_err(), "minigun-prefire-snapshot");
+        let metadata = BTreeMap::new();
+        let mut particles = super::super::wearable::ParticleStates::default();
+        let mut world = super::super::ModelPoseWorld {
+            metadata: &metadata, lighting: None, visibility: None, collision: None,
+            snapshot: None, gameplay: None, cubemaps: &[], particle_inputs: None,
+            wearable_particles: &mut particles,
+        };
+        let error = super::super::encode_model_poses(&models, &BTreeMap::new(), &mut BTreeMap::new(),
+            &mut BTreeMap::new(), &mut states, &[request.clone()], &mut world, Vec::new()).unwrap_err();
+        assert!(error.starts_with("model pose minigun-prefire-snapshot: request=0 identity=7 actor=1 sample_tick=42 "), "{error}");
+        assert!(error.contains("definition=Some(15) activity=\"ACT_MP_ATTACK_STAND_PREFIRE\""), "{error}");
+        assert!(error.ends_with("authority_tick=None authority_class=None"), "{error}");
+        // Preparation has no live weapon owner: it must reach the independent
+        // model-resource check rather than report a missing gameplay snapshot.
+        request.preparation = true;
+        assert_eq!(prepare(&request, &models, &mut states, None).unwrap_err(), "viewmodel-model");
+        assert!(states.is_empty());
     }
 
     #[test]
