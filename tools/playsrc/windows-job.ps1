@@ -119,10 +119,12 @@ $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
-$extra = @($ProfileArguments | ConvertFrom-Json)
+$extra = ConvertFrom-Json -InputObject $ProfileArguments
+if ($extra -isnot [array]) { throw 'Invalid profiler argument array' }
 if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
-if ($extra.Count -gt 16 -or @($extra | Where-Object { $_ -isnot [string] }).Count) { throw 'Invalid profiler argument array' }
+if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
+foreach ($value in $extra) { if ($value -isnot [string]) { throw 'Invalid profiler argument array' } }
 $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile) " + (($extra | ForEach-Object { Quote $_ }) -join ' ') }
 $command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
