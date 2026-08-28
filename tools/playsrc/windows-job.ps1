@@ -75,6 +75,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       $policyFile = Join-Path $directory "$($Task.Substring('playsrc-local-job-'.Length))-policy.json"
       if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
     }
+    if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}
@@ -157,7 +158,8 @@ if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
 $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile) " + (($extra | ForEach-Object { Quote $_ }) -join ' ') }
-$command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
+$ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
