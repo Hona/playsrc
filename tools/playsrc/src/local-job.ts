@@ -178,6 +178,7 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
   const checkout = path.join(directory, "checkout")
   const running = await open(path.join(directory, "running"), "wx")
   try {
+  await running.writeFile(JSON.stringify({ pid: process.pid, startedAt: Date.now(), job: id, command: plan.command }))
   if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
   await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
