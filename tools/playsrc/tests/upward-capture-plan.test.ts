@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test"
 import { upwardCapturePlan, validateUpwardCapturePlan, assertMatchingCapturePlans } from "../profile/upward-capture-plan"
 
+test("steady gameplay can retain owner replay without class input or cadence changes", () => {
+  const normal = upwardCapturePlan({ PROFILE_INTEGRATED_ACCEPTANCE: "1" })
+  const retained = upwardCapturePlan({ PROFILE_INTEGRATED_ACCEPTANCE: "1", PROFILE_GAMEPLAY_REPLAY: "1" })
+  expect(retained).toEqual({ ...normal, gameplayReplay: "required" })
+  expect(() => validateUpwardCapturePlan(retained)).not.toThrow()
+  expect(() => assertMatchingCapturePlans(normal, retained)).toThrow("differ")
+  expect(() => validateUpwardCapturePlan({ ...retained, gameplayReplay: "optional" })).toThrow()
+  expect(upwardCapturePlan({ PROFILE_ACCEPTANCE_STOCK_ONLY: "1", PROFILE_GAMEPLAY_REPLAY: "1" }).gameplayReplay).toBeUndefined()
+})
+
 test("render owner instrumentation is explicit, bounded and comparison-plan significant", () => {
   const normal = upwardCapturePlan({}), owners = upwardCapturePlan({ PROFILE_RENDER_OWNERS: "1" })
   expect(owners.renderOwners).toBe("two-frames-after-60-v1")

@@ -22,6 +22,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     interaction: stockOnly ? "stock-loadouts" : exerciseClasses ? "class-input"
       : environment.PROFILE_UPWARD_TRAINING_INTERACTION === "1" ? "movement-weapon" : "forward-movement",
     workerCpu: !stockOnly && (exerciseClasses || acceptance) ? "required" : "not-requested",
+    ...(!stockOnly && environment.PROFILE_GAMEPLAY_REPLAY === "1" ? { gameplayReplay: "required" as const } : {}),
     ...(!stockOnly && environment.PROFILE_RENDER_OWNERS === "1" ? { renderOwners: "two-frames-after-60-v1" as const } : {}),
   } as const)
 }
@@ -58,6 +59,7 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
     PROFILE_SAMPLE_SECONDS: String(value.sampleSeconds),
     PROFILE_UPWARD_TRAINING_INTERACTION: value.interaction === "movement-weapon" ? "1" : "0",
     PROFILE_RENDER_OWNERS: value.renderOwners ? "1" : "0",
+    PROFILE_GAMEPLAY_REPLAY: value.gameplayReplay ? "1" : "0",
     PROFILE_CLASS_REPLACEMENT: value.replacement ? "1" : "0",
   })
   if (Object.keys(value).length !== Object.keys(resolved).length

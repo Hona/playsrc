@@ -5422,14 +5422,14 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &collision,
             &collision_snapshot,
             candidate.rocket_trace_requests(),
-            candidate.producer_snapshot().tick,
+            candidate.tick(),
         ) else {
             fail!(17);
         };
         consumed_rocket_results.extend_from_slice(&rocket_results);
         gameplay_world.replace_snapshot(collision_snapshot);
         gameplay_world.set_movement_time(
-            candidate.producer_snapshot().tick as f32 * playsrc_simulation::DEFAULT_TICK_INTERVAL,
+            candidate.tick() as f32 * playsrc_simulation::DEFAULT_TICK_INTERVAL,
         );
         let physics_results = if index == 0 {
             input.physics_results.as_slice()
