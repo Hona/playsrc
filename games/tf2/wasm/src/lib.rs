@@ -5946,7 +5946,11 @@ fn encode_snapshot(
     movement_tick: Option<&playsrc_movement::StepResult>,
     extensions: SnapshotExtensions<'_>,
 ) -> Option<Vec<u8>> {
-    const MAX: usize = 64 * 1024 * 1024;
+    // Charge the borrowed Collision payload against the transaction bound now,
+    // but insert it only after the remaining exact output size is known. Growing
+    // the vector after inserting that large section repeatedly moves its bytes.
+    #[allow(non_snake_case)]
+    let MAX = (64_usize * 1024 * 1024).checked_sub(extensions.collision_snapshot.len())?;
     let mut out = Vec::new();
     extend(&mut out, b"PSSN", MAX)?;
     u32_field(&mut out, 30, MAX)?;
@@ -6402,7 +6406,7 @@ fn encode_snapshot(
     for result in extensions.mover_results {
         encode_mover_result(&mut out, *result, MAX)?;
     }
-    extend(&mut out, extensions.collision_snapshot, MAX)?;
+    let collision_offset = out.len();
     snapshot_section(&mut out, jump_length, |out| {
         match snapshot.jump.as_ref() {
             Some(value) => encode_jump(out, value, MAX),
@@ -6714,6 +6718,10 @@ fn encode_snapshot(
     i32_field(&mut out, extensions.soundscape.soundscape, MAX)?;
     u32_field(&mut out, u32::from(extensions.soundscape.position_bits), MAX)?;
     for position in extensions.soundscape.positions { floats(&mut out, position, MAX)?; }
+    out.reserve_exact(extensions.collision_snapshot.len());
+    // One owned buffer, one exact-size growth, one in-place suffix move. Splice
+    // consumes the exact-size iterator before any immutable lease is published.
+    drop(out.splice(collision_offset..collision_offset, extensions.collision_snapshot.iter().copied()));
     Some(out)
 }
 
@@ -16787,6 +16795,8 @@ mod tests {
             assert_eq!(&lease[148..916], &encoded[148..916]);
             assert_eq!(&lease[916 + size..], &encoded[916 + collision_snapshot.len()..]);
             assert!(metrics.requests <= 11, "section staging must not return: {metrics:?}");
+            assert!(metrics.bytes <= 2 * lease.len() + 4112, "Collision insertion must not regrow the full payload: {metrics:?}");
+            assert!(metrics.peak <= (2 * lease.len() + 1024) as isize, "redundant payload owners: {metrics:?}");
             assert_eq!(metrics.live as usize, (lease.len() + 16).next_multiple_of(8));
             eprintln!("snapshot collision_bytes={size} output_bytes={} {metrics:?}", lease.len());
             leases.push(lease);
