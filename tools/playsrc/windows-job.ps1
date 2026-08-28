@@ -51,7 +51,9 @@ if ($Action -ne 'Run' -and $Action -ne 'Build') {
   if ($Task) {
     # A rejected launch may never create a command.log. Never report the prior
     # build/test's success as this task's outcome.
-    try { if ($launchText) { $result = $launchText | ConvertFrom-Json } } catch { }
+    $readback = & $bun (Join-Path $root 'tools/playsrc/src/local-job.ts') result $Job $Task
+    if ($LASTEXITCODE) { throw 'Cannot read the recorded task result' }
+    $result = ($readback | ConvertFrom-Json).result
   } elseif ($latestRun -and (Test-Path (Join-Path $latestRun.FullName 'result.json'))) {
     $result = Get-Content -Raw (Join-Path $latestRun.FullName 'result.json') | ConvertFrom-Json
   }
