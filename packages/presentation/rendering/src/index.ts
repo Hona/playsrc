@@ -37,7 +37,7 @@ export { browserFrameProfiler, type BrowserFrameProfiler, type RendererFrameProf
 import { fillParticleBatchRanges, type MutableParticleBatchRange } from "./particle-batches"
 import { particlePipelineKey, particlePipelineVariant, particlePreparationSides } from "./particle-pipeline"
 import { createParticleQuadWriter, writeParticleQuadIndices } from "./particle-geometry"
-import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance } from "./particle-attributes"
+import { createParticleAttributeUpdates, resetParticleAttributeUpdates, writeParticleAppearance, writeParticleCenters } from "./particle-attributes"
 import { installOrderedWebGpuBundles, type OrderedBundleBackend } from "./ordered-webgpu-bundles"
 import { PersistentWorldDraws } from "./persistent-world-draws"
 import { applyMapModelTransform, applyMapModelRenderBounds } from "./map-model-transform"
@@ -5354,11 +5354,7 @@ class RendererOwner implements Renderer {
     for (let index = 0; index < end - start; index += 1) {
       const item = items[start + index]!
       if (item.primitive === "rope") throw new RenderingError("MalformedInput", "rope geometry cannot share a sprite batch")
-      for (let vertex = 0; vertex < 4; vertex++) {
-        const offset = index * 16 + vertex * 4
-        centers.set(item.position, offset)
-        centers[offset + 3] = item.orientationType
-      }
+      writeParticleCenters(centers, index * 16, item.position, item.orientationType)
       const orientationTint = writeParticleQuad(item, positions, index * 12)
       writeParticleAppearance(item, arrays, index, updates, orientationTint)
     }

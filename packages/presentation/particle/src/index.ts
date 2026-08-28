@@ -444,7 +444,7 @@ class SheetImagesCache {
       if (equal) return entry.images
     }
     const images = sheetImages(view, offset)
-    if (this.#size < 512) {
+    if (this.#size < 512 && (!bucket || bucket.length < 4)) {
       if (bucket) bucket.push({ offset, images })
       else this.#buckets.set(hash, [{ offset, images }])
       this.#size++
