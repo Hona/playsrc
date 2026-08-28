@@ -549,7 +549,6 @@ export class Tf2Application {
   #lastRandomAudioProbe = ""
   #lastCollisionMoverProbe = ""
   #animationFrame = 0
-  #nextSimulationSampleSeconds=0
   readonly #simulationSamples = new SimulationClockQueue()
   #simulationBusy = false
   #simulationTask?: Promise<void>
@@ -943,7 +942,6 @@ export class Tf2Application {
       const transition = this.#gameUi?.dispatch({ kind: "gameui-hidden" })
       if (transition?.disposition !== "applied") return
       this.#paused = document.hidden
-      this.#nextSimulationSampleSeconds = 0
       if (!this.#paused) void this.resumeAudio()
       this.#set({ gameUi: "in-game", detail: `Playing ${this.#mapIdentity}` })
       if (restorePointer && !this.#paused) void this.requestPointer()
@@ -1962,7 +1960,6 @@ export class Tf2Application {
     this.#canvasDiagnostics.clear()
     this.#canvas.dataset.sky3dPass = ""
     this.#canvas.dataset.skyVisibilityDisposition = "not-visible"
-    this.#nextSimulationSampleSeconds = 0
     this.#lastRenderedPreparedRevision = 0
     this.#lastRenderedViewRevision = 0
     this.#lastRenderedTick = undefined
@@ -3601,7 +3598,6 @@ export class Tf2Application {
       this.#blockers.clear()
       for (const blocker of previousBlockers) this.#blockers.add(blocker)
       this.#paused = document.hidden
-      this.#nextSimulationSampleSeconds = 0
       this.#set({ phase: "Ready", gameUi: "in-game", detail: `Prior map retained: ${reason}` })
     }
   }
@@ -3700,7 +3696,6 @@ export class Tf2Application {
     this.#pendingPresentation=undefined
     this.#preparedPresentation=undefined
     this.#requiredParticleDisplayFrames.reset()
-    this.#nextSimulationSampleSeconds=0
     await Promise.all([this.#displayTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask, this.#equipmentRenderTask])
     await this.#equipmentAdmissionTask?.catch(error => { if (error?.name !== "AbortError") throw error })
     if (operation) this.#requireOperation(operation)
@@ -4629,12 +4624,10 @@ export class Tf2Application {
       if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
       return
     }
-    const nowSeconds=timeSeconds
-    if(nowSeconds+Number.EPSILON>=this.#nextSimulationSampleSeconds){
-      this.#scheduleSimulation(nowSeconds, false)
-      if(this.#nextSimulationSampleSeconds===0)this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
-      else do{this.#nextSimulationSampleSeconds+=SIMULATION_SAMPLE_INTERVAL_SECONDS}while(this.#nextSimulationSampleSeconds<=nowSeconds)
-    }
+    // Rust owns tick accumulation. A second 15ms browser gate aliases the host
+    // clock into zero/two-tick observations and loses visible publications.
+    // Observe each real browser frame; the authoritative simulation stays 66.7Hz.
+    this.#scheduleSimulation(timeSeconds, false)
     if (this.#classSelection?.state().visible) this.#renderClassSelection()
     else if (this.#teamSelection?.state().visible) this.#renderTeamSelection()
     else this.#offerDisplay()
@@ -6077,7 +6070,6 @@ export class Tf2Application {
     this.#predictedEye.suspend()
     this.#neutral()
     const nowSeconds=this.#frameClock.admit(performance.now()/1_000)
-    this.#nextSimulationSampleSeconds=nowSeconds+SIMULATION_SAMPLE_INTERVAL_SECONDS
     if(this.#client&&this.#snapshot)this.#scheduleSimulation(nowSeconds,this.#paused)
   }
   readonly #pointerLock = (): void => {
