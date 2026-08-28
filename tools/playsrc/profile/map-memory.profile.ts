@@ -13,6 +13,7 @@ import { macosProcessMemorySampler } from "./process-memory-macos"
 import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { mapMemoryReply } from "./map-memory-reply"
 import { installGpuTextureAccounting } from "./gpu-texture-accounting"
+import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -156,7 +157,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     await route.fulfill({ response, body: `${prefix}\n${source}` })
   })
 
-  await page.addInitScript(({ memoryReplySource, textureAccountingSource }) => {
+  await page.addInitScript(({ memoryReplySource, textureAccountingSource, lightmapProbeSource }) => {
     const memoryReply = new Function(`return (${memoryReplySource})`)() as typeof mapMemoryReply
     const textureAccounting = new Function(`return (${textureAccountingSource})`)() as typeof installGpuTextureAccounting
     const state = {
@@ -169,6 +170,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         bufferBytes: 0,
         peakBufferBytes: 0,
         textureAllocation: textureAccounting(),
+        lightmapAllocation: new Function(`return (${lightmapProbeSource})`)()(),
         uploadedBufferBytes: 0,
         stagingBytes: 0,
         peakStagingBytes: 0,
@@ -189,7 +191,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       garbageCollections: [] as number[],
     }
     ;(globalThis as any).__playsrcMemoryProfile = state
-    ;(globalThis as any).__playsrcProfile = {}
+    ;(globalThis as any).__playsrcProfile = { lightmapStages: [] }
     for (const kind of ["keydown", "keyup"]) addEventListener(kind, (event) => {
       if ((event as KeyboardEvent).code === "KeyW") state.inputEvents.push({ kind, at: performance.now(), trusted: event.isTrusted })
     })
@@ -360,7 +362,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       queuedWrite(receiver, bytes)
       return result
     })
-  }, { memoryReplySource: mapMemoryReply.toString(), textureAccountingSource: installGpuTextureAccounting.toString() })
+  }, { memoryReplySource: mapMemoryReply.toString(), textureAccountingSource: installGpuTextureAccounting.toString(), lightmapProbeSource: installLightmapAllocationProbe.toString() })
 
   const maps: Record<string, unknown>[] = []
   try {
@@ -527,6 +529,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           load: JSON.parse(main.dataset.loadPerformance ?? "null"),
           staticProps: JSON.parse(document.querySelector<HTMLElement>("canvas.world-canvas")?.dataset.staticProps ?? "null"),
           gpu: profile.gpu,
+          lightmapStages: (globalThis as any).__playsrcProfile.lightmapStages,
            transfers: profile.transfers.filter((record: any) => record.at >= started),
            worker: profile.worker.filter((record: any) => record.at >= started),
           indexedDb: profile.indexedDb,

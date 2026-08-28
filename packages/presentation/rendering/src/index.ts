@@ -18,7 +18,8 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { applyParticleDepthState, configureWorldLightmap, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
+import { applyParticleDepthState, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
+import { createWorldLightmapTextures, replaceWorldLightmapData } from "./world-lightmap-textures"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
@@ -1398,12 +1399,6 @@ function textureFromAuthoredCubemap(input: AuthoredTextureInput, colorSpace: str
   const base=level(0),texture=new THREE.CubeTexture([...base.images] as any)
   texture.mipmaps=Array.from({length:input.mipCount-1},(_,index)=>level(index+1)) as any
   texture.colorSpace=colorSpace;texture.type=componentType;texture.format=THREE.RGBAFormat;texture.flipY=false;texture.generateMipmaps=false;texture.minFilter=[THREE.NearestFilter,THREE.LinearFilter,THREE.LinearMipmapNearestFilter,THREE.LinearMipmapLinearFilter,THREE.LinearMipmapLinearFilter][input.sampling.minFilter]??THREE.LinearFilter;texture.magFilter=input.sampling.magFilter===0?THREE.NearestFilter:THREE.LinearFilter;texture.anisotropy=input.sampling.anisotropyLevel;texture.needsUpdate=true
-  return texture
-}
-
-function textureFromLightmap(lightmap: RuntimeLightmap, plane: Float32Array): THREE.DataTexture {
-  const texture = new THREE.DataTexture(plane, lightmap.width, lightmap.height, THREE.RGBAFormat, THREE.FloatType)
-  configureWorldLightmap(texture, lightmap.profile)
   return texture
 }
 
@@ -2926,17 +2921,11 @@ class RendererOwner implements Renderer {
     const occurrenceMatrices = modelOccurrenceMatrices(map, request.modelOccurrences)
     const lightmap = map.lightmap
     if (!lightmap) throw new RenderingError("MissingInput", "runtime lightmap is unavailable")
-    const lightmapTextures: [THREE.DataTexture, THREE.DataTexture?, THREE.DataTexture?, THREE.DataTexture?] = [
-      textureFromLightmap(lightmap, lightmap.flat),
-    ]
-    disposables.add(lightmapTextures[0])
-    if (lightmap.directional) {
-      for (let index = 0; index < 3; index += 1) {
-        const texture = textureFromLightmap(lightmap, lightmap.directional[index]!)
-        lightmapTextures[index + 1] = texture
-        disposables.add(texture)
-      }
-    }
+    const lightmapTextures = createWorldLightmapTextures(lightmap, disposables)
+    const lightmapProfile = (globalThis as typeof globalThis & { __playsrcProfile?: { lightmapStages?: object[] } }).__playsrcProfile
+    if (lightmapProfile?.lightmapStages && lightmapProfile.lightmapStages.length < 256) lightmapProfile.lightmapStages.push({ at: performance.now(), generation: sceneGeneration,
+      retainedSource: !!retained, samePlane: retained?.lightmapTextures[0].image.data === lightmap.flat,
+      bytes: lightmap.flat.byteLength * (lightmap.directional ? 4 : 1), textureIds: lightmapTextures.map(texture => texture!.id) })
     const exposureUniform = retained?.exposureUniform ?? TSL.uniform(
       this.configuration.lightingProfile === "hdr" ? this.#exposure.snapshot().current : 1,
       "float",
@@ -4460,18 +4449,8 @@ class RendererOwner implements Renderer {
   }
 
   #replaceLightmapData(scene: SceneResources, lightmap: RuntimeLightmap): void {
-    const planes = [lightmap.flat, ...(lightmap.directional ?? [])]
-    if (planes.length !== scene.lightmapTextures.filter(Boolean).length) {
-      throw new RenderingError("MalformedInput", "lightmap plane count changed")
-    }
-    for (let index = 0; index < planes.length; index += 1) {
-      const texture = scene.lightmapTextures[index]!
-      const image = texture.image as { data: Float32Array; width: number; height: number }
-      image.data = planes[index]!
-      image.width = lightmap.width
-      image.height = lightmap.height
-      texture.needsUpdate = true
-    }
+    try { replaceWorldLightmapData(scene.lightmapTextures, lightmap) }
+    catch (error) { throw new RenderingError("MalformedInput", String(error)) }
   }
 
   #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]> & { refractTint?: readonly [number, number, number] }): void {
