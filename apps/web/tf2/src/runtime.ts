@@ -2,6 +2,7 @@ import { createImmutableObjectAcquirer, openDerivedObjectCache, type DerivedObje
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import { chunksForRole, partitionResourceChunkDescriptors, parseResourceCatalogBytes, parseResourceGraphBytes, parseResourceSet, resourceChunkObject, resourceSectionIdentity, selectCatalogTarget, type ResourceCatalog, type ResourceGraph, type ResourceChunkDescriptor } from "@playsrc/asset-store/graph"
 import { combatPoseSelection } from "./combat-pose-selection"
+import {mapRendererInputs} from "./map-renderer-inputs"
 import { createSourceAudioSystem, SoundRegistry, SourceAudioError, SourceAudioWorld, type PcmResource } from "@playsrc/audio"
 import { tf2AudioModuleUrl } from "@playsrc/game-tf2-browser/audio"
 import GameplayWorker from "@playsrc/game-tf2-browser/worker?worker"
@@ -1778,22 +1779,9 @@ export class Tf2Application {
         payload: this.#loaded.payload,
         resourceIdentity: this.#dependencies.sha256,
         payloadSha256: this.#loaded.payloadSha256,
-        directionalTextures: this.#artifacts.directionalTextures,
-        environment: this.#artifacts.environment,
+        ...mapRendererInputs(this.#artifacts),
         materialStates: this.#materialStates(this.#artifacts),
-        particleTextures: this.#artifacts.particleTextures,
-        legacyVisualTextures: this.#artifacts.legacyVisualTextures,
-        modelOccurrences: this.#artifacts.modelOccurrences,
-        modelDrawInputs: this.#artifacts.modelOccurrences.map((occurrence) => Object.freeze({
-          entity: occurrence.entity,
-          lighting: occurrence.lighting,
-          eyes: occurrence.eyes,
-        })),
         modelFacing: this.#modelFacing(this.#artifacts),
-        modelMaterials: this.#artifacts.modelMaterials,
-        authoredTextures: this.#artifacts.authoredTextures,
-        brushModels:this.#artifacts.brushModels,
-        staticProps:this.#artifacts.staticProps,
         diagnostic: true,
       })
       this.#environmentDrawables = scene.environmentDrawables
@@ -3769,21 +3757,9 @@ export class Tf2Application {
         payload: staged.payload,
         resourceIdentity: (candidate?.dependencies ?? this.#dependencies).sha256,
         payloadSha256: staged.payloadSha256,
-        directionalTextures: artifacts.directionalTextures,
-        environment: artifacts.environment,
+        ...mapRendererInputs(artifacts),
         materialStates: this.#materialStates(artifacts),
-        particleTextures: artifacts.particleTextures,
-      modelOccurrences: artifacts.modelOccurrences,
-      modelDrawInputs: artifacts.modelOccurrences.map((occurrence) => Object.freeze({
-        entity: occurrence.entity,
-        lighting: occurrence.lighting,
-        eyes: occurrence.eyes,
-      })),
       modelFacing: this.#modelFacing(artifacts),
-      modelMaterials: artifacts.modelMaterials,
-      authoredTextures: artifacts.authoredTextures,
-      brushModels:artifacts.brushModels,
-      staticProps:artifacts.staticProps,
         diagnostic: true,
       })
       finishReplacePhase("rendererLoadMap")
@@ -3821,21 +3797,9 @@ export class Tf2Application {
         payload: prior.payload,
         resourceIdentity: this.#dependencies.sha256,
         payloadSha256: prior.payloadSha256,
-        directionalTextures: priorArtifacts?.directionalTextures,
-        environment: priorArtifacts?.environment,
+        ...(priorArtifacts?mapRendererInputs(priorArtifacts):{}),
         materialStates: priorArtifacts ? this.#materialStates(priorArtifacts) : undefined,
-        particleTextures: priorArtifacts?.particleTextures,
-        modelOccurrences: priorArtifacts?.modelOccurrences,
-        modelDrawInputs: priorArtifacts?.modelOccurrences.map((occurrence) => Object.freeze({
-          entity: occurrence.entity,
-          lighting: occurrence.lighting,
-          eyes: occurrence.eyes,
-        })),
         modelFacing: priorArtifacts ? this.#modelFacing(priorArtifacts) : undefined,
-        modelMaterials: priorArtifacts?.modelMaterials,
-        staticProps:priorArtifacts?.staticProps,
-        authoredTextures: priorArtifacts?.authoredTextures,
-        brushModels:priorArtifacts?.brushModels,
         diagnostic: true,
       })
       throw error
@@ -4796,7 +4760,7 @@ export class Tf2Application {
         }
         if(!visualViews.some(view=>view.kind===0))visualViews.push({...camera,kind:0,aspectRatio,presentationTimeSeconds,viewportHeight:this.#canvas.height,pixelVisibility:renderer.pixelVisibilityFeedback(0)})
       }
-      const visualPayload=hasVisuals?encodeLegacyVisualQuery(visualViews):new Uint8Array()
+      const visualPayload=hasVisuals?encodeLegacyVisualQuery(visualViews,{screenWidth:renderer.legacyVisualViewport(0).width,samples:renderer.sampleCount}):new Uint8Array()
       if(profile?.legacyVisualProbe)profile.legacyVisualViews=visualViews
       const output = await client.legacyFrame(generation, encodeLegacyParticleFrame(presentationTimeSeconds, clientFrame, { ...camera, aspectRatio },visualPayload))
       if (this.#closed || this.#paused || generation !== this.#generation || renderer !== this.#renderer || this.#classSelection?.state().visible || this.#teamSelection?.state().visible
@@ -6032,8 +5996,9 @@ export class Tf2Application {
       const authored = new Map([
         ...this.#artifacts.environment.authoredTextures,
         ...this.#artifacts.authoredTextures,
+        ...this.#artifacts.legacyVisualTextures.flatMap(texture=>[[texture.logicalPath,texture] as const,...texture.normal?[[texture.normal.logicalPath,texture.normal] as const]:[]]),
       ])
-      let planes = 0, planeBytes = 0, mipLevels = 0, frames = 0, compressed = 0, compressedBytes = 0
+      let planes = 0, planeBytes = 0, mipLevels = 0, frames = 0, compressed = 0, compressedBytes = 0,decodedCompressedTailBytes=0
       for (const texture of authored.values()) {
         mipLevels += texture.mipCount
         frames += texture.frameCount
@@ -6041,6 +6006,7 @@ export class Tf2Application {
         for (const plane of texture.planes) {
           planes += 1
           planeBytes += plane.rgba.byteLength
+          decodedCompressedTailBytes+=plane.decodedRgba?.byteLength??0
           if ([13, 14, 15, 20].includes(texture.sourceFormat ?? -1)) compressedBytes += plane.rgba.byteLength
         }
       }
@@ -6064,6 +6030,7 @@ export class Tf2Application {
         frames,
         compressedTextures: compressed,
         compressedPlaneBytes: compressedBytes,
+        decodedCompressedTailBytes,
         directionalBytes: this.#artifacts.directionalTextures.reduce((total, texture) => total
           + (texture.authored.planes.find((plane) => plane.mip === 0 && plane.frame === 0 && plane.face === 0 && plane.slice === 0)?.rgba.byteLength ?? 0), 0),
         particleBytes: this.#artifacts.particleTextures.reduce((total, texture) => total + texture.planes.reduce((bytes, plane) => bytes + plane.rgba.byteLength, 0), 0),

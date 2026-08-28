@@ -2939,6 +2939,11 @@ fn main() -> Result<(), String> {
     for path in &visuals.materials {
         collect_material(&mut resolver, path, true, SelectionEnvironment::default(), true, "map-visual-material")?;
     }
+    for path in &visuals.optional_materials {
+        if resolver.optional(path,"map-visual-optional-material")?.is_some(){
+            collect_material(&mut resolver,path,true,SelectionEnvironment::default(),true,"map-visual-material")?;
+        }
+    }
     for stem in &visuals.smoke_series {
         for index in 1..=MAX_DEPENDENCY_REQUESTS {
             let path = format!("{stem}{index}.vmt");

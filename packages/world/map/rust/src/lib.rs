@@ -9,6 +9,7 @@ pub mod pixel_visibility;
 pub mod legacy_glow;
 pub mod legacy_sun;
 pub mod legacy_spotlight;
+pub mod legacy_rope;
 pub mod legacy_sprite;
 pub mod render_fx;
 mod displacement;

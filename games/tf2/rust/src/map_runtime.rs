@@ -416,6 +416,7 @@ pub struct MapRuntime {
     smokestacks: playsrc_entity::smokestack::Systems,
     sprites: playsrc_entity::sprite::Sprites,
     suns:playsrc_entity::sun::Suns,
+    ropes:playsrc_entity::rope::Ropes,
     spotlights:Vec<playsrc_entity::spotlight::Beam>,
     spotlight_collision:Option<crate::spotlight::Collision>,
     sprite_models: std::sync::Arc<BTreeMap<Vec<u8>,u32>>,
@@ -663,6 +664,7 @@ impl MapRuntime {
         config.external_classes.extend(playsrc_entity::soundscape::bindings());
         config.external_classes.extend(playsrc_entity::sprite::bindings());
         config.external_classes.push(playsrc_entity::sun::binding());
+        config.external_classes.extend(playsrc_entity::rope::bindings());
         config.external_classes.extend(playsrc_entity::spotlight::bindings());
         let (mut world, _) = EntityWorld::compile(entity_graph, config)?;
         if let Some(koth) = round_configuration.koth {
@@ -970,6 +972,7 @@ impl MapRuntime {
         let restart_definitions = control_points.as_ref().map(|_| std::sync::Arc::new(source_handles.values().filter_map(|handle| world.entity(*handle).map(|e| e.definition.as_ref().clone())).collect()));
         let particle_systems = playsrc_entity::particle_system::Systems::from_world(&world, 0.0);
         let suns=playsrc_entity::sun::Suns::from_world(&world).map_err(|source|invalid(source as usize))?;
+        let ropes=playsrc_entity::rope::Ropes::from_world(&world).map_err(|source|invalid(source as usize))?;
         let mut smokestacks = playsrc_entity::smokestack::Systems::default();
         smokestacks.synchronize(&world).map_err(|_| invalid(0))?;
         Ok(Self {
@@ -979,6 +982,7 @@ impl MapRuntime {
             soundscape_player: playsrc_entity::soundscape::Player::default(),
             sprites: playsrc_entity::sprite::Sprites::default(),
             suns,
+            ropes,
             spotlights:Vec::new(),spotlight_collision:None,
             sprite_models: std::sync::Arc::default(),
             world,
@@ -1472,6 +1476,7 @@ impl MapRuntime {
 
     pub fn sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.sprites.presentation(&self.world,source) }
     pub fn sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.suns.get(&self.world,source)}
+    pub fn rope_state(&self,source:u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>{self.ropes.get(&self.world,source)}
     pub fn install_spotlights(&mut self,world:std::sync::Arc<playsrc_collision::World>,inputs:Vec<playsrc_collision::ObjectInput>)->Result<MapPhase,RuntimeFailure>{
         let collision=crate::spotlight::Collision::new(world,inputs);
         let (seeds,commands)=collision.prepare(&self.world).map_err(|source|invalid(source as usize))?;
@@ -1590,6 +1595,7 @@ impl MapRuntime {
         self.particle_systems = playsrc_entity::particle_system::Systems::from_world(&self.world, tick as f32 * self.tick_interval);
         self.sprites.reconcile(&self.world,tick as f32*self.tick_interval,|name|self.sprite_models.get(name).copied()).map_err(|source|invalid(source as usize))?;
         self.suns.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
+        self.ropes.reconcile(&self.world).map_err(|source|invalid(source as usize))?;
         let (seeds,commands)=self.spotlight_collision.as_ref().map(|collision|collision.prepare(&self.world)).transpose().map_err(|source|invalid(source as usize))?.unwrap_or_default();
         let beams=self.world.phase(tick,&commands)?;
         self.spotlights=playsrc_entity::spotlight::bind(&self.world,seeds).map_err(|source|invalid(source as usize))?;
@@ -2422,6 +2428,7 @@ impl MapRuntime {
                         }
                         self.particle_systems.input(&self.world, entity, &input, self.world.current_tick() as f32 * self.tick_interval);
                         self.smokestacks.input(entity, &input, &value);
+                        self.ropes.input(&self.world,entity,&input,&value).map_err(|source|invalid(source as usize))?;
                         if input.eq_ignore_ascii_case(b"Width")&&let Some(beam)=self.spotlights.iter_mut().find(|beam|beam.entity==entity)&&let Some(width)=value.as_float(){beam.width=width.min(102.3);beam.end_width=beam.width;}
                         if let Some(color)=self.suns.input(&self.world,entity,&input,&value){
                             let changed=self.world.phase(self.world.current_tick(),&[WorldCommand::Input(InputRecord{target:EventTarget::Direct(entity),input:b"Color".to_vec(),value:color,activator:None,caller:Some(entity),output_action:None,producer_sequence:self.next_producer_sequence})])?;

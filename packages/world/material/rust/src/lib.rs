@@ -25,6 +25,7 @@ pub enum Shader {
     Water,
     Refract,
     Sprite,
+    Cable,
     DecalModulate,
     Modulate,
     SkyLdr,
@@ -494,6 +495,7 @@ pub fn resolve_for_environment(
                 sprite_card,
             );
             if shader == Shader::Modulate { request.color_read = TextureColorRead::Linear; }
+            if shader == Shader::Cable&&role==TextureRole::Base{request.color_read=TextureColorRead::Srgb;}
             if role == TextureRole::Environment
                 && document.root.key.bytes.eq_ignore_ascii_case(b"EyeRefract")
             {
@@ -501,6 +503,9 @@ pub fn resolve_for_environment(
             }
             textures.push(request);
         }
+    }
+    if shader==Shader::Cable&&!textures.iter().any(|request|request.role==TextureRole::Bump){
+        textures.push(texture(b"$bumpmap",TextureRole::Bump,b"cable/cablenormalmap")?);
     }
     let selected_textures = selected_textures(shader, environment, &textures)?;
     let active_textures = textures.iter().map(|texture| texture.role).collect();
@@ -692,6 +697,8 @@ fn static_state_with_alpha(
     let additive_sprite = additive_sprite_state(material)?;
     let blend = if additive_sprite.is_some() {
         BlendState { enabled: true, equation: BlendEquation::Add, source: BlendFactor::SourceAlpha, destination: BlendFactor::One }
+    } else if material.shader==Shader::Cable {
+        BlendState{enabled:features.translucent,equation:BlendEquation::Add,source:if features.translucent{BlendFactor::SourceAlpha}else{BlendFactor::One},destination:if features.translucent{BlendFactor::OneMinusSourceAlpha}else{BlendFactor::Zero}}
     } else if material.shader == Shader::Modulate {
         BlendState {
             enabled: true,
@@ -774,6 +781,7 @@ fn static_state_with_alpha(
         Shader::UnlitGeneric
         | Shader::UnlitTwoTexture
         | Shader::Sprite
+        | Shader::Cable
         | Shader::Refract
         | Shader::DecalModulate => LightingModel::Unlit,
         Shader::Modulate => LightingModel::Unlit,
@@ -1128,6 +1136,9 @@ fn selected_textures(
             return Err(error(ErrorCode::MissingProfileTexture, None));
         }
         return Ok(vec![TextureRole::Base, TextureRole::Base2]);
+    }
+    if shader==Shader::Cable{
+        return (has(TextureRole::Base)&&has(TextureRole::Bump)).then_some(vec![TextureRole::Base,TextureRole::Bump]).ok_or_else(||error(ErrorCode::MissingProfileTexture,None));
     }
     if shader == Shader::Refract {
         return has(TextureRole::Normal)
@@ -1570,6 +1581,8 @@ fn shader(v: &[u8]) -> Shader {
         Shader::Refract
     } else if v.eq_ignore_ascii_case(b"Sprite") || v.eq_ignore_ascii_case(b"SpriteCard") {
         Shader::Sprite
+    } else if v.eq_ignore_ascii_case(b"Cable") || v.eq_ignore_ascii_case(b"Cable_DX9") {
+        Shader::Cable
     } else if v.eq_ignore_ascii_case(b"DecalModulate") {
         Shader::DecalModulate
     } else if v.eq_ignore_ascii_case(b"Modulate") || v.eq_ignore_ascii_case(b"Modulate_DX9") {
@@ -1669,6 +1682,18 @@ mod tests {
     use super::*;
     use playsrc_keyvalues::ConditionEnvironment;
     use playsrc_vmt::{Composition, Limits, compose};
+    #[test]
+    fn cable_selects_srgb_base_and_linear_authored_or_default_normal_texture(){
+        let Composition::Complete(document)=compose(br#"Cable { "$basetexture" "cable/black" "$vertexcolor" "1" "$nocull" "1" }"#,"materials/cable/cable.vmt",&[],&ConditionEnvironment::default(),Limits::default()).unwrap()else{panic!()};
+        let material=resolve_for_environment(&document,SelectionEnvironment::default()).unwrap();
+        assert_eq!(material.shader,Shader::Cable);assert_eq!(material.selected_textures,[TextureRole::Base,TextureRole::Bump]);
+        assert_eq!(material.textures[0].color_read,TextureColorRead::Srgb);
+        let normal=material.textures.iter().find(|texture|texture.role==TextureRole::Bump).unwrap();
+        assert_eq!(normal.logical_path.as_deref(),Some("materials/cable/cablenormalmap.vtf"));assert_eq!(normal.color_read,TextureColorRead::Linear);
+        let Composition::Complete(document)=compose(br#"Cable { "$basetexture" "cable/dx8cable" "$Translucent" "1" }"#,"materials/cable/cable_back.vmt",&[],&ConditionEnvironment::default(),Limits::default()).unwrap()else{panic!()};
+        let material=resolve_for_environment(&document,SelectionEnvironment::default()).unwrap();
+        let state=static_state(&material,TextureAlphaFacts{base:false}).unwrap();assert!(state.blend.enabled);assert!(!state.depth_write);
+    }
     #[test]
     fn configured_legacy_unlit_sky_keeps_its_authored_transform() {
         let Composition::Complete(document) = compose(

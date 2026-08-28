@@ -21,6 +21,7 @@ members = [
   "packages/world/map/rust",
   "packages/world/map/wasm",
   "packages/presentation/particle/rust",
+  "packages/presentation/beam/rust",
   "packages/presentation/audio/rust",
   "packages/presentation/audio/wasm",
   "packages/runtime/movement/rust",

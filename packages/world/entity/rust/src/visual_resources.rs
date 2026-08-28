@@ -18,6 +18,7 @@ pub fn sprite_material(model: &str) -> Option<String> {
 pub struct References {
     pub materials: BTreeSet<String>,
     pub smoke_series: BTreeSet<String>,
+    pub optional_materials: BTreeSet<String>,
 }
 
 pub fn sun_materials(entity:&Entity)->Result<[String;2],std::str::Utf8Error>{
@@ -47,6 +48,10 @@ pub fn from_entities<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> Resu
             output.materials.extend(["materials/sprites/light_glow03.vmt".into(), "materials/sprites/glow_test02.vmt".into()]);
         } else if class.eq_ignore_ascii_case(b"env_sun") {
             output.materials.extend(sun_materials(entity)?);
+        } else if crate::rope::is_rope(class) {
+            let material=crate::rope::material(entity)?;
+            output.optional_materials.insert(format!("{}_back.vmt",material.strip_suffix(".vmt").expect("rope material")));
+            output.materials.insert(material);
         } else if class.eq_ignore_ascii_case(b"env_smokestack") {
             let mut model = text(entity, b"SmokeMaterial")?.to_owned();
             let explicit = !model.is_empty();

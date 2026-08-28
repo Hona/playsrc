@@ -1995,6 +1995,7 @@ impl<W: GameplayWorld + Clone> Session<W> {
 
     pub fn map_sprite_state(&self,source:u32)->Option<playsrc_entity::sprite::Presentation> { self.map.sprite_state(source) }
     pub fn map_sun_state(&self,source:u32)->Option<playsrc_entity::sun::Presentation>{self.map.sun_state(source)}
+    pub fn map_rope_state(&self,source:u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>{self.map.rope_state(source)}
     pub fn map_spotlight_state(&self,source:u32)->Option<(playsrc_entity::spotlight::Beam,playsrc_entity::EntityRenderState)>{self.map.spotlight_state(source)}
     pub fn map_collision_entity(&self,source:u32)->Option<playsrc_entity::EntityCollisionState>{self.map.collision_entity(source)}
     pub fn map_mover_hierarchy(&self,source:u32)->Vec<(u32,playsrc_entity::EntityCollisionState,Vec<playsrc_entity::Transform>)>{self.map.mover_hierarchy(source)}

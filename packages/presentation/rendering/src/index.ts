@@ -29,7 +29,7 @@ import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
-import { sourceTextureLayout } from "./source-texture-layout"
+import { sourceTextureLayout,authoredMipUpload } from "./source-texture-layout"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, observeStaticPropUse, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
@@ -697,6 +697,7 @@ export type AuthoredTextureInput = Readonly<{
     width: number
     height: number
     rgba: Uint8Array
+    decodedRgba?:Uint8Array
   }>[]
 }>
 export type StaticPropInput=Readonly<{
@@ -713,7 +714,7 @@ export type MapLoadRequest = Readonly<{
   environment?: EnvironmentInput
   materialStates?: ReadonlyMap<string, MaterialStateInput>
   particleTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string; materialPath: string; spriteCard?: SpriteCardInput | null; additiveSprite?: AdditiveSpriteInput | null }>)[]
-  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string;program:LegacyVisualProgram }>)[]
+  legacyVisualTextures?: readonly (AuthoredTextureInput & Readonly<{ material: string;program:LegacyVisualProgram;normal:AuthoredTextureInput|null }>)[]
   modelOccurrences?: readonly Readonly<{ entity: number; model: string; matrix: Float32Array }>[]
   modelFacing?: ReadonlyMap<string, Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>>
   modelMaterials?: ReadonlyMap<string, ModelMaterialInput>
@@ -1360,12 +1361,8 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
     throw new RenderingError("MissingInput", `authored texture ${input.logicalPath} has an incomplete selected mip chain`)
   }
   const selected = planes.slice(input.sampling.noLod ? 0 : Math.min(Math.max(0, quality?.mipOffset ?? 0), planes.length - 1))
-  const data = (plane: AuthoredTextureInput["planes"][number]) =>
-    sourceTextureSamples(plane.rgba, input.sourceFormat, input.scalarEncoding)
   const base = selected[0]!
-  const layout = sourceTextureLayout(input.sourceFormat, input.scalarEncoding)
-  if (!layout) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
-  const mipmaps = selected.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
+  const {layout,mipmaps}=authoredMipUpload(input.sourceFormat,input.scalarEncoding,selected)
   const texture = layout.compressed === null
     ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, layout.type)
     : new THREE.CompressedTexture(mipmaps, base.width, base.height, layout.compressed, layout.type)
@@ -3866,13 +3863,23 @@ class RendererOwner implements Renderer {
             if(!texture){texture=disposables.add(textureFromAuthored(input,program.srgb?THREE.SRGBColorSpace:THREE.NoColorSpace,frame,this.textureQuality));textures.set(key,texture)}
             const material = disposables.add(new THREE.MeshBasicNodeMaterial(materialOptions({ logicalPath:input.material,width:input.width,height:input.height,shader:2,features:1,textureRole:0 },state)))
             const sampled=TSL.texture(texture,TSL.uv()), raw=TSL.attribute("legacyColor","vec4"), color=program.vertexGamma?TSL.vec4(raw.rgb.pow(2.2),raw.a):raw
-            const rgb=program.vertexRgb?sampled.rgb.mul(color.rgb):sampled.rgb
+            let rgb=program.vertexRgb?sampled.rgb.mul(color.rgb):sampled.rgb
+            if(program.cable){
+              if(!input.normal)throw new RenderingError("MissingInput","Cable normal texture is unavailable")
+              const normalKey=`${input.normal.sourceSha256}:0:false`
+              let normal=textures.get(normalKey)
+              if(!normal){normal=disposables.add(textureFromAuthored(input.normal,THREE.NoColorSpace,0,this.textureQuality));textures.set(normalKey,normal)}
+              // Cable_DX9 expands the normal, then applies squared half-Lambert
+              // against tangent-space +Z: the resulting factor is blue squared.
+              rgb=rgb.mul(TSL.texture(normal,TSL.uv()).b.pow(2))
+            }
             const alpha=program.vertexAlpha?sampled.a.mul(color.a):sampled.a
             const hdr=this.configuration.lightingProfile==="hdr"?TSL.attribute("legacyHdr","float"):TSL.float(1)
             const exposure=program.gammaExposure?exposureUniform.pow(1/2.2):exposureUniform
             const value=TSL.vec4(rgb.mul(TSL.vec3(...program.modulation.slice(0,3))).mul(hdr).mul(exposure),alpha.mul(program.modulation[3]))
             material.colorNode=legacyFog(sourceFragmentColor(value,state),state.fog,this.#viewFogUniforms,waterFogUniforms)
             material.fog=false;material.toneMapped=false;material.forceSinglePass=true;material.name=`legacy:${input.material}:${frame}`
+            if(program.cable){material.transparent=false;material.userData.sourceRope=true}
             return material
           })
         })
@@ -5463,7 +5470,7 @@ class RendererOwner implements Renderer {
       const batchCamera = first.sky ? skyCamera : camera
       if (!batchCamera) { retained.mesh.visible = false; continue }
       this.#updateParticleBatchGeometry(retained.mesh.geometry, items, batch.start, batch.end, batchCamera)
-      retained.mesh.renderOrder = batch.start
+      retained.mesh.renderOrder = batch.start+(retained.mesh.material.transparent?0:0x200000)
       retained.mesh.visible = true
     }
     for (let index = count; index < meshes.length; index += 1) {

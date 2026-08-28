@@ -6,14 +6,15 @@ pub const GLOW_MATERIAL: &str = "materials/sprites/light_glow02_add_noz.vmt";
 pub fn encode_materials(out: &mut Vec<u8>, graph: &playsrc_entity::Graph, bundle: &BTreeMap<String, &[u8]>,
     decoders: &super::TextureDecoders<'_>, hashes: &BTreeMap<String,[u8;32]>, profile: playsrc_map::LightingProfile) -> Result<(), ()> {
     let layout=super::legacy_materials::compile(graph,bundle,decoders,profile)?;
-    out.extend_from_slice(b"PLVM"); out.extend_from_slice(&2_u32.to_le_bytes()); out.extend_from_slice(&(layout.materials.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"PLVM"); out.extend_from_slice(&3_u32.to_le_bytes()); out.extend_from_slice(&(layout.materials.len() as u32).to_le_bytes());
     for asset in &layout.materials {
         let texture=super::model_authored_texture(&asset.texture,decoders,hashes,true)?;
         super::pbytes(out,asset.identity.as_bytes())?;
         super::encode_model_authored_texture(out,&asset.texture,&texture)?;
         let p=&asset.program;
-        let flags=u32::from(p.srgb)|(u32::from(p.vertex_rgb)<<1)|(u32::from(p.vertex_alpha)<<2)|(u32::from(p.vertex_gamma)<<3)|(u32::from(p.gamma_exposure)<<4)|(u32::from(p.world_renderable)<<5);
+        let flags=u32::from(p.srgb)|(u32::from(p.vertex_rgb)<<1)|(u32::from(p.vertex_alpha)<<2)|(u32::from(p.vertex_gamma)<<3)|(u32::from(p.gamma_exposure)<<4)|(u32::from(p.world_renderable)<<5)|(u32::from(p.cable)<<6);
         out.extend_from_slice(&flags.to_le_bytes());for value in p.modulation {out.extend_from_slice(&value.to_le_bytes());}
+        if let Some(normal)=&asset.normal{let texture=super::model_authored_texture(normal,decoders,hashes,true).inspect_err(|_|eprintln!("Rope normal texture: {normal}"))?;super::encode_model_authored_texture(out,normal,&texture)?;}
     }
     Ok(())
 }
@@ -21,6 +22,18 @@ pub fn encode_materials(out: &mut Vec<u8>, graph: &playsrc_entity::Graph, bundle
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rope_entity_removal_recreation_and_speculative_frames_preserve_client_ownership(){
+        let mut layout=super::super::legacy_materials::Layout::default();layout.ropes.push(super::super::legacy_materials::RopeDefinition{source:7,material:0,back:None,mapping_height:16});
+        let state=|generation|Some((playsrc_entity::rope::Definition{source:7,entity:playsrc_entity::EntityHandle{slot:7,generation},end:None,length:200,slack:120,nodes:5,width:1.0,texture_scale:1.0,subdivisions:2,flags:playsrc_entity::rope::SIMULATE|playsrc_entity::rope::INITIAL_HANG|playsrc_entity::rope::NO_WIND,locked:3,material:"materials/cable/cable.vmt".into(),scroll_speed:0.0},[Some([0.0;3]),Some([200.0,0.0,0.0]) ]));
+        let mut world=World{layout:Arc::new(layout),ropes:vec![None],..Default::default()};world.initialize_ropes(|_|state(1),|_|Ok([0.5;3])).unwrap();
+        let original=world.ropes[0].as_ref().unwrap().physics.nodes.clone();
+        let runtime=Runtime::new(world);let (_,mut abandoned)=runtime.begin(1,0).unwrap();
+        abandoned.advance_ropes(0.1,[0.0;3],|_|None,|_|panic!("removed rope must not sample lighting")).unwrap();assert!(abandoned.ropes[0].is_none());
+        let (_,mut retry)=runtime.begin(1,0).unwrap();assert_eq!(retry.ropes[0].as_ref().unwrap().physics.nodes,original);
+        let mut samples=0;retry.advance_ropes(0.0,[0.0;3],|_|state(2),|_|{samples+=1;Ok([0.25;3])}).unwrap();
+        assert_eq!(samples,5);let rope=retry.ropes[0].as_ref().unwrap();assert_eq!(rope.definition.entity.generation,2);assert_eq!(rope.lighting[0],[0.25;3]);assert_eq!(rope.physics.nodes,original);
+    }
     #[test]
     fn sun_client_frame_issues_both_native_proxy_channels(){
         let mut layout=super::super::legacy_materials::Layout::default();
@@ -32,7 +45,7 @@ mod tests {
         let mut bytes=Vec::new();
         world.frame(&view,0,12.0,1,0.016,1.0,&[],|_|Some((entity,playsrc_entity::Transform::IDENTITY,playsrc_entity::EntityRenderState{brush_model:None,mode:0,color:[254,221,177,255],fx:0,effects:0},None)),|_|Some(sun.clone()),|_|None,|_,_|(true,true),&mut bytes).unwrap();
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()),2);
-        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()),0x8000_0000|816);
+        assert_eq!(u32::from_le_bytes(bytes[20..24].try_into().unwrap()),0x8000_0000|816);
     }
     #[test]
     fn abandoned_render_candidates_do_not_advance_the_source_random_stream() {
@@ -96,6 +109,19 @@ struct SunClient {entity:Option<playsrc_entity::EntityHandle>,queries:[[Query;2]
 impl Default for SunClient {fn default()->Self{Self{entity:None,queries:[[Query::default();2];2],cutoff:[[0;2];2],sky_fraction:[1.0;2]}}}
 
 struct DrawQuad {source:u32,material:u32,frame:u32,layer:u32,hdr:f32,origin:[f32;3],positions:[[f32;3];4],color:[[f32;4];4],uv:[[f32;2];4]}
+struct DrawMesh {material:u32,sources:Vec<u32>,mesh:playsrc_beam::Mesh}
+#[derive(Clone)]
+struct RopeClient {definition:playsrc_entity::rope::Definition,physics:playsrc_map::legacy_rope::Rope,lighting:Arc<Vec<[f32;3]>>}
+impl RopeClient{
+    fn new(definition:playsrc_entity::rope::Definition,points:[Option<[f32;3]>;2],random:&mut playsrc_tf2::UniformRandomStream,lighting:&mut impl FnMut([f32;3])->Result<[f32;3],()>)->Result<Self,()>{
+        if definition.flags&!(1|playsrc_entity::rope::SIMULATE|playsrc_entity::rope::NO_WIND|playsrc_entity::rope::INITIAL_HANG)!=0{eprintln!("Unsupported rope flags {} at {}",definition.flags,definition.source);return Err(());}
+        let start=points[0].ok_or(())?;
+        let mut physics=playsrc_map::legacy_rope::Rope::new([start,points[1].unwrap_or(start)],usize::from(definition.nodes),definition.length,definition.slack,definition.locked,definition.flags&playsrc_entity::rope::NO_WIND!=0,definition.flags&playsrc_entity::rope::INITIAL_HANG!=0,&mut |low,high|random.random_float(low,high));
+        physics.set_endpoints(points,definition.locked);
+        let lighting=Arc::new(physics.nodes.iter().map(|node|lighting(node.predicted)).collect::<Result<Vec<_>,_>>()?);
+        Ok(Self{definition,physics,lighting})
+    }
+}
 
 #[derive(Clone)]
 pub struct World {
@@ -104,11 +130,13 @@ pub struct World {
     sprites:Vec<SpriteClient>,
     suns:Vec<SunClient>,
     spotlights:Vec<SpriteClient>,
+    ropes:Vec<Option<RopeClient>>,
+    screen_width:u32,samples:u32,
     random: playsrc_tf2::UniformRandomStream,
 }
 
 impl Default for World {
-    fn default() -> Self { Self { glows:Vec::new(),layout:Arc::default(),sprites:Vec::new(),suns:Vec::new(),spotlights:Vec::new(),random:playsrc_tf2::UniformRandomStream::from_seed(0).expect("Source default random seed") } }
+    fn default() -> Self { Self { glows:Vec::new(),layout:Arc::default(),sprites:Vec::new(),suns:Vec::new(),spotlights:Vec::new(),ropes:Vec::new(),screen_width:1280,samples:1,random:playsrc_tf2::UniformRandomStream::from_seed(0).expect("Source default random seed") } }
 }
 
 #[derive(Clone, Copy)]
@@ -124,10 +152,35 @@ impl World {
     pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decoders:&super::TextureDecoders<'_>,profile:playsrc_map::LightingProfile)->Result<Self,()> {
         let mut world=Self::definitions(graph)?;
         world.layout=super::legacy_materials::compile(graph,bundle,decoders,profile)?;
+        if !world.layout.ropes.is_empty()&&graph.entities.iter().any(|entity|entity.classname.as_deref().is_some_and(|class|class.eq_ignore_ascii_case(b"env_wind"))){eprintln!("Authored rope wind controller is unavailable");return Err(());}
         world.sprites=vec![SpriteClient::default();world.layout.sprites.len()];
         world.suns=vec![SunClient::default();world.layout.suns.len()];
         world.spotlights=vec![SpriteClient::default();world.layout.spotlights.len()];
+        world.ropes=vec![None;world.layout.ropes.len()];
         Ok(world)
+    }
+
+    fn initialize_ropes(&mut self,mut state:impl FnMut(u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>,mut lighting:impl FnMut([f32;3])->Result<[f32;3],()>)->Result<(),()>{
+        for (layout,client) in self.layout.ropes.iter().zip(&mut self.ropes){
+            let Some((definition,points))=state(layout.source).filter(|(definition,_)|definition.flags&playsrc_entity::rope::SIMULATE!=0)else{continue;};
+            *client=Some(RopeClient::new(definition,points,&mut self.random,&mut lighting)?);
+        }
+        Ok(())
+    }
+
+    fn advance_ropes(&mut self,seconds:f32,view:[f32;3],mut state:impl FnMut(u32)->Option<(playsrc_entity::rope::Definition,[Option<[f32;3]>;2])>,mut lighting:impl FnMut([f32;3])->Result<[f32;3],()>)->Result<(),()>{
+        for (layout,client) in self.layout.ropes.iter().zip(&mut self.ropes){
+            let Some((definition,points))=state(layout.source).filter(|(definition,_)|definition.flags&playsrc_entity::rope::SIMULATE!=0)else{*client=None;continue;};
+            if client.as_ref().is_none_or(|client|client.definition.entity!=definition.entity){
+                *client=Some(RopeClient::new(definition.clone(),points,&mut self.random,&mut lighting)?);
+            }
+            let client=client.as_mut().ok_or(())?;
+            if client.definition!=definition{client.physics.changed();}
+            if client.definition.length!=definition.length||client.definition.slack!=definition.slack{client.physics.set_length(definition.length,definition.slack);}
+            client.physics.set_endpoints(points,definition.locked);client.definition=definition;
+            client.physics.advance(seconds,view,[0.0;3],&mut |low,high|self.random.random_float(low,high));
+        }
+        Ok(())
     }
 
     fn definitions(graph: &playsrc_entity::Graph) -> Result<Self, ()> {
@@ -161,6 +214,7 @@ impl World {
         let frame=u64::from(client_frame);
         let mut proxies = Vec::new();
         let mut quads = Vec::new();
+        let mut meshes:Vec<DrawMesh>=Vec::new();
         let feedback = feedback.iter().map(|value| (value.source,value)).collect::<BTreeMap<_,_>>();
         for glow in &mut self.glows {
             if owner>1 {continue;}
@@ -283,8 +337,26 @@ impl World {
                 quads.push(DrawQuad{source:definition.source,material:asset as u32,frame:0,layer:0,hdr,origin:std::array::from_fn(|i|(beam.start[i]+beam.end[i])*0.5),positions:quad.positions,color:quad.colors,uv:quad.uv});
             }
         }
-        out.extend_from_slice(b"PLVF"); out.extend_from_slice(&7_u32.to_le_bytes());
+        for (layout,client) in self.layout.ropes.iter().zip(&self.ropes){
+            let Some(client)=client else{continue;};let Some((_,transform,render,_))=state(layout.source)else{continue;};
+            if render.effects&0x20!=0{continue;}
+            let mut minimum=client.physics.nodes[0].position;let mut maximum=minimum;
+            for node in &client.physics.nodes{for axis in 0..3{minimum[axis]=minimum[axis].min(node.position[axis]);maximum[axis]=maximum[axis].max(node.position[axis]);}}
+            let (belongs,visible)=visibility(transform.origin,Some(playsrc_visibility::Aabb{minimum,maximum}));if !belongs||!visible{continue;}
+            let definition=&client.definition;
+            let geometry=playsrc_map::legacy_rope::geometry(&client.physics,playsrc_map::legacy_rope::Draw{lighting:&client.lighting,color_modulation:[1.0;3],width:definition.width,
+                subdivisions:usize::from(if definition.subdivisions==255{2}else{definition.subdivisions.min(7)}),length:definition.length,slack:definition.slack,texture_scale:definition.texture_scale,mapping_height:layout.mapping_height,
+                view,screen_width:self.screen_width,samples:self.samples,has_back:layout.back.is_some()});
+            for (material,mesh) in [(layout.back,geometry.back),(Some(layout.material),geometry.solid)]{
+                let (Some(material),Some(mesh))=(material,mesh)else{continue;};
+                if let Some(batch)=meshes.iter_mut().find(|batch|batch.material==material as u32){
+                    let base=batch.mesh.vertices.len() as u32;batch.mesh.vertices.extend(mesh.vertices);batch.mesh.indices.extend(mesh.indices.into_iter().map(|index|index+base));batch.sources.push(layout.source);
+                }else{meshes.push(DrawMesh{material:material as u32,sources:vec![layout.source],mesh});}
+            }
+        }
+        out.extend_from_slice(b"PLVF"); out.extend_from_slice(&8_u32.to_le_bytes());
         out.extend_from_slice(&(proxies.len() as u32).to_le_bytes()); out.extend_from_slice(&(quads.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(meshes.len() as u32).to_le_bytes());
         for (source,proxy) in proxies {
             out.extend_from_slice(&source.to_le_bytes()); out.extend_from_slice(&proxy.clip_fraction.to_le_bytes());
             for vertex in proxy.vertices {for value in vertex.into_iter().chain([1.0]) {out.extend_from_slice(&value.to_le_bytes());}}
@@ -293,6 +365,12 @@ impl World {
             for value in [quad.source,quad.material,quad.frame,quad.layer] {out.extend_from_slice(&value.to_le_bytes());}
             out.extend_from_slice(&quad.hdr.to_le_bytes());
             for value in quad.origin.into_iter().chain(quad.positions.into_iter().flatten()).chain(quad.color.into_iter().flatten()).chain(quad.uv.into_iter().flatten()) {out.extend_from_slice(&value.to_le_bytes());}
+        }
+        for batch in meshes{
+            for value in [batch.material,batch.sources.len() as u32,batch.mesh.vertices.len() as u32,batch.mesh.indices.len() as u32]{out.extend_from_slice(&value.to_le_bytes());}
+            for source in batch.sources{out.extend_from_slice(&source.to_le_bytes());}
+            for vertex in batch.mesh.vertices{for value in vertex.position.into_iter().chain(vertex.uv){out.extend_from_slice(&value.to_le_bytes());}out.extend_from_slice(&vertex.color);}
+            for index in batch.mesh.indices{out.extend_from_slice(&index.to_le_bytes());}
         }
         Ok(())
     }
@@ -305,9 +383,17 @@ pub struct Runtime {
     pending:Option<(u32,std::sync::Arc<World>)>,
 }
 
+#[cfg(not(target_arch="wasm32"))]
+pub struct RopeFacts {pub source:u32,pub nodes:Vec<[f32;3]>,pub no_wind:bool,pub material:String,pub cameras:Vec<[f32;5]>}
+
 impl Runtime {
     pub fn new(world:World)->Self {Self{committed:std::sync::Arc::new(world),..Default::default()}}
-    pub fn required(&self)->bool {!self.committed.glows.is_empty()||!self.committed.layout.sprites.is_empty()||!self.committed.layout.suns.is_empty()||!self.committed.layout.spotlights.is_empty()}
+    pub fn required(&self)->bool {!self.committed.glows.is_empty()||!self.committed.layout.sprites.is_empty()||!self.committed.layout.suns.is_empty()||!self.committed.layout.spotlights.is_empty()||!self.committed.layout.ropes.is_empty()}
+    pub fn initialize_ropes(&mut self,map:&playsrc_tf2::MapRuntime,lighting:&mut playsrc_map::ModelLightingWorld<'_>,visibility:&playsrc_visibility::World,collision:&playsrc_collision::World,snapshot:&playsrc_collision::Snapshot)->Result<(),()>{
+        Arc::make_mut(&mut self.committed).initialize_ropes(|source|map.rope_state(source),|position|lighting.point_lighting(position,visibility,collision,snapshot).inspect_err(|_|eprintln!("Rope lighting at {position:?}")))
+    }
+    #[cfg(not(target_arch="wasm32"))]
+    pub fn rope_facts(&self)->Vec<RopeFacts>{self.committed.ropes.iter().flatten().map(|rope|RopeFacts{source:rope.definition.source,nodes:rope.physics.nodes.iter().map(|node|node.predicted).collect(),no_wind:rope.definition.flags&playsrc_entity::rope::NO_WIND!=0,material:rope.definition.material.to_string(),cameras:Vec::new()}).collect()}
     fn begin(&self,client_frame:u32,accepted_client_frame:u32)->Result<(Self,World),()> {
         if client_frame!=accepted_client_frame.checked_add(1).ok_or(())? {return Err(());}
         let mut runtime=self.clone();
@@ -328,9 +414,19 @@ pub(super) fn prepare(slot:&super::Slot,payload:&[u8],client_frame:u32,accepted_
     let (mut runtime,mut candidate)=slot.legacy_visuals.begin(client_frame,accepted_client_frame)?;
     let (Some(visibility),Some(area),Some(candidates),Some(environment),Some(session))=(slot.visibility.as_ref(),slot.area_state.as_ref(),slot.visibility_candidates.as_ref(),slot.environment.as_ref(),slot.session.as_ref()) else {return Err(());};
     let mut reader=Reader{bytes:payload,at:0};
-    if reader.take(4)?!=b"PLVQ"||reader.u32()?!=2 {return Err(());}
+    if reader.take(4)?!=b"PLVQ"||reader.u32()?!=3 {return Err(());}
     let count=reader.u32()?;
+    candidate.screen_width=reader.u32()?;candidate.samples=reader.u32()?;
+    if !(1..=32768).contains(&candidate.screen_width)||![1,4].contains(&candidate.samples){return Err(());}
     if !(1..=5).contains(&count) {return Err(());}
+    let mut scan=Reader{bytes:payload,at:reader.at};let mut main_origin=None;
+    for _ in 0..count{
+        let owner=scan.u32()?;scan.take(8)?;let feedback=scan.u32()?;let position=[scan.f32()?,scan.f32()?,scan.f32()?];scan.take(36)?;
+        scan.take((feedback as usize).checked_mul(20).ok_or(())?)?;if owner==0{main_origin=Some(position);}
+    }
+    let mut lighting=slot.model_lighting_world.as_ref().ok_or(())?.borrowed_view();
+    let world=slot.gameplay_world.as_ref().ok_or(())?;let snapshot=world.snapshot();
+    candidate.advance_ropes(client_frame_seconds,main_origin.ok_or(())?,|source|session.map_rope_state(source),|position|lighting.point_lighting(position,visibility,&world.world,&snapshot))?;
     let mut owners=std::collections::BTreeSet::new();
     let mut output=b"PLVF".to_vec();output.extend_from_slice(&5_u32.to_le_bytes());output.extend_from_slice(&count.to_le_bytes());
     let sky_area=environment.world.controllers.iter().find_map(|controller|match controller.state {playsrc_map::ControllerState::SkyCamera{area,..}=>Some(area),_=>None});

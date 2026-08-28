@@ -14,6 +14,7 @@ presentation-bound-diagnostic = []
 collision-replay = ["playsrc-collision/replay-reference"]
 
 [dependencies]
+playsrc-beam = { path = "../../../packages/presentation/beam/rust" }
 playsrc-audio = { path = "../../../packages/presentation/audio/rust" }
 playsrc-wav = { path = "../../../packages/formats/wav/rust" }
 playsrc-asset-graph = { path = "../../../packages/asset-store/rust" }
