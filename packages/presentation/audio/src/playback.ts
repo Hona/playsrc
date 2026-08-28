@@ -51,7 +51,7 @@ const encoded = new TextEncoder(), decoded = new TextDecoder("utf-8", { fatal: t
 const moduleCache = new Map<string, Promise<WebAssembly.Module>>()
 const CAPACITY = 16384, AHEAD = 4408
 
-export async function createSourceAudioSystem(context: AudioContext, moduleUrl: URL, resources: ReadonlyMap<string, Uint8Array>, random: AudioRandom) {
+export async function createSourceAudioSystem(context: AudioContext, moduleUrl: URL, resources: ReadonlyMap<string, Uint8Array>, random: AudioRandom, diagnostics = false) {
   if (context.sampleRate !== 44100 || !context.audioWorklet || typeof AudioWorkletNode !== "function" || !crossOriginIsolated) {
     throw new AudioError("BrowserFailure", "Source audio requires a 44.1 kHz isolated audio device")
   }
@@ -74,13 +74,20 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
   const buffer = new SharedArrayBuffer(32 + CAPACITY * 8)
   const control = new Int32Array(buffer, 0, 8), samples = new Float32Array(buffer, 32)
   await context.audioWorklet.addModule(new URL("./output-worklet.js", import.meta.url))
-  const output = new AudioWorkletNode(context, "playsrc-output", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { buffer, capacity: CAPACITY } })
+  const output = new AudioWorkletNode(context, "playsrc-output", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { buffer, capacity: CAPACITY, diagnostics } })
   output.connect(context.destination)
   let closed = false, failure: Error | undefined, epoch = 0, previousTime: number | undefined, pending = false, ready = false
   let inventory = new Map<string, PcmResource>()
   const queued: Array<{ voice: NeutralVoice; source: SoundSource } | { stop: number }> = []
-  let capture: { base: number; parts: Int16Array[]; frames: number; resolve(value: AudioCapture): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
-  const metrics = { paintCalls: 0, paintedFrames: 0, paintMilliseconds: 0, maximumPaintMilliseconds: 0 }
+  let capture: { id: number; base: number; parts: Int16Array[]; frames: number; resolve(value: AudioCapture): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
+  let captureSequence = 0
+  const metrics = { paintCalls: 0, extraPaintCalls: 0, paintedFrames: 0, paintMilliseconds: 0, maximumPaintMilliseconds: 0 }
+  const lifecycle: Record<string, unknown>[] = []
+  let lastPaint: number | undefined
+  let nextExtraUpdate = 0
+  const record = (event: string, fields: Record<string, unknown> = {}) => {
+    if (diagnostics && lifecycle.length < 256) lifecycle.push({ event, wallTime: performance.now(), audioTime: context.currentTime, epoch, pending, ready, contextState: context.state, ...fields })
+  }
   output.onprocessorerror = () => {
     failure = new AudioError("BrowserFailure", "Source audio device processor failed")
     if (capture) { clearTimeout(capture.timer); capture.reject(failure); capture = undefined }
@@ -110,9 +117,14 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
       done() { if (at !== value.length) throw new AudioError("MalformedResource", "Trailing audio metadata") } }
   }
   function flushDevice(): void {
+    record("retire", { read: Atomics.load(control, 0) >>> 0, write: Atomics.load(control, 1) >>> 0 })
     Atomics.store(control, 4, 0); epoch = (epoch + 1) >>> 0; Atomics.store(control, 2, epoch)
     previousTime = undefined; pending = false; ready = false; queued.length = 0
-    if (capture) { clearTimeout(capture.timer); capture.reject(new AudioError("Closed", "Audio capture crossed map ownership")); capture = undefined }
+    lastPaint = undefined
+    if (capture) {
+      clearTimeout(capture.timer); output.port.postMessage({ cancelCapture: capture.id })
+      capture.reject(new AudioError("Closed", "Audio capture crossed map ownership")); capture = undefined
+    }
   }
   function replace(input: ReadonlyMap<string, Uint8Array>): ReadonlyMap<string, PcmResource> {
     if (closed) throw new AudioError("Closed", "Audio system is closed")
@@ -174,12 +186,19 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
       samples[at] = pcm[frame * 2]! / 32768; samples[at + 1] = pcm[frame * 2 + 1]! / 32768
     }
     Atomics.store(control, 1, (write + frames) | 0); Atomics.store(control, 4, 1)
+    if (diagnostics) {
+      const now = context.currentTime
+      if (lastPaint === undefined || now - lastPaint > 0.08) record("paint-gap", { previousAudioTime: lastPaint, read, write, frames, previousAvailable: available, activeVoices: wasm.playsrc_audio_voice_count() })
+      lastPaint = now
+    }
     const duration = performance.now() - started
     metrics.paintCalls++; metrics.paintedFrames += frames; metrics.paintMilliseconds += duration; metrics.maximumPaintMilliseconds = Math.max(metrics.maximumPaintMilliseconds, duration)
+    nextExtraUpdate = performance.now() + 90
   }
   output.port.onmessage = ({ data }) => {
+    if (data.deviceGap) { record("device-gap", data.deviceGap); return }
     const current = capture
-    if (!current) return
+    if (!current || data.captureId !== current.id) return
     capture = undefined; clearTimeout(current.timer)
     if (data.error || !(data.capture instanceof ArrayBuffer) || data.epoch !== epoch || data.capture.byteLength !== current.frames * 4) {
       current.reject(new AudioError("BrowserFailure", data.error ?? "Audio capture framing differs")); return
@@ -257,6 +276,13 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
       if (failure) throw failure
       if (!closed && ready && context.state === "running") paint()
     },
+    extraUpdate() {
+      if (performance.now() >= nextExtraUpdate && !closed && ready && context.state === "running") {
+        const before = metrics.paintCalls
+        paint()
+        metrics.extraPaintCalls += Number(metrics.paintCalls !== before)
+      }
+    },
     reset() { if (!closed) { wasm.playsrc_audio_reset(); flushDevice() } },
     async resume() {
       if (closed) throw new AudioError("Closed", "Audio system is closed")
@@ -273,16 +299,22 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
       activeVoices: wasm.playsrc_audio_voice_count(), room: wasm.playsrc_audio_room(), wasmBytes: wasm.memory.buffer.byteLength,
       soundscape: wasm.playsrc_audio_soundscape(), environmentStarts: wasm.playsrc_audio_environment_starts(), mp3Frames: Number(wasm.playsrc_audio_mp3_frames()),
       underwater: wasm.playsrc_audio_underwater() !== 0, roomObservation: observation,
-      decodedBytes: [...inventory.values()].reduce((total, clip) => total + clip.length * clip.numberOfChannels * 2, 0), epoch }) },
+      decodedBytes: [...inventory.values()].reduce((total, clip) => total + clip.length * clip.numberOfChannels * 2, 0), epoch,
+      ...(diagnostics ? { lifecycle: lifecycle.slice() } : {}) }) },
     capture(frames = 220500): Promise<AudioCapture> {
-      if (closed || context.state !== "running" || capture || (Atomics.load(control, 6) >>> 0) !== epoch || !Number.isInteger(frames) || frames < 1 || frames > 441000) return Promise.reject(new AudioError("MalformedEvent", "Audio capture is unavailable"))
+      if (closed || context.state !== "running" || capture || captureSequence >= 0xffff_ffff || (Atomics.load(control, 6) >>> 0) !== epoch || !Number.isInteger(frames) || frames < 1 || frames > 441000) return Promise.reject(new AudioError("MalformedEvent", "Audio capture is unavailable"))
       const base = Atomics.load(control, 0) >>> 0, end = Atomics.load(control, 1) >>> 0, buffered = (end - base) >>> 0
       const initial = new Int16Array(buffered * 2)
       for (let frame = 0; frame < buffered; frame++) { const at = ((base + frame) & (CAPACITY - 1)) * 2; initial[frame * 2] = samples[at]! * 32768; initial[frame * 2 + 1] = samples[at + 1]! * 32768 }
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { capture = undefined; reject(new AudioError("BrowserFailure", "Audio capture timed out")) }, 12_000)
-        capture = { base, parts: [initial], frames, resolve, reject, timer }
-        output.port.postMessage({ captureFrames: frames })
+        const id = ++captureSequence
+        const timer = setTimeout(() => {
+          if (capture?.id !== id) return
+          capture = undefined; output.port.postMessage({ cancelCapture: id })
+          reject(new AudioError("BrowserFailure", "Audio capture timed out"))
+        }, 12_000)
+        capture = { id, base, parts: [initial], frames, resolve, reject, timer }
+        output.port.postMessage({ captureId: capture.id, captureFrames: frames })
       })
     },
   })

@@ -377,10 +377,7 @@ pub unsafe extern "C" fn playsrc_audio_scene(pointer: *const u8, length: usize) 
             .playback
             .as_mut()
             .ok_or(Error::Malformed("audio is not initialized"))?;
-        if let Some(room) = reply.room {
-            playback.room(room.node, room.created)?;
-        }
-        playback.spatialize(&reply.obstruction, reply.underwater)?;
+        playback.scene(reply.room, &reply.obstruction, reply.underwater)?;
         state.pending = false;
         Ok(())
     })
@@ -610,4 +607,194 @@ pub extern "C" fn playsrc_audio_error_length() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_audio_error_data() -> *const u8 {
     state().lock().expect("audio instance").error.as_ptr()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resource(name: &str, bytes: &[u8]) {
+        assert_eq!(
+            unsafe {
+                playsrc_audio_resource(name.as_ptr(), name.len(), bytes.as_ptr(), bytes.len())
+            },
+            1
+        );
+    }
+    fn stage(world: [u8; 32]) {
+        assert_eq!(playsrc_audio_stage(), 1);
+        resource(
+            playsrc_audio::soundscape::MAP_BINDING,
+            &playsrc_audio::soundscape::encode_map_binding("fixture", world).unwrap(),
+        );
+        resource(
+            playsrc_audio::soundscape::MANIFEST,
+            b"soundscapes_manifest {}",
+        );
+        let presets = (0..15)
+            .map(|id| format!("{{ {id} LINEAR .2 .7 0 0 80 .5 {{ NULL }} }}\n"))
+            .collect::<String>();
+        resource("scripts/dsp_presets.txt", presets.as_bytes());
+        resource(
+            "scripts/soundmixers.txt",
+            br#"GROUPRULES { All "" "" "" "" "" 50 0 0 100 40 } Default_Mix { All 1 }"#,
+        );
+        let mut wav = b"RIFF\x2a\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\x06\0\0\0".to_vec();
+        for sample in [1000_i16, 2000, 3000] {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        resource("sound/test.wav", &wav);
+    }
+    fn frame() -> Vec<u8> {
+        let mut bytes = vec![0; 168];
+        bytes[4..8].copy_from_slice(&(-1_i32).to_le_bytes());
+        for (at, value) in [
+            (120, 1.0_f32),
+            (136, -1.0),
+            (144, 0.015),
+            (148, 1.0),
+            (160, 1.0),
+        ] {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[152..160].copy_from_slice(&1.0_f64.to_le_bytes());
+        bytes
+    }
+    fn start() -> Vec<u8> {
+        let mut bytes = vec![];
+        for word in [17_u32, 8] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"test.wav");
+        // volume, pitch, level, local, entity domain/id, has origin, xyz,
+        // radius, channel, offsets, no envelope, empty source class.
+        for word in [
+            1.0_f32.to_bits(),
+            100,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+    fn update(bytes: &[u8]) -> u32 {
+        unsafe { playsrc_audio_frame(bytes.as_ptr(), bytes.len()) }
+    }
+    fn scene(reply: &wire::SceneReply) -> u32 {
+        let bytes = wire::reply_bytes(reply);
+        unsafe { playsrc_audio_scene(bytes.as_ptr(), bytes.len()) }
+    }
+    #[test]
+    fn host_binding_owns_transaction_rollback_replacement_reuse_and_disposal() {
+        playsrc_audio_dispose();
+        stage([7; 32]);
+        assert_eq!(playsrc_audio_commit(), 1);
+        let clip = state().lock().unwrap().resources[b"sound/test.wav".as_slice()]
+            .clip
+            .clone();
+        let voice = start();
+        assert_eq!(
+            unsafe { playsrc_audio_start(voice.as_ptr(), voice.len()) },
+            1
+        );
+        assert_eq!(playsrc_audio_active_count(), 1);
+        let frame = frame();
+        let mut malformed = frame.clone();
+        malformed[160..164].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(update(&malformed), 0);
+        assert!(!state().lock().unwrap().pending);
+        assert_eq!(update(&frame), 1);
+        let request = wire::read_request(&state().lock().unwrap().output).unwrap();
+        assert_eq!(update(&frame), 0);
+        assert_eq!(playsrc_audio_paint(4), 1);
+        assert_eq!(
+            state().lock().unwrap().playback.as_ref().unwrap().painted(),
+            &[0; 8]
+        );
+        let mut reply = wire::SceneReply {
+            world: [8; 32],
+            sequence: request.sequence,
+            room: None,
+            underwater: false,
+            obstruction: vec![],
+        };
+        assert_eq!(scene(&reply), 0);
+        reply.world = request.world;
+        reply.obstruction.push((1, 1.0));
+        reply.room = Some(playsrc_audio::acoustics::RoomChange {
+            node: 0,
+            created: Some(playsrc_audio::room::Room {
+                outside: false,
+                width: 256,
+                length: 512,
+                height: 128,
+                diffusion: 0.0,
+                reflectivity: 0.5,
+                surfaces: [0.5; 6],
+            }),
+        });
+        assert_eq!(scene(&reply), 0);
+        assert!(
+            state()
+                .lock()
+                .unwrap()
+                .playback
+                .as_mut()
+                .unwrap()
+                .room(0, None)
+                .is_err()
+        );
+        reply.obstruction.clear();
+        reply.room = None;
+        assert_eq!(scene(&reply), 1);
+        assert_eq!(scene(&reply), 0);
+        assert_eq!(playsrc_audio_paint(4), 1);
+        assert_eq!(
+            state().lock().unwrap().playback.as_ref().unwrap().painted(),
+            &[992, 992, 1984, 1984, 2976, 2976, 0, 0]
+        );
+
+        assert_eq!(playsrc_audio_stage(), 1);
+        assert_eq!(playsrc_audio_commit(), 0);
+        assert_eq!(playsrc_audio_active_count(), 1);
+        assert!(Arc::ptr_eq(
+            &clip,
+            &state().lock().unwrap().resources[b"sound/test.wav".as_slice()].clip
+        ));
+        stage([8; 32]);
+        assert_eq!(playsrc_audio_commit(), 1);
+        assert!(Arc::ptr_eq(
+            &clip,
+            &state().lock().unwrap().resources[b"sound/test.wav".as_slice()].clip
+        ));
+        assert_eq!(playsrc_audio_active_count(), 0);
+        assert_eq!(update(&frame), 1);
+        assert_eq!(scene(&reply), 0);
+        let next = wire::read_request(&state().lock().unwrap().output).unwrap();
+        assert!(next.sequence > request.sequence);
+        reply.world = next.world;
+        reply.sequence = next.sequence;
+        assert_eq!(scene(&reply), 1);
+        playsrc_audio_reset();
+        assert_eq!(playsrc_audio_voice_count(), 0);
+        let weak = Arc::downgrade(&clip);
+        drop(clip);
+        playsrc_audio_dispose();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(playsrc_audio_active_count(), 0);
+        assert_eq!(playsrc_audio_paint(4), 0);
+    }
 }

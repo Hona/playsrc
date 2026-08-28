@@ -3,10 +3,14 @@ import { chooseTf2Team } from "./team-selection-evidence"
 import { writeFile } from "node:fs/promises"
 
 test("Lakeside trigger entries and exits change real mixed audio including underwater processing", async ({ page }, testInfo) => {
-  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = {} })
+  await page.addInitScript(() => {
+    const profile = ((globalThis as any).__playsrcProfile = { longTasks: [] as unknown[], coldPhases: [] as unknown[] })
+    new PerformanceObserver(list => { for (const task of list.getEntries()) if (profile.longTasks.length < 128) profile.longTasks.push(task.toJSON()) }).observe({ type: "longtask", buffered: true })
+  })
   const main = page.locator("main"), errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
   const command = async (value: string) => {
+    await page.evaluate(value => { const profile = (globalThis as any).__playsrcProfile; profile.coldPhases.push({ command: value, at: performance.now(), audio: profile.audio?.stats() }) }, value)
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
     const entry = page.locator("[aria-label='Console command']")
     await entry.fill(value); await entry.press("Enter"); await page.keyboard.press("Backquote")
@@ -17,6 +21,12 @@ test("Lakeside trigger entries and exits change real mixed audio including under
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  const cpu = process.env.PROFILE_AUDIO_CPU === "1" ? await page.context().newCDPSession(page) : undefined
+  if (cpu) {
+    await cpu.send("Profiler.enable")
+    await cpu.send("Profiler.setSamplingInterval", { interval: 1000 })
+    await cpu.send("Profiler.start")
+  }
   await page.locator("canvas.world-canvas").click({ force: true })
   // Trigger *24 covers the shallow lake shore. The deep z=1 water volume
   // is inside the temple, not this shore (whose water surface is z=-248).
@@ -68,6 +78,10 @@ test("Lakeside trigger entries and exits change real mixed audio including under
   const outside = await page.evaluate(() => ({ selection: (globalThis as any).__playsrcProfile.soundscape, audio: (globalThis as any).__playsrcProfile.audio.stats(), player: (globalThis as any).__playsrcProfile.player }))
   await page.screenshot({ path: testInfo.outputPath("lake-exit.png") })
   const captured = await recording
+  if (cpu) {
+    await writeFile(testInfo.outputPath("cold-admission.cpuprofile"), JSON.stringify((await cpu.send("Profiler.stop")).profile))
+    await cpu.detach()
+  }
   await writeFile(testInfo.outputPath("lakeside-capture.json"), JSON.stringify({ ...captured, pcm: undefined }))
   await writeFile(testInfo.outputPath("lakeside-raw.pcm"), Buffer.from(captured.pcm, "base64"))
   expect(captured.captured.differingSamples).toBe(0)
@@ -93,6 +107,9 @@ test("Lakeside trigger entries and exits change real mixed audio including under
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.soundscape?.entity === 0, undefined, { timeout: 5000 })
   const exited = await page.evaluate(() => ({ selection: (globalThis as any).__playsrcProfile.soundscape, audio: (globalThis as any).__playsrcProfile.audio.stats() }))
   expect(exited.audio.soundscape).toBe(outside.audio.soundscape)
-  await writeFile(testInfo.outputPath("lakeside-audio.json"), JSON.stringify({ lake, temple, water, outside, exited, captured: { ...captured, pcm: undefined }, nonzero, waterStereoDifferences, errors }))
+  const diagnostics = await page.evaluate(() => { const profile = (globalThis as any).__playsrcProfile; return { longTasks: profile.longTasks, coldPhases: profile.coldPhases } })
+  await writeFile(testInfo.outputPath("lakeside-audio.json"), JSON.stringify({ lake, temple, water, outside, exited, captured: { ...captured, pcm: undefined }, nonzero, waterStereoDifferences, diagnostics, errors }))
+  expect(exited.audio.underrunFrames).toBe(0)
+  expect(exited.audio.extraPaintCalls).toBeGreaterThan(0)
   expect(errors).toEqual([])
 })
