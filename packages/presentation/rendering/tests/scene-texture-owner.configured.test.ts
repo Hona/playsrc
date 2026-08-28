@@ -3,7 +3,7 @@ import path from "node:path"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
 import { parseResourceSet } from "../../../asset-store/src/graph"
 import { parsePresentationArtifacts } from "../../../../games/tf2/browser/src/artifacts"
-import { decodeModelPoseOutput } from "../../../../games/tf2/browser/src/presentation"
+import { decodeModelPoseOutput, projectileModelPath } from "../../../../games/tf2/browser/src/presentation"
 import { decodeSnapshot } from "../../../../games/tf2/browser/src/codec"
 import { loadOfflineTextureOwner, offlineTextureDevice, offlinePipelineDevice } from "./offline-texture-owner"
 
@@ -65,8 +65,19 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
     device.backend.textureUtils.getDepthBuffer(true, false)
     for (const entry of entries(first)) if (device.backend.has(entry.value) && device.backend.get(entry.value).texture) initializedBefore.add(entry.value)
   }
-  // Exercise the complete prepared-template route as well as texture handoff.
-  for (const key of first.modelTemplates.keys()) first.modelPipelineKeys.add(key)
+  // Reproduce prepared model identities through the same authored request/pose
+  // contract; do not mark unseen templates prepared merely to improve reuse.
+  const poseRequest = await Bun.file(path.join(directory, "models-request.json")).json()
+  const poses = decodeModelPoseOutput(await Bun.file(path.join(directory, "models-output.bin")).bytes())
+  const requests = new Map(poseRequest.requests.map((value: any) => [value.request.identity, value]))
+  for (const pose of poses) {
+    const request: any = requests.get(pose.identity), artifact = artifacts.models.get(pose.model)!
+    first.modelPipelineKeys.add(m.offlineModelKey(pose.model, request.request.skin < artifact.skinCount ? request.request.skin : 0))
+  }
+  for (const model of new Set([1, 2, 3, 4].map(kind => projectileModelPath(kind as 1 | 2 | 3 | 4, false)).concat(projectileModelPath(1, true)))) {
+    const artifact = artifacts.models.get(model)!
+    for (let skin = 0; skin < artifact.skinCount; skin++) first.modelPipelineKeys.add(m.offlineModelKey(model, skin))
+  }
   const second = owner.offlineBuildScene(device.renderer, map, payload, request.payloadSha256, request)
   const after = entries(second), newSamples = after.filter((entry: any) => !beforeObjects.has(entry.value))
   const transferred = after.filter((entry: any) => beforeObjects.has(entry.value))
@@ -83,11 +94,8 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
     const worldEnd = device.allocations.length
     owner.offlineAdmitScene(second)
     device.phase("candidate-particle-pipeline-warmup")
-    const poseRequest = await Bun.file(path.join(directory, "models-request.json")).json()
     await owner.prepareParticlePipelines(poseRequest.camera)
     const particleEnd = device.allocations.length
-    const poses = decodeModelPoseOutput(await Bun.file(path.join(directory, "models-output.bin")).bytes())
-    const requests = new Map(poseRequest.requests.map((value: any) => [value.request.identity, value]))
     const prepared = poses.map(pose => {
       const preparation: any = requests.get(pose.identity), artifact = artifacts.models.get(pose.model)!, request = preparation.request
       return { pass: preparation.pass, unposedPanel: preparation.pass === "panel" && pose.role === "single", item: {
@@ -110,11 +118,14 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
         const entry = entries(second).find((entry: any) => entry.value.name === record.label)
         expect(entry).toBeDefined(); expect(initializedBefore.has(entry.value)).toBe(false)
         return { ...record, logicalTextureId: entry.value.id, residencyIdentity: entry.identity,
-          constructedBeforeReplacement: beforeObjects.has(entry.value), initializedBeforeReplacement: false }
+          constructedBeforeReplacement: beforeObjects.has(entry.value), initializedBeforeReplacement: false,
+          uploadInputs: device.writes.filter((write: any) => write.id === record.id),
+          sampler: Object.fromEntries(["format", "type", "colorSpace", "channel", "internalFormat", "wrapS", "wrapT", "minFilter", "magFilter", "anisotropy", "generateMipmaps", "flipY", "premultiplyAlpha", "unpackAlignment"].map(key => [key, entry.value[key]])) }
       })
     expect(newlyResident).toHaveLength(35)
     expect(newlyResident.filter((record: any) => record.constructedBeforeReplacement)).toHaveLength(34)
     expect(newlyResident.find((record: any) => !record.constructedBeforeReplacement)?.label).toBe("cubemap:materials/maps/pl_upward/c205_520_617.vtf:frame=0/1:")
+    expect(newlyResident.reduce((sum: number, record: any) => sum + record.uploadInputs.reduce((bytes: number, write: any) => bytes + write.bytes, 0), 0)).toBe(4144484)
     compilation = { newAllocations: device.allocations.slice(start), worldAllocations: device.allocations.slice(start, worldEnd),
       particleAllocations: device.allocations.slice(worldEnd, particleEnd), modelAllocations: device.allocations.slice(particleEnd, modelsEnd),
       initialBindingAllocations: device.allocations.slice(modelsEnd), initialEyeLeaf: visibility.eyeLeaf,
@@ -125,12 +136,18 @@ test.skipIf(process.env.PLAYSRC_OFFLINE_SCENE_OWNER !== "1")("actual configured 
   }
   const record = (entry: any) => ({ identity: entry.identity, textureId: entry.value.id, owner: entry.value.name, pinned: entry.pinned,
     version: entry.value.version, format: entry.value.format, colorSpace: entry.value.colorSpace, mipCount: entry.value.mipmaps.length })
+  // Without compilation this is rollback; with compilation it is terminal
+  // retirement after handoff. Both use the production generation owner.
+  second.disposables.dispose(); second.textureResidency.clear()
+  expect(first.disposables.snapshot().state).toBe("Active")
+  first.disposables.dispose(); first.textureResidency.clear()
+  if (compilation) {
+    compilation.terminalNewlyResidentLive = compilation.newlyResident.filter((entry: any) => !device.allocations.find((allocation: any) => allocation.id === entry.id)!.destroyed).length
+    expect(compilation.terminalNewlyResidentLive).toBe(0)
+    device.renderer.dispose()
+  }
   await Bun.write(path.join(root, "offline/scene-construction.json"), JSON.stringify({ sourceSha256: loaded.sourceSha256, manifest,
     diagnostics: { first: first.diagnostics, second: second.diagnostics }, compilation, first: before.map(record), second: after.map(record), newSamples: newSamples.map(record),
     transferredSamples: transferred.length, particleInputs: artifacts.particleTextures.map(input => ({ material: input.material, logicalPath: input.logicalPath, sourceSha256: input.sourceSha256 })),
     interpretation: "Actual configured production scene construction, Three pipeline traversal and initial unassigned-world command-encoding path. GPU commands recorded, not executed; no browser, pixels, physical residency or FPS evidence. Historical native and newly compiled fixture identities remain separate." }, null, 2) + "\n")
-  // Rejected staging owns only its new resources, never active borrowed samples.
-  second.disposables.dispose(); second.textureResidency.clear()
-  expect(first.disposables.snapshot().state).toBe("Active")
-  first.disposables.dispose(); first.textureResidency.clear()
 }, 20_000)
