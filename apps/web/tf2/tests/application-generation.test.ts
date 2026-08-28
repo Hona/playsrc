@@ -1,7 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import { createApplicationGenerationRecovery, resourceGenerationMatches } from "../src/application-generation"
+import { createApplicationGenerationRecovery, installedMapProfileIdentity, resourceGenerationMatches } from "../src/application-generation"
 
 describe("authenticated application generation recovery", () => {
+  test("profiling joins the installed target and generation, including same-target replacement", () => {
+    const targets = ["pl_upward", "ctf_2fort"].map((target, i) => ({ target, contentBuild: "24245096",
+      objects: { resources: { sha256: String(i + 1).repeat(64) }, bsp: { sha256: String(i + 3).repeat(64) } } }))
+    const configuration = { defaultTarget: "pl_upward", targets }
+    const startup = { bundle: "a".repeat(64), startedMilliseconds: 10 }
+    const first = { ...startup, ...installedMapProfileIdentity(configuration.targets[1]!, 7) }
+    expect(first).toEqual({ ...startup, target: "ctf_2fort", contentBuild: "24245096",
+      resourceRoot: "2".repeat(64), bsp: "4".repeat(64), mapGeneration: 7 })
+    const replacement = { ...first, ...installedMapProfileIdentity(configuration.targets[1]!, 12) }
+    expect(replacement.mapGeneration).toBe(12)
+    expect(replacement.resourceRoot).toBe(first.resourceRoot)
+    expect(first.mapGeneration).toBe(7)
+    const changed = { ...replacement, ...installedMapProfileIdentity(configuration.targets[0]!, 18) }
+    expect(changed.target).toBe("pl_upward")
+    expect(changed.resourceRoot).toBe("1".repeat(64))
+    expect(changed.bsp).toBe("3".repeat(64))
+    expect(startup).not.toHaveProperty("resourceRoot")
+  })
   test("separates exact archived WASM generations sharing the same immutable root and rejects foreign Windows path/case identities", () => {
     const root = "7d77f7e7d4fac359c9a72d19f9c275e5c86683434269618f567ce07d7b567e6b"
     const wasm = ["9adaf2ae3c0f92f0f967b44a0f594a2ace2965327e5f13a13465f77c74878e81", "f98848112dfb7307cbba703349d81e14fcf85ca3f1c6f51034cee9404998a9ca"]

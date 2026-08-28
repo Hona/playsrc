@@ -2,6 +2,16 @@ const HASH = /^[0-9a-f]{64}$/
 const STORAGE_KEY = "playsrc.tf2.application-generation.v1"
 const MAX_UPGRADES = 3
 
+/** Join profiling to the successfully activated target, not the startup default. */
+export function installedMapProfileIdentity(target: Readonly<{
+  target: string
+  contentBuild: string
+  objects: Readonly<{ resources: Readonly<{ sha256: string }>; bsp: Readonly<{ sha256: string }> }>
+}>, mapGeneration: number) {
+  return { target: target.target, contentBuild: target.contentBuild,
+    resourceRoot: target.objects.resources.sha256, bsp: target.objects.bsp.sha256, mapGeneration }
+}
+
 export function resourceGenerationMatches(
   configuration: Readonly<{ wasm: Readonly<{ sha256: string }>; targets: readonly Readonly<{ target: string; objects: Readonly<{ resources: Readonly<{ sha256: string }> }> }>[] }>,
   wasmSha256: string,

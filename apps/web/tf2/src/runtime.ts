@@ -115,7 +115,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleResources} from "./console-resources"
 import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
-import { createApplicationGenerationRecovery, resourceGenerationMatches } from "./application-generation"
+import { createApplicationGenerationRecovery, installedMapProfileIdentity, resourceGenerationMatches } from "./application-generation"
 import { playStartupVideo } from "./startup-playback"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, sourceMouseButtonCode, type PhysicalBinding } from "./input"
@@ -1576,7 +1576,7 @@ export class Tf2Application {
       const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
       if (profile) profile.applicationGeneration = {
         bundle: __PLAYSRC_APPLICATION_BUILD__, configuration: configuration.applicationBuild,
-        wasm: configuration.wasm.sha256, resourceRoot: configuration.targets.find((target) => target.target === configuration.defaultTarget)?.objects.resources.sha256,
+        wasm: configuration.wasm.sha256,
         presentationSchema: TF2_PRESENTATION_SCHEMA, startedMilliseconds: performance.now(),
       }
       const generationMismatch = !resourceGenerationMatches(configuration, __PLAYSRC_WASM_SHA256__, __PLAYSRC_RESOURCE_ROOTS__)
@@ -1793,6 +1793,9 @@ export class Tf2Application {
       finishLoadPhase("audioSetup")
       this.#requireOperation(operation)
       await this.#client!.activate(this.#generation)
+      this.#requireOperation(operation)
+      const applicationProfile = (globalThis as typeof globalThis & { __playsrcProfile?: { applicationGeneration?: Record<string, unknown> } }).__playsrcProfile?.applicationGeneration
+      if (applicationProfile) Object.assign(applicationProfile, installedMapProfileIdentity(target, this.#generation))
       await this.#releaseEquipmentAdmissions(this.#generation)
       await this.#admitRestoredEquipment()
       finishLoadPhase("activation")
