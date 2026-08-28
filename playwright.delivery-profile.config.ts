@@ -6,6 +6,7 @@ export default { ...base, projects: [
   { name: "ordinary-native", use: { viewport: { width: 1689, height: 1277 } }, metadata: { frameDeliveryMode: "ordinary" } },
   { name: "presentation-native", use: { viewport: { width: 1689, height: 1277 } }, metadata: { frameDeliveryMode: "presentation" } },
   { name: "cpu", metadata: { frameDeliveryMode: "cpu" } },
+  { name: "cpu-native", use: { viewport: { width: 1689, height: 1277 } }, metadata: { frameDeliveryMode: "cpu" } },
   { name: "rpc", metadata: { frameDeliveryMode: "rpc", diagnosticMinimumTick: 618 } },
   { name: "traced", metadata: { frameDeliveryMode: "traced" } },
 ] }
