@@ -74,7 +74,7 @@ import {
 } from "@playsrc/game-tf2-browser/loading-presentation"
 import { encodeCommand, mapDerivedKey, type BotConfiguration, type BotQuotaMode, type BotRequest, type Snapshot, type Tf2Class, type Tf2Team, type Tf2Weapon, type Tf2BuildingRequest } from "@playsrc/game-tf2-browser/codec"
 import { blueprintModel, buildingModel, initializeTf2EngineerPresentation, type Tf2EngineerPresentation } from "@playsrc/game-tf2-browser/engineer"
-import { createClientRenderFrameClock } from "@playsrc/game-tf2-browser/client-render-frame"
+import { createClientRenderFrameClock, RecordedClientRenderFrames } from "@playsrc/game-tf2-browser/client-render-frame"
 import { TF2_CLASS_NAMES, tf2ClassFromName, tf2ClassPresentation } from "@playsrc/game-tf2-browser/class"
 import { parsePresentationArtifacts, parseEquipmentModelArtifacts, type PresentationArtifacts, type EquipmentModelArtifacts } from "@playsrc/game-tf2-browser/artifacts"
 import {
@@ -420,6 +420,8 @@ export class Tf2Application {
   #fireAttachmentTransforms = new Map<number, ReadonlyMap<string, ReturnType<typeof transformAttachment>>>()
   #particleBatches = createParticleBatchEncoder()
   #clientRenderFrames = createClientRenderFrameClock()
+  #recordedClientFrames: RecordedClientRenderFrames | undefined
+  #recordedPresentations: { inputs: NonNullable<import("@playsrc/game-tf2-browser/command-workload").CommandWorkload["presentations"]>; cursor: number; buffered: SimulationPublication[] } | undefined
   #particleSystems = new Set<string>()
   #pyroFlameEffect?: string
   #manmelterChargeEffect?: string
@@ -1935,7 +1937,19 @@ export class Tf2Application {
     this.#preparingModelPipelines = false
     this.#predictedEye.clear()
     this.#particleBatches = createParticleBatchEncoder()
-    this.#clientRenderFrames = createClientRenderFrameClock()
+    this.#recordedClientFrames?.close()
+    const workloadProfile = (globalThis as any).__playsrcProfile
+    const recordedFrames = (globalThis as any).__playsrcCommandWorkload?.clientFrames
+    const recordedPresentations = (globalThis as any).__playsrcCommandWorkload?.presentations
+    this.#recordedPresentations = recordedPresentations?.length ? { inputs: recordedPresentations, cursor: 0, buffered: [] } : undefined
+    if (workloadProfile?.captureClientFrames) workloadProfile.presentationInputs = []
+    this.#recordedClientFrames = recordedFrames?.length ? new RecordedClientRenderFrames(recordedFrames) : undefined
+    if (workloadProfile?.captureClientFrames) workloadProfile.clientFrames = []
+    this.#clientRenderFrames = createClientRenderFrameClock(workloadProfile?.captureClientFrames ? frame => {
+      if (workloadProfile.clientFrames.length >= 16384) throw new Error("Client-frame workload recording overflow")
+      workloadProfile.clientFrames.push(frame)
+    } : undefined)
+    if (this.#recordedClientFrames && workloadProfile) workloadProfile.clientFrameWorkload = this.#recordedClientFrames.observations
     this.#medicBeamTarget = null
     this.#medicBeamReleasing = false
     this.#pendingProjectileTimeline = []
@@ -4672,7 +4686,13 @@ export class Tf2Application {
   async #renderDisplay(prepared:PreparedPresentation):Promise<void>{
     const client=this.#client,renderer=this.#renderer,generation=this.#generation
     if(!prepared||!client||!renderer||prepared.generation!==generation)return
-    const clientFrame = this.#clientRenderFrames.prepare(performance.now() / 1000)
+    const workloadClock = (globalThis as any).__playsrcProfile?.commandWorkload
+    const recordedFrame = this.#recordedClientFrames && !this.#recordedClientFrames.ended
+      ? await this.#recordedClientFrames.next(workloadClock?.epoch) : undefined
+    const clientNow = recordedFrame?.nowSeconds ?? (performance.now() - (this.#recordedClientFrames ? workloadClock?.epoch ?? 0 : 0)) / 1000
+    const clientFrame = this.#clientRenderFrames.prepare(clientNow)
+    if (recordedFrame && (clientFrame.clientFrame !== recordedFrame.clientFrame || clientFrame.acceptedClientFrame !== recordedFrame.acceptedClientFrame
+      || clientFrame.clientFrameSeconds !== recordedFrame.clientFrameSeconds || clientFrame.reset !== recordedFrame.reset)) throw new Error("Client-frame clock input differs from authenticated workload")
     const viewRevision=this.#viewRevision,mouseRevision=this.#mouseViewRevision,snapRevision=this.#authoritativeViewRevision,yaw=this.#yaw,pitch=this.#pitch
     const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
     const override=profile?.displacementCameraOverride as Partial<Camera>|undefined
@@ -4814,6 +4834,7 @@ export class Tf2Application {
       })}`,{cause:error})
     }
     clientFrame.accept()
+    if (recordedFrame) this.#recordedClientFrames!.accept(recordedFrame.clientFrame)
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     if (captureHudPixels && profile) profile.hudPixelEvidence = { revision: hudPixelRevision, before: rendered.beforeHudCapture, after: rendered.capture }
     const hudModel=this.#hudIntegration?.modelPanel()
@@ -4947,6 +4968,30 @@ export class Tf2Application {
     const admissionProfile=botAdmissionProfile()
     if(admissionProfile)recordBotAdmission(admissionProfile,"frame-submitted",prepared.snapshot.tick,{displayFrame:this.#displayFrame,actors:models?.filter(model=>model.identity>=BOT_MODEL_IDENTITY_BASE&&model.identity<BOT_MODEL_IDENTITY_BASE+0x10000).map(model=>({actor:model.identity-BOT_MODEL_IDENTITY_BASE,model:model.model,skin:model.skin}))??[]})
     const frameDetail=profile||frameProfiler?{tick:prepared.snapshot.tick.toString(),selectedTicks:prepared.publication.selectedTicks,bots:prepared.snapshot.bots.length,buildings:prepared.snapshot.buildings.length,pickups:prepared.snapshot.pickups.length,models:prepared.modelMilliseconds,projectiles:prepared.projectileMilliseconds,visibility:visibilityMilliseconds,particleWorker:prepared.particleMilliseconds,particleDecode:prepared.particleDecodeMilliseconds,legacyParticleMilliseconds,legacyParticleBytes,audio:prepared.audioMilliseconds,particleItems:rendered.timings.particleItems,particleBatches:rendered.timings.particleBatches,dynamicItems:rendered.timings.dynamicItemsMilliseconds,world:rendered.timings.worldMilliseconds,viewmodel:rendered.timings.viewModelMilliseconds,hudModel:hudModelMilliseconds,render:renderMilliseconds,total:totalMilliseconds}:undefined
+    if (profile?.captureWorkloadState) profile.workloadProgress = { at: performance.now(), lastRenderedTick: Number(prepared.snapshot.tick), targetTick: profile.workloadTargetTick }
+    if (profile?.captureWorkloadState && !frameProfiler?.active
+      && (profile.workloadTargetTick == null || profile.workloadTargetTick === Number(prepared.snapshot.tick))) {
+      // Plain consumed data only, copied while the pose lease is still owned.
+      // This one retained witness is disabled before active sampling begins.
+      profile.workloadFrame = structuredClone({ schema: 3, tick: Number(prepared.snapshot.tick), round: prepared.snapshot.round, playerClass: prepared.snapshot.class, weapon: prepared.snapshot.weapon,
+        position: camera.position, yaw: camera.yawDegrees, pitch: camera.pitchDegrees, drawSurfaces: visibility.drawSurfaces.length,
+        leaves: visibility.leaves.length, props: rendered.visibleMainStaticPropSources.length,
+        skySurfaces: rendered.sky3dPass?.skySurfaces ?? 0, skyProps: rendered.sky3dPass?.skyProps ?? 0,
+        mainVisibilityIdentity: visibility.cacheIdentity, skyVisibilityIdentity: sky3d?.visibility.cacheIdentity ?? null,
+        modelInputs: models?.map(model => ({ ...model, pose: model.pose ? { ...model.pose,
+          boneMatrices: Array.from(new Uint8Array(model.pose.boneMatrices.buffer, model.pose.boneMatrices.byteOffset, model.pose.boneMatrices.byteLength)),
+          flex: model.pose.flex?.map(flex => ({ primitive: flex.primitive, indices: Array.from(flex.indices), positions: Array.from(flex.positions), normals: Array.from(flex.normals) })),
+        } : null })),
+        particleInputs: particles?.map(particle => ({ ...particle, stableTieIdentity: String(particle.stableTieIdentity),
+          visibility: particle.visibility ? { identity: String(particle.visibility.identity), vertices: Array.from(particle.visibility.vertices), clipFraction: particle.visibility.clipFraction } : null,
+          mesh: particle.mesh ? { positions: Array.from(particle.mesh.positions), uv: Array.from(particle.mesh.uv),
+            colors: Array.from(particle.mesh.colors), indices: Array.from(particle.mesh.indices) } : null })),
+        detail: frameDetail })
+      profile.captureWorkloadState = false
+      const phaseReady = profile.workloadStateReady as ((at: number) => void) | undefined
+      profile.workloadStateReady = undefined
+      phaseReady?.(performance.now())
+    }
     if(frameProfiler?.active&&rendererProfile){
       frameProfiler.counters.completedFrames!+=1
       frameProfiler.completedFrames.push({
@@ -5107,6 +5152,14 @@ export class Tf2Application {
         const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
         if(profile)profile.snapshotTransport=client.snapshotMetrics(sample.generation)
         for(const publication of publications)this.#enqueuePresentation(sample.generation,publication,sampledMovementX)
+        if (client.finishRecordedInput(sample.generation, this.#simulationSamples.length)) {
+          // These are live caller samples that the explicit replay input owner
+          // never admitted. The recorded program and all its publications have
+          // completed. Resume at the next ordinary real-time sample, without a
+          // game-clock reset or changing any recorded command.
+          this.#simulationSamples.clear()
+          break
+        }
       }
     }catch(error){
       if(!this.#closed&&activeGeneration===this.#generation&&this.#view.phase!=="Replacing"){
@@ -5118,6 +5171,8 @@ export class Tf2Application {
     }finally{this.#simulationBusy=false}
   }
   #applyAuthoritativeView(publication:SimulationPublication,_sampledMovementX:number):void{
+    const workload = publication.recordedCommandView
+    if (workload) { this.#yaw = workload.yaw; this.#pitch = workload.pitch }
     for(const batch of publication.eventBatches){
       const offset = batch.snapshot.viewAngleOffset
       if (offset.some((value, axis) => !Object.is(value, this.#appliedViewAngleOffset[axis]))) {
@@ -5128,10 +5183,62 @@ export class Tf2Application {
     }
   }
   #enqueuePresentation(generation:number,publication:SimulationPublication,sampledMovementX:number):void{
-    if(generation!==this.#generation||this.#closed)return;this.#applyAuthoritativeView(publication,sampledMovementX);for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication;this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks);if(!this.#presentationBusy){const task=this.#drainPresentations();this.#presentationTask=task;void task.finally(()=>{if(this.#presentationTask===task)this.#presentationTask=undefined})}
+    if(generation!==this.#generation||this.#closed)return
+    this.#applyAuthoritativeView(publication,sampledMovementX)
+    for(const batch of publication.eventBatches){const entry=batch.snapshot.projectileTimeline[0];if(!entry||this.#pendingProjectileTimeline.at(-1)?.tick===entry.tick)continue;if(this.#pendingProjectileTimeline.at(-1)&&this.#pendingProjectileTimeline.at(-1)!.tick>entry.tick){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reversed before admission"});return}this.#pendingProjectileTimeline.push(entry)}
+    if(this.#pendingProjectileTimeline.length>4096){this.#paused=true;this.#set({phase:"Failed",detail:"Projectile presentation timeline reached its explicit limit"});return}
+    const workload = this.#recordedPresentations
+    if (workload && workload.cursor < workload.inputs.length) {
+      if (workload.buffered.length >= 1024 || workload.buffered.reduce((n, p) => n + p.snapshotByteLength, publication.snapshotByteLength) > 64 * 1024 * 1024) {
+        this.#paused = true; this.#set({ phase: "Failed", detail: "Recorded presentation queue overflow" }); return
+      }
+      workload.buffered.push(publication)
+    } else {
+      this.#pendingPresentation=this.#pendingPresentation?this.#mergePublications(this.#pendingPresentation,publication):publication
+      this.#maximumPublicationTicks=Math.max(this.#maximumPublicationTicks,this.#pendingPresentation.selectedTicks)
+    }
+    if(!this.#presentationBusy){const task=this.#drainPresentations();this.#presentationTask=task;void task.finally(()=>{if(this.#presentationTask===task)this.#presentationTask=undefined})}
   }
   #mergePublications(left:SimulationPublication,right:SimulationPublication):SimulationPublication{const snapshot=mergePublicationSnapshots([left.snapshot,right.snapshot]);return Object.freeze({...right,firstHostTick:left.firstHostTick,selectedTicks:left.selectedTicks+right.selectedTicks,eventBatches:Object.freeze([...left.eventBatches,...right.eventBatches]),snapshot})}
-  async #drainPresentations():Promise<void>{this.#presentationBusy=true;try{while(this.#pendingPresentation&&!this.#closed){const value=this.#pendingPresentation;this.#pendingPresentation=undefined;await this.#present(value)}}finally{this.#presentationBusy=false}}
+  async #drainPresentations():Promise<void>{
+    this.#presentationBusy=true
+    const generation = this.#generation
+    try {
+      while (!this.#closed && generation === this.#generation) {
+        const workload = this.#recordedPresentations
+        let value: SimulationPublication | undefined
+        if (workload && workload.cursor < workload.inputs.length) {
+          const expected = workload.inputs[workload.cursor]!
+          const last = BigInt(expected.lastHostTick)
+          if (!workload.buffered.length || workload.buffered.at(-1)!.lastHostTick < last) break
+          if (workload.buffered[0]!.firstHostTick !== BigInt(expected.firstHostTick)) throw new Error("Recorded presentation begins at a different Source tick")
+          while (workload.buffered.length && (value?.lastHostTick ?? 0n) < last) {
+            const next = workload.buffered.shift()!
+            value = value ? this.#mergePublications(value, next) : next
+          }
+          if (value?.lastHostTick !== last || value.selectedTicks !== expected.selectedTicks) throw new Error("Recorded presentation grouping differs")
+          const epoch = (globalThis as any).__playsrcProfile.commandWorkload.epoch
+          if (!Number.isFinite(epoch)) throw new Error("Recorded presentation clock is absent")
+          const due = epoch + expected.atSeconds * 1000
+          while (!this.#closed && generation === this.#generation && performance.now() < due) await new Promise(resolve => setTimeout(resolve, Math.min(20, due - performance.now())))
+          if (this.#closed || generation !== this.#generation) break
+          workload.cursor++
+        } else {
+          if (workload?.buffered.length) {
+            for (const publication of workload.buffered) value = value ? this.#mergePublications(value, publication) : publication
+            workload.buffered.length = 0
+          }
+          if (this.#pendingPresentation) value = value ? this.#mergePublications(value, this.#pendingPresentation) : this.#pendingPresentation
+          this.#pendingPresentation = undefined
+        }
+        if (!value) break
+        this.#maximumPublicationTicks = Math.max(this.#maximumPublicationTicks, value.selectedTicks)
+        await this.#present(value)
+      }
+    } catch (error) {
+      if (!this.#closed && generation === this.#generation) { this.#paused = true; this.#set({ phase: "Failed", detail: this.#failureDetail(error, "Recorded presentation failed") }) }
+    } finally { this.#presentationBusy=false }
+  }
 
   async #present(publication: SimulationPublication): Promise<void> {
     if (
@@ -5143,6 +5250,11 @@ export class Tf2Application {
     )
       return
     const generation=this.#generation,client=this.#client
+    const captureProfile = (globalThis as any).__playsrcProfile
+    if (captureProfile?.captureClientFrames) {
+      if (captureProfile.presentationInputs.length >= 16384) throw new Error("Presentation workload recording overflow")
+      captureProfile.presentationInputs.push({ atSeconds: performance.now() / 1000, firstHostTick: String(publication.firstHostTick), lastHostTick: String(publication.lastHostTick), selectedTicks: publication.selectedTicks })
+    }
     const owners=Object.freeze({generation,mapper:this.#projectiles,encoder:this.#particleBatches})
     const ownsGeneration=()=>!this.#closed&&client===this.#client
       &&currentPresentationGeneration(owners,this.#generation,this.#projectiles,this.#particleBatches)
@@ -6153,6 +6265,7 @@ export class Tf2Application {
   }
 
   async close(): Promise<void> {
+    this.#recordedClientFrames?.close()
     if (this.#closed) return
     await this.#release()
     this.#set({ phase: "Closed", detail: "Application closed", pointerLocked: false, pointerMovement:undefined, consoleVisible: false })

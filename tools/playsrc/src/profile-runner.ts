@@ -62,7 +62,7 @@ const PROFILES = Object.freeze({
   "map-sanity": { config: "playwright.map-sanity-profile.config.ts", target: "jump_beef" },
   "map-coverage": { config: "playwright.coverage-profile.config.ts", target: "jump_beef" },
   "upward-outdoors": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_UPWARD_OUTDOORS: "1" } },
-  "upward-training-bots": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots" } },
+  "upward-training-bots": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots" }, minimumRemainingMilliseconds: environment => environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? 120_000 : environment.PROFILE_UPWARD_TRAINING_WARM_RELOAD === "1" ? 90_000 : 60_000 },
   "class-switch-high-dpi": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_UPWARD_CLASS_SWITCH: "1" } },
   "particle-combat": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_PARTICLE_COMBAT: "1" } },
   "sky-coherence": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SKY_COHERENCE: "1" } },
@@ -360,7 +360,9 @@ export async function runHeadedProfile(arguments_: readonly string[]): Promise<n
   try {
     windowsConsole = requireWindowsProfileConsole(remaining())
     // Preserve the full release matrix's earlier admission deadline.
-    const maximumWait = Math.min(remaining(), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : profile === "skinning-equivalence" ? 80_000 : MAX_RUN_MILLISECONDS)
+    // Queue only while the selected workflow can still fit. Admission must not
+    // spend its startup/sample/retention reservation waiting for another owner.
+    const maximumWait = Math.min(Math.max(1, remaining() - profileMinimumRemainingMilliseconds(profile)), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : profile === "skinning-equivalence" ? 80_000 : MAX_RUN_MILLISECONDS)
     lock = await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
       signal: cancellation.signal,
       onProgress: state => {

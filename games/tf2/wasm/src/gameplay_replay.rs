@@ -259,6 +259,12 @@ pub extern "C" fn playsrc_gameplay_replay_begin(handle: u32) -> u32 {
     .flatten() else {
         return 0;
     };
+    {
+        let Some((index, generation)) = decode(handle) else { return 0; };
+        let mut entries = slots().lock().expect("slots");
+        let Some(slot) = entries.get_mut(index).filter(|slot| slot.generation == generation) else { return 0; };
+        if let Some((_, state)) = &mut slot.map_particles { state.record_entropy(); }
+    }
     *journal().lock().expect("gameplay replay") = Some(Journal {
         handle,
         bytes: header,
@@ -279,6 +285,44 @@ pub extern "C" fn playsrc_gameplay_replay_mark(handle: u32, mark: u32) -> u32 {
     }
     append(handle, 7, &[&mark.to_le_bytes()]);
     1
+}
+
+/// A workload author may retain a live, unmeasured command tail after sampling.
+/// Stop only the phase recorder at its existing boundary; keep every command
+/// and complete state hash in the journal until its separate stop operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_gameplay_replay_stop_admission(handle: u32) -> u32 {
+    if handle == 0 || ACTIVE.load(Ordering::Relaxed) != handle { return 0; }
+    admission_metrics::stop();
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_map_particle_entropy_length(handle: u32) -> usize {
+    with(handle, |slot| slot.map_particles.as_ref().map_or(12, |(_, state)| state.entropy_bytes().len())).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn playsrc_map_particle_entropy_copy(handle: u32, pointer: *mut u8, capacity: usize) -> usize {
+    with(handle, |slot| {
+        let bytes = slot.map_particles.as_ref().map_or_else(|| b"MPER\x01\0\0\0\0\0\0\0".to_vec(), |(_, state)| state.entropy_bytes());
+        if bytes.len() > capacity { return 0; }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()); }
+        bytes.len()
+    }).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn playsrc_map_particle_entropy_restore(handle: u32, pointer: *const u8, length: usize) -> u32 {
+    if length < 12 || length > 4 * 1024 * 1024 || ACTIVE.load(Ordering::Relaxed) != handle { return 0; }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+    let Some((index, generation)) = decode(handle) else { return 0; };
+    let mut entries = slots().lock().expect("slots");
+    let Some(slot) = entries.get_mut(index).filter(|slot| slot.generation == generation) else { return 0; };
+    match &mut slot.map_particles {
+        Some((_, state)) => u32::from(state.restore_entropy(bytes).is_ok()),
+        None => u32::from(bytes == b"MPER\x01\0\0\0\0\0\0\0"),
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_gameplay_replay_stop(handle: u32) -> u32 {
@@ -480,6 +524,12 @@ pub(super) mod tests {
         let mut bot_equip = vec![2]; bot_equip.extend_from_slice(&identity.to_le_bytes()); bot_equip.extend_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(unsafe { playsrc_equipment_update(handle, bot_equip.as_ptr(), bot_equip.len()) }, 1);
         assert_eq!(playsrc_gameplay_replay_mark(handle, 1), 1);
+        let metric_length = admission_metrics::playsrc_admission_metrics_length();
+        assert_eq!(playsrc_gameplay_replay_stop_admission(0), 0);
+        assert_eq!(playsrc_gameplay_replay_stop_admission(handle), 1);
+        playsrc_tf2::admission_metrics::emit(9, 0);
+        assert_eq!(admission_metrics::playsrc_admission_metrics_length(), metric_length);
+        assert_eq!(playsrc_player_set_position(handle, 12.5, -3.0, 96.0), 1);
         assert_eq!(playsrc_gameplay_replay_stop(handle), 1);
         let value = journal().lock().unwrap();
         let bytes = &value.as_ref().unwrap().bytes;
@@ -491,7 +541,7 @@ pub(super) mod tests {
             kinds.push(u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()));
             offset += length;
         }
-        assert_eq!(kinds, [7, 4, 5, 9, 9, 10, 6, 9, 7, 8]);
+        assert_eq!(kinds, [7, 4, 5, 9, 9, 10, 6, 9, 7, 5, 8]);
         assert_eq!(offset, bytes.len());
         drop(value);
         dispose(handle);

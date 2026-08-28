@@ -24,11 +24,20 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     workerCpu: !stockOnly && (exerciseClasses || acceptance) ? "required" : "not-requested",
     ...(!stockOnly && environment.PROFILE_GAMEPLAY_REPLAY === "1" ? { gameplayReplay: "required" as const } : {}),
     ...(!stockOnly && environment.PROFILE_RENDER_OWNERS === "1" ? { renderOwners: "two-frames-after-60-v1" as const } : {}),
+    ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" ? { workloadAuthor: 2 as const } : {}),
+    ...(environment.PROFILE_COMMAND_WORKLOAD ? { commandWorkload: environment.PROFILE_COMMAND_WORKLOAD } : {}),
+    ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? { workloadPhase: "equipped-primary-draw-after-secondary-idle-v1" as const } : {}),
+    ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? { clientFrameWorkload: "accepted-real-clock-v1" as const } : {}),
+    ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? { presentationWorkload: "recorded-publication-groups-v1" as const } : {}),
+    ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" || environment.PROFILE_COMMAND_WORKLOAD ? { presentationEntropy: "recorded-map-seeds-v1" as const } : {}),
   } as const)
 }
 
 export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   const base = baseCapturePlan(environment)
+  if (base.commandWorkload && !/^[0-9a-f]{64}$/.test(base.commandWorkload)) throw new Error("Invalid command workload identity")
+  if ((base.workloadAuthor || base.commandWorkload) && (!base.warmReload || base.exerciseClasses || base.combat || base.stockOnly
+    || environment.PROFILE_CLASS_REPLACEMENT === "1" || base.workloadAuthor && base.commandWorkload)) throw new Error("Incompatible command workload capture plan")
   return Object.freeze({ ...base, schema: "playsrc-upward-capture-plan-v2" as const,
     replacement: !base.stockOnly && environment.PROFILE_CLASS_REPLACEMENT === "1" })
 }
@@ -61,6 +70,8 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
     PROFILE_RENDER_OWNERS: value.renderOwners ? "1" : "0",
     PROFILE_GAMEPLAY_REPLAY: value.gameplayReplay ? "1" : "0",
     PROFILE_CLASS_REPLACEMENT: value.replacement ? "1" : "0",
+    PROFILE_AUTHOR_WORKLOAD: value.workloadAuthor === 2 ? "1" : "0",
+    PROFILE_COMMAND_WORKLOAD: value.commandWorkload,
   })
   if (Object.keys(value).length !== Object.keys(resolved).length
     || Object.entries(resolved).some(([key, expected]) => value[key] !== expected)) throw new Error("Inconsistent effective capture plan")

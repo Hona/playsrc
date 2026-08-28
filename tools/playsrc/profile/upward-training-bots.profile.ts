@@ -33,6 +33,8 @@ import { auditSpriteOrientation } from "./sprite-orientation-audit"
 import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { auditDrawPlaneParity } from "./draw-plane-parity"
+import { loadCommandWorkload, compareWorkloadJournal } from "./command-workload"
+import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } from "./workload-state"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -49,6 +51,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
   const evidenceLabel = `${label}-${wallStarted}`
   const { sourceCacheDir } = await loadLocalConfig()
+  const authorWorkload = process.env.PROFILE_AUTHOR_WORKLOAD === "1"
+  const workload = process.env.PROFILE_COMMAND_WORKLOAD
+    ? await loadCommandWorkload(path.join(sourceCacheDir, "profiles/command-workloads"), process.env.PROFILE_COMMAND_WORKLOAD) : undefined
+  if ((authorWorkload || workload) && (!capturePlan.warmReload || exerciseClasses || combat)) throw new Error("Workload requires the declared warm ordinary roster/route")
   // This workflow already owns the checked machine-wide lock. Admit genuine
   // physical-console idle before any gameplay input, also on the local desktop.
   if (process.platform === "darwin") {
@@ -74,7 +80,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
   const replay = exerciseClasses || capturePlan.gameplayReplay === "required"
-    ? await startGameplayReplayLifecycle(page, evidenceDirectory, evidenceLabel, capturePlan.warmReload, capturePlan.replacement ? 2 : 1) : undefined
+    ? await startGameplayReplayLifecycle(page, evidenceDirectory, evidenceLabel, capturePlan.warmReload, capturePlan.replacement ? 2 : 1, workload?.entropyHex) : undefined
   const replayIdentity = () => page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.applicationGeneration))
   const stopReplay = async (complete: boolean) => replay?.stop(await replayIdentity().catch(error => { if (complete) throw error; return null }), complete)
   retainIncomplete = () => stopReplay(false)
@@ -83,10 +89,16 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (sourceCommit.status !== 0) throw new Error("Cannot establish profiler source commit")
   await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
-  await page.addInitScript(() => {
+  await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
-    ;(globalThis as any).__playsrcProfile = {}
-  })
+    ;(globalThis as any).__playsrcProfile = { captureClientFrames }
+  }, authorWorkload)
+  if (workload) await page.addInitScript(plan => {
+    const ordinal = Number(sessionStorage.getItem("playsrc-command-workload-navigation") ?? "0") + 1
+    sessionStorage.setItem("playsrc-command-workload-navigation", String(ordinal))
+    if (ordinal > 2) throw new Error("Unexpected workload application generation")
+    if (ordinal === 2) (globalThis as any).__playsrcCommandWorkload = plan
+  }, workload.plan)
   const network = {
     requests: 0, failed: 0, responseBytes: 0, maximumInflight: 0, duplicateImmutableRequests: 0,
     immutableRequests: 0, immutableBytes: 0, maximumImmutableInflight: 0, wireBytes: 0,
@@ -142,6 +154,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
     network.contentEncodings[encoding] = (network.contentEncodings[encoding] ?? 0) + 1
   })
   const networkCdp = await context.newCDPSession(page)
+  const cdp = await context.newCDPSession(page)
+  const browserCdp = await context.browser()!.newBrowserCDPSession()
+  let profilerPreparation: Promise<unknown> = Promise.resolve()
+  let profilerPreparationError: unknown
+  const preparationTimings: Record<string, number> = {}
+  const prepare = async <T>(name: string, action: () => Promise<T>) => {
+    const began = performance.now()
+    try { return await action() } finally { preparationTimings[name] = performance.now() - began }
+  }
   await networkCdp.send("Network.enable")
   networkCdp.on("Network.loadingFinished", ({ encodedDataLength }) => { network.wireBytes += encodedDataLength })
   networkCdp.on("Network.requestServedFromCache", () => { network.cacheHits += 1 })
@@ -183,6 +204,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
     networkStage = `${cache}-startup`
     if (cache === "cold") await page.goto(process.env.PLAYSRC_PROFILE_ORIGIN ? "/tf2" : "/", { waitUntil: "domcontentloaded", timeout: 30_000 })
     else await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
+    // Enable domains while ordinary startup is already in flight, without
+    // delaying or moving its Ready observation. No sampling/heap read starts
+    // here; their existing pre-sample boundaries below remain authoritative.
+    if (workload) profilerPreparation = prepare(`domains-${cache}`, () => Promise.all([
+      cdp.send("Performance.enable"), cdp.send("HeapProfiler.enable"),
+      cdp.send("Profiler.enable").then(() => cdp.send("Profiler.setSamplingInterval", { interval: 1000 })),
+    ])).catch(error => { profilerPreparationError = error })
     await page.bringToFront()
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 100_000 })
     const startupMilliseconds = Date.now() - started
@@ -387,8 +415,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   const before = await canvas.screenshot({ timeout: 20_000 })
   if (capturePlan.interaction === "movement-weapon") await canvas.click({ position: { x: 300, y: 250 } })
-  const cdp = await context.newCDPSession(page)
-  const browserCdp = await context.browser()!.newBrowserCDPSession()
+  await profilerPreparation
+  if (profilerPreparationError) throw profilerPreparationError
   const system = await browserCdp.send("SystemInfo.getInfo").catch(() => null)
   const processBefore = await browserCdp.send("SystemInfo.getProcessInfo").catch(() => null)
   const nativeScreenshot = nativeReader ? path.join(directory, `${evidenceLabel}.desktop.png`) : null
@@ -441,11 +469,20 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)
   if (!Number.isFinite(totalDeadline)) throw new Error("Invalid bounded profile deadline")
   if (totalDeadline - Date.now() < seconds * 1000 + 20_000) throw new Error("Insufficient bounded capture/retention time after lock and startup; partial replay retained")
-  const allocationCapture = await startAllocationCapture(cdp, evidenceDirectory)
+  if (workload) {
+    // Arm native collection no more than three seconds before the authenticated
+    // phase, keeping collection plus the five-second sample within ten seconds.
+    await page.waitForFunction(start => {
+      const owner = (globalThis as any).__playsrcProfile.commandWorkload
+      return owner?.epoch !== undefined && owner.epoch + start - performance.now() <= 3000
+    }, workload.plan.sampleStarted, { timeout: 40_000 })
+    expect(await page.evaluate(start => (globalThis as any).__playsrcProfile.commandWorkload.epoch + start - performance.now(), workload.plan.sampleStarted)).toBeGreaterThan(0)
+  }
+  const allocationCapture = await prepare("allocation-start", () => startAllocationCapture(cdp, evidenceDirectory))
   const rawPartial = path.join(directory, "compositor-evidence", `${evidenceLabel}.trace.partial.gz`)
   await mkdir(path.dirname(rawPartial), { recursive: true })
   await writeFile(rawPartial, Buffer.alloc(0), { flag: "wx" })
-  const mainCpu = await startMainCpuEvidence(cdp, evidenceDirectory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint })
+  const mainCpu = await prepare("main-cpu-start", () => startMainCpuEvidence(cdp, evidenceDirectory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint }))
   let interrupted = false
   let traceStarted = false
   const collectNative = async () => {
@@ -525,28 +562,62 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   // Preserve the authored order: sampler setup before movement input. A slow
   // Profiler.start must not advance the player before the original input edge.
+  if (authorWorkload) {
+    // Select a real, authoritative weapon-draw phase. Initial idle animation can
+    // depend on the first presentation read during loading; a declared ordinary
+    // slot transition supplies its exact activity tick without resetting clocks,
+    // bots, simulation, rendering, or existing recorded input bytes.
+    await page.keyboard.press("Digit2")
+    await expect.poll(async () => {
+      const weapon = (await root.getAttribute("data-hud-probe"))?.split(":")[2]
+      return Boolean(weapon && weapon !== "unavailable" && weapon !== "1")
+    }).toBe(true)
+    // Use the real secondary draw completion, not an arbitrary delay, to give
+    // replay preparation a stable prelude before the measured primary draw.
+    await expect.poll(async () => await root.getAttribute("data-viewmodel-activity")).toContain("IDLE")
+    await page.keyboard.press("Digit1")
+    await expect.poll(async () => (await root.getAttribute("data-hud-probe"))?.split(":")[2]).toBe("1")
+  }
   if (!exerciseClasses) await page.keyboard.down("w")
   await replay?.mark(0)
-  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
-    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } })
+  await prepare("trace-start", () => browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: TRACE_LIMITS.browserKilobytes, includedCategories: [...COMPOSITOR_TRACE_CATEGORIES] } }))
   traceStarted = true
   captureDeadline = setTimeout(interrupt, Math.min(seconds * 1000 + 5000, Math.max(1, totalDeadline - Date.now() - 5000)))
   await workerCpu?.start()
   const performanceBefore = (await cdp.send("Performance.getMetrics").catch(() => ({ metrics: [] }))).metrics
   const clockBefore = performanceBefore.find(metric => metric.name === "Timestamp")?.value
   profilePhases.enter("sample-and-readback")
-  const measurementPromise = page.evaluate(async ({ duration, startMark, endMark }) => {
+  const measurementPromise = page.evaluate(async ({ duration, startMark, endMark, workloadStart, captureState, workloadTick }) => {
+    const profile = (globalThis as any).__playsrcProfile
+    let phase: { at: number; snapshotAt: number; owner: any; values: Record<string, number>; frameCompletedAt: number } | undefined
+    if (captureState) {
+      profile.workloadFrame = undefined; profile.workloadTargetTick = workloadTick
+      phase = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Authenticated displayed phase missing: ${JSON.stringify(profile.workloadProgress)}`)), 4000)
+        profile.workloadStateReady = (frameCompletedAt: number) => {
+          clearTimeout(timer)
+          const owner = profile.snapshotTransport, values = structuredClone(owner ?? {})
+          const snapshotAt = performance.now(), at = performance.now()
+          resolve({ at, snapshotAt, owner, values, frameCompletedAt })
+        }
+        profile.captureWorkloadState = true
+      })
+    }
     const main = document.querySelector<HTMLElement>("main")!
     const surface = document.querySelector<HTMLCanvasElement>("canvas.world-canvas")!
     const instrumentation = (globalThis as any).__playsrcFrameProfiler
+    const workloadInitial = { frame: structuredClone((globalThis as any).__playsrcProfile.workloadFrame),
+      round: structuredClone((globalThis as any).__playsrcProfile.round), producerTick: main.dataset.snapshotTick }
+    ;(globalThis as any).__playsrcProfile.captureWorkloadState = false
     const firstTick = Number(main.dataset.snapshotTick)
     const firstFrame = Number(surface.dataset.displayFrame)
     const firstPosition = (main.dataset.cameraPosition ?? "").split(",").map(Number)
     const firstUploads = structuredClone((globalThis as any).__playsrcProfile.modelParticleUploads ?? {}) as Record<string, number>
-    const firstSnapshotOwner = (globalThis as any).__playsrcProfile.snapshotTransport
-    const firstSnapshots = structuredClone(firstSnapshotOwner ?? {}) as Record<string, number>
-    const firstSnapshotAt = performance.now()
-    const started = performance.now()
+    const firstSnapshotOwner = phase?.owner ?? (globalThis as any).__playsrcProfile.snapshotTransport
+    const firstSnapshots = phase?.values ?? structuredClone(firstSnapshotOwner ?? {}) as Record<string, number>
+    const firstSnapshotAt = phase?.snapshotAt ?? performance.now()
+    const started = phase?.at ?? performance.now()
     ;(globalThis as any).__playsrcProfile.classInputSampleStarted = started
     performance.mark(startMark, { startTime: started })
     const lifecycle: Array<{ at: number; phase: string; playerClass?: number; key?: string; visible?: boolean; button?: number; trusted?: boolean; controllerAction?: string | null }> = []
@@ -651,7 +722,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
     })
     const gpuContext = surface.getContext("webgpu")
     const output = {
-      elapsed, started, ended, browserLifecycle, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
+      elapsed, started, ended, workloadInitial,
+      workloadClock: structuredClone((globalThis as any).__playsrcProfile.commandWorkload ?? null),
+      workloadPhaseAdmission: workloadStart === null ? null : { expected: profile.commandWorkload.epoch + workloadStart,
+        actual: started, delayMilliseconds: started - profile.commandWorkload.epoch - workloadStart },
+      clientFrames: structuredClone((globalThis as any).__playsrcProfile.clientFrames ?? null),
+      clientFrameWorkload: structuredClone((globalThis as any).__playsrcProfile.clientFrameWorkload ?? null),
+      browserLifecycle, firstTick, lastTick: Number(main.dataset.snapshotTick), firstFrame,
       visible: document.visibilityState === "visible", focused: document.hasFocus(), animationCallbacks,
       viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualViewportScale: visualViewport?.scale ?? null, canvasWidth: surface.width, canvasHeight: surface.height },
       lastFrame: Number(surface.dataset.displayFrame), traveled: Math.hypot(...position.map((value, index) => value - firstPosition[index]!)),
@@ -695,7 +772,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     }
     await instrumentation.flushShaderHashes()
     return output
-  }, { duration: seconds, startMark: TRACE_START, endMark: TRACE_END })
+  }, { duration: workload ? (workload.plan.sampleEnded - workload.plan.sampleStarted) / 1000 : seconds,
+    startMark: TRACE_START, endMark: TRACE_END, workloadStart: workload?.plan.sampleStarted ?? null,
+    captureState: Boolean(authorWorkload || workload), workloadTick: workload?.initialState?.frame.tick ?? null })
   const exercisedClasses: string[] = []
   const admittedAttacks: Array<{ playerClass: number; weapon: number; lifecycle: number; hostTick: string; at: number; requestId: number; playerTick: string; firstPrimaryTick: string; nextPrimaryTick: string; primaryActivities: unknown[] }> = []
   let visibleScoreboardRows: number | null = null
@@ -871,15 +950,31 @@ test("profile authored headed Upward offline-practice default roster and actual 
   clearTimeout(captureDeadline)
   process.off("SIGTERM", interrupt)
   await replay?.mark(1).catch(() => { interrupted = true })
-  const replayCapture = await stopReplay(!interrupted && sample.error === null)
-  const replayArtifact = replayCapture?.artifact
+  if (authorWorkload) await replay?.stopAdmission()
+  const replayPending = authorWorkload ? undefined : stopReplay(!interrupted && sample.error === null)
   // Stop the real Worker sampler before ending the trace so its end clock mark
   // remains joinable. Failure here must not discard the native browser trace.
   const { workerCapture, workerArtifact, mainCapture, performanceAfter, memory } = await finishNative()
   const clockAfter = performanceAfter.find(metric => metric.name === "Timestamp")?.value
   if (!exerciseClasses) await page.keyboard.up("w").catch(() => undefined)
+  // Author a genuine live tail for playback retention, after the original trace,
+  // memory and input-release boundaries. These ticks are never sampled as FPS.
+  if (authorWorkload) await page.waitForTimeout(4000)
+  const replayCapture = await (replayPending ?? stopReplay(!interrupted && sample.error === null))
+  const replayArtifact = replayCapture?.artifact
+  const clientFrameInputs = authorWorkload ? await page.evaluate(() => (globalThis as any).__playsrcProfile.clientFrames ?? null) : null
+  const presentationInputs = authorWorkload ? await page.evaluate(() => (globalThis as any).__playsrcProfile.presentationInputs ?? null) : null
   const joins: TraceJoin[] = []
   const measured = sample.measurement
+  const initialWorkloadState = (workload || authorWorkload) && measured
+    ? workloadState(measured.workloadInitial.frame) : null
+  if (measured) {
+    // The private capture may contain BigInt/typed model inputs. Persist their
+    // lossless canonical form, never a second non-JSON raw copy in the report.
+    const producerAtStart = canonicalWorkloadState({ tick: measured.workloadInitial.producerTick, round: measured.workloadInitial.round })
+    delete (measured as Partial<typeof measured>).workloadInitial
+    Object.assign(measured, { workloadState: initialWorkloadState, producerAtStart })
+  }
   snapshotBoundaries = measured?.snapshotTransport ?? null
   if (measured) {
     for (const record of measured.renderOwners) joins.push({ kind: "render-owners", at: measured.started, end: measured.ended, detail: record })
@@ -897,7 +992,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const evidence = await retainNativeEvidence(
     { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
     { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact,
-      gameplayReplayLifecycle: replayCapture?.lifecycle, nativeAdmission: nativeRecords(), replacement })
+      gameplayReplayLifecycle: replayCapture?.lifecycle, nativeAdmission: nativeRecords(), replacement,
+      workloadState: initialWorkloadState,
+      workloadIdentity: process.env.PROFILE_COMMAND_WORKLOAD ?? null, authorWorkload, preparationTimings, clientFrameInputs, presentationInputs })
   const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
   // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
   await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
@@ -908,6 +1005,17 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (interrupted) throw new Error("Capture interrupted; partial diagnostics retained, not passing evidence")
   if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
   if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
+  if (workload) {
+    let failure: string | null = null
+    try {
+      assertMatchingWorkloadState(workload.initialState, evidence.manifest.identity.workloadState)
+      if (!replayArtifact?.file) throw new Error("Actual workload journal is absent")
+      compareWorkloadJournal(await readFile(workload.journalFile), await readFile(path.join(evidenceDirectory, replayArtifact.file)), workload.plan.sampleEnded / 1000)
+    } catch (error) { failure = String(error) }
+    await writeFile(path.join(directory, `${label}-workload-validation.json`), JSON.stringify({ identity: process.env.PROFILE_COMMAND_WORKLOAD,
+      accepted: failure === null, failure, expected: workload.initialState, actual: evidence.manifest.identity.workloadState }, null, 2))
+    if (failure) throw new Error(failure)
+  }
   if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
   const { allocation, processAfter, memoryAfter } = await memory
   const memoryEvidence = await loadAllocationMemoryEvidence(path.join(evidenceDirectory, evidence.artifact.file), evidence)

@@ -80,7 +80,7 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true, expec
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */
-export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2, retainAdmission = false) {
+export async function startGameplayReplayJournal(page: Page, directory: string, label: string, mapOrdinal = 1, expectedMarks: 0 | 2 = 2, retainAdmission = false, entropyHex?: string) {
   if (!Number.isSafeInteger(mapOrdinal) || mapOrdinal < 1) throw new Error("Replay map ordinal rejected")
   await mkdir(directory, { recursive: true })
   const partial = path.join(directory, `${label}.replay.partial`)
@@ -89,6 +89,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
   let worker: Worker | undefined, offset = 0, failure: string | null = null, checkpoint: ReplayCheckpoint | undefined
   let pending = Promise.resolve(), stopped = false, closedAt: number | null = null
   let admission: { file: string; sha256: string; bytes: number } | undefined
+  let entropy: { file: string; sha256: string; bytes: number } | undefined
   const persistStatus = () => writeFile(progress, JSON.stringify({ schema: "playsrc-gameplay-replay-progress-v1", complete: false, bytes: offset, checkpoint, error: failure }))
   await persistStatus()
   const capture = async (stop = false) => {
@@ -110,6 +111,14 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       if (checkpoint && JSON.stringify(checkpoint) !== JSON.stringify(result.checkpoint)) throw new Error("Replay checkpoint changed")
       if (result.mapOrdinal !== mapOrdinal) throw new Error("Replay captured a different map construction")
       checkpoint = result.checkpoint
+      if (stop && result.mapEntropyHex !== undefined) {
+        if (!/^(?:[0-9a-f]{2})+$/.test(result.mapEntropyHex) || result.mapEntropyHex.length > 8 * 1024 * 1024) throw new Error("Malformed entropy record")
+        const data = Buffer.from(result.mapEntropyHex, "hex"), sha256 = createHash("sha256").update(data).digest("hex"), file = `${sha256}.map-entropy.bin`
+        await writeFile(path.join(directory, file), data, { flag: "wx" }).catch(async error => {
+          if (error.code !== "EEXIST" || !data.equals(await readFile(path.join(directory, file)))) throw error
+        })
+        entropy = { file, sha256, bytes: data.length }
+      }
       await appendFile(partial, bytes)
       offset += bytes.length
       if (stop && !result.complete) throw new Error("Authoritative replay owner reported incomplete evidence")
@@ -133,11 +142,11 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
     if (worker) { failure = "Replay gameplay owner changed"; return }
     worker = value
     value.on?.("close", () => { closedAt = Date.now() })
-    pending = value.evaluate(async ({ mapOrdinal }) => {
+    pending = value.evaluate(async ({ mapOrdinal, entropyHex }) => {
       const deadline = performance.now() + 5000
       while (!(globalThis as any).__playsrcGameplayReplay && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
-      ;(globalThis as any).__playsrcGameplayReplay.arm(mapOrdinal)
-    }, { mapOrdinal }).catch(error => { failure = String(error) })
+      ;(globalThis as any).__playsrcGameplayReplay.arm(mapOrdinal, entropyHex)
+    }, { mapOrdinal, entropyHex }).catch(error => { failure = String(error) })
   }
   page.on("worker", attach)
   let busy = false
@@ -183,7 +192,7 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
       await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
         if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
       })
-        const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, admission, error: failure }
+        const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, admission, entropy, error: failure }
       const manifestBytes = Buffer.from(JSON.stringify(manifest))
       const manifestFile = `${createHash("sha256").update(manifestBytes).digest("hex")}.replay.json`
       await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" }).catch(async error => {
@@ -209,9 +218,9 @@ export function bindReplayGeneration(journal: any, installed: ReplayInstalledIde
 /** Explicit requested navigation boundaries, never automatic replacement recovery.
  * Setup journals end before navigation is requested; they do not claim teardown
  * coverage. Each new Worker must close its predecessor and authenticate anew. */
-export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1) {
+export async function startGameplayReplayLifecycle(page: Page, directory: string, label: string, warmReload: boolean, mapOrdinal = 1, entropyHex?: string) {
   if (warmReload && mapOrdinal !== 1) throw new Error("Warm-reload replay requires the initial map of each Worker")
-  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2, true)
+  let journal = await startGameplayReplayJournal(page, directory, `${label}-worker-1`, mapOrdinal, warmReload ? 0 : 2, true, warmReload ? undefined : entropyHex)
   let ordinal = 1, previous: typeof journal | undefined, transitionAt: number | undefined
   let stopped = false
   const generations: any[] = []
@@ -235,7 +244,7 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
       previous = journal
       transitionAt = Date.now()
       ordinal = 2
-      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal, 2, true)
+      journal = await startGameplayReplayJournal(page, directory, `${label}-worker-2`, mapOrdinal, 2, true, entropyHex)
     },
     async ready() {
       if (ordinal !== (warmReload ? 2 : 1)) throw new Error("Requested replay navigation missing")
@@ -243,6 +252,11 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
       if (previous && (previous.owner() === journal.owner() || previous.closedAt() === null)) throw new Error("Replay predecessor Worker did not close")
     },
     mark: (mark: number) => journal.mark(mark),
+    async stopAdmission() {
+      const owner = journal.owner()
+      if (!owner || stopped) throw new Error("Admission recorder owner absent")
+      await owner.evaluate(() => (globalThis as any).__playsrcGameplayReplay.stopAdmission())
+    },
     stop(installed: ReplayInstalledIdentity, complete = true) {
       if (result) return result
       stopped = true

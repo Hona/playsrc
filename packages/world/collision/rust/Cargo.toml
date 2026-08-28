@@ -16,6 +16,11 @@ sha2 = "0.11"
 playsrc-asset-graph = { path = "../../../asset-store/rust" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+libc = "0.2"
+
+[[example]]
+name = "brush_queries"
+required-features = ["replay-reference"]
 
 [lib]
 path = "src/lib.rs"
