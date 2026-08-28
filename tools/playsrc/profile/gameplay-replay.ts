@@ -173,7 +173,9 @@ export async function startGameplayReplayJournal(page: Page, directory: string, 
         const manifest = { schema: "playsrc-gameplay-replay-v1", file, sha256, bytes: bytes.length, complete: complete && !failure, checkpoint, mapOrdinal, expectedMarks, admission, error: failure }
       const manifestBytes = Buffer.from(JSON.stringify(manifest))
       const manifestFile = `${createHash("sha256").update(manifestBytes).digest("hex")}.replay.json`
-      await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" })
+      await writeFile(path.join(directory, manifestFile), manifestBytes, { flag: "wx" }).catch(async error => {
+        if (error.code !== "EEXIST" || !manifestBytes.equals(await readFile(path.join(directory, manifestFile)))) throw error
+      })
       await writeFile(progress, JSON.stringify({ ...manifest, manifestFile }))
       return { ...manifest, manifestFile }
       })()
@@ -240,7 +242,9 @@ export async function startGameplayReplayLifecycle(page: Page, directory: string
         validateReplayLifecycle(manifest, manifest.complete)
         const bytes = Buffer.from(JSON.stringify(manifest)), sha256 = createHash("sha256").update(bytes).digest("hex")
         const file = `${sha256}.replay-lifecycle.json`
-        await writeFile(path.join(directory, file), bytes, { flag: "wx" })
+        await writeFile(path.join(directory, file), bytes, { flag: "wx" }).catch(async error => {
+          if (error.code !== "EEXIST" || !bytes.equals(await readFile(path.join(directory, file)))) throw error
+        })
         return { artifact, lifecycle: { file, sha256, bytes: bytes.length, complete: manifest.complete } }
       })()
       return result
