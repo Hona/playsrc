@@ -247,7 +247,9 @@ pub struct SkyParameters {
 }
 
 pub fn sky_parameters(material: &Material) -> Result<SkyParameters, Error> {
-    if !matches!(material.shader, Shader::SkyLdr | Shader::SkyHdr) {
+    // Configured legacy sky faces use UnlitGeneric with nofog/ignorez and an
+    // authored base-texture transform; a sky face is not limited to Sky_DX9.
+    if !matches!(material.shader, Shader::SkyLdr | Shader::SkyHdr | Shader::UnlitGeneric) {
         return Err(error(ErrorCode::RootKind, None));
     }
     let selected = material.selected_textures.first().ok_or_else(|| error(ErrorCode::MissingProfileTexture, None))?;
@@ -1642,6 +1644,22 @@ mod tests {
     use super::*;
     use playsrc_keyvalues::ConditionEnvironment;
     use playsrc_vmt::{Composition, Limits, compose};
+    #[test]
+    fn configured_legacy_unlit_sky_keeps_its_authored_transform() {
+        let Composition::Complete(document) = compose(
+            br#"UnlitGeneric { "$nofog" "1" "$ignorez" "1" "$basetexture" "skybox/sky_day01_01bk" "$basetexturetransform" "center 0 0 scale 1 2 rotate 0 translate 0 0" }"#,
+            "materials/skybox/sky_day01_01bk.vmt", &[], &ConditionEnvironment::default(), Limits::default(),
+        ).unwrap() else { panic!() };
+        for hdr_mode in [HdrMode::None, HdrMode::Integer, HdrMode::Float] {
+            let material = resolve_for_environment(&document, SelectionEnvironment { hdr_mode, ..SelectionEnvironment::default() }).unwrap();
+            assert_eq!(material.shader, Shader::UnlitGeneric);
+            assert_eq!(material.selected_textures, vec![TextureRole::Base]);
+            let parameters = sky_parameters(&material).unwrap();
+            assert_eq!(parameters.color, [1.0; 3]);
+            assert_eq!(parameters.texture_transform[0], 1.0);
+            assert_eq!(parameters.texture_transform[5], 2.0);
+        }
+    }
     #[test]
     fn sky_parameters_keep_authored_uv_scale_and_color_in_both_profiles() {
         let Composition::Complete(document) = compose(
