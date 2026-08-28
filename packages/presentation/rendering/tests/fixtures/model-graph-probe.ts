@@ -1,13 +1,13 @@
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, perObjectModelEnvironment } from "../../src/model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelTexture, perObjectModelTextures } from "../../src/model-lighting-graphs"
 import { createSourceModelLightingUniforms, createSourceModelEyeUniforms, sourceEyeIrisNode, sourceModelSurfaceNode, updateSourceModelLightingUniforms } from "../../src/source-model-lighting"
 import { bindSourceModelMesh, createSourceModelSkeleton, updateSourceModelSkeleton } from "../../src/source-model-skinning"
 import { RetainedModelCache } from "../../src/retained-model-cache"
 
 /** Diagnostic equivalence, not a gameplay/performance benchmark. Both paths
  * draw the same multi-object scene, including overlapping skinned geometry. */
-export async function createModelGraphProbe(materialVariants = false) {
+export async function createModelGraphProbe(materialVariants = false, basePlanes = false) {
   const width = 640, height = 480
   const renderer = new THREE.WebGPURenderer({ antialias: false })
   await renderer.init()
@@ -32,6 +32,17 @@ export async function createModelGraphProbe(materialVariants = false) {
   const graphs = new ModelLightingGraphs()
   const iris = new THREE.DataTexture(new Uint8Array([255, 30, 10, 255, 20, 220, 50, 255, 20, 30, 240, 255, 220, 180, 20, 255]), 2, 2)
   iris.needsUpdate = true
+  const planes = [[240, 40, 20, 180], [20, 90, 240, 210], [40, 220, 60, 240]].map(rgba => {
+    const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1)
+    texture.needsUpdate = true
+    return texture
+  })
+  const warps = [[180, 140, 120, 255], [120, 180, 140, 255], [140, 120, 180, 255]].map(rgba => {
+    const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1); texture.needsUpdate = true; return texture
+  })
+  const exponents = [[20, 160, 0, 100], [80, 60, 0, 180], [140, 200, 0, 240]].map(rgba => {
+    const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1); texture.needsUpdate = true; return texture
+  })
   const cubemaps = [[60, 10, 20, 255], [10, 35, 70, 255]].map(rgba => {
     const faces = Array.from({ length: 6 }, () => new THREE.DataTexture(new Uint8Array(rgba), 1, 1))
     const texture = new THREE.CubeTexture(faces)
@@ -56,21 +67,31 @@ export async function createModelGraphProbe(materialVariants = false) {
     mesh.position.set((index - 1) * .9, (index % 2) * .35 - .15, index * .22)
     if (index === 1) mesh.scale.set(1, -.85, 1.1)
     bindModelLighting(mesh, lighting, eye)
-    bindModelEnvironment(mesh, cubemaps[index % 2]!)
-    const variant = materialVariants ? index : 0
-    const surface = { halfLambert: true, environment: { texture: cubemaps[0]!, tint: [1, 1 - variant * .1, 1] as const, scale: 1 + variant }, phong: {
-      maskSource: 0, invertMask: false, albedoTint: false, exponent: 8 + variant * 32, exponentFactor: 0,
+    bindModelTexture(mesh, "sourceEnvironment", cubemaps[index % 2]!)
+    bindModelTexture(mesh, "sourceBaseTexture", planes[index]!)
+    bindModelTexture(mesh, "sourceWarpTexture", warps[index]!)
+    bindModelTexture(mesh, "sourceExponentTexture", exponents[index]!)
+    const variant = materialVariants || basePlanes ? index : 0
+    const surface = { halfLambert: true, environment: { texture: cubemaps[0]!, tint: [1, basePlanes ? 1 : 1 - variant * .1, 1] as const, scale: basePlanes ? 1 : 1 + variant }, phong: {
+      maskSource: 0, invertMask: false, albedoTint: basePlanes, exponent: 8 + variant * 32, exponentFactor: basePlanes ? 100 : 0,
       tint: [1, .7, .4 + variant * .2] as const, boost: .5 + variant * .15, packedFresnel: [.1, .4 + variant * .1, 1] as const,
-      rim: { exponent: 2 + variant, boost: .2 + variant * .1, exponentTextureAlphaMask: false },
+      rim: { exponent: 2 + variant, boost: .2 + variant * .1, exponentTextureAlphaMask: basePlanes },
     } }
-    const dedicated = sourceModelSurfaceNode(sourceEyeIrisNode(iris, eye, .4 + variant * .1, true), lighting, surface, TSL.float(1))
+    graphs.bindPhong(mesh, surface.phong)
+    const dedicatedBase = TSL.texture(planes[index]!, TSL.uv())
+    const dedicatedWarp = TSL.texture(warps[index]!, TSL.uv()), dedicatedExponent = TSL.texture(exponents[index]!, TSL.uv())
+    const dedicated = sourceModelSurfaceNode(basePlanes ? dedicatedBase : sourceEyeIrisNode(iris, eye, .4 + variant * .1, true), lighting,
+      { ...surface, ...(basePlanes ? { diffuseWarp: dedicatedWarp, exponentTexture: dedicatedExponent } : {}) }, TSL.float(1))
     original.colorNode = dedicated.color
-    shared.colorNode = graphs.get(`eye-phong-environment:${variant}`, () => {
-      const value = sourceModelSurfaceNode(sourceEyeIrisNode(iris, graphs.eyes, .4 + variant * .1, true), graphs.lighting, surface, TSL.float(1))
-      return perObjectModelEnvironment(value.color, value.environmentNode)
+    shared.colorNode = graphs.get(`eye-phong-environment:${basePlanes ? 0 : variant}`, () => {
+      const sampler = TSL.texture(planes[0]!, TSL.uv())
+      const warp = TSL.texture(warps[0]!, TSL.uv()), exponent = TSL.texture(exponents[0]!, TSL.uv())
+      const value = sourceModelSurfaceNode(basePlanes ? sampler : sourceEyeIrisNode(iris, graphs.eyes, .4 + variant * .1, true), graphs.lighting,
+        { ...surface, phongUniforms: graphs.phong, ...(basePlanes ? { diffuseWarp: warp, exponentTexture: exponent } : {}) }, TSL.float(1))
+      return perObjectModelTextures(value.color, [{ name: "sourceEnvironment", node: value.environmentNode }, ...(basePlanes ? [{ name: "sourceBaseTexture" as const, node: sampler }, { name: "sourceWarpTexture" as const, node: warp }, { name: "sourceExponentTexture" as const, node: exponent }] : [])])
     })
     scene.add(mesh)
-    return { mesh, lighting, eye, skeleton, original, shared, dedicated }
+    return { mesh, lighting, eye, skeleton, original, shared, dedicated, dedicatedBase, dedicatedWarp, dedicatedExponent }
   })
   const parked = new RetainedModelCache<typeof actors[number]>(3, () => { throw Error("unexpected probe eviction") })
   const capture = async (shared: boolean) => {
@@ -102,8 +123,14 @@ export async function createModelGraphProbe(materialVariants = false) {
         actor.eye.irisU.value.set(.4, 0, 0, .2 * index + phase * .1)
         actor.eye.irisV.value.set(0, .4, 0, .1 * index)
         const texture = cubemaps[(index + phase) % 2]!
-        bindModelEnvironment(actor.mesh, texture)
+        bindModelTexture(actor.mesh, "sourceEnvironment", texture)
         actor.dedicated.environmentNode.value = texture
+        const plane = planes[(index + phase) % planes.length]!
+        bindModelTexture(actor.mesh, "sourceBaseTexture", plane)
+        actor.dedicatedBase.value = plane
+        const warp = warps[(index + phase) % warps.length]!, exponent = exponents[(index + phase) % exponents.length]!
+        bindModelTexture(actor.mesh, "sourceWarpTexture", warp); bindModelTexture(actor.mesh, "sourceExponentTexture", exponent)
+        actor.dedicatedWarp.value = warp; actor.dedicatedExponent.value = exponent
       }
       const before = await capture(false), after = await capture(true)
       const mismatches = (a: Uint8Array, b: Uint8Array) => a.reduce((sum, value, i) => sum + Number(value !== b[i]), 0)
@@ -115,6 +142,8 @@ export async function createModelGraphProbe(materialVariants = false) {
     dispose() {
       for (const actor of actors) { actor.skeleton.dispose(); actor.original.dispose(); actor.shared.dispose() }
       for (const texture of cubemaps) texture.dispose()
+      for (const texture of planes) texture.dispose()
+      for (const texture of [...warps, ...exponents]) texture.dispose()
       iris.dispose(); geometry.dispose(); depthQuad.geometry.dispose(); depthMaterial.dispose(); target.dispose(); depthTarget.dispose(); renderer.dispose()
     },
   }

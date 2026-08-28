@@ -18,13 +18,14 @@ import {
   type RenderConfiguration,
   type ToneOperator,
 } from "./color-output"
-import { applyParticleDepthState, sourceFragmentUsesAlpha, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
+import { applyParticleDepthState, sourceMaterialUsesFog, worldMaterialSide } from "./material-state"
 import { borrowWorldLightmapTextures, createWorldLightmapTextures, replaceWorldLightmapData } from "./world-lightmap-textures"
 import { retainedSceneSource } from "./scene-resource-handoff"
 import { projectedDecalDepthBias, projectedDecalReceiverIsValid } from "./decal-occlusion"
 import { OwnedResourceGeneration } from "./resource-generation"
 import { SharedTextureResidency } from "./texture-residency"
 import { sourceTextureSamples } from "./texture-samples"
+import { sourceTextureLayout } from "./source-texture-layout"
 import { FramePacingController, type FramePacingRecord } from "./frame-pacing"
 import { browserFrameProfiler, installNodeBuilderInstrumentation, observeStaticPropUse, RendererFrameInstrumentation, type RendererFrameProfile } from "./frame-instrumentation"
 import { RenderOwnerProbe, RENDER_OWNER_PLAN } from "./render-owner-probe"
@@ -49,7 +50,9 @@ import { installRenderObjectLifetime } from "./render-object-lifetime"
 import { installGeometryAttributeLifetime } from "./geometry-attribute-lifetime"
 import { installTextureBindingLifetime } from "./texture-binding-lifetime"
 import { disposeDynamicModel } from "./dynamic-model-disposal"
-import { ModelLightingGraphs, bindModelLighting, bindModelEnvironment, bindStaticPropFade, modelEnvironmentShape, perObjectModelEnvironment, transferModelBindings } from "./model-lighting-graphs"
+import { ModelLightingGraphs, bindModelLighting, bindModelTexture, bindStaticPropFade, modelEnvironmentShape, transferModelBindings } from "./model-lighting-graphs"
+import { modelMaterialGraph, swizzleModelTexture } from "./model-material-graphs"
+import { sourceFragmentColor } from "./source-fragment-color"
 import { createStaticPropBatch, MAX_STATIC_PROPS_PER_BATCH, type StaticPropBatch } from "./static-prop-batches"
 import { distanceFadeOpacity, quantizeStaticPropOpacity, screenFadeOpacity } from "./static-prop-fade"
 import { executeViewModelDepthPhase } from "./viewmodel-depth-phase"
@@ -80,8 +83,6 @@ import { SourceExposureSampler } from "./source-exposure"
 import {
   createSourceModelLightingUniforms,
   createSourceModelEyeUniforms,
-  sourceEyeIrisNode,
-  sourceModelSurfaceNode,
   sourceStaticVertexLightingNode,
   sourceModelWorldNormal,
   updateSourceModelLightingUniforms,
@@ -95,7 +96,6 @@ import {
   createSourceWaterFogUniforms,
   createSourceWaterMaterial,
   sourceViewFogNode,
-  sourceWaterFogFragment,
   type SourceWaterFogUniforms,
   type SourceWaterShaderState,
 } from "./source-water"
@@ -278,6 +278,8 @@ const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
 const SOURCE_MODEL_BIND_GEOMETRY = new WeakMap<THREE.BufferGeometry, Readonly<{ geometry: THREE.BufferGeometry; palette: Uint16Array }>>()
 const SOURCE_MODEL_BASE_COLOR = new WeakMap<THREE.BufferGeometry, any>()
+const SOURCE_MODEL_BASE_TEXTURE = new WeakMap<object, Readonly<{ texture: THREE.Texture; input: AuthoredTextureInput }>>()
+const swizzle = (sample: any, input: AuthoredTextureInput) => swizzleModelTexture(sample, input.sourceFormat)
 
 type Canvas = HTMLCanvasElement | OffscreenCanvas
 
@@ -1056,7 +1058,6 @@ type ModelTemplateContext = Readonly<{
 function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplateContext): void {
   const { request, materialStates, disposables, modelTemplates, modelLightingTextures, modelPanelMaterialAnimations, modelBaseSamples, waterFogUniforms } = context
   const createModelTexture = context.texture, createModelCubemap = context.cubemap
-  const swizzle = (sample: any, input: AuthoredTextureInput) => input.sourceFormat === 1 ? sample.abgr : input.sourceFormat === 11 ? sample.gbar : input.sourceFormat === 12 ? sample.bgra : input.sourceFormat === 16 ? TSL.vec4(sample.bgr, 1) : sample
   for (const model of models) {
     const template = new THREE.Group()
     for (const [primitiveIndex, primitive] of model.primitives.entries()) {
@@ -1103,6 +1104,7 @@ function buildModelTemplates(models: RuntimeMap["models"], context: ModelTemplat
       const baseKey = baseTexture && typed?.shader !== "unlit-two-texture" ? `${baseTexture.texture.uuid}:${baseTexture.input.sourceFormat}` : undefined
       let base = baseKey ? modelBaseSamples.get(baseKey) : undefined
       if (!base) { base = first; if (baseKey) modelBaseSamples.set(baseKey, base) }
+      if (baseKey && baseTexture) SOURCE_MODEL_BASE_TEXTURE.set(base, baseTexture)
       if (typed?.shader === "unlit-two-texture") {
         const second = createModelTexture(resolved.logicalPath, 6)
         if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
@@ -1354,17 +1356,12 @@ function textureFromAuthored(input: AuthoredTextureInput, colorSpace: string, fr
   const data = (plane: AuthoredTextureInput["planes"][number]) =>
     sourceTextureSamples(plane.rgba, input.sourceFormat, input.scalarEncoding)
   const base = selected[0]!
-  const compressedFormat = input.sourceFormat === null ? null : new Map<number, THREE.CompressedPixelFormat>([
-    [13, THREE.RGBA_S3TC_DXT1_Format],
-    [20, THREE.RGBA_S3TC_DXT1_Format],
-    [14, THREE.RGBA_S3TC_DXT3_Format],
-    [15, THREE.RGBA_S3TC_DXT5_Format],
-  ]).get(input.sourceFormat)
-  if (input.sourceFormat !== null && ![0,1,2,3,11,12,16,24].includes(input.sourceFormat) && compressedFormat === undefined) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
+  const layout = sourceTextureLayout(input.sourceFormat, input.scalarEncoding)
+  if (!layout) throw new RenderingError("UnsupportedFeature", `authored texture ${input.logicalPath} has unsupported source format ${input.sourceFormat}`)
   const mipmaps = selected.map((plane) => Object.freeze({ data: data(plane), width: plane.width, height: plane.height }))
-  const texture = compressedFormat === null || compressedFormat === undefined
-    ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, input.scalarEncoding === "u8" ? THREE.UnsignedByteType : THREE.HalfFloatType)
-    : new THREE.CompressedTexture(mipmaps, base.width, base.height, compressedFormat, THREE.UnsignedByteType)
+  const texture = layout.compressed === null
+    ? new THREE.DataTexture(mipmaps[0]!.data, base.width, base.height, THREE.RGBAFormat, layout.type)
+    : new THREE.CompressedTexture(mipmaps, base.width, base.height, layout.compressed, layout.type)
   texture.mipmaps = mipmaps
   texture.colorSpace = colorSpace
   const wrap = (value: number) => value === 0 ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping
@@ -1430,27 +1427,6 @@ function materialOptions(resolved: RuntimeMaterial, state?: MaterialStateInput):
 function sourceModelSide(facing: Readonly<{ frontFace: "clockwise" | "counter-clockwise"; cullFace: "back" }>): THREE.Side {
   if (facing.cullFace !== "back") throw new RenderingError("MalformedInput", "StudioModel cull face is invalid")
   return facing.frontFace === "clockwise" ? THREE.BackSide : THREE.FrontSide
-}
-
-function sourceFragmentColor(
-  sample: any,
-  state?: MaterialStateInput,
-  waterFogUniforms?: SourceWaterFogUniforms,
-  dynamicFade = false,
-): any {
-  const alpha = sample.a.mul(state?.alphaModulation ?? 1)
-  const authored = TSL.vec4(sample.rgb, sourceFragmentUsesAlpha(state, dynamicFade) ? alpha : 1)
-  const color = waterFogUniforms && !state?.blendEnabled
-    ? sourceWaterFogFragment(authored, waterFogUniforms)
-    : authored
-  if (state?.fragmentDiscard.kind !== "alpha") return color
-  return TSL.Fn(() => {
-    const rejected = state.fragmentDiscard.pass === "greater"
-      ? alpha.lessThanEqual(state.fragmentDiscard.reference)
-      : alpha.lessThan(state.fragmentDiscard.reference)
-    rejected.discard()
-    return color
-  })()
 }
 
 function detailColor(base: any, detail: RuntimeMaterial["detail"], texture?: THREE.Texture): any {
@@ -3636,6 +3612,7 @@ class RendererOwner implements Renderer {
                base = first
                if (baseKey) modelBaseSamples.set(baseKey, base)
              }
+             if (baseKey && baseTexture) SOURCE_MODEL_BASE_TEXTURE.set(base, baseTexture)
             if (typedMaterial?.shader === "unlit-two-texture") {
               const second = createModelTexture(resolved.logicalPath, 6)
               if (!second) throw new RenderingError("MissingInput", `authored second model texture ${resolved.logicalPath} is unavailable`)
@@ -5634,7 +5611,7 @@ class RendererOwner implements Renderer {
     if (!retained.meshes) retained.instance.traverse((object) => { if (object instanceof THREE.Mesh && !object.userData.sourceCloakOverlay) meshes.push(object) })
     retained.meshes = meshes
     if (retained.cubemapIdentity !== input.localEnvironment) {
-      if (localEnvironment) for (const mesh of meshes) bindModelEnvironment(mesh, localEnvironment)
+      if (localEnvironment) for (const mesh of meshes) bindModelTexture(mesh, "sourceEnvironment", localEnvironment)
       retained.cubemapIdentity = input.localEnvironment
     }
     if (!uniforms || retained.environmentShape !== environmentShape) {
@@ -5681,10 +5658,9 @@ class RendererOwner implements Renderer {
               scale: authored.shader === "eye-refract" ? 1 : this.configuration.lightingProfile === "hdr" ? 16 : 1,
             })
           }
-          let base = SOURCE_MODEL_BASE_COLOR.get(mesh.geometry)
+          const base = SOURCE_MODEL_BASE_COLOR.get(mesh.geometry)
           if (!base) throw new RenderingError("MissingInput", `authored model base sample ${identity} is unavailable`)
-          const graphKey = `${identity}:${base.uuid}:${textures?.environment ? "authored" : environmentShape}`
-          let eyeShader = false
+          const baseTexture = SOURCE_MODEL_BASE_TEXTURE.get(base)
           if (authored.shader === "eye-refract" || authored.shader === "eyes") {
             const primitive = Number(mesh.userData.posedPrimitive ?? mesh.userData.sourcePrimitive)
             const eye = item.eyeStates?.find((value) => value.primitive === primitive)
@@ -5697,28 +5673,10 @@ class RendererOwner implements Renderer {
             retained.eyes = eyes
             updateSourceModelEyeUniforms(eyeUniforms, eye)
             bindModelLighting(mesh, uniforms, eyeUniforms)
-            eyeShader = true
           }
-          material.colorNode = resources.graphs.get(graphKey, () => {
-            this.#instrumentation?.dynamicModel("graphCreated")
-            if (eyeShader) base = sourceEyeIrisNode(textures!.iris!, resources.graphs.eyes, state.dilation!, authored.shader === "eye-refract")
-            const shaded = sourceModelSurfaceNode(base, resources.graphs.lighting, {
-              halfLambert: state.phong ? true : state.halfLambert,
-              diffuseWarp: textures?.warp,
-              exponentTexture: textures?.exponent,
-              phong: state.phong,
-              environment,
-              ...(authored.shader === "eye-refract" ? {
-                eye: {
-                  ambientOcclusion: textures?.ambientOcclusion,
-                  ambientOcclusionColor: state.ambientOcclusionColor!,
-                  glossiness: state.glossiness!,
-                },
-              } : {}),
-            }, resources.exposure)
-            const color = shaded.environmentNode && !textures?.environment ? perObjectModelEnvironment(shaded.color, shaded.environmentNode) : shaded.color
-            return sourceFragmentColor(color, resources.states.get(identity), resources.waterFog)
-          })
+          material.colorNode = modelMaterialGraph(mesh, resources.graphs, { shader: authored.shader, state: state as typeof state & { halfLambert: boolean },
+            fragment: resources.states.get(identity), base, baseTexture: baseTexture && { texture: baseTexture.texture, sourceFormat: baseTexture.input.sourceFormat },
+            textures, environment, exposure: resources.exposure, waterFog: resources.waterFog }, () => this.#instrumentation?.dynamicModel("graphCreated"))
           material.needsUpdate = true
         }
       }

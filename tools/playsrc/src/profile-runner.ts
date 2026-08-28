@@ -80,6 +80,7 @@ const PROFILES = Object.freeze({
   hud: { config: "playwright.hud-profile.config.ts", target: "jump_beef" },
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
+  "selection-transition": { config: "playwright.selection-transition.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
