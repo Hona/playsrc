@@ -2,6 +2,7 @@ use playsrc_asset_graph::{ResourceGraph, decode, encode_resource_set, hex_hash};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
+mod payload_retention;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -17,10 +18,10 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && arguments[2] == "--control-point-match" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention"].contains(&arguments[2].as_str()) || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
-            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match]".to_owned(),
+            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --payload-retention]".to_owned(),
         );
     }
     let target = &arguments[0];
@@ -96,6 +97,11 @@ fn main() -> Result<(), String> {
     let resources =
         encode_resource_set(&entries).map_err(|error| format!("resource set: {error:?}"))?;
     drop(entries);
+    if arguments.get(2).is_some_and(|option| option == "--payload-retention") {
+        let profiles = payload_retention::verify(&bsp, &resources)?;
+        println!("{}", serde_json::json!({"target": target, "graphSha256": arguments[1], "bspSha256": hash, "profiles": profiles}));
+        return Ok(());
+    }
     if arguments.len() == 3 {
         let mut frames = Vec::new();
         let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, |snapshot| {
@@ -108,7 +114,7 @@ fn main() -> Result<(), String> {
     }
     let section = playsrc_tf2_wasm::ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let resource_hash: [u8; 32] = Sha256::digest(&resources).into();
-    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, resource_hash.as_ptr()) };
+    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, resource_hash.as_ptr(), 1) };
     struct OwnedHandle(u32);
     impl Drop for OwnedHandle { fn drop(&mut self) { playsrc_tf2_wasm::playsrc_dispose(self.0); } }
     let _owner = OwnedHandle(handle);

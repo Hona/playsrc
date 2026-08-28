@@ -594,6 +594,7 @@ struct ClassPreview {
 struct Slot {
     generation: u16,
     payload: Option<Vec<u8>>,
+    payload_bytes: usize,
     presentation: Vec<u8>,
     presentation_bytes: usize,
     coverage: Vec<u8>,
@@ -633,7 +634,7 @@ struct Slot {
     session: Option<playsrc_tf2::Session<SharedWorld>>,
     snapshot: Arc<[u8]>,
     compile_metrics: [u64; 17],
-    memory_metrics: [usize; 12],
+    memory_metrics: [usize; 13],
     texture_inspections: [u32; 2],
     model_cache: [u32; 2],
 }
@@ -1033,6 +1034,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
     configuration_pointer: *const ResourceSection,
     configuration_count: usize,
     configuration_sha256_pointer: *const u8,
+    retain_payload: u32,
 ) -> u32 {
     unsafe {
         compile_map(
@@ -1043,6 +1045,7 @@ pub unsafe extern "C" fn playsrc_compile_map(
             configuration_count,
             configuration_sha256_pointer,
             None,
+            retain_payload,
         )
     }
 }
@@ -1058,6 +1061,7 @@ pub unsafe extern "C" fn playsrc_compile_map_cached(
     configuration_sha256_pointer: *const u8,
     presentation_pointer: *const u8,
     presentation_length: usize,
+    retain_payload: u32,
 ) -> u32 {
     let presentation = if presentation_length == 0 {
         None
@@ -1075,6 +1079,7 @@ pub unsafe extern "C" fn playsrc_compile_map_cached(
             configuration_count,
             configuration_sha256_pointer,
             presentation,
+            retain_payload,
         )
     }
 }
@@ -1087,6 +1092,7 @@ unsafe fn compile_map(
     configuration_count: usize,
     configuration_sha256_pointer: *const u8,
     cached_presentation: Option<&[u8]>,
+    retain_payload: u32,
 ) -> u32 {
     PRESENTATION_FAILURE_DETAIL.lock().unwrap().clear();
     PRESENTATION_MODEL_CACHE_HITS.store(0, Ordering::Relaxed);
@@ -1096,7 +1102,7 @@ unsafe fn compile_map(
         playsrc_simulation::MetricsClock::monotonic_nanoseconds(&mut metrics_clock);
     let mut phase_started = compile_started;
     let mut compile_metrics = [0_u64; 17];
-    let mut memory_metrics = [0_usize; 12];
+    let mut memory_metrics = [0_usize; 13];
     memory_metrics[0] = memory::live_bytes();
     let bsp_bytes = if bsp_length == 0 {
         &[]
@@ -1119,6 +1125,11 @@ unsafe fn compile_map(
         let profile = match profile {
             0 => playsrc_map::LightingProfile::Ldr,
             1 => playsrc_map::LightingProfile::Hdr,
+            _ => return Err(2),
+        };
+        let retain_payload = match retain_payload {
+            0 => false,
+            1 => true,
             _ => return Err(2),
         };
         let resources = unsafe { resource_sections(configuration_pointer, configuration_count) }
@@ -1305,6 +1316,7 @@ unsafe fn compile_map(
             visibility_world,
             bsp_sha,
             playsrc_map::RuntimeAssembly {
+                retain_payload,
                 compiler_identity: if profile == playsrc_map::LightingProfile::Hdr {
                     if displacement_runtime {
                         "playsrc-map-runtime-hdr-2"
@@ -1339,6 +1351,7 @@ unsafe fn compile_map(
             }
         })?;
         memory_metrics[6] = memory::live_bytes();
+        memory_metrics[12] = runtime.descriptor.payload.capacity();
         drop(runtime_models);
         drop(model_occurrences);
         let coverage = encode_profile_coverage(
@@ -1486,6 +1499,7 @@ unsafe fn compile_map(
         compile_metrics[10] = phase_finished.saturating_sub(compile_started);
         Ok((
             runtime.descriptor.payload,
+            runtime.descriptor.payload_bytes,
             runtime.descriptor.payload_sha256,
             runtime.descriptor.derived_sha256,
             presentation,
@@ -1526,6 +1540,7 @@ unsafe fn compile_map(
     let slot = match result {
         Ok((
             payload,
+            payload_bytes,
             hash,
             derived_hash,
             presentation,
@@ -1551,6 +1566,7 @@ unsafe fn compile_map(
         )) => Slot {
             generation,
             payload: Some(payload),
+            payload_bytes,
             presentation_bytes: cached_presentation.map_or(presentation.len(), <[u8]>::len),
             presentation,
             coverage,
@@ -1603,6 +1619,7 @@ unsafe fn compile_map(
         Err(error) => Slot {
             generation,
             payload: Some(Vec::new()),
+            payload_bytes: 0,
             presentation: Vec::new(),
             presentation_bytes: 0,
             coverage: Vec::new(),
@@ -1667,7 +1684,7 @@ pub struct CompiledArtifact {
 pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
     let section = ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let hash: [u8; 32] = Sha256::digest(resources).into();
-    let handle = unsafe { playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, hash.as_ptr()) };
+    let handle = unsafe { playsrc_compile_map(bsp.as_ptr(), bsp.len(), 1, &section, 1, hash.as_ptr(), 1) };
     let result = (|| {
         let failure = playsrc_result_error(handle);
         if failure != 0 { return Err(format!("map compilation failed: {failure}")); }
@@ -1714,6 +1731,7 @@ pub fn compile_artifact(
             &section,
             1,
             configuration_sha256.as_ptr(),
+            1,
         )
     };
     let failure = playsrc_result_error(handle);
@@ -1828,7 +1846,7 @@ pub fn diagnose_presentation_bound(
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_length(handle: u32) -> usize {
-    with(handle, |slot| slot.payload.as_ref().map_or(0, Vec::len)).unwrap_or(0)
+    with(handle, |slot| slot.payload_bytes).unwrap_or(0)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_result_error(handle: u32) -> u32 {
@@ -4739,6 +4757,7 @@ pub extern "C" fn playsrc_result_take(handle: u32) -> *mut u8 {
     if payload.is_empty() {
         return std::ptr::null_mut();
     }
+    slot.payload_bytes = 0;
     Box::into_raw(std::mem::take(payload).into_boxed_slice()) as *mut u8
 }
 
@@ -4759,6 +4778,7 @@ pub extern "C" fn playsrc_result_release(handle: u32) -> u32 {
     };
     payload.clear();
     payload.shrink_to_fit();
+    slot.payload_bytes = 0;
     1
 }
 
@@ -16008,6 +16028,7 @@ mod tests {
         guard.push(Slot {
             generation: 1,
             payload: Some(vec![1, 2]),
+            payload_bytes: 2,
             presentation: vec![7, 8, 9],
             presentation_bytes: 3,
             coverage: Vec::new(),
@@ -16047,7 +16068,7 @@ mod tests {
             session: None,
             snapshot: Arc::from([]),
             compile_metrics: [0; 17],
-            memory_metrics: [0; 12],
+            memory_metrics: [0; 13],
             texture_inspections: [0; 2],
             model_cache: [0; 2],
         });
@@ -16089,6 +16110,15 @@ mod tests {
         assert_eq!(unsafe { std::slice::from_raw_parts(payload, 2) }, &[1, 2]);
         assert_eq!(playsrc_result_length(old), 0);
         unsafe { playsrc_free(payload, 2) };
+        // Identity-only output still owns a live generation, but no byte lease.
+        slots().lock().unwrap()[0].payload_bytes = 123;
+        assert_eq!(playsrc_result_length(old), 123);
+        assert!(playsrc_result_take(old).is_null());
+        let mut sentinel = [0xa5; 4];
+        assert_eq!(unsafe { playsrc_result_copy(old, sentinel.as_mut_ptr(), sentinel.len()) }, 0);
+        assert_eq!(sentinel, [0xa5; 4]);
+        assert_eq!(playsrc_result_release(old), 1);
+        assert_eq!(playsrc_result_length(old), 0);
         let mut hash = [0; 32];
         assert_eq!(unsafe { playsrc_result_hash(old, hash.as_mut_ptr()) }, 1);
         assert_eq!(hash, [3; 32]);
@@ -16097,6 +16127,7 @@ mod tests {
         guard[0] = Slot {
             generation: 2,
             payload: Some(vec![4]),
+            payload_bytes: 1,
             presentation: Vec::new(),
             presentation_bytes: 0,
             coverage: Vec::new(),
@@ -16136,7 +16167,7 @@ mod tests {
             session: None,
             snapshot: Arc::from([]),
             compile_metrics: [0; 17],
-            memory_metrics: [0; 12],
+            memory_metrics: [0; 13],
             texture_inspections: [0; 2],
             model_cache: [0; 2],
         };

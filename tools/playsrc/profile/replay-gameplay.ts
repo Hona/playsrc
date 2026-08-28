@@ -99,7 +99,7 @@ export async function replayGameplay(manifestPath: string, wasmPath: string, tic
       && Buffer.from(new Uint8Array(e.memory.buffer, digest, 32)).toString("hex") === checkpoint.configurationSha256, "Configured resource set differs from recorded checkpoint")
     require(e.playsrc_collision_replay_mode(reference && !baseline ? (displacement ? 2 : 1) : 0) === 1, "Replay selector failed")
     const compileStarted = performance.now()
-    const handle = e.playsrc_compile_map(bspPointer, bsp.length, checkpoint.profile, table, sections.length, digest)
+    const handle = e.playsrc_compile_map(bspPointer, bsp.length, checkpoint.profile, table, sections.length, digest, 1)
     require(e.playsrc_result_error(handle) === 0, `Replay checkpoint construction failed: ${e.playsrc_result_error(handle)}`)
     e.playsrc_result_release(handle)
     e.playsrc_presentation_release(handle)

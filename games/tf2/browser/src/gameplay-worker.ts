@@ -27,8 +27,8 @@ type WasmExports = Readonly<{
   playsrc_resource_take(): number
   playsrc_resource_release(pointer: number, length: number): number
   playsrc_resource_sections_hash(sections: number, count: number, output: number): number
-  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number): number
-  playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number): number
+  playsrc_compile_map(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, retainPayload: number): number
+  playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number, retainPayload: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
   playsrc_memory_bytes(index: number): number
   playsrc_compile_memory_bytes(handle: number, index: number): number
@@ -591,6 +591,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
         configurationHashPointer,
         presentationPointer,
         request.presentation.byteLength,
+        Number(request.includeMap),
       )
     : exports.playsrc_compile_map(
         bspPointer,
@@ -599,6 +600,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
         configurationPointer,
         configuration.sections.length,
         configurationHashPointer,
+        Number(request.includeMap),
       )
   const compileMilliseconds = performance.now() - compileStarted
   const resultStarted = performance.now()
@@ -720,7 +722,7 @@ function load(request: Extract<WorkerRequest, { kind: "load" }>): void {
       wasmLinearMemoryBytes: exports.memory.buffer.byteLength,
       wasmAllocatorLiveBytes: exports.playsrc_memory_bytes(0) >>> 0,
       wasmAllocatorHighWaterBytes: exports.playsrc_memory_bytes(1) >>> 0,
-      wasmCompileOwnerBytes: Array.from({ length: 12 }, (_, index) => exports.playsrc_compile_memory_bytes(candidate, index) >>> 0),
+      wasmCompileOwnerBytes: Array.from({ length: 13 }, (_, index) => exports.playsrc_compile_memory_bytes(candidate, index) >>> 0),
       resourceSections: configuration.sections.length,
       resourceBytes: request.configurationBytes,
       totalMilliseconds: performance.now() - started,
