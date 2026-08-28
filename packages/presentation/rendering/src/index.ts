@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu"
+import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import { spriteCardNodes, type SpriteCardInput } from "./sprite-card"
 import { SourceParticleDepth } from "./particle-depth"
@@ -4654,25 +4655,14 @@ class RendererOwner implements Renderer {
   }
 
   #validateFrame(frame: Frame): void {
-    if (
-      frame.effects.length + (frame.shadows?.length ?? 0) + (frame.models?.length ?? 0) + (frame.particles?.length ?? 0)+(frame.brushModels?.models.length??0) > MAX_EFFECTS ||
-      !finite([
-        ...frame.camera.position,
-        frame.camera.yawDegrees,
-        frame.camera.pitchDegrees,
-        frame.camera.verticalFovDegrees,
-        frame.camera.near,
-        frame.camera.far,
-        frame.deltaSeconds ?? 0,
-      ]) ||
-      frame.camera.verticalFovDegrees <= 0 ||
-      frame.camera.verticalFovDegrees >= 180 ||
-      frame.camera.near <= 0 ||
-      frame.camera.far <= frame.camera.near ||
-      (frame.deltaSeconds ?? 0) < 0 ||
-      (frame.exposureHistogram && frame.exposureHistogram.length !== 16)
-    ) {
-      throw new RenderingError("MalformedInput", "render frame is invalid")
+    const invalid=invalidFrameEnvelope(frame,MAX_EFFECTS)
+    if (invalid) {
+      throw new RenderingError("MalformedInput", `render frame is invalid: ${JSON.stringify({ ...invalid,
+        clientFrame:frame.clientFrame,clientFrameSeconds:frame.clientFrameSeconds,
+        brushTick:frame.brushModels?.tick.toString(),entityRevision:frame.brushModels?.entityRevision.toString(),
+        sceneGeneration:this.#sceneGeneration,deviceGeneration:this.#deviceGeneration,
+        counts:{effects:frame.effects.length,shadows:frame.shadows?.length??0,models:frame.models?.length??0,particles:frame.particles?.length??0,brushes:frame.brushModels?.models.length??0},
+      })}`)
     }
     try {
       validateDynamicLights(frame.effects, MAX_EFFECTS)

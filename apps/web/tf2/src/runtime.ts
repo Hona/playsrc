@@ -4791,7 +4791,8 @@ export class Tf2Application {
     const cosmeticDepthRevision = profile?.cosmeticDepthRevision
     const captureCosmeticDepth = Number.isSafeInteger(cosmeticDepthRevision) && cosmeticDepthRevision !== (profile?.cosmeticDepthCapture as { revision?: number } | undefined)?.revision
     if (captureCosmeticDepth) renderer.requestParticleDepthEvidence()
-    const rendered=await renderer.render({
+    let rendered
+    try { rendered=await renderer.render({
       ...prepared.frame,
       particles,
       clientFrame: clientFrame.clientFrame,
@@ -4804,7 +4805,14 @@ export class Tf2Application {
       fog:this.#artifacts?this.#mainFog(this.#artifacts):undefined,
       sky3d,
       deltaSeconds:deltaTicks*SIMULATION_SAMPLE_INTERVAL_SECONDS,
-    })
+    }) } catch (error) {
+      throw new Error(`${String(error)}; frame producer=${JSON.stringify({
+        generation,currentGeneration:this.#generation,closed:this.#closed,paused:this.#paused,sameRenderer:renderer===this.#renderer,
+        snapshotTick:prepared.snapshot.tick.toString(),lastRenderedTick:this.#lastRenderedTick?.toString(),selectedTicks:prepared.publication.selectedTicks,deltaTicks,
+        viewRevision:this.#viewRevision,mouseRevision:this.#mouseViewRevision,snapRevision:this.#authoritativeViewRevision,
+        presented:{...presentedCamera.revisions,tick:presentedCamera.revisions.tick.toString()},roundState:prepared.snapshot.round.state,inSetup:prepared.snapshot.round.inSetup,waiting:prepared.snapshot.round.waitingForPlayers,
+      })}`,{cause:error})
+    }
     clientFrame.accept()
     if(this.#closed||this.#paused||generation!==this.#generation||renderer!==this.#renderer)return
     if (captureHudPixels && profile) profile.hudPixelEvidence = { revision: hudPixelRevision, before: rendered.beforeHudCapture, after: rendered.capture }
