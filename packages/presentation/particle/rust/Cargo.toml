@@ -7,6 +7,9 @@ license-file = "../SOURCE-1-SDK-LICENSE.txt"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+playsrc-beam = { path = "../../beam/rust" }
+
 [dev-dependencies]
 playsrc-asset-graph = { path = "../../../asset-store/rust" }
 playsrc-vpk = { path = "../../../formats/vpk/rust", default-features = false }

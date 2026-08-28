@@ -16,7 +16,7 @@ pub use dmx::{Attribute, Document, Element, Value};
 pub use sheet::{
     ParticleSheet, SheetFrame, SheetSample, SheetSampleRequest, SheetSequence, sample_sheet,
 };
-pub use rope::{RopeMesh, RopePoint, RopeRender, RopeVertex};
+pub use rope::{RopePoint, RopeRender};
 pub use visibility::{VisibilityProxy, VisibilitySample, VisibilityView};
 pub use world::{
     AdvanceRequest, Bounds, CollisionBatch, CollisionQuery, CollisionResult, ControlPoint, Event,

@@ -8,6 +8,7 @@ license.workspace = true
 collision-replay = ["playsrc-collision/replay-reference"]
 
 [dependencies]
+playsrc-beam = { path = "../../../presentation/beam/rust" }
 playsrc-bsp = { path = "../../../formats/bsp/rust" }
 playsrc-collision = { path = "../../collision/rust" }
 playsrc-entity = { path = "../../entity/rust" }

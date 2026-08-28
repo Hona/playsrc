@@ -1,4 +1,4 @@
-use crate::world::{add, cross, mul, normalize, sub};
+use crate::world::sub;
 use crate::{Error, ErrorCode};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8,19 +8,6 @@ pub struct RopePoint {
     pub color: [f32; 4],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RopeVertex {
-    pub position: [f32; 3],
-    pub uv: [f32; 2],
-    pub color: [u8; 4],
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RopeMesh {
-    pub vertices: Vec<RopeVertex>,
-    pub indices: Vec<u32>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RopeRender {
     pub points: Vec<RopePoint>,
@@ -28,7 +15,7 @@ pub struct RopeRender {
     pub texel_size: f32,
     pub scroll_offset: f32,
     pub camera: [f32; 3],
-    pub mesh: Option<RopeMesh>,
+    pub mesh: Option<playsrc_beam::Mesh>,
 }
 
 impl RopeRender {
@@ -61,43 +48,12 @@ impl RopeRender {
                     "rope vertex count overflow",
                 )
             })?;
-        let mut mesh = RopeMesh {
-            vertices: Vec::with_capacity(vertices),
-            indices: Vec::with_capacity((vertices / 2 - 1) * 6),
-        };
+        let mut beam=playsrc_beam::Builder::new(vertices/2,self.camera);
         let scale = 1.0 / (mapping_height as f32 * self.texel_size);
         let step = 1.0 / self.subdivisions as f32;
         let mut length = 0.0;
         let mut previous = self.points[0];
         let mut previous_v = self.scroll_offset * scale;
-        let mut previous_normal = None;
-        let emit = |mesh: &mut RopeMesh, point: RopePoint, v: f32, normal: [f32; 3]| {
-            let offset = mul(normal, point.width * 0.5);
-            let color = point
-                .color
-                .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
-            mesh.vertices.push(RopeVertex {
-                position: add(point.position, offset),
-                uv: [0.0, v],
-                color,
-            });
-            mesh.vertices.push(RopeVertex {
-                position: sub(point.position, offset),
-                uv: [1.0, v],
-                color,
-            });
-            if mesh.vertices.len() > 2 {
-                let base = (mesh.vertices.len() - 4) as u32;
-                mesh.indices.extend_from_slice(&[
-                    base,
-                    base + 1,
-                    base + 2,
-                    base + 1,
-                    base + 3,
-                    base + 2,
-                ]);
-            }
-        };
         for index in 1..self.points.len() {
             let start = self.points[index - 1];
             let end = self.points[index];
@@ -129,21 +85,13 @@ impl RopeRender {
                     );
                     (subdivided, v)
                 };
-                let normal = normalize(cross(
-                    sub(previous.position, next.position),
-                    sub(previous.position, self.camera),
-                ))
-                .unwrap_or([0.0; 3]);
-                let averaged = previous_normal.map_or(normal, |prior| {
-                    normalize(mul(add(normal, prior), 0.5)).unwrap_or([0.0; 3])
-                });
-                emit(&mut mesh, previous, previous_v, averaged);
+                beam.push(playsrc_beam::Segment{position:previous.position,width:previous.width,color:previous.color,texture_coordinate:previous_v});
                 previous = next;
                 previous_v = next_v;
-                previous_normal = Some(normal);
             }
         }
-        emit(&mut mesh, previous, previous_v, previous_normal.unwrap());
+        beam.push(playsrc_beam::Segment{position:previous.position,width:previous.width,color:previous.color,texture_coordinate:previous_v});
+        let mesh=beam.finish();
         debug_assert_eq!(mesh.vertices.len(), vertices);
         self.points = Vec::new();
         self.mesh = Some(mesh);

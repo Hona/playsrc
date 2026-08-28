@@ -69,6 +69,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   const main = page.locator("main")
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
+  if(process.env.PROFILE_MAP_ROPES==="1")page.on("console",message=>{if(message.type()==="error"||message.type()==="warning"){if(/WebGPU|THREE\./.test(message.text()))errors.push(message.text());console.error(`[rope-console] ${message.location().url}: ${message.text()}`)}})
   const command = async (value: string) => {
     if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
     const entry = page.locator("[aria-label='Console command']")
@@ -175,6 +176,47 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_ROPES==="1"){
+    const rope=facts.ropes.filter((rope:any)=>rope.name&&rope.cameras.length&&rope.noWind&&rope.nodes.length>2)
+      .find((rope:any)=>{const a=rope.nodes[0],b=rope.nodes.at(-1),length=Math.hypot(b[0]-a[0],b[1]-a[1]);return length>200&&length<800})
+    expect(rope,"authored static cable fixture").toBeDefined()
+    const [x,y,z,yaw,pitch]=rope.cameras[0],position=[x,y,z]
+    await command("joinclass soldier");await command("ent_fire info_particle_system Stop");await closeConsole()
+    await capture("rope-spawn")
+    await page.evaluate(({position,yaw,pitch})=>{const p=(globalThis as any).__playsrcProfile;p.legacyVisualProbe=true;p.displacementCameraOverride={...p.player.camera,position,yawDegrees:yaw,pitchDegrees:pitch}}, {position,yaw,pitch})
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.meshes.some((mesh:any)=>Array.from(mesh.sources).includes(source)),rope.source)
+    await page.waitForTimeout(8000)
+    await page.evaluate(()=>{(globalThis as any).__playsrcProfile.geometryEvidenceRevision=999})
+    await page.waitForFunction(()=>(globalThis as any).__playsrcProfile.geometryEvidence?.revision===999)
+    await writeFile(testInfo.outputPath("rope-view-geometry.json"),json(await page.evaluate(()=>(globalThis as any).__playsrcProfile.geometryEvidence)))
+    const before=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-rope-present.png`)))
+    const state=await page.evaluate(()=>(globalThis as any).__playsrcProfile.legacyVisualEvidence.map((view:any)=>({ropeDraws:view.ropeDraws,ropeObjects:view.ropeObjects,meshes:view.meshes.map((mesh:any)=>({sources:Array.from(mesh.sources),material:mesh.material,vertices:mesh.positions.length/3,triangles:mesh.indices.length/3,firstPositions:Array.from(mesh.positions.slice(0,18)),firstColors:Array.from(mesh.color.slice(0,16))}))})))
+    await command(`ent_fire ${JSON.stringify(rope.name)} Kill`);await closeConsole()
+    await page.waitForFunction(source=>!(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.meshes.some((mesh:any)=>Array.from(mesh.sources).includes(source)),rope.source)
+    const after=decodeScreenshot(await worldScreenshot(testInfo.outputPath(`${target}-rope-removed.png`)))
+    let changed=0
+    for(let y=100;y<Math.min(450,before.height);y++)for(let x=100;x<Math.min(800,before.width);x++){
+      const at=(y*before.width+x)*before.channels;if([0,1,2].some(channel=>Math.abs(before.pixels[at+channel]-after.pixels[at+channel])>8))changed++
+    }
+    await writeFile(testInfo.outputPath("authored-rope.json"),json({rope,camera:{position,yaw,pitch},state,changed}))
+    expect(changed).toBeGreaterThan(40)
+    // TF2 preserves rope classes across round resets, including their removal.
+    await page.waitForFunction(()=>{const p=(globalThis as any).__playsrcProfile;return !p.round.waitingForPlayers&&p.round.state===4},undefined,{timeout:45000})
+    expect(await page.evaluate(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence[0].meshes.some((mesh:any)=>Array.from(mesh.sources).includes(source)),rope.source)).toBe(false)
+    const previous=await page.evaluate(()=>(globalThis as any).__playsrcProfile.memoryAssets)
+    await command(`map ${target}`);await expect(main).toHaveAttribute("data-phase","Ready",{timeout:30000})
+    await page.waitForFunction(generation=>(globalThis as any).__playsrcProfile.memoryAssets?.generation>generation,previous.generation,{timeout:5000})
+    await closeConsole();await expect(main).toHaveAttribute("data-team-selection-visible","true");await chooseTf2Team(page,"red")
+    await command("joinclass soldier");await closeConsole()
+    await page.evaluate(({position,yaw,pitch})=>{const p=(globalThis as any).__playsrcProfile;p.legacyVisualProbe=true;p.displacementCameraOverride={...p.player.camera,position,yawDegrees:yaw,pitchDegrees:pitch}}, {position,yaw,pitch})
+    await writeFile(testInfo.outputPath("rope-replacement-state.json"),json(await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;return {memory:p.memoryAssets,player:p.player,views:p.legacyVisualEvidence,dataset:{...document.querySelector<HTMLElement>("main")!.dataset}}})))
+    await page.waitForFunction(source=>(globalThis as any).__playsrcProfile.legacyVisualEvidence?.[0]?.meshes.some((mesh:any)=>Array.from(mesh.sources).includes(source)),rope.source,{timeout:5000})
+    await capture("rope-recreated")
+    const replacement=await page.evaluate(()=>(globalThis as any).__playsrcProfile.memoryAssets)
+    for(const key of ["resourceBytes","resourceSections","textures","planes","planeBytes","decodedCompressedTailBytes"])expect(replacement[key],key).toBe(previous[key])
+    await writeFile(testInfo.outputPath("rope-replacement-memory.json"),json({previous,replacement}))
+    expect(errors).toEqual([]);return
+  }
   if(process.env.PROFILE_MAP_AUTONOMOUS==="1"){
     await replayJournal?.ready()
     if(replayJournal)await writeFile(testInfo.outputPath("replay-content.json"),json(await page.evaluate(()=>(globalThis as any).__playsrcProfile.applicationGeneration)))

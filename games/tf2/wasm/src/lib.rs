@@ -16,6 +16,8 @@ mod smokestack;
 mod legacy_visuals;
 mod legacy_materials;
 pub mod static_prop_artifact;
+#[cfg(not(target_arch="wasm32"))]
+pub use legacy_visuals::RopeFacts;
 
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
@@ -1179,7 +1181,7 @@ unsafe fn compile_map(
         let entity_graph =
             playsrc_entity::parse(bsp.lumps[0].bytes(&bsp), playsrc_entity::Limits::default())
                 .map_err(|_| 3_u32)?;
-        let legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph,&resources,&decoders,profile).map_err(|_| 9_u32)?);
+        let mut legacy_visuals = legacy_visuals::Runtime::new(legacy_visuals::World::compile(&entity_graph,&resources,&decoders,profile).map_err(|_| 9_u32)?);
         let collision_world = playsrc_collision::compile(&bsp).map_err(|_| 3_u32)?;
         let visibility_world = playsrc_visibility::compile(&bsp).map_err(|_| 3_u32)?;
         let mut canonical =
@@ -1406,7 +1408,7 @@ unsafe fn compile_map(
             &studio_model_checksums,
         )
         .map_err(|_| 5_u32)?;
-        let model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
+        let mut model_lighting_world = playsrc_map::ModelLightingWorld::new(runtime.map.lighting);
         let visibility = runtime.visibility;
         let area_state = playsrc_map::compile_area_portal_state(&runtime.entities, &visibility)
             .map_err(|_| 3_u32)?;
@@ -1493,6 +1495,7 @@ unsafe fn compile_map(
         }
         map.install_sprite_models(sprite_models).map_err(|_|9_u32)?;
         map.install_spotlights(Arc::clone(&collision),collision_templates.iter().map(|template|template.input.clone()).collect()).map_err(|_|9_u32)?;
+        legacy_visuals.initialize_ropes(&map,&mut model_lighting_world,&visibility,&collision,&gameplay_world.snapshot()).map_err(|_|9_u32)?;
         let rules = playsrc_tf2::team_selection::TeamRules {
             attack_defend: map.control_points().is_some_and(|points| !points.rounds().is_empty() || points.master().switch_teams) || runtime.entities.entities.iter().any(|entity| {
                 entity
@@ -1826,6 +1829,25 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], crossing:Option<
     playsrc_dispose(handle);
     result
 }
+
+#[cfg(not(target_arch="wasm32"))]
+pub fn verified_rope_facts(handle:u32)->Vec<RopeFacts>{with(handle,|slot|{
+    let mut facts=slot.legacy_visuals.rope_facts();
+    if let (Some(visibility),Some(world))=(&slot.visibility,&slot.gameplay_world){
+        for rope in &mut facts{
+            let start=rope.nodes[0];let end=*rope.nodes.last().unwrap();let middle=rope.nodes[rope.nodes.len()/2];
+            let dx=end[0]-start[0];let dy=end[1]-start[1];let length=dx.hypot(dy);if length<1.0{continue;}
+            for distance in [96.0,200.0,400.0]{for sign in [1.0,-1.0]{for height in [-128.0,-64.0,0.0,64.0,128.0]{
+                let position=[middle[0]-dy/length*distance*sign,middle[1]+dx/length*distance*sign,middle[2]+height];
+                if !visibility.locate_leaf(position).is_ok_and(|leaf|visibility.leaves[leaf].cluster>=0){continue;}
+                let trace=world.world.trace_snapshot_ray(&world.snapshot(),playsrc_collision::SnapshotRayRequest{start:position,end:middle,mask:playsrc_collision::MASK_OPAQUE,scope:playsrc_collision::TraceScope::Everything,ignored:&[]},|_|true);
+                if !trace.is_ok_and(|trace|trace.fraction==1.0&&!trace.start_solid){continue;}
+                rope.cameras.push([position[0],position[1],position[2],(middle[1]-position[1]).atan2(middle[0]-position[0]).to_degrees(),height.atan2(distance).to_degrees()]);
+            }}}
+        }
+    }
+    facts
+}).unwrap_or_default()}
 
 pub fn compile_artifact(
     bsp: &[u8],
@@ -8700,6 +8722,7 @@ fn shader_code(shader: playsrc_material::Shader) -> u8 {
         playsrc_material::Shader::SkyLdr => 9,
         playsrc_material::Shader::DecalModulate => 11,
         playsrc_material::Shader::Modulate => 12,
+        playsrc_material::Shader::Cable => 13,
         playsrc_material::Shader::Unsupported => 255,
     }
 }
@@ -10666,6 +10689,7 @@ struct EncodedAuthoredTexture {
 
 #[derive(Clone)]
 struct ReferencedTexturePlane {
+    decoded_tail:Option<Vec<u8>>,
     identity: playsrc_material::TextureSubresourceIdentity,
     width: u32,
     height: u32,
@@ -10914,7 +10938,7 @@ fn model_authored_texture(
         );
     if direct || two_dimensional && converted_or_compressed {
         let manifest = material_texture_manifest(metadata);
-        let planes = metadata
+        let mut planes:Vec<_> = metadata
             .subresources
             .iter()
             .filter_map(|subresource| match subresource.identity {
@@ -10925,6 +10949,7 @@ fn model_authored_texture(
                     face,
                     slice,
                 } => Some(ReferencedTexturePlane {
+                    decoded_tail:None,
                     identity: playsrc_material::TextureSubresourceIdentity {
                         mip,
                         frame,
@@ -10945,6 +10970,14 @@ fn model_authored_texture(
                 }),
             })
             .collect();
+        if matches!(metadata.high_format,playsrc_vtf::ImageFormat::Dxt1|playsrc_vtf::ImageFormat::Dxt1OneBitAlpha|playsrc_vtf::ImageFormat::Dxt3|playsrc_vtf::ImageFormat::Dxt5){
+            for plane in &mut planes{
+                if plane.width%4==0&&plane.height%4==0{continue;}
+                let decoded=decoder.decode(vtf_subresource(plane.identity)).map_err(|_|())?;
+                if decoded.scalar_encoding!=playsrc_vtf::ScalarEncoding::U8||decoded.channel_layout!=playsrc_vtf::ChannelLayout::Rgba{return Err(());}
+                plane.decoded_tail=Some(decoded.samples);
+            }
+        }
         return Ok(ModelAuthoredTexture::Referenced(
             ReferencedAuthoredTexture {
                 source_sha256: *resource_hashes.get(path).ok_or(())?,
@@ -11471,7 +11504,7 @@ fn encode_model_authored_texture(
                 out.extend_from_slice(&0_u16.to_le_bytes());
                 out.extend_from_slice(&plane.width.to_le_bytes());
                 out.extend_from_slice(&plane.height.to_le_bytes());
-                out.extend_from_slice(&[1, 0, 0, 0]);
+                out.extend_from_slice(&[if plane.decoded_tail.is_some(){2}else{1}, 0, 0, 0]);
                 out.extend_from_slice(&texture.format.to_le_bytes());
                 out.extend_from_slice(
                     &u32::try_from(plane.range.start)
@@ -11483,6 +11516,7 @@ fn encode_model_authored_texture(
                         .map_err(|_| ())?
                         .to_le_bytes(),
                 );
+                if let Some(decoded)=&plane.decoded_tail{pbytes(out,decoded)?;}
             }
         }
     }
@@ -12403,6 +12437,9 @@ fn encoded_model_authored_texture_length(
             length = length
                 .checked_add(texture.planes.len().checked_mul(32).ok_or(())?)
                 .ok_or(())?;
+            for decoded in texture.planes.iter().filter_map(|plane|plane.decoded_tail.as_ref()){
+                length=length.checked_add(4).and_then(|value|value.checked_add(decoded.len())).ok_or(())?;
+            }
         }
     }
     Ok(length)
@@ -15906,6 +15943,20 @@ mod tests {
             assert_eq!(texture.planes[0].range, 64..67);
             assert_eq!(texture.planes[1].range, 67..70);
         }
+    }
+
+    #[test]
+    fn compressed_sub_block_mips_retain_native_decoding_and_exact_encoded_size(){
+        let mut source=vec![0_u8;64+8+8+8+16+32];
+        source[..4].copy_from_slice(b"VTF\0");source[4..8].copy_from_slice(&7_u32.to_le_bytes());source[8..12].copy_from_slice(&1_u32.to_le_bytes());source[12..16].copy_from_slice(&64_u32.to_le_bytes());
+        source[16..18].copy_from_slice(&16_u16.to_le_bytes());source[18..20].copy_from_slice(&4_u16.to_le_bytes());source[24..26].copy_from_slice(&1_u16.to_le_bytes());source[52..56].copy_from_slice(&13_i32.to_le_bytes());source[56]=5;source[57..61].copy_from_slice(&(-1_i32).to_le_bytes());
+        for block in source[64..].chunks_exact_mut(8){block[..2].copy_from_slice(&0xf800_u16.to_le_bytes());}
+        let path="materials/narrow.vtf".to_owned();let bundle=BTreeMap::from([(path.clone(),source.as_slice())]);let hashes=BTreeMap::from([(path.clone(),[7_u8;32])]);
+        let texture=model_authored_texture(&path,&TextureDecoders::new(&bundle),&hashes,false).unwrap();
+        let ModelAuthoredTexture::Referenced(referenced)=&texture else{panic!("aligned levels should remain compressed")};
+        assert_eq!(referenced.planes.iter().filter(|plane|plane.decoded_tail.is_some()).count(),4);
+        for plane in &referenced.planes{if let Some(decoded)=&plane.decoded_tail{assert_eq!(decoded.len(),plane.width as usize*plane.height as usize*4);assert!(decoded.chunks_exact(4).all(|pixel|pixel==[255,0,0,255]));}}
+        let mut bytes=Vec::new();encode_model_authored_texture(&mut bytes,&path,&texture).unwrap();assert_eq!(bytes.len(),encoded_model_authored_texture_length(&path,&texture).unwrap());
     }
 
     fn particle_stop_transaction(mode: u8) -> Vec<u8> {

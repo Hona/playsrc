@@ -166,7 +166,7 @@ fn main() -> Result<(), String> {
     }
     if playsrc_tf2_wasm::playsrc_legacy_particle_frames(handle) == 1 {
         let mut visual=b"PLVQ".to_vec();
-        for value in [2_u32,1,0] {visual.extend_from_slice(&value.to_le_bytes());}
+        for value in [3_u32,1,1280,1,0] {visual.extend_from_slice(&value.to_le_bytes());}
         visual.extend_from_slice(&0.0_f32.to_le_bytes());
         for value in [720_u32,0] {visual.extend_from_slice(&value.to_le_bytes());}
         let position=smoke_camera.unwrap_or([0.0;3]);
@@ -180,7 +180,7 @@ fn main() -> Result<(), String> {
         for index in 0..60_u32 {
             let now = index as f32 / 60.0;
             frame[8..12].copy_from_slice(&now.to_le_bytes()); frame[12..16].copy_from_slice(&now.to_le_bytes());
-            frame[80..84].copy_from_slice(&now.to_le_bytes());
+            frame[88..92].copy_from_slice(&now.to_le_bytes());
             frame[36..40].copy_from_slice(&index.to_le_bytes()); frame[40..44].copy_from_slice(&(index + 1).to_le_bytes());
             if unsafe { playsrc_tf2_wasm::playsrc_particle_transact(handle, frame.as_ptr(), frame.len()) } != 1 { return Err("native legacy particle frame failed".into()); }
         }
@@ -225,7 +225,11 @@ fn main() -> Result<(), String> {
             _ => legacy_visuals.push(serde_json::json!({"identity":entity.index,"classname":value(b"classname"),"name":value(b"targetname"),"position":vector(b"origin")?,"angles":vector(b"angles")?,"minimumDistance":value(b"MinDist"),"maximumDistance":value(b"MaxDist"),"outerMaximumDistance":value(b"OuterMaxDist"),"color":value(b"rendercolor"),"spawnflags":value(b"spawnflags"),"model":value(b"model"),"renderMode":value(b"rendermode"),"renderFx":value(b"renderfx"),"scale":value(b"scale")})),
         }
     }
-    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras,"smokestacks":smokestacks,"smokeOcclusion":smoke_occlusion,"legacyVisuals":legacy_visuals})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let ropes=playsrc_tf2_wasm::verified_rope_facts(handle).into_iter().map(|rope|{
+        let name=entities.entities.iter().find(|entity|entity.index==rope.source as usize).and_then(|entity|entity.targetname.as_deref()).map(|name|String::from_utf8_lossy(name).into_owned());
+        serde_json::json!({"source":rope.source,"nodes":rope.nodes,"noWind":rope.no_wind,"material":rope.material,"name":name,"cameras":rope.cameras})
+    }).collect::<Vec<_>>();
+    fs::write(output.join(format!("{target}.facts.json")), serde_json::to_vec(&serde_json::json!({"target": target, "bspSha256": hash, "spawns": spawns, "particleSystems":particle_systems,"skyCameras":sky_cameras,"smokestacks":smokestacks,"smokeOcclusion":smoke_occlusion,"legacyVisuals":legacy_visuals,"ropes":ropes})).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     println!(
         "{}",
         serde_json::json!({"target": target, "graphSha256": arguments[1], "byteLength": payload.len(), "sha256": hex_hash(&payload), "particleOutputBytes": particle_bytes,"skyParticles":sky_particles})

@@ -2,9 +2,9 @@ use std::{collections::BTreeMap,sync::Arc};
 use playsrc_material::{legacy_sprite::{Orientation,SpriteMaterial,gamma_constant},Material,Shader,StaticState,TextureAlphaFacts,TextureColorRead};
 
 #[derive(Clone)]
-pub struct Program {pub srgb:bool,pub vertex_rgb:bool,pub vertex_alpha:bool,pub vertex_gamma:bool,pub gamma_exposure:bool,pub hdr_gamma:bool,pub world_renderable:bool,pub modulation:[f32;4]}
+pub struct Program {pub srgb:bool,pub vertex_rgb:bool,pub vertex_alpha:bool,pub vertex_gamma:bool,pub gamma_exposure:bool,pub hdr_gamma:bool,pub world_renderable:bool,pub modulation:[f32;4],pub cable:bool}
 
-pub struct Asset {pub identity:String,pub source:String,pub texture:String,pub state:StaticState,pub program:Program}
+pub struct Asset {pub identity:String,pub source:String,pub texture:String,pub state:StaticState,pub program:Program,pub normal:Option<String>}
 
 pub struct SpriteDefinition {
     pub source:u32,pub size:[u32;2],pub frames:u32,pub orientation:Orientation,pub extents:[f32;4],pub proxy_radius:f32,pub hdr_scale:f32,
@@ -12,9 +12,10 @@ pub struct SpriteDefinition {
 }
 pub struct SunDefinition {pub source:u32,pub materials:[usize;2]}
 pub struct SpotlightDefinition {pub source:u32,pub materials:[usize;2]}
+pub struct RopeDefinition {pub source:u32,pub material:usize,pub back:Option<usize>,pub mapping_height:u32}
 
 #[derive(Default)]
-pub struct Layout {pub materials:Vec<Asset>,pub sprites:Vec<SpriteDefinition>,pub suns:Vec<SunDefinition>,pub spotlights:Vec<SpotlightDefinition>}
+pub struct Layout {pub materials:Vec<Asset>,pub sprites:Vec<SpriteDefinition>,pub suns:Vec<SunDefinition>,pub spotlights:Vec<SpotlightDefinition>,pub ropes:Vec<RopeDefinition>}
 
 fn resolved(path:&str,bundle:&BTreeMap<String,&[u8]>,decoders:&super::TextureDecoders<'_>,profile:playsrc_map::LightingProfile,entity_binding:bool)->Result<(Material,String,StaticState,[u32;2],u32),()> {
     let material=super::resolve_material_semantics(path,bundle,super::material_environment(profile,false))?;
@@ -32,7 +33,7 @@ fn unlit_program(material:&Material)->Result<Program,()> {
     let srgb=match material.textures.iter().find(|texture|texture.role==playsrc_material::TextureRole::Base).ok_or(())?.color_read {
         TextureColorRead::Srgb=>true,TextureColorRead::Linear=>false,TextureColorRead::FormatDependent=>{eprintln!("Legacy unlit texture needs format-dependent color selection");return Err(())},
     };
-    Ok(Program{srgb,vertex_rgb:material.features.vertex_color,vertex_alpha:material.features.vertex_alpha,vertex_gamma:false,gamma_exposure:false,hdr_gamma:false,world_renderable:false,
+    Ok(Program{srgb,vertex_rgb:material.features.vertex_color,vertex_alpha:material.features.vertex_alpha,vertex_gamma:false,gamma_exposure:false,hdr_gamma:false,world_renderable:false,cable:false,
         modulation:playsrc_material::legacy_sprite::unlit_sprite_modulation(material).map_err(|_|())?})
 }
 
@@ -47,7 +48,7 @@ fn render_program(material:&Material,sprite:Option<&SpriteMaterial>,mut state:St
             modulation=if mode==8 {let weight=if pass_index==0 {sprite.alpha}else{0.0};[weight,weight,weight,1.0]}else{[sprite.color[0],sprite.color[1],sprite.color[2],sprite.alpha]};
             if sprite.srgb {for color in &mut modulation[..3] {*color=gamma_constant(*color);}}
         }
-        Program{srgb:sprite.srgb,vertex_rgb:pass.vertex_color,vertex_alpha:pass.vertex_color,vertex_gamma:sprite.srgb,gamma_exposure:!sprite.srgb,hdr_gamma:sprite.srgb,world_renderable:true,modulation}
+        Program{srgb:sprite.srgb,vertex_rgb:pass.vertex_color,vertex_alpha:pass.vertex_color,vertex_gamma:sprite.srgb,gamma_exposure:!sprite.srgb,hdr_gamma:sprite.srgb,world_renderable:true,modulation,cable:false}
     }else{unlit_program(material)?};
     program.world_renderable=true;Ok((state,program))
 }
@@ -57,9 +58,29 @@ pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decod
     if graph.entities.iter().any(|entity|entity.classname.as_deref().is_some_and(|class|class.eq_ignore_ascii_case(b"env_lightglow"))) {
         let source=super::legacy_visuals::GLOW_MATERIAL;
         let (material,texture,state,_,_)=resolved(source,bundle,decoders,profile,false)?;
-        layout.materials.push(Asset{identity:source.into(),source:source.into(),texture,state,program:unlit_program(&material)?});
+        layout.materials.push(Asset{identity:source.into(),source:source.into(),texture,state,program:unlit_program(&material)?,normal:None});
     }
     for entity in &graph.entities {
+        if entity.classname.as_deref().is_some_and(playsrc_entity::rope::is_rope){
+            let source=playsrc_entity::rope::material(entity).map_err(|_|())?;
+            let mut add=|source:&str|->Result<(usize,u32),()>{
+                if let Some(index)=layout.materials.iter().position(|asset|asset.identity==format!("{source}#rope")){
+                    let (_,_,_,size,_)=resolved(source,bundle,decoders,profile,false)?;return Ok((index,size[1]));
+                }
+                let (material,texture,mut state,size,_)=resolved(source,bundle,decoders,profile,false).inspect_err(|_|eprintln!("Rope material resolution failed: {source}"))?;
+                if material.shader!=Shader::Cable{eprintln!("Rope shader is not Cable: {source} {:?}",material.shader_token);return Err(());}
+                let normal=material.textures.iter().find(|texture|texture.role==playsrc_material::TextureRole::Bump).and_then(|texture|texture.logical_path.clone()).ok_or(())?;
+                state.vertex_color=true;state.vertex_alpha=true;
+                let index=layout.materials.len();
+                layout.materials.push(Asset{identity:format!("{source}#rope"),source:source.into(),texture,state,normal:Some(normal),
+                    program:Program{srgb:true,vertex_rgb:true,vertex_alpha:true,vertex_gamma:false,gamma_exposure:false,hdr_gamma:false,world_renderable:true,modulation:[1.0;4],cable:true}});
+                Ok((index,size[1]))
+            };
+            let (material,mapping_height)=add(&source)?;
+            let back_source=format!("{}_back.vmt",source.strip_suffix(".vmt").ok_or(())?);
+            let back=if bundle.contains_key(&back_source){Some(add(&back_source)?.0)}else{None};
+            layout.ropes.push(RopeDefinition{source:entity.index as u32,material,back,mapping_height});
+        }
         if entity.classname.as_deref().is_some_and(|class|class.eq_ignore_ascii_case(b"point_spotlight")){
             let mut materials=[0;2];
             for (index,(source,mode)) in [("materials/sprites/glow_test02.vmt",5),("materials/sprites/light_glow03.vmt",3)].into_iter().enumerate(){
@@ -68,7 +89,7 @@ pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decod
                     let (material,texture,state,_,_)=resolved(source,bundle,decoders,profile,false)?;
                     let sprite=if material.shader==Shader::Sprite {Some(SpriteMaterial::compile(&material).map_err(|_|())?)}else{None};
                     let (state,program)=render_program(&material,sprite.as_ref(),state,mode,0)?;let index=layout.materials.len();
-                    layout.materials.push(Asset{identity,source:source.into(),texture,state,program});index
+                    layout.materials.push(Asset{identity,source:source.into(),texture,state,program,normal:None});index
                 };
             }
             layout.spotlights.push(SpotlightDefinition{source:entity.index as u32,materials});
@@ -79,7 +100,7 @@ pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decod
             for (index,source) in sources.into_iter().enumerate(){
                 materials[index]=if let Some(index)=layout.materials.iter().position(|asset|asset.identity==source){index}else{
                     let (material,texture,state,_,_)=resolved(&source,bundle,decoders,profile,false)?;let index=layout.materials.len();
-                    layout.materials.push(Asset{identity:source.clone(),source,texture,state,program:unlit_program(&material)?});index
+                    layout.materials.push(Asset{identity:source.clone(),source,texture,state,program:unlit_program(&material)?,normal:None});index
                 };
             }
             layout.suns.push(SunDefinition{source:entity.index as u32,materials});
@@ -100,7 +121,7 @@ pub fn compile(graph:&playsrc_entity::Graph,bundle:&BTreeMap<String,&[u8]>,decod
                 let index=if let Some(index)=variants.get(&key) {*index} else {
                     let (state,program)=render_program(&material,sprite.as_ref(),state,mode,pass_index)?;
                     let index=layout.materials.len();
-                    layout.materials.push(Asset{identity:format!("{source}#sprite={mode}:{pass_index}"),source:source.clone(),texture:texture.clone(),state,program});variants.insert(key,index);index
+                    layout.materials.push(Asset{identity:format!("{source}#sprite={mode}:{pass_index}"),source:source.clone(),texture:texture.clone(),state,program,normal:None});variants.insert(key,index);index
                 };
                 modes[usize::from(mode)].push(index);
             }

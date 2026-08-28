@@ -3,14 +3,15 @@ import type { VisibilityView } from "./protocol"
 
 export type LegacyVisualView = VisibilityView & Readonly<{kind:LegacyViewKind;viewportHeight:number;pixelVisibility:readonly PixelVisibilityFeedback[] }>
 
-export function encodeLegacyVisualQuery(views:readonly LegacyVisualView[]):Uint8Array {
+export function encodeLegacyVisualQuery(views:readonly LegacyVisualView[],quality:Readonly<{screenWidth:number;samples:1|4}>):Uint8Array {
   if(views.length<1||views.length>5||!views.some(view=>view.kind===0)||new Set(views.map(view=>view.kind)).size!==views.length)throw new Error("Legacy visual view count")
-  const length=12+views.reduce((sum,view)=>sum+64+view.pixelVisibility.length*20,0)
+  if(!Number.isSafeInteger(quality.screenWidth)||quality.screenWidth<1||quality.screenWidth>32768||![1,4].includes(quality.samples))throw new Error("Legacy visual quality")
+  const length=20+views.reduce((sum,view)=>sum+64+view.pixelVisibility.length*20,0)
   if(length>4*1024*1024)throw new Error("Legacy visual query bound")
   const bytes=new Uint8Array(length),output=new DataView(bytes.buffer);let at=0
   const u32=(value:number)=>{if(!Number.isSafeInteger(value)||value<0||value>0xffffffff)throw new Error("Legacy visual integer");output.setUint32(at,value,true);at+=4}
   const f32=(value:number)=>{if(!Number.isFinite(value))throw new Error("Legacy visual scalar");output.setFloat32(at,value,true);at+=4}
-  bytes.set(new TextEncoder().encode("PLVQ"));at=4;u32(2);u32(views.length)
+  bytes.set(new TextEncoder().encode("PLVQ"));at=4;u32(3);u32(views.length);u32(quality.screenWidth);u32(quality.samples)
   views.forEach((view,index)=>{
     if(view.position.length!==3||(view.visibilityPosition??view.position).length!==3||view.viewportHeight<1||view.viewportHeight>32768||view.pixelVisibility.length>65536||view.presentationTimeSeconds<0
       ||view.verticalFovDegrees<=0||view.verticalFovDegrees>=180||view.aspectRatio<=0||view.near<=0||view.far<=view.near)throw new Error("Legacy visual view")
@@ -45,9 +46,9 @@ export function decodeLegacyVisualViews(bytes:Uint8Array):LegacyVisualFrameSet {
   for(let index=0;index<count;index++){
     const kind=packet.u32() as LegacyViewKind
     if(kind>4||views[kind])throw new Error("Legacy visual view kind")
-    const frame=new Reader(packet.take(packet.u32()));frame.header(7)
-    const proxyCount=frame.u32(),quadCount=frame.u32()
-    if(proxyCount>65536||quadCount>65536||proxyCount*88+quadCount*176!==frame.bytes.length-frame.at)throw new Error("Legacy visual record count")
+    const frame=new Reader(packet.take(packet.u32()));frame.header(8)
+    const proxyCount=frame.u32(),quadCount=frame.u32(),meshCount=frame.u32()
+    if(proxyCount>65536||quadCount>65536||meshCount>4096||proxyCount*88+quadCount*176>frame.bytes.length-frame.at)throw new Error("Legacy visual record count")
     const proxies=Object.freeze(Array.from({length:proxyCount},()=>{
       const source=frame.u32(),clipFraction=frame.f32(),vertices=frame.floats(20)
       if(clipFraction<0||clipFraction>1)throw new Error("Legacy proxy clipping")
@@ -58,7 +59,22 @@ export function decodeLegacyVisualViews(bytes:Uint8Array):LegacyVisualFrameSet {
       if(layer>2)throw new Error("Legacy visual render layer")
       return Object.freeze({source,material,frame:selectedFrame,layer:layer as 0|1|2,hdrScale:frame.f32(),origin:frame.floats(3),positions:frame.floats(12),color:frame.floats(16),uv:frame.floats(8)})
     }))
-    frame.end();views[kind]=Object.freeze({proxies,quads})
+    const meshes=Object.freeze(Array.from({length:meshCount},()=>{
+      const material=frame.u32(),sourceCount=frame.u32(),vertexCount=frame.u32(),indexCount=frame.u32()
+      if(sourceCount<1||sourceCount>16384||vertexCount<4||vertexCount>262144||indexCount<6||indexCount>786432||indexCount%3!==0)throw new Error("Legacy mesh bounds")
+      if(sourceCount*4+vertexCount*24+indexCount*4>frame.bytes.length-frame.at)throw new Error("Legacy mesh record range")
+      const sources=Uint32Array.from({length:sourceCount},()=>frame.u32())
+      const positions=new Float32Array(vertexCount*3),uv=new Float32Array(vertexCount*2),color=new Uint8Array(vertexCount*4)
+      for(let vertex=0;vertex<vertexCount;vertex++){
+        for(let axis=0;axis<3;axis++)positions[vertex*3+axis]=frame.f32()
+        for(let axis=0;axis<2;axis++)uv[vertex*2+axis]=frame.f32()
+        color.set(frame.take(4),vertex*4)
+      }
+      const indices=Uint32Array.from({length:indexCount},()=>frame.u32())
+      if(indices.some(index=>index>=vertexCount))throw new Error("Legacy mesh index")
+      return Object.freeze({material,sources,positions,uv,color,indices})
+    }))
+    frame.end();views[kind]=Object.freeze({proxies,quads,meshes})
   }
   if(!views[0])throw new Error("Missing legacy main view")
   packet.end();return Object.freeze(views)

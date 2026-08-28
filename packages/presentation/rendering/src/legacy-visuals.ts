@@ -4,7 +4,7 @@ import { SourcePixelVisibility } from "./pixel-visibility"
 import { createWorldClipGroup, prepareWorldViewPipelines } from "./world-pipeline-preparation"
 import { sourceWaterFogFragment,type SourceViewFogUniforms,type SourceWaterFogUniforms } from "./source-water"
 
-export type LegacyVisualProgram=Readonly<{srgb:boolean;vertexRgb:boolean;vertexAlpha:boolean;vertexGamma:boolean;gammaExposure:boolean;worldRenderable:boolean;modulation:readonly[number,number,number,number]}>
+export type LegacyVisualProgram=Readonly<{srgb:boolean;vertexRgb:boolean;vertexAlpha:boolean;vertexGamma:boolean;gammaExposure:boolean;worldRenderable:boolean;modulation:readonly[number,number,number,number];cable:boolean}>
 export type LegacyViewKind=0|1|2|3|4
 export type LegacyVisualFrameSet=Readonly<Partial<Record<LegacyViewKind,LegacyVisualFrame>>>
 
@@ -21,6 +21,7 @@ export function legacyFog(color:any,mode:number,view:SourceViewFogUniforms,water
 export type LegacyVisualFrame = Readonly<{
   proxies: readonly Readonly<{ source: number; clipFraction: number; vertices: Float32Array }>[]
   quads: readonly Readonly<{ source: number; material: number; frame:number;layer:0|1|2;hdrScale:number;origin:Float32Array;positions: Float32Array; color: Float32Array;uv:Float32Array }>[]
+  meshes:readonly Readonly<{material:number;sources:Uint32Array;positions:Float32Array;uv:Float32Array;color:Uint8Array;indices:Uint32Array}>[]
 }>
 export type PixelVisibilityFeedback = Readonly<{ source: number; submission: number; visible: number; possible: number; clipFraction: number }>
 
@@ -66,6 +67,8 @@ export class LegacyVisuals {
   readonly #counter: SourcePixelVisibility
   readonly #materials: readonly (readonly THREE.Material[])[]
   readonly #meshes: THREE.Mesh[] = []
+  readonly #ropeMeshes:THREE.Mesh[]=[]
+  #ropeDraws=0
   readonly #feedback = new PixelFeedbackLedger()
   #frame: LegacyVisualFrame | null = null
   #submission = 0
@@ -95,14 +98,19 @@ export class LegacyVisuals {
 
   async prepare(): Promise<void> { await Promise.all([this.#counter.prepare(1,"r8unorm"), this.#counter.prepare(4,"r8unorm")]) }
   async prepareMaterials(renderer:THREE.WebGPURenderer,camera:THREE.Camera,world:THREE.Scene,plane=new THREE.Plane(),waterTargets:readonly THREE.RenderTarget[]=[]):Promise<void>{
-    const geometry=quadGeometry(),group=createWorldClipGroup(plane)
-    for(const material of this.#materials.flat()){const mesh=new THREE.Mesh(geometry,material);mesh.frustumCulled=false;group.add(mesh)}
+    const geometry=quadGeometry(),rope=quadGeometry(),group=createWorldClipGroup(plane),ropeGroup=createWorldClipGroup()
+    rope.setAttribute("legacyColor",new THREE.BufferAttribute(new Uint8Array(16),4,true).setUsage(THREE.DynamicDrawUsage))
+    for(const material of this.#materials.flat()){
+      const mesh=new THREE.Mesh(material.userData.sourceRope?rope:geometry,material);mesh.frustumCulled=false
+      if(material.userData.sourceRope&&!ropeGroup.parent)group.add(ropeGroup)
+      ;(material.userData.sourceRope?ropeGroup:group).add(mesh)
+    }
     try{
       if(group.children.length){await prepareWorldViewPipelines(renderer,group,camera,world,group,waterTargets);await prepareWorldViewPipelines(renderer,group,camera,this.noDepth,group,waterTargets);group.enabled=false;await renderer.compileAsync(group,camera,this.group)}
-    }finally{group.clear();geometry.dispose()}
+    }finally{ropeGroup.clear();group.clear();geometry.dispose();rope.dispose()}
   }
   feedback(): readonly PixelVisibilityFeedback[] { return this.#feedback.consume() }
-  evidence() { return { samples:this.#samples,quads:this.#frame?.quads??[],queries:this.#feedback.snapshot() } }
+  evidence() { return { samples:this.#samples,quads:this.#frame?.quads??[],meshes:this.#frame?.meshes??[],ropeDraws:this.#ropeDraws,ropeObjects:this.#ropeMeshes.map(mesh=>({visible:mesh.visible,parentVisible:mesh.parent?.visible,drawCount:mesh.geometry.drawRange.count,material:(mesh.material as THREE.Material).name,depthTest:(mesh.material as THREE.Material).depthTest,depthWrite:(mesh.material as THREE.Material).depthWrite})),queries:this.#feedback.snapshot() } }
   finishFrame(): void { const read=this.#afterSubmit; this.#afterSubmit=null; read?.() }
 
   update(frame: LegacyVisualFrame): void {
@@ -135,6 +143,32 @@ export class LegacyVisuals {
       uv.needsUpdate=true;hdr.needsUpdate=true
       fog.needsUpdate=true
       mesh.geometry.computeBoundingSphere();mesh.geometry.boundingSphere!.center.fromArray(quad.origin)
+    }
+    for(let index=0;index<Math.max(frame.meshes.length,this.#ropeMeshes.length);index++){
+      const input=frame.meshes[index];let mesh=this.#ropeMeshes[index]
+      if(!input){if(mesh)mesh.visible=false;continue}
+      const material=this.#materials[input.material]?.[0]
+      if(!material)throw new Error("Legacy rope material is not admitted")
+      if(!mesh){mesh=new THREE.Mesh(new THREE.BufferGeometry(),material);mesh.frustumCulled=false;mesh.onBeforeRender=()=>{this.#ropeDraws++};this.world.add(mesh);this.#ropeMeshes.push(mesh)}
+      mesh.visible=true;mesh.material=material;mesh.renderOrder=0x100000+index
+      let geometry=mesh.geometry
+      const vertices=input.positions.length/3
+      if((geometry.getAttribute("position")?.count??0)<vertices||(geometry.index?.count??0)<input.indices.length){
+        const capacity=2**Math.ceil(Math.log2(Math.max(vertices,geometry.getAttribute("position")?.count??0)))
+        const indices=2**Math.ceil(Math.log2(Math.max(input.indices.length,geometry.index?.count??0)))
+        geometry.dispose();geometry=new THREE.BufferGeometry();mesh.geometry=geometry
+        for(const [name,size]of [["position",3],["uv",2],["legacyHdr",1],["legacyFog",1]]as const){
+          const values=new Float32Array(capacity*size);if(name==="legacyHdr"||name==="legacyFog")values.fill(1)
+          geometry.setAttribute(name,new THREE.BufferAttribute(values,size).setUsage(THREE.DynamicDrawUsage))
+        }
+        geometry.setAttribute("legacyColor",new THREE.BufferAttribute(new Uint8Array(capacity*4),4,true).setUsage(THREE.DynamicDrawUsage))
+        geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices),1).setUsage(THREE.DynamicDrawUsage))
+      }
+      for(const [name,values]of [["position",input.positions],["uv",input.uv],["legacyColor",input.color]]as const){
+        const attribute=geometry.getAttribute(name)as THREE.BufferAttribute;(attribute.array as Float32Array|Uint8Array).set(values);attribute.clearUpdateRanges();attribute.addUpdateRange(0,values.length);attribute.needsUpdate=true
+      }
+      geometry.index!.array.set(input.indices);geometry.index!.clearUpdateRanges();geometry.index!.addUpdateRange(0,input.indices.length);geometry.index!.needsUpdate=true
+      geometry.setDrawRange(0,input.indices.length)
     }
   }
 
@@ -171,6 +205,7 @@ export class LegacyVisuals {
   dispose(): void {
     this.#disposed = true; this.#afterSubmit=null; this.#counter.dispose(); this.#queryTarget?.destroy(); this.#feedback.clear()
     for (const mesh of this.#meshes) mesh.geometry.dispose()
+    for (const mesh of this.#ropeMeshes) mesh.geometry.dispose()
     this.group.clear();this.world.removeFromParent();this.world.clear();this.noDepth.clear()
     const hook = HOOKS.get(this.#backend)!
     if (--hook.owners===0) { this.#backend.finishRender=hook.original; HOOKS.delete(this.#backend) }
