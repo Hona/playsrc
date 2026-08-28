@@ -172,10 +172,29 @@ test("configured map native traversal, objective roster, visible geometry and ca
   }
   await page.goto("/")
   await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 60_000 })
-  await command(`map ${target}`)
+  if(process.env.PROFILE_MAP_CREATE_SERVER==="1"){
+    await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+    await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
+    const dialog=page.locator(".local-match-layer").getByRole("dialog",{name:"CREATE SERVER"})
+    await dialog.locator("[data-vgui-name='MapList']").click()
+    await page.getByRole("option",{name:target,exact:true}).click()
+    await expect(dialog.locator("[data-vgui-name='MapList']")).toHaveAttribute("aria-label",target)
+    await dialog.getByRole("tab",{name:"GAME",exact:true}).click()
+    await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("16")
+    await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='TeamFillComboBox']").click()
+    await page.getByRole("option",{name:"fill",exact:true}).click()
+    await waitNativeReady();await page.screenshot({path:testInfo.outputPath(`${target}-create-server.png`)});await checkNative()
+    await dialog.getByRole("button",{name:"Start",exact:true}).click()
+  }else await command(`map ${target}`)
   await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 60_000 })
   await closeConsole(); await chooseTf2Team(page, "red")
   await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 30_000 })
+  if(process.env.PROFILE_MAP_CREATE_SERVER==="1"){
+    await expect(main).toHaveAttribute("data-bot-count","15",{timeout:10000})
+    const settings=JSON.parse(await main.getAttribute("data-local-match-settings")??"null")
+    expect(settings.mapIdentity).toBe(target);expect(settings.entry).toBe("create-server")
+    await writeFile(testInfo.outputPath("create-server-settings.json"),json(settings))
+  }
   if(process.env.PROFILE_MAP_ROPES==="1"){
     const rope=facts.ropes.filter((rope:any)=>rope.name&&rope.cameras.length&&rope.noWind&&rope.nodes.length>2)
       .find((rope:any)=>{const a=rope.nodes[0],b=rope.nodes.at(-1),length=Math.hypot(b[0]-a[0],b[1]-a[1]);return length>200&&length<800})
@@ -559,6 +578,12 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await checkSpawn(2, "red-class-respawn")
   await command("joinclass soldier"); await closeConsole()
   await waitPlayer("class", 3)
+  if(process.env.PROFILE_MAP_CREATE_SERVER==="1"){
+    await capture("create-server-playable")
+    await expect(main).toHaveAttribute("data-bot-count","15")
+    await writeFile(testInfo.outputPath("create-server-spawn-checks.json"),json({target,spawnChecks,bots:await page.evaluate(()=>(globalThis as any).__playsrcProfile.bots)}))
+    return // A filled balanced roster intentionally enforces normal team limits.
+  }
   await command("jointeam blue")
   await command("joinclass soldier"); await closeConsole()
   await checkSpawn(3, "blue-join")

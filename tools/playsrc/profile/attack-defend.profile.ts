@@ -3,8 +3,21 @@ import { summarizeFrameTimes } from "./profile-window"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { Tf2BrowserAutomation } from "../../../apps/web/tf2/src/browser-automation"
 import { writeFile } from "node:fs/promises"
+import {loadLocalConfig} from "../src/config"
+import {macPageAdmission,requireMacPageAdmission} from "./macos-page-admission"
+let native:Awaited<ReturnType<typeof macPageAdmission>>
+let nativeRecords:unknown[]=[]
+let nativeWaits:unknown[]=[]
+test.afterEach(async({},testInfo)=>{await writeFile(testInfo.outputPath("native-admission.json"),JSON.stringify(nativeRecords));await writeFile(testInfo.outputPath("native-admission-waits.json"),JSON.stringify(nativeWaits));await native?.close();native=undefined})
 
 test("headed authored attack/defend stages, capture, timers, team switch and local bots", async ({ page }, testInfo) => {
+  native=await macPageAdmission(page,(await loadLocalConfig()).sourceCacheDir);nativeRecords=[];nativeWaits=[]
+  await page.bringToFront()
+  const checkNative=async(wait=false)=>{
+    if(!native)return
+    const deadline=Date.now()+(wait?5000:0)
+    for(;;){const record=await native.read();try{requireMacPageAdmission(record);nativeRecords.push(record);return}catch(error){nativeWaits.push(record);if(Date.now()>=deadline)throw error}await page.waitForTimeout(250)}
+  }
   const map = process.env.PROFILE_ATTACK_DEFEND_MAP!
   const performanceOnly = process.env.PROFILE_ATTACK_DEFEND_PERFORMANCE === "1"
   const main = page.locator("main")
@@ -32,6 +45,7 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
   let geometryRevision = 0
   const capture = async (name: string) => {
     await close()
+    await checkNative(true)
     await expect(page.locator(".hud-layer [data-vgui-name='HudControlPointIcons'] [data-vgui-name='BaseImage']:visible")).toHaveCount(2)
     const revision = ++geometryRevision
     await page.evaluate(revision => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = revision }, revision)
@@ -39,6 +53,7 @@ test("headed authored attack/defend stages, capture, timers, team switch and loc
     const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.geometryEvidence)
     expect(geometry.geometry.samples.some((s: any) => s.disposition === "main-world" && Number.isFinite(s.depth) && s.depth > 0)).toBe(true)
     const bytes = await page.screenshot({ path: testInfo.outputPath(`${name}.png`) })
+    await checkNative()
     const pixels = decodeScreenshot(bytes)
     let visible = 0
     for (let i = 0; i < pixels.pixels.length; i += pixels.channels) if (pixels.pixels[i]! + pixels.pixels[i + 1]! + pixels.pixels[i + 2]! > 72) visible++

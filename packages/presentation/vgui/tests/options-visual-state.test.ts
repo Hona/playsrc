@@ -159,4 +159,25 @@ describe("resource-derived Options control visual states", () => {
     expect(runtime.snapshot().panels.find((panel) => panel.id === combo)).toMatchObject({ text: "Low", state: { activeIndex: 0, highlightedIndex: null } })
     expect(popup.style.display).toBe("none")
   })
+  test("a scrolled map combo hits the displayed row rather than the same row in the first page",()=>{
+    const {root,runtime}=setup()
+    const combo=apply(runtime,{kind:"create-panel",parent:1,control:"ComboBox",name:"Maps",properties:[
+      {name:"xpos",value:"100"},{name:"ypos",value:"50"},{name:"wide",value:"180"},{name:"tall",value:"24"},{name:"numLines",value:"5"},
+    ]})!
+    apply(runtime,{kind:"mutate-control",panel:combo,mutation:{items:Array.from({length:15},(_,id)=>({id,text:`map_${id}`,enabled:true})),activeIndex:0,editable:false}})
+    apply(runtime,{kind:"pointer-press",button:"left",x:110,y:60,pointerId:1,clicks:1});apply(runtime,{kind:"frame",timeSeconds:0})
+    const popup=descendants(root).find(element=>element.dataset.vguiComboPopup==="Maps")!
+    popup.scrollTop=200 // Browser scrollbar or scrolling an option into view.
+    apply(runtime,{kind:"pointer-move",x:110,y:145,pointerId:1});apply(runtime,{kind:"frame",timeSeconds:0})
+    expect(runtime.snapshot().panels.find(panel=>panel.id===combo)?.state.highlightedIndex).toBe(13)
+    apply(runtime,{kind:"pointer-press",button:"left",x:110,y:145,pointerId:1,clicks:1})
+    apply(runtime,{kind:"pointer-release",button:"left",x:110,y:145,pointerId:1});apply(runtime,{kind:"frame",timeSeconds:0})
+    expect(runtime.snapshot().panels.find(panel=>panel.id===combo)).toMatchObject({text:"map_13",state:{activeIndex:13}})
+    apply(runtime,{kind:"pointer-press",button:"left",x:110,y:60,pointerId:1,clicks:1});apply(runtime,{kind:"frame",timeSeconds:0})
+    expect(popup.scrollTop).toBe(200)
+    apply(runtime,{kind:"pointer-wheel",delta:1,x:110,y:145});apply(runtime,{kind:"frame",timeSeconds:0})
+    expect(popup.scrollTop).toBe(180)
+    apply(runtime,{kind:"pointer-wheel",delta:-100,x:110,y:145});apply(runtime,{kind:"frame",timeSeconds:0})
+    expect(popup.scrollTop).toBe(200)
+  })
 })
