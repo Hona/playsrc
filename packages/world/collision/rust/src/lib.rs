@@ -4,6 +4,7 @@ use playsrc_bsp::{
 use sha2::{Digest, Sha256};
 use std::{fmt, ops::Range};
 
+mod brush_visits;
 mod contact;
 mod displacement;
 mod hitbox;
@@ -11,6 +12,8 @@ mod lighting;
 #[cfg(feature = "replay-reference")]
 pub mod replay_diagnostics;
 mod snapshot;
+
+use brush_visits::BrushVisits;
 
 pub use contact::{
     CONTACT_SNAPSHOT_VERSION, ContactEdge, ContactEdgeKind, ContactFrame, ContactLimits,
@@ -685,7 +688,7 @@ impl World {
         let extents = scale(sub(hull.maxs, hull.mins), 0.5);
         let point = dot(extents, extents) < 1.0e-6;
         let mut pending = vec![(head_node, add(start, center), add(end, center), 0_usize)];
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BrushVisits::new();
         let mut ordered = Vec::new();
         while let Some((mut child, first, mut second, depth)) = pending.pop() {
             let mut traversal_depth = depth;
@@ -754,9 +757,8 @@ impl World {
                 .get(begin..finish)
                 .ok_or_else(|| error(ErrorCode::InvalidReference, Some(leaf_index)))?
             {
-                let brush = *brush as usize;
-                if seen.insert(brush) {
-                    ordered.push(brush);
+                if seen.insert(*brush) {
+                    ordered.push(*brush as usize);
                 }
             }
         }
@@ -1256,6 +1258,37 @@ mod tests {
             !w.overlaps_model_hull(0, [100., 0., 0.], [0., 0., 0.], point)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn leaf_brush_membership_preserves_encounter_order_and_equal_hit_winner() {
+        let mut world = compile(&fixture()).unwrap();
+        let point = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        world.leaf_brushes = vec![65535, 64, 63, 0, 511, 512, 65535, 63];
+        world.leaves[0].leaf_brush_count = world.leaf_brushes.len() as u16;
+        assert_eq!(world.ordered_brushes(-1, [32.0, 0.0, 0.0], [-32.0, 0.0, 0.0], point).unwrap(),
+            [65535, 64, 63, 0, 511, 512]);
+        for order in [vec![1, 0, 1], vec![0, 1, 0]] {
+            world.leaf_brushes = order;
+            world.leaves[0].leaf_brush_count = 3;
+            let trace = world.trace_hull([-32.0, 0.0, 0.0], [32.0, 0.0, 0.0], point, 1).unwrap();
+            assert_eq!(trace.brush, Some(usize::from(world.leaf_brushes[0])));
+        }
+    }
+
+    #[test]
+    fn brush_visitation_keeps_traversal_before_clip_error_precedence() {
+        let mut world = compile(&fixture()).unwrap();
+        let point = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        world.models[0].head_node = 0;
+        world.nodes[0].children = [-1, -2];
+        world.leaf_brushes[0] = u16::MAX;
+        let query = |world: &World, hull| world.trace_hull([32.0, 0.0, 0.0], [-32.0, 0.0, 0.0], hull, 1);
+        assert_eq!(query(&world, point), Err(error(ErrorCode::InvalidReference, Some(1))));
+        assert_eq!(query(&world, Hull { mins: [f32::NAN; 3], maxs: [0.0; 3] }), Err(error(ErrorCode::InvalidHull, None)));
+        world.leaves.push(world.leaves[0].clone());
+        world.leaf_brushes[0] = 0;
+        assert!(query(&world, point).is_ok());
     }
 
     fn box_object(identity: u64, minimum: [f32; 3], maximum: [f32; 3]) -> ObjectInput {
