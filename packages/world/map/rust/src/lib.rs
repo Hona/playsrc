@@ -813,34 +813,16 @@ fn serialize(
         out.push(u8::from(s.draw));
         u32v(&mut out, s.positions.len() as u32);
         u32v(&mut out, s.triangles.len() as u32);
-        for p in &s.positions {
-            for v in p {
-                f32v(&mut out, *v)
-            }
-        }
-        for n in &s.normals {
-            for v in n {
-                f32v(&mut out, *v)
-            }
-        }
-        for uv in &s.uv {
-            f32v(&mut out, uv[0]);
-            f32v(&mut out, uv[1]);
-        }
-        for uv in &s.lightmap_uv {
-            f32v(&mut out, uv[0]);
-            f32v(&mut out, uv[1]);
-        }
+        serialization::f32_plane(&mut out, &s.positions);
+        serialization::f32_plane(&mut out, &s.normals);
+        serialization::f32_plane(&mut out, &s.uv);
+        serialization::f32_plane(&mut out, &s.lightmap_uv);
         if matches!(schema, 8 | 9 | 10 | 11) {
             for alpha in &s.alpha {
                 f32v(&mut out, *alpha);
             }
         }
-        for t in &s.triangles {
-            for v in t {
-                u32v(&mut out, *v)
-            }
-        }
+        serialization::u32_plane(&mut out, &s.triangles);
         i32v(&mut out, s.light_offset);
         out.extend_from_slice(&s.light_styles);
         i32v(&mut out, s.lightmap_size[0]);
@@ -897,11 +879,7 @@ fn serialize(
             }
         }
         LightingSamples::LinearRgb32(samples) => {
-            for sample in samples {
-                for value in sample {
-                    f32v(&mut out, *value)
-                }
-            }
+            serialization::f32_plane(&mut out, samples);
         }
     }
     bytesv(&mut out, &entities.source);
@@ -959,15 +937,15 @@ fn model_registry(
             u32v(out, primitive.positions.len() as u32);
             u32v(out, primitive.triangles.len() as u32);
             for vectors in [&primitive.positions, &primitive.normals, &primitive.bind_positions, &primitive.bind_normals] {
-                for vector in vectors { for value in vector { f32v(out, *value); } }
+                serialization::f32_plane(out, vectors);
             }
-            for tangent in &primitive.bind_tangents { for value in tangent { f32v(out, *value); } }
-            for indices in &primitive.bone_indices { for index in indices { out.extend_from_slice(&index.to_le_bytes()); } }
-            for weights in &primitive.bone_weights { for value in weights { f32v(out, *value); } }
+            serialization::f32_plane(out, &primitive.bind_tangents);
+            serialization::u16_plane(out, &primitive.bone_indices);
+            serialization::f32_plane(out, &primitive.bone_weights);
             u32v(out, primitive.bone_palette.len() as u32);
             for index in &primitive.bone_palette { out.extend_from_slice(&index.to_le_bytes()); }
-            for uv in &primitive.uv { for value in uv { f32v(out, *value); } }
-            for triangle in &primitive.triangles { for index in triangle { u32v(out, *index); } }
+            serialization::f32_plane(out, &primitive.uv);
+            serialization::u32_plane(out, &primitive.triangles);
         }
     }
 }
