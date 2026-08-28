@@ -13,17 +13,20 @@ import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 const json = (value: unknown) => JSON.stringify(value, (_, value) => typeof value === "bigint" ? value.toString() : value)
 let closeNative:(()=>Promise<void>)|undefined
 let nativeRecords:MacPageAdmission[]=[]
+let nativeWaitRecords:MacPageAdmission[]=[]
 let nativeMonitoring=false,nativeFailure:unknown,nativeMonitor:Promise<void>|undefined
 
 test.afterEach(async ({ page }, testInfo) => {
   nativeMonitoring=false;await nativeMonitor
   await writeFile(testInfo.outputPath("native-admission.json"),json(nativeRecords))
+  await writeFile(testInfo.outputPath("native-admission-waits.json"),json(nativeWaitRecords))
   await closeNative?.();closeNative=undefined
   if(nativeFailure&&testInfo.status===testInfo.expectedStatus)throw nativeFailure
   if (testInfo.status === testInfo.expectedStatus || page.isClosed()) return
   const evidence = await page.evaluate(() => ({ failure: (globalThis as any).__playsrcProfile?.failure,
     legacyVisuals: (globalThis as any).__playsrcProfile?.legacyVisualEvidence,
     legacyViews:(globalThis as any).__playsrcProfile?.legacyVisualViews,
+    geometry:(globalThis as any).__playsrcProfile?.geometryEvidence,
     frames: (globalThis as any).__playsrcFrameProfiler?.completedFrames,
     simulation: (globalThis as any).__playsrcFrameProfiler?.simulation,
     counters:(globalThis as any).__playsrcFrameProfiler?.counters,nodeBuilds:(globalThis as any).__playsrcFrameProfiler?.nodeBuilds,
@@ -35,13 +38,23 @@ test("configured map native traversal, objective roster, visible geometry and ca
   const target = headedProfileTarget(process.env, "cp_badlands")
   const config = await loadLocalConfig()
   const native=await macPageAdmission(page,config.sourceCacheDir)
-  closeNative=native?.close;nativeRecords=[];nativeFailure=undefined;nativeMonitor=undefined
+  closeNative=native?.close;nativeRecords=[];nativeWaitRecords=[];nativeFailure=undefined;nativeMonitor=undefined
   const checkNative=async(desktop?:string)=>{
     if(!native)return
     const record=await native.read(desktop);nativeRecords.push(record);requireMacPageAdmission(record)
   }
   const worldScreenshot=async(path:string)=>{
     await checkNative();const bytes=await page.locator("canvas.world-canvas").screenshot({path});await checkNative();return bytes
+  }
+  const waitNativeReady=async()=>{
+    if(!native)return
+    const deadline=Date.now()+5000
+    for(;;){
+      const record=await native.read()
+      try{requireMacPageAdmission(record);nativeRecords.push(record);return}
+      catch(error){nativeWaitRecords.push(record);if(Date.now()>=deadline)throw error}
+      await page.waitForTimeout(250)
+    }
   }
   const facts = JSON.parse(await readFile(path.join(config.sourceCacheDir, "evidence/map-runtime", `${target}.facts.json`), "utf8"))
   expect(facts.bspSha256).toBe(tf2MapBsp(target).sha256)
@@ -124,12 +137,12 @@ test("configured map native traversal, objective roster, visible geometry and ca
       const offset = (y * image.width + x) * image.channels
       return { ...sample, rgb: [...image.pixels.subarray(offset, offset + 3)] }
     })
-    expect(depth.some((sample: any) => sample.disposition === "main-world" && sample.rgb.some((channel: number) => channel > 3))).toBe(true)
     const facts = await page.evaluate(() => ({ points: (globalThis as any).__playsrcProfile.controlPoints, bots: (globalThis as any).__playsrcProfile.bots, round: (globalThis as any).__playsrcProfile.round }))
     const dataPath = testInfo.outputPath(`${target}-${label}.json`)
     await writeFile(dataPath, JSON.stringify({ geometry, depth, facts }))
     await testInfo.attach(label, { path: imagePath, contentType: "image/png" })
     await testInfo.attach(`${label}-depth`, { path: dataPath, contentType: "application/json" })
+    expect(depth.some((sample: any) => ["main-world","static-prop","dynamic-prop"].includes(sample.disposition) && sample.rgb.some((channel: number) => channel > 3))).toBe(true)
   }
   await page.bringToFront()
   if(native){
@@ -157,7 +170,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const state=await page.evaluate(()=>{const p=(globalThis as any).__playsrcProfile;return {point:p.controlPoints.points.find((point:any)=>point.owner===0),bots:p.bots}})
     expect(state.point).toBeTruthy()
     for(const [index,bot]of state.bots.entries())await command(`bot_teleport ${bot.identity} ${state.point.position[0]+(index%5-2)*40} ${state.point.position[1]+(Math.floor(index/5)-1)*40} ${state.point.position[2]+8}`)
-    await checkNative()
+    await waitNativeReady()
     await command(`setpos ${state.point.position[0]} ${state.point.position[1]} ${state.point.position[2]+8}`);await closeConsole()
     const sample=await sampleWindow()
     await writeFile(testInfo.outputPath(`${target}-pipeline-probe-performance.json`),json({phase:"pipeline-probe-only-not-map-admission",...sample,frames:summarizeFrameTimes(sample.frames)}))
@@ -416,7 +429,10 @@ test("configured map native traversal, objective roster, visible geometry and ca
   expect(points).toHaveLength(tf2MapMode(target) === "king-of-the-hill" ? 1 : 5)
   if (tf2MapMode(target) === "king-of-the-hill") await command("ent_fire team_control_point SetUnlockTime 1")
   const point = points.find((point: any) => point.owner === 0) ?? points[Math.floor(points.length / 2)]
-  await checkNative()
+  // Finish native browser pointer-lock UI before the cold-view command, never
+  // insert an admission/readback delay after setpos and outside its timing.
+  if(await main.getAttribute("data-console-visible")!=="true")await page.keyboard.press("Backquote")
+  await waitNativeReady()
   const cpu=process.env.PROFILE_MAP_CPU==="1"?await page.context().newCDPSession(page):null
   if(cpu){await cpu.send("Profiler.enable");await cpu.send("Profiler.start")}
   await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
