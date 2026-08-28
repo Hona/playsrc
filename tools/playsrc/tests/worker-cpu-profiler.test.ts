@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { startWorkerCpuCapture, WorkerCdpSession } from "../profile/worker-cpu-profiler"
+import { prepareWorkerCpuCapture, WorkerCdpSession } from "../profile/worker-cpu-profiler"
 import { admitWorkerExecutionContext } from "../profile/worker-runtime-admission"
 
 describe("actual Worker CDP sampling transport", () => {
@@ -44,10 +44,14 @@ describe("actual Worker CDP sampling transport", () => {
       }
       return {}
     }
-    const controller = await startWorkerCpuCapture(browser, { send: async () => ({ targetInfo: { browserContextId: "context" } }) } as any,
+    const controller = await prepareWorkerCpuCapture(browser, { send: async () => ({ targetInfo: { browserContextId: "context" } }) } as any,
       { workers: () => targets.slice(0, 2).map(target => ({ url: () => target.url })) } as any)
+    await expect(controller.stop()).rejects.toThrow("prepared but never started")
+    expect(commands.some(value => value.method === "Profiler.start" || value.method === "Profiler.stop")).toBe(false)
     await controller.start()
+    await expect(controller.start()).rejects.toThrow("already started")
     const captured = await controller.stop()
+    expect(await controller.stop()).toBe(captured)
     await controller.close()
     expect(evaluated).toEqual(["game", "game"])
     expect(commands[0].method).toBe("Runtime.enable")
