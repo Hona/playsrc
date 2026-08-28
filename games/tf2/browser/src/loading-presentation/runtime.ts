@@ -197,7 +197,8 @@ export function initializeTf2LoadingVguiRuntime(input: Tf2LoadingVguiRuntimeInpu
           if (!info) throw new Error("TF2 failure InfoLabel is missing")
           const height = info.bounds.y + info.bounds.height + operation.contentBottomPadding
           const button = panel("CancelButton")
-          mustApply(runtime, { kind: "set-bounds", panel: dialog, bounds: { x: (viewport.width - 380) / 2, y: (viewport.height - height) / 2, width: 380, height } })
+          // Frame::MoveToCenterOfScreen uses integer SetPos coordinates.
+          mustApply(runtime, { kind: "set-bounds", panel: dialog, bounds: { x: Math.trunc((viewport.width - 380) / 2), y: Math.trunc((viewport.height - height) / 2), width: 380, height } })
           const buttonBounds = runtime.snapshot().panels.find((candidate) => candidate.id === button)!.bounds
           mustApply(runtime, { kind: "set-bounds", panel: button, bounds: { ...buttonBounds, y: info.bounds.y + info.bounds.height + operation.buttonGap } })
         } else {

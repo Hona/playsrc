@@ -1932,9 +1932,14 @@ export class Tf2Application {
       await this.#teardownGameplay()
       if (this.#closed || !this.#operations.current(operation)) return
       const detail = error instanceof Error ? error.message : "Gameplay startup failed"
-      this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
-      this.#syncLoadingPresentation()
       this.#set({ phase: "Failed", gameUi: "failure", detail })
+      try {
+        this.#gameUi?.dispatch({ kind: "loading-failed", reason: "Map load failed", extendedReason: detail.slice(0, 255) })
+        this.#syncLoadingPresentation()
+      } catch (presentationError) {
+        console.error("TF2 loading failure presentation failed", presentationError)
+        this.#set({ bootFailure: true })
+      }
     } finally {
       if (this.#operations.current(operation)) this.#preparingModelPipelines = false
     }

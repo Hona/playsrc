@@ -309,6 +309,20 @@ describe("TF2 GameUI Escape and pending owner operations", () => {
 })
 
 describe("TF2 loading dialog lifecycle", () => {
+  test("centers a failure on odd native viewport dimensions without losing its reason", () => {
+    const fixture=createTf2GameUiTransitionFixture()
+    const viewport={width:1689,height:1277,devicePixelRatio:1}
+    fixture.loading.setViewport(viewport)
+    const presentation=createTf2LoadingPresentation({loadingResource:fixture.resources.panelDocument("resource/loadingdialognobanner.res"),failureResource:fixture.resources.panelDocument("resource/loadingdialogerror.res")})
+    fixture.gameUi.dispatch({kind:"loading-started",mapIdentity:"jump_beef"})
+    fixture.loading.apply(presentation.update(1,fixture.gameUi.state(),viewport,null)!)
+    fixture.gameUi.dispatch({kind:"loading-failed",reason:"Map load failed",extendedReason:"Retained primary failure"})
+    fixture.loading.apply(presentation.update(1,fixture.gameUi.state(),viewport,null)!)
+    const panels=fixture.loading.snapshot().panels,dialog=panels.find(panel=>panel.name==="LoadingDialog")!
+    expect(dialog.bounds.x).toBe(Math.trunc((viewport.width-dialog.bounds.width)/2))
+    expect(dialog.bounds.y).toBe(Math.trunc((viewport.height-dialog.bounds.height)/2))
+    expect(panels.find(panel=>panel.name==="InfoLabel")?.text).toContain("Retained primary failure")
+  })
   test("keeps one modal through milestones, swaps error resources, and releases it once", () => {
     const fixture = createTf2GameUiTransitionFixture()
     const presentation = createTf2LoadingPresentation({
