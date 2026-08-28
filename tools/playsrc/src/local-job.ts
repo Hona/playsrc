@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createWriteStream } from "node:fs"
-import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { finished } from "node:stream/promises"
 import { createServer } from "node:net"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
+import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 
 const LIMIT = 175_000
 const SHA = /^[0-9a-f]{40}$/
@@ -33,7 +34,10 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
     parseHeadedProfile(options)
     return { command: ["tools/playsrc/src/profile-runner.ts", ...options], interactive: true }
   }
-  throw new Error("Expected test [files...] or profile <normal profile name> [normal profiler options]")
+  if (kind === "build" && options.length === 1 && (TF2_TARGET_NAMES as readonly string[]).includes(options[0]!)) {
+    return { command: ["tools/playsrc/src/cli.ts", "dev", options[0]!, "--prepare-only"], interactive: false }
+  }
+  throw new Error("Expected test [files...], build <map>, or profile <normal profile name> [normal profiler options]")
 }
 
 /** Remote transport never supplies a browser endpoint, fixture, or asset server.
@@ -75,35 +79,59 @@ async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, l
 }
 
 async function availablePort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve) })
-  const address = server.address()
-  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
-  if (!address || typeof address === "string") throw new Error("Could not allocate a local development port")
-  return address.port
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const application = createServer(), assets = createServer()
+    try {
+      await new Promise<void>((resolve, reject) => { application.once("error", reject); application.listen(0, "127.0.0.1", resolve) })
+      const address = application.address()
+      if (!address || typeof address === "string" || address.port < 1024 || address.port >= 65535) continue
+      await new Promise<void>((resolve, reject) => { assets.once("error", reject); assets.listen(address.port + 1, "127.0.0.1", resolve) })
+      return address.port
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error }
+    finally {
+      await Promise.all([application, assets].filter(server => server.listening).map(server => new Promise<void>(resolve => server.close(() => resolve()))))
+    }
+  }
+  throw new Error("Could not reserve adjacent local development/application asset ports")
 }
 
-export async function prepareLocalJob(ref: string, commit: string, root = repositoryRoot): Promise<{ id: string; directory: string; commit: string }> {
+export async function prepareLocalJob(ref: string, commit: string, root = repositoryRoot, reuse?: string): Promise<{ id: string; directory: string; commit: string }> {
   validateRevision(ref, commit)
+  if (reuse !== undefined && !ID.test(reuse)) throw new Error("Invalid reusable job ID")
   const config = await loadLocalConfig(root)
   const env = localJobEnvironment(process.env)
   const origin = await execute(["git", "remote", "get-url", "origin"], root, env)
-  const id = randomUUID(), directory = path.join(config.sourceCacheDir, "local-jobs", id), checkout = path.join(directory, "checkout")
+  const id = reuse ?? randomUUID(), directory = path.join(config.sourceCacheDir, "local-jobs", id), checkout = path.join(directory, "checkout")
   await mkdir(directory, { recursive: true })
+  const preparing = await open(path.join(directory, "running"), "wx")
+  const pending = path.join(directory, "job.pending.json")
+  try {
+  if (reuse) {
+    const previous = JSON.parse(await readFile(pending, "utf8").catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      return readFile(path.join(directory, "job.json"), "utf8")
+    })) as Job
+    if (previous.id !== id || previous.origin !== origin) throw new Error("Reusable job origin differs")
+    await assertCheckout(checkout, previous)
+  }
   const job: Job = { schema: "playsrc-local-job-v1", id, origin, ref, commit, config }
-  await writeFile(path.join(directory, "request.json"), JSON.stringify(job, null, 2), { flag: "wx" })
+  await writeFile(path.join(directory, `request-${randomUUID()}.json`), JSON.stringify(job, null, 2), { flag: "wx" })
   // No reset/clean/stash in the developer's checkout, no source or generated
   // artifact copying from a controller host, and no alternate toolchain setup.
-  await execute(["git", "init", checkout], root, env)
-  await execute(["git", "remote", "add", "origin", origin], checkout, env)
-  await execute(["git", "fetch", "--no-tags", "origin", ref], checkout, env, path.join(directory, "fetch.log"))
+  if (!reuse) {
+    await execute(["git", "init", checkout], root, env)
+    await execute(["git", "remote", "add", "origin", origin], checkout, env)
+  }
+  await execute(["git", "fetch", "--no-tags", "origin", ref], checkout, env, path.join(directory, `fetch-${randomUUID()}.log`))
   await execute(["git", "merge-base", "--is-ancestor", commit, "FETCH_HEAD"], checkout, env)
   await execute(["git", "checkout", "--detach", commit], checkout, env)
-  await writeFile(path.join(checkout, "playsrc.local.json"), JSON.stringify(config, null, 2), { flag: "wx" })
-  await execute([process.execPath, "install", "--frozen-lockfile"], checkout, env, path.join(directory, "install.log"))
+  if (!reuse) await writeFile(path.join(checkout, "playsrc.local.json"), JSON.stringify(config, null, 2), { flag: "wx" })
+  await writeFile(pending, JSON.stringify(job, null, 2))
+  await execute([process.execPath, "install", "--frozen-lockfile"], checkout, env, path.join(directory, `install-${randomUUID()}.log`))
   await assertCheckout(checkout, job)
-  await writeFile(path.join(directory, "job.json"), JSON.stringify(job, null, 2), { flag: "wx" })
+  await rename(pending, path.join(directory, "job.json"))
   return { id, directory, commit }
+  } finally { await preparing.close(); await rm(path.join(directory, "running")) }
 }
 
 async function assertCheckout(checkout: string, job: Job): Promise<void> {
@@ -126,10 +154,11 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
   const checkout = path.join(directory, "checkout")
   const running = await open(path.join(directory, "running"), "wx")
   try {
+  if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
   await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
   await mkdir(run)
-  const startedAt = Date.now(), port = plan.interactive ? await availablePort() : undefined
+  const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availablePort() : undefined
   const command = [process.execPath, ...plan.command]
   let failure: string | null = null
   try {
@@ -149,12 +178,12 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
 if (import.meta.main) {
   try {
     const [operation, ...args] = process.argv.slice(2)
-    if (operation === "prepare" && args.length === 2) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!)))
+    if (operation === "prepare" && (args.length === 2 || args.length === 3)) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!, repositoryRoot, args[2])))
     else if (operation === "run" && args.length >= 2) {
       const ready = args[1] === "--ready"
       const result = await runLocalJob(args[0]!, args.slice(ready ? 2 : 1), ready)
       console.log(JSON.stringify(result))
       if (result.failure) process.exitCode = 1
-    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> | run <id> [--ready] test|profile ...")
+    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> [existing-job] | run <id> [--ready] test|build|profile ...")
   } catch (error) { console.error(String(error)); process.exitCode = 1 }
 }

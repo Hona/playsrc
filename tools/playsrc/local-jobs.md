@@ -18,6 +18,21 @@ copies only the three local configuration roots and runs `bun install
 toolchain, or transfers generated browser/WASM artifacts from another host.
 Keep the returned job ID. Preparation opens no window.
 
+To advance that same dedicated checkout, pass its ID as the third argument to
+`prepare`. A clean, idle job can switch to the next exact commit without deleting
+its native compiler cache. Previous run receipts retain their original commits.
+An interrupted dependency installation must finish before the next run.
+
+Prebuild before requesting the short interactive window:
+
+```sh
+bun tools/playsrc/src/local-job.ts run <job-id> build jump_beef
+```
+
+This uses normal `bun dev jump_beef --prepare-only`: build, verify local server
+readiness, close. It opens no browser. Cold compiler work does not need to consume
+the gameplay capture window.
+
 Run ordinary tests, directly or through SSH:
 
 ```sh
@@ -35,6 +50,10 @@ From SSH, the thin session bridge runs that same command:
 ```powershell
 powershell.exe -NoProfile -File tools/playsrc/windows-job.ps1 -Job <job-id> -Profile gameplay -Ready
 ```
+
+The launch returns immediately. `-Action Status -Job <job-id>` and `-Action Logs
+-Job <job-id>` return a current snapshot or log tail immediately; there is no SSH
+wait loop. Helper consoles stay hidden, but the game browser is always headed.
 
 `--ready`/`-Ready` is explicit authorization for this attempt, not a way to
 override desktop admission. The ordinary profiler still owns the machine lock,

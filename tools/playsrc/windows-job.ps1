@@ -4,6 +4,7 @@ param(
   [ValidateSet('Run','Status','Logs')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
+  [string]$Task,
   [switch]$Ready
 )
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,11 @@ $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
 if ($Action -ne 'Run') {
+  $taskState = $null
+  if ($Task) {
+    if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
+    $taskState = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue | Select-Object TaskName,State
+  }
   $latest = Get-ChildItem -Path "$directory/*/command.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   $result = if ($latest -and (Test-Path (Join-Path $latest.DirectoryName 'result.json'))) { Get-Content -Raw (Join-Path $latest.DirectoryName 'result.json') | ConvertFrom-Json } else { $null }
   if ($Action -eq 'Logs') {
@@ -24,7 +30,7 @@ if ($Action -ne 'Run') {
     }
   } else {
     $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Replace('/','\').Contains($directory.Replace('/','\')) -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like "*local-job.ts run $Job*")) } | Select-Object ProcessId,ParentProcessId,Name)
-    @{job=$Job;running=(Test-Path (Join-Path $directory 'running'));processes=$processes;log=$latest.FullName;result=$result} | ConvertTo-Json -Depth 8 -Compress
+    @{job=$Job;task=$taskState;running=(Test-Path (Join-Path $directory 'running'));processes=$processes;log=$latest.FullName;result=$result} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
 }
