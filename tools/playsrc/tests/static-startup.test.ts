@@ -6,7 +6,7 @@ import { deflateSync } from "node:zlib"
 import releaseJson from "../../../apps/web/tf2/releases/current.json"
 import { createDeployedBrowserConfiguration, parseTf2Release } from "../../../apps/web/tf2/src/deployment"
 import { staticStartupPackage, staticStartupRouter, startupDigest } from "../profile/static-startup-package"
-import { captureStaticStartup, staticStartupReceipt, assertStaticStartupReceipt, startupPixelEvidence, type StartupObservation } from "../profile/static-startup-gate"
+import { captureStaticStartupPhase, compactStaticStartupPhase, staticStartupReceipt, assertStaticStartupReceipt, startupPixelEvidence, type StartupObservation, type StaticStartupDriver } from "../profile/static-startup-gate"
 import { fetchImmutableObject } from "@playsrc/asset-store/browser"
 
 // Synthetic PNGs are unit inputs only, never retained as browser evidence.
@@ -62,20 +62,22 @@ test("exact static package catches a page/Worker/WASM mismatch before publicatio
 
 test("startup gate rejects the real silent-failure shape even with no console exception", async()=>{
   const native=async()=>({at:Date.now(),physical:true,unlocked:true,foreground:true,visible:true,minimized:false,idleMilliseconds:2500,browserPid:1,windowId:2,targetId:'test'})
-  await expect(captureStaticStartup({native,navigate:async()=>{},read:async()=>({phase:'Failed',detail:'Application generation upgrade did not converge',visible:true,focused:true,timeOrigin:0,at:0,frame:0,teamSelection:false,classSelection:false,unexpectedInput:0,movie:null}),screenshot:async()=>png(1),action:async()=>{},wait:async()=>{}},'jump_beef')).rejects.toThrow('did not converge')
+  await expect(captureStaticStartupPhase({native,navigate:async()=>{},read:async()=>({phase:'Failed',detail:'Application generation upgrade did not converge',visible:true,focused:true,timeOrigin:0,at:0,frame:0,teamSelection:false,classSelection:false,unexpectedInput:0,movie:null}),screenshot:async()=>png(1),action:async()=>{},wait:async()=>{}},'jump_beef','cold')).rejects.toThrow('did not converge')
 })
 
 test("receipt requires advancing movie pixels, menu and completed game frames for cold and warm upgrade", async()=>{
   let tick=0,playing=false,image=0,cache="stored",loadingAt:number|undefined
   const actions:string[]=[]
-  const capture=await captureStaticStartup({
+  const driver:StaticStartupDriver={
     native:async()=>({at:Date.now(),physical:true,unlocked:true,foreground:true,visible:true,minimized:false,idleMilliseconds:2500,browserPid:1,windowId:2,targetId:'test'}),
     navigate:async mode=>{tick=0;playing=false;loadingAt=undefined;cache=mode==='cold'?'stored':'hit'},
     read:async()=>({phase:playing?'Ready':loadingAt!==undefined?'Loading':tick>3?'MainMenu':'Startup',detail:'fixture',startupState:tick>3?'Completed':'Playing',visible:true,focused:true,timeOrigin:1,at:tick,frame:playing?tick:0,cache,consoleVisible:loadingAt!==undefined&&!playing,gameUi:playing?'in-game':'main-menu',playerClass:playing?3:0,tick:String(tick+1),teamSelection:loadingAt!==undefined&&!playing&&tick>=loadingAt+2,classSelection:false,unexpectedInput:0,movie:playing?null:{time:4.9+tick*.6,paused:false,muted:false,width:1440,height:1080}} as StartupObservation),
     screenshot:async()=>png(++image),action:async action=>{actions.push(action);if(action==='open-map')loadingAt=tick;else if(action==='choose-team')playing=true;else if(action==='close-console')throw new Error('Console focus was removed before the team transition')},wait:async()=>{tick++;await new Promise(r=>setTimeout(r,1))},
-  },'jump_beef')
-  const identity={packageSha256:'a'.repeat(64),wasmSha256:'b'.repeat(64),previousPackageSha256:'c'.repeat(64),previousEntryUsed:true,upgradeNavigations:2,bootFailure:{phase:'Failed',visible:true,text:'Unavailable configuration',pixels:startupPixelEvidence(png(20)),native:capture.native[0]!}}
-  const receipt=staticStartupReceipt(identity,capture)
+  }
+  const cold=compactStaticStartupPhase(await captureStaticStartupPhase(driver,'jump_beef','cold'),'d'.repeat(64))
+  const warm=compactStaticStartupPhase(await captureStaticStartupPhase(driver,'jump_beef','warm-upgrade'),'d'.repeat(64))
+  const identity={packageSha256:'a'.repeat(64),wasmSha256:'b'.repeat(64),previousPackageSha256:'c'.repeat(64),previousEntryUsed:true,upgradeNavigations:2,bootFailure:{phase:'Failed',visible:true,text:'Unavailable configuration',pixels:startupPixelEvidence(png(20)),native:warm.native[0]!}}
+  const receipt=staticStartupReceipt(identity,cold,warm)
   expect(actions).toEqual(['open-map','choose-team','open-map','choose-team'])
   assertStaticStartupReceipt(receipt,identity)
   for(const change of [
@@ -93,12 +95,12 @@ test("receipt requires advancing movie pixels, menu and completed game frames fo
 
 test("a particle admission failure after valid movie/menu pixels cannot produce release acceptance", async()=>{
   let tick=0,loading=false,image=0
-  const attempt=captureStaticStartup({
+  const attempt=captureStaticStartupPhase({
     native:async()=>({at:Date.now(),physical:true,unlocked:true,foreground:true,visible:true,minimized:false,idleMilliseconds:2500,browserPid:1,windowId:2,targetId:'test'}),
     navigate:async()=>{},
     read:async()=>({phase:loading?'Failed':tick>3?'MainMenu':'Startup',detail:loading?'CompileFailed:10':'fixture',startupState:tick>3?'Completed':'Playing',visible:true,focused:true,timeOrigin:1,at:tick,frame:0,teamSelection:false,classSelection:false,unexpectedInput:0,movie:loading?null:{time:4.9+tick*.6,paused:false,muted:false,width:1440,height:1080}}),
     screenshot:async()=>png(++image),action:async action=>{if(action==='open-map')loading=true},wait:async()=>{tick++},
-  },'pl_upward')
+  },'pl_upward','cold')
   await expect(attempt).rejects.toThrow('CompileFailed:10')
   const failure=await attempt.catch(error=>error)
   expect(failure.startupEvidence.runs[0].menu.state.phase).toBe('MainMenu')

@@ -1,21 +1,33 @@
 import { test } from "@playwright/test"
 import { spawn } from "node:child_process"
 import { createServer } from "node:net"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, writeFile, readFile, realpath } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig } from "../src/config"
-import { staticStartupRouter } from "./static-startup-package"
-import { captureStaticStartup, staticStartupReceipt, startupPixelEvidence, requireStartupNative, type StartupObservation } from "./static-startup-gate"
+import { staticStartupRouter, startupDigest } from "./static-startup-package"
+import { captureStaticStartupPhase, compactStaticStartupPhase, assertStaticStartupPhase, staticStartupReceipt, startupPixelEvidence, requireStartupNative, type StartupObservation } from "./static-startup-gate"
 import { startupConsoleIdle, startupNativeReader, externalStartupNativeReader } from "./native-startup"
 import { WorkerCdpSession } from "./worker-cpu-profiler"
 import { admitWorkerExecutionContext } from "./worker-runtime-admission"
 import { installStaticPackageRouting } from "./static-package-routing"
 
-test("exact static package: audible startup movie, menu and playable frame, cold and warm upgrade", async ({ playwright }, testInfo) => {
+test(`exact static package: audible movie, menu and playable frame (${process.env.PLAYSRC_STARTUP_CASE??"cold"})`, async ({ playwright }, testInfo) => {
   if (process.env.PLAYSRC_PROFILE_MANAGED !== "1") throw new Error("Static startup must run under the checked machine-wide profile lock")
   const config = await loadLocalConfig()
   const required = (name: string) => { const value=process.env[name];if(!value||!path.isAbsolute(value))throw new Error(`${name} must name an exact absolute file/directory`);return value }
   const router = await staticStartupRouter({ directory: required("PLAYSRC_STATIC_PACKAGE"), previousDirectory: required("PLAYSRC_PREVIOUS_STATIC_PACKAGE"), wasmFile: required("PLAYSRC_STATIC_WASM"), assetDir: config.assetDir })
+  const mode=process.env.PLAYSRC_STARTUP_CASE??"cold"
+  if(mode!=="cold"&&mode!=="warm-upgrade")throw new Error("Static startup case must be cold or warm-upgrade")
+  let cold:any
+  if(mode==="warm-upgrade"){
+    const file=required("PLAYSRC_STATIC_COLD_PHASE")
+    cold=JSON.parse(await readFile(file,"utf8"))
+    if(cold.schema!=="playsrc-static-startup-phase-v1"||cold.mode!=="cold"||cold.packageSha256!==router.admitted.sha256||cold.wasmSha256!==router.admitted.configuration.wasm.sha256)throw new Error("Warm startup requires the exact accepted cold package")
+    assertStaticStartupPhase(cold.capture,"cold")
+    const profile=await realpath(cold.profileDirectory),parent=await realpath(path.dirname(file))
+    if(path.dirname(profile)!==parent||!path.basename(profile).startsWith("native-profile-")||path.relative(config.sourceCacheDir,parent).startsWith(".."))throw new Error("Warm startup may only reopen its own accepted cold profile")
+    if(cold.capture.profileSha256!==startupDigest(cold.profileDirectory))throw new Error("Accepted cold profile identity differs")
+  }
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   await mkdir(directory, { recursive: true })
   const evidence: any = { package: router.admitted, previous: router.previous, startedAt: Date.now(), idle: [] }
@@ -32,7 +44,8 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve))
   const address = reservation.address(); if (!address || typeof address === "string") throw new Error("Static startup debug port reservation failed")
   await new Promise<void>(resolve => reservation.close(() => resolve()))
-  const profile = await mkdtemp(path.join(directory, "native-profile-"))
+  const profile = cold?.profileDirectory??await mkdtemp(path.join(directory, "native-profile-"))
+  evidence.profileDirectory=profile
   const executable = process.env.PLAYSRC_STARTUP_BROWSER ?? playwright.chromium.executablePath()
   if (!path.isAbsolute(executable)) throw new Error("Static startup browser must name its exact installed executable")
   const width = process.platform === "win32" ? 1705 : 1280, height = process.platform === "win32" ? 1372 : 800
@@ -138,7 +151,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
       },{capture:true,passive:true})
     })
     let admission=0
-    const capture=await captureStaticStartup({
+    const capture=await captureStaticStartupPhase({
       native:()=>native!.read(path.join(directory,`native-${admission++}.png`)),
       navigate,
       read:async()=>{
@@ -165,7 +178,13 @@ test("exact static package: audible startup movie, menu and playable frame, cold
         } finally {await page.evaluate(()=>{(globalThis as any).__playsrcStartupInput.action="none"})}
       },
       wait:milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds)),
-    },router.admitted.configuration.defaultTarget)
+    },router.admitted.configuration.defaultTarget,mode)
+    await router.verifyUnchanged()
+    const phase={schema:"playsrc-static-startup-phase-v1",mode,packageSha256:router.admitted.sha256,wasmSha256:router.admitted.configuration.wasm.sha256,profileDirectory:profile,capture:compactStaticStartupPhase(capture,startupDigest(profile))}
+    assertStaticStartupPhase(phase.capture,mode)
+    await writeFile(path.join(directory,"startup-phase.json"),JSON.stringify(phase))
+    evidence.capture=capture
+    if(mode==="cold"){console.log(`PLAYSRC_STATIC_COLD_PHASE ${path.join(directory,"startup-phase.json")}`);return}
     const upgradeNavigations=router.upgradeNavigations
     evidence.runtime=await page.evaluate(()=>({graphics:(globalThis as any).__playsrcStartupGraphics,quality:(globalThis as any).__playsrcProfile.videoQuality,generation:(globalThis as any).__playsrcProfile.applicationGeneration,cache:(globalThis as any).__playsrcProfile.immutableCache,state:{...document.querySelector<HTMLElement>("main")?.dataset}}))
     if(evidence.gpuFailures.length)throw new Error("Static startup encountered a GPU validation/device failure")
@@ -186,7 +205,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
     packageRouting.check();await packageRouting.close();packageRouting=undefined
     await Promise.all([workerPage.detach(),workerBrowser.detach()])
     evidence.capture=capture
-    const receipt=staticStartupReceipt({packageSha256:router.admitted.sha256,wasmSha256:router.admitted.configuration.wasm.sha256,previousPackageSha256:router.previous.sha256,previousEntryUsed:router.previousEntryUsed,upgradeNavigations,bootFailure},capture)
+    const receipt=staticStartupReceipt({packageSha256:router.admitted.sha256,wasmSha256:router.admitted.configuration.wasm.sha256,previousPackageSha256:router.previous.sha256,previousEntryUsed:router.previousEntryUsed,upgradeNavigations,bootFailure},cold.capture,phase.capture)
     await writeFile(path.join(directory,"startup-receipt.json"),JSON.stringify(receipt))
     console.log(`PLAYSRC_STATIC_STARTUP_RECEIPT ${JSON.stringify(receipt)}`)
   } catch(error) {
@@ -202,6 +221,11 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   finally {
     evidence.reads=router.reads;evidence.native=native?.records;evidence.endedAt=Date.now()
     await writeFile(path.join(directory,"static-startup-evidence.json"),JSON.stringify(evidence))
-    try {await packageRouting?.close();await native?.close()} finally {try {await browser?.close()} finally {terminate();process.removeListener("SIGTERM",terminate)}}
+    try {await packageRouting?.close();await native?.close()} finally {
+      try {
+        if(browser){const close=await browser.newBrowserCDPSession();await close.send("Browser.close").catch(()=>{});await browser.close().catch(()=>{})}
+        if(child&&child.exitCode===null)await Promise.race([new Promise(resolve=>child.once("exit",resolve)),new Promise(resolve=>setTimeout(resolve,2000))])
+      } finally {terminate();process.removeListener("SIGTERM",terminate)}
+    }
   }
 })
