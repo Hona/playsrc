@@ -9,6 +9,13 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public static class ProfileConsole {
+ [StructLayout(LayoutKind.Sequential)] public struct LastInput { public uint cbSize; public uint dwTime; }
+ [DllImport("user32.dll", SetLastError=true)] public static extern bool GetLastInputInfo(ref LastInput info);
+ public static uint IdleMilliseconds() {
+  var input = new LastInput { cbSize = (uint)Marshal.SizeOf(typeof(LastInput)) };
+  if (!GetLastInputInfo(ref input)) throw new System.ComponentModel.Win32Exception();
+  return unchecked((uint)Environment.TickCount - input.dwTime);
+ }
  [StructLayout(LayoutKind.Explicit, Size=24)]
  public struct InfoPrefix {
   [FieldOffset(0)] public uint Level;
@@ -39,16 +46,17 @@ public static class ProfileConsole {
 $session=[ProfileConsole]::WTSGetActiveConsoleSessionId()
 if ($session -eq [uint32]::MaxValue) { throw 'No active physical console session' }
 $info=[ProfileConsole]::Query($session)
-[pscustomobject]@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session)} | ConvertTo-Json -Compress
+[pscustomobject]@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session);idleMilliseconds=[ProfileConsole]::IdleMilliseconds()} | ConvertTo-Json -Compress
 `
 
 export type WindowsDesktopState = Readonly<{
   consoleSessionId: number; processSessionId: number; level: number; sessionId: number; state: number; flags: number; protocol: number;
+  idleMilliseconds: number;
 }>
 
 export function parseWindowsDesktopState(output: string): WindowsDesktopState {
   const value = JSON.parse(output.replace(/^\uFEFF/u, "")) as WindowsDesktopState
-  if (!value || [value.consoleSessionId, value.processSessionId, value.level, value.sessionId, value.state, value.flags, value.protocol]
+  if (!value || [value.consoleSessionId, value.processSessionId, value.level, value.sessionId, value.state, value.flags, value.protocol, value.idleMilliseconds]
     .some(field => !Number.isSafeInteger(field))) throw new Error("Incomplete Windows desktop evidence")
   return value
 }
@@ -62,6 +70,10 @@ export function assertWindowsConsole(state: WindowsDesktopState, release: string
   if (state.processSessionId !== state.consoleSessionId) throw new Error("Profiler is not running in the unlocked physical console session; no browser will be launched")
 }
 
+export function assertWindowsIdle(state: WindowsDesktopState): void {
+  if (!Number.isSafeInteger(state.idleMilliseconds) || state.idleMilliseconds < 2_000 || state.idleMilliseconds > 0xffff_ffff) throw new Error("Windows physical console requires two seconds of genuine idle before profiling")
+}
+
 export function queryWindowsDesktop(timeout = 10_000): WindowsDesktopState {
   if (process.platform !== "win32") throw new Error("Windows desktop evidence must be collected on the Windows host")
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 10_000) throw new Error("Windows desktop query deadline is invalid")
@@ -73,6 +85,7 @@ export function requireWindowsProfileConsole(remaining = 10_000): WindowsDesktop
   if (process.platform !== "win32") return null
   const state = queryWindowsDesktop(Math.min(10_000, remaining))
   assertWindowsConsole(state, os.release())
+  assertWindowsIdle(state)
   return state
 }
 
