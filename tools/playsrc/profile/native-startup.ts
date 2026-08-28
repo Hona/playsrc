@@ -5,7 +5,7 @@ import { macWindowReader } from "./macos-visible-windows"
 import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admission"
 import type { StartupNativeAdmission } from "./static-startup-gate"
 import os from "node:os"
-import { WINDOWS_OWNED_UI, ownedDiagnosticWindow } from "./windows-owned-ui"
+import { WINDOWS_OWNED_UI, WINDOWS_LOCAL_PERMISSION, ownedDiagnosticWindow, assertOwnedEphemeralBrowser } from "./windows-owned-ui"
 
 export type NativeDesktopPixels = Readonly<{ path: string; bounds: Readonly<{ X: number; Y: number; Width: number; Height: number }>; startedEpoch: number; endedEpoch: number }>
 
@@ -51,10 +51,10 @@ public static class StartupWindow {
 '@
 `
 
-let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean):Promise<any>;close():void}|undefined
+let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean,permissionOrigin?:string):Promise<any>;close():void}|undefined
 
 function openWindowsProbe() {
-  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+String.raw`
+  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+WINDOWS_LOCAL_PERMISSION+String.raw`
 Add-Type -AssemblyName System.Drawing
 while (($line=[Console]::ReadLine()) -ne $null) {
  try {
@@ -93,13 +93,14 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     if ([StartupWindow]::GetForegroundWindow().ToInt64() -ne $foreground) {throw 'Native foreground changed during pixel capture'}
     $pixels=@{path=[string]$request.capture;bounds=@{X=$x;Y=$y;Width=$w;Height=$h};startedEpoch=$start;endedEpoch=$end}
    }
-   $ui=$null
+   $ui=$null;$action=$null
    if ($request.ownedDiagnostic) {
     if (!$request.captureWindow -or !$request.capture -or $foregroundOwner.processId -ne $request.pid) {throw 'Owned UI diagnosis requires the linked private capture'}
     $ui=Read-OwnedUI $foreground ([uint32]$request.pid)
+    if ($request.permissionOrigin) {$action=Allow-OwnedLocalPermission $ui ([string]$request.permissionOrigin) ([uint32]$request.pid) $foreground}
    }
    $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui}
+   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui;action=$action}
  } catch {$result=@{id=$request.id;error=($_|Out-String)}}
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
 }
@@ -123,7 +124,7 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       result.error?entry.reject(new Error(result.error)):entry.resolve(result)
     }
   })
-  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow,ownedDiagnostic})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean,permissionOrigin?:string)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
 }
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
@@ -132,8 +133,8 @@ export function windowsForegroundMatches(native: { foreground: number; foregroun
   return native.foreground === windowId && native.foregroundAfter === windowId && focused
 }
 
-async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic)
+async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean, permissionOrigin?: string) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic,permissionOrigin)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -171,6 +172,24 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
       const mainWindowId = ownedDiagnosticWindow(native, before.bounds as any, browserPid)
       requireNativeDesktopPixels(native.pixels, capture)
       return { ...record, mainWindowId }
+    },
+    async allowOwnedLocalPermission(captureBefore: string) {
+      if (process.platform !== "win32") throw new Error("Owned permission action requires Windows")
+      const command = await browserCdp.send("Browser.getBrowserCommandLine")
+      assertOwnedEphemeralBrowser(command.arguments)
+      const origin = new URL(page.url()).origin
+      if (!/^http:\/\/127\.0\.0\.1:\d+$/u.test(origin)) throw new Error("Permission action is not for the local application")
+      const { targetInfo } = await pageCdp.send("Target.getTargetInfo")
+      const facts = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
+      // Read-only identity checks happen before the explicit action request.
+      const before = await windowsSnapshot(browserPid)
+      const mainWindowId = ownedDiagnosticWindow(before, facts.bounds as any, browserPid)
+      if (before.foreground === mainWindowId) throw new Error("No owned permission window to resolve")
+      const native = await windowsSnapshot(browserPid, captureBefore, facts.bounds as any, mainWindowId, true, origin)
+      const record = { at: Date.now(), purpose: "normal-owned-loopback-permission-control", browserPid, targetId: targetInfo.targetId, facts, before, native, ephemeralProfile: command.arguments.find((value: string) => value.startsWith("--user-data-dir=")) }
+      records.push(record)
+      if (native.action?.action !== "normal-visible-Allow") throw new Error("Permission control was not invoked")
+      return record
     },
     async read(desktopScreenshot?: string, pixelScope: "desktop" | "window" = "desktop"): Promise<StartupNativeAdmission & { pixels?: NativeDesktopPixels }> {
       if (mac) {

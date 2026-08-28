@@ -89,6 +89,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const lightmapAudit = process.env.PROFILE_MEMORY_LIGHTMAP_AUDIT === "1"
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
+  let permissionResolved = false
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
   const diagnoseUi = async (stage: string) => {
     if (!nativeReader) throw new Error("Owned UI diagnostic reader is unavailable")
@@ -97,7 +98,16 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   }
   const native = async () => { if (nativeReader) {
     const value = await nativeReader.read()
-    try { requireStartupNative(value) } catch (error) { if (ownedUiDiagnostic) await diagnoseUi("guard-failure"); throw error }
+    try { requireStartupNative(value) } catch (error) {
+      if (ownedUiDiagnostic || process.env.PROFILE_MEMORY_LOCAL_PERMISSION === "1") await diagnoseUi("guard-failure")
+      if (process.env.PROFILE_MEMORY_LOCAL_PERMISSION !== "1" || permissionResolved) throw error
+      const action = await nativeReader.allowOwnedLocalPermission(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-permission-before.png`))
+      permissionResolved = true
+      await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-permission-action.json`), JSON.stringify(action, null, 2))
+      await expect.poll(async () => (await nativeReader.read()).foreground, { timeout: 3_000 }).toBe(true)
+      requireStartupNative(await nativeReader.read())
+      await diagnoseUi("permission-after")
+    }
   } }
   if (inputDiagnostic) guardStartupInput(page, native)
   if (process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1") await page.addInitScript(() => {

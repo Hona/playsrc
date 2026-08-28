@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { WINDOWS_OWNED_UI, ownedDiagnosticWindow } from "../profile/windows-owned-ui"
+import { WINDOWS_OWNED_UI, ownedDiagnosticWindow, assertOwnedEphemeralBrowser, WINDOWS_LOCAL_PERMISSION } from "../profile/windows-owned-ui"
 import { windowsForegroundMatches } from "../profile/native-startup"
 
 test("owned diagnostic captures cannot admit a popup or inspect an unrelated app", () => {
@@ -14,4 +14,13 @@ test("owned diagnostic captures cannot admit a popup or inspect an unrelated app
   expect(WINDOWS_OWNED_UI).not.toMatch(/Invoke\(|SetFocus|SendInput|SetForeground|Select\(|Toggle\(/)
   expect(WINDOWS_OWNED_UI).toContain("$rows.Count -lt 48")
   expect(WINDOWS_OWNED_UI).toContain("$clock.ElapsedMilliseconds -lt 1500")
+})
+
+test("normal permission resolution is restricted to an owned temporary automation profile and exact observed control", () => {
+  expect(() => assertOwnedEphemeralBrowser(["--enable-automation", "--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"])).not.toThrow()
+  for (const args of [["--user-data-dir=C:\\Users\\User\\Chrome"], ["--enable-automation"], ["--user-data-dir=C:\\Temp\\playwright_chromiumdev_profile-Ab123"]]) expect(() => assertOwnedEphemeralBrowser(args)).toThrow()
+  expect(WINDOWS_LOCAL_PERMISSION).toContain("Access other apps and services on this device")
+  expect(WINDOWS_LOCAL_PERMISSION).toContain("$matches.Count -ne 1")
+  expect(WINDOWS_LOCAL_PERMISSION).toContain("GetRuntimeId()")
+  expect(WINDOWS_LOCAL_PERMISSION).not.toMatch(/SetForeground|SetFocus|SendInput|CloseWindow/)
 })

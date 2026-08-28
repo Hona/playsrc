@@ -19,7 +19,7 @@ function Read-OwnedUI([long]$windowId,[uint32]$processId) {
   if ($automation.Length -gt 128) {$automation=$automation.Substring(0,128)}
   $rect=$current.BoundingRectangle
   $rows.Add(@{name=$name;automationId=$automation;controlType=$current.ControlType.ProgrammaticName;className=$current.ClassName;enabled=$current.IsEnabled;offscreen=$current.IsOffscreen;depth=$item.depth;runtimeId=$element.GetRuntimeId();bounds=@{x=$rect.X;y=$rect.Y;width=$rect.Width;height=$rect.Height}})
-  if ($item.depth -lt 4) {
+  if ($item.depth -lt 8) {
    $child=$walker.GetFirstChild($element);$count=0
    while ($child -and $count -lt 24 -and $queue.Count -lt 48 -and $clock.ElapsedMilliseconds -lt 1500) {
     $queue.Enqueue(@{element=$child;depth=$item.depth+1});$child=$walker.GetNextSibling($child);$count++
@@ -29,6 +29,36 @@ function Read-OwnedUI([long]$windowId,[uint32]$processId) {
  return @{windowId=$windowId;processId=$processId;milliseconds=$clock.ElapsedMilliseconds;truncated=($queue.Count -gt 0 -or $depthLimited);elements=$rows.ToArray()}
 }
 `
+
+/** Explicit normal-control action, separate from the read-only reader. Only
+ * the observed loopback permission in the owned ephemeral browser is allowed. */
+export const WINDOWS_LOCAL_PERMISSION = String.raw`
+function Allow-OwnedLocalPermission($ui,[string]$origin,[uint32]$processId,[long]$windowId) {
+ if ($origin -notmatch '^http://127\.0\.0\.1:[0-9]+$') {throw 'Permission origin is not the owned loopback application'}
+ $expected=$origin+' wants to: Access other apps and services on this device'
+ $prompt=@($ui.elements | Where-Object {$_.className -eq 'RootView' -and $_.controlType -eq 'ControlType.Window' -and $_.name -eq $expected})
+ $buttons=@($ui.elements | Where-Object {$_.controlType -eq 'ControlType.Button' -and $_.name -eq 'Allow' -and $_.enabled -and !$_.offscreen})
+ if ($prompt.Count -ne 1 -or $buttons.Count -ne 1 -or [StartupWindow]::GetForegroundWindow().ToInt64() -ne $windowId) {throw 'Observed local permission control differs'}
+ $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$windowId)
+ if ($root.Current.ProcessId -ne $processId) {throw 'Permission process changed'}
+ $name=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Allow')
+ $type=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)
+ $condition=New-Object System.Windows.Automation.AndCondition($name,$type)
+ $matches=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$condition)
+ if ($matches.Count -ne 1) {throw 'Permission control is ambiguous'}
+ $button=$matches[0]
+ if (($button.GetRuntimeId() -join ':') -ne ($buttons[0].runtimeId -join ':') -or !$button.Current.IsEnabled -or $button.Current.IsOffscreen) {throw 'Permission control changed'}
+ $pattern=$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+ $start=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();$pattern.Invoke()
+ return @{action='normal-visible-Allow';origin=$origin;windowId=$windowId;processId=$processId;control=$buttons[0];startedEpoch=$start;endedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}
+}
+`
+
+export function assertOwnedEphemeralBrowser(arguments_: readonly string[]): void {
+  const profiles = arguments_.filter(value => value.startsWith("--user-data-dir="))
+  if (profiles.length !== 1 || !/[\\/]playwright_chromiumdev_profile-[a-zA-Z0-9_-]+$/u.test(profiles[0]!)
+    || !arguments_.includes("--enable-automation")) throw new Error("Permission action requires the owned ephemeral automation profile")
+}
 
 export function ownedDiagnosticWindow(native: any, bounds: { left: number; top: number; width: number; height: number }, browserPid: number): number {
   const matches = native.windows.filter((window: any) => window.visible && !window.minimized && window.bounds.Left === bounds.left && window.bounds.Top === bounds.top
