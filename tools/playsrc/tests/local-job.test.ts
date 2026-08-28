@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test"
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
-import { execFileSync } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
-import { localJobCommand, localJobEnvironment, prepareLocalJob, runLocalJob, validateRevision } from "../src/local-job"
+import { localJobCommand, localJobEnvironment, prepareLocalJob, readLocalTaskResult, runLocalJob, validateRevision } from "../src/local-job"
 import { resolveCargoExecutable } from "../src/tf2-wasm-build"
 
 test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", async () => {
@@ -48,10 +47,6 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     await writeFile(path.join(source, ".gitignore"), "playsrc.local.json\nnode_modules/\n")
     await writeFile(path.join(source, "pass.test.ts"), 'import {test,expect} from "bun:test"; test("native command",()=>expect(2+2).toBe(4))')
     await writeFile(path.join(source, "fail.test.ts"), 'import {test,expect} from "bun:test"; test("real failure",()=>expect(2+2).toBe(5))')
-    if (process.platform === "win32") {
-      await mkdir(path.join(source, "tools", "playsrc"), { recursive: true })
-      await cp(path.resolve(import.meta.dir, "../windows-job.ps1"), path.join(source, "tools", "playsrc", "windows-job.ps1"))
-    }
     const install = Bun.spawnSync([process.execPath, "install"], { cwd: source })
     expect(install.exitCode).toBe(0)
     git(["add", "."]); git(["commit", "-m", "fixture"])
@@ -70,14 +65,15 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     const passed = await runLocalJob(job.id, ["test", "pass.test.ts"], false, source)
     expect(passed.outcome).toBe("passed")
     expect(JSON.parse(await readFile(path.join(passed.run, "result.json"), "utf8")).commit).toBe(commit)
-    if (process.platform === "win32") {
-      const token = randomUUID()
-      await writeFile(path.join(job.directory, `${token}-launch.log`), "Error: rejected before a command started")
-      const status = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Result", "-Job", job.id, "-Task", `playsrc-local-job-${token}`], { timeout: 10_000, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-      const observed = JSON.parse(status)
-      expect(observed.result).toBeNull()
-      expect(observed.launchError).toContain("rejected before a command")
-    }
+    const token = randomUUID(), launch = path.join(job.directory, `${token}-launch.log`), task = `playsrc-local-job-${token}`
+    await writeFile(launch, "Error: rejected before a command started")
+    expect(await readLocalTaskResult(job.directory, task)).toEqual({ result: null, launchError: "Error: rejected before a command started" })
+    await writeFile(launch, Buffer.from("\uFEFF" + JSON.stringify(passed), "utf16le"))
+    expect((await readLocalTaskResult(job.directory, task)).result.commit).toBe(commit)
+    await writeFile(launch, JSON.stringify({ ...passed, id: randomUUID() }))
+    expect((await readLocalTaskResult(job.directory, task)).result).toBeNull()
+    await writeFile(launch, "")
+    expect(await readLocalTaskResult(job.directory, task)).toEqual({ result: null, launchError: null })
     expect((await runLocalJob(job.id, ["test", "fail.test.ts"], false, source)).outcome).toBe("failed")
     await mkdir(path.join(job.directory, "checkout", "node_modules"), { recursive: true })
     const nativeCache = path.join(job.directory, "checkout", "node_modules", "native-build-marker")

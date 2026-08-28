@@ -15,6 +15,23 @@ const SHA = /^[0-9a-f]{40}$/
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 type Job = { schema: "playsrc-local-job-v1"; id: string; origin: string; ref: string; commit: string; config: LocalConfig }
 
+/** A task's launch record is its authority, never another run's newer log. */
+export async function readLocalTaskResult(directory: string, task: string) {
+  const token = task.slice("playsrc-local-job-".length)
+  if (!task.startsWith("playsrc-local-job-") || !ID.test(token)) throw new Error("Invalid task identity")
+  const bytes = await readFile(path.join(directory, `${token}-launch.log`))
+  if (bytes.length > 2 * 1024 * 1024) throw new Error("Task launch record exceeds its bound")
+  const text = bytes.toString(bytes[0] === 0xff && bytes[1] === 0xfe ? "utf16le" : "utf8").replace(/^\uFEFF/, "").trim()
+  if (!text) return { result: null, launchError: null }
+  try {
+    const result = JSON.parse(text)
+    if (result.schema !== "playsrc-local-job-result-v1" || result.id !== path.basename(directory)
+      || !SHA.test(result.commit) || !["passed", "failed"].includes(result.outcome) || !Array.isArray(result.command)
+      || typeof result.run !== "string" || path.dirname(result.run) !== directory) throw new Error("Malformed task result")
+    return { result, launchError: null }
+  } catch { return { result: null, launchError: text } }
+}
+
 export function validateRevision(ref: string, commit: string): void {
   if (!SHA.test(commit) || !(SHA.test(ref) || /^refs\/(heads|tags)\/[A-Za-z0-9_][A-Za-z0-9_.\/-]*$/.test(ref))
     || ref.includes("..") || ref.includes("//") || ref.endsWith("/") || ref.endsWith(".lock")) {
@@ -179,6 +196,10 @@ if (import.meta.main) {
   try {
     const [operation, ...args] = process.argv.slice(2)
     if (operation === "prepare" && (args.length === 2 || args.length === 3)) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!, repositoryRoot, args[2])))
+    else if (operation === "result" && args.length === 2 && ID.test(args[0]!)) {
+      const config = await loadLocalConfig()
+      console.log(JSON.stringify(await readLocalTaskResult(path.join(config.sourceCacheDir, "local-jobs", args[0]!), args[1]!)))
+    }
     else if (operation === "run" && args.length >= 2) {
       const ready = args[1] === "--ready"
       const result = await runLocalJob(args[0]!, args.slice(ready ? 2 : 1), ready)
