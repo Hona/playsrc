@@ -5,6 +5,7 @@ import { macWindowReader } from "./macos-visible-windows"
 import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admission"
 import type { StartupNativeAdmission } from "./static-startup-gate"
 import os from "node:os"
+import { WINDOWS_OWNED_UI, ownedDiagnosticWindow } from "./windows-owned-ui"
 
 export type NativeDesktopPixels = Readonly<{ path: string; bounds: Readonly<{ X: number; Y: number; Width: number; Height: number }>; startedEpoch: number; endedEpoch: number }>
 
@@ -50,10 +51,10 @@ public static class StartupWindow {
 '@
 `
 
-let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number):Promise<any>;close():void}|undefined
+let windowsProbe: {read(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean):Promise<any>;close():void}|undefined
 
 function openWindowsProbe() {
-  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+String.raw`
+  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+WINDOWS_OWNED_UI+String.raw`
 Add-Type -AssemblyName System.Drawing
 while (($line=[Console]::ReadLine()) -ne $null) {
  try {
@@ -78,7 +79,9 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     if ($request.captureWindow) {
      $expected=$request.captureWindow
      $matches=@($windows | Where-Object {$_.bounds.Left -eq $expected.left -and $_.bounds.Top -eq $expected.top -and ($_.bounds.Right-$_.bounds.Left) -eq $expected.width -and ($_.bounds.Bottom-$_.bounds.Top) -eq $expected.height})
-     if ($matches.Count -ne 1 -or $matches[0].id -ne $foreground) {throw 'Pixel scope is not the complete foreground measured window'}
+     if ($matches.Count -ne 1) {throw 'Pixel scope is not the complete measured window'}
+     $ownedScope=$request.ownedDiagnostic -and $foregroundOwner.processId -eq $request.pid -and $foregroundOwner.rootOwnerWindowId -eq $matches[0].id
+     if ($matches[0].id -ne $foreground -and !$ownedScope) {throw 'Pixel scope is not the complete foreground measured window'}
      $x=$matches[0].bounds.Left;$y=$matches[0].bounds.Top;$w=$matches[0].bounds.Right-$x;$h=$matches[0].bounds.Bottom-$y
     }
     if ($w -le 0 -or $h -le 0 -or $w*$h -gt 33554432) {throw 'Native pixel desktop bounds invalid'}
@@ -90,8 +93,13 @@ while (($line=[Console]::ReadLine()) -ne $null) {
     if ([StartupWindow]::GetForegroundWindow().ToInt64() -ne $foreground) {throw 'Native foreground changed during pixel capture'}
     $pixels=@{path=[string]$request.capture;bounds=@{X=$x;Y=$y;Width=$w;Height=$h};startedEpoch=$start;endedEpoch=$end}
    }
+   $ui=$null
+   if ($request.ownedDiagnostic) {
+    if (!$request.captureWindow -or !$request.capture -or $foregroundOwner.processId -ne $request.pid) {throw 'Owned UI diagnosis requires the linked private capture'}
+    $ui=Read-OwnedUI $foreground ([uint32]$request.pid)
+   }
    $idle=[StartupWindow]::Idle();$idleEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels}
+   $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=$idle;idleEpoch=$idleEpoch;foreground=$foreground;foregroundEpoch=$foregroundEpoch;foregroundAfter=[StartupWindow]::GetForegroundWindow().ToInt64();foregroundOwner=$foregroundOwner;foregroundParent=$foregroundParent;probePid=$PID;windows=$windows;pixels=$pixels;ownedUI=$ui}
  } catch {$result=@{id=$request.id;error=($_|Out-String)}}
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
 }
@@ -115,7 +123,7 @@ while (($line=[Console]::ReadLine()) -ne $null) {
       result.error?entry.reject(new Error(result.error)):entry.resolve(result)
     }
   })
-  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+  return {read:(pid:number,capture?:string,captureWindow?:{left:number;top:number;width:number;height:number},expectedWindow?:number,ownedDiagnostic?:boolean)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid,capture,captureWindow,expectedWindow,ownedDiagnostic})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
 }
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
@@ -124,8 +132,8 @@ export function windowsForegroundMatches(native: { foreground: number; foregroun
   return native.foreground === windowId && native.foregroundAfter === windowId && focused
 }
 
-async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number) {
-  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow)
+async function windowsSnapshot(browserPid = 0, capture?: string, captureWindow?:{left:number;top:number;width:number;height:number}, expectedWindow?: number, ownedDiagnostic?: boolean) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid,capture,captureWindow,expectedWindow,ownedDiagnostic)
   assertWindowsConsole(result.desktop,os.release())
   return result
 }
@@ -151,6 +159,19 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
   const records: any[] = []
   return {
     records,
+    async diagnoseOwnedWindow(capture: string) {
+      if (process.platform !== "win32") throw new Error("Owned UI diagnosis requires Windows")
+      const { targetInfo } = await pageCdp.send("Target.getTargetInfo")
+      const before = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
+      const native = await windowsSnapshot(browserPid, capture, before.bounds as any, established, true)
+      const after = await browserCdp.send("Browser.getWindowForTarget", { targetId: targetInfo.targetId })
+      const record = { at: Date.now(), purpose: "private-owned-ui-diagnosis-not-admission", browserPid, targetId: targetInfo.targetId, before, after, native }
+      records.push(record)
+      if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("Measured window linkage changed during owned UI diagnosis")
+      const mainWindowId = ownedDiagnosticWindow(native, before.bounds as any, browserPid)
+      requireNativeDesktopPixels(native.pixels, capture)
+      return { ...record, mainWindowId }
+    },
     async read(desktopScreenshot?: string, pixelScope: "desktop" | "window" = "desktop"): Promise<StartupNativeAdmission & { pixels?: NativeDesktopPixels }> {
       if (mac) {
         const record = await mac.read(desktopScreenshot); records.push(record); requireMacPageAdmission(record)
