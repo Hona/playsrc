@@ -33,7 +33,7 @@ test("configured Granary mixed PCM, soundscape transitions, pause and map owners
   // Stay clear of the gantry directly above the capture point, which correctly
   // rejects an automatic-room scan with side sky but a solid overhead ray.
   // 6080d8b69cd526aa3e76252d61138ccd4d371953ea0ef2787e5a56bd3399f08d.
-  await command("setpos -1472 -4800 -397")
+  await command("setpos -1000 -5200 -450")
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.soundscape?.entity === 49, undefined, { timeout: 5000 }).catch(failure)
   const outside = await selection()
   await page.waitForFunction(() => {

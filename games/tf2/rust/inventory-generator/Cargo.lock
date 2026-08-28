@@ -273,6 +273,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "nanomp3"
+version = "0.1.1"
+
+[[package]]
 name = "num-bigint-dig"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -339,6 +343,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-audio"
+version = "0.1.0"
+dependencies = [
+ "playsrc-entity",
+ "playsrc-keyvalues",
+ "playsrc-mp3",
+ "playsrc-visibility",
+ "playsrc-wav",
+]
+
+[[package]]
 name = "playsrc-bsp"
 version = "0.1.0"
 dependencies = [
@@ -386,6 +401,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-mp3"
+version = "0.1.0"
+dependencies = [
+ "nanomp3",
+]
+
+[[package]]
 name = "playsrc-nav"
 version = "0.1.0"
 
@@ -405,6 +427,7 @@ name = "playsrc-tf2"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "playsrc-audio",
  "playsrc-collision",
  "playsrc-entity",
  "playsrc-keyvalues",
@@ -436,6 +459,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "playsrc-visibility"
+version = "0.1.0"
+dependencies = [
+ "playsrc-bsp",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "playsrc-vmt"
 version = "0.1.0"
 dependencies = [
@@ -451,6 +482,10 @@ dependencies = [
  "rsa",
  "sha2 0.10.9",
 ]
+
+[[package]]
+name = "playsrc-wav"
+version = "0.1.0"
 
 [[package]]
 name = "ppv-lite86"
