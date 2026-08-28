@@ -82,6 +82,8 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   })
   let sampling = false
   let captureLoop: Promise<void> | undefined
+  let activeStartedEpoch: number | undefined
+  let measurementRetained = false
   const captureWithCua = process.platform === "darwin" && process.env.PLAYSRC_SELECTION_CAPTURE === "cua"
   const session = path.basename(directory)
   const cua = async (name: string, input: Record<string, unknown>) => JSON.parse((await promisify(execFile)("cua-driver", ["call", name, JSON.stringify(input)], { timeout: 2000, maxBuffer: 1024 * 1024 })).stdout)
@@ -150,6 +152,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     const residentBefore = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
     await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 100 }); await cdp.send("Profiler.start")
     const startedEpoch = Date.now()
+    activeStartedEpoch = startedEpoch
     await page.evaluate(() => { const root = globalThis as any; root.__playsrcProfile.selectionSampling = true; root.__playsrcFrameProfiler.active = true
       root.__playsrcProfile.selectionMemory = []
       const sample = () => { if (!root.__playsrcProfile.selectionSampling) return
@@ -202,6 +205,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
     const residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
     await capture()
     await writeFile(path.join(directory, "selection-measurement.json"), JSON.stringify({ team, identity, warm, startedEpoch, endedEpoch, references, evidence, heapBefore, heapAfter, residentBefore, residentAfter, cpu: summarizeCpuProfile(profile) }, null, 2))
+    measurementRetained = true
     expect(endedEpoch - startedEpoch).toBeGreaterThanOrEqual(5000)
     expect(endedEpoch - startedEpoch).toBeLessThanOrEqual(10000)
     expect(evidence.inputs).toHaveLength(2)
@@ -215,7 +219,21 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   } finally {
     sampling = false
     await captureLoop?.catch(() => {})
-    await cdp.send("Profiler.stop").catch(() => {})
+    const partialCpu = await cdp.send("Profiler.stop").catch(() => undefined)
+    if (!measurementRetained && activeStartedEpoch !== undefined) {
+      if (partialCpu) await writeFile(path.join(directory, "selection-partial.cpuprofile"), JSON.stringify(partialCpu.profile))
+      const partial = await page.evaluate(() => {
+        const root = globalThis as any, profile = root.__playsrcProfile, frames = root.__playsrcFrameProfiler
+        if (profile) profile.selectionSampling = false
+        if (frames) frames.active = false
+        return { inputs: profile?.selectionInputs ?? [], owners: profile?.selectionOwners ?? [], memorySamples: profile?.selectionMemory ?? [],
+          frames: frames?.completedFrames ?? [], worker: frames?.worker ?? [], gpuOperations: frames?.gpuOperations ?? [],
+          gpuOperationsDropped: frames?.gpuOperationsDropped ?? 0, longTasks: frames?.longTasks ?? [], longAnimationFrames: frames?.longAnimationFrames ?? [] }
+      }).catch(error => ({ unavailable: String(error) }))
+      await writeFile(path.join(directory, "selection-partial.json"), JSON.stringify({ status: "failed-incomplete", startedEpoch: activeStartedEpoch,
+        endedEpoch: Date.now(), references, partial, cpu: partialCpu ? summarizeCpuProfile(partialCpu.profile) : null,
+        boundary: "Any missing next visible frame is right-censored, never a zero-latency or successful transition" }, null, 2))
+    }
     await writeFile(path.join(directory, "selection-references.json"), JSON.stringify(references))
     await native?.close(); await windows?.close(); await Promise.all([cdp.detach(), browser.detach()])
     if (captureWithCua) await cua("end_session", { session })
