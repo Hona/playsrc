@@ -2739,6 +2739,10 @@ class RendererOwner implements Renderer {
   async #prepareReachablePipelines(scene: SceneResources, signal: AbortSignal | undefined, ordinal: number, leaves?: readonly number[]): Promise<void> {
     this.#checkAbort(signal, ordinal)
     const waterTargets=this.#waterPreparationTargets(scene)
+    // A material binding can visit a sampled water attachment during compilation.
+    // Admit its complete target first so the later target pass cannot replace it.
+    if (scene.reflectionTarget) this.#backend.initRenderTarget(scene.reflectionTarget)
+    if (scene.refractionTarget) this.#backend.initRenderTarget(scene.refractionTarget)
     const visibleLeaves = new Set(leaves)
     const eligibleProps = new Set(scene.staticPropInstances.filter(prop =>
       leaves === undefined || prop.ownership === 1 || prop.leaves.some(leaf => visibleLeaves.has(leaf)),
@@ -2798,8 +2802,6 @@ class RendererOwner implements Renderer {
     }
     const centerX = (volume.bounds[0][0] + volume.bounds[1][0]) * 0.5
     const centerY = (volume.bounds[0][1] + volume.bounds[1][1]) * 0.5
-    if (scene.reflectionTarget) this.#backend.initRenderTarget(scene.reflectionTarget)
-    if (scene.refractionTarget) this.#backend.initRenderTarget(scene.refractionTarget)
     const initializedTextures = new Set<THREE.Texture>()
     for (const water of scene.waterMaterials.values()) {
       const texture = scene.textureResidency.selected(water.normalConsumer)

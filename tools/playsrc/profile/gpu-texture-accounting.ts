@@ -85,6 +85,25 @@ export function installGpuTextureAccounting(host: any = globalThis, traceOwners 
     recordOwner({ kind: "upload", id: record?.id ?? null, bytes: args[1].byteLength })
     return value
   } })
+  if (traceOwners && host.GPUTexture.prototype.createView && host.GPUCommandEncoder?.prototype.beginRenderPass) {
+    const views = new WeakMap<object, { id: number; owner: string }>()
+    const view = host.GPUTexture.prototype.createView, pass = host.GPUCommandEncoder.prototype.beginRenderPass
+    host.GPUTexture.prototype.createView = function (...args: any[]) {
+      const result = view.apply(this, args), record = allocations.get(this)
+      if (record?.owner.startsWith("playsrc-water-")) views.set(result, { id: record.id, owner: record.owner })
+      return result
+    }
+    host.GPUCommandEncoder.prototype.beginRenderPass = function (...args: any[]) {
+      const result = pass.apply(this, args)
+      // The checked Three owner supplies an ordinary array, not an iterable
+      // descriptor whose native consumption could be repeated by the probe.
+      if (Array.isArray(args[0].colorAttachments)) for (const attachment of args[0].colorAttachments) {
+        const record = attachment && views.get(attachment.view)
+        if (record) recordOwner({ kind: "attachment", ...record, loadOp: attachment.loadOp, storeOp: attachment.storeOp })
+      }
+      return result
+    }
+  }
   Object.defineProperty(host, "__playsrcGpuTextureAccounting", { value: state, configurable: true })
   return state
 }
