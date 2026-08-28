@@ -84,3 +84,17 @@ test("the report producer labels model preparation and render submission as sepa
   expect(value).not.toHaveProperty("botWork")
   expect(value).not.toHaveProperty("frameWork")
 })
+
+test("ordinary observation retains the existing phase publication and its own frame join", () => {
+  let mutation = () => {}
+  const canvas = { dataset: { displayFrame: "1" } }
+  const root = { dataset: { displayFrame: "1", performance: "1,2,3,4,5:6,7,8,9" } }
+  const host: any = { performance: { now: () => 10 }, addEventListener() {}, document: { addEventListener() {}, querySelector: (selector: string) => selector === "main" ? root : canvas },
+    MutationObserver: class { constructor(fn: () => void) { mutation = fn } observe() {} disconnect() {} },
+    requestAnimationFrame() { return 1 }, cancelAnimationFrame() {} }
+  installDeliveryObserver(host); host.__playsrcDeliveryObserver.start()
+  canvas.dataset.displayFrame = "2"
+  mutation()
+  expect(host.__playsrcDeliveryObserver.stop(20).frames[0]).toMatchObject({ frame: 2, phaseFrame: 1, performance: root.dataset.performance })
+  expect(root.dataset.displayFrame).toBe("1") // Stale phase joins are retained, never relabeled.
+})

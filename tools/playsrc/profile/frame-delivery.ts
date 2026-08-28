@@ -102,7 +102,7 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
  * app profile globals, requestAnimationFrame replacement or renderer hooks. */
 export function installDeliveryObserver(host: any = globalThis) {
   let active = false, observer: MutationObserver | undefined, raf = 0
-  let frames: Array<{ at: number; frame: number; cameraPosition?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
+  let frames: Array<{ at: number; frame: number; cameraPosition?: string; phaseFrame?: number; performance?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
   let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0
   const state = () => {
     const data = host.document.querySelector("main")?.dataset ?? {}
@@ -134,7 +134,9 @@ export function installDeliveryObserver(host: any = globalThis) {
         if (frame !== lastFrame) {
           if (frame < lastFrame) lifecycle.push("completed-frame counter reset")
           missedPublications += Math.max(0, frame - lastFrame - 1)
-          frames.push({ at: host.performance.now(), frame, cameraPosition: host.document.querySelector("main")?.dataset.cameraPosition }); lastFrame = frame
+          const data = host.document.querySelector("main")?.dataset
+          frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
+            ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); lastFrame = frame
         }
       })
       observer!.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
