@@ -7,7 +7,7 @@ export function installGpuTextureAccounting(host: any = globalThis) {
   const total = () => ({ textures: 0, knownBytes: 0, unknownByteTextures: 0,
     compressedTextures: 0, compressedBytes: 0, formats: {} as Record<string, FormatTotal> })
   const totalState = () => ({ schema: "playsrc-gpu-texture-api-allocation-v1", interpretation:
-    "Explicit API object creation/destruction; knownBytes excludes implementation-defined/unknown format sizes and driver padding. Not physical GPU residency. Upload source bytes are writeTexture input spans, not measured bus traffic.",
+    "Live means created minus explicit destroys; implicit GC, device loss, validation and driver retirement are not observed. knownBytes excludes implementation-defined/unknown format sizes and driver padding. Not physical GPU residency. created/destroyed/writeTexture counters are cumulative; upload source bytes are input spans, not measured bus traffic.",
     live: total(), created: total(), destroyedTextures: 0, peakKnownBytes: 0,
     writeTextureCalls: 0, writeTextureSourceBytes: 0 })
   const state = totalState()
@@ -24,8 +24,8 @@ export function installGpuTextureAccounting(host: any = globalThis) {
     [16, "rgba32uint rgba32sint rgba32float"],
   ] as const) for (const format of formats.split(" ")) scalar.set(format, bytes)
   const block = (format: string): readonly [number, number, number] | undefined => {
-    if (/^bc(?:1-rgba|4-r)-(?:unorm(?:-srgb)?|snorm)$/.test(format)) return [4, 4, 8]
-    if (/^bc(?:2-rgba|3-rgba|5-rg|6h-rgb|7-rgba)-(?:unorm(?:-srgb)?|snorm|ufloat|float)$/.test(format)) return [4, 4, 16]
+    if (["bc1-rgba-unorm", "bc1-rgba-unorm-srgb", "bc4-r-unorm", "bc4-r-snorm"].includes(format)) return [4, 4, 8]
+    if (["bc2-rgba-unorm", "bc2-rgba-unorm-srgb", "bc3-rgba-unorm", "bc3-rgba-unorm-srgb", "bc5-rg-unorm", "bc5-rg-snorm", "bc6h-rgb-ufloat", "bc6h-rgb-float", "bc7-rgba-unorm", "bc7-rgba-unorm-srgb"].includes(format)) return [4, 4, 16]
     if (/^(?:etc2-rgb8|etc2-rgb8a1)-unorm(?:-srgb)?$/.test(format) || /^eac-r11-(?:unorm|snorm)$/.test(format)) return [4, 4, 8]
     if (/^etc2-rgba8-unorm(?:-srgb)?$/.test(format) || /^eac-rg11-(?:unorm|snorm)$/.test(format)) return [4, 4, 16]
     const astc = /^astc-(4x4|5x4|5x5|6x5|6x6|8x5|8x6|8x8|10x5|10x6|10x8|10x10|12x10|12x12)-unorm(?:-srgb)?$/.exec(format)
