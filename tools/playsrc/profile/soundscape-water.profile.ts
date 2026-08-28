@@ -83,6 +83,10 @@ test("Lakeside trigger entries and exits change real mixed audio including under
     await cpu.detach()
   }
   await writeFile(testInfo.outputPath("lakeside-capture.json"), JSON.stringify({ ...captured, pcm: undefined }))
+  await writeFile(testInfo.outputPath("admission-diagnostics.json"), JSON.stringify(await page.evaluate(() => {
+    const profile = (globalThis as any).__playsrcProfile
+    return { longTasks: profile.longTasks, coldPhases: profile.coldPhases }
+  })))
   await writeFile(testInfo.outputPath("lakeside-raw.pcm"), Buffer.from(captured.pcm, "base64"))
   expect(captured.captured.differingSamples).toBe(0)
   expect(captured.captured.uncoveredSamples).toBe(0)
