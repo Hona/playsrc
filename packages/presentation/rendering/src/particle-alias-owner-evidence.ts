@@ -16,7 +16,7 @@ export function installParticleAliasOwnerReceipt() {
         const mips = []
         for (const mip of texture.mipmaps as THREE.CompressedTexture["mipmaps"]) {
           const bytes = new Uint8Array(mip.data.buffer, mip.data.byteOffset, mip.data.byteLength)
-          const hash = await crypto.subtle.digest("SHA-256", bytes)
+          const hash = await crypto.subtle.digest("SHA-256", bytes.slice())
           mips.push({ width: mip.width, height: mip.height, bytes: bytes.length, sha256: Array.from(new Uint8Array(hash), value => value.toString(16).padStart(2, "0")).join("") })
         }
         records.push({ name, image: texture.name, mips, width: texture.image.width, height: texture.image.height,
