@@ -15,7 +15,9 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
   if (process.env.PLAYSRC_PROFILE_MANAGED !== "1") throw new Error("Static startup must run under the checked machine-wide profile lock")
   const config = await loadLocalConfig()
   const required = (name: string) => { const value=process.env[name];if(!value||!path.isAbsolute(value))throw new Error(`${name} must name an exact absolute file/directory`);return value }
-  const router = await staticStartupRouter({ directory: required("PLAYSRC_STATIC_PACKAGE"), previousDirectory: required("PLAYSRC_PREVIOUS_STATIC_PACKAGE"), wasmFile: required("PLAYSRC_STATIC_WASM"), assetDir: config.assetDir })
+  const expectedSha256=process.env.PLAYSRC_STATIC_EXPECT_PACKAGE??""
+  if(!/^[0-9a-f]{64}$/.test(expectedSha256))throw new Error("Static startup requires the frozen candidate package SHA-256")
+  const router = await staticStartupRouter({ directory: required("PLAYSRC_STATIC_PACKAGE"), previousDirectory: required("PLAYSRC_PREVIOUS_STATIC_PACKAGE"), wasmFile: required("PLAYSRC_STATIC_WASM"), assetDir: config.assetDir, expectedSha256 })
   const mode=process.env.PLAYSRC_STARTUP_CASE??"cold"
   if(mode!=="cold"&&mode!=="warm-upgrade")throw new Error("Static startup case must be cold or warm-upgrade")
   let cold:any

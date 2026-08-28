@@ -61,8 +61,9 @@ function headersFor(text: string, pathname: string): Record<string, string> {
  * routing API. Only local verified bytes are fulfilled; no server is deployed.
  * A warm upgrade uses one retained previous HTML entry and its original assets,
  * while configuration and subsequent navigation belong to the new package. */
-export async function staticStartupRouter(options: { directory: string; assetDir: string; wasmFile: string; previousDirectory: string }) {
+export async function staticStartupRouter(options: { directory: string; assetDir: string; wasmFile: string; previousDirectory: string; expectedSha256: string }) {
   const admitted = await staticStartupPackage(options.directory)
+  if(admitted.sha256!==options.expectedSha256)throw new Error("Staged static package differs from the frozen candidate identity")
   const wasm = await readFile(options.wasmFile)
   if (startupDigest(wasm) !== admitted.configuration.wasm.sha256 || String(wasm.byteLength) !== admitted.configuration.wasm.byteLength) throw new Error("Static startup WASM bytes differ from the selected package")
   const headerText = await readFile(path.join(options.directory, "_headers"), "utf8")
