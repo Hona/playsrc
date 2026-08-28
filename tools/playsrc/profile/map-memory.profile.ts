@@ -10,7 +10,7 @@ import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { macosProcessMemorySampler } from "./process-memory-macos"
-import { summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
+import { activeGameplayTraceWindow, summarizeCompositorTruth, type ChromiumTraceEvent } from "./compositor-truth"
 import { mapMemoryReply } from "./map-memory-reply"
 import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { installLightmapAllocationProbe } from "./lightmap-allocation-probe"
@@ -19,6 +19,8 @@ import { requireStartupNative } from "./static-startup-gate"
 import { instrumentLightmapSceneSource } from "./lightmap-scene-route"
 import { instrumentParticleAliasSource } from "./particle-alias-route"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { windowsProcessMemory } from "./windows-process-memory"
+import { fixedInputPulses } from "./fixed-input-pulses"
 
 const TARGETS = ["jump_beef", "ctf_2fort", "pl_upward"] as const
 const executeFile = promisify(execFile)
@@ -37,12 +39,16 @@ type MemorySample = Readonly<{
   js?: Readonly<{ usedSize: number; backingStorageSize?: number }>
 }>
 
-async function residentProcesses(processes: readonly BrowserProcess[], macosSampler?: string): Promise<readonly ProcessMemory[]> {
+async function residentProcesses(processes: readonly BrowserProcess[], macosSampler?: string, windowsSampler?: ReturnType<typeof windowsProcessMemory>, hostSamples?: any[]): Promise<readonly ProcessMemory[]> {
   const identities = [...new Set(processes.map((process) => process.id).filter((id) => Number.isSafeInteger(id) && id > 0))]
   if (identities.length === 0) return []
-  const command = macosSampler ? [macosSampler, ...identities.map(String)] : process.platform === "win32"
-    ? ["powershell", "-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`]
-    : ["ps", "-o", "pid=,rss=", "-p", identities.join(",")]
+  if (windowsSampler) {
+    const result = await windowsSampler.read(identities), types = new Map(processes.map(entry => [entry.id, entry.type]))
+    hostSamples?.push({ ...result.host, helper: result.helper, browserCpu: processes.map(({ id, type, cpuTime }) => ({ id, type, cpuTime })) })
+    return result.processes.map((entry: any) => ({ id: entry.Id, type: types.get(entry.Id) ?? "unknown", residentBytes: entry.WorkingSet64, privateBytes: entry.PrivateMemorySize64 }))
+  }
+  if (process.platform === "win32") throw new Error("Windows process telemetry must use its owned persistent reader")
+  const command = macosSampler ? [macosSampler, ...identities.map(String)] : ["ps", "-o", "pid=,rss=", "-p", identities.join(",")]
   // This is a non-GUI telemetry helper, not the headed browser. A console
   // window from each sample can itself change native foreground ownership.
   const pending = executeFile(command[0]!, command.slice(1), { timeout: 2_000, windowsHide: true })
@@ -52,15 +58,6 @@ async function residentProcesses(processes: readonly BrowserProcess[], macosSamp
   try { output = (await pending).stdout } finally { receipt.endedEpoch = Date.now() }
   if (!output.trim()) return []
   const types = new Map(processes.map((entry) => [entry.id, entry.type]))
-  if (process.platform === "win32") {
-    const parsed = JSON.parse(output) as { Id: number; WorkingSet64: number; PrivateMemorySize64: number } | { Id: number; WorkingSet64: number; PrivateMemorySize64: number }[]
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((entry) => Object.freeze({
-      id: entry.Id,
-      type: types.get(entry.Id) ?? "unknown",
-      residentBytes: entry.WorkingSet64,
-      privateBytes: entry.PrivateMemorySize64,
-    }))
-  }
   return output.trim().split("\n").flatMap((line) => {
     const [identity, resident, privateBytes] = line.trim().split(/\s+/u).map(Number)
     return Number.isSafeInteger(identity) && Number.isSafeInteger(resident)
@@ -130,6 +127,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     }, { capture: true, passive: true })
   })
   const macosSampler = await macosProcessMemorySampler((await loadLocalConfig()).sourceCacheDir)
+  const windowsSampler = process.platform === "win32" ? windowsProcessMemory((await loadLocalConfig()).sourceCacheDir) : undefined
+  const hostSamples: any[] = []
+  const sourceReceipts: object[] = []
+  if (windowsSampler) helperProcesses.push(windowsSampler.receipt)
   await mkdir(output, { recursive: true })
   const browserCdp = await browser.newBrowserCDPSession()
   const pageCdp = await page.context().newCDPSession(page)
@@ -144,7 +145,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     busy = true
     try {
       const snapshot = await browserCdp.send("SystemInfo.getProcessInfo") as { processInfo: BrowserProcess[] }
-      const processes = await residentProcesses(snapshot.processInfo, macosSampler)
+      const processes = await residentProcesses(snapshot.processInfo, macosSampler, windowsSampler, hostSamples)
       const [js, browserState] = await Promise.all([
         pageCdp.send("Runtime.getHeapUsage"),
         page.evaluate(() => {
@@ -177,8 +178,11 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   if (lightmapAudit) await page.route(/\/packages\/presentation\/rendering\/src\/index\.ts(?:\?|$)/u, async route => {
     const response = await route.fetch()
     let source = instrumentLightmapSceneSource(await response.text(), process.env.PROFILE_MEMORY_LIGHTMAP_REFERENCE === "1")
+    const canonicalOwnerHash = aliasCombat ? createHash("sha256").update(instrumentParticleAliasSource(source, true)).digest("hex") : undefined
     if (aliasPixels) source = instrumentParticleAliasSource(source, false)
+    else if (aliasCombat) source = instrumentParticleAliasSource(source, process.env.PROFILE_MEMORY_ALIAS_REFERENCE === "1")
     else if (process.env.PROFILE_MEMORY_ALIAS_REFERENCE === "1") source = instrumentParticleAliasSource(source, true, false)
+    sourceReceipts.push({ canonicalOwnerHash, deliveredHash: createHash("sha256").update(source).digest("hex"), reference: process.env.PROFILE_MEMORY_ALIAS_REFERENCE === "1" })
     await route.fulfill({ response, body: source })
   })
 
@@ -434,6 +438,10 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     if (lightmapAudit && !inputDiagnostic) await page.bringToFront()
     await native()
     if (ownedUiDiagnostic) { await diagnoseUi("main-menu"); return }
+    if (aliasCombat) await page.evaluate(async url => {
+      const module = await import(/* @vite-ignore */ url)
+      ;(globalThis as any).__playsrcParticleAliasEvidence = module.installParticleAliasOwnerReceipt()
+    }, `/@fs/${repositoryRoot}/packages/presentation/rendering/src/particle-alias-owner-evidence.ts`)
     if (aliasPixels) await page.evaluate(async url => {
       const module = await import(/* @vite-ignore */ url)
       ;(globalThis as any).__playsrcParticleAliasEvidence = module.installParticleAliasEvidence()
@@ -718,17 +726,25 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         await native()
         await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 360 } })
         await expect(root).toHaveAttribute("data-pointer-locked", "true")
+        expect(Number(await root.getAttribute("data-fire-events"))).toBe(0)
         await native()
       }
       const collectTrace = ({ value }: { value: ChromiumTraceEvent[] }) => traceEvents.push(...value)
       pageCdp.on("Tracing.dataCollected", collectTrace)
-      await pageCdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
-      const frameSample = page.evaluate(async (minimumMilliseconds) => {
+      await pageCdp.send("Tracing.start", { categories: "benchmark,viz,gpu,devtools.timeline,blink.user_timing,v8,disabled-by-default-v8.gc", options: "record-as-much-as-possible" })
+      const frameSample = page.evaluate(async ({ minimumMilliseconds, combat }) => {
         const root = document.querySelector<HTMLElement>("main")!
+        if (combat) await new Promise<void>(resolve => {
+          addEventListener("pointerdown", () => resolve(), { capture: true, once: true })
+          ;(globalThis as any).__playsrcCombatArmed = true
+        })
         const first = Number(root.dataset.snapshotTick)
         const profiler = (globalThis as any).__playsrcFrameProfiler
         if (profiler) profiler.active = true
         const start = performance.now()
+        performance.mark("playsrc-active-gameplay-start")
+        const initialActor = { fireEvents: Number(root.dataset.fireEvents), hud: root.dataset.hudProbe, position: root.dataset.cameraPosition,
+          yaw: root.dataset.cameraYaw, pitch: root.dataset.cameraPitch, pointerLocked: root.dataset.pointerLocked, cache: root.dataset.cache }
         let count = 0
         let previous = start
         const gaps: number[] = []
@@ -743,10 +759,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           requestAnimationFrame(frame)
         })
         const ordered = gaps.toSorted((left, right) => left - right)
+        const end = performance.now()
+        performance.mark("playsrc-active-gameplay-end")
         if (profiler) profiler.active = false
         return {
-          ...(profiler ? { actualFrames: profiler.completedFrames, gpuTimestamps: profiler.gpuTimestamps, counters: profiler.counters, losses: profiler.losses } : {}),
-          milliseconds: performance.now() - start,
+          initialActor, start, end,
+          ...(profiler ? { actualFrames: profiler.completedFrames, gpuTimestamps: profiler.gpuTimestamps, counters: profiler.counters, losses: profiler.losses, shaders: profiler.shaders, devices: profiler.devices, adapters: profiler.adapters, gpuOperations: profiler.gpuOperations } : {}),
+          milliseconds: end - start,
           count,
           firstTick: first,
           lastTick: Number(root.dataset.snapshotTick),
@@ -755,10 +774,26 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
           frameP99Milliseconds: ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.99))] ?? 0,
           maximumFrameMilliseconds: ordered.at(-1) ?? 0,
         }
-      }, sampleWindows[index]! * 1_000)
+      }, { minimumMilliseconds: sampleWindows[index]! * 1_000, combat: aliasCombat })
       const input: Record<string, unknown>[] = []
-      if (aliasCombat) await page.mouse.down({ button: "left" })
-      if (process.env.PROFILE_MEMORY_INPUT === "1") {
+      let inputDelivery: unknown
+      if (aliasCombat) {
+        await page.waitForFunction(() => (globalThis as any).__playsrcCombatArmed === true)
+        await native()
+        await page.mouse.down({ button: "left" })
+        const pulses = await fixedInputPulses({ now: () => performance.now(), wait: duration => new Promise(resolve => setTimeout(resolve, duration)), admit: native,
+          send: down => down ? page.keyboard.down("w") : page.keyboard.up("w"),
+          observe: async down => {
+            const event = await page.evaluate(kind => (globalThis as any).__playsrcMemoryProfile.inputEvents.findLast((value: any) => value.kind === kind), down ? "keydown" : "keyup")
+            await page.waitForFunction(down => {
+              const speed = Number(document.querySelector<HTMLElement>("main")?.dataset.wishSpeed)
+              return down ? speed > 0 : speed === 0
+            }, down, { timeout: 5_000, polling: 5 })
+            return page.evaluate(event => ({ ...event, observed: performance.now(), milliseconds: performance.now() - event.at }), event)
+          },
+        })
+        inputDelivery = pulses.delivery; input.push(...pulses.observations)
+      } else if (process.env.PROFILE_MEMORY_INPUT === "1") {
         await page.locator("canvas.world-canvas").focus()
         for (let trial = 0; trial < 3; trial++) {
           try {
@@ -789,13 +824,21 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       await pageCdp.send("Tracing.end")
       await traced
       pageCdp.off("Tracing.dataCollected", collectTrace)
-      const compositor = summarizeCompositorTruth(traceEvents, frames.milliseconds)
+      const traceWindow = activeGameplayTraceWindow(traceEvents)
+      const compositor = summarizeCompositorTruth(traceEvents, frames.milliseconds, traceWindow)
+      const particleOwnerReceipt = aliasCombat ? await page.evaluate(() => (globalThis as any).__playsrcParticleAliasEvidence.snapshot()) : undefined
       const simulationHz = (frames.lastTick - frames.firstTick) * 1_000 / frames.milliseconds
       expect(simulationHz).toBeGreaterThan(55)
       const own = timeline.slice(timelineStart)
       const peak = own.reduce((maximum, entry) => entry.residentBytes > maximum.residentBytes ? entry : maximum, own[0]!)
       const transition = own.filter((entry) => entry.phase === "loading")
       maps.push({
+        inputDelivery,
+        particleOwnerReceipt,
+        compositorIncludingControlOverhead: summarizeCompositorTruth(traceEvents, frames.milliseconds),
+        traceWindow,
+        presentationEvents: traceEvents.filter(event => event.name === "Display::FrameDisplayed" || event.name === "PresentationFeedback" || event.name === "FramePresented"),
+        configuredTarget: selected,
         target: identity,
         readyMilliseconds: Number(readyMilliseconds.toFixed(3)),
         firstPlayableMilliseconds,
@@ -983,6 +1026,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       platform: process.platform,
       architecture: process.arch,
       gpu: system.gpu ?? null,
+      browserVersion: await browserCdp.send("Browser.getVersion"),
+      configuration,
+      sourceReceipts,
       maps,
       lightmapEvidence,
       lightmapTeardown,
@@ -991,6 +1037,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
       inputDiagnosis: process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1" ? { helpers: helperProcesses,
         page: await page.evaluate(() => (globalThis as any).__playsrcInputDiagnosis) } : undefined,
       timeline,
+      hostSamples,
       allocations: [...allocations].sort((left, right) => right[1] - left[1]).slice(0, 30)
         .map(([identity, bytes]) => ({ identity, bytes })),
       heapSnapshot,
@@ -1020,6 +1067,8 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
     throw error
   } finally {
     clearInterval(sampler)
+    windowsSampler?.close()
+    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL ?? "current"}-helpers.json`), JSON.stringify({ helpers: helperProcesses, hostSamples }, null, 2))
     await nativeReader?.close()
     await browserCdp.detach().catch(() => {})
   }

@@ -21,9 +21,25 @@ async function buildOfflineTextureOwner(reference: boolean) {
     if (source.split(decision).length !== 2) throw new Error("Particle alias reference owner differs")
     source = source.replace(decision, "const alias = undefined")
   }
+  const decision = reference ? "const alias = undefined" : "const alias = texture.frameCount === 1 ? particleTextureAlias(candidate, textures.values()) : undefined"
+  if (source.split(decision).length !== 2) throw new Error("Particle lookup timing seam differs")
+  source = source.replace(decision, `const offlineAliasStart = performance.now(); ${decision};
+    this.offlineAliasMilliseconds = (this.offlineAliasMilliseconds ?? 0) + performance.now() - offlineAliasStart;
+    this.offlineAliasCalls = (this.offlineAliasCalls ?? 0) + 1`)
   const declaration = "class RendererOwner implements Renderer {"
   if (source.split(declaration).length !== 2) throw new Error("Renderer test owner declaration differs")
   const addition = `export class RendererOwner implements Renderer {
+    offlineParticleScene(backend, inputs, states) {
+      this.#backend = backend; this.#lifecycle = "Ready"; this.#deviceGeneration = 1;
+      this.#particleVisibility.attach(backend);
+      const disposables = new OwnedResourceGeneration(1, ++this.#sceneGeneration);
+      const particleDepth = disposables.add(new SourceParticleDepth(backend.backend));
+      const particleTextures = new Map(), particleBatchMaterials = new Map(), particlePipelineMeshes = new THREE.Group();
+      this.#buildParticleMaterials(inputs, new Map(states), disposables, createSourceWaterFogUniforms(), particleDepth,
+        particleTextures, particleBatchMaterials, particlePipelineMeshes, TSL.float(1), false);
+      this.#active = { disposables, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes };
+      disposables.activate(); return this.#active;
+    }
     offlineAttach(backend, textures) {
       this.#backend = backend;
       this.#lifecycle = "Ready";
