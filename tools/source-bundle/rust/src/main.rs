@@ -3228,8 +3228,13 @@ fn main() -> Result<(), String> {
         for entity in &graph.entities {
             if !entity.classname.as_deref().is_some_and(|class| class.eq_ignore_ascii_case(b"env_soundscape") || class.eq_ignore_ascii_case(b"env_soundscape_triggerable")) { continue; }
             if let Some(pair) = entity.pairs.iter().rev().find(|pair| pair.key.eq_ignore_ascii_case(b"soundscape")) {
-                let index = registry.find(&pair.value).ok_or_else(|| format!("unresolved map soundscape at entity {}", entity.index))?;
-                roots.push(index);
+                if let Some(index) = registry.find(&pair.value) {
+                    roots.push(index);
+                } else {
+                    // CEnvSoundscape::Precache warns and retains index -1. An
+                    // authored missing name is not an invented silent preset.
+                    eprintln!("source-bundle soundscape entity={} unresolved={:?}", entity.index, String::from_utf8_lossy(&pair.value));
+                }
             }
         }
         for resource in registry.resources(&roots) {
