@@ -71,8 +71,8 @@ test("array layers do not shrink with mips; volume depth does; format sizes and 
     const t = device.createTexture({ size: [1, 1], format })
     expect(state.live.knownBytes).toBe(bytes); reconcile(state); t.destroy()
   }
-  for (const format of ["depth24plus", "depth24plus-stencil8", "depth32float-stencil8", "unknown"]) device.createTexture({ size: [8, 8], format })
-  expect(state.live).toMatchObject({ textures: 4, knownBytes: 0, unknownByteTextures: 4 })
+  for (const format of ["depth24plus", "depth24plus-stencil8", "depth32float-stencil8", "unknown", "bc4-r-unorm-srgb", "bc2-rgba-snorm"]) device.createTexture({ size: [8, 8], format })
+  expect(state.live).toMatchObject({ textures: 6, knownBytes: 0, unknownByteTextures: 6 })
   reconcile(state)
   expect(state.interpretation).toContain("Not physical GPU residency")
 })
