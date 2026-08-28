@@ -80,12 +80,12 @@ async function residentProcesses(processes: readonly BrowserProcess[]): Promise<
   if (identities.length === 0) return []
   const types = new Map(processes.map((entry) => [entry.id, entry.type]))
   if (process.platform === "win32") {
-    const { stdout } = await executeFile("powershell", ["-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`])
+    const { stdout } = await executeFile("powershell", ["-NoProfile", "-Command", `@(Get-Process -Id ${identities.join(",")} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,PrivateMemorySize64) | ConvertTo-Json -Compress`], { timeout: 2_000, windowsHide: true })
     if (!stdout.trim()) return []
     const values = [JSON.parse(stdout)].flat() as Array<{ Id: number; WorkingSet64: number; PrivateMemorySize64: number }>
     return values.map((value) => Object.freeze({ id: value.Id, type: types.get(value.Id) ?? "unknown", residentBytes: value.WorkingSet64, privateBytes: value.PrivateMemorySize64 }))
   }
-  const { stdout } = await executeFile("ps", ["-o", "pid=,rss=", "-p", identities.join(",")])
+  const { stdout } = await executeFile("ps", ["-o", "pid=,rss=", "-p", identities.join(",")], { timeout: 2_000 })
   return stdout.trim().split("\n").flatMap((line) => {
     const [identity, resident] = line.trim().split(/\s+/u).map(Number)
     return Number.isSafeInteger(identity) && Number.isSafeInteger(resident)
