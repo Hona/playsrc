@@ -4,7 +4,7 @@ import path from "node:path"
 import { parseGameplayReplay, startGameplayReplayJournal } from "../profile/gameplay-replay"
 import { drainTraceStream } from "../profile/compositor-evidence"
 import { summarizeActivePresentationSilence } from "../profile/compositor-truth"
-import { parseReplayArguments, verifyReplayHash } from "../profile/replay-gameplay"
+import { parseReplayArguments, replayMutation, verifyReplayCheckpoint, verifyReplayHash } from "../profile/replay-gameplay"
 
 test("offline replay accepts only explicit map/root selections and unambiguous options", () => {
   const identity = "a".repeat(64), resourceRoot = "b".repeat(64)
@@ -29,6 +29,17 @@ test("historical replay stays strict and explicit two-build comparisons report h
   expect(() => verifyReplayHash("b", "a", "tick:2", hashes)).toThrow("diverged")
 })
 
+test("replay checkpoint cannot substitute another generation or installed BSP", () => {
+  const checkpoint = { configurationSha256: "a".repeat(64), configurationBytes: 4096, profile: 0, generation: 2 }
+  const installed = { mapGeneration: 2, bsp: "b".repeat(64) }
+  verifyReplayCheckpoint(checkpoint, installed, installed.bsp)
+  expect(() => verifyReplayCheckpoint(checkpoint, { ...installed, mapGeneration: 1 }, installed.bsp)).toThrow("generation")
+  expect(() => verifyReplayCheckpoint(checkpoint, installed, "c".repeat(64))).toThrow("BSP")
+  for (const changed of [{ generation: 0 }, { generation: 1.5 }, { configurationBytes: -1 }, { configurationSha256: "bad" }, { profile: 2 }]) {
+    expect(() => verifyReplayCheckpoint({ ...checkpoint, ...changed }, installed, installed.bsp)).toThrow("checkpoint")
+  }
+})
+
 test("a missing final native presentation cannot hide boundary silence", () => {
   const value = summarizeActivePresentationSilence([
     { name: "PresentationFeedback", ts: 0, pid: 1, tid: 1 },
@@ -51,6 +62,44 @@ function fixture() {
   const one = Buffer.from([1, 0, 0, 0])
   return Buffer.concat([header, record(7, Buffer.alloc(4)), record(1, observe), record(2, tick), record(3, Buffer.alloc(32)), record(7, one), record(8, one)])
 }
+
+test("v3 mutations have disjoint wire operations; historical ambiguous records fail closed", () => {
+  const old = fixture(), header = Buffer.alloc(780)
+  old.copy(header, 0, 0, 88); header.writeUInt32LE(3, 4); header.write("TFEQ\x01\0\0\0", 88, "latin1")
+  const position = Buffer.alloc(12); position.writeFloatLE(-12.5); position.writeFloatLE(3, 4); position.writeFloatLE(96, 8)
+  const course = Buffer.alloc(52); course.write("PJMP"); course.writeUInt32LE(1, 4)
+  const entity = Buffer.concat([Buffer.alloc(4), Buffer.from("door\0Open\0")])
+  const equip = Buffer.from([1, 3, 0, 18, 0, 0, 0]), botEquip = Buffer.from([2, 2, 0, 0, 0, 255, 255, 255, 255])
+  const restore = Buffer.concat([Buffer.from([0]), header.subarray(88)])
+  const mutations = [[4, Buffer.from([2, 0, 0, 0])], [5, position], [6, course], [9, equip], [9, botEquip], [9, restore], [10, entity]] as const
+  const parsed = parseGameplayReplay(Buffer.concat([header, ...mutations.map(([kind, bytes]) => record(kind, bytes)), old.subarray(88)]))
+  expect(parsed.version).toBe(3); expect(parsed.initialEquipment?.length).toBe(692)
+  expect(parsed.records.slice(0, mutations.length).map(r => r.kind)).toEqual([4, 5, 6, 9, 9, 9, 10])
+  for (const [kind, data] of [[5, position], [5, botEquip], [7, entity]] as const) {
+    expect(() => parseGameplayReplay(Buffer.concat([old.subarray(0, 88), record(kind, data), old.subarray(88)]))).toThrow("historical")
+  }
+  const calls: unknown[] = [], memory = new WebAssembly.Memory({ initial: 1, maximum: 3 })
+  const exports: Record<string, any> = { memory, playsrc_alloc(size: number) { memory.grow(1); return 65536 }, playsrc_free(pointer: number, size: number) { calls.push(["free", pointer, size]) },
+    playsrc_team_select: (...args: unknown[]) => { calls.push(["team", ...args]); return 1 },
+    playsrc_player_set_position: (...args: unknown[]) => { calls.push(["position", ...args]); return 1 } }
+  for (const [name, kind, bytes] of [["playsrc_jump_configure", 6, course], ["playsrc_equipment_update", 9, botEquip], ["playsrc_entity_fire", 10, entity]] as const) {
+    exports.playsrc_alloc = () => 65536
+    if (memory.buffer.byteLength === 65536) memory.grow(1)
+    exports[name] = (handle: number, pointer: number, length: number) => {
+      expect(handle).toBe(0x20001); expect(Buffer.from(memory.buffer, pointer, length).equals(bytes)).toBe(true); return 1
+    }
+    replayMutation(exports, 0x20001, { kind, bytes })
+  }
+  replayMutation(exports, 0x20001, { kind: 4, bytes: mutations[0][1] })
+  replayMutation(exports, 0x20001, { kind: 5, bytes: position })
+  expect(calls.slice(-2)).toEqual([["team", 0x20001, 2], ["position", 0x20001, -12.5, 3, 96]])
+  exports.playsrc_entity_fire = () => 0
+  expect(() => replayMutation(exports, 0x20001, { kind: 10, bytes: entity })).toThrow("mutation 10 failed")
+  expect(calls.at(-1)).toEqual(["free", 65536, entity.length])
+  expect(() => replayMutation(exports, 1, { kind: 7, bytes: Buffer.alloc(4) })).toThrow("Invalid gameplay mutation")
+  position.writeFloatLE(NaN)
+  expect(() => replayMutation(exports, 1, { kind: 5, bytes: position })).toThrow("Invalid gameplay mutation")
+})
 test("authoritative replay retains full merged commands and rejects incomplete/order-corrupt evidence", () => {
   const bytes = fixture()
   expect(parseGameplayReplay(bytes).complete).toBe(true)

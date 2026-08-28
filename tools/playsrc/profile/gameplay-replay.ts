@@ -6,17 +6,39 @@ import type { Page, Worker } from "@playwright/test"
 export const REPLAY_BYTES = 4 * 1024 * 1024
 export type ReplayCheckpoint = { configurationSha256: string; configurationBytes: number; profile: number; generation: number }
 export type ReplayRecord = { kind: number; bytes: Buffer }
+export function validateReplayMutation(kind: number, data: Buffer) {
+  let valid = false
+  if (kind === 4) valid = data.length === 4 && data.readUInt32LE(0) >= 1 && data.readUInt32LE(0) <= 4
+  if (kind === 5) valid = data.length === 12 && [0, 4, 8].every(at => Number.isFinite(data.readFloatLE(at)))
+  if (kind === 6) valid = data.length >= 52 && data.length <= 65536 && data.toString("ascii", 0, 4) === "PJMP" && data.readUInt32LE(4) === 1
+    && 52 + data.readUInt32LE(48) * 16 === data.length
+  if (kind === 9) valid = (data.length === 693 && data[0] === 0 && data.subarray(1, 9).equals(Buffer.from("TFEQ\x01\0\0\0")))
+    || (data.length === 7 && data[0] === 1 && data[1]! >= 1 && data[1]! <= 9 && data[2]! <= 18)
+    || (data.length === 9 && data[0] === 2)
+  if (kind === 10 && data.length >= 8 && data.length <= 3078 && Number.isFinite(data.readFloatLE(0))) {
+    const fields = data.subarray(4).toString("latin1").split("\0")
+    valid = fields.length === 3 && fields[0]!.length > 0 && fields[1]!.length > 0 && fields.every(field => field.length <= 1024)
+  }
+  if (!valid) throw new Error("Invalid gameplay mutation")
+}
 export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
-  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || bytes.readUInt32LE(4) !== 2
+  if (bytes.length < 88 || bytes.length > REPLAY_BYTES || bytes.toString("ascii", 0, 4) !== "PGRP" || ![2, 3].includes(bytes.readUInt32LE(4))
     || bytes.readBigUInt64LE(72) !== 0n || bytes.readBigUInt64LE(80) !== 1n) throw new Error("Replay initial checkpoint is invalid")
+  const version = bytes.readUInt32LE(4), headerBytes = version === 3 ? 780 : 88
+  if (bytes.length < headerBytes || (version === 3 && !bytes.subarray(88, 96).equals(Buffer.from("TFEQ\x01\0\0\0")))) throw new Error("Replay equipment checkpoint is invalid")
+  const initialEquipment = version === 3 ? bytes.subarray(88, headerBytes) : undefined
   const records: ReplayRecord[] = []
-  let at = 88, observing = false, complete = false, tick = -1n, marks = 0
+  let at = headerBytes, observing = false, complete = false, tick = -1n, marks = 0
   while (at < bytes.length) {
     if (at + 8 > bytes.length) { if (!requireComplete) break; throw new Error("Partial replay record") }
     const length = bytes.readUInt32LE(at), kind = bytes.readUInt32LE(at + 4)
     if (length < 8 || length > 65596 || records.length > 16384) throw new Error("Replay record bound is invalid")
     if (at + length > bytes.length) { if (!requireComplete) break; throw new Error("Partial replay record") }
     const data = bytes.subarray(at + 8, at + length)
+    // V2 assigned kind 5 to two mutations and kind 7 to both Entity input and
+    // sample marks. Only four-byte marks are unambiguous (Entity input requires
+    // at least eight bytes). Never infer a mutation from historical payload shape.
+    if (version === 2 && (kind === 5 || (kind === 7 && data.length !== 4) || kind > 8)) throw new Error("Ambiguous or unsupported historical replay operation")
     if (kind === 1) {
       if (observing || data.length < 108 || data.readUInt32LE(20) + 24 !== data.length || !Number.isFinite(data.readDoubleLE(0)) || data.readUInt32LE(8) > 1) throw new Error("Invalid admitted observe command")
       observing = true
@@ -26,8 +48,9 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
     } else if (kind === 3) {
       if (!observing || data.length !== 32) throw new Error("Invalid observe publication")
       observing = false
-    } else if (kind === 4 || kind === 5 || kind === 6) {
-      if (observing || (kind === 4 && data.length !== 4) || (kind === 5 && data.length !== 12)) throw new Error("Invalid gameplay mutation")
+    } else if ([4, 5, 6, 9, 10].includes(kind)) {
+      if (observing) throw new Error("Invalid gameplay mutation during observe")
+      validateReplayMutation(kind, data)
     } else if (kind === 7) {
       if (observing || data.length !== 4 || data.readUInt32LE(0) !== marks || marks > 1) throw new Error("Invalid replay sample boundary")
       marks++
@@ -39,7 +62,7 @@ export function parseGameplayReplay(bytes: Buffer, requireComplete = true) {
     at += length
   }
   if (requireComplete && (!complete || observing || marks !== 2)) throw new Error("Replay is incomplete")
-  return { bspSha256: bytes.subarray(8, 40).toString("hex"), worldSha256: bytes.subarray(40, 72).toString("hex"), records, complete, marks }
+  return { version, headerBytes, initialEquipment, bspSha256: bytes.subarray(8, 40).toString("hex"), worldSha256: bytes.subarray(40, 72).toString("hex"), records, complete, marks }
 }
 
 /** Durable incremental journal: owner-generated commands, never a heap/checkpoint dump. */

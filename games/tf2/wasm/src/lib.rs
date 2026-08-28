@@ -4916,7 +4916,7 @@ pub extern "C" fn playsrc_team_select(handle: u32, choice: u32) -> u32 {
     };
     let success = session.select_team_choice(selected).is_ok();
     if success {
-        gameplay_replay::mutation(handle, 4, &choice.to_le_bytes());
+        gameplay_replay::mutation(handle, gameplay_replay::Mutation::Team, &choice.to_le_bytes());
     }
     u32::from(success)
 }
@@ -4957,6 +4957,7 @@ pub unsafe extern "C" fn playsrc_equipment_update(handle: u32, pointer: *const u
         for slot in slots().lock().expect("TF2 slots").iter_mut() {
             if let Some(session) = slot.session.as_mut() { session.restore_equipment(&saved).expect("validated local equipment"); }
         }
+        gameplay_replay::local_equipment_mutation(bytes);
         return 1;
     }
     let Some((index, generation)) = decode(handle) else { return 0; };
@@ -4972,7 +4973,7 @@ pub unsafe extern "C" fn playsrc_equipment_update(handle: u32, pointer: *const u
         },
         _ => return 0,
     };
-    if result.is_ok() { gameplay_replay::mutation(handle, 5, bytes); }
+    if result.is_ok() { gameplay_replay::mutation(handle, gameplay_replay::Mutation::Equipment, bytes); }
     u32::from(result.is_ok())
 }
 
@@ -5804,7 +5805,7 @@ pub unsafe extern "C" fn playsrc_jump_configure(
         return 0;
     }
     *session = candidate;
-    gameplay_replay::mutation(handle, 6, bytes);
+    gameplay_replay::mutation(handle, gameplay_replay::Mutation::Course, bytes);
     1
 }
 
@@ -5829,7 +5830,7 @@ pub extern "C" fn playsrc_player_set_position(handle: u32, x: f32, y: f32, z: f3
         for (chunk, value) in bytes.chunks_exact_mut(4).zip([x, y, z]) {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
-        gameplay_replay::mutation(handle, 5, &bytes);
+        gameplay_replay::mutation(handle, gameplay_replay::Mutation::Position, &bytes);
     }
     u32::from(success)
 }
@@ -5852,7 +5853,7 @@ pub unsafe extern "C" fn playsrc_entity_fire(handle: u32, pointer: *const u8, le
     let Some(slot) = slots.get_mut(index).filter(|slot| slot.generation == generation) else { return 0; };
     let Some(session) = slot.session.as_mut() else { return 0; };
     let success = session.fire_entity_input(target, input, value, delay).is_ok();
-    if success { gameplay_replay::mutation(handle, 7, bytes); }
+    if success { gameplay_replay::mutation(handle, gameplay_replay::Mutation::EntityInput, bytes); }
     u32::from(success)
 }
 
@@ -16278,6 +16279,7 @@ mod tests {
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);
         assert_eq!(playsrc_result_length(encode(0, 2)), 1);
+        gameplay_replay::tests::assert_mutations(encode(0, 2));
         assert_eq!(playsrc_dispose(encode(0, 2)), 1);
         let mut header = vec![0; playsrc_bsp::HEADER_BYTES];
         header[..4].copy_from_slice(b"VBSP");
