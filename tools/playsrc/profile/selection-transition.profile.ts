@@ -13,6 +13,36 @@ import { summarizeCpuProfile } from "./gameui-profile"
 import { captureProcessMemory } from "./process-memory"
 import { analyzeNativeSelectionPixels } from "./selection-transition-analysis"
 import { selectionLoadingControl } from "./selection-loading-control"
+import { realpath } from "node:fs/promises"
+
+test("minimal native selection capture owner diagnostic", async ({ page, baseURL }) => {
+  const { sourceCacheDir } = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
+  if (!directory || !baseURL || new URL(baseURL).hostname !== "127.0.0.1") throw new Error("Use the checked local selection runner")
+  const lockPath = path.join(sourceCacheDir,"evidence","tf2-browser-performance","chromium-profile.lock")
+  const lockBefore = JSON.parse(await readFile(lockPath,"utf8"))
+  const reader = await startupNativeReader(page,sourceCacheDir)
+  const observations: unknown[] = []
+  let failure: string | null = null
+  try {
+    const url = new URL(`/@fs/${repositoryRoot.replaceAll("\\", "/")}/packages/presentation/rendering/tests/fixtures/native-capture.html`,baseURL).href
+    await page.goto(url)
+    if (await startupConsoleIdle(sourceCacheDir)<2000) throw new Error("Native capture requires genuine idle")
+    const started=Date.now()
+    for(let index=0;index<6;index++) {
+      const record=await reader.read(path.join(directory,`native-owner-${index}.desktop.png`),index===0?"desktop":"window")
+      observations.push(record);requireStartupNative(record)
+      if(index<5) await page.waitForTimeout(Math.max(0,started+(index+1)*1000-Date.now()))
+    }
+    const lockAfter=JSON.parse(await readFile(lockPath,"utf8"))
+    expect(lockAfter).toEqual(lockBefore)
+    expect(Date.now()-started).toBeLessThan(10000)
+  } catch(error) {failure=String(error);throw error}
+  finally {
+    await writeFile(path.join(directory,"native-capture-owner.json"),JSON.stringify({privacy:"private-native-owner",sourceCacheDir:await realpath(sourceCacheDir),
+      lockPath:await realpath(lockPath),lock:lockBefore,controller:{pid:process.pid,parentPid:process.ppid},observations,records:reader.records,failure},null,2))
+    await reader.close()
+  }
+})
 
 const classes = ["scout", "sniper", "soldier", "demoman", "medic", "heavyweapons", "pyro", "spy", "engineer"] as const
 
@@ -265,6 +295,7 @@ test(`trusted selection ${team} class${identity} ${warm ? "warm" : "cold"} to ch
   } finally {
     clearInterval(loadingTimer)
     await loadingObservation
+    if(windows) await writeFile(path.join(directory,"selection-native-owner.json"),JSON.stringify({privacy:"private-native-owner",records:windows.records}))
     await writeFile(path.join(directory, "selection-loading-admission.json"), JSON.stringify({ records: loadingAdmissions,
       failure: loadingAdmissionFailure ? String(loadingAdmissionFailure) : null }))
     await writeFile(path.join(directory, "selection-loading-control.json"), JSON.stringify(loadingControl.stop()))
