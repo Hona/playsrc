@@ -36,7 +36,7 @@ test("exact static package: audible startup movie, menu and playable frame, cold
   const executable = process.env.PLAYSRC_STARTUP_BROWSER ?? playwright.chromium.executablePath()
   if (!path.isAbsolute(executable)) throw new Error("Static startup browser must name its exact installed executable")
   const width = process.platform === "win32" ? 1705 : 1280, height = process.platform === "win32" ? 1372 : 800
-  const child = externalEndpoint?undefined:spawn(executable, [`--user-data-dir=${profile}`, `--remote-debugging-port=${address.port}`, "--no-first-run", "--window-position=0,40", `--window-size=${width},${height}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] })
+  const child = externalEndpoint?undefined:spawn(executable, [`--user-data-dir=${profile}`, `--remote-debugging-port=${address.port}`, "--no-first-run", `--window-position=0,${process.platform==="win32"?0:40}`, `--window-size=${width},${height}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] })
   let launchError: unknown, browser: Awaited<ReturnType<typeof playwright.chromium.connectOverCDP>> | undefined
   let native: Awaited<ReturnType<typeof startupNativeReader>> | Awaited<ReturnType<typeof externalStartupNativeReader>> | undefined
   let packageRouting: Awaited<ReturnType<typeof installStaticPackageRouting>> | undefined
