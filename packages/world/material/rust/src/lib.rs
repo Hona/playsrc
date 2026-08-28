@@ -657,11 +657,12 @@ pub struct AdditiveSpriteState {
 pub fn additive_sprite_state(material: &Material) -> Result<Option<AdditiveSpriteState>, Error> {
     if material.shader != Shader::Sprite || material.particle.is_some()
         || integer_or(&material.first_parameters, b"$spriterendermode", 0)? != 5 { return Ok(None); }
+    let sprite=legacy_sprite::SpriteMaterial::compile(material)?;
     Ok(Some(AdditiveSpriteState {
-        srgb: !boolean_or(&material.first_parameters, b"$nosrgb", true)?,
-        vertex_color: !boolean_or(&material.first_parameters, b"$ignorevertexcolors", true)?,
-        color: color_or(&material.first_parameters, b"$color", [1.0; 3])?,
-        hdr_color_scale: float_or(&material.first_parameters, b"$hdrcolorscale", 1.0)?,
+        srgb: sprite.srgb,
+        vertex_color: !sprite.ignore_vertex_colors,
+        color: sprite.color,
+        hdr_color_scale: sprite.hdr_color_scale,
     }))
 }
 
@@ -805,7 +806,7 @@ fn static_state_with_alpha(
         alpha_test,
         alpha_test_function,
         alpha_test_reference,
-        cull: if features.no_cull || material.particle.is_some() {
+        cull: if features.no_cull || material.particle.is_some() || additive_sprite.is_some() {
             CullState::None
         } else {
             CullState::Back
@@ -1895,13 +1896,14 @@ mod tests {
 
     #[test]
     fn sprite_transadd_uses_shader_defaults_not_modulate_or_vertex_color_flags() {
-        let material = material(br#"Sprite { "$basetexture" "Effects/beam_generic_3" "$spriterendermode" "5" "$mod2x" "1" "$nocull" "1" }"#, Default::default()).unwrap();
+        let material = material(br#"Sprite { "$basetexture" "Effects/beam_generic_3" "$spriterendermode" "5" "$mod2x" "1" }"#, Default::default()).unwrap();
         let constants = additive_sprite_state(&material).unwrap().unwrap();
         assert!(!constants.srgb);
-        assert!(!constants.vertex_color);
+        assert!(constants.vertex_color);
         assert_eq!(constants.color, [1.0; 3]);
         assert_eq!(constants.hdr_color_scale, 1.0);
         let state = static_state(&material, TextureAlphaFacts { base: true }).unwrap();
+        assert_eq!(state.cull,CullState::None);
         assert_eq!(state.blend.source, BlendFactor::SourceAlpha);
         assert_eq!(state.blend.destination, BlendFactor::One);
         assert!(!state.depth_write);
