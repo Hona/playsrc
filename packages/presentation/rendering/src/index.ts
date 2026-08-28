@@ -3645,10 +3645,13 @@ class RendererOwner implements Renderer {
                }))
              }
            }
-          const material = new THREE.MeshBasicNodeMaterial({
+           const material = new THREE.MeshBasicNodeMaterial({
             ...materialOptions(resolved, materialState),
             side: sourceModelSide(request.modelFacing!.get(model.logicalPath.split("#")[0]!.toLowerCase())!),
-          })
+           })
+           // Sharing compiler graphs must not remove a template's existing
+           // geometry/texture admission work from the pre-Ready traversal.
+           material.userData.sourcePreparationIdentity = material.uuid
            let sampled=baseTexture?TSL.texture(baseTexture.texture,TSL.uv()):undefined
            if(sampled&&baseTexture?.input.sourceFormat===1)sampled=sampled.abgr
            else if(sampled&&baseTexture?.input.sourceFormat===11)sampled=sampled.gbar
