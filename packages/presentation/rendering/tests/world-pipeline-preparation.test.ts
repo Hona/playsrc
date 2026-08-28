@@ -33,3 +33,17 @@ test("failed water preparation restores clipping and target; dry maps do not add
   calls=0;await prepareWorldViewPipelines(renderer as unknown as THREE.WebGPURenderer,root,camera,scene,root,[])
   expect(calls).toBe(1);expect(root.enabled).toBe(true);water.dispose()
 })
+test("water preparation covers authored ordinary fog and height-fog's no-Three-fog shader",async()=>{
+  const scene=new THREE.Scene(),fog=new THREE.Fog(0xffffff,1,100),other=new THREE.Fog(0,5,200)
+  scene.fog=fog
+  let target:any=null
+  const seen:any[]=[]
+  const renderer={getRenderTarget:()=>target,setRenderTarget:(value:any)=>target=value,compileAsync:async()=>{seen.push([target,scene.fog])}}
+  const water=new THREE.RenderTarget(),clipping=createWorldClipGroup()
+  await prepareWorldViewPipelines(renderer as any,clipping,new THREE.Camera(),scene,clipping,[water],[null,other])
+  expect(seen).toEqual([[null,fog],[null,null],[water,fog],[water,null]])
+  expect(scene.fog).toBe(fog)
+  renderer.compileAsync=async()=>{throw new Error("compile failure")}
+  await expect(prepareWorldViewPipelines(renderer as any,clipping,new THREE.Camera(),scene,clipping,[water],[null])).rejects.toThrow("compile failure")
+  expect(scene.fog).toBe(fog);expect(target).toBeNull()
+})
