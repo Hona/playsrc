@@ -4,7 +4,7 @@ function pipelineIdentity(mesh: THREE.Mesh): string {
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
   const shaders = materials.map(material => [
     material.customProgramCacheKey(), material.transparent, material.side, material.blending,
-    material.depthWrite, material.depthTest, material.alphaTest,
+    material.depthWrite, material.depthTest, material.alphaTest, material.userData.sourcePreparationIdentity ?? "",
   ].join(":"))
   const attributes = Object.entries(mesh.geometry.attributes)
     .map(([name, attribute]) => `${name}:${attribute.itemSize}:${attribute.normalized}:${attribute.array.constructor.name}`)
