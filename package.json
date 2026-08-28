@@ -27,6 +27,7 @@
     "profile:deathnotice": "bun tools/playsrc/src/profile-runner.ts deathnotice",
     "profile:class-hud": "bun tools/playsrc/src/profile-runner.ts class-hud",
     "profile:class-selection": "bun tools/playsrc/src/profile-runner.ts class-selection",
+    "profile:selection-transition": "bun tools/playsrc/src/profile-runner.ts selection-transition",
     "profile:spy-cloak": "bun tools/playsrc/src/profile-runner.ts spy-cloak",
     "profile:gameplay": "bun tools/playsrc/src/profile-runner.ts gameplay",
     "profile:frame-budget": "bun tools/playsrc/src/profile-runner.ts frame-budget",

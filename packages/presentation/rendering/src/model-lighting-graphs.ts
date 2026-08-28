@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu"
 import * as TSL from "three/tsl"
-import type { SourceModelEyeUniforms, SourceModelLightingUniforms } from "./source-model-lighting"
+import { createSourceModelPhongUniforms, type SourceModelEyeUniforms, type SourceModelLightingUniforms, type SourceModelPhongState, type SourceModelPhongUniforms } from "./source-model-lighting"
 
 const reference = (path: string, type: string) => TSL.reference(`userData.${path}.value`, type) as ReturnType<typeof TSL.uniform>
 
@@ -48,6 +48,27 @@ class DrawLightingNode extends THREE.Node {
   }
 }
 
+const PHONG_FIELDS = ["exponent", "exponentFactor", "fresnel", "boost", "tint", "rimExponent", "rimBoost"] as const
+
+class DrawPhongNode extends THREE.Node {
+  declare readonly phong: SourceModelPhongUniforms
+
+  constructor() {
+    super("void")
+    this.updateType = "object"
+    Object.defineProperty(this, "phong", { value: Object.freeze(Object.fromEntries(PHONG_FIELDS.map(name =>
+      [name, TSL.uniform(null, name === "fresnel" || name === "tint" ? "vec3" : "float").before(this)],
+    ))) })
+  }
+
+  override build(builder: THREE.NodeBuilder): any { return super.build(builder, "void") }
+
+  override update({ object }: { object: THREE.Mesh }): void {
+    const values = object.userData.sourcePhong as SourceModelPhongUniforms
+    for (const name of PHONG_FIELDS) this.phong[name].value = values[name].value
+  }
+}
+
 /** One immutable graph family per scene/exposure/fog domain. Values are read
  * from the drawn primitive, not captured from the first actor using a shader.
  * The owner is scene-local, with an explicit handoff for an identical verified
@@ -63,6 +84,14 @@ export class ModelLightingGraphs {
       [name, reference(`sourceEye.${name}`, name === "origin" ? "vec3" : "vec4")]),
   )) as SourceModelEyeUniforms
   readonly #graphs = new Map<string, any>()
+  readonly phong = new DrawPhongNode().phong
+  readonly #phongValues = new WeakMap<SourceModelPhongState, SourceModelPhongUniforms>()
+
+  bindPhong(mesh: THREE.Mesh, state: SourceModelPhongState): void {
+    let values = this.#phongValues.get(state)
+    if (!values) { values = createSourceModelPhongUniforms(state); this.#phongValues.set(state, values) }
+    Object.defineProperty(mesh.userData, "sourcePhong", { value: values, configurable: true })
+  }
 
   get(key: string, create: () => any): any {
     let graph = this.#graphs.get(key)
@@ -81,7 +110,7 @@ export class ModelLightingGraphs {
     // Vector identities are draw values too. Do not retain a retired occurrence's
     // values through a verified graph handoff; the next draw binds them afresh.
     for (const node of [this.lighting.ambientEnabled, this.lighting.cameraPosition, ...this.lighting.ambient,
-      ...this.lighting.local.flatMap(light => Object.values(light))]) node.value = null
+      ...this.lighting.local.flatMap(light => Object.values(light)), ...Object.values(this.phong)]) node.value = null
   }
 }
 
@@ -99,7 +128,7 @@ export function bindModelLighting(mesh: THREE.Mesh, lighting: SourceModelLightin
 /** Replacing the bind-pose mesh with its skinned mesh does not create another
  * occurrence. Preserve its non-enumerable bindings without making them cloneable. */
 export function transferModelBindings(source: THREE.Mesh, target: THREE.Mesh): void {
-  for (const name of ["sourceLighting", "sourceEye", "sourceEnvironment"]) {
+  for (const name of ["sourceLighting", "sourceEye", "sourcePhong", "sourceEnvironment", "sourceBaseTexture", "sourceWarpTexture", "sourceExponentTexture", "sourceIrisTexture", "sourceAmbientOcclusionTexture"]) {
     const descriptor = Object.getOwnPropertyDescriptor(source.userData, name)
     if (descriptor) Object.defineProperty(target.userData, name, descriptor)
   }
@@ -111,16 +140,24 @@ export function modelEnvironmentShape(texture: THREE.CubeTexture | undefined): s
   return texture ? `${texture.type}:${texture.format}:${texture.colorSpace}:${texture.mapping}:${Number(texture.isRenderTargetTexture)}` : "none"
 }
 
-export function bindModelEnvironment(mesh: THREE.Mesh, texture: THREE.CubeTexture): void {
-  Object.defineProperty(mesh.userData, "sourceEnvironment", { value: texture, configurable: true })
+export type ModelTextureBindingName = "sourceEnvironment" | "sourceBaseTexture" | "sourceWarpTexture" | "sourceExponentTexture" | "sourceIrisTexture" | "sourceAmbientOcclusionTexture"
+
+export function bindModelTexture(mesh: THREE.Mesh, name: ModelTextureBindingName, texture: THREE.Texture): void {
+  Object.defineProperty(mesh.userData, name, { value: texture, configurable: true })
 }
 
-export function perObjectModelEnvironment(color: any, node: any): any {
+export function modelBaseTextureShape(texture: THREE.Texture, sourceFormat: number | null): string {
+  return `${sourceFormat}:${texture.type}:${texture.format}:${texture.colorSpace}:${texture.mapping}:${Number(texture.isRenderTargetTexture)}:${Number(texture.flipY)}:${Number((texture as any).isCubeTexture === true)}:${Number((texture as any).isData3DTexture === true)}:${Number((texture as any).isDataArrayTexture === true)}:${Number((texture as any).isVideoTexture === true)}`
+}
+
+export function perObjectModelTextures(color: any, bindings: readonly Readonly<{ name: ModelTextureBindingName; node: any }>[]): any {
   // TextureNode.setup selects its own updateType. A separate object event is
   // required; attaching onObjectUpdate directly to the sampler is overwritten
   // during shader construction for cubemaps without a UV matrix.
   return TSL.Fn(() => {
-    TSL.OnObjectUpdate(({ object }: { object: THREE.Mesh }) => { node.value = object.userData.sourceEnvironment })
+    TSL.OnObjectUpdate(({ object }: { object: THREE.Mesh }) => {
+      for (const { name, node } of bindings) node.value = object.userData[name]
+    })
     return color
   })()
 }

@@ -9,6 +9,7 @@ import { botAdmissionProfile, recordBotAdmission } from "./bot-admission-profile
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__, RESOURCE_ROOTS as __PLAYSRC_RESOURCE_ROOTS__ } from "virtual:playsrc-generation"
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, equipmentPipelinePoseRequests, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
+import { selectionTransitionMark, selectionTransitionDraw } from "./selection-transition-profile"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -1823,12 +1824,14 @@ export class Tf2Application {
       })
       await this.#showTeamSelection()
       await admission
+      selectionTransitionMark("initial-team-admitted", { generation: this.#generation })
       this.#requireOperation(operation)
       this.#preparingModelPipelines = true
       await Promise.all([this.#displayTask, this.#teamSelectionRenderTask, this.#classSelectionRenderTask])
       this.#requireOperation(operation)
       this.#advanceLoading("synchronizing-game-state")
       this.#snapshot = (await this.#initialPublication(this.#generation)).snapshot
+      selectionTransitionMark("initial-publication", { generation: this.#generation, team: this.#snapshot.team })
       if (this.#snapshot.objectives && (this.#flagCapturesPerRound !== 3 || this.#flagReturnOnTouch)) {
         this.#objectiveConfiguration = Object.freeze({
           capturesPerRound: this.#flagCapturesPerRound,
@@ -1852,6 +1855,7 @@ export class Tf2Application {
       this.#modelProbes = await this.#probePlayerModels(this.#artifacts)
       this.#viewmodelTimelineProbes = await this.#probeViewmodelTimelines(this.#artifacts)
       finishLoadPhase("initialProbes")
+      selectionTransitionMark("initial-probes-ready")
       const persistence = await this.#loaded.persistence
       this.#requireOperation(operation)
       finishLoadPhase("persistence")
@@ -1974,6 +1978,7 @@ export class Tf2Application {
     }
     const damageTexture=this.#artifacts.environment.textures.find(texture=>texture.material.toLowerCase()==="materials/vgui/damageindicator.vmt")
     if(!damageTexture)throw new Error("Authored TF2 damage indicator material is unavailable")
+    selectionTransitionMark("hud-construction-start")
     this.#hudIntegration = initializeTf2HudIntegration({
       root: this.#hudRoot,
       resources: this.#uiResources,
@@ -1992,6 +1997,7 @@ export class Tf2Application {
       },
     })
     this.#hudIntegration.setDeathNoticeTime(this.#deathNoticeTime)
+    selectionTransitionMark("hud-construction-end")
     const panels = this.#hudIntegration.snapshot().vgui.panels
     this.#hudRootCounts = Object.freeze({
       playerStatus: panels.filter((panel) => panel.name === "HudPlayerStatus").length,
@@ -2005,6 +2011,7 @@ export class Tf2Application {
       this.#classSelection.dispatch({ kind: "hide" })
       return
     }
+    selectionTransitionMark("class-construction-start")
     this.#classSelection = initializeTf2ClassSelectionIntegration({
       root: this.#classSelectionRoot,
       modelSurface: this.#canvas,
@@ -2037,6 +2044,7 @@ export class Tf2Application {
         })
       },
     })
+    selectionTransitionMark("class-construction-end")
   }
 
   async #showEquipment(playerClass?: Tf2Class): Promise<void> {
@@ -2244,6 +2252,7 @@ export class Tf2Application {
   }
 
   #classSelectionRequest(request: Tf2ClassSelectionRequest): void {
+    selectionTransitionMark("class-request", { identity: request.identity, generation: this.#generation })
     this.#selectionViewportEpoch += 1
     this.#pendingClassSelectionTeam = undefined
     const identity = request.identity
@@ -2259,11 +2268,13 @@ export class Tf2Application {
     this.#teamSelection?.dispatch({ kind: "hide" })
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
+    selectionTransitionMark("class-show-start", { initialJoin, team: this.#snapshot.team })
     this.#classSelection.dispatch({
       kind: "show",
       team: this.#snapshot.team,
       current: initialJoin ? null : this.#snapshot.class as Tf2ClassIdentity,
     })
+    selectionTransitionMark("class-show-end")
   }
 
   #renderClassSelection(): void {
@@ -2353,6 +2364,7 @@ export class Tf2Application {
     }))
       const result = await renderer.renderModelPanels(panels)
         if (generation !== this.#generation || revision !== this.#classSelectionRenderRevision) return
+        selectionTransitionDraw({ scene: "class", generation, revision, team: player.skin + 2, model: pose?.model })
         this.#set({ classSelectionModels: [`MenuBG:${background.model}:${background.skin}:${this.#classSelectionBackgroundPrimitives}`, ...result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`)].join("|"),
           classSelectionAnimation: pose ? JSON.stringify({ model: pose.model, activity: pose.activity, cycle: pose.cycle,
             flexVertices: pose.flex.reduce((count, primitive) => count + primitive.indices.length, 0),
@@ -2398,7 +2410,9 @@ export class Tf2Application {
     if (!this.#client || !this.#teamSelection) return
     const generation = this.#generation
     const selectionEpoch = ++this.#selectionViewportEpoch
+    selectionTransitionMark("team-request", { team: request.team, generation })
     const server = await this.#client.teamSelection(generation, request.team)
+    selectionTransitionMark("team-acknowledged", { team: server.localTeam, generation })
     if (generation !== this.#generation || this.#closed) return
     if (selectionEpoch === this.#selectionViewportEpoch && this.#snapshot && (server.localTeam === 2 || server.localTeam === 3)
       && this.#snapshot.team !== server.localTeam) {
@@ -4085,6 +4099,7 @@ export class Tf2Application {
   }
 
   async #prepareGameplayPipelines(team: number | undefined, prepareVisibleWorld: boolean): Promise<void> {
+    selectionTransitionMark("pipeline-start", { team, prepareVisibleWorld })
     const renderer = this.#renderer!, client = this.#client!, artifacts = this.#artifacts!, snapshot = this.#snapshot!
     const generation = this.#generation, camera = tf2Camera(snapshot, this.#yaw, this.#pitch), viewport = this.#viewport()
     const checkOwner = () => {
@@ -4100,11 +4115,14 @@ export class Tf2Application {
     })
     checkOwner()
     await renderer.prepareVisiblePipelines(camera, visibility.leaves)
+    selectionTransitionMark("visible-pipelines-ready")
     checkOwner()
     }
     await renderer.prepareParticlePipelines(camera, this.#mainFog(artifacts))
+    selectionTransitionMark("particle-pipelines-ready")
     checkOwner()
     await this.#prepareProjectilePipelines(camera)
+    selectionTransitionMark("projectile-pipelines-ready")
     checkOwner()
     // Replacement resets the simulation's team. Keep the admitted presentation
     // team's bounded panel/view variants; world players include both teams.
@@ -4114,7 +4132,9 @@ export class Tf2Application {
     ]
     if (!requests.length) return
     const byIdentity = new Map(requests.map(value => [value.request.identity, value]))
+    selectionTransitionMark("model-poses-request", { requests: requests.length })
     const poses = await client.models(generation, encodeModelPoseBatch(requests.map(value => ({ ...value.request, preparation: true }))))
+    selectionTransitionMark("model-poses-ready", { poses: poses.length })
     checkOwner()
     await renderer.prepareModelPipelines(poses.map(pose => {
       const preparation = byIdentity.get(pose.identity), artifact = artifacts.models.get(pose.model)
@@ -4124,6 +4144,7 @@ export class Tf2Application {
         identity: pose.identity, model: pose.model, skin: request.skin < artifact.skinCount ? request.skin : 0,
         position: request.lighting.origin, angles: request.lighting.angles, scale: 1, pose, modelLighting: pose.lighting, eyeStates: pose.eyes } }
     }), camera, this.#mainFog(artifacts))
+    selectionTransitionMark("pipeline-end")
     checkOwner()
   }
 
@@ -4836,6 +4857,7 @@ export class Tf2Application {
       profile.controlPoints=prepared.snapshot.controlPoints
       profile.soundscape=prepared.snapshot.soundscape
       profile.player={team:prepared.snapshot.team,class:prepared.snapshot.class,position:prepared.snapshot.position,viewAngleOffset:prepared.snapshot.viewAngleOffset,camera}
+      if (profile.captureSelectionTransitions === true) selectionTransitionDraw({ scene: "world", generation, team: prepared.snapshot.team, class: prepared.snapshot.class, lifecycle: prepared.snapshot.lifecycle })
       profile.combat={tick:prepared.snapshot.tick.toString(),health:prepared.snapshot.health,lifecycle:prepared.snapshot.lifecycle,
         scores:prepared.snapshot.scoreboard.players.map(player=>({...player,killstreak:player.kills,
           respawnTick:prepared.snapshot.bots.find(bot=>bot.identity===player.identity)?.respawnTick?.toString()??null}))}
@@ -5058,9 +5080,13 @@ export class Tf2Application {
         const client=this.#client
         if(!client||sample.generation!==this.#generation)continue
         activeGeneration=sample.generation
+        const selectionClass=this.#selectClass
         const sampledMovementX=this.#pointerMovementX,command=this.#command()
+        if (selectionClass !== undefined) selectionTransitionMark("class-command-sent", { generation: sample.generation, identity: selectionClass })
         this.#wasmCalls.observe++
         const publications=await client.observe(sample.generation,sample.nowSeconds,command,sample.suspended)
+        if (selectionClass !== undefined) selectionTransitionMark("class-command-acknowledged", { generation: sample.generation, identity: selectionClass,
+          publications: publications.map(value => ({ tick: value.snapshot.tick.toString(), class: value.snapshot.class, team: value.snapshot.team })) })
         if(this.#closed||sample.generation!==this.#generation||client!==this.#client)continue
         const profile=(globalThis as typeof globalThis&{__playsrcProfile?:Record<string,unknown>}).__playsrcProfile
         if(profile)profile.snapshotTransport=client.snapshotMetrics(sample.generation)

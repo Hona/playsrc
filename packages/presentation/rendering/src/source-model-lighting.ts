@@ -11,6 +11,11 @@ import type { ModelEyeState, ModelLightingInput } from "./model-lighting"
 export const sourceModelWorldNormal = TSL.normalWorldGeometry
 
 type VectorUniform = ReturnType<typeof TSL.uniform>
+export type SourceModelTexture = THREE.Texture | ReturnType<typeof TSL.texture>
+
+function sampleModelTexture(texture: SourceModelTexture, uv: any): any {
+  return (texture as any).isTextureNode === true ? (texture as any).sample(uv) : TSL.texture(texture as THREE.Texture, uv)
+}
 
 type LocalLightUniform = Readonly<{
   enabled: VectorUniform
@@ -64,7 +69,7 @@ export function updateSourceModelEyeUniforms(uniforms: SourceModelEyeUniforms, e
 }
 
 export function sourceEyeIrisNode(
-  iris: THREE.Texture,
+  iris: SourceModelTexture,
   eye: SourceModelEyeUniforms,
   dilation: number,
   refract: boolean,
@@ -76,7 +81,7 @@ export function sourceEyeIrisNode(
   const radius = centered.length().div(0.2).clamp(0, 1)
   const amount = scalar(Math.max(0, Math.min(1, dilation)) * 2.5 - 1.25)
   const uv = centered.mul(radius.sub(1).mul(amount).add(1)).add(0.5)
-  return TSL.texture(iris, uv)
+  return sampleModelTexture(iris, uv)
 }
 
 export function createSourceModelLightingUniforms(): SourceModelLightingUniforms {
@@ -148,13 +153,25 @@ export type SourceModelPhongState = Readonly<{
   rim: null | Readonly<{ exponent: number; boost: number; exponentTextureAlphaMask: boolean }>
 }>
 
+export type SourceModelPhongUniforms = Readonly<{
+  exponent: VectorUniform; exponentFactor: VectorUniform; fresnel: VectorUniform; boost: VectorUniform
+  tint: VectorUniform; rimExponent: VectorUniform; rimBoost: VectorUniform
+}>
+
+export function createSourceModelPhongUniforms(phong: SourceModelPhongState): SourceModelPhongUniforms {
+  return Object.freeze({ exponent: scalar(Math.max(phong.exponent, 0)), exponentFactor: scalar(phong.exponentFactor),
+    fresnel: TSL.uniform(new THREE.Vector3(...phong.packedFresnel)), boost: scalar(phong.boost),
+    tint: TSL.uniform(new THREE.Vector3(...phong.tint)), rimExponent: scalar(phong.rim?.exponent ?? 0), rimBoost: scalar(phong.rim?.boost ?? 0) })
+}
+
 export type SourceModelSurface = Readonly<{
   halfLambert: boolean
-  diffuseWarp?: THREE.Texture
-  exponentTexture?: THREE.Texture
+  diffuseWarp?: SourceModelTexture
+  exponentTexture?: SourceModelTexture
   phong?: SourceModelPhongState | null
+  phongUniforms?: SourceModelPhongUniforms
   eye?: Readonly<{
-    ambientOcclusion?: THREE.Texture
+    ambientOcclusion?: SourceModelTexture
     ambientOcclusionColor: readonly [number, number, number]
     glossiness: number
   }>
@@ -168,7 +185,7 @@ export type SourceModelSurface = Readonly<{
 export function sourceModelLightingNode(
   uniforms: SourceModelLightingUniforms,
   halfLambert: boolean,
-  diffuseWarp?: THREE.Texture,
+  diffuseWarp?: SourceModelTexture,
 ): any {
   const normal = sourceModelWorldNormal.normalize()
   return TSL.Fn(() => {
@@ -198,7 +215,7 @@ export function sourceModelLightingNode(
           ? rawDiffuse.mul(0.5).add(0.5).clamp(0, 1)
           : rawDiffuse.clamp(0, 1)
         if (diffuseWarp) {
-          diffuse = TSL.texture(diffuseWarp, TSL.vec2(diffuse, 0.5)).rgb.mul(2)
+          diffuse = sampleModelTexture(diffuseWarp, TSL.vec2(diffuse, 0.5)).rgb.mul(2)
         } else if (halfLambert) {
           diffuse = diffuse.pow(2)
         }
@@ -219,7 +236,7 @@ export function sourceModelSurfaceNode(
   const eye = uniforms.cameraPosition.sub(TSL.positionWorld).normalize()
   let lighting = sourceModelLightingNode(uniforms, state.halfLambert, state.diffuseWarp)
   if (state.eye?.ambientOcclusion) {
-    const occlusion = TSL.texture(state.eye.ambientOcclusion, TSL.uv()).rgb
+    const occlusion = sampleModelTexture(state.eye.ambientOcclusion, TSL.uv()).rgb
     lighting = lighting.mul(TSL.mix(TSL.uniform(new THREE.Vector3(...state.eye.ambientOcclusionColor)), TSL.vec3(1), occlusion))
   }
   let result = base.rgb.mul(lighting)
@@ -228,16 +245,8 @@ export function sourceModelSurfaceNode(
     // Authored material numbers are shader constants, not program variants.
     // Keep these nodes local to the material graph: another skin/class may use
     // the same compiled program while retaining different parameter values.
-    const parameters = {
-      exponent: scalar(Math.max(phong.exponent, 0)),
-      exponentFactor: scalar(phong.exponentFactor),
-      fresnel: TSL.uniform(new THREE.Vector3(...phong.packedFresnel)),
-      boost: scalar(phong.boost),
-      tint: TSL.uniform(new THREE.Vector3(...phong.tint)),
-      rimExponent: scalar(phong.rim?.exponent ?? 0),
-      rimBoost: scalar(phong.rim?.boost ?? 0),
-    }
-    const exponentSample = state.exponentTexture ? TSL.texture(state.exponentTexture, TSL.uv()) : undefined
+    const parameters = state.phongUniforms ?? createSourceModelPhongUniforms(phong)
+    const exponentSample = state.exponentTexture ? sampleModelTexture(state.exponentTexture, TSL.uv()) : undefined
     const exponent = exponentSample
       ? phong.exponentFactor !== 0
         ? exponentSample.r.mul(parameters.exponentFactor).add(1)
