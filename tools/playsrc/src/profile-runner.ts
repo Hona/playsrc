@@ -7,7 +7,7 @@ import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget } from "../profile/profile-target"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
-import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock, delegatedHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
@@ -302,16 +302,18 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
 }
 
 export async function runHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> {
-  const started = Date.now()
+  const entered = Date.now()
   const { profile, fresh, freshBrowser, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()
   const config = await loadLocalConfig(root)
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
+  const lockPath = path.join(evidence, "chromium-profile.lock")
+  const delegated = await delegatedHeadedProfileLock(lockPath,process.env.PLAYSRC_PROFILE_LOCK_DELEGATION,repositoryRoot,profile)
+  const started = delegated?.startedAt ?? entered
   const runId = `${profile}-${new Date(started).toISOString().replaceAll(":", "-")}-${randomUUID()}`
   const runDirectory = path.join(evidence, "runs", runId)
   await mkdir(runDirectory, { recursive: true })
   const configurationMilliseconds = Date.now() - configurationStarted
-  const lockPath = path.join(evidence, "chromium-profile.lock")
   const cancellation = new AbortController()
   // Five seconds of the unchanged total cap belong to cleanup, not sampling.
   const remaining = () => cancellation.signal.aborted ? 0 : Math.max(0, MAX_RUN_MILLISECONDS - 5_000 - (Date.now() - started))
@@ -377,7 +379,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     // Queue only while the selected workflow can still fit. Admission must not
     // spend its startup/sample/retention reservation waiting for another owner.
     const maximumWait = Math.min(Math.max(1, remaining() - profileMinimumRemainingMilliseconds(profile)), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : profile === "skinning-equivalence" ? 80_000 : MAX_RUN_MILLISECONDS)
-    lock = await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
+    lock = delegated ?? await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
       signal: cancellation.signal,
       onProgress: state => {
         observations.push(state)
@@ -493,7 +495,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       exitCode = 1
       if (outcome === "passed" || outcome === "deferred") outcome = "failed"
     } finally {
-      if (lock) await releaseHeadedProfileLock(lockPath, lock.token)
+      if (lock && !delegated) await releaseHeadedProfileLock(lockPath, lock.token)
       clearTimeout(deadline)
       clearTimeout(hardDeadline)
       process.off("SIGINT", cancel)
@@ -521,7 +523,8 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
           elapsedMilliseconds: finished - started,
           exitCode,
           timedOut,
-          windowsConsole,
+           windowsConsole,
+           consoleScope: delegated ? { ownerPid: delegated.pid, startedAt: delegated.startedAt, beforeProfilerMilliseconds: entered-started, releaseOwner: "local-job-parent" } : null,
           phases: Object.freeze({
             configurationMilliseconds,
             sourceIdentityMilliseconds,

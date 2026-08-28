@@ -8,6 +8,7 @@ import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 import { parseLocalPreparationStage } from "./prepare-local-stage"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const LIMIT = 175_000
 const SHA = /^[0-9a-f]{40}$/
@@ -68,9 +69,9 @@ export function localJobEnvironment(source: NodeJS.ProcessEnv, port?: number): N
   return env
 }
 
-async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, log?: string, timeout = LIMIT): Promise<string> {
+async function execute(command: string[], cwd: string, env: NodeJS.ProcessEnv, log?: string, timeout = LIMIT, windowsHide = true): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command[0]!, command.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
+    const child = spawn(command[0]!, command.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide })
     let output = "", diagnostic = "", timedOut = false
     const stream = log ? createWriteStream(log, { flags: "wx" }) : undefined
     let logFailure: unknown
@@ -193,14 +194,31 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
     ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", checkout, ...plan.command.slice(1)]
     : [process.execPath, ...plan.command]
   let failure: string | null = null
+  let consoleLock: Awaited<ReturnType<typeof acquireHeadedProfileLock>> | undefined
+  const consoleQueue: unknown[]=[]
+  const lockPath=path.join(config.sourceCacheDir,"evidence","tf2-browser-performance","chromium-profile.lock")
   try {
     // The shared profiler owns physical admission and its deadline. Do not
     // block this supervisor in a second synchronous console query.
     await phase("command")
-    await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
+    const env=localJobEnvironment(process.env,port)
+    let launched=command
+    if(plan.interactive&&process.platform==="win32") {
+      consoleLock=await acquireHeadedProfileLock(lockPath,args[1]!,Math.max(1,LIMIT-(Date.now()-startedAt)),{onProgress:state=>consoleQueue.push(state)})
+      env.PLAYSRC_PROFILE_LOCK_DELEGATION=JSON.stringify({...consoleLock,pid:process.pid,startedAt})
+      const quote=(value:string)=>`'${value.replaceAll("'","''")}'`
+      const script=`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; . ${quote(path.join(checkout,"tools/playsrc/windows-job-console.ps1"))} -Receipt ${quote(path.join(run,"console-owner.json"))}; & ${command.map(quote).join(" ")}; exit $LASTEXITCODE`
+      launched=["powershell.exe","-NoProfile","-NonInteractive","-WindowStyle","Hidden","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")]
+    }
+    await execute(launched, checkout, env, path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)), !consoleLock)
     await phase("verify-source")
     await assertCheckout(checkout, job)
   } catch (error) { failure = String(error) }
+  finally {if(plan.interactive&&process.platform==="win32"){
+    const consoleExitedEpoch=consoleLock?Date.now():null
+    if(consoleLock)await releaseHeadedProfileLock(lockPath,consoleLock.token)
+    await writeFile(path.join(run,"console-lock.json"),JSON.stringify({privacy:"private-native-owner",lockPath,pid:process.pid,startedAt,acquired:Boolean(consoleLock),...consoleLock,queue:consoleQueue,consoleExitedEpoch,releasedEpoch:consoleLock?Date.now():null}))
+  }}
   const result = { schema: "playsrc-local-job-result-v1", id, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome: failure ? "failed" : "passed", failure, run }
   await writeFile(path.join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx" })
   return result
