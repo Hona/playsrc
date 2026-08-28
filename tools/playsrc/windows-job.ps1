@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Status','Logs')][string]$Action = 'Run',
+  [ValidateSet('Run','Status','Logs','Doctor')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Task,
@@ -14,6 +14,15 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
+if ($Action -eq 'Doctor') {
+  $cargo = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo/bin/cargo.exe'
+  $env:CARGO_HOME = Join-Path $config.sourceCacheDir 'toolchains/rust/cargo'
+  $env:RUSTUP_HOME = Join-Path $config.sourceCacheDir 'toolchains/rust/rustup'
+  @{cargo=$cargo;exists=(Test-Path -LiteralPath $cargo);pathExt=$env:PATHEXT;version=(& $cargo --version)} | ConvertTo-Json -Compress
+  $probe = 'const p=process.argv[1]; const fs=require("node:fs"), cp=require("node:child_process"); console.log(JSON.stringify({pathKeys:Object.keys(process.env).filter(k=>k.toLowerCase()==="path"),PATHEXT:process.env.PATHEXT,stat:fs.statSync(p).isFile(),which:Bun.which(p)})); try {console.log(cp.execFileSync(p,["--version"],{encoding:"utf8"}))} catch(e){console.log(String(e))}; try {console.log(Bun.spawnSync([p,"--version"]).stdout.toString())} catch(e){console.log(String(e))}'
+  & $bun -e $probe $cargo
+  exit $LASTEXITCODE
+}
 if ($Action -ne 'Run') {
   $taskState = $null
   if ($Task) {
