@@ -16174,6 +16174,27 @@ mod tests {
         drop(guard);
         assert_eq!(playsrc_result_length(old), 0);
         assert_eq!(playsrc_result_length(encode(0, 2)), 1);
+        assert_eq!(playsrc_dispose(encode(0, 2)), 1);
+        let mut header = vec![0; playsrc_bsp::HEADER_BYTES];
+        header[..4].copy_from_slice(b"VBSP");
+        header[4..8].copy_from_slice(&20_i32.to_le_bytes());
+        let invalid_presentation = b"PTF2";
+        for retain in [0, 1] {
+            for (source, profile, expected) in [(b"".as_slice(), 3, 1), (header.as_slice(), 3, 2), (header.as_slice(), 0, 7)] {
+                for cached in [false, true] {
+                    let handle = unsafe {
+                        if cached {
+                            playsrc_compile_map_cached(source.as_ptr(), source.len(), profile, std::ptr::null(), 0, std::ptr::null(), invalid_presentation.as_ptr(), invalid_presentation.len(), retain)
+                        } else {
+                            playsrc_compile_map(source.as_ptr(), source.len(), profile, std::ptr::null(), 0, std::ptr::null(), retain)
+                        }
+                    };
+                    assert_eq!(playsrc_result_error(handle), expected);
+                    assert_eq!(playsrc_result_length(handle), 0);
+                    assert_eq!(playsrc_dispose(handle), 1);
+                }
+            }
+        }
     }
 
     #[test]
