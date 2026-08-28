@@ -2,6 +2,13 @@
 export const WINDOWS_OWNED_UI = String.raw`
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+function Read-UIBounds($rect) {
+ if ($rect.IsEmpty) {return $null}
+ foreach ($value in @($rect.X,$rect.Y,$rect.Width,$rect.Height)) {
+  if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) {return $null}
+ }
+ return @{x=$rect.X;y=$rect.Y;width=$rect.Width;height=$rect.Height}
+}
 function Read-OwnedUI([long]$windowId,[uint32]$processId) {
  $clock=[Diagnostics.Stopwatch]::StartNew()
  $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$windowId)
@@ -18,7 +25,7 @@ function Read-OwnedUI([long]$windowId,[uint32]$processId) {
   if ($name.Length -gt 256) {$name=$name.Substring(0,256)}
   if ($automation.Length -gt 128) {$automation=$automation.Substring(0,128)}
   $rect=$current.BoundingRectangle
-  $rows.Add(@{name=$name;automationId=$automation;controlType=$current.ControlType.ProgrammaticName;className=$current.ClassName;enabled=$current.IsEnabled;offscreen=$current.IsOffscreen;depth=$item.depth;runtimeId=$element.GetRuntimeId();bounds=@{x=$rect.X;y=$rect.Y;width=$rect.Width;height=$rect.Height}})
+  $rows.Add(@{name=$name;automationId=$automation;controlType=$current.ControlType.ProgrammaticName;className=$current.ClassName;enabled=$current.IsEnabled;offscreen=$current.IsOffscreen;depth=$item.depth;runtimeId=$element.GetRuntimeId();bounds=(Read-UIBounds $rect)})
   if ($item.depth -lt 8) {
    $child=$walker.GetFirstChild($element);$count=0
    while ($child -and $count -lt 24 -and $queue.Count -lt 48 -and $clock.ElapsedMilliseconds -lt 1500) {
@@ -37,7 +44,7 @@ function Allow-OwnedLocalPermission($ui,[string]$origin,[uint32]$processId,[long
  if ($origin -notmatch '^http://127\.0\.0\.1:[0-9]+$') {throw 'Permission origin is not the owned loopback application'}
  $expected=$origin+' wants to: Access other apps and services on this device'
  $prompt=@($ui.elements | Where-Object {$_.className -eq 'RootView' -and $_.controlType -eq 'ControlType.Window' -and $_.name -eq $expected})
- $buttons=@($ui.elements | Where-Object {$_.controlType -eq 'ControlType.Button' -and $_.name -eq 'Allow' -and $_.enabled -and !$_.offscreen})
+ $buttons=@($ui.elements | Where-Object {$_.controlType -eq 'ControlType.Button' -and $_.name -eq 'Allow' -and $_.enabled -and !$_.offscreen -and $_.bounds.width -gt 0 -and $_.bounds.height -gt 0})
  if ($prompt.Count -ne 1 -or $buttons.Count -ne 1 -or [StartupWindow]::GetForegroundWindow().ToInt64() -ne $windowId) {throw 'Observed local permission control differs'}
  $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$windowId)
  if ($root.Current.ProcessId -ne $processId) {throw 'Permission process changed'}
