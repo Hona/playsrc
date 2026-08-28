@@ -20,6 +20,7 @@ use std::{
 
 mod navigation;
 mod particles;
+mod texture_owner_inputs;
 
 const SOURCE_MEDIA_TYPE: &str = "application/octet-stream";
 const LEDGER_MEDIA_TYPE: &str = "application/vnd.playsrc.source-dependency-ledger+json";
@@ -2170,10 +2171,15 @@ fn main() -> Result<(), String> {
     let target = arguments
         .next()
         .ok_or_else(|| "target is required".to_owned())?;
+    let mut owner_inputs = None;
     let (verify_hdr, diagnose_presentation_bound) = match arguments.next().as_deref() {
         None => (false, false),
         Some("--verify-hdr") => (true, false),
         Some("--diagnose-presentation-bound") => (false, true),
+        Some("--texture-owner-inputs") => {
+            owner_inputs = Some(arguments.next().ok_or("texture owner input request is required")?);
+            (false, false)
+        }
         Some(_) => return Err("source bundle mode is malformed".to_owned()),
     };
     if arguments.next().is_some() {
@@ -2355,6 +2361,10 @@ fn main() -> Result<(), String> {
             pak,
         )
         .map_err(|error| error.to_string())?;
+    if let Some(request) = owner_inputs {
+        println!("{}", texture_owner_inputs::collect(&content, &cache, Path::new(&request))?);
+        return Ok(());
+    }
     let mut startup_sources = Vec::new();
     let mut startup_presentation = BTreeMap::new();
     for (path, bytes, sha256, provider, disposition) in [
