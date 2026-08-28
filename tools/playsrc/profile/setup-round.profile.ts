@@ -34,6 +34,11 @@ test("authentic setup countdown reaches a live local round with configured audio
     waitFor: async (expression,timeout)=>{await page.waitForFunction(expression,undefined,{timeout})},
     activateCurrentTab: ()=>page.bringToFront(),
   })
+  const lookBy = async (x: number) => {
+    expect(await page.evaluate(()=>document.pointerLockElement===document.querySelector("canvas.world-canvas"))).toBe(true)
+    await automation.player.lookBy({x,y:0})
+    expect(await page.evaluate(()=>(globalThis as any).__playsrcBrowserTestPointer?.mode??"native")).toBe("native")
+  }
   const save = async (name: string, value: unknown) => {
     await writeFile(testInfo.outputPath(`${name}.json`), JSON.stringify(value, null, 2))
   }
@@ -129,7 +134,7 @@ test("authentic setup countdown reaches a live local round with configured audio
       const yaw=Number(document.querySelector<HTMLElement>("main")!.dataset.cameraYaw)
       return ((yaw-270+180)%360+360)%360-180
     })
-    if (Math.abs(delta)>0.01) await automation.player.lookBy({x:delta/0.066,y:0})
+    if (Math.abs(delta)>0.01) await lookBy(delta/0.066)
   }
   try {
     await page.goto("/")
@@ -180,6 +185,9 @@ test("authentic setup countdown reaches a live local round with configured audio
     })
     await page.keyboard.up("KeyW"); await page.mouse.up()
     await save("live-sample",{...sample,summary:summarizeFrameTimes(sample.frames)})
+    // Look back over the traversed route for the endpoint pixels, rather than
+    // leaving the camera against the obstacle reached by the forward input.
+    await lookBy(180/0.066)
     await capture("movement-firing-bots")
     expect(sample.ticks/sample.seconds).toBeGreaterThan(65)
     expect(sample.after).not.toBe(sample.before)
