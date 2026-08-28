@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { TF2_CONFIGURED_STARTUP } from "@playsrc/game-tf2-browser/startup-presentation"
 import { TF2_MAP_LOADING, TF2_STAMP_BACKGROUND } from "@playsrc/game-tf2-browser/loading-presentation"
-import { BrowserConfigurationError, parseBrowserConfiguration, tf2SelectableMapNames } from "../src/config"
+import { BrowserConfigurationError, loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames } from "../src/config"
 import { tf2MapBsp } from "@playsrc/game-tf2-browser/maps"
 
 const object = (kind: "source-object" | "derived-object" | "source-root" | "catalog", value: string, mediaType = "application/octet-stream") => ({ kind, mediaType, byteLength: "1", sha256: value.repeat(64) })
@@ -20,6 +20,30 @@ const valid = Object.freeze({
 })
 
 describe("TF2 browser multi-map configuration", () => {
+  test("cache-busts the single configuration endpoint with the bundled release identity", async () => {
+    const base = process.env.BASE_URL
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window")
+    process.env.BASE_URL = "/tf2/"
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: valid.assetOrigin } } })
+    const request = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(valid))
+    try {
+      await loadBrowserConfiguration("a".repeat(64))
+      await loadBrowserConfiguration("b".repeat(64))
+      expect(request.mock.calls).toEqual(["a", "b"].map(build => [
+        `/tf2/playsrc-config.json?v=${build.repeat(64)}`,
+        { cache: "no-store", credentials: "same-origin", redirect: "error" },
+      ]))
+      await expect(loadBrowserConfiguration("invalid")).rejects.toThrow(BrowserConfigurationError)
+      expect(request).toHaveBeenCalledTimes(2)
+    } finally {
+      request.mockRestore()
+      if (base === undefined) delete process.env.BASE_URL
+      else process.env.BASE_URL = base
+      if (windowDescriptor) Object.defineProperty(globalThis, "window", windowDescriptor)
+      else Reflect.deleteProperty(globalThis, "window")
+    }
+  })
+
   test("admits explicitly prepared Viaduct only for local integration", () => {
     const integration = { ...valid, defaultTarget: "koth_viaduct", targets: [target("koth_viaduct", 1)] }
     const configuration = parseBrowserConfiguration(integration, valid.assetOrigin)

@@ -26,6 +26,14 @@ describe("TF2 production release", () => {
     expect(landing).toContain("<button type=\"button\" disabled>Half-Life 2</button>")
   })
 
+  test("does not retain HTML or configuration while hashed assets remain immutable", async () => {
+    const headers = await readFile(new URL("../../_headers", import.meta.url), "utf8")
+    for (const route of ["/tf2", "/tf2/", "/tf2/index.html", "/tf2/playsrc-config.json"]) {
+      expect(headers).toContain(`${route}\n  Cache-Control: no-store\n`)
+    }
+    expect(headers).toContain("/tf2/assets/*\n  Cache-Control: public, max-age=31536000, immutable")
+  })
+
   test("admits every checked configured map descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
     expect(parsed.defaultTarget).toBe("jump_beef")

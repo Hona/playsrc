@@ -1605,7 +1605,7 @@ export class Tf2Application {
   async start(): Promise<void> {
     try {
       await this.#viewportOwner.first()
-      const configuration = await loadBrowserConfiguration()
+      const configuration = await loadBrowserConfiguration(__PLAYSRC_APPLICATION_BUILD__)
       const profile = (globalThis as typeof globalThis & { __playsrcProfile?: Record<string, unknown> }).__playsrcProfile
       if (profile) profile.applicationGeneration = {
         bundle: __PLAYSRC_APPLICATION_BUILD__, configuration: configuration.applicationBuild,

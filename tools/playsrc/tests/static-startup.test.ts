@@ -52,6 +52,7 @@ test("exact static package catches a page/Worker/WASM mismatch before publicatio
     const expectedSha256=(await staticStartupPackage(current)).sha256
     await expect(staticStartupRouter({directory:current,previousDirectory:previous,assetDir:root,wasmFile,expectedSha256:'0'.repeat(64)})).rejects.toThrow('frozen candidate identity')
     const router=await staticStartupRouter({directory:current,previousDirectory:previous,assetDir:root,wasmFile,expectedSha256})
+    expect((await router.response(`https://playsrc.online/tf2/playsrc-config.json?v=${configuration.applicationBuild}`))!.body.toString()).toBe(JSON.stringify(configuration))
     expect((await router.response('https://playsrc.online/tf2'))!.body.toString()).toContain('index-test')
     expect(router.upgradeNavigations).toBe(0)
     router.warmUpgrade()
