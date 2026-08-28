@@ -1,4 +1,5 @@
 import path from "node:path"
+import { randomUUID } from "node:crypto"
 import { mkdir, writeFile } from "node:fs/promises"
 import { test } from "./application-test"
 import { requireStartupNative } from "./static-startup-gate"
@@ -7,8 +8,9 @@ import { startupNativeReader } from "./native-startup"
 
 test.use({ preserveStartupMovie: true })
 test("private read-only owned browser UI diagnosis", async ({ page }) => {
-  const config = await loadLocalConfig(), directory = path.join(config.sourceCacheDir, "profiles/owned-browser-ui")
+  const config = await loadLocalConfig(), directory = path.join(config.sourceCacheDir, "profiles/owned-browser-ui", randomUUID())
   await mkdir(directory, { recursive: true })
+  console.log(`PLAYSRC_PRIVATE_OWNED_UI ${directory}`)
   const reader = await startupNativeReader(page, config.sourceCacheDir), records: unknown[] = []
   try {
     records.push(await reader.diagnoseOwnedWindow(path.join(directory, "before.png")))

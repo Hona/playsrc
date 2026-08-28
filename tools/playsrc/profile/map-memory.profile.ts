@@ -1,5 +1,5 @@
 import { closeSync, openSync, writeSync } from "node:fs"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import path from "node:path"
@@ -94,21 +94,24 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   if (aliasCombat) await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})();` })
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const ownedUiDiagnostic = process.env.PROFILE_MEMORY_OWNED_UI_DIAGNOSTIC === "1"
+  const nativeEvidenceDirectory = path.join(output, "native", randomUUID())
   let permissionResolved = false
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
   const diagnoseUi = async (stage: string) => {
     if (!nativeReader) throw new Error("Owned UI diagnostic reader is unavailable")
-    const record = await nativeReader.diagnoseOwnedWindow(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-${stage}.png`))
-    await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-${stage}.json`), JSON.stringify({ diagnosticOnly: true, record }, null, 2))
+    await mkdir(nativeEvidenceDirectory, { recursive: true })
+    const filename = `${stage}-${randomUUID()}`
+    const record = await nativeReader.diagnoseOwnedWindow(path.join(nativeEvidenceDirectory, `${filename}.png`))
+    await writeFile(path.join(nativeEvidenceDirectory, `${filename}.json`), JSON.stringify({ diagnosticOnly: true, record }, null, 2))
   }
   const native = async () => { if (nativeReader) {
     const value = await nativeReader.read()
     try { requireStartupNative(value) } catch (error) {
       if (ownedUiDiagnostic || process.env.PROFILE_MEMORY_LOCAL_PERMISSION === "1") await diagnoseUi("guard-failure")
       if (process.env.PROFILE_MEMORY_LOCAL_PERMISSION !== "1" || permissionResolved) throw error
-      const action = await nativeReader.allowOwnedLocalPermission(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-permission-before.png`))
+      const action = await nativeReader.allowOwnedLocalPermission(path.join(nativeEvidenceDirectory, "permission-before.png"))
       permissionResolved = true
-      await writeFile(path.join(output, `${process.env.PROFILE_MEMORY_LABEL}-permission-action.json`), JSON.stringify(action, null, 2))
+      await writeFile(path.join(nativeEvidenceDirectory, "permission-action.json"), JSON.stringify(action, null, 2))
       await expect.poll(async () => (await nativeReader.read()).foreground, { timeout: 3_000 }).toBe(true)
       requireStartupNative(await nativeReader.read())
       await diagnoseUi("permission-after")
