@@ -204,6 +204,7 @@ export type Tf2HudPickupNotification = Readonly<{
 }>
 
 export type Tf2HudEvent =
+  | (Tf2HudEventIdentity & Readonly<{ kind: "loadout"; weapons: readonly Tf2HudWeapon[] }>)
   | (Tf2HudEventIdentity & Readonly<{ kind: "health"; health: Tf2HudHealth; cause: Tf2HudHealthCause }>)
   | (Tf2HudEventIdentity & Readonly<{
       kind: "ammo"

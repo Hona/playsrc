@@ -827,10 +827,11 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     })
     const publication = adaptSessionHud(unavailable("initial"), compactPublication(source), context)
     expect(publication.events).toMatchObject([
-      { tick: 9n, ordinal: 0, kind: "killfeed", notice: { killer: { name: "unnamed", team: 3 },
+      { tick: 9n, ordinal: 0, kind: "loadout" },
+      { tick: 9n, ordinal: 1, kind: "killfeed", notice: { killer: { name: "unnamed", team: 3 },
         victim: { name: "Chucklenuts", team: 2 }, customKill: 1, critical: true,
         weaponIdentity: { kind: "available", value: 12 } } },
-      { tick: 9n, ordinal: 1, kind: "pickup", notification: { pickupIdentity: 45, pickup: "health",
+      { tick: 9n, ordinal: 2, kind: "pickup", notification: { pickupIdentity: 45, pickup: "health",
         amount: { kind: "available", value: 25 } } },
     ])
     const binding = bindTf2Hud(publication)
@@ -1084,6 +1085,33 @@ describe("canonical all-class TF2 session HUD adapter", () => {
     expect(() => bindTf2Hud(publication)).not.toThrow()
     expect(value(bindTf2Hud(publication).values, "dialog-variable", "HudWeaponAmmo", "Ammo"))
       .toMatchObject({ value: { value: 4 } })
+  })
+
+  test("retires reload facts when coalesced native class changes replace the weapon roster", () => {
+    const soldier = compactSnapshot(1n, { weapon: 2, equippedItems: [nativeEquipment.inventory.find(entry => entry.item.definitionIndex === 513)!.item], loadout: [{ weapon: 2, reload: 0, clip: 2, reserve: 20, maximumClip: 4, maximumReserve: 20 }] })
+    const previous = bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(soldier), context)).facts
+    const reload = compactSnapshot(2n, { ...soldier, tick: 2n, loadout: [{ weapon: 2, reload: 2, clip: 3, reserve: 19, maximumClip: 4, maximumReserve: 20 }] })
+    const scout = compactSnapshot(3n, { class: 1, weapon: 4, health: 125, maximumHealth: 125,
+      loadout: [{ weapon: 4, reload: 0, clip: 6, reserve: 32, maximumClip: 6, maximumReserve: 32 }],
+      events: [{ kind: 1, detail: 1, subject: 0, auxiliary: 0, values: [0, 0, 0, 0] }, { kind: 3, detail: 4, subject: 0, auxiliary: 0, values: [0, 0, 0, 0] }] })
+    const returned = compactSnapshot(4n, { ...soldier, tick: 4n,
+      events: [{ kind: 1, detail: 3, subject: 0, auxiliary: 0, values: [0, 0, 0, 0] }, { kind: 3, detail: 2, subject: 0, auxiliary: 0, values: [0, 0, 0, 0] }] })
+    for (const frames of [[reload, scout], [reload, scout, returned]]) {
+      const publication = adaptSessionHud(availablePrevious(previous), compactPublication(...frames), context)
+      expect(() => bindTf2Hud(publication)).not.toThrow()
+      expect(publication.events.some(event => event.kind === "ammo" && event.tick === 2n && event.weapon === 2)).toBe(true)
+      expect(() => bindTf2Hud(adaptSessionHud(unavailable("initial"), compactPublication(...frames), context))).not.toThrow()
+    }
+    const replacement = compactSnapshot(3n, { weapon: 94, equippedItems: [nativeEquipment.inventory.find(entry => entry.item.definitionIndex === 1104)!.item],
+      loadout: [{ weapon: 94, reload: 0, clip: 4, reserve: 20, maximumClip: 4, maximumReserve: 20 }],
+      events: [{ kind: 5, detail: 94, subject: 85, auxiliary: 0, values: [200, 4, 20, 0] }] })
+    const replaced = adaptSessionHud(availablePrevious(previous), compactPublication(reload, replacement), context)
+    expect(() => bindTf2Hud(replaced)).not.toThrow()
+    expect(replaced.events.filter(event => event.kind === "loadout")).toHaveLength(1)
+    const stale = Object.freeze({ ...replaced, events: Object.freeze([...replaced.events,
+      { tick: 3n, ordinal: replaced.events.at(-1)!.ordinal + 1, kind: "ammo" as const, weapon: 2,
+        clip: tf2HudAvailable(3), reserve: tf2HudAvailable(19), reload: "insert" as const, cause: "reload" as const }]) })
+    expect(() => bindTf2Hud(stale)).toThrow("ammo event weapon is absent")
   })
 
   test("marks unavailable compact damage direction and preserves death ordering", () => {
