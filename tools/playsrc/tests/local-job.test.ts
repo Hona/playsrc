@@ -72,7 +72,7 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     if (process.platform === "win32") {
       const token = randomUUID()
       await writeFile(path.join(job.directory, `${token}-launch.log`), "Error: rejected before a command started")
-      const status = Bun.spawnSync(["powershell.exe", "-NoProfile", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Status", "-Job", job.id, "-Task", `playsrc-local-job-${token}`])
+      const status = Bun.spawnSync(["powershell.exe", "-NoProfile", "-File", path.join(source, "tools", "playsrc", "windows-job.ps1"), "-Action", "Result", "-Job", job.id, "-Task", `playsrc-local-job-${token}`], { timeout: 10_000 })
       expect(status.exitCode).toBe(0)
       const observed = JSON.parse(status.stdout.toString())
       expect(observed.result).toBeNull()
