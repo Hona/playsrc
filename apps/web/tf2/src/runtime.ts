@@ -947,6 +947,7 @@ export class Tf2Application {
       return
     }
     if (request.kind === "disconnect") {
+      this.#nextOperation()
       await this.#teardownGameplay()
       this.#gameUi?.dispatch({ kind: "teardown-confirmed" })
       this.#returnToMainMenu()
@@ -1243,6 +1244,7 @@ export class Tf2Application {
           const section = sourceIndex !== undefined
             ? await this.#client!.retainResourceSection(generation!, prior!, sourceIndex)
             : await this.#client!.decodeResources([{ descriptor: record.descriptor, bytes: record.bytes! }], generation)
+          if (signal.aborted) throw new DOMException("Resource loading was superseded", "AbortError")
           span(sourceIndex !== undefined ? "resource-retain" : "resource-decode", started, {
             group: index,
             bytes: section.byteLength,
@@ -6207,6 +6209,8 @@ export class Tf2Application {
     await this.#renderer?.dispose().catch(() => {})
     this.#renderer = undefined
     await this.#releaseEquipmentAdmissions()
+    await this.#resourceRuntime?.catch(() => {})
+    this.#resourceRuntime = undefined
     await this.#client?.shutdown().catch(() => {})
     this.#equipmentProfile?.close()
     this.#equipmentProfile = undefined
