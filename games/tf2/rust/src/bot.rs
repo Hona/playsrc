@@ -5599,12 +5599,23 @@ mod tests {
             assert!(due > 1);
             world.advance(&Floor, 1, human, &[], &mut random, None).unwrap();
             assert_eq!(world.bots.values().next().unwrap().next_repath_tick, due);
+            // A skipped think cannot prove that the action honored its timer.
+            // Exercise the first real scheduled update before the timer expires.
+            let period = locomotion::update_ticks(world.tick_interval);
+            assert!(period < due);
+            world.advance(&Floor, period, human, &[], &mut random, None).unwrap();
+            let bot = world.bots.values().next().unwrap();
+            assert_eq!(world.scheduler.last_update(bot.identity), period as i64);
+            assert_eq!(bot.next_repath_tick, due);
             world.advance(&Floor, due, human, &[], &mut random, None).unwrap();
             assert!(world.bots.values().next().unwrap().next_repath_tick > due);
-            // Explicit action invalidation still causes an immediate search.
+            // Explicit action invalidation still searches on the next think,
+            // not during the intervening locomotion-only tick.
             world.bots.values_mut().next().unwrap().next_repath_tick = 0;
             world.advance(&Floor, due + 1, human, &[], &mut random, None).unwrap();
-            assert!(world.bots.values().next().unwrap().next_repath_tick > due + 1);
+            assert_eq!(world.bots.values().next().unwrap().next_repath_tick, 0);
+            world.advance(&Floor, due + period, human, &[], &mut random, None).unwrap();
+            assert!(world.bots.values().next().unwrap().next_repath_tick > due + period);
         }
     }
 
