@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { WINDOWS_OWNED_UI, ownedDiagnosticWindow, assertOwnedEphemeralBrowser, WINDOWS_LOCAL_PERMISSION } from "../profile/windows-owned-ui"
 import { windowsForegroundMatches } from "../profile/native-startup"
+import { execFileSync } from "node:child_process"
 
 test("owned diagnostic captures cannot admit a popup or inspect an unrelated app", () => {
   const bounds = { left: 10, top: 10, width: 1296, height: 808 }
@@ -14,6 +15,13 @@ test("owned diagnostic captures cannot admit a popup or inspect an unrelated app
   expect(WINDOWS_OWNED_UI).not.toMatch(/Invoke\(|SetFocus|SendInput|SetForeground|Select\(|Toggle\(/)
   expect(WINDOWS_OWNED_UI).toContain("$rows.Count -lt 48")
   expect(WINDOWS_OWNED_UI).toContain("$clock.ElapsedMilliseconds -lt 1500")
+})
+
+test.skipIf(process.platform !== "win32")("native UI Automation empty bounds remain valid JSON in Windows PowerShell", () => {
+  const script = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';" + WINDOWS_OWNED_UI
+    + "$empty=Read-UIBounds ([System.Windows.Rect]::Empty);$finite=Read-UIBounds ([System.Windows.Rect]::new(1,2,3,4));@{empty=$empty;finite=$finite}|ConvertTo-Json -Compress"
+  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: 10000, windowsHide: true })
+  expect(JSON.parse(output)).toEqual({ empty: null, finite: { x: 1, y: 2, width: 3, height: 4 } })
 })
 
 test("normal permission resolution is restricted to an owned temporary automation profile and exact observed control", () => {
