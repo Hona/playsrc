@@ -195,10 +195,7 @@ export async function verifyCloudflareDeployment(target: string | undefined): Pr
 export async function deployCloudflare(target: string | undefined): Promise<void> {
   const applicationBuild = await buildStaticSite(target, { approved: true })
   const packaged = await staticStartupPackage(DIST_DIRECTORY)
-  let startup: unknown
-  try { startup = JSON.parse(process.env.PLAYSRC_STATIC_STARTUP_RECEIPT ?? "") }
-  catch { throw new DeploymentError("Approved release requires its exact headed static-package startup receipt") }
-  assertStaticStartupReceipt(startup, { packageSha256: packaged.sha256, wasmSha256: packaged.configuration.wasm.sha256 })
+  assertReleaseStartupAcceptance({ packageSha256: packaged.sha256, wasmSha256: packaged.configuration.wasm.sha256 })
   await verifyRemoteObjects(target)
   if ((await staticStartupPackage(DIST_DIRECTORY)).sha256 !== packaged.sha256) throw new DeploymentError("Static package changed after startup acceptance")
   await applyCloudflareInfrastructure()
@@ -207,6 +204,17 @@ export async function deployCloudflare(target: string | undefined): Promise<void
   if (result.code !== 0) throw new DeploymentError(`Wrangler deployment failed: ${result.stderr.trim()}`)
   await waitForDeployment(target, applicationBuild)
   console.log(JSON.stringify({ target, applicationBuild, url: `${TF2_APPLICATION_ORIGIN}/tf2` }))
+}
+
+export function assertReleaseStartupAcceptance(expected: { packageSha256: string; wasmSha256: string }, environment: NodeJS.ProcessEnv = process.env): void {
+  if (environment.PLAYSRC_RELEASE_VERSION === "0.0.11" && environment.PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT === "true") {
+    console.warn("User-authorized v0.0.11 startup receipt waiver: exact-package headed startup is not certified; asset, binding and package checks remain mandatory")
+    return
+  }
+  let startup: unknown
+  try { startup = JSON.parse(environment.PLAYSRC_STATIC_STARTUP_RECEIPT ?? "") }
+  catch { throw new DeploymentError("Approved release requires its exact headed static-package startup receipt") }
+  assertStaticStartupReceipt(startup, expected)
 }
 
 export function assertReleaseWasmInterface(compiled: Uint8Array, approved: Uint8Array): void {
