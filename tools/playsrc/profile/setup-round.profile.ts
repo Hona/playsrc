@@ -13,6 +13,8 @@ test("authentic setup countdown reaches a live local round with configured audio
   if (process.env.PLAYSRC_PROFILE_MANAGED !== "1" || !testInfo.outputPath("evidence").startsWith(`${path.resolve(sourceCacheDir)}${path.sep}`)) throw Error("Use the checked setup-round profile runner with evidence under sourceCacheDir")
   const map = process.env.PROFILE_MAP_TARGET ?? "pl_upward"
   const team = process.env.PROFILE_SETUP_TEAM ?? "blue"
+  const reproduceOrigin = process.env.PROFILE_SETUP_FAILURE_ORIGIN === "1"
+  if (reproduceOrigin && (map !== "pl_upward" || team !== "blue")) throw Error("The retained failed origin belongs to Upward BLU")
   if (!["pl_upward", "cp_dustbowl", "cp_gorge"].includes(map) || !["blue", "red"].includes(team)) throw Error("Unsupported setup acceptance target/team")
   const native = await macPageAdmission(page, sourceCacheDir)
   const admissions: unknown[] = []
@@ -140,6 +142,37 @@ test("authentic setup countdown reaches a live local round with configured audio
     })
     if (Math.abs(delta)>0.01) await lookBy(delta/0.066)
   }
+  const walkToFailedUpwardOrigin = async () => {
+    const directions = [["KeyW"],["KeyW","KeyA"],["KeyA"],["KeyS","KeyA"],["KeyS"],["KeyS","KeyD"],["KeyD"],["KeyW","KeyD"]]
+    // Match the retained failed live-round camera using ordinary input during
+    // real setup, not a camera override, teleport or authored respawn mutation.
+    await page.keyboard.down("ControlLeft")
+    try {
+      let reached=false
+      for(let step=0;step<100;step++) {
+        const state=await page.evaluate(()=>{
+          const d=document.querySelector<HTMLElement>("main")!.dataset
+          const [x,y]=d.cameraPosition!.split(",").map(Number)
+          const angle=Math.atan2(-1680-y!,-2592-x!)*180/Math.PI-Number(d.cameraYaw)
+          return {distance:Math.hypot(-2592-x!,-1680-y!),direction:((Math.round(angle/45)%8)+8)%8}
+        })
+        if(state.distance<2){reached=true;break}
+        const keys=directions[state.direction]!
+        for(const key of keys)await page.keyboard.down(key)
+        await page.waitForTimeout(state.distance>30?50:16)
+        for(const key of keys)await page.keyboard.up(key)
+        await page.waitForTimeout(180)
+      }
+      expect(reached,"native walk to retained failed Upward origin").toBe(true)
+    } finally { await page.keyboard.up("ControlLeft") }
+    await page.waitForTimeout(1000)
+    const delta=await page.evaluate(()=>{
+      const yaw=Number(document.querySelector<HTMLElement>("main")!.dataset.cameraYaw)
+      return ((yaw-315+180)%360+360)%360-180
+    })
+    if(Math.abs(delta)>0.01)await lookBy(delta/0.066)
+    await capture("matched-failure-origin")
+  }
   try {
     await page.goto("/")
     if (native) {
@@ -173,6 +206,7 @@ test("authentic setup countdown reaches a live local round with configured audio
       // real setup timer continues while ordinary native input positions us.
       await walkToGorgeExit()
     }
+    if(reproduceOrigin)await walkToFailedUpwardOrigin()
     await capture("authentic-setup")
     await page.waitForFunction(() => {
       const r = (globalThis as any).__playsrcProfile.round
