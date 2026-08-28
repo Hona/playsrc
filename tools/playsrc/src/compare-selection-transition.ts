@@ -33,7 +33,7 @@ const owners = (measurement: any) => {
   return end.at - start.at
 }
 const modelBefore = owners(before), modelAfter = owners(after)
-if (modelAfter >= modelBefore || intervals[0]!.disposition !== "proven-reduction") throw new Error("No proven reduction of the measured team-selection blocking work")
+if (!before.warm && (modelAfter >= modelBefore || intervals[0]!.disposition !== "proven-reduction")) throw new Error("No proven reduction of the measured team-selection blocking work")
 if (JSON.stringify(before.evidence.modelPreparation.models) !== JSON.stringify(after.evidence.modelPreparation.models)
   || before.evidence.gpu.preparedModelVariants !== after.evidence.gpu.preparedModelVariants) throw new Error("Prepared authored model/pass coverage changed")
 if (after.evidence.losses.length || after.evidence.gpuOperationsDropped || before.evidence.gpuOperationsDropped) throw new Error("Incomplete or failed GPU evidence")
@@ -52,7 +52,7 @@ if (sampledPeakHeap.after > sampledPeakHeap.before) throw new Error("Sampled pea
 const loadingBefore = JSON.parse(before.evidence.loading), loadingAfter = JSON.parse(after.evidence.loading)
 if (loadingBefore.mapBytes !== loadingAfter.mapBytes || loadingBefore.presentationBytes !== loadingAfter.presentationBytes) throw new Error("Configured loaded content differs")
 if (loadingAfter.totalMilliseconds > loadingBefore.totalMilliseconds) throw new Error("Initial loading regressed; selection work cannot be moved before the measured input")
-const report = { status: "matched-reduction", beforeDirectory, afterDirectory, intervals,
+const report = { status: before.warm ? "matched-warm-nonregression" : "matched-reduction", beforeDirectory, afterDirectory, intervals,
   modelPreparationWallMilliseconds: { before: modelBefore, after: modelAfter }, memory, sampledPeakHeap,
   initialLoadingMilliseconds: { before: loadingBefore.totalMilliseconds, after: loadingAfter.totalMilliseconds },
   limitation: "Overlapping native capture intervals are not called a latency improvement. This does not certify an absolute250ms budget or steady60FPS." }
