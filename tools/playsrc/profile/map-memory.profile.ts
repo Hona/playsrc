@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import path from "node:path"
 import { promisify } from "node:util"
-import { expect, test } from "./application-test"
+import { expect, test, guardStartupInput } from "./application-test"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
@@ -90,6 +90,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
   const inputDiagnostic = process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1"
   const nativeReader = lightmapAudit ? await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir) : null
   const native = async () => { if (nativeReader) requireStartupNative(await nativeReader.read()) }
+  if (inputDiagnostic) guardStartupInput(page, native)
   if (process.env.PROFILE_MEMORY_INPUT_DIAGNOSTIC === "1") await page.addInitScript(() => {
     const state = { events: [] as object[], dropped: 0 }
     ;(globalThis as any).__playsrcInputDiagnosis = state
@@ -396,6 +397,7 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
 
   const maps: Record<string, unknown>[] = []
   try {
+    if (inputDiagnostic) await native()
     await page.goto("/", { waitUntil: "load", timeout: 30_000 })
     const root = page.locator("main")
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 180_000 })
