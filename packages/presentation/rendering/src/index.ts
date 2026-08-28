@@ -279,10 +279,10 @@ export {
   type SurfaceLightingKind,
 } from "./runtime-map"
 
-const MAX_EFFECTS = 4_096
 // Native requests can expand into player, carried-item and wearable poses. This
 // bounded rendered-variant cache is distinct from the 128-request wire bound.
 const MAX_PREPARED_MODEL_VARIANTS = 192
+const MAX_EFFECTS = 4_096
 const MAX_DIMENSION = 8_192
 const HASH = /^[0-9a-f]{64}$/
 const SOURCE_MODEL_BIND_GEOMETRY = new WeakMap<THREE.BufferGeometry, Readonly<{ geometry: THREE.BufferGeometry; palette: Uint16Array }>>()

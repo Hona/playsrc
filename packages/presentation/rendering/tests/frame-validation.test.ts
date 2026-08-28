@@ -42,6 +42,9 @@ test("a decoded particle population is not charged against the scene-object budg
   expect(input.particles).toHaveLength(4096)
   expect(invalidFrameEnvelope(input,4096)).toBeUndefined()
   expect(invalidFrameEnvelope({...input,particles:particles(4099)},4096)).toBeUndefined()
+  // Configured Viaduct's observed envelope: 4078 snow particles, 39 models,
+  // 22 brushes. This tests counts only, not model payload admission or pixels.
+  expect(invalidFrameEnvelope({...input,particles:particles(4078),models:Array(39),brushModels:{...input.brushModels!,models:Array(22)}},4096)).toBeUndefined()
 })
 
 test("independent budgets still reject overflow and retired/replacement frames do not inherit population state",()=>{
