@@ -42,9 +42,10 @@ await mkdir(directory, { recursive: true })
 const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
 const lock = await acquireHeadedProfileLock(lockPath, "observe-content-experiment", 5000)
 const restore = installNodeWorkerHost()
-const runtime = await exactWasmReplayRuntime(source, directory, 2)
+let runtime: Awaited<ReturnType<typeof exactWasmReplayRuntime>> | undefined
 const deadline = setTimeout(() => process.exit(124), 170_000)
 try {
+  runtime = await exactWasmReplayRuntime(source, directory, 2)
   const e = await runtime.instantiate(await readFile(path.join(source, "tf2_wasm_bg.wasm")), 0)
   const copy = (bytes: Uint8Array) => { const pointer = e.playsrc_alloc(bytes.length) >>> 0; new Uint8Array(e.memory.buffer, pointer, bytes.length).set(bytes); return pointer }
   const sections: { pointer: number; length: number }[] = []
@@ -113,5 +114,5 @@ try {
   if (cpuProfile) await writeFile(path.join(directory, "cpu.json"), JSON.stringify(cpuProfile))
   await writeFile(path.join(directory, "result.json"), JSON.stringify(result))
   console.log(JSON.stringify({ directory, milliseconds, cpuMicroseconds, stages: result.stages.phases.map(({ name, wall }) => ({ name, wall })) }, null, 2))
-} finally { clearTimeout(deadline); await runtime.close(); restore(); await releaseHeadedProfileLock(lockPath, lock.token) }
+} finally { clearTimeout(deadline); await runtime?.close(); restore(); await releaseHeadedProfileLock(lockPath, lock.token) }
 process.exit(0)
