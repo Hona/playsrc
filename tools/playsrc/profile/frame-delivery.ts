@@ -126,6 +126,7 @@ export function installDeliveryObserver(host: any = globalThis) {
       const canvas = host.document.querySelector("canvas.world-canvas")
       if (!canvas) throw new Error("No gameplay surface")
       started = at; firstFrame = lastFrame = Number(canvas.dataset.displayFrame)
+      host.__playsrcDeliveryRpc?.start(at)
       before = state()
       frames = []; opportunities = []; lifecycle = []; missedPublications = 0; active = true
       observer = new host.MutationObserver(() => {
@@ -143,6 +144,7 @@ export function installDeliveryObserver(host: any = globalThis) {
       active = false; observer?.disconnect(); host.cancelAnimationFrame(raf)
       const response = movementInput && frames.find(frame => frame.cameraPosition !== movementInput!.cameraPosition)
       return { started, ended: at, firstFrame, lastFrame, before, after: state(), frames, raf: opportunities, lifecycle, missedPublications,
+        ...(host.__playsrcDeliveryRpc ? { rpc: host.__playsrcDeliveryRpc.stop() } : {}),
         movementInput, inputToChangedSubmissionMilliseconds: response && movementInput ? response.at - movementInput.at : null,
         inputCensoredMilliseconds: !response && movementInput ? at - movementInput.at : null,
         inputScope: "DOM input delivery to changed completed-frame camera publication, not physical input-to-photon latency",

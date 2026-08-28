@@ -4,5 +4,6 @@ export default { ...base, projects: [
   { name: "ordinary", metadata: { frameDeliveryMode: "ordinary" } },
   { name: "presentation", metadata: { frameDeliveryMode: "presentation" } },
   { name: "cpu", metadata: { frameDeliveryMode: "cpu" } },
+  { name: "rpc", metadata: { frameDeliveryMode: "rpc", diagnosticMinimumTick: 618 } },
   { name: "traced", metadata: { frameDeliveryMode: "traced" } },
 ] }
