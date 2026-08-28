@@ -3,5 +3,6 @@ const base = headedProfileConfiguration({ match: "upward-training-bots.profile.t
 export default { ...base, projects: [
   { name: "ordinary", metadata: { frameDeliveryMode: "ordinary" } },
   { name: "presentation", metadata: { frameDeliveryMode: "presentation" } },
+  { name: "cpu", metadata: { frameDeliveryMode: "cpu" } },
   { name: "traced", metadata: { frameDeliveryMode: "traced" } },
 ] }

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
-import { readFile, rename, rm, writeFile } from "node:fs/promises"
+import { readFile, rm, writeFile } from "node:fs/promises"
+import { replaceProfileLeaseFile } from "./profile-lease-rename"
 import path from "node:path"
 import { repositoryRoot } from "./config"
 import { fileFingerprint } from "./file-fingerprint"
@@ -28,6 +29,7 @@ export async function browserLaunchIdentity(launch: BrowserLaunch): Promise<stri
   return createHash("sha256").update(JSON.stringify(launch))
     .update(await fileFingerprint(import.meta.filename))
     .update(await fileFingerprint(path.join(import.meta.dir, "profile-browser-server.cjs")))
+    .update(await fileFingerprint(path.join(import.meta.dir, "profile-lease-rename.ts")))
     .update(await fileFingerprint(profileNodeExecutable()))
     .update(await fileFingerprint(path.join(repositoryRoot, "node_modules/@playwright/test/package.json")))
     .update(await fileFingerprint(path.join(repositoryRoot, "bun.lock"))).digest("hex")
@@ -37,23 +39,10 @@ export async function browserLease(filename: string, token: string, milliseconds
   const temporary = `${filename}.lease.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporary, JSON.stringify({ token, expiresAt: Date.now() + milliseconds, closeUnderLockToken }))
-    await publishBrowserRecord(temporary, `${filename}.lease`)
+    await replaceProfileLeaseFile(temporary, `${filename}.lease`)
   } finally { await rm(temporary, { force: true }) }
 }
 
-/** Windows readers can transiently deny replacement. Keep the old complete
- * record authoritative until rename succeeds; never delete it to work around
- * sharing violations or retry beyond one second. */
-export async function publishBrowserRecord(source: string, destination: string,
-  replace = rename, pause: (milliseconds: number) => Promise<unknown> = milliseconds => Bun.sleep(milliseconds)) {
-  for (let attempt = 0; ; attempt++) {
-    try { await replace(source, destination); return }
-    catch (error) {
-      if (attempt >= 19 || !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error
-      await pause(50)
-    }
-  }
-}
 
 export async function acquireBrowserRetirementLock(filename: string, token: string) {
   const lockPath = path.join(path.dirname(filename), "chromium-profile.lock")
@@ -185,7 +174,7 @@ if (import.meta.main) {
   else {
     try {
       await writeFile(temporary, JSON.stringify(owner))
-      await publishBrowserRecord(temporary, filename)
+      await replaceProfileLeaseFile(temporary, filename)
     } catch (error) {
       const holder = await optionalJson(path.join(path.dirname(filename), "chromium-profile.lock"))
       await stop(Boolean(lease?.closeUnderLockToken && holder?.token === lease.closeUnderLockToken))

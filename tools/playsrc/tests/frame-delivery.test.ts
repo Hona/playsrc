@@ -30,6 +30,7 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
   const presentation = { ...traced, mode: "presentation" }
   expect(compareDeliveryEvidence(ordinary, boundary, presentation, boundary).traced.completed.count).toBe(1)
   expect(() => compareDeliveryEvidence(ordinary, boundary, presentation, traceBoundary)).toThrow("instrumentation")
+  expect(() => compareDeliveryEvidence(ordinary, boundary, { ...presentation, mode: "cpu" }, boundary)).toThrow("Expected ordinary")
   for (const changed of [
     { ...traceBoundary, applicationCommit: "c".repeat(40) },
     { ...traceBoundary, configuration: { ...traceBoundary.configuration, renderLevel: 1 } },

@@ -47,9 +47,9 @@ test.afterEach(async () => {
 test("profile authored headed Upward offline-practice default roster and actual completed gameplay frames", async ({ page, context, profilePhases }, testInfo) => {
   const wallStarted = Date.now()
   const applicationRoot = process.cwd()
-  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "traced" | undefined
-  if (deliveryMode && !["ordinary", "presentation", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
-  const passiveDelivery = deliveryMode === "ordinary" || deliveryMode === "presentation"
+  const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "cpu" | "traced" | undefined
+  if (deliveryMode && !["ordinary", "presentation", "cpu", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
+  const passiveDelivery = deliveryMode === "ordinary" || deliveryMode === "presentation" || deliveryMode === "cpu"
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
@@ -443,15 +443,23 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   if (passiveDelivery) {
     expect(await page.evaluate(() => Boolean((globalThis as any).__playsrcProfile || (globalThis as any).__playsrcFrameProfiler))).toBe(false)
-    const presentationCdp = deliveryMode === "presentation" ? await context.browser()!.newBrowserCDPSession() : undefined
+    const presentationCdp = deliveryMode !== "ordinary" ? await context.browser()!.newBrowserCDPSession() : undefined
+    const diagnosticCdp = deliveryMode === "cpu" ? await context.newCDPSession(page) : undefined
+    if (diagnosticCdp) await diagnosticCdp.send("Performance.enable")
+    let diagnosticCpu: Awaited<ReturnType<typeof startMainCpuEvidence>> | undefined
+    let diagnosticWorkers: Awaited<ReturnType<typeof startWorkerCpuCapture>> | undefined
     const presentationCategories = ["disabled-by-default-display.framedisplayed", "blink.user_timing"]
     const processBefore = await presentationCdp?.send("SystemInfo.getProcessInfo")
     const processBoundaryStarted = performance.now()
     const memoryBefore = processBefore ? await captureProcessMemory(processBefore.processInfo) : undefined
-    const gpuEngines = processBefore && process.platform === "win32" ? await startGpuEngineCapture(processBefore.processInfo, seconds) : undefined
+    const gpuEngines = processBefore && process.platform === "win32" && deliveryMode === "presentation" ? await startGpuEngineCapture(processBefore.processInfo, seconds) : undefined
     if (presentationCdp) {
       const available = (await presentationCdp.send("Tracing.getCategories")).categories
       expect(presentationCategories.every(category => available.includes(category))).toBe(true)
+      if (diagnosticCdp) {
+        diagnosticWorkers = await startWorkerCpuCapture(presentationCdp, diagnosticCdp, page)
+        diagnosticCpu = await startMainCpuEvidence(diagnosticCdp, directory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint })
+      }
       await presentationCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
         traceConfig: { recordMode: "recordUntilFull", includedCategories: presentationCategories, traceBufferSizeInKb: 8192 } })
     }
@@ -477,6 +485,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
       sample, completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)),
       raf: deliveryTimeline(sample.started, sample.ended, sample.raf), nativeAdmission: nativeRecords(), nativeFailure: nativeFailure ? String(nativeFailure) : null }, null, 2))
     if (presentationCdp) {
+      const mainCpu = await diagnosticCpu?.stop()
+      if (diagnosticWorkers) {
+        const workers = await diagnosticWorkers.stop().then(captures => ({ captures, error: null as string | null }), error => ({ captures: [], error: String(error) }))
+        await retainEvidenceBlob(directory, Buffer.from(JSON.stringify({ ...workers, unsampledTargets: diagnosticWorkers.unsampledTargets })), "workers.json")
+        await diagnosticWorkers.close()
+      }
       const processAfter = await presentationCdp.send("SystemInfo.getProcessInfo")
       const processBoundaryEnded = performance.now()
       const memoryAfter = await captureProcessMemory(processAfter.processInfo)
@@ -490,10 +504,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
       finally { clearTimeout(timer) }
       expect(completion.stream).toBeTruthy()
       const raw = await drainTraceStream(presentationCdp, completion.stream!)
-      const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(completion.dataLossOccurred),
-        categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint,
+      const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(completion.dataLossOccurred), mainCpu,
+        categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter: await applicationBuildIdentity(applicationRoot), sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint, origin: new URL(page.url()).origin,
           mode: deliveryMode, nativeAdmission: nativeRecords(), applicationGeneration: (await (await page.request.get("/playsrc-config.json")).json()),
-          instrumentation: "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
+          instrumentation: diagnosticCpu ? "CPU diagnosis only: main/Worker samplers plus native display marks; not ordinary acceptance" : "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
         probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.missedPublications } })
       const compositor = summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined)
       await writeFile(path.join(directory, "delivery-presentation.json"), JSON.stringify({ evidence: evidence.artifact, complete: evidence.manifest.complete, compositor,
@@ -503,6 +517,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         gpuEngines: gpuEngines ? { ...await gpuEngines.finished, scope: gpuEngines.scope, startedEpoch: sample.startedEpoch, endedEpoch: sample.endedEpoch } : null }, null, 2))
       expect(evidence.manifest.complete).toBe(true)
       expect(compositor.evidence).toBe("chromium-compositor-presentation-trace")
+      await diagnosticCdp?.detach()
       await presentationCdp.detach()
     }
     expect(nativeFailure).toBeUndefined()

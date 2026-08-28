@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget } from "../profile/profile-target"
