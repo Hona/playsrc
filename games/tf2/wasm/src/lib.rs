@@ -11310,11 +11310,6 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
         "Player.KillSoundDefaultDing",
     ];
     let flag_targets: Vec<&str> = playsrc_tf2::audio::FLAG_SOUNDS.iter().map(|definition| definition.identity()).collect();
-    let countdown_targets: &[&str] = &[
-        "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
-        "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
-        "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds",
-    ];
     let item_targets: &[&str] = &[
         "HealthKit.Touch",
         "AmmoPack.Touch",
@@ -11352,11 +11347,11 @@ fn encode_audio_documents(out: &mut Vec<u8>, bundle: &BTreeMap<String, &[u8]>, g
     let timer_audio = koth || graph.entities.iter().any(|entity| entity.classname.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(b"team_round_timer")) && entity_scalar(entity, b"show_in_hud") == Some(b"1"));
     let mut voice_targets = Vec::new();
     if flags { voice_targets.extend_from_slice(&flag_targets); }
-    if timer_audio { voice_targets.extend_from_slice(countdown_targets); }
+    if timer_audio { voice_targets.extend_from_slice(playsrc_tf2::audio::TIMER_VOICE_SOUNDS); }
     if control_points { voice_targets.extend(playsrc_tf2::control_point::VOICE_SOUNDS.iter().map(|definition| definition.identity())); }
     if !voice_targets.is_empty() { documents.push(("scripts/game_sounds_vo.txt", &voice_targets)); }
     let mut round_targets = if flags || timer_audio { item_and_round_targets.to_vec() } else { item_targets.to_vec() };
-    if timer_audio { round_targets.push("Game.Overtime"); }
+    if timer_audio { round_targets.extend_from_slice(playsrc_tf2::audio::TIMER_GENERAL_SOUNDS); }
     if control_points { round_targets.extend(playsrc_tf2::control_point::GENERAL_SOUNDS.iter().map(|definition| definition.identity())); }
     documents.push(("scripts/game_sounds.txt", &round_targets));
     for (_, path, _) in playsrc_tf2::audio::CONFIGURED_SOUNDS {
@@ -11443,6 +11438,36 @@ fn sound_precache_absences(bundle: &BTreeMap<String, &[u8]>) -> Result<Vec<Strin
         || path.contains('\\') || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
         || bundle.contains_key(path) || !seen.insert(path)) { return Err(()); }
     Ok(paths)
+}
+
+#[cfg(test)]
+#[test]
+fn payload_timer_audio_includes_setup_countdown_without_control_point_audio() {
+    let scripts = playsrc_tf2::SoundDefinition::NATIVE.iter().map(|sound| sound.identity())
+        .chain(playsrc_tf2::audio::CONFIGURED_SOUNDS.iter().map(|(name, _, _)| *name))
+        .chain(["Announcer.TimeAddedForEnemy", "Announcer.TimeAwardedForTeam"])
+        .chain(["TFPlayer.CritHit", "Player.HitSoundDefaultDing", "Player.KillSoundDefaultDing"])
+        .chain(["Default.BulletImpact", "Concrete.BulletImpact", "Wood.BulletImpact", "SolidMetal.BulletImpact", "Dirt.BulletImpact", "Sand.BulletImpact", "Glass.BulletImpact", "Flesh.BulletImpact"])
+        .map(|name| format!("\"{name}\" {{ \"wave\" \"fixture.wav\" }}\n")).collect::<String>();
+    let mut bundle = BTreeMap::new();
+    for path in ["scripts/game_sounds_weapons.txt", "scripts/game_sounds_player.txt", "scripts/game_sounds_physics.txt", "scripts/game_sounds.txt", "scripts/game_sounds_vo.txt"]
+        .into_iter().chain(playsrc_tf2::audio::CONFIGURED_SOUNDS.iter().map(|(_, path, _)| *path)) {
+        bundle.insert(path.to_owned(), b"\"unused\" {}".as_slice());
+    }
+    bundle.insert("scripts/game_sounds_weapons.txt".to_owned(), scripts.as_bytes());
+    bundle.insert("scripts/game_sounds_manifest.txt".to_owned(), b"\"game_sounds_manifest\" {}".as_slice());
+    bundle.insert("scripts/soundmixers.txt".to_owned(), b"".as_slice());
+    bundle.insert(playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_PATH.to_owned(), playsrc_tf2::audio::SOUND_PRECACHE_ABSENCES_HEADER.as_bytes());
+    for timer in [false, true] {
+        let entities = if timer { br#"{"classname" "team_control_point_master"} {"classname" "team_train_watcher"} {"classname" "team_round_timer" "show_in_hud" "1"}"#.as_slice() } else { b"".as_slice() };
+        let graph = playsrc_entity::parse(entities, playsrc_entity::Limits::default()).unwrap();
+        let mut bytes = Vec::new();
+        encode_audio_documents(&mut bytes, &bundle, &graph).unwrap();
+        for name in ["Announcer.RoundBegins60Seconds", "Announcer.RoundBegins1Seconds", "Announcer.RoundEnds60seconds", "Ambient.Siren"] {
+            assert_eq!(bytes.windows(name.len()).any(|value| value == name.as_bytes()), timer, "{name}");
+        }
+        assert!(!bytes.windows(b"Hud.PointCaptured".len()).any(|value| value == b"Hud.PointCaptured"));
+    }
 }
 
 #[cfg(test)]

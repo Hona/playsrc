@@ -27,6 +27,19 @@ pub const FLAG_SOUNDS: &[SoundDefinition] = &[
 pub const SOUND_PRECACHE_ABSENCES_PATH: &str = "playsrc/audio-precache-absences.txt";
 pub const SOUND_PRECACHE_ABSENCES_HEADER: &str = "playsrc-audio-precache-absences-v1\n";
 
+/// CTeamRoundTimer::Precache: setup and normal countdowns share the timer's
+/// closure even on payload maps, which do not use the control-point runtime.
+pub const TIMER_VOICE_SOUNDS: &[&str] = &[
+    "Announcer.RoundEnds60seconds", "Announcer.RoundEnds30seconds", "Announcer.RoundEnds10seconds",
+    "Announcer.RoundEnds5seconds", "Announcer.RoundEnds4seconds", "Announcer.RoundEnds3seconds",
+    "Announcer.RoundEnds2seconds", "Announcer.RoundEnds1seconds",
+    "Announcer.RoundBegins60Seconds", "Announcer.RoundBegins30Seconds", "Announcer.RoundBegins10Seconds",
+    "Announcer.RoundBegins5Seconds", "Announcer.RoundBegins4Seconds", "Announcer.RoundBegins3Seconds",
+    "Announcer.RoundBegins2Seconds", "Announcer.RoundBegins1Seconds",
+    "Announcer.TimeAdded", "Announcer.TimeAddedForEnemy", "Announcer.TimeAwardedForTeam",
+];
+pub const TIMER_GENERAL_SOUNDS: &[&str] = &["Game.Overtime", "Game.YourTeamWon", "Game.YourTeamLost", "Game.Stalemate", "Ambient.Siren"];
+
 #[cfg(test)]
 mod native_tests {
     use super::*;
