@@ -31,6 +31,7 @@ import { auditEngineerMenus } from "./engineer-menu-audit"
 import { auditSpriteOrientation } from "./sprite-orientation-audit"
 import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
+import { auditDrawPlaneParity } from "./draw-plane-parity"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -386,6 +387,13 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await checkNativeWindow(nativeScreenshot ?? undefined)
   await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
   if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
+  const auditParity = () => auditDrawPlaneParity(page, canvas, directory, label, process.env.PROFILE_DRAW_LIGHTING_PARITY === "1"
+    || process.env.PROFILE_DRAW_LIGHTING_PARITY_ONLY === "1", async phase => {
+      await checkNativeWindow(nativeReader ? path.join(directory, `${label}-parity-${phase}.desktop.png`) : undefined)
+      await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
+      if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
+    })
+  if (process.env.PROFILE_DRAW_LIGHTING_PARITY_ONLY === "1") { await auditParity(); return }
   if (process.env.PROFILE_ENGINEER_UI_ONLY === "1") {
     await auditEngineerMenus(page, root, directory, label, combatCommand)
     await checkNativeWindow(nativeReader ? path.join(directory, `${label}-ui-after.desktop.png`) : undefined)
@@ -1100,54 +1108,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
   if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1" || process.env.PROFILE_DRAW_LIGHTING_PARITY === "1") {
-    // Install only after all active sampling and memory extraction. Compare
-    // actual GPU color/depth/normal planes with the reference GPU upload path
-    // without changing simulation cadence or the measured performance window.
-    const lightingParity = process.env.PROFILE_DRAW_LIGHTING_PARITY === "1"
-    await page.evaluate(async ({ url, lightingParity }) => {
-      const module = await import(/* @vite-ignore */ url)
-      ;(globalThis as any).__skinningEvidence = lightingParity ? module.installDrawLightingEvidence() : module.installSkinningEvidence()
-    }, { url: `/@fs/${repositoryRoot}/packages/presentation/rendering/src/${lightingParity ? "draw-lighting-evidence" : "skinning-evidence"}.ts`, lightingParity })
-    const records = []
-    for (const pass of ["main", "viewmodel"]) {
-      if (pass === "main") {
-        // The performance input sequence can finish facing an empty wall. Only
-        // this post-sample correctness capture uses an aligned live-bot camera.
-        await page.evaluate(() => {
-          const profile = (globalThis as any).__playsrcProfile
-          const bot = profile.bots.find((bot: any) => bot.lifecycle === 1)
-          if (!bot) throw new Error("No live bot for visible palette parity")
-          const yaw = bot.yawDegrees * Math.PI / 180
-          profile.displacementCameraOverride = {
-            position: [bot.position[0] + Math.cos(yaw) * 64, bot.position[1] + Math.sin(yaw) * 64, bot.position[2] + 48],
-            yawDegrees: bot.yawDegrees + 180, pitchDegrees: 0,
-          }
-        })
-        await page.waitForFunction(() => document.querySelector<HTMLElement>(".world-canvas")?.dataset.displayCameraPosition
-          === (globalThis as any).__playsrcProfile.displacementCameraOverride.position.join(","), undefined, { timeout: 5_000 })
-      }
-      const record = await page.evaluate(async ({ label, pass }) => Promise.race([
-        (globalThis as any).__skinningEvidence.capture(label, pass),
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`no skinned ${pass} pass`)), 8_000)),
-      ]), { label, pass }) as any
-      records.push(record)
-      if (lightingParity) {
-        expect(record.lightingDraws).toBeGreaterThan(0)
-        expect(record.lightingValues).toBe(record.lightingDraws * 44)
-      }
-      await writeFile(path.join(directory, `${label}-skinning-parity.json`), JSON.stringify(records, null, 2))
-      expect(record.planes).toHaveLength(3)
-      for (const plane of record.planes) {
-        expect(plane.mismatches, `${pass}/${plane.plane}`).toBe(0)
-        expect(plane.referenceSha256).toBe(plane.sha256)
-        if (lightingParity) expect(plane.identicalDrawOrder).toBe(true)
-        if (plane.plane === "color") expect(plane.actorPixels).toBeGreaterThan(40)
-        if (plane.plane === "depth") expect(plane.channels[0]).toBeGreaterThan(1)
-      }
-      await writeFile(path.join(directory, `${label}-skinning-${pass}.png`), await canvas.screenshot({ timeout: 5_000 }))
-      await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
-    }
-    await page.evaluate(() => { (globalThis as any).__skinningEvidence.dispose(); delete (globalThis as any).__skinningEvidence })
+    // Strictly after sampling and memory extraction; never rerun an unchanged
+    // expensive sample to iterate on the differential correctness oracle.
+    await auditParity()
   }
   if (acceptance && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
