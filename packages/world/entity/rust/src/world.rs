@@ -629,6 +629,9 @@ pub struct RuntimeEntity {
     pub render: EntityRenderState,
 }
 
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct EntityCollisionState {pub transform:Transform,pub enabled:bool}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedFieldState {
     pub key: Vec<u8>,
@@ -696,8 +699,7 @@ pub enum BlockContactKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldCommand {
     Spawn(Entity),
-    /// Map loading/recreation creates the complete hierarchy before activation.
-    SpawnMapEntities(Vec<Entity>),
+    SpawnMapEntities { definitions:Vec<Entity>,excluded_sources:Vec<usize> },
     Input(InputRecord),
     QueueInput { input: InputRecord, delay: f32 },
     Contact(ContactRecord),
@@ -1119,31 +1121,26 @@ impl EntityWorld {
             config: Arc::new(config),
         };
         let mut batch = TransitionBatch::default();
-        let skipped = template_prototype_indices(graph)?;
-        for definition in ordered_definitions(&graph.entities, &skipped, &world.config.spawn_priorities) {
-            world.spawn_definition(definition.clone(), &mut batch)?;
-        }
-        world.refresh_projected_fields();
-        world.install_initial_attachments(None)?;
-        world.resolve_initial_parents(&world.state.creation_order.clone(), &mut batch)?;
-        world.capture_templates(graph)?;
-        world.link_path_nodes()?;
-        let handles = world.state.creation_order.clone();
-        for handle in handles {
-            if let Some(entity) = world.entity_mut(handle) {
-                entity.lifecycle = Lifecycle::Activated;
-            }
-            world.push_transition(
-                &mut batch,
-                Transition::Lifecycle {
-                    entity: handle,
-                    state: Lifecycle::Activated,
-                },
-            )?;
-            world.schedule_activation(handle, &mut batch)?;
-        }
+        world.spawn_map_definitions(&graph.entities,&[],&mut batch)?;
         world.state.revision = 1;
         Ok((world, batch))
+    }
+
+    fn spawn_map_definitions(&mut self,definitions:&[Entity],excluded:&[usize],batch:&mut TransitionBatch)->Result<(),RuntimeFailure>{
+        let mut skipped=template_prototype_indices(definitions)?;skipped.extend(excluded.iter().copied());
+        let mut created=Vec::new();
+        for definition in ordered_definitions(definitions,&skipped,&self.config.spawn_priorities){created.push(self.spawn_definition(definition.clone(),batch)?);}
+        self.refresh_projected_fields();
+        self.install_initial_attachments(&created)?;
+        self.resolve_initial_parents(&created,batch)?;
+        self.capture_templates(definitions,&created)?;
+        self.link_path_nodes()?;
+        for handle in created {
+            self.entity_mut(handle).expect("spawned map entity").lifecycle=Lifecycle::Activated;
+            self.push_transition(batch,Transition::Lifecycle{entity:handle,state:Lifecycle::Activated})?;
+            self.schedule_activation(handle,batch)?;
+        }
+        Ok(())
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -1267,6 +1264,29 @@ impl EntityWorld {
         (slot.generation == handle.generation)
             .then_some(slot.entity.as_deref())
             .flatten()
+    }
+
+    pub fn collision_state(&self,handle:EntityHandle)->Option<EntityCollisionState>{
+        let entity=self.entity(handle)?;
+        let enabled=match &entity.behavior{
+            BehaviorState::Brush(brush)=>match brush.solidity{BrushSolidity::Never=>false,BrushSolidity::Always=>true,BrushSolidity::Toggle=>brush.enabled},
+            BehaviorState::DynamicProp(prop)=>prop.collision_enabled,
+            BehaviorState::Breakable(prop)=>!prop.broken,
+            _=>true,
+        };
+        Some(EntityCollisionState{transform:entity.world_transform,enabled})
+    }
+
+    pub fn descendant_local_chain(&self,root:EntityHandle,mut child:EntityHandle)->Option<Vec<Transform>>{
+        let mut chain=Vec::new();let mut depth=0;
+        while child!=root {
+            depth+=1;if depth>self.config.limits.max_hierarchy_depth{return None;}
+            let entity=self.entity(child)?;let parent=entity.parent?;
+            chain.push(entity.local_transform);
+            if let Some(attachment)=&entity.parent_attachment{chain.push(*self.entity(parent)?.attachments.get(attachment)?);}
+            child=parent;
+        }
+        chain.reverse();Some(chain)
     }
 
     pub fn live_handles(&self) -> Vec<EntityHandle> {
@@ -1651,9 +1671,8 @@ impl EntityWorld {
             .collect()
     }
 
-    fn install_initial_attachments(&mut self, scope: Option<&[EntityHandle]>) -> Result<(), RuntimeFailure> {
+    fn install_initial_attachments(&mut self,created:&[EntityHandle]) -> Result<(), RuntimeFailure> {
         for binding in self.config.initial_attachments.clone() {
-            if scope.is_some_and(|handles| !handles.iter().any(|handle| self.entity(*handle).is_some_and(|entity| entity.source_index == binding.parent_source_index))) { continue; }
             if binding.attachment.is_empty()
                 || binding
                     .parent_space_transform
@@ -1680,6 +1699,7 @@ impl EntityWorld {
                     binding.parent_source_index,
                 ));
             };
+            if !created.contains(&parent){continue;}
             let replaced = self
                 .entity_mut(parent)
                 .expect("resolved initial attachment parent")
@@ -1710,10 +1730,8 @@ impl EntityWorld {
         }
     }
 
-    fn capture_templates(&mut self, graph: &Graph) -> Result<(), RuntimeFailure> {
-        let templates = self
-            .state
-            .creation_order
+    fn capture_templates(&mut self, definitions:&[Entity],created:&[EntityHandle]) -> Result<(), RuntimeFailure> {
+        let templates = created
             .iter()
             .copied()
             .filter(|handle| {
@@ -1733,7 +1751,7 @@ impl EntityWorld {
             };
             let mut members = Vec::new();
             for name in names {
-                for definition in graph.entities.iter().filter(|definition| {
+                for definition in definitions.iter().filter(|definition| {
                     definition
                         .targetname
                         .as_deref()
@@ -2767,10 +2785,11 @@ impl EntityWorld {
 
     fn resolve_initial_parents(
         &mut self,
-        handles: &[EntityHandle],
+        created:&[EntityHandle],
         batch: &mut TransitionBatch,
     ) -> Result<(), RuntimeFailure> {
-        let requests: Vec<_> = handles.iter()
+        let requests: Vec<_> = created
+            .iter()
             .filter_map(|handle| {
                 let entity = self.entity(*handle)?;
                 entity
@@ -3261,22 +3280,7 @@ impl EntityWorld {
         batch: &mut TransitionBatch,
     ) -> Result<(), RuntimeFailure> {
         match command {
-            WorldCommand::SpawnMapEntities(definitions) => {
-                let mut handles = Vec::with_capacity(definitions.len());
-                for definition in ordered_definitions(&definitions, &Default::default(), &self.config.spawn_priorities) {
-                    handles.push(self.spawn_definition(definition.clone(), batch)?);
-                }
-                self.refresh_projected_fields();
-                self.install_initial_attachments(Some(&handles))?;
-                self.resolve_initial_parents(&handles, batch)?;
-                self.link_path_nodes()?;
-                for handle in handles {
-                    self.entity_mut(handle).expect("spawned map handle").lifecycle = Lifecycle::Activated;
-                    self.push_transition(batch, Transition::Lifecycle { entity: handle, state: Lifecycle::Activated })?;
-                    self.schedule_activation(handle, batch)?;
-                }
-                Ok(())
-            }
+            WorldCommand::SpawnMapEntities{definitions,excluded_sources}=>self.spawn_map_definitions(&definitions,&excluded_sources,batch),
             WorldCommand::Spawn(definition) => {
                 let handle = self.spawn_definition(definition, batch)?;
                 self.entity_mut(handle).expect("spawned handle").lifecycle = Lifecycle::Activated;
@@ -8202,10 +8206,10 @@ fn fixup_template_definitions(members: &mut [TemplateMemberState], suffix: &[u8]
 }
 
 fn template_prototype_indices(
-    graph: &Graph,
+    definitions: &[Entity],
 ) -> Result<std::collections::BTreeSet<usize>, RuntimeFailure> {
     let mut output = std::collections::BTreeSet::new();
-    for template in graph.entities.iter().filter(|entity| {
+    for template in definitions.iter().filter(|entity| {
         entity
             .classname
             .as_deref()
@@ -8219,7 +8223,7 @@ fn template_prototype_indices(
             let Some(name) = field(template, key.as_bytes()).filter(|name| !name.is_empty()) else {
                 continue;
             };
-            output.extend(graph.entities.iter().filter_map(|definition| {
+            output.extend(definitions.iter().filter_map(|definition| {
                 definition
                     .targetname
                     .as_deref()
@@ -8232,13 +8236,13 @@ fn template_prototype_indices(
 }
 
 fn ordered_definitions<'a>(
-    entities: &'a [Entity],
+    definitions: &'a [Entity],
     skipped: &std::collections::BTreeSet<usize>,
     priorities: &[ClassSpawnPriority],
 ) -> Vec<&'a Entity> {
     fn depth(
         definition: &Entity,
-        entities: &[Entity],
+        definitions: &[Entity],
         stack: &mut Vec<usize>,
         memo: &mut BTreeMap<usize, usize>,
     ) -> usize {
@@ -8256,21 +8260,22 @@ fn ordered_definitions<'a>(
             .filter(|value| !value.is_empty());
         let value = parent_name
             .and_then(|name| {
-                entities.iter().find(|candidate| {
+                definitions.iter().find(|candidate| {
                     candidate
                         .targetname
                         .as_deref()
                         .is_some_and(|target| target.eq_ignore_ascii_case(name))
                 })
             })
-            .map_or(0, |parent| 1 + depth(parent, entities, stack, memo));
+            .map_or(0, |parent| 1 + depth(parent, definitions, stack, memo));
         stack.pop();
         memo.insert(definition.index, value);
         value
     }
 
     let mut memo = BTreeMap::new();
-    let mut output = entities.iter()
+    let mut output = definitions
+        .iter()
         .filter(|definition| !skipped.contains(&definition.index))
         .collect::<Vec<_>>();
     output.sort_by_key(|definition| {
@@ -8283,7 +8288,7 @@ fn ordered_definitions<'a>(
             2
         };
         let hierarchy_depth = if group == 2 {
-            depth(definition, entities, &mut Vec::new(), &mut memo)
+            depth(definition, definitions, &mut Vec::new(), &mut memo)
         } else {
             0
         };

@@ -5,11 +5,12 @@ use playsrc_collision::{
 };
 use std::collections::BTreeSet;
 
-pub const PUSHER_SNAPSHOT_VERSION: u32 = 2;
+pub const PUSHER_SNAPSHOT_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PusherLimits {
     pub max_pushers: usize,
+    pub max_hierarchy_depth: usize,
     pub max_subjects: usize,
     pub max_contacts: usize,
     pub max_subject_moves: usize,
@@ -19,6 +20,7 @@ impl Default for PusherLimits {
     fn default() -> Self {
         Self {
             max_pushers: 64,
+            max_hierarchy_depth: 256,
             max_subjects: 1_024,
             max_contacts: 192,
             max_subject_moves: 65_536,
@@ -30,6 +32,7 @@ impl PusherLimits {
     fn validate(self) -> Result<Self, Error> {
         if [
             self.max_pushers,
+            self.max_hierarchy_depth,
             self.max_subjects,
             self.max_contacts,
             self.max_subject_moves,
@@ -65,10 +68,12 @@ pub struct TransformPusherRequest {
     pub hierarchy: Vec<PusherHierarchyMemberRequest>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PusherHierarchyMemberRequest {
     pub identity: u64,
-    pub start: Transform,
+    /// Authoritative parent-local transforms, from the root to this collider.
+    /// Do not reconstruct these by subtracting rounded absolute positions.
+    pub local_chain: Vec<Transform>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,10 +172,27 @@ struct PusherState {
     hierarchy: Vec<PusherHierarchyState>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct PusherHierarchyState {
     identity: u64,
-    local: Transform,
+    local_chain: Vec<Transform>,
+}
+
+impl PusherHierarchyState {
+    fn at(&self,root:Transform)->Result<Transform,playsrc_collision::Error>{self.local_chain.iter().try_fold(root,|parent,local|parent.compose(*local))}
+}
+
+fn hierarchy_states(members:&[PusherHierarchyMemberRequest],identities:&mut BTreeSet<u64>,limits:PusherLimits)->Result<Vec<PusherHierarchyState>,Error>{
+    let mut hierarchy=Vec::with_capacity(members.len());
+    for member in members {
+        if !identities.insert(member.identity)||member.local_chain.is_empty()||member.local_chain.len()>limits.max_hierarchy_depth
+            ||member.local_chain.iter().any(|local|local.origin.into_iter().chain(local.angles).any(|value|!value.is_finite())){
+            return Err(mover_error(FailureKind::Malformed,"pusher-hierarchy"));
+        }
+        hierarchy.push(PusherHierarchyState{identity:member.identity,local_chain:member.local_chain.clone()});
+    }
+    if identities.len()>limits.max_pushers{return Err(mover_error(FailureKind::Malformed,"pusher-count"));}
+    Ok(hierarchy)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -287,29 +309,7 @@ impl PusherSnapshot {
             } else {
                 scale(angular_delta, request.angular_speed / angular_distance)
             };
-            let mut hierarchy = Vec::with_capacity(request.hierarchy.len());
-            for member in &request.hierarchy {
-                if !identities.insert(member.identity)
-                    || member
-                        .start
-                        .origin
-                        .into_iter()
-                        .chain(member.start.angles)
-                        .any(|value| !value.is_finite())
-                {
-                    return Err(mover_error(FailureKind::Malformed, "pusher-hierarchy"));
-                }
-                hierarchy.push(PusherHierarchyState {
-                    identity: member.identity,
-                    local: member
-                        .start
-                        .relative_to(request.start)
-                        .map_err(collision_error)?,
-                });
-            }
-            if identities.len() > limits.max_pushers {
-                return Err(mover_error(FailureKind::Malformed, "pusher-count"));
-            }
+            let hierarchy=hierarchy_states(&request.hierarchy,&mut identities,limits)?;
             states.push(PusherState {
                 request_id: request.request_id,
                 identity: request.identity,
@@ -338,6 +338,15 @@ impl PusherSnapshot {
         self.states.len()
     }
 
+    pub fn update_hierarchy(&mut self,request_id:u64,members:&[PusherHierarchyMemberRequest])->Result<(),Error>{
+        let index=self.states.iter().position(|state|state.request_id==request_id).ok_or_else(||mover_error(FailureKind::Missing,"pusher-request"))?;
+        let current=&self.states[index].hierarchy;
+        if current.len()==members.len()&&current.iter().zip(members).all(|(a,b)|a.identity==b.identity&&a.local_chain==b.local_chain){return Ok(());}
+        let mut identities=self.states.iter().flat_map(|state|std::iter::once(state.identity).chain(state.hierarchy.iter().filter(move |_|state.request_id!=request_id).map(|member|member.identity))).collect();
+        self.states[index].hierarchy=hierarchy_states(members,&mut identities,self.limits)?;
+        Ok(())
+    }
+
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut output = BoundedBytes::new(self.limits.max_snapshot_bytes);
         output.bytes(b"PUSH")?;
@@ -362,9 +371,8 @@ impl PusherSnapshot {
             output.u32(as_u32(state.hierarchy.len(), "pusher-hierarchy-count")?)?;
             for member in &state.hierarchy {
                 output.u64(member.identity)?;
-                for value in member.local.origin.into_iter().chain(member.local.angles) {
-                    output.f32(value)?;
-                }
+                output.u32(as_u32(member.local_chain.len(),"pusher-hierarchy-depth")?)?;
+                for local in &member.local_chain {for value in local.origin.into_iter().chain(local.angles){output.f32(value)?;}}
             }
         }
         Ok(output.finish())
@@ -528,11 +536,10 @@ pub fn advance_linear_pushers(
                     .iter()
                     .map(|member| PusherHierarchyTransform {
                         identity: member.identity,
-                        transform: Transform {
+                        transform: member.at(Transform {
                             origin: state.destination,
                             angles: state.destination_angles,
-                        }
-                        .compose(member.local)
+                        })
                         .expect("validated pusher hierarchy"),
                     })
                     .collect(),
@@ -553,8 +560,7 @@ pub fn advance_linear_pushers(
             angles: state.angles,
         };
         for member in &state.hierarchy {
-            let expected = current_root
-                .compose(member.local)
+            let expected = member.at(current_root)
                 .map_err(collision_error)?;
             if collision.object_transform(member.identity) != Some(expected) {
                 return Err(mover_error(
@@ -603,8 +609,7 @@ pub fn advance_linear_pushers(
             .hierarchy
             .iter()
             .map(|member| {
-                candidate_transform
-                    .compose(member.local)
+                member.at(candidate_transform)
                     .map(|transform| PusherHierarchyTransform {
                         identity: member.identity,
                         transform,
@@ -810,8 +815,7 @@ pub fn advance_linear_pushers(
                     .iter()
                     .map(|member| PusherHierarchyTransform {
                         identity: member.identity,
-                        transform: current_root
-                            .compose(member.local)
+                        transform: member.at(current_root)
                             .expect("validated pusher hierarchy"),
                     })
                     .collect(),
@@ -1020,6 +1024,31 @@ mod tests {
     use super::*;
     use playsrc_collision::{ObjectInput, ObjectRole, SnapshotLimits, SnapshotShape};
 
+    #[test]
+    fn closing_hierarchy_retains_authored_local_offsets_without_absolute_roundtrip_loss(){
+        let world=World::empty();
+        let local=Transform{origin:[-26.999023,0.8306999,109.75_f32-108.38_f32],angles:[0.0;3]};
+        let start=Transform{origin:[-939.0,-11.5,238.380005],angles:[0.0;3]};
+        let child=start.compose(local).unwrap();
+        assert_ne!(child.relative_to(start).unwrap().origin[2],local.origin[2]);
+        let members=vec![PusherHierarchyMemberRequest{identity:2,local_chain:vec![local]}];
+        let inputs=|root:Transform|{
+            let mut parent=object(1,root.origin,mover_bounds());parent.transform=root;
+            let child=root.compose(local).unwrap();let mut shape=object(2,child.origin,mover_bounds());shape.transform=child;
+            vec![parent,shape]
+        };
+        let mut collision=Snapshot::compile(&world,1,inputs(start),SnapshotLimits::default()).unwrap();
+        let mut pusher=PusherSnapshot::start_transforms(1,&[TransformPusherRequest{request_id:7,identity:1,start,destination:Transform{origin:[-939.0,-11.5,108.38],angles:[0.0;3]},linear_speed:600.0,angular_speed:0.0,hierarchy:members.clone()}],PusherLimits::default()).unwrap();
+        for revision in 2..32{
+            pusher.update_hierarchy(7,&members).unwrap();
+            let frame=advance_transform_pushers(&world,&collision,&pusher,revision,&[],0.015,|_,_|true,|_,_|true).unwrap();
+            let result=&frame.results[0];assert_eq!(result.hierarchy[0].transform,result.transform.compose(local).unwrap());
+            collision=collision.recompile(&world,revision,inputs(result.transform)).unwrap();pusher=frame.next;
+            if pusher.active_count()==0{break;}
+        }
+        assert_eq!(pusher.active_count(),0);
+    }
+
     fn object(identity: u64, origin: [f32; 3], bounds: Hull) -> ObjectInput {
         ObjectInput {
             identity,
@@ -1110,8 +1139,8 @@ mod tests {
         );
         assert_eq!(frame.next.active_count(), 0);
         assert!(frame.contacts.is_empty());
-        assert_eq!(&prior.snapshot_bytes().unwrap()[..8], b"PUSH\x02\0\0\0");
-        assert_eq!(&frame.snapshot_bytes().unwrap()[..8], b"PRES\x02\0\0\0");
+        assert_eq!(&prior.snapshot_bytes().unwrap()[..8], b"PUSH\x03\0\0\0");
+        assert_eq!(&frame.snapshot_bytes().unwrap()[..8], b"PRES\x03\0\0\0");
     }
 
     #[test]
@@ -1298,10 +1327,10 @@ mod tests {
                 angular_speed: 90.0,
                 hierarchy: vec![PusherHierarchyMemberRequest {
                     identity: 2,
-                    start: Transform {
+                    local_chain: vec![Transform {
                         origin: [2.0, 0.0, 0.0],
                         angles: [0.0; 3],
-                    },
+                    }],
                 }],
             }],
             PusherLimits::default(),
@@ -1328,7 +1357,7 @@ mod tests {
         assert!(moved.to[0].abs() < 0.000_01);
         assert!((moved.to[1] - 3.0).abs() < 0.000_01);
         assert_eq!(moved.angular_displacement, [0.0, 90.0, 0.0]);
-        assert_eq!(&frame.snapshot_bytes().unwrap()[..8], b"PRES\x02\0\0\0");
+        assert_eq!(&frame.snapshot_bytes().unwrap()[..8], b"PRES\x03\0\0\0");
         for _ in 0..1_024 {
             assert_eq!(
                 advance_transform_pushers(

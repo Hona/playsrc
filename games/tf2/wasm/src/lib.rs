@@ -1750,7 +1750,8 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         command[42..44].copy_from_slice(&(1_u16 | (15 << 2) | (1 << 7) | (2 << 11) | (2 << 13)).to_le_bytes());
         for batch in 0..189 {
             if unsafe { playsrc_game_advance(handle, command.as_ptr(), command.len(), if batch == 0 { 1 } else if batch == 188 { 31 } else { 64 }) } == 0 {
-                return Err(format!("gameplay transaction failed: {}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
+                let detail=GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail").clone();
+                return Err(format!("gameplay transaction failed: {}{detail}", GAME_ADVANCE_ERROR.load(Ordering::Relaxed)));
             }
             command[32..36].fill(0); command[42..44].fill(0);
             let values = slots().lock().expect("TF2 slots");
@@ -1760,7 +1761,20 @@ pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], mut observe: imp
         }
         let values = slots().lock().expect("TF2 slots");
         let paths = values[index].session.as_ref().and_then(|session| session.bot_world()).map_or_else(Vec::new, |bots|bots.navigation_diagnostics());
-        Err(format!("walking bots did not complete the control-point round within 180 simulation seconds: {}", paths.join("\n")))
+        let mut collision_detail=String::new();
+        if let (Some(session),Some(world),Some(bot))=(&values[index].session,&values[index].gameplay_world,values[index].latest_game_snapshot.as_ref().and_then(|snapshot|snapshot.bots.first())){
+            let hull=playsrc_tf2::MovementPolicy{class:bot.class,modifiers:playsrc_tf2::MovementModifiers::default()}.resolve().standing_hull;
+            let yaw=bot.yaw_degrees.to_radians();let end=[bot.position[0]+yaw.cos()*96.0,bot.position[1]+yaw.sin()*96.0,bot.position[2]];
+            let trace=playsrc_movement::Tracer::trace(world,bot.position,end,hull,playsrc_movement::Configuration::default().solid_mask);
+            collision_detail.push_str(&format!("\nforward collision={trace:?}"));
+            for template in values[index].collision_templates.iter().filter(|template|template.runtime_transform){
+                let Some(state)=u32::try_from(template.input.identity).ok().and_then(|source|session.map_collision_entity(source))else{continue;};
+                if state.transform.origin.iter().zip(bot.position).map(|(a,b)|(a-b)*(a-b)).sum::<f32>()<512.0*512.0{
+                    collision_detail.push_str(&format!("\nnearby collider={} state={state:?}",template.input.identity));
+                }
+            }
+        }
+        Err(format!("walking bots did not complete the control-point round within 180 simulation seconds: {}{collision_detail}", paths.join("\n")))
     })();
     playsrc_dispose(handle);
     result
@@ -5315,6 +5329,11 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 .iter()
                 .any(|request| request.request_id == *request_id)
         });
+        pushers.retain(|request_id,_|candidate.mover_requests().iter().any(|request|request.request_id==*request_id));
+        for (request_id,pusher) in &mut pushers {
+            let request=candidate.mover_requests().iter().find(|request|request.request_id==*request_id).expect("retained mover request");
+            if pusher.update_hierarchy(*request_id,&parented_pusher_members(&candidate,request.entity,templates)).is_err(){fail!(10);}
+        }
         let pending_movers = candidate
             .mover_requests()
             .iter()
@@ -5342,18 +5361,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     },
                     linear_speed: request.speed,
                     angular_speed,
-                    hierarchy: templates.iter().filter_map(|template| {
-                        // The prop children are rigid members of this pusher;
-                        // independently driven brush movers keep their own requests.
-                        if !matches!(&template.input.shape, playsrc_collision::SnapshotShape::Physics(_)) { return None; }
-                        let identity = u32::try_from(template.input.identity).ok()?;
-                        if !candidate.entity_descends_from(identity, request.entity) { return None; }
-                        let transform = candidate.entity_world_transform(identity)?;
-                        Some(playsrc_movement::PusherHierarchyMemberRequest {
-                            identity: u64::from(identity),
-                            start: playsrc_collision::Transform { origin: transform.origin, angles: transform.angles },
-                        })
-                    }).collect(),
+                    hierarchy: parented_pusher_members(&candidate,request.entity,templates),
                 };
                 let pusher = match playsrc_movement::PusherSnapshot::start_transforms(
                     collision_revision,
@@ -5374,7 +5382,8 @@ pub unsafe extern "C" fn playsrc_game_advance(
             &prior_collision,
             templates,
             current_revision,
-            Some(&|identity| candidate.entity_collision_state(identity)),
+            snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
+            Some(&candidate),
             &transforms,
             &velocities,
         ) {
@@ -5385,7 +5394,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 current_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_collision_state(identity)),
+                Some(&candidate),
                 &transforms,
                 &velocities,
             ) {
@@ -5440,7 +5449,10 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     |_, _| true,
                 ) {
                     Ok(value) => value,
-                    Err(_) => fail!(12),
+                    Err(error) => {
+                        *GAME_ADVANCE_DETAIL.get_or_init(||Mutex::new(String::new())).lock().expect("game advance detail")=format!("; pusher request={request_id} error={error:?}");
+                        fail!(12)
+                    },
                 };
                 let Some(records) = mover_records(&frame) else {
                     fail!(13);
@@ -5476,11 +5488,10 @@ pub unsafe extern "C" fn playsrc_game_advance(
                     transforms.insert(result.identity, result.transform);
                     velocities.insert(result.identity, result.trajectory_velocity);
                     for child in &result.hierarchy {
-                        transforms.insert(child.identity, child.transform);
-                        // CBaseEntity::CalcAbsoluteVelocity adds the parent's
-                        // absolute velocity to the child's rotated local one.
-                        // These rigid hierarchy members have zero local velocity.
-                        velocities.insert(child.identity, result.trajectory_velocity);
+                        transforms.insert(child.identity,child.transform);
+                        // Parent-relative prop velocity is zero; Source's absolute
+                        // velocity adds the parent's linear velocity (no orbital term).
+                        velocities.insert(child.identity,result.trajectory_velocity);
                     }
                 }
                 consumed_mover_results.extend(records.into_iter().take(consumed_records));
@@ -5502,7 +5513,7 @@ pub unsafe extern "C" fn playsrc_game_advance(
                 templates,
                 collision_revision,
                 snapshot.as_ref().or(slot.latest_game_snapshot.as_ref()),
-                Some(&|identity| candidate.entity_collision_state(identity)),
+                Some(&candidate),
                 &transforms,
                 &velocities,
             ) {
@@ -9008,24 +9019,19 @@ fn collision_object_templates(
     Ok(output)
 }
 
-// Dynamic props (including gate children) share the entity world's resolved
-// parent transform with presentation. A brush-only snapshot cannot own their
-// collision pose. Removed entities must not leave a solid at the authored pose.
-fn collision_template_transform(
-    template: &CollisionObjectTemplate,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
-    overrides: &BTreeMap<u64, playsrc_collision::Transform>,
-) -> (bool, playsrc_collision::Transform) {
-    let mut enabled = template.input.enabled;
-    let mut transform = template.input.transform;
-    if template.runtime_transform && let Some(resolve) = entity_transform {
-        match u32::try_from(template.input.identity).ok().and_then(resolve) {
-            Some((value,solid)) => { transform = playsrc_collision::Transform { origin: value.origin, angles: value.angles }; enabled=solid || template.input.volume_contents; },
-            None => enabled = false,
-        }
+fn parented_pusher_members(session:&playsrc_tf2::Session<SharedWorld>,source:u32,templates:&[CollisionObjectTemplate])->Vec<playsrc_movement::PusherHierarchyMemberRequest>{
+    session.map_mover_hierarchy(source).into_iter().filter(|(source,state,_)|state.enabled&&templates.iter().any(|template|template.input.identity==u64::from(*source))).map(|(source,_,chain)|playsrc_movement::PusherHierarchyMemberRequest{
+        identity:u64::from(source),local_chain:chain.into_iter().map(|local|playsrc_collision::Transform{origin:local.origin,angles:local.angles}).collect(),
+    }).collect()
+}
+
+fn collision_entity_state(template:&CollisionObjectTemplate,session:Option<&playsrc_tf2::Session<SharedWorld>>)->(playsrc_collision::Transform,bool){
+    if template.runtime_transform&&let Some(session)=session {
+        return u32::try_from(template.input.identity).ok().and_then(|source|session.map_collision_entity(source)).map_or((template.input.transform,false),|state|(
+            playsrc_collision::Transform{origin:state.transform.origin,angles:state.transform.angles},state.enabled||template.input.volume_contents,
+        ));
     }
-    if let Some(value) = overrides.get(&template.input.identity) { transform = *value; }
-    (enabled, transform)
+    (template.input.transform,template.input.enabled)
 }
 
 fn compile_collision_snapshot(
@@ -9034,7 +9040,7 @@ fn compile_collision_snapshot(
     templates: &[CollisionObjectTemplate],
     revision: u64,
     latest: Option<&playsrc_tf2::Snapshot>,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
+    session: Option<&playsrc_tf2::Session<SharedWorld>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Result<playsrc_collision::Snapshot, playsrc_collision::Error> {
@@ -9042,7 +9048,10 @@ fn compile_collision_snapshot(
         .iter()
         .map(|template| {
             let mut input = template.input.clone();
-            (input.enabled, input.transform) = collision_template_transform(template, entity_transform, transform_overrides);
+            (input.transform,input.enabled)=collision_entity_state(template,session);
+            if let Some(transform) = transform_overrides.get(&input.identity) {
+                input.transform = *transform;
+            }
             if let Some(velocity) = velocity_overrides.get(&input.identity) {
                 input.linear_velocity = *velocity;
             }
@@ -9087,11 +9096,12 @@ fn retain_collision_snapshot(
     previous: &playsrc_collision::Snapshot,
     templates: &[CollisionObjectTemplate],
     revision: u64,
-    entity_transform: Option<&dyn Fn(u32) -> Option<(playsrc_entity::Transform,bool)>>,
+    latest: Option<&playsrc_tf2::Snapshot>,
+    session: Option<&playsrc_tf2::Session<SharedWorld>>,
     transform_overrides: &BTreeMap<u64, playsrc_collision::Transform>,
     velocity_overrides: &BTreeMap<u64, [f32; 3]>,
 ) -> Option<playsrc_collision::Snapshot> {
-    if previous.records().len() != templates.len() {
+    if previous.records().len() != templates.len()||latest.is_some_and(|snapshot|!snapshot.buildings.is_empty()) {
         return None;
     }
     for (record, template) in previous.records().iter().zip(templates) {
@@ -9099,12 +9109,16 @@ fn retain_collision_snapshot(
         if record.identity != identity {
             return None;
         }
-        let (enabled, transform) = collision_template_transform(template, entity_transform, transform_overrides);
+        let (runtime,enabled)=collision_entity_state(template,session);
+        let transform = transform_overrides
+            .get(&identity)
+            .copied()
+            .unwrap_or(runtime);
         let velocity = velocity_overrides
             .get(&identity)
             .copied()
             .unwrap_or(template.input.linear_velocity);
-        if record.enabled != enabled || record.transform != transform || record.linear_velocity != velocity {
+        if record.transform != transform || record.linear_velocity != velocity || record.enabled != enabled {
             return None;
         }
     }

@@ -1480,6 +1480,22 @@ impl MapRuntime {
         playsrc_entity::spotlight::presentation(&self.world,self.spotlights.iter().find(|beam|beam.source==source)?)
     }
 
+    pub fn collision_entity(&self,source:u32)->Option<playsrc_entity::EntityCollisionState>{
+        self.world.collision_state(*self.source_handles.get(&source)?)
+    }
+
+    pub fn mover_hierarchy(&self,source:u32)->Vec<(u32,playsrc_entity::EntityCollisionState,Vec<playsrc_entity::Transform>)>{
+        let Some(root_handle)=self.source_handles.get(&source).copied()else{return Vec::new();};
+        let Some(root)=self.world.entity(root_handle)else{return Vec::new();};
+        let mut pending=root.children.iter().rev().copied().collect::<Vec<_>>();let mut output=Vec::new();
+        while let Some(handle)=pending.pop(){
+            let Some(entity)=self.world.entity(handle)else{continue;};
+            if let Ok(source)=u32::try_from(entity.source_index){output.push((source,self.world.collision_state(handle).expect("live hierarchy member"),self.world.descendant_local_chain(root_handle,handle).expect("descendant chain")));}
+            pending.extend(entity.children.iter().rev().copied());
+        }
+        output
+    }
+
     pub fn round_configuration(&self) -> crate::round::Configuration {
         self.round_configuration.clone()
     }
@@ -1541,8 +1557,8 @@ impl MapRuntime {
         let mut result = self.consume(removed)?;
         result.append(std::mem::take(&mut payload_phase));
         self.world.clear_event_queue();
-        let spawns = definitions.iter().filter(|entity| !preserved_on_round_restart(entity)).cloned().collect();
-        let spawned = self.world.phase(tick, &[WorldCommand::SpawnMapEntities(spawns)])?;
+        let excluded_sources=definitions.iter().filter(|entity|preserved_on_round_restart(entity)).map(|entity|entity.index).collect();
+        let spawned=self.world.phase(tick,&[WorldCommand::SpawnMapEntities{definitions:definitions.to_vec(),excluded_sources}])?;
         self.source_handles.clear();
         for handle in self.world.live_handles().into_iter().filter(|handle| !actors.contains(handle)) {
             if let Some(entity) = self.world.entity(handle) { self.source_handles.insert(entity.source_index as u32, handle); }

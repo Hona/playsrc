@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap,sync::Arc};
 use playsrc_collision::{ObjectInput,ObjectRole,Snapshot,SnapshotShape,World};
-use playsrc_entity::{BehaviorState,BrushSolidity,EntityWorld,WorldCommand,spotlight::Seed};
+use playsrc_entity::{EntityWorld,WorldCommand,spotlight::Seed};
 
 /// Rebuild activation traces from live brushes after round cleanup, rather than
 /// treating a previous round's endpoints as collision authority.
@@ -20,10 +20,8 @@ impl Collision {
         let inputs=self.inputs.iter().cloned().map(|mut input|{
             if input.role==ObjectRole::Entity {
                 if let Some(entity)=live.get(&input.identity){
-                    input.transform=playsrc_collision::Transform{origin:entity.world_transform.origin,angles:entity.world_transform.angles};
-                    if let BehaviorState::Brush(brush)=&entity.behavior{
-                        input.enabled=match brush.solidity{BrushSolidity::Never=>false,BrushSolidity::Always=>true,BrushSolidity::Toggle=>brush.enabled};
-                    }
+                    let state=entities.collision_state(entity.handle).expect("live collision entity");
+                    input.transform=playsrc_collision::Transform{origin:state.transform.origin,angles:state.transform.angles};input.enabled=state.enabled;
                 }else{input.enabled=false;}
             }
             input
