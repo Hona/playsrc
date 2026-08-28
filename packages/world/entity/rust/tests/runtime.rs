@@ -63,6 +63,53 @@ fn cloned_entity_world_mutates_only_its_transactional_entities() {
     ));
     assert_eq!(original.current_tick(), 0);
     assert_eq!(changed.current_tick(), 1);
+    assert!(std::sync::Arc::ptr_eq(
+        &original.entity(handle).unwrap().definition,
+        &changed.entity(handle).unwrap().definition,
+    ));
+}
+
+#[test]
+fn installed_definition_survives_checkpoint_rollback_but_not_last_owner_removal() {
+    let graph = parse(b"{\"classname\"\"func_brush\"\"targetname\"\"authored\"\"StartDisabled\"\"1\"}", playsrc_entity::Limits::default()).unwrap();
+    let mut config = EntityWorldConfig::default();
+    config.limits.max_entities = 1;
+    let mut world = EntityWorld::compile(&graph, config).unwrap().0;
+    let handle = world.resolve(b"authored", None, None, None)[0];
+    let definition = std::sync::Arc::downgrade(&world.entity(handle).unwrap().definition);
+    let checkpoint = world.snapshot().unwrap();
+    let failure = world.phase(1, &[
+        input(handle, b"Enable", Variant::Void, 1),
+        WorldCommand::SetTargetname { entity: handle, targetname: Some(b"runtime".to_vec()) },
+        WorldCommand::Spawn(graph.entities[0].clone()),
+    ]).unwrap_err();
+    assert_eq!(failure.code, RuntimeFailureCode::EntityLimit);
+    assert_eq!(world.snapshot().unwrap().bytes(), checkpoint.bytes());
+    world.phase(1, &[
+        input(handle, b"Enable", Variant::Void, 1),
+        WorldCommand::SetTargetname { entity: handle, targetname: Some(b"runtime".to_vec()) },
+    ]).unwrap();
+    let entity = world.entity(handle).unwrap();
+    assert_eq!(entity.targetname.as_deref(), Some(b"runtime".as_slice()));
+    assert_eq!(entity.definition.targetname.as_deref(), Some(b"authored".as_slice()));
+    assert!(std::sync::Arc::ptr_eq(&definition.upgrade().unwrap(), &entity.definition));
+    // Mutating an exported owned clone must still be private to that clone.
+    let mut exported = entity.clone();
+    std::sync::Arc::make_mut(&mut exported.definition).targetname = None;
+    assert_eq!(world.entity(handle).unwrap().definition.targetname.as_deref(), Some(b"authored".as_slice()));
+    drop(exported);
+    world.phase(2, &[WorldCommand::Remove(handle)]).unwrap();
+    assert!(definition.upgrade().is_some(), "retained checkpoint owns authored data");
+    world.restore(&checkpoint).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&definition.upgrade().unwrap(), &world.entity(handle).unwrap().definition));
+    world.phase(2, &[WorldCommand::Remove(handle)]).unwrap();
+    drop(checkpoint);
+    assert!(definition.upgrade().is_none(), "no immortal definition cache");
+    world.phase(3, &[WorldCommand::Spawn(graph.entities[0].clone())]).unwrap();
+    let replacement = world.resolve(b"authored", None, None, None)[0];
+    assert_eq!(replacement.slot, handle.slot);
+    assert_ne!(replacement.generation, handle.generation);
+    assert!(world.entity(handle).is_none());
 }
 
 #[test]
@@ -1423,6 +1470,10 @@ fn point_template_removes_prototype_fixes_internal_names_and_restores_instance_s
         .phase(1, &[input(maker, b"ForceSpawn", Variant::Void, 2)])
         .unwrap();
     assert_eq!(world.resolve(b"piece&0002", None, None, None).len(), 1);
+    let second = world.resolve(b"piece&0002", None, None, None)[0];
+    assert_eq!(world.entity(first).unwrap().definition.targetname.as_deref(), Some(b"piece&0001".as_slice()));
+    assert_eq!(world.entity(second).unwrap().definition.targetname.as_deref(), Some(b"piece&0002".as_slice()));
+    assert!(!std::sync::Arc::ptr_eq(&world.entity(first).unwrap().definition, &world.entity(second).unwrap().definition));
     let mut restored = compile(bytes, |_| {});
     restored.restore(&snapshot).unwrap();
     let restored_maker = restored.resolve(b"maker", None, None, None)[0];
@@ -1430,6 +1481,7 @@ fn point_template_removes_prototype_fixes_internal_names_and_restores_instance_s
         .phase(1, &[input(restored_maker, b"ForceSpawn", Variant::Void, 2)])
         .unwrap();
     assert_eq!(restored.resolve(b"piece&0002", None, None, None).len(), 1);
+    assert_eq!(restored.snapshot().unwrap().bytes(), world.snapshot().unwrap().bytes());
 }
 
 #[test]

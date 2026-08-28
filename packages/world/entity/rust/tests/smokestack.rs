@@ -30,7 +30,7 @@ fn smokestack_authored_keys_inputs_and_generation_lifecycle() {
     systems.input(first.entity, b"Speed", &Variant::Integer(90));
     assert_eq!(systems.presentation(&world)[0].parameters.rate, 7.5);
     assert_eq!(systems.presentation(&world)[0].parameters.speed, 90.0);
-    let definition = world.entity(first.entity).unwrap().definition.clone();
+    let definition = world.entity(first.entity).unwrap().definition.as_ref().clone();
     world.phase(1, &[WorldCommand::Remove(first.entity)]).unwrap();
     systems.synchronize(&world).unwrap();
     assert!(systems.presentation(&world).is_empty());
