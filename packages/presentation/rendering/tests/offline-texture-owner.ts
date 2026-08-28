@@ -4,17 +4,23 @@ import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
 
 /** No browser or GPU. Expose the unchanged production owner solely in an
  * offline test bundle; replace only its native compilation/device boundary. */
-let loadedOwner: ReturnType<typeof buildOfflineTextureOwner> | undefined
-export function loadOfflineTextureOwner() {
-  return loadedOwner ??= buildOfflineTextureOwner()
+let loadedOwners: Promise<Awaited<ReturnType<typeof buildOfflineTextureOwner>>[]> | undefined
+export async function loadOfflineTextureOwner(reference = false) {
+  loadedOwners ??= (async () => [await buildOfflineTextureOwner(false), await buildOfflineTextureOwner(true)])()
+  return (await loadedOwners)[reference ? 1 : 0]!
 }
 
-async function buildOfflineTextureOwner() {
+async function buildOfflineTextureOwner(reference: boolean) {
   const config = await loadLocalConfig()
-  const directory = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/texture-replacement/offline")
+  const directory = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/texture-replacement/alias-investigation")
   await mkdir(directory, { recursive: true })
   const sourcePath = path.resolve(import.meta.dir, "../src/index.ts")
-  const source = await Bun.file(sourcePath).text()
+  let source = await Bun.file(sourcePath).text()
+  if (reference) {
+    const decision = "const alias = texture.frameCount === 1 ? particleTextureAlias(candidate, textures.values()) : undefined"
+    if (source.split(decision).length !== 2) throw new Error("Particle alias reference owner differs")
+    source = source.replace(decision, "const alias = undefined")
+  }
   const declaration = "class RendererOwner implements Renderer {"
   if (source.split(declaration).length !== 2) throw new Error("Renderer test owner declaration differs")
   const addition = `export class RendererOwner implements Renderer {
@@ -78,7 +84,7 @@ async function buildOfflineTextureOwner() {
     } }],
   })
   if (!result.success || result.outputs.length !== 1) throw new Error(`Offline owner bundle failed: ${result.logs}`)
-  const file = path.join(directory, "owner-loop.mjs")
+  const file = path.join(directory, reference ? "owner-loop-reference.mjs" : "owner-loop.mjs")
   await Bun.write(file, result.outputs[0]!)
   return { module: await import(file + `?revision=${Bun.hash(source)}`), sourcePath, sourceSha256: new Bun.CryptoHasher("sha256").update(source).digest("hex") }
 }
@@ -140,6 +146,7 @@ export async function offlinePipelineDevice(module: any, recordCommands = false)
 export function offlineTextureDevice(module: any) {
   const T = module.OfflineThree
   const allocations: any[] = [], writes: any[] = []
+  const textureEvents: { kind: string; id: number; label: string; phase: string }[] = []
   let phase = "initial", next = 0
   const data = new WeakMap<object, any>()
   const backend: any = {
@@ -155,7 +162,8 @@ export function offlineTextureDevice(module: any) {
         const record = { id: ++next, phase, label: descriptor.label, format: descriptor.format,
           size: { ...descriptor.size }, levels: descriptor.mipLevelCount, samples: descriptor.sampleCount, destroyed: false, destroyPhase: "" }
         allocations.push(record)
-        return { ...record.size, format: record.format, destroy() { record.destroyed = true; record.destroyPhase = phase }, id: record.id }
+        textureEvents.push({ kind: "create", id: record.id, label: record.label, phase })
+        return { ...record.size, format: record.format, destroy() { if (!record.destroyed) textureEvents.push({ kind: "destroy", id: record.id, label: record.label, phase }); record.destroyed = true; record.destroyPhase = phase }, id: record.id }
       },
       queue: {
         writeTexture(destination: any, bytes: ArrayBufferView, layout: any, extent: any) {
@@ -177,7 +185,7 @@ export function offlineTextureDevice(module: any) {
   const textures = new module.OfflineTextures(renderer, backend, { memory: { renderTargets: 0 }, createTexture() {}, destroyTexture() {} })
   // The browser API constants, not a graphics device or software renderer.
   Object.assign(globalThis, { GPUTextureUsage: { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 } })
-  return { T, backend, renderer, textures, allocations, writes, phase: (value: string) => { phase = value },
+  return { T, backend, renderer, textures, allocations, writes, textureEvents, phase: (value: string) => { phase = value },
     compile(values: Map<string, any>, failure?: () => void) {
       renderer.compileAsync = async () => { for (const texture of values.values()) textures.updateTexture(texture); failure?.() }
     },
