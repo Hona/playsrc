@@ -33,6 +33,13 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   await mkdir(directory, { recursive: true })
   const evidence: any = { package: router.admitted, previous: router.previous, startedAt: Date.now(), idle: [] }
+  evidence.inputCommands=[];evidence.inputEvents=[]
+  const input=async(method:string,arguments_:unknown,invoke:()=>Promise<unknown>)=>{
+    const entry:any={sequence:evidence.inputCommands.length+1,method,arguments:arguments_,startedAt:Date.now(),startedMonotonic:performance.now(),clock:"controller API issuance/completion; not inferred DOM state"}
+    evidence.inputCommands.push(entry)
+    try {await invoke();entry.completed=true} catch(error){entry.error=String(error);throw error}
+    finally {entry.finishedAt=Date.now();entry.finishedMonotonic=performance.now()}
+  }
   const externalEndpoint=process.env.PLAYSRC_STARTUP_CDP_ENDPOINT
   if(externalEndpoint&&(!/^http:\/\/127\.0\.0\.1:\d+$/.test(externalEndpoint)||!process.env.PLAYSRC_STARTUP_NATIVE_ENDPOINT||!process.env.PLAYSRC_STARTUP_NATIVE_LOCK_TOKEN))throw new Error("External startup endpoint requires its checked native broker")
   const idleDeadline = Date.now() + 15_000
@@ -73,7 +80,7 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
     observedPage=page
     page.setDefaultTimeout(5_000)
     if(context.pages().length!==1)throw new Error("Static startup requires its single fresh native page")
-    if(!externalEndpoint)await page.bringToFront()
+    if(!externalEndpoint)await input("Page.bringToFront",{},()=>page.bringToFront())
     native=externalEndpoint?await externalStartupNativeReader(page,process.env.PLAYSRC_STARTUP_NATIVE_ENDPOINT!,process.env.PLAYSRC_STARTUP_NATIVE_LOCK_TOKEN!):await startupNativeReader(page,config.sourceCacheDir)
     evidence.console=[];evidence.errors=[];evidence.workers=[];evidence.responses=[]
     evidence.workerContexts=[]
@@ -128,6 +135,7 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
     page.on("response",response=>evidence.responses.push({url:response.url(),status:response.status(),headers:response.headers()}))
     evidence.unexpectedInput=[]
     await page.exposeBinding("__playsrcUnexpectedStartupInput",(_source,event)=>{evidence.unexpectedInput.push(event)})
+    await page.exposeBinding("__playsrcObservedStartupInput",(_source,event)=>{if(evidence.inputEvents.length<8192)evidence.inputEvents.push(event);else evidence.inputEventsDropped=(evidence.inputEventsDropped??0)+1})
     evidence.gpuFailures=[]
     await page.exposeBinding("__playsrcStartupGpuFailure",(_source,event)=>{evidence.gpuFailures.push(event)})
     await page.addInitScript(()=>{
@@ -151,7 +159,9 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
         if(type==="mousemove"&&!(event as MouseEvent).movementX&&!(event as MouseEvent).movementY)return
         const planned=state.action!=="none"&&event.isTrusted&&(type==="mousemove"||type==="pointerdown"&&button===0
           ||type==="keydown"&&(state.action==="open-map"&&["Backquote","Enter"].includes(key)||(state.action==="close-console"||state.action==="choose-team")&&key==="Backquote"||state.action==="choose-class"&&key==="Digit2"))
-        if(!planned){const detail={at:performance.now(),timeOrigin:performance.timeOrigin,type,key,button,trusted:event.isTrusted,action:state.action};state.unexpected.push(detail);void(globalThis as any).__playsrcUnexpectedStartupInput(detail)}
+        const detail={at:performance.now(),eventTimeStamp:event.timeStamp,timeOrigin:performance.timeOrigin,type,key,button,trusted:event.isTrusted,action:state.action,planned,clientX:(event as MouseEvent).clientX,clientY:(event as MouseEvent).clientY,movementX:(event as MouseEvent).movementX,movementY:(event as MouseEvent).movementY}
+        void(globalThis as any).__playsrcObservedStartupInput(detail)
+        if(!planned){state.unexpected.push(detail);void(globalThis as any).__playsrcUnexpectedStartupInput(detail)}
       },{capture:true,passive:true})
     })
     let admission=0
@@ -171,14 +181,22 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
         if(evidence.unexpectedInput.length||!await page.evaluate(()=>document.visibilityState==="visible"&&document.hasFocus()))throw new Error("Static startup input delivery lost its visible admitted document")
         await page.evaluate(action=>{(globalThis as any).__playsrcStartupInput.action=action},action)
         try {
-          if(action==="play-intro")await page.getByRole("button",{name:"Play intro",exact:true}).click()
-          else if(action==="open-map") {await page.keyboard.press("Backquote");await page.getByRole("textbox",{name:"Console command",exact:true}).click();await page.keyboard.insertText(`map ${target}`);await page.keyboard.press("Enter")}
-          else if(action==="close-console"){await page.keyboard.press("Backquote");await page.locator("canvas.world-canvas").focus()}
-          else if(action==="choose-team"){
-            if(await page.locator("main").getAttribute("data-console-visible")==="true")await page.keyboard.press("Backquote")
-            await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+          if(action==="play-intro")await input("locator.click",{role:"button",name:"Play intro"},()=>page.getByRole("button",{name:"Play intro",exact:true}).click())
+          else if(action==="open-map") {
+            await input("keyboard.press",{key:"Backquote"},()=>page.keyboard.press("Backquote"))
+            await input("locator.click",{role:"textbox",name:"Console command"},()=>page.getByRole("textbox",{name:"Console command",exact:true}).click())
+            await input("keyboard.insertText",{text:`map ${target}`},()=>page.keyboard.insertText(`map ${target}`))
+            await input("keyboard.press",{key:"Enter"},()=>page.keyboard.press("Enter"))
           }
-          else await page.keyboard.press("Digit2")
+          else if(action==="close-console"){
+            await input("keyboard.press",{key:"Backquote"},()=>page.keyboard.press("Backquote"))
+            await input("locator.focus",{selector:"canvas.world-canvas"},()=>page.locator("canvas.world-canvas").focus())
+          }
+          else if(action==="choose-team"){
+            if(await page.locator("main").getAttribute("data-console-visible")==="true")await input("keyboard.press",{key:"Backquote"},()=>page.keyboard.press("Backquote"))
+            await input("locator.click",{selector:".team-selection-layer [data-vgui-name='teambutton1']"},()=>page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click())
+          }
+          else await input("keyboard.press",{key:"Digit2"},()=>page.keyboard.press("Digit2"))
         } finally {await page.evaluate(()=>{(globalThis as any).__playsrcStartupInput.action="none"})}
       },
       wait:milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds)),

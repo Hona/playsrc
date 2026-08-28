@@ -17,6 +17,10 @@ test("startup preparation preserves the published target table when the executab
   expect(TF2_TARGET_NAMES).toContain("cp_dustbowl")
   expect(TF2_TARGET_NAMES).toContain("cp_gorge")
   expect(startupPreparationScope(selected)).not.toContain("cp_dustbowl")
+  const configuration=createDeployedBrowserConfiguration(selected,"a".repeat(64))
+  const photo=configuration.targets.find(target=>target.target==="ctf_2fort")!.loading.mapPhoto!
+  expect(Object.keys(photo.material)).toEqual(["logicalPath","byteLength","sha256","providerIdentity","providerRevision"])
+  expect(Object.keys(photo.texture)).toEqual(["logicalPath","byteLength","sha256","providerIdentity","providerRevision"])
 })
 
 // Synthetic PNGs are unit inputs only, never retained as browser evidence.
