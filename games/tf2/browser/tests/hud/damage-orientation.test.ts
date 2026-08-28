@@ -12,15 +12,18 @@ function fixture() {
   const root = { ownerDocument: document, append: (element: any) => children.push(element) }
   let yaw = 0
   const eye = [100, -200, 75] as const
-  const previous = globalThis.ImageData
-  globalThis.ImageData = class {} as typeof ImageData
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "ImageData")
+  Object.defineProperty(globalThis, "ImageData", { configurable: true, writable: true, value: class {} })
   let presentation: Tf2HudDamagePresentation
   try {
     presentation = new Tf2HudDamagePresentation(root as unknown as HTMLElement, {
       material: "materials/vgui/damageindicator.vmt", texture: { width: 128, height: 64, rgba: new Uint8Array(128 * 64 * 4) },
       eyePosition: () => eye, yawDegrees: () => yaw, random: () => .5,
     })
-  } finally { globalThis.ImageData = previous }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "ImageData", previous)
+    else Reflect.deleteProperty(globalThis, "ImageData")
+  }
   return { children, presentation, eye, yaw: (value: number) => { yaw = value },
     hit(delta: readonly number[], now = 0, scale = 50) {
       presentation.publish({ commands: [{ kind: "damage-indicator", scale, lifetimeSeconds: 1 + scale / 100,

@@ -76,9 +76,13 @@ test("authored radial damage follows real bot hits and camera bearing", async ({
     captures.push(record)
     await writeFile(path.join(directory, "captures.json"), JSON.stringify(captures, null, 2))
     expect(state.material).toBe("materials/vgui/damageindicator.vmt")
+    expect(state.viewport.dpr).toBe(Number(process.env.PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR ?? 1))
     expect(state.health).toBeLessThan(selfDamage ? 200 : 300)
     expect(pixels.texture).toMatchObject({ width: 128, height: 64 })
     expect(pixels.texture.alphaWeightedV).toBeGreaterThan(.6)
+    const pivot = state.pivot.split(" ").map(parseFloat)
+    expect(pivot[0]).toBeCloseTo(state.quad.width / 2, 2)
+    expect(pivot[1]).toBeCloseTo(state.quad.height / 2, 2)
     expect(pixels.redPixels).toBeGreaterThan(50)
     expect(pixels.inwardCosine).toBeGreaterThan(.7)
     if (bearing !== undefined) {
@@ -102,7 +106,14 @@ test("authored radial damage follows real bot hits and camera bearing", async ({
     }
     if (dynamic) {
       await page.locator("canvas.world-canvas").click({ position: { x: 640, y: 360 } })
-      if (native) await expect.poll(async () => (await native.read()).occluders?.length ?? 0, { timeout: 8_000 }).toBe(0)
+      if (native) {
+        await expect.poll(async () => {
+          const record = await native.read()
+          return record.error ?? record.occluders?.map(w => w.id).join(",") ?? ""
+        }, { timeout: 8_000 }).toBe("")
+        const record = await native.read()
+        records.push(record); requireMacPageAdmission(record)
+      }
     }
     await page.waitForSelector("[data-tf2-damage-indicator]", { timeout: 10_000 })
     if (selfDamage) await page.mouse.up()
@@ -114,6 +125,12 @@ test("authored radial damage follows real bot hits and camera bearing", async ({
         const { bearing } = view
         await page.waitForSelector("[data-tf2-damage-indicator]", { timeout: 2_000 })
         for (let attempt = 0; attempt < 6; attempt++) {
+          // Wait for a fresh real hit if this one is fading; do not stretch its
+          // lifetime or slow simulation for screenshot extraction.
+          await page.waitForFunction(() => {
+            const e = [...document.querySelectorAll<HTMLElement>("[data-tf2-damage-indicator]")].at(-1)
+            return e && Number(e.style.opacity) > .8
+          }, undefined, { timeout: 2_000 })
           const delta = await page.evaluate(target => {
             const e = [...document.querySelectorAll<HTMLElement>("[data-tf2-damage-indicator]")].at(-1)!
             const s = e.style, x = parseFloat(s.left) + parseFloat(s.width) / 2 - innerWidth / 2, y = parseFloat(s.top) + parseFloat(s.height) / 2 - innerHeight / 2
@@ -161,6 +178,19 @@ test("authored radial damage follows real bot hits and camera bearing", async ({
     const endpoint = await native?.read(path.join(directory, "private-desktop-end.png"))
     if (endpoint) { records.push(endpoint); requireMacPageAdmission(endpoint) }
     await expect(page.locator("[data-tf2-damage-indicator]")).toHaveCount(0, { timeout: 3_000 })
+    if (process.env.PROFILE_DAMAGE_LIFECYCLE === "1") {
+      await page.keyboard.press("Backquote")
+      await command("nb_stop 0")
+      await page.keyboard.press("Backquote")
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.lifecycle), { timeout: 15_000 }).toBe(2)
+      await page.keyboard.press("Backquote")
+      await command("nb_stop 1")
+      await page.keyboard.press("Backquote")
+      await expect(page.locator("[data-tf2-damage-indicator]")).toHaveCount(0, { timeout: 3_000 })
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.combat.lifecycle), { timeout: 25_000 }).toBe(1)
+      await expect(page.locator("[data-tf2-damage-indicator]")).toHaveCount(0)
+      await writeFile(path.join(directory, "respawn.json"), JSON.stringify(await page.evaluate(() => (globalThis as any).__playsrcProfile.combat)))
+    }
     await page.keyboard.press("Backquote")
     await command("disconnect")
     await expect(page.locator("[data-tf2-damage-indicator]")).toHaveCount(0)
