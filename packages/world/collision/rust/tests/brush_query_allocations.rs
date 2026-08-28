@@ -1,5 +1,5 @@
-use playsrc_bsp::{Float32, Leaf, Model, Vector3};
-use playsrc_collision::{Brush, Hull, World};
+use playsrc_bsp::{Float32, Leaf, Model, Node, Vector3};
+use playsrc_collision::{Brush, Hull, Plane, World};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -44,8 +44,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-#[test]
-fn repeated_brush_queries_do_not_allocate_membership_nodes() {
+fn leaf_world() -> World {
     let mut world = World::empty();
     let zero = Vector3 {
         x: Float32(0),
@@ -84,6 +83,12 @@ fn repeated_brush_queries_do_not_allocate_membership_nodes() {
     ];
     // Descending order and duplicates are intentional; membership is not ordering.
     world.leaf_brushes = (0..256).rev().chain(0..256).collect();
+    world
+}
+
+#[test]
+fn repeated_brush_queries_do_not_allocate_membership_nodes() {
+    let world = leaf_world();
     let hull = Hull {
         mins: [0.0; 3],
         maxs: [0.0; 3],
@@ -110,7 +115,36 @@ fn repeated_brush_queries_do_not_allocate_membership_nodes() {
     let counts = COUNTS.replace(None).unwrap();
     drop(reset);
     eprintln!("brush queries: {counts:?}, {elapsed:?}");
-    // One traversal stack and seven ordered-list capacities per query. There
+    // Seven ordered-list capacities per query; a leaf needs no traversal stack. There
     // must be no membership allocation, retained scratch, or map-sized clearing.
-    assert_eq!(counts.0, 8000);
+    assert_eq!(counts.0, 7000);
+}
+
+#[test]
+fn only_deferred_branches_need_heap_stack_storage() {
+    let mut world = leaf_world();
+    world.leaves[0].leaf_brush_count = 0;
+    world.planes.push(Plane { normal: [1.0, 0.0, 0.0], distance: 0.0, kind: 0 });
+    world.nodes.push(Node {
+        plane_index: 0, children: [-1, -1], mins: [0; 3], maxs: [0; 3],
+        first_face: 0, face_count: 0, area: 0, padding: 0,
+    });
+    let hull = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+    for (head, start, end, requests) in [
+        (-1, [1.0; 3], [2.0; 3], 0),
+        (0, [1.0; 3], [2.0; 3], 0),
+        (0, [-1.0; 3], [-2.0; 3], 0),
+        (0, [-1.0; 3], [1.0; 3], 1000),
+    ] {
+        world.models[0].head_node = head;
+        let expected = world.trace_hull(start, end, hull, 1).unwrap();
+        assert!(COUNTS.replace(Some((0, 0))).is_none());
+        for _ in 0..1000 {
+            assert_eq!(black_box(&world).trace_hull(start, end, hull, 1).unwrap(), expected);
+        }
+        let counts = COUNTS.replace(None).unwrap();
+        assert_eq!(counts.0, requests);
+        // A single deferred branch keeps the original one-entry heap capacity.
+        assert_eq!(counts.1, requests * std::mem::size_of::<(i32, [f32; 3], [f32; 3], usize)>());
+    }
 }
