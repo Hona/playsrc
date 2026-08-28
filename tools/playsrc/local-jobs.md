@@ -83,6 +83,10 @@ physical-console checks, headed browser, input/window guards, server, deadlines
 and evidence. A free loopback port avoids the developer's existing server.
 Profiles use native local builds and localhost, never a production URL, remote
 CDP connection, request-interception broker or controller-host asset relay.
+Scheduled launches explicitly use Windows **Normal** process priority (task
+priority 5), not Task Scheduler's default background/BelowNormal priority 7.
+The task records its actual entry priority; browser process boundary snapshots
+also retain their observed priorities. No process is boosted above Normal.
 The invoking checkout supplies the profiler harness; `--application-root` binds
 the server and executable identity to the prepared checkout without editing it.
 See [frame delivery](profile/frame-delivery.md) for ordinary/traced comparisons.

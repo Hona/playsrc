@@ -74,7 +74,11 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   equal(configuration(ordinaryBoundary.configuration), configuration(tracedBoundary.configuration), "configuration/content/quality")
   equal(ordinaryBoundary.boundary.instrumentation, { app: false, frame: false }, "ordinary instrumentation")
   equal(tracedBoundary.boundary.instrumentation, { app: true, frame: true }, "traced instrumentation")
-  const roster = (value: string) => value.split("|").map(bot => bot.split(":").slice(0, 3).join(":"))
+  const roster = (value: string) => {
+    const actors = value.split("|").map(bot => bot.split(":").slice(0, 3).join(":"))
+    if (actors.length !== 15 || new Set(actors.map(actor => actor.split(":")[0])).size !== 15) throw new Error("Incomplete active bot roster")
+    return actors
+  }
   equal(roster(ordinary.sample.before.botProbe), roster(traced.sample.before.botProbe), "bot identity/team/class roster")
   for (const run of [ordinary, traced]) {
     const sample = run.sample, elapsed = sample.ended - sample.started

@@ -71,6 +71,10 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   if ($Action -eq 'Artifacts') {
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
+    if ($Task) {
+      $policyFile = Join-Path $directory "$($Task.Substring('playsrc-local-job-'.Length))-policy.json"
+      if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
+    }
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}
@@ -143,6 +147,7 @@ if ($Action -eq 'Run') {
 $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
+$policy = Join-Path $directory "$token-policy.json"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
 $extra = ConvertFrom-Json -InputObject $ProfileArguments
 if ($ProfileArguments.Trim() -notmatch '^\[.*\]$' -or $extra.Count -gt 16 -or ($null -eq $extra -and $ProfileArguments -notmatch '^\s*\[\s*\]\s*$')) { throw 'Invalid profiler argument array' }
@@ -152,11 +157,14 @@ if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
 $arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile) " + (($extra | ForEach-Object { Quote $_ }) -join ' ') }
-$command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
+$command = "`$ErrorActionPreference='Stop'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# Task Scheduler defaults to 7 (BELOW_NORMAL/background), unlike an ordinary
+# interactive launch. 5 is NORMAL, not an above-normal/realtime benchmark boost.
+# https://learn.microsoft.com/windows/win32/taskschd/tasksettings-priority
+$settings = New-ScheduledTaskSettingsSet -Priority 5 -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 try {
   Register-ScheduledTask -TaskName $name -Action $taskAction -Principal $principal -Settings $settings | Out-Null
   Start-ScheduledTask -TaskName $name
