@@ -22,5 +22,6 @@ void (async () => {
   server = await chromium.launchServer({ ...JSON.parse(process.argv[2]), host: "127.0.0.1", headless: false, timeout: 20_000 })
   server.on("close", () => process.exit(0))
   if (stopping) await stop()
-  else console.log(JSON.stringify({ endpoint: server.wsEndpoint(), executable: server.process().spawnfile }))
+  else console.log(JSON.stringify({ endpoint: server.wsEndpoint(), executable: server.process().spawnfile,
+    browserPid: server.process().pid, arguments: server.process().spawnargs.slice(1) }))
 })().catch(error => { console.error(error); process.exitCode = 1 })

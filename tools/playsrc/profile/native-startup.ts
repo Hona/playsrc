@@ -185,8 +185,10 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
     },
     async allowOwnedLocalPermission(captureBefore: string) {
       if (process.platform !== "win32") throw new Error("Owned permission action requires Windows")
-      const command = await browserCdp.send("Browser.getBrowserCommandLine")
-      assertOwnedEphemeralBrowser(command.arguments)
+      // The launcher owns this receipt. Do not add automation/security flags
+      // merely to enable a CDP command that ordinary Chrome may reject.
+      const command = JSON.parse(readFileSync(path.join(cacheDir, "evidence/tf2-browser-performance/headed-browser.json"), "utf8"))
+      assertOwnedEphemeralBrowser(command.arguments, command.browserPid, browserPid)
       const origin = new URL(page.url()).origin
       if (!/^http:\/\/127\.0\.0\.1:\d+$/u.test(origin)) throw new Error("Permission action is not for the local application")
       const { targetInfo } = await pageCdp.send("Target.getTargetInfo")

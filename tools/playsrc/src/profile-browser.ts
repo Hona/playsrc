@@ -8,7 +8,7 @@ import { repositoryRoot } from "./config"
 import { fileFingerprint } from "./file-fingerprint"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive } from "./profile-lock"
 
-type BrowserOwner = { token: string; pid: number; endpoint: string; identity: string; executable: string; executableSha256: string }
+type BrowserOwner = { token: string; pid: number; browserPid: number; arguments: string[]; endpoint: string; identity: string; executable: string; executableSha256: string }
 export type BrowserLaunch = { channel?: string; args?: string[] }
 
 async function optionalJson(filename: string): Promise<any> {
@@ -118,8 +118,8 @@ if (import.meta.main) {
   })
   // Observe rejection during startup as well as during controlled shutdown.
   void exited.catch(() => undefined)
-  const { endpoint, executable } = await Promise.race([
-    new Promise<{ endpoint: string; executable: string }>((resolve, reject) => {
+  const { endpoint, executable, browserPid, arguments: browserArguments } = await Promise.race([
+    new Promise<{ endpoint: string; executable: string; browserPid: number; arguments: string[] }>((resolve, reject) => {
       let output = ""
       child.stdout!.on("data", chunk => {
         output += chunk.toString()
@@ -129,7 +129,8 @@ if (import.meta.main) {
     }),
     exited.then(() => { throw new Error("Headed browser server exited before publishing its endpoint") }),
   ])
-  const owner: BrowserOwner = { token, pid: process.pid, endpoint,
+  if (!Number.isSafeInteger(browserPid) || browserPid < 1 || !Array.isArray(browserArguments) || browserArguments.some(value => typeof value !== "string")) throw new Error("Owned browser launch receipt differs")
+  const owner: BrowserOwner = { token, pid: process.pid, browserPid, arguments: browserArguments, endpoint,
     identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }
   let stopping = false
   const stop = async (underLock = false) => {

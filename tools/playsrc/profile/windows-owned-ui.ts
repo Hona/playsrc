@@ -62,10 +62,10 @@ function Allow-OwnedLocalPermission($ui,[string]$origin,[uint32]$processId,[long
 }
 `
 
-export function assertOwnedEphemeralBrowser(arguments_: readonly string[]): void {
+export function assertOwnedEphemeralBrowser(arguments_: readonly string[], launchedPid: number, measuredPid: number): void {
   const profiles = arguments_.filter(value => value.startsWith("--user-data-dir="))
   if (profiles.length !== 1 || !/[\\/]playwright_chromiumdev_profile-[a-zA-Z0-9_-]+$/u.test(profiles[0]!)
-    || !arguments_.includes("--enable-automation")) throw new Error("Permission action requires the owned ephemeral automation profile")
+    || !Number.isSafeInteger(launchedPid) || launchedPid < 1 || launchedPid !== measuredPid) throw new Error("Permission action requires the owned ephemeral automation profile")
 }
 
 export function ownedDiagnosticWindow(native: any, bounds: { left: number; top: number; width: number; height: number }, browserPid: number): number {
