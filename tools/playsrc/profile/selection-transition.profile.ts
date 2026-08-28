@@ -16,7 +16,7 @@ import { selectionLoadingControl } from "./selection-loading-control"
 
 const classes = ["scout", "sniper", "soldier", "demoman", "medic", "heavyweapons", "pyro", "spy", "engineer"] as const
 
-test("selection material color depth and draw ownership parity", async ({ page, baseURL }) => {
+for (const kind of ["model", "particle"]) test(`selection ${kind} material color depth and draw ownership parity`, async ({ page, baseURL }) => {
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, { sourceCacheDir } = await loadLocalConfig()
   if (!directory || !baseURL || new URL(baseURL).hostname !== "127.0.0.1") throw new Error("Use the ordinary local native selection runner")
   const reader = await startupNativeReader(page, sourceCacheDir), observations: unknown[] = [], records: unknown[] = []
@@ -31,7 +31,7 @@ test("selection material color depth and draw ownership parity", async ({ page, 
     // Use a real loopback response. A fulfilled/intercepted document has no
     // network address-space provenance and can provoke native LNA permission
     // UI for its own local modules. Do not grant/suppress that permission.
-    const url = new URL(`/@fs/${repositoryRoot.replaceAll("\\", "/")}/packages/presentation/rendering/tests/fixtures/model-graph-parity.html`, baseURL).href
+    const url = new URL(`/@fs/${repositoryRoot.replaceAll("\\", "/")}/packages/presentation/rendering/tests/fixtures/${kind}-graph-parity.html`, baseURL).href
     await page.goto(url)
     await page.waitForFunction(() => (window as any).probe)
     await check("model-before")
