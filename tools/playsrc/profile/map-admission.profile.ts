@@ -84,6 +84,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const root=document.querySelector<HTMLElement>("main")!,profile=(globalThis as any).__playsrcProfile,profiler=(globalThis as any).__playsrcFrameProfiler
     profiler.completedFrames.length=0;profiler.active=true
     const start=performance.now(),tick=Number(root.dataset.snapshotTick)
+    const audioBefore=profile.audio?.stats()
     const before=profile.bots.map((bot:any)=>({identity:bot.identity,area:bot.area,position:bot.position}))
     const frames:number[]=[];let previous:number|undefined,firstRafTimestamp:number|undefined,firstRafObserved:number|undefined
     // A RAF timestamp can precede an evaluate() that ran during that frame.
@@ -94,7 +95,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
     };requestAnimationFrame(frame)})
     profiler.active=false
     return {seconds:(performance.now()-start)/1000,ticks:Number(root.dataset.snapshotTick)-tick,frames,sampleStarted:start,firstRafTimestamp,firstRafObserved,before,bots:profile.bots,points:profile.controlPoints.points,
-      completedFrames:profiler.completedFrames,counters:profiler.counters,nodeBuilds:profiler.nodeBuilds,nodeKeys:profiler.nodeKeys,simulation:profiler.simulation,memoryAssets:profile.memoryAssets,failures:profile.failure,longTasks:profiler.longTasks,round:profile.round}
+      completedFrames:profiler.completedFrames,counters:profiler.counters,nodeBuilds:profiler.nodeBuilds,nodeKeys:profiler.nodeKeys,simulation:profiler.simulation,memoryAssets:profile.memoryAssets,failures:profile.failure,longTasks:profiler.longTasks,round:profile.round,
+      audioBefore,audioAfter:profile.audio?.stats(),soundscape:profile.soundscape}
     })}finally{nativeMonitoring=false;await nativeMonitor;await checkNative();if(nativeFailure)throw nativeFailure}
   }
   let revision = 0
@@ -124,6 +126,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
     await page.evaluate(revision => { (globalThis as any).__playsrcProfile.geometryEvidenceRevision = revision }, selected)
     await page.waitForFunction(revision => (globalThis as any).__playsrcProfile.geometryEvidence?.revision === revision, selected)
     const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.geometryEvidence)
+    await writeFile(testInfo.outputPath(`${target}-${label}-audio.json`),json(await page.evaluate(()=>({selection:(globalThis as any).__playsrcProfile.soundscape,stats:(globalThis as any).__playsrcProfile.audio?.stats()}))))
     const imagePath = testInfo.outputPath(`${target}-${label}.png`)
     await page.screenshot({ path: imagePath })
     if (process.platform === "darwin" && label === "spawn") {
@@ -175,9 +178,14 @@ test("configured map native traversal, objective roster, visible geometry and ca
     const state=async(label:string)=>{
       await capture(label)
       const data=await page.evaluate(()=>({generation:Number(document.querySelector<HTMLElement>("main")!.dataset.generation),cache:document.querySelector<HTMLElement>("main")!.dataset.cache,
-        geometry:(globalThis as any).__playsrcProfile.geometryEvidence,memory:(globalThis as any).__playsrcProfile.memoryAssets,quality:(globalThis as any).__playsrcProfile.videoQuality,heap:(performance as any).memory?.usedJSHeapSize}))
+        geometry:(globalThis as any).__playsrcProfile.geometryEvidence,memory:(globalThis as any).__playsrcProfile.memoryAssets,quality:(globalThis as any).__playsrcProfile.videoQuality,heap:(performance as any).memory?.usedJSHeapSize,
+        soundscape:(globalThis as any).__playsrcProfile.soundscape,audio:(globalThis as any).__playsrcProfile.audio?.stats()}))
       const worker=await Promise.all(page.workers().filter(worker=>worker.url().includes("gameplay-worker")).map(worker=>worker.evaluate(()=>(globalThis as any).__playsrcWorkerMemory)))
-      records.push({label,...data,worker});await writeFile(testInfo.outputPath("map-generation-lifecycle.json"),json(records));return data
+      records.push({label,...data,worker});await writeFile(testInfo.outputPath("map-generation-lifecycle.json"),json(records))
+      expect(data.audio?.underrunFrames).toBe(0)
+      expect(worker).toHaveLength(1)
+      expect(worker[0].resourceSections.every((section:any)=>section.generation===data.generation&&section.owner==="active")).toBe(true)
+      return data
     }
     const initial=await state("generation-initial")
     await page.keyboard.press("Escape")
@@ -502,6 +510,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
   await writeFile(resultPath, json({ target,scope:"balanced-roster-traversal-and-cadence", errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
   await testInfo.attach("map-acceptance", { path: resultPath, contentType: "application/json" })
   expect(sample.bots).toHaveLength(15)
+  expect.soft(sample.audioAfter?.contextState).toBe("running")
+  expect.soft(sample.audioAfter?.underrunFrames).toBe(0)
   expect(sample.bots.every((bot: any) => bot.area !== null)).toBe(true)
   expect(sample.bots.some((bot: any) => sample.before.some((prior: any) => prior.identity === bot.identity && Math.hypot(...bot.position.map((value: number, axis: number) => value - prior.position[axis])) > 32))).toBe(true)
   // Retain the failure, but still exercise capture/lifecycle gates so a cold-view
