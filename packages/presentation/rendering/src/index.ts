@@ -4451,7 +4451,7 @@ class RendererOwner implements Renderer {
 
   #replaceLightmapData(scene: SceneResources, lightmap: RuntimeLightmap): void {
     try { replaceWorldLightmapData(scene.lightmapTextures, lightmap) }
-    catch (error) { throw new RenderingError("MalformedInput", String(error)) }
+    catch (error) { throw new RenderingError("MalformedInput", error instanceof Error ? error.message : String(error)) }
   }
 
   #renderUnderwaterOverlay(overlay: NonNullable<NonNullable<WaterFramePlan["visibleWater"]>["overlay"]> & { refractTint?: readonly [number, number, number] }): void {

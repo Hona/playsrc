@@ -116,7 +116,7 @@ test("source plane/view/topology or sampler mismatch always allocates independen
   expect(borrowWorldLightmapTextures({ ...lightmap, width: 4, height: 8 }, active.textures)).toBeUndefined()
   expect(borrowWorldLightmapTextures({ ...lightmap, profile: "hdr" }, active.textures)).toBeUndefined()
   for (const [key, value] of Object.entries({ type: THREE.HalfFloatType, format: THREE.RedFormat, colorSpace: THREE.SRGBColorSpace,
-    channel: 0, flipY: true, generateMipmaps: true, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    channel: 0, flipY: true, generateMipmaps: true, anisotropy: 4, premultiplyAlpha: true, unpackAlignment: 4, internalFormat: "RGBA16F", minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
     wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping })) {
     const texture = active.textures[0] as any, original = texture[key]; texture[key] = value
     expect(borrowWorldLightmapTextures(lightmap, active.textures)).toBeUndefined(); texture[key] = original
