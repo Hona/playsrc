@@ -140,6 +140,18 @@ while (($line=[Console]::ReadLine()) -ne $null) {
    $result=@{id=$request.id;error=$failure}
  }
  $result.receipt=@{schema='playsrc-native-capture-receipt-v1';privacy='private-native-owner';receivedEpoch=$received;finishedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();sequence=$request.id;browserPid=$request.pid;helper=$helper;before=$before;after=$after;windows=$windows;captureStartedEpoch=$start;captureEndedEpoch=$end;desktop=$desktop}
+ # A rejected capture is NEVER a sample. Preserve separate private diagnostic
+ # pixels so a secondary permission window need not be guessed from a handle.
+ if($result.error -and $request.capture -and $desktop.state -eq 0 -and $desktop.flags -eq 1 -and $desktop.protocol -eq 0 -and $desktop.consoleSessionId -eq $desktop.processSessionId) {
+  try {
+   $dx=[StartupWindow]::GetSystemMetrics(76);$dy=[StartupWindow]::GetSystemMetrics(77);$dw=[StartupWindow]::GetSystemMetrics(78);$dh=[StartupWindow]::GetSystemMetrics(79)
+   if($dw -le 0 -or $dh -le 0 -or $dw*$dh -gt 33554432){throw 'Diagnostic desktop bounds invalid'}
+   $diagnosticPath=[string]$request.capture+'.rejected.png';$diagnosticStart=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+   $bitmap=New-Object System.Drawing.Bitmap($dw,$dh,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb);$graphics=[System.Drawing.Graphics]::FromImage($bitmap)
+   try {$graphics.CopyFromScreen($dx,$dy,0,0,$bitmap.Size);$bitmap.Save($diagnosticPath,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$graphics.Dispose();$bitmap.Dispose()}
+   $result.receipt.diagnosticPixels=@{path=$diagnosticPath;privacy='private-desktop-never-upload';admitted=$false;startedEpoch=$diagnosticStart;endedEpoch=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}
+  }catch{$result.receipt.diagnosticFailure=$_.Exception.Message}
+ }
  [Console]::WriteLine(($result|ConvertTo-Json -Depth 12 -Compress))
 }
 `
