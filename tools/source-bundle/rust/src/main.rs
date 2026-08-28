@@ -3964,7 +3964,10 @@ fn sound_wave_dependencies(source: &[u8], targets: &[&str]) -> Result<Vec<String
                 playsrc_keyvalues::Value::Object(children) => pending.extend(children),
                 playsrc_keyvalues::Value::Scalar(value) if node.key.bytes.eq_ignore_ascii_case(b"wave") => {
                     let wave = std::str::from_utf8(&value.token.bytes).map_err(|_| format!("Sound wave {target} is not UTF-8"))?;
-                    waves.insert(format!("sound/{}", wave.trim_start_matches('#')).to_ascii_lowercase());
+                    // soundchars.h::PSkipSoundChars. Decorators are not part
+                    // of the VPK path (payload alarms use spatial stereo ')').
+                    let wave=wave.trim_start_matches(|c| matches!(c,'*'|'?'|'!'|'#'|'@'|'>'|'<'|'^'|')'|'}'));
+                    waves.insert(format!("sound/{wave}").to_ascii_lowercase());
                 }
                 _ => {}
             }
@@ -3980,6 +3983,13 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn round_wave_dependencies_skip_source_sound_chars_not_only_drymix() {
+        let source=br#""Cart.Warning" { "wave" ")items/cart_warning.wav" }
+          "Fixture" { "rndwave" { "wave" "*#)items/cart_warning_single.wav" "wave" "$literal.wav" } }"#;
+        assert_eq!(super::sound_wave_dependencies(source,&["Cart.Warning","Fixture"]).unwrap(),
+            ["sound/$literal.wav","sound/items/cart_warning.wav","sound/items/cart_warning_single.wav"]);
+    }
     use super::*;
 
     #[test]

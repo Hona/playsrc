@@ -16736,9 +16736,10 @@ mod tests {
         )
         .unwrap()));
         eprintln!("snapshot encoding: bytes={} {metrics:?} sha256={:x}", encoded.len(), Sha256::digest(&encoded));
-        assert!(metrics.requests <= 10 && metrics.bytes <= 5368, "snapshot encoder retains redundant staging/growth");
-        assert_eq!(metrics.live, 1280);
-        let expected_hash = "ab86a94b607e9d76a9d778e01818e0358658eee5f3f2f19131573c69fffa5aeb";
+        // Two ten-wave masks add four wire bytes without another allocation.
+        assert!(metrics.requests <= 10 && metrics.bytes <= 5376, "snapshot encoder retains redundant staging/growth");
+        assert_eq!(metrics.live, 1288);
+        let expected_hash = "c3e218d905c914634d2025e7f000776ad34fcd1799f3a1709fb8fcb13e7c44b5";
         assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
         assert_eq!(&encoded[..8], b"PSSN\x1e\0\0\0");
         assert_eq!(encoded.len(), 1268);
@@ -16802,6 +16803,7 @@ mod tests {
         // Exercise growth boundaries while holding every older immutable lease.
         // Collision bytes are an opaque, already-authenticated section here.
         let mut leases = Vec::new();
+        let collision_at=552+368;
         for size in [0, 1, 4095, 65536, 1024 * 1024] {
             let collision = vec![0xa5; size];
             let (lease, metrics) = encoding_allocations::measure(|| Arc::<[u8]>::from(encode_snapshot(
@@ -16814,10 +16816,10 @@ mod tests {
                 }).unwrap()));
             assert_eq!(lease.len(), encoded.len() - collision_snapshot.len() + size);
             assert_eq!(u32::from_le_bytes(lease[144..148].try_into().unwrap()) as usize, size);
-            assert_eq!(&lease[916..916 + size], collision);
+            assert_eq!(&lease[collision_at..collision_at + size], collision);
             assert_eq!(&lease[..144], &encoded[..144]);
-            assert_eq!(&lease[148..916], &encoded[148..916]);
-            assert_eq!(&lease[916 + size..], &encoded[916 + collision_snapshot.len()..]);
+            assert_eq!(&lease[148..collision_at], &encoded[148..collision_at]);
+            assert_eq!(&lease[collision_at + size..], &encoded[collision_at + collision_snapshot.len()..]);
             assert!(metrics.requests <= 11, "section staging must not return: {metrics:?}");
             assert!(metrics.bytes <= 2 * lease.len() + 4112, "Collision insertion must not regrow the full payload: {metrics:?}");
             assert!(metrics.peak <= (2 * lease.len() + 1024) as isize, "redundant payload owners: {metrics:?}");
@@ -16827,7 +16829,7 @@ mod tests {
         }
         assert_eq!(format!("{:x}", Sha256::digest(&encoded)), expected_hash);
         for (lease, size) in leases.iter().zip([0, 1, 4095, 65536, 1024 * 1024]) {
-            assert!(lease[916..916 + size].iter().all(|byte| *byte == 0xa5));
+            assert!(lease[collision_at..collision_at + size].iter().all(|byte| *byte == 0xa5));
         }
         let oversized = vec![0; 64 * 1024 * 1024];
         let (failed, metrics) = encoding_allocations::measure(|| encode_snapshot(
