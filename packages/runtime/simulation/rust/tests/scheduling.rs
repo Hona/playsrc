@@ -151,6 +151,41 @@ fn frame(observation: Observation) -> (u32, u32, f64, f32, PumpDisposition) {
 }
 
 #[test]
+fn render_observations_do_not_alias_a_second_tick_clock() {
+    // Browser callbacks are observations, not a second simulation authority.
+    // A separately phased 15ms gate can batch two real ticks into one visible
+    // publication even though the host executes the correct number of ticks.
+    let run = |offset: f64, gated: bool| {
+        let mut host = FixedStepHost::new(configuration(), DeterministicSimulation::new());
+        host.observe(0.0).unwrap();
+        let mut next = offset;
+        let (mut ticks, mut publications) = (0, 0);
+        for callback in 0..1155 {
+            let now = offset + f64::from(callback) / 165.0;
+            if gated && now < next { continue; }
+            host.observe(now).unwrap();
+            if gated { while next <= now { next += 0.015; } }
+            let ready = host.drain_publications();
+            if (1.0..7.0).contains(&now) {
+                publications += ready.len();
+                ticks += ready.iter().map(|publication| publication.selected_ticks as usize).sum::<usize>();
+            }
+        }
+        (ticks, publications)
+    };
+    let mut aliased = false;
+    for milliseconds in 1..15 {
+        let direct = run(f64::from(milliseconds) / 1000.0, false);
+        let gated = run(f64::from(milliseconds) / 1000.0, true);
+        assert!((399..=401).contains(&direct.0));
+        assert_eq!(direct.0, direct.1, "one publication per authoritative tick at 165Hz");
+        assert!(direct.0.abs_diff(gated.0) <= 1);
+        aliased |= gated.1 < 360;
+    }
+    assert!(aliased, "independent browser gates must reproduce the below-60 publication failure");
+}
+
+#[test]
 fn validates_complete_configuration_before_construction() {
     assert_eq!(DEFAULT_TICK_INTERVAL.to_bits(), 0x3c75_c28f);
     assert_eq!(configuration().maximum_ticks_per_host_frame(), 7);

@@ -27,7 +27,8 @@ export function installDeliveryRpcObserver(host: any = globalThis) {
           "wasmLinearMemoryBytes", "wasmAllocatorLiveBytes", "wasmAllocatorHighWaterBytes"]) {
           timings[key] = typeof response.timings[key] === "number" ? response.timings[key] : null
         }
-        records.push({ worker, id: response.id, kind: request.kind, sent: request.at, received: at, censoredStart: request.at < started,
+        const outputBytes = typeof response.byteLength === "number" ? response.byteLength : response.output instanceof ArrayBuffer ? response.output.byteLength : undefined
+        records.push({ worker, id: response.id, kind: request.kind, sent: request.at, received: at, censoredStart: request.at < started, outputBytes,
           elapsedMilliseconds: at - request.at, timings })
       }
     }

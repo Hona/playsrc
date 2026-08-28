@@ -15,6 +15,7 @@ test("RPC diagnosis keeps the real send/reply contract and never retains payload
   expect(result.records).toHaveLength(1)
   expect(result.records[0]).toMatchObject({ kind: "observe", sent: 0, received: 5, elapsedMilliseconds: 5, censoredStart: true })
   expect(result.records[0]).not.toHaveProperty("output")
+  expect(result.records[0].outputBytes).toBe(1000)
   expect(result.records[0]).not.toHaveProperty("bytes")
   expect(host.__playsrcProfile).toBeUndefined()
   expect(host.__playsrcFrameProfiler).toBeUndefined()
