@@ -178,17 +178,26 @@ export async function runLocalJob(id: string, args: readonly string[], ready: bo
   const checkout = path.join(directory, "checkout")
   const running = await open(path.join(directory, "running"), "wx")
   try {
-  await running.writeFile(JSON.stringify({ pid: process.pid, startedAt: Date.now(), job: id, command: plan.command }))
+  const owner = { pid: process.pid, startedAt: Date.now(), job: id, command: plan.command }
+  const phase = async (name: string) => {
+    const text = JSON.stringify({ ...owner, phase: name })
+    await running.write(text, 0, "utf8"); await running.truncate(Buffer.byteLength(text))
+  }
+  await phase("source-validation")
   if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
   await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
   await mkdir(run)
+  await phase("reserve-ports")
   const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
   const command = [process.execPath, ...plan.command]
   let failure: string | null = null
   try {
+    await phase("console-admission")
     if (plan.interactive) requireWindowsProfileConsole()
+    await phase("command")
     await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
+    await phase("verify-source")
     await assertCheckout(checkout, job)
   } catch (error) { failure = String(error) }
   const result = { schema: "playsrc-local-job-result-v1", id, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome: failure ? "failed" : "passed", failure, run }

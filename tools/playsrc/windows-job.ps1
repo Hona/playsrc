@@ -113,7 +113,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
       }
     }
     $summary = if ($result) { $result | Select-Object commit,outcome,startedAt,finishedAt,run } else { $null }
-    $marker = if ($running) { Get-Item (Join-Path $directory 'running') | Select-Object CreationTimeUtc,Length } else { $null }
+    $marker = if ($running) { @{file=(Get-Item (Join-Path $directory 'running') | Select-Object CreationTimeUtc,Length);content=(Get-Content -Raw (Join-Path $directory 'running'))} } else { $null }
     @{job=$Job;task=$taskState;taskInfo=$taskInfo;running=$running;marker=$marker;latestRun=$latestRun.FullName;processes=$processes;log=$latest.FullName;launchLog=$launchFile;launchError=$(if (!$result) { $launchText } else { $null });result=$summary} | ConvertTo-Json -Depth 8 -Compress
   }
   exit 0
