@@ -603,6 +603,101 @@ fn control_point_position_operators_run_before_initial_particle_emission() {
 }
 
 #[test]
+fn yaw_spin_updates_yaw_not_roll_and_preserves_rate_floor_and_zero_rate() {
+    for (rate, expected) in [(60, 0.32898682), (-60, 0.005483114), (0, 0.0)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("initial_particles", TestValue::Int(1)), ("operators", TestValue::Refs(vec![2])),
+                ("renderers", TestValue::Refs(vec![3])), ("material", TestValue::Text("effects/sc_strobe_light.vmt")),
+            ] },
+            element("spin", 2, vec![("functionName", TestValue::Text("Rotation Spin Yaw")),
+                ("yaw_rate_degrees", TestValue::Int(rate)), ("yaw_rate_min", TestValue::Int(1)), ("yaw_stop_time", TestValue::Float(0.0))]),
+            element("renderer", 3, vec![("functionName", TestValue::Text("render_animated_sprites")), ("orientation_type", TestValue::Int(1))]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), Default::default()).unwrap();
+        world.advance(&[create_event(vec![control([0.0; 3], [0.0; 3])])], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        let (items, _) = world.advance(&[], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.05, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].orientation_type, 1);
+        assert_eq!(items[0].roll_radians, 0.0);
+        assert!((items[0].yaw_radians - expected).abs() < 0.000001, "rate {rate}: {}", items[0].yaw_radians);
+    }
+}
+
+#[test]
+fn control_point_light_colors_particles_at_the_authored_half_intensity_distance() {
+    let bytes = encode(&[
+        TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+        TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+            ("initial_particles", TestValue::Int(1)), ("operators", TestValue::Refs(vec![2])), ("renderers", TestValue::Refs(vec![3])),
+            ("initializers", TestValue::Refs(vec![4])), ("material", TestValue::Text("smoke.vmt")),
+        ] },
+        element("light", 2, vec![("functionName", TestValue::Text("Color Light From Control Point")),
+            ("Light 1 Color", TestValue::Color([255, 120, 0, 255])), ("Light 1 50% Distance", TestValue::Float(100.0)),
+            ("Light 1 0% Distance", TestValue::Float(500.0)), ("Initial Color Bias", TestValue::Float(0.0))]),
+        element("renderer", 3, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+        element("position", 4, vec![("functionName", TestValue::Text("Position Within Box Random")),
+            ("min", TestValue::Vector([100.0, 0.0, 0.0])), ("max", TestValue::Vector([100.0, 0.0, 0.0]))]),
+    ]);
+    let registry = registry(&bytes);
+    let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), Default::default()).unwrap();
+    world.advance(&[create_event(vec![control([0.0; 3], [0.0; 3])])], AdvanceRequest {
+        from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+    }, &mut NoHit).unwrap();
+    let (items, _) = world.advance(&[], AdvanceRequest {
+        from_seconds: 0.0, to_seconds: 0.05, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+    }, &mut NoHit).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].position, [100.0, 0.0, 0.0]);
+    assert_eq!(items[0].color, [128, 60, 0]);
+}
+
+#[test]
+fn child_position_initialization_cycles_parent_particles_and_expires_without_live_parents() {
+    for parent_count in [0, 3] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1, 2]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "rockettrail", uuid: [1; 16], attributes: vec![
+                ("initial_particles", TestValue::Int(parent_count)), ("initializers", TestValue::Refs(vec![4])),
+                ("renderers", TestValue::Refs(vec![6])), ("children", TestValue::Refs(vec![3])), ("material", TestValue::Text("smoke.vmt")),
+            ] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "child", uuid: [2; 16], attributes: vec![
+                ("initial_particles", TestValue::Int(5)), ("initializers", TestValue::Refs(vec![5])),
+                ("renderers", TestValue::Refs(vec![6])), ("material", TestValue::Text("smoke.vmt")),
+            ] },
+            TestElement { kind: "DmeParticleChild", name: "child", uuid: [3; 16], attributes: vec![("child", TestValue::Ref(2))] },
+            element("position", 4, vec![("functionName", TestValue::Text("Position Within Box Random")), ("min", TestValue::Vector([0.0; 3])), ("max", TestValue::Vector([100.0; 3]))]),
+            element("inherit", 5, vec![("functionName", TestValue::Text("Position From Parent Particles")), ("Inherited Velocity Scale", TestValue::Float(0.0)), ("Random Parent Particle Distribution", TestValue::Bool(false))]),
+            element("renderer", 6, vec![("functionName", TestValue::Text("render_animated_sprites"))]),
+        ]);
+        let registry = registry(&bytes);
+        let mut world = playsrc_particle::ParticleWorld::new(&registry, &Default::default(), Default::default()).unwrap();
+        world.advance(&[create_event(vec![control([0.0; 3], [0.0; 3])])], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.0, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        let (items, _) = world.advance(&[], AdvanceRequest {
+            from_seconds: 0.0, to_seconds: 0.05, maximum_step_seconds: 0.05, camera_position: [0.0; 3],
+        }, &mut NoHit).unwrap();
+        let mut parents = items.iter().filter(|item| item.system_uuid == [1; 16]).collect::<Vec<_>>();
+        let mut children = items.iter().filter(|item| item.system_uuid == [2; 16]).collect::<Vec<_>>();
+        parents.sort_by_key(|item| item.particle_identity);
+        children.sort_by_key(|item| item.particle_identity);
+        assert_eq!(parents.len(), parent_count as usize);
+        assert_eq!(children.len(), if parent_count == 0 { 0 } else { 5 });
+        for (index, child) in children.iter().enumerate() {
+            assert_eq!(child.position, parents[index % parents.len()].position);
+            assert_eq!(child.previous_position, child.position);
+        }
+    }
+}
+
+#[test]
 fn continuous_emission_scales_by_highest_control_index_not_populated_count() {
     for (highest, scale, expected) in [(0, 1.0, 4), (3, 1.0, 12), (3, 0.5, 6)] {
         let bytes = encode(&[
@@ -670,6 +765,22 @@ fn parses_registry_and_rejects_malformed_documents_atomically() {
         .code,
         ErrorCode::BoundExceeded,
     );
+}
+
+#[test]
+fn admits_z_aligned_sprite_renderers_without_accepting_other_unimplemented_modes() {
+    for (orientation, control_point, accepted) in [(0, -1, true), (1, -1, true), (2, -1, true), (3, -1, false), (1, 0, false)] {
+        let bytes = encode(&[
+            TestElement { kind: "DmeElement", name: "root", uuid: [0; 16], attributes: vec![("particleSystemDefinitions", TestValue::Refs(vec![1]))] },
+            TestElement { kind: "DmeParticleSystemDefinition", name: "cart_flashinglight", uuid: [1; 16], attributes: vec![
+                ("material", TestValue::Text("effects/sc_strobe_light.vmt")), ("renderers", TestValue::Refs(vec![2])),
+            ] },
+            element("renderer", 2, vec![("functionName", TestValue::Text("render_animated_sprites")),
+                ("orientation_type", TestValue::Int(orientation)), ("orientation control point", TestValue::Int(control_point))]),
+        ]);
+        let registry = registry(&bytes);
+        assert_eq!(registry.target_closure(&[DefinitionLookup::Name("cart_flashinglight")]).is_ok(), accepted, "orientation {orientation}, control point {control_point}");
+    }
 }
 
 #[test]

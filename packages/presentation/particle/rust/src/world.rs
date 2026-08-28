@@ -620,6 +620,7 @@ struct System {
     unique_particle_identity: i32,
     emitter_contexts: Vec<EmitterContext>,
     operator_contexts: Vec<OperatorContext>,
+    parent_particle_cursors: Vec<usize>,
     controls: Arc<Vec<Option<ControlPoint>>>,
     local_lighting: Option<(i32, [f32; 3], [u8; 3])>,
     target_control_point: u8,
@@ -670,6 +671,7 @@ enum EmitterContext {
 enum OperatorContext {
     None,
     PositionLock { previous_position: [f32; 3], previous_orientation: [f32; 4] },
+    ControlPointLight(Box<crate::control_point_light::ControlPointLighting>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -911,6 +913,7 @@ impl ParticleWorld {
                     collision,
                     &mut self.simulation_random,
                     &mut effect.collision_cache,
+                    None,
                 )?;
             }
             from = next;
@@ -991,6 +994,7 @@ impl ParticleWorld {
                     self.limits,
                     &mut remaining,
                     collision,
+                    None,
                 )?;
                 self.effects[index] = replacement;
             }
@@ -1088,6 +1092,7 @@ impl ParticleWorld {
             self.limits,
             &mut remaining,
             collision,
+            None,
         )?;
         self.effects.push(effect);
         Ok(())
@@ -1182,13 +1187,14 @@ fn initialize_first_frame(
     limits: WorldLimits,
     remaining_particles: &mut usize,
     collision: &mut impl CollisionQuery,
+    parent_particles: Option<&[Particle]>,
 ) -> Result<(), Error> {
     if system.delay_seconds > 0.0 {
         return Ok(());
     }
-    initialize_system_first_frame(system, registry, limits, remaining_particles, collision)?;
+    initialize_system_first_frame(system, registry, limits, remaining_particles, collision, parent_particles)?;
     for child in &mut system.children {
-        initialize_first_frame(child, registry, limits, remaining_particles, collision)?;
+        initialize_first_frame(child, registry, limits, remaining_particles, collision, Some(&system.particles))?;
     }
     Ok(())
 }
@@ -1199,6 +1205,7 @@ fn initialize_system_first_frame(
     limits: WorldLimits,
     remaining_particles: &mut usize,
     collision: &mut impl CollisionQuery,
+    parent_particles: Option<&[Particle]>,
 ) -> Result<(), Error> {
     let definition = registry
         .definition_at(system.definition_index)
@@ -1216,7 +1223,7 @@ fn initialize_system_first_frame(
         ));
     }
     for _ in 0..initial {
-        let particle = initialize_particle(system, definition, 0.0, collision)?;
+        let particle = initialize_particle(system, definition, 0.0, collision, parent_particles)?;
         system.particles.push(particle);
         *remaining_particles -= 1;
     }
@@ -1291,9 +1298,9 @@ fn instantiate(
                     previous_position: [0.0; 3],
                     previous_orientation: [0.0, 0.0, 0.0, 1.0],
                 }
-            } else {
-                OperatorContext::None
-            }
+            } else if operator.identity.eq_ignore_ascii_case("Color Light From Control Point") {
+                OperatorContext::ControlPointLight(Box::new(crate::control_point_light::ControlPointLighting::new(operator, |_| [0.0; 3])))
+            } else { OperatorContext::None }
         })
         .collect();
     let mut children = Vec::with_capacity(definition.children.len());
@@ -1340,6 +1347,9 @@ fn instantiate(
         unique_particle_identity: 0,
         emitter_contexts,
         operator_contexts,
+        parent_particle_cursors: if definition.functions(FunctionCategory::Initializer).any(|function| function.identity.eq_ignore_ascii_case("Position From Parent Particles")) {
+            vec![0; definition.functions(FunctionCategory::Initializer).count()]
+        } else { Vec::new() },
         controls: Arc::clone(state.controls),
         local_lighting: None,
         target_control_point: state
@@ -1365,6 +1375,7 @@ fn advance_system(
     collision: &mut impl CollisionQuery,
     simulation_random: &mut SimdRandom,
     collision_cache: &mut CollisionPlaneCache,
+    parent_particles: Option<&[Particle]>,
 ) -> Result<(), Error> {
     let definition = registry
         .definition_at(system.definition_index)
@@ -1375,7 +1386,7 @@ fn advance_system(
         return Ok(());
     }
     if system.first_frame {
-        initialize_system_first_frame(system, registry, limits, remaining_particles, collision)?;
+        initialize_system_first_frame(system, registry, limits, remaining_particles, collision, parent_particles)?;
     }
     let dt = (local_to - local_from).max(0.0);
     system.current_step = dt;
@@ -1389,6 +1400,7 @@ fn advance_system(
         limits,
         remaining_particles,
         collision,
+        parent_particles,
     )?;
     if dt > 0.0 {
         system.simulated_frames = system.simulated_frames.saturating_add(1);
@@ -1422,6 +1434,7 @@ fn advance_system(
             collision,
             simulation_random,
             collision_cache,
+            Some(&system.particles),
         )?;
     }
     Ok(())
@@ -1471,6 +1484,7 @@ fn emit(
     limits: WorldLimits,
     remaining_particles: &mut usize,
     collision: &mut impl CollisionQuery,
+    parent_particles: Option<&[Particle]>,
 ) -> Result<(), Error> {
     if !system.emission_active {
         return Ok(());
@@ -1557,7 +1571,7 @@ fn emit(
             } else {
                 creation_start
             };
-            let particle = initialize_particle(system, definition, creation.min(to), collision)?;
+            let particle = initialize_particle(system, definition, creation.min(to), collision, parent_particles)?;
             system.particles.push(particle);
             *remaining_particles -= 1;
         }
@@ -1570,6 +1584,7 @@ fn initialize_particle(
     definition: &Definition,
     creation: f32,
     collision: &mut impl CollisionQuery,
+    parent_particles: Option<&[Particle]>,
 ) -> Result<Particle, Error> {
     let constant_color = color_attribute(definition, "color", [255; 4]);
     let mut particle = Particle {
@@ -1603,7 +1618,7 @@ fn initialize_particle(
     };
     let mut velocity = [0.0; 3];
     let mut claimed = BTreeSet::new();
-    for initializer in definition.functions(FunctionCategory::Initializer) {
+    for (initializer_index, initializer) in definition.functions(FunctionCategory::Initializer).enumerate() {
         if initializer
             .identity
             .eq_ignore_ascii_case("Position Modify Offset Random")
@@ -1634,7 +1649,27 @@ fn initialize_particle(
         if attribute.is_some_and(|attribute| !claimed.insert(attribute)) {
             continue;
         }
-        if initializer
+        if initializer.identity.eq_ignore_ascii_case("Position From Parent Particles") {
+            claimed.insert("lifetime");
+            match parent_particles {
+                None => { particle.position = [0.0; 3]; velocity = [0.0; 3]; }
+                Some([]) => { particle.lifetime_seconds = 0.0; }
+                Some(parents) => {
+                    let cursor = if bool_parameter(initializer, "Random Parent Particle Distribution", false) {
+                        next_random_int(system, 0, parents.len() as i32 - 1) as usize
+                    } else {
+                        let cursor = system.parent_particle_cursors[initializer_index];
+                        if cursor >= parents.len() { 0 } else { cursor }
+                    };
+                    let parent = &parents[cursor];
+                    let fraction = remap(creation, system.local_time - system.current_step, system.local_time);
+                    particle.position = std::array::from_fn(|axis| mix(parent.previous_position[axis], parent.position[axis], fraction));
+                    let scale = float_parameter(initializer, "Inherited Velocity Scale", 0.0);
+                    velocity = mul(sub(particle.position, parent.previous_position), scale / system.previous_step);
+                    system.parent_particle_cursors[initializer_index] = cursor + 1;
+                }
+            }
+        } else if initializer
             .identity
             .eq_ignore_ascii_case("Assign target CP")
         {
@@ -2367,6 +2402,12 @@ fn operate(
         }
         if operator.identity.eq_ignore_ascii_case("Movement Lock to Control Point") {
             operate_position_lock(system, operator, function_index, time, dt, strength, simulation_random);
+            continue;
+        }
+        if operator.identity.eq_ignore_ascii_case("Color Light From Control Point") {
+            let OperatorContext::ControlPointLight(lighting) = &mut system.operator_contexts[function_index] else { unreachable!("validated light context") };
+            lighting.update_controls(|index| control_at_slice(&system.controls, index));
+            for particle in &mut system.particles { particle.color = lighting.color(particle.position, particle.color); }
             continue;
         }
         let random_offset = (function_index as i32).wrapping_mul(17);
@@ -4068,6 +4109,7 @@ fn initializer_attribute(identity: &str) -> Option<&'static str> {
     } else if identity.eq_ignore_ascii_case("Position Within Box Random")
         || identity.eq_ignore_ascii_case("Position Within Sphere Random")
         || identity.eq_ignore_ascii_case("Position Along Path Random")
+        || identity.eq_ignore_ascii_case("Position From Parent Particles")
     {
         Some("position")
     } else {

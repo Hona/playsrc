@@ -40,18 +40,35 @@ const base: ParticleQuad = {
 }
 
 describe("allocation-free Source Particle geometry", () => {
-  test("Z-aligned sprite cards retain world Z, particle yaw, and shader near-camera tint", () => {
+  test("Z-aligned sprite cards retain authored radius until the shader applies size clamps and proximity tint", () => {
     const positions = new Float32Array(12)
     const write = createParticleQuadWriter({ position: [0, 0, 0], yawDegrees: 43, pitchDegrees: 70 })
     const item: ParticleQuad = { ...base, position: [10, 0, 0], radius: 2, rollRadians: 0, yawRadians: 0, orientationType: 1, materialShader: "sprite-card" }
     expect(write(item, positions, 0)).toBe(1)
-    expect([...positions]).toEqual([10, -2, -2, 10, 2, -2, 10, 2, 2, 10, -2, 2])
+    expect([...positions]).toEqual([10, 2, 2, 10, -2, 2, 10, -2, -2, 10, 2, -2])
     write({ ...item, yawRadians: Math.PI / 2 }, positions, 0)
-    expect(positions[0]).toBeCloseTo(8)
+    expect(positions[0]).toBeCloseTo(12)
     expect(positions[1]).toBeCloseTo(0)
-    expect(write({ ...item, position: [1.5, 0, 0] }, positions, 0)).toBe(0.5)
-    expect(write({ ...item, position: [1, 0, 0] }, positions, 0)).toBe(0)
-    expect([...positions]).toEqual([1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0])
+    expect(write({ ...item, position: [1.5, 0, 0] }, positions, 0)).toBe(1)
+    expect(write({ ...item, position: [1, 0, 0] }, positions, 0)).toBe(1)
+    expect([...positions]).toEqual([1, 2, 2, 1, -2, 2, 1, -2, -2, 1, 2, -2])
+  })
+
+  test("Z-aligned sprites face the eye horizontally, retain world up, roll and authored yaw", () => {
+    const item = { ...base, position: [10, 0, 0] as const, radius: 2, rollRadians: 0, yawRadians: 0, orientationType: 1 }
+    const first = new Float32Array(12)
+    writeParticleQuad(item, { position: [0, 0, 6], yawDegrees: 90, pitchDegrees: -45 }, first, 0)
+    expect([...first]).toEqual([10, 2, 2, 10, -2, 2, 10, -2, -2, 10, 2, -2])
+    const turned = new Float32Array(12)
+    writeParticleQuad({ ...item, yawRadians: Math.PI / 2 }, { position: [0, 0, 6], yawDegrees: 0, pitchDegrees: 0 }, turned, 0)
+    expect(turned[0]).toBeCloseTo(12)
+    expect(turned[1]).toBeCloseTo(0)
+    expect(turned[2]).toBeCloseTo(2)
+    const rolled = new Float32Array(12)
+    writeParticleQuad({ ...item, rollRadians: Math.PI / 2 }, { position: [0, 0, 6], yawDegrees: 0, pitchDegrees: 0 }, rolled, 0)
+    expect(rolled[0]).toBeCloseTo(10)
+    expect(rolled[1]).toBeCloseTo(2)
+    expect(rolled[2]).toBeCloseTo(-2)
   })
 
   test("one-sided sprites and trails face their actual pass camera without disabling culling", () => {

@@ -657,6 +657,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Alpha Fade In Random",
             "Set child control points from particle positions",
             "Color Fade",
+            "Color Light From Control Point",
             "Lifespan Decay",
             "Movement Basic",
             "Movement Follow CP",
@@ -682,6 +683,7 @@ fn supported(category: FunctionCategory, identity: &str) -> bool {
             "Remap Noise to Scalar",
             "Lifetime Random",
             "Position Along Path Random",
+            "Position From Parent Particles",
             "Move Particles Between 2 Control Points",
             "Position Modify Offset Random",
             "remap initial scalar",
@@ -724,7 +726,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
                 ),
             ));
         }
-        let valid = if [
+        let light_parameter = function.identity.eq_ignore_ascii_case("Color Light From Control Point")
+            .then(|| crate::control_point_light::parameter_type(&name, value)).flatten();
+        let valid = if let Some(valid) = light_parameter { valid } else if [
             "animation_fit_lifetime",
             "use animation rate as fps",
             "ease_in_and_out",
@@ -733,6 +737,7 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             "bias in local system",
             "use parent particles for emission scaling",
             "randomly_flip_direction",
+            "random parent particle distribution",
             "offset proportional to radius 0/1",
             "offset in local space 0/1",
             "proportional 0/1",
@@ -890,7 +895,9 @@ fn validate_function(function: &Function, definition: &Definition) -> Result<(),
             ));
         }
     }
-    let unsupported = if function.category == FunctionCategory::Renderer {
+    let unsupported = if function.identity.eq_ignore_ascii_case("Color Light From Control Point") {
+        !crate::control_point_light::supported(function)
+    } else if function.category == FunctionCategory::Renderer {
         int_parameter(function, "Visibility Proxy Input Control Point Number", -1) >= 0
             || (function
                 .identity
@@ -975,6 +982,8 @@ fn bool_parameter(function: &Function, name: &str, default: bool) -> bool {
 }
 
 fn accepted_parameter(function: &Function, name: &str) -> bool {
+    if function.identity.eq_ignore_ascii_case("Color Light From Control Point")
+        && crate::control_point_light::parameter_type(name, &Value::Int(0)).is_some() { return true; }
     if [
         "operator start fadein",
         "operator end fadein",
@@ -1093,6 +1102,8 @@ fn accepted_parameter(function: &Function, name: &str) -> bool {
         ]
     } else if function.identity.eq_ignore_ascii_case("Rotation Spin Yaw") {
         &["yaw_rate_degrees", "yaw_stop_time", "yaw_rate_min"]
+    } else if function.identity.eq_ignore_ascii_case("Position From Parent Particles") {
+        &["inherited velocity scale", "random parent particle distribution"]
     } else if function.identity.eq_ignore_ascii_case("Rotation Spin Roll") {
         &["spin_rate_degrees", "spin_stop_time", "spin_rate_min"]
     } else if function

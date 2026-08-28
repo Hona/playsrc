@@ -15,6 +15,7 @@ export type ParticleQuad = Readonly<{
   trailWidth: number
   radius: number
   rollRadians: number
+  yawRadians?: number
   orientationType?: number
   yawRadians?: number
   materialShader?: "sprite-card" | "mesh-sprite"
@@ -106,21 +107,28 @@ function writeQuad(
   let upY = worldOriented ? -1 : cameraUpY
   let upZ = worldOriented ? 0 : cameraUpZ
   let radius = item.radius, tint = 1
-  if (item.orientationType === 1) {
-    const mesh = item.materialShader === "mesh-sprite"
+  if (item.orientationType === 1 && item.materialShader === "mesh-sprite") {
     const deltaX = centerX - camera.position[0], deltaY = centerY - camera.position[1], deltaZ = centerZ - camera.position[2]
     const distance = Math.hypot(deltaX, deltaY, deltaZ)
-    const basisX = mesh ? camera.position[0] : deltaX, basisY = mesh ? camera.position[1] : deltaY
+    const basisX = camera.position[0], basisY = camera.position[1]
     const inverse = 1 / (Math.hypot(basisX, basisY) || 1)
-    const yaw = mesh ? 0 : item.yawRadians ?? 0, cosine = Math.cos(yaw), sine = Math.sin(yaw)
-    rightX = (-basisY * cosine + basisX * sine) * inverse
-    rightY = (basisX * cosine + basisY * sine) * inverse
-    upX = 0; upY = 0; upZ = mesh ? 1 : -1
-    if (mesh ? distance < radius * 0.5 : distance <= radius * 0.5) { radius = 0; tint = 0 }
-    else if (!mesh && radius > 0 && distance < radius * 2) {
-      const t = Math.min(1, (distance - radius * 0.5) / (radius * 0.5))
-      tint = t * t * (3 - 2 * t)
-    }
+    rightX = -basisY * inverse
+    rightY = basisX * inverse
+    upX = 0; upY = 0; upZ = 1
+    if (distance < radius * 0.5) { radius = 0; tint = 0 }
+  } else if (item.orientationType === 1) {
+    // SpriteCard orientation 1 retains world Z, facing the eye in XY. The
+    // renderer's UV corner order reverses the shader's horizontal basis.
+    const eyeX = centerX - camera.position[0]
+    const eyeY = centerY - camera.position[1]
+    const inverseLength = 1 / (Math.sqrt(eyeX * eyeX + eyeY * eyeY) || 1)
+    const horizontalX = eyeY * inverseLength
+    const horizontalY = -eyeX * inverseLength
+    const yaw = item.yawRadians ?? 0
+    const cosine = Math.cos(yaw), sine = Math.sin(yaw)
+    rightX = horizontalX * cosine + horizontalY * sine
+    rightY = horizontalY * cosine - horizontalX * sine
+    upX = 0; upY = 0; upZ = 1
   }
   const cosine = Math.cos(item.rollRadians)
   const sine = Math.sin(item.rollRadians)

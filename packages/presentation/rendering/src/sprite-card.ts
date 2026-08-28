@@ -8,7 +8,8 @@ export type SpriteCardInput = Readonly<{
 
 /** SpriteCard's authored size, tint, premultiplication and depth feathering. */
 export function spriteCardNodes(state: SpriteCardInput, sampled: any, tint: any, depthTexture: any): { position: any; color: any } {
-  const center = TSL.attribute("particleCenter", "vec3")
+  const centerOrientation = TSL.attribute("particleCenterOrientation", "vec4")
+  const center = centerOrientation.xyz
   const offset = TSL.positionLocal.sub(center)
   const distance = center.sub(TSL.cameraPosition).length().max(0.000001)
   const radius = offset.length().mul(Math.SQRT1_2)
@@ -17,9 +18,15 @@ export function spriteCardNodes(state: SpriteCardInput, sampled: any, tint: any,
     .div(distance.mul(state.endFadeSize - state.startFadeSize)).clamp(0, 1))
   const farStart = Math.max(1, state.maximumDistance - state.farFadeInterval)
   const farFade = TSL.float(1).sub(distance.sub(farStart).div(state.maximumDistance - farStart).clamp(0, 1))
-  const faded = tint.mul(TSL.varying(sizeFade.mul(farFade)))
   const finalRadius = minimumRadius.min(distance.mul(state.maximumSize)).mul(sizeFade.greaterThan(0).and(farFade.greaterThan(0)).select(1, 0))
-  const position = center.add(offset.mul(finalRadius.div(radius.max(0.000001))))
+  // The Z-aligned branch of SpriteCard applies proximity fading after the
+  // authored size clamps, and collapses the quad inside half its final radius.
+  const zAligned = centerOrientation.w.equal(1)
+  const outsideCenter = distance.greaterThan(finalRadius.mul(0.5))
+  const proximityFade = zAligned.and(outsideCenter).select(TSL.smoothstep(finalRadius.mul(0.5), finalRadius, distance), 1)
+  const faded = tint.mul(TSL.varying(sizeFade.mul(farFade).mul(proximityFade)))
+  const displacement = finalRadius.div(radius.max(0.000001)).mul(zAligned.and(outsideCenter.not()).select(0, 1))
+  const position = center.add(offset.mul(displacement))
   let alpha = faded.a
   if (state.depthBlend) {
     const sceneCompressed = depthTexture.a
