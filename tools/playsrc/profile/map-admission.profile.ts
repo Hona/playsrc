@@ -289,6 +289,8 @@ test("configured map native traversal, objective roster, visible geometry and ca
   expect(points).toHaveLength(tf2MapMode(target) === "king-of-the-hill" ? 1 : 5)
   if (tf2MapMode(target) === "king-of-the-hill") await command("ent_fire team_control_point SetUnlockTime 1")
   const point = points.find((point: any) => point.owner === 0) ?? points[Math.floor(points.length / 2)]
+  const cpu=process.env.PROFILE_MAP_CPU==="1"?await page.context().newCDPSession(page):null
+  if(cpu){await cpu.send("Profiler.enable");await cpu.send("Profiler.start")}
   await command(`setpos ${point.position[0]} ${point.position[1]} ${point.position[2] + 8}`)
   await closeConsole()
   const sample = await page.evaluate(async () => {
@@ -305,8 +307,9 @@ test("configured map native traversal, objective roster, visible geometry and ca
     profiler.active = false
     return { seconds: (performance.now() - start) / 1000, ticks: Number(root.dataset.snapshotTick) - tick, frames, before, bots: profile.bots, points: profile.controlPoints.points,
       completedFrames: profiler.completedFrames, counters: profiler.counters, nodeBuilds: profiler.nodeBuilds,
-      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure }
+      simulation: profiler.simulation, memoryAssets: profile.memoryAssets, failures: profile.failure,longTasks:profiler.longTasks }
   })
+  if(cpu){const result=await cpu.send("Profiler.stop");await writeFile(testInfo.outputPath(`${target}-main.cpuprofile`),JSON.stringify(result.profile));await cpu.detach()}
   const resultPath = testInfo.outputPath(`${target}-acceptance.json`)
   await writeFile(resultPath, json({ target, errors, spawnChecks, ...sample, frames: summarizeFrameTimes(sample.frames) }))
   await testInfo.attach("map-acceptance", { path: resultPath, contentType: "application/json" })
@@ -316,6 +319,7 @@ test("configured map native traversal, objective roster, visible geometry and ca
   // Retain the failure, but still exercise capture/lifecycle gates so a cold-view
   // pipeline hitch cannot hide an independent gameplay admission failure.
   expect.soft(sample.ticks / sample.seconds).toBeGreaterThan(63)
+  if(process.env.PROFILE_MAP_CPU==="1")return
   await capture("objective")
   // Exercise a real bot capture, not a point-owner input or a local-player cap.
   // This happens after the unchanged cadence window; the seeded bots still run
