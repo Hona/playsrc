@@ -656,7 +656,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     try {
       if (!traceStarted) throw new Error("Native trace did not start; main CPU diagnostics retained")
       completion = await Promise.race([(async () => { await browserCdp.send("Tracing.end"); return traceFinished })(),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Native trace completion exceeded 5 seconds")), 5000) })])
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Native trace completion exceeded 15 seconds")), 15_000) })])
     } catch (error) { collectionErrors.push(String(error)) }
     finally { clearTimeout(timer) }
     const raw = completion.stream ? await drainTraceStream(browserCdp, completion.stream, TRACE_LIMITS.compressedBytes, chunk => appendFile(rawPartial, chunk)) : { bytes: new Uint8Array(), complete: false }
