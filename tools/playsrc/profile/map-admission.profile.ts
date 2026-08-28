@@ -460,26 +460,37 @@ test("configured map native traversal, objective roster, visible geometry and ca
     if (!point) throw new Error("No capturable authored point remains for bot acceptance")
     const team = point.owner !== 2 && point.mayCapture[0] ? 2 : 3
     const roster = JSON.parse(document.querySelector<HTMLElement>("main")!.dataset.scoreboardProbe!).players
+    const candidates=profile.bots.filter((bot:any)=>bot.team===team&&bot.health>0&&[1,3,4,6,7].includes(bot.class))
+      .sort((a:any,b:any)=>Number(b.class===1)-Number(a.class===1)).slice(0,3)
     return { point, team, camera: profile.player.camera,
-      bots: profile.bots.filter((bot: any) => bot.team === team && bot.health > 0).slice(0, 3)
+      resetBots:profile.bots.filter((bot:any)=>!candidates.some((candidate:any)=>candidate.identity===bot.identity)).map((bot:any)=>({identity:bot.identity,team:bot.team,position:bot.position,name:roster.find((player:any)=>player.identity===bot.identity).name})),
+      bots: candidates
         .map((bot: any) => ({ identity: bot.identity, captures: bot.captures, position: bot.position,
           name: roster.find((player: any) => player.identity === bot.identity).name })) }
   })
   expect(botCapture.bots.length).toBeGreaterThan(0)
   const home = (spawnChecks[0] as any).player.position
   await command(`setpos ${home.join(" ")}`)
+  // Keep the full roster and AI alive, but avoid turning the capture proof into
+  // an unbounded contested fight. Both team homes are observed authored spawns.
+  for(const bot of botCapture.resetBots){
+    const spawn=(spawnChecks as any[]).find(check=>check.player.team===bot.team).player.position
+    await command(`bot_teleport ${JSON.stringify(bot.name)} ${spawn.join(" ")} 0 90 0`)
+  }
   for (const bot of botCapture.bots) await command(`bot_teleport ${JSON.stringify(bot.name)} ${botCapture.point.position[0]} ${botCapture.point.position[1]} ${botCapture.point.position[2] + 8} 0 90 0`)
   await closeConsole()
   await page.evaluate(camera => { (globalThis as any).__playsrcProfile.displacementCameraOverride = camera }, botCapture.camera)
   const botPath = testInfo.outputPath(`${target}-bot-capture-state.json`)
   await writeFile(botPath, json(botCapture))
-  await page.waitForFunction(({ point, team, bots }) => {
+  let captureFailure:unknown
+  try{await page.waitForFunction(({ point, team, bots }) => {
     const profile = (globalThis as any).__playsrcProfile
     return profile.controlPoints.points.find((candidate: any) => candidate.identity === point.identity)?.owner === team
       && bots.some((before: any) => profile.bots.some((bot: any) => bot.identity === before.identity && bot.captures > before.captures))
-  }, botCapture, { timeout: 20_000 })
+  }, botCapture, { timeout: 20_000 })}catch(error){captureFailure=error}
   const captured = await page.evaluate(() => ({ points: (globalThis as any).__playsrcProfile.controlPoints, bots: (globalThis as any).__playsrcProfile.bots }))
   await writeFile(botPath, json({ ...botCapture, captured }))
+  if(captureFailure)throw captureFailure
   await capture("bot-capture")
   await page.evaluate(() => { delete (globalThis as any).__playsrcProfile.displacementCameraOverride })
   for (const [index, point] of points.entries()) {
