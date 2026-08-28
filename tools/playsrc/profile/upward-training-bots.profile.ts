@@ -19,7 +19,7 @@ import { summarizeFrameTimes } from "./profile-window"
 import { upwardCapturePlan } from "./upward-capture-plan"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { chooseTf2Team } from "./team-selection-evidence"
-import { startWorkerCpuCapture } from "./worker-cpu-profiler"
+import { prepareWorkerCpuCapture } from "./worker-cpu-profiler"
 import { attributeWorkerIncidents } from "./worker-incident-attribution"
 import { captureProcessMemory } from "./process-memory"
 import { startGpuEngineCapture } from "./process-gpu"
@@ -447,7 +447,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const diagnosticCdp = deliveryMode === "cpu" ? await context.newCDPSession(page) : undefined
     if (diagnosticCdp) await diagnosticCdp.send("Performance.enable")
     let diagnosticCpu: Awaited<ReturnType<typeof startMainCpuEvidence>> | undefined
-    let diagnosticWorkers: Awaited<ReturnType<typeof startWorkerCpuCapture>> | undefined
+    let diagnosticWorkers: Awaited<ReturnType<typeof prepareWorkerCpuCapture>> | undefined
     const presentationCategories = ["disabled-by-default-display.framedisplayed", "blink.user_timing"]
     const processBefore = await presentationCdp?.send("SystemInfo.getProcessInfo")
     const processBoundaryStarted = performance.now()
@@ -457,11 +457,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
       const available = (await presentationCdp.send("Tracing.getCategories")).categories
       expect(presentationCategories.every(category => available.includes(category))).toBe(true)
       if (diagnosticCdp) {
-        diagnosticWorkers = await startWorkerCpuCapture(presentationCdp, diagnosticCdp, page)
+        diagnosticWorkers = await prepareWorkerCpuCapture(presentationCdp, diagnosticCdp, page)
         diagnosticCpu = await startMainCpuEvidence(diagnosticCdp, directory, { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint })
       }
       await presentationCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
         traceConfig: { recordMode: "recordUntilFull", includedCategories: presentationCategories, traceBufferSizeInKb: 8192 } })
+      await diagnosticWorkers?.start()
     }
     await page.keyboard.down("w")
     let monitoring = true, nativeFailure: unknown
@@ -578,7 +579,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   })
   cdp.on("LayerTree.layerPainted", ({ layerId, clip }) => layerPaints.push({ layerId, ...clip }))
   await cdp.send("LayerTree.enable")
-  const workerCpu = capturePlan.workerCpu === "required" ? await startWorkerCpuCapture(browserCdp, cdp, page) : undefined
+  const workerCpu = capturePlan.workerCpu === "required" ? await prepareWorkerCpuCapture(browserCdp, cdp, page) : undefined
   // Never enter an active sample that the shared runner's total deadline would
   // necessarily truncate. The construction/command journal is already durable.
   const totalDeadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000)

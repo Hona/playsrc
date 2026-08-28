@@ -69,7 +69,7 @@ export type WorkerCpuCapture = Readonly<{
   }
 }>
 
-export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSession, page: Page) {
+export async function prepareWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSession, page: Page) {
   const { targetInfo: owner } = await pageCdp.send("Target.getTargetInfo")
   const urls = new Set(page.workers().map(worker => worker.url()))
   const { targetInfos } = await browser.send("Target.getTargets")
@@ -95,7 +95,9 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
     let stopped: Promise<WorkerCpuCapture[]> | undefined
     let deadline: ReturnType<typeof setTimeout> | undefined
     let deadlineStopped = false
+    let started = false
     const stop = (): Promise<WorkerCpuCapture[]> => {
+      if (!started) return Promise.reject(new Error("Worker CPU capture was prepared but never started"))
       if (stopped) return stopped
       if (deadline) clearTimeout(deadline)
       stopped = Promise.all(attached.map(async ({ target, session, contextId }) => {
@@ -109,6 +111,8 @@ export async function startWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSes
     return {
       unsampledTargets: targets.filter(target => !gameplay.includes(target)),
       async start() {
+        if (started) throw new Error("Worker CPU capture already started")
+        started = true
         deadline = setTimeout(() => { deadlineStopped = true; void stop().catch(() => undefined) }, 12_000)
         await Promise.all(attached.map(async ({ target, session, contextId }) => {
           const expression = `(${installWorkerTaskProfiler.toString()})(globalThis, ${JSON.stringify(target.targetId)})`
