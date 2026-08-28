@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import * as THREE from "three/webgpu"
 import { prepareReachablePipelineVisibility } from "../src/reachable-pipeline-visibility"
+import { StaticMaterialGraphs } from "../src/static-material-graphs"
 
 describe("reachable Source map pipeline preparation", () => {
   test("exposes hidden bundle meshes, deduplicates equivalent shaders, and restores authored visibility", () => {
@@ -58,6 +59,12 @@ describe("reachable Source map pipeline preparation", () => {
     expect(meshes.map(mesh=>mesh.visible)).toEqual([true,true,false])
     staged.restore()
     expect(meshes.every(mesh=>mesh.visible)).toBe(true)
+    // Posed runtime lighting replaces the template shader family. Its existing
+    // dynamic graph equivalence must not inherit extra template admissions.
+    for(const mesh of meshes)StaticMaterialGraphs.releasePreparationIdentity(mesh.material)
+    const dynamic=prepareReachablePipelineVisibility(root)
+    expect(dynamic.variants).toBe(1)
+    dynamic.restore()
     geometry.dispose();meshes[1]!.geometry.dispose();for(const mesh of meshes)mesh.material.dispose()
   })
 })
