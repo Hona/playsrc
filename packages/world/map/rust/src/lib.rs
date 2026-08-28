@@ -751,7 +751,8 @@ pub fn assemble_prepared_runtime(
         let hash = Sha256::digest(&payload).into();
         (payload, hash)
     } else {
-        let mut sink = serialization::HashSink::new();
+        let mut sink = serialization::HashSink::new()
+            .map_err(|_| error(ErrorCode::BoundExceeded, None))?;
         serialize(&serialization, schema, payload_bytes, &mut sink)?;
         (Vec::new(), sink.finish())
     };
@@ -1985,7 +1986,7 @@ mod tests {
             let mut bytes = Vec::new();
             serialize_model_registry(&mut bytes, &models, modern);
             assert!(bytes.windows(4).any(|value| value == 0x7fc0_1234_u32.to_le_bytes()));
-            let mut sink = serialization::HashSink::new();
+            let mut sink = serialization::HashSink::new().unwrap();
             model_registry(&mut sink, &models, modern);
             assert_eq!(sink.len(), bytes.len());
             assert_eq!(sink.finish(), <[u8; 32]>::from(Sha256::digest(bytes)));
