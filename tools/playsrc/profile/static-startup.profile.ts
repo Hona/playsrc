@@ -6,7 +6,7 @@ import path from "node:path"
 import { loadLocalConfig } from "../src/config"
 import { staticStartupRouter, startupDigest } from "./static-startup-package"
 import { captureStaticStartupPhase, compactStaticStartupPhase, assertStaticStartupPhase, staticStartupReceipt, startupPixelEvidence, requireStartupNative, type StartupObservation } from "./static-startup-gate"
-import { startupConsoleIdle, startupNativeReader, externalStartupNativeReader } from "./native-startup"
+import { startupConsoleIdle, startupNativeReader, externalStartupNativeReader, closeStartupNativeProbe } from "./native-startup"
 import { WorkerCdpSession } from "./worker-cpu-profiler"
 import { admitWorkerExecutionContext } from "./worker-runtime-admission"
 import { installStaticPackageRouting } from "./static-package-routing"
@@ -35,9 +35,11 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
   if(externalEndpoint&&(!/^http:\/\/127\.0\.0\.1:\d+$/.test(externalEndpoint)||!process.env.PLAYSRC_STARTUP_NATIVE_ENDPOINT||!process.env.PLAYSRC_STARTUP_NATIVE_LOCK_TOKEN))throw new Error("External startup endpoint requires its checked native broker")
   const idleDeadline = Date.now() + 15_000
   if(!externalEndpoint) do {
-    const idle = await startupConsoleIdle(config.sourceCacheDir); evidence.idle.push({ at: Date.now(), milliseconds: idle })
+    let idle:number
+    try {idle=await startupConsoleIdle(config.sourceCacheDir)} catch(error) {closeStartupNativeProbe();evidence.admissionFailure=String(error);await writeFile(path.join(directory,"rejected-admission.json"),JSON.stringify(evidence));throw error}
+    evidence.idle.push({ at: Date.now(), milliseconds: idle })
     if (idle >= 2000) break
-    if (Date.now() >= idleDeadline) { await writeFile(path.join(directory, "rejected-admission.json"), JSON.stringify(evidence)); throw new Error("No genuine two-second idle interval during bounded static startup admission") }
+    if (Date.now() >= idleDeadline) { await writeFile(path.join(directory, "rejected-admission.json"), JSON.stringify(evidence)); closeStartupNativeProbe();throw new Error("No genuine two-second idle interval during bounded static startup admission") }
     await new Promise(resolve => setTimeout(resolve, 250))
   } while (true)
   const reservation = createServer()
@@ -225,7 +227,7 @@ test(`exact static package: audible movie, menu and playable frame (${process.en
       try {
         if(browser){const close=await browser.newBrowserCDPSession();await close.send("Browser.close").catch(()=>{});await browser.close().catch(()=>{})}
         if(child&&child.exitCode===null)await Promise.race([new Promise(resolve=>child.once("exit",resolve)),new Promise(resolve=>setTimeout(resolve,2000))])
-      } finally {terminate();process.removeListener("SIGTERM",terminate)}
+      } finally {closeStartupNativeProbe();terminate();process.removeListener("SIGTERM",terminate)}
     }
   }
 })

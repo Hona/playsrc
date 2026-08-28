@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
+import { spawn } from "node:child_process"
 import type { Page } from "@playwright/test"
 import { WINDOWS_DESKTOP_QUERY, assertWindowsConsole } from "./windows-desktop"
 import { macWindowReader } from "./macos-visible-windows"
@@ -7,7 +6,6 @@ import { macPageAdmission, requireMacPageAdmission } from "./macos-page-admissio
 import type { StartupNativeAdmission } from "./static-startup-gate"
 import os from "node:os"
 
-const execute = promisify(execFile)
 const WINDOWS_INPUT = String.raw`
 Add-Type -TypeDefinition @'
 using System;
@@ -29,15 +27,49 @@ public static class StartupWindow {
 '@
 `
 
-async function windowsSnapshot(browserPid = 0) {
-  const script = WINDOWS_DESKTOP_QUERY + WINDOWS_INPUT + `
-$windows=@(foreach($hwnd in [StartupWindow]::Windows(${browserPid})) {$rect=New-Object StartupWindow+Rect;if(-not [StartupWindow]::GetWindowRect($hwnd,[ref]$rect)){throw 'Window bounds unavailable'};@{id=$hwnd.ToInt64();bounds=$rect;visible=[StartupWindow]::IsWindowVisible($hwnd);minimized=[StartupWindow]::IsIconic($hwnd)}})
-@{idleMilliseconds=[StartupWindow]::Idle();foreground=[StartupWindow]::GetForegroundWindow().ToInt64();windows=$windows} | ConvertTo-Json -Depth 5 -Compress
+let windowsProbe: {read(pid:number):Promise<any>;close():void}|undefined
+
+function openWindowsProbe() {
+  const script = "$ProgressPreference='SilentlyContinue';"+WINDOWS_DESKTOP_QUERY+WINDOWS_INPUT+String.raw`
+while (($line=[Console]::ReadLine()) -ne $null) {
+ try {
+  $request=$line|ConvertFrom-Json
+  $session=[ProfileConsole]::WTSGetActiveConsoleSessionId();$info=[ProfileConsole]::Query($session)
+  $desktop=@{consoleSessionId=$session;processSessionId=[System.Diagnostics.Process]::GetCurrentProcess().SessionId;level=$info.Level;sessionId=$info.SessionId;state=$info.State;flags=$info.Flags;protocol=[ProfileConsole]::Protocol($session)}
+  $windows=@(foreach($hwnd in [StartupWindow]::Windows([uint32]$request.pid)) {$rect=New-Object StartupWindow+Rect;if(-not [StartupWindow]::GetWindowRect($hwnd,[ref]$rect)){throw 'Window bounds unavailable'};@{id=$hwnd.ToInt64();bounds=$rect;visible=[StartupWindow]::IsWindowVisible($hwnd);minimized=[StartupWindow]::IsIconic($hwnd)}})
+  $result=@{id=$request.id;desktop=$desktop;idleMilliseconds=[StartupWindow]::Idle();foreground=[StartupWindow]::GetForegroundWindow().ToInt64();windows=$windows}
+ } catch {$result=@{id=$request.id;error=($_|Out-String)}}
+ [Console]::WriteLine(($result|ConvertTo-Json -Depth 6 -Compress))
+}
 `
-  const lines = (await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { timeout: 10_000, windowsHide: true })).stdout.trim().split(/\r?\n/)
-  const desktop = JSON.parse(lines[0]!)
-  assertWindowsConsole(desktop, os.release())
-  return { desktop, ...JSON.parse(lines.at(-1)!) }
+  const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")],{windowsHide:true,stdio:["pipe","pipe","pipe"]})
+  let next=0,text="",diagnostics=""
+  const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
+  child.stderr.on("data",value=>{diagnostics=(diagnostics+value).slice(-4096)})
+  const fail=(error:Error)=>{for(const value of pending.values()){clearTimeout(value.timer);value.reject(error)}pending.clear()}
+  child.on("error",fail);child.on("exit",()=>fail(new Error(`Native startup probe exited: ${diagnostics}`)))
+  child.stdout.on("data",value=>{
+    text+=value
+    while(text.includes("\n")){
+      const end=text.indexOf("\n"),line=text.slice(0,end).trim();text=text.slice(end+1)
+      if(!line)continue
+      let result:any
+      try{result=JSON.parse(line)}catch{fail(new Error("Malformed native startup probe response"));continue}
+      if(!result.id)continue // initial read-only WTS readiness record
+      const entry=pending.get(result.id);if(!entry)continue
+      pending.delete(result.id);clearTimeout(entry.timer)
+      result.error?entry.reject(new Error(result.error)):entry.resolve(result)
+    }
+  })
+  return {read:(pid:number)=>new Promise<any>((resolve,reject)=>{const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error("Native startup readback exceeded ten seconds"))},10_000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,pid})+"\n")}),close(){child.stdin.end();child.kill();fail(new Error("Native startup probe closed"))}}
+}
+
+export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
+
+async function windowsSnapshot(browserPid = 0) {
+  const result=await (windowsProbe??=openWindowsProbe()).read(browserPid)
+  assertWindowsConsole(result.desktop,os.release())
+  return result
 }
 
 export async function startupConsoleIdle(cacheDir: string) {
@@ -90,7 +122,7 @@ export async function startupNativeReader(page: Page, cacheDir: string) {
         visible: window.visible && documentState.visible, minimized: window.minimized, idleMilliseconds: native.idleMilliseconds,
         browserPid, windowId: window.id, targetId: targetInfo.targetId }
     },
-    async close() { await Promise.all([mac?.close(), pageCdp.detach(), browserCdp.detach()]) },
+    async close() { closeStartupNativeProbe();await Promise.all([mac?.close(), pageCdp.detach(), browserCdp.detach()]) },
   }
 }
 
