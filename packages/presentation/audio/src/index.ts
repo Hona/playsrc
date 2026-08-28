@@ -1,8 +1,13 @@
+import { AudioError } from "./error"
+export { AudioError } from "./error"
+
 const MAX_RESOURCES = 4096
 const MAX_VOICES = 128
 const IDENTITY = /^[\x21-\x7e]{1,512}$/
 
 export * from "./source"
+export { createSourceAudioSystem } from "./playback"
+export type { AudioCapture, PcmResource, AudioRandom, AudioEntity, SoundscapeSelection } from "./playback"
 
 export type AudioResource = Readonly<{
   identity: string
@@ -22,23 +27,6 @@ type Voice = Readonly<{
   nodes: readonly AudioNode[]
   stereo?: Readonly<{ left: AudioParam; right: AudioParam }>
 }>
-
-export class AudioError extends Error {
-  constructor(
-    readonly code:
-      | "MalformedResource"
-      | "MissingResource"
-      | "MalformedEvent"
-      | "Capacity"
-      | "Suspended"
-      | "Closed"
-      | "BrowserFailure",
-    message: string,
-  ) {
-    super(message)
-    this.name = "AudioError"
-  }
-}
 
 function canonical(value: string): string {
   return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase())

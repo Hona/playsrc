@@ -138,3 +138,21 @@ fn configured_automatic_preset_template_candidate() {
         ]
     );
 }
+
+#[test]
+#[ignore = "requires configured soundmixers.txt; no game assets are distributed"]
+fn configured_mixer_selects_specific_rules_before_all() {
+    let mut mixers = playsrc_audio::mixers::Mixers::parse(&file(
+        "soundmixers.txt",
+        "3e95dd0bc9182f99cb3fad543cd7df77371e4ce3ad7bfaa833eaadec8ea99e47",
+    ))
+    .unwrap();
+    let ambient = mixers.membership(b"ambient/outdoors.wav", b"", 6, 0);
+    let explosion = mixers.membership(b"weapons/explode.wav", b"", 0, 140);
+    assert_eq!(mixers.gain(ambient), 0.72);
+    assert_eq!(mixers.gain(explosion), 0.90);
+    mixers.select(Some(b"Display_Mix"));
+    assert_eq!(mixers.gain(ambient), 0.7);
+    mixers.select(None);
+    assert_eq!(mixers.gain(ambient), 0.72);
+}

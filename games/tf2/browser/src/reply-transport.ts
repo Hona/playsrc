@@ -10,11 +10,13 @@ export type ReplyControl = Readonly<{ kind: "reply-control"; sequence: number; r
 export type ReplyMemory = Readonly<{ mailbox: SharedArrayBuffer; memory: WebAssembly.Memory; modelOwnership: SharedArrayBuffer }>
 export type ReplyRange = Readonly<{ pointer: number; length: number }>
 export type SharedReply = Readonly<{
-  id: number; generation: number; kind: "simulation" | "particles" | "models" | "visibility"
+  id: number; generation: number; kind: "simulation" | "particles" | "models" | "visibility" | "acoustics"
   ranges: readonly ReplyRange[]; timings: WorkerTransactionTimings
+  acoustic?: boolean
   slot?: number; replayAttack?: Readonly<{ hostTick: bigint; playerClass: number; weapon: number; lifecycle: number }>
 }>
-const tags = ["simulation", "particles", "models", "visibility"] as const
+const tags = ["simulation", "particles", "models", "visibility", "acoustics"] as const
+const rangeOffsets = [16, 24, 40] as const
 const timingKeys = ["queueMilliseconds", "inputCopyMilliseconds", "transactMilliseconds", "outputCopyMilliseconds", "totalMilliseconds"] as const
 const memoryKeys = ["wasmLinearMemoryBytes", "wasmAllocatorLiveBytes", "wasmAllocatorHighWaterBytes"] as const
 
@@ -62,7 +64,9 @@ export class ReplyWriter {
   }
   shared(reply: SharedReply, release: () => void): void {
     const { at, sequence } = this.#reserve()
-    if (reply.ranges.length < 1 || reply.ranges.length > 2 || (reply.kind !== "visibility" && reply.kind !== "particles" && reply.ranges.length !== 1)) throw new Error("Invalid reply ranges")
+    const acoustic = reply.kind === "visibility" && reply.acoustic === true
+    if (reply.ranges.length < 1 + Number(acoustic) || reply.ranges.length > (reply.kind === "visibility" ? 2 + Number(acoustic) : 2)
+      || (reply.kind !== "visibility" && reply.kind !== "particles" && reply.ranges.length !== 1)) throw new Error("Invalid reply ranges")
     this.#bytes.setUint32(at, tags.indexOf(reply.kind) + 1, true)
     this.#bytes.setUint32(at + 4, reply.id, true)
     this.#bytes.setUint32(at + 8, reply.generation, true)
@@ -71,13 +75,13 @@ export class ReplyWriter {
       const range = reply.ranges[index]!
       if (!Number.isSafeInteger(range.pointer) || range.pointer < 1 || range.pointer > 0xffff_ffff
         || !Number.isSafeInteger(range.length) || range.length < 1 || range.length > 512 * 1024 * 1024) throw new Error("Invalid reply lease")
-      this.#bytes.setUint32(at + 16 + index * 8, range.pointer, true)
-      this.#bytes.setUint32(at + 20 + index * 8, range.length, true)
+      this.#bytes.setUint32(at + rangeOffsets[index]!, range.pointer, true)
+      this.#bytes.setUint32(at + rangeOffsets[index]! + 4, range.length, true)
     }
     this.#bytes.setUint32(at + 32, reply.slot ?? 0, true)
     const attack = reply.replayAttack
-    this.#bytes.setUint32(at + 36, attack ? 1 : 0, true)
-    this.#bytes.setUint32(at + 40, attack ? attack.playerClass | attack.weapon << 8 | attack.lifecycle << 16 : 0, true)
+    this.#bytes.setUint32(at + 36, reply.kind === "visibility" ? Number(acoustic) : attack ? 1 : 0, true)
+    if (reply.kind !== "visibility") this.#bytes.setUint32(at + 40, attack ? attack.playerClass | attack.weapon << 8 | attack.lifecycle << 16 : 0, true)
     this.#bytes.setBigUint64(at + 48, attack?.hostTick ?? 0n, true)
     timingKeys.forEach((key, index) => this.#bytes.setFloat64(at + 56 + index * 8, reply.timings[key], true))
     const hasMemory = reply.timings.wasmLinearMemoryBytes !== undefined
@@ -159,7 +163,9 @@ export class ReplyReader {
     const kind = tags[tag - 1]
     const id = this.#bytes.getUint32(at + 4, true), generation = this.#bytes.getUint32(at + 8, true)
     const count = this.#bytes.getUint32(at + 12, true)
-    if (!kind || id === 0 || count < 1 || count > 2 || (kind !== "visibility" && kind !== "particles" && count !== 1)) throw new Error("Invalid shared reply")
+    const acousticFlag = kind === "visibility" ? this.#bytes.getUint32(at + 36, true) : 0
+    if (!kind || id === 0 || acousticFlag > 1 || count < 1 + acousticFlag || count > (kind === "visibility" ? 2 + acousticFlag : 2)
+      || (kind !== "visibility" && kind !== "particles" && count !== 1)) throw new Error("Invalid shared reply")
     const memoryFlag = this.#bytes.getUint32(at + 120, true)
     if (memoryFlag > 1) throw new Error("Invalid reply memory flag")
     const timings: { -readonly [K in keyof WorkerTransactionTimings]: WorkerTransactionTimings[K] } & { mainCopyMilliseconds: number } = {
@@ -176,7 +182,7 @@ export class ReplyReader {
     // A shared Memory object, not a cached SAB, observes growth by its Worker.
     const memory = this.shared.memory.buffer
     const ranges = Array.from({ length: count }, (_, index) => {
-      const pointer = this.#bytes.getUint32(at + 16 + index * 8, true), length = this.#bytes.getUint32(at + 20 + index * 8, true)
+      const pointer = this.#bytes.getUint32(at + rangeOffsets[index]!, true), length = this.#bytes.getUint32(at + rangeOffsets[index]! + 4, true)
       if (pointer === 0 || length === 0 || length > 512 * 1024 * 1024 || pointer > memory.byteLength - length) throw new Error("Reply lease outside memory")
       return { pointer, length }
     })
@@ -187,7 +193,8 @@ export class ReplyReader {
     const copyStarted = performance.now()
     const outputs = ranges.map(range => new Uint8Array(memory, range.pointer, range.length).slice().buffer)
     timings.mainCopyMilliseconds = performance.now() - copyStarted
-    if (kind === "visibility") return { id, kind, generation, timings, outputs }
+    if (kind === "visibility") return { id, kind, generation, timings, outputs: acousticFlag ? outputs.slice(0, -1) : outputs, ...(acousticFlag ? { acoustic: outputs.at(-1)! } : {}) }
+    if (kind === "acoustics") return { id, kind, generation, timings, output: outputs[0]! }
     if (kind === "particles") return { id, kind, generation, timings, output: outputs[0]!, ...(outputs[1] ? { visualOutput: outputs[1] } : {}) }
     const player = this.#bytes.getUint32(at + 40, true)
     const replayAttack = this.#bytes.getUint32(at + 36, true) ? { hostTick: this.#bytes.getBigUint64(at + 48, true),

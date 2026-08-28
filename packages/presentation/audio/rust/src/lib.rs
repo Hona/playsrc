@@ -1,6 +1,11 @@
 pub mod acoustics;
 pub mod dsp;
-pub mod environment;
+pub mod mixers;
+pub mod output;
+mod ramp;
+pub mod obstruction;
+pub mod playback;
 pub mod room;
 pub mod soundscape;
 pub mod spatial;
+pub mod wire;

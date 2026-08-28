@@ -109,3 +109,38 @@ fn jumping_does_not_begin_wall_scan_and_disabled_dsp_never_traces() {
     );
     assert_eq!(world.traces, [TraceKind::WorldAndStaticProps; 3]);
 }
+
+#[test]
+fn vertical_axis_observation_uses_its_own_half_span() {
+    struct Rays(Vec<(Position, Position, TraceKind)>);
+    impl Geometry for Rays {
+        fn trace(&mut self, start: Position, end: Position, kind: TraceKind) -> Hit {
+            self.0.push((start, end, kind));
+            Hit {
+                start,
+                end,
+                hit: false,
+                sky: false,
+                reflectivity: None,
+            }
+        }
+    }
+    let mut detector = Detector::default();
+    let mut rays = Rays(vec![]);
+    for frame in 0..7 {
+        detector.update(
+            true,
+            1.0 + frame as f64 * 0.015,
+            [4.0, 8.0, 64.0],
+            &mut rays,
+        );
+    }
+    let heights = rays
+        .0
+        .iter()
+        .filter(|(start, end, kind)| *kind == TraceKind::WorldSolid && end[2] > start[2])
+        .map(|(start, end, _)| std::array::from_fn::<_, 3, _>(|axis| end[axis] - start[axis]))
+        .collect::<Vec<_>>();
+    assert_eq!(heights[7], [0.0, 1248.0, 2496.0]);
+    assert_eq!(heights[2], [1248.0, 1152.0, 2496.0]);
+}

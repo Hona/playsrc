@@ -16,6 +16,7 @@ fn with_output<T>(handle: u32, kind: u32, operation: impl FnOnce(&mut Vec<u8>) -
         2 => &mut slot.particle_output,
         4 => &mut slot.visibility_output,
         5 => &mut slot.legacy_visual_output,
+        6 => &mut slot.acoustic_output,
         _ => return None,
     };
     Some(operation(output))
@@ -55,7 +56,7 @@ pub(super) mod tests {
     use crate::encode;
 
     pub fn assert_reply_ownership(handle: u32) {
-        for kind in [2, 4, 5] {
+        for kind in [2, 4, 5, 6] {
             with_output(handle, kind, |bytes| bytes.extend_from_slice(b"first-view"));
             let capacity = playsrc_reply_output_capacity(handle, kind);
             let pointer = playsrc_reply_output_take(handle, kind);

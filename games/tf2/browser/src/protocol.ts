@@ -62,9 +62,10 @@ export type WorkerRequest = WorkerEnvelope & (
       kind: "models"
       generation: number
       batch: ArrayBuffer
-      visibility?: Readonly<{ id: number; queuedAt: number; views: readonly VisibilityView[] }>
+      visibility?: Readonly<{ id: number; queuedAt: number; views: readonly VisibilityView[]; acoustic?: ArrayBuffer }>
     }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; views: readonly VisibilityView[] }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; views: readonly VisibilityView[]; acoustic?: ArrayBuffer }>
+  | Readonly<{ id: number; kind: "acoustics"; generation: number; batch: ArrayBuffer }>
   | Readonly<{
       id: number
       kind: "observe"
@@ -170,7 +171,8 @@ export type WorkerResponse =
   | Readonly<{ id: number; kind: "entity-input-queued"; generation: number }>
   | Readonly<{ id: number; kind: "particles"; generation: number; output: ArrayBuffer; visualOutput?: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "models"; generation: number; output: SharedArrayBuffer; byteOffset: number; byteLength: number; lease: number; ownership: SharedArrayBuffer; slot: number; timings: WorkerTransactionTimings }>
-  | Readonly<{ id: number; kind: "visibility"; generation: number; outputs: readonly ArrayBuffer[]; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "visibility"; generation: number; outputs: readonly ArrayBuffer[]; acoustic?: ArrayBuffer; timings: WorkerTransactionTimings }>
+  | Readonly<{ id: number; kind: "acoustics"; generation: number; output: ArrayBuffer; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "simulation"; generation: number; output: ArrayBuffer; replayAttack?: Readonly<{ hostTick: bigint; playerClass: number; weapon: number; lifecycle: number }>; timings: WorkerTransactionTimings }>
   | Readonly<{ id: number; kind: "shutdown" }>
   | Readonly<{ id: number; kind: "failure"; code: WorkerFailureCode; detail: number; reason?: string }>

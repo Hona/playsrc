@@ -120,3 +120,12 @@ fn unsupported_processors_and_malformed_graphs_fail_instead_of_dry_playback() {
     assert!(preset.validate_processing().is_err());
     assert!(PresetProcessor::new(&preset).is_err());
 }
+
+#[test]
+fn amplifier_distortion_and_integer_gain_preserve_threshold_boundaries() {
+    let mut clipped = Processor::new(&spec(11, &[2.0, 0.1, 1.0])).unwrap();
+    assert_eq!(clipped.sample(16384, &mut NoRandom), 6552);
+    assert_eq!(clipped.sample(-16384, &mut NoRandom), -6552);
+    let mut clean = Processor::new(&spec(11, &[2.0, 0.2, 1.0])).unwrap();
+    assert_eq!(clean.sample(16384, &mut NoRandom), 32768);
+}

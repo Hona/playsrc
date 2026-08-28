@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./artifacts": "./src/artifacts.ts",
+    "./audio": "./src/audio.ts",
     "./codec": "./src/codec.ts",
     "./client-render-frame": "./src/client-render-frame.ts",
     "./engineer": "./src/engineer.ts",
