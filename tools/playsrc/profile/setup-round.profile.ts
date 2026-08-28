@@ -14,6 +14,10 @@ test("authentic setup countdown reaches a live local round with configured audio
   const map = process.env.PROFILE_MAP_TARGET ?? "pl_upward"
   const team = process.env.PROFILE_SETUP_TEAM ?? "blue"
   const reproduceOrigin = process.env.PROFILE_SETUP_FAILURE_ORIGIN === "1"
+  const sampleSeconds = process.env.PROFILE_SETUP_SAMPLE_SECONDS === "10" ? 10 : 5
+  const aimDown = process.env.PROFILE_SETUP_AIM_DOWN === "1"
+  const faceCart = process.env.PROFILE_SETUP_CART_FACING === "1"
+  const botQuota = process.env.PROFILE_SETUP_BOT_QUOTA === "16" ? 16 : 15
   if (reproduceOrigin && (map !== "pl_upward" || team !== "blue")) throw Error("The retained failed origin belongs to Upward BLU")
   if (!["pl_upward", "cp_dustbowl", "cp_gorge"].includes(map) || !["blue", "red"].includes(team)) throw Error("Unsupported setup acceptance target/team")
   const native = await macPageAdmission(page, sourceCacheDir)
@@ -38,9 +42,9 @@ test("authentic setup countdown reaches a live local round with configured audio
     waitFor: async (expression,timeout)=>{await page.waitForFunction(expression,undefined,{timeout})},
     activateCurrentTab: ()=>page.bringToFront(),
   })
-  const lookBy = async (x: number) => {
+  const lookBy = async (x: number, y = 0) => {
     expect(await page.evaluate(()=>document.pointerLockElement===document.querySelector("canvas.world-canvas"))).toBe(true)
-    await automation.player.lookBy({x,y:0})
+    await automation.player.lookBy({x,y})
     expect(await page.evaluate(()=>(globalThis as any).__playsrcBrowserTestPointer?.mode??"native")).toBe("native")
   }
   const save = async (name: string, value: unknown) => {
@@ -48,6 +52,7 @@ test("authentic setup countdown reaches a live local round with configured audio
   }
   await page.addInitScript(() => {
     ;(globalThis as any).__playsrcProfile ??= {}
+    ;(globalThis as any).__playsrcProfile.captureFrameAdmission=true
     const probe = { contexts: [] as any[], states: [] as any[], voices: [] as any[] }
     ;(globalThis as any).__setupEvidence = probe
     const connect = AudioNode.prototype.connect
@@ -93,7 +98,7 @@ test("authentic setup countdown reaches a live local round with configured audio
     await page.screenshot({path:testInfo.outputPath(`${name}.png`)})
     await save(name,await page.evaluate(() => {
       const p = (globalThis as any).__playsrcProfile
-      return {data:{...document.querySelector<HTMLElement>("main")!.dataset},round:p.round,player:p.player,bots:p.bots,points:p.controlPoints}
+      return {data:{...document.querySelector<HTMLElement>("main")!.dataset},round:p.round,player:p.player,bots:p.bots,points:p.controlPoints,frameAdmission:p.frameAdmission}
     }))
   }
   const walkToGorgeExit = async () => {
@@ -188,7 +193,7 @@ test("authentic setup countdown reaches a live local round with configured audio
     await page.keyboard.press("Digit1")
     await expect(main).toHaveAttribute("data-class-selection-visible","false")
     await expect(main).toHaveAttribute("data-phase","Ready")
-    await command("tf_bot_quota 15")
+    await command(`tf_bot_quota ${botQuota}`)
     await page.bringToFront()
     await page.locator("canvas.world-canvas").click()
     await expect(main).toHaveAttribute("data-pointer-locked","true")
@@ -213,13 +218,18 @@ test("authentic setup countdown reaches a live local round with configured audio
       return r && r.state === 4 && !r.waitingForPlayers && !r.inSetup
     },undefined,{timeout:125_000})
     await capture("live-round")
+    if(faceCart) {
+      const delta=await page.evaluate(()=>((Number(document.querySelector<HTMLElement>("main")!.dataset.cameraYaw)+180)%360+360)%360-180)
+      await lookBy(delta/0.066); await capture("native-cart-facing-aim")
+    }
+    if(aimDown) { await lookBy(0,45/0.066); await capture("native-downward-aim") }
     await page.keyboard.down("KeyW"); await page.mouse.down()
-    const sample = await page.evaluate(async () => {
+    const sample = await page.evaluate(async (sampleSeconds) => {
       const d = document.querySelector<HTMLElement>("main")!.dataset, p = (globalThis as any).__playsrcProfile
       const tick = Number(d.snapshotTick), before = d.cameraPosition, bots = structuredClone(p.bots)
-      const timing = await p.setupSampleFrames()
+      const timing = await p.setupSampleFrames(undefined,undefined,sampleSeconds)
       return {...timing,ticks:Number(d.snapshotTick)-tick,before,after:d.cameraPosition,botsBefore:bots,botsAfter:p.bots,round:p.round,points:p.controlPoints,audio:d.audioStarts}
-    })
+    },sampleSeconds)
     await page.keyboard.up("KeyW"); await page.mouse.up()
     await save("live-sample-raw",sample)
     await save("live-sample",{...sample,summary:summarizeFrameTimes(sample.frames)})
@@ -229,7 +239,7 @@ test("authentic setup countdown reaches a live local round with configured audio
     await capture("movement-firing-bots")
     expect(sample.ticks/sample.seconds).toBeGreaterThan(65)
     expect(sample.after).not.toBe(sample.before)
-    expect(sample.botsAfter.length).toBe(15)
+    expect(sample.botsAfter.length).toBe(botQuota)
     expect(sample.audio).toContain("Weapon_Scatter_Gun.Single")
     for (const seconds of [60,30,10,5,4,3,2,1]) expect(sample.audio).toContain(`Announcer.RoundBegins${seconds}Seconds:sound/vo/announcer_begins_${seconds}sec.mp3`)
     expect(sample.audio).toContain("Ambient.Siren:sound/ambient_mp3/siren.mp3")

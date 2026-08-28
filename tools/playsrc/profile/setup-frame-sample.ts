@@ -3,7 +3,9 @@
 export async function sampleSetupFrames(
   clock = () => performance.now(),
   schedule = (callback: FrameRequestCallback) => requestAnimationFrame(callback),
+  seconds = 5,
 ) {
+  if(seconds!==5&&seconds!==10)throw Error("Setup frame sample must be five or ten real seconds")
   const at = clock(), frames: number[] = []
   let previous = at
   await new Promise<void>(resolve => {
@@ -11,7 +13,7 @@ export async function sampleSetupFrames(
       const now = clock()
       frames.push(now - previous)
       previous = now
-      if (now - at >= 5000) resolve()
+      if (now - at >= seconds*1000) resolve()
       else schedule(frame)
     }
     schedule(frame)
