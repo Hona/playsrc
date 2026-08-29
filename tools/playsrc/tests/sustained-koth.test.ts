@@ -18,4 +18,6 @@ test("sustained plans authenticate the target and unchanged create-server roster
     expect(() => validateUpwardCapturePlan({ ...plan, sustainedSeconds: 15 })).toThrow()
   }
   expect(() => upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "pl_upward" })).toThrow()
+  for (const option of ["PROFILE_UPWARD_TRAINING_WARM_RELOAD", "PROFILE_CLASS_REPLACEMENT", "PROFILE_UPWARD_CLASS_SWITCH", "PROFILE_PARTICLE_COMBAT"])
+    expect(() => upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_sawmill", [option]: "1" })).toThrow()
 })

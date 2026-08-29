@@ -38,6 +38,8 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
 
 export function upwardCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   const base = baseCapturePlan(environment)
+  if (base.sustainedSeconds && (base.warmReload || base.exerciseClasses || base.combat || base.stockOnly || base.acceptance
+    || environment.PROFILE_CLASS_REPLACEMENT === "1" || base.workloadAuthor || base.commandWorkload)) throw new Error("Sustained KOTH requires one uninterrupted ordinary full-roster generation")
   if (base.commandWorkload && !/^[0-9a-f]{64}$/.test(base.commandWorkload)) throw new Error("Invalid command workload identity")
   if ((base.workloadAuthor || base.commandWorkload) && (!base.warmReload || base.exerciseClasses || base.combat || base.stockOnly
     || environment.PROFILE_CLASS_REPLACEMENT === "1" || base.workloadAuthor && base.commandWorkload)) throw new Error("Incompatible command workload capture plan")
