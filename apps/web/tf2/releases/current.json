@@ -5,14 +5,14 @@
     "wasm": {
       "kind": "derived-object",
       "mediaType": "application/octet-stream",
-      "byteLength": "8566966",
-      "sha256": "001157a3b497cea2e0cf5169fee51440448a99fcafd2f54ffb50e231e6c5d072"
+      "byteLength": "9360507",
+      "sha256": "108f68333f6919b71a32c3338c62db17c05639098b1180ef943d58d9e4a4dcb2"
     },
     "catalog": {
       "kind": "catalog",
       "mediaType": "application/vnd.playsrc.asset-catalog+json",
-      "byteLength": "1147",
-      "sha256": "abab1f5f6f26c038f4fda967f862353d5bbe0b372f6af30574bd11d449146245"
+      "byteLength": "3348",
+      "sha256": "6ab9f57cd7de19a3585327c30b9deed2ea835f54ecf7ed4dc1384910d4c707e5"
     }
   },
   "wasmBindings": [
@@ -24,7 +24,7 @@
     {
       "name": "tf2_wasm.js",
       "byteLength": "9072",
-      "sha256": "b35a993769a2fbb9028d36f37cbae8fe56cae9a11e071161e854c602edc133c5"
+      "sha256": "b0faebc66e51d0e7f47cbf3e114350bd9e04ab7cb9fefda98fbe826e8b793ddd"
     }
   ],
   "targets": [
@@ -41,14 +41,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "887994",
-          "sha256": "978bfeea458f38d1b51c388bb9fc23a58811e5ba065b556f4deb3b66dd3f71b8"
+          "byteLength": "965827",
+          "sha256": "95b3f2cdb9162f3de7f0bedfb068eb228a59d981c37feb4c06d84802cde5e9b9"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "2379867",
-          "sha256": "8fd2a5a6a3e74b5129334db0faabbdd033d0e80c9664579838379c687f5ce4da"
+          "byteLength": "2587271",
+          "sha256": "a5e7b4eec694ddecb3ccb880ef101c868a4380331e087d50e3e6297bad0a2062"
         }
       }
     },
@@ -65,14 +65,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1284515",
-          "sha256": "15f2814b1a4589e2bd3b7982442f635a0b7f35ae38a40368e7377a8a653da784"
+          "byteLength": "1375234",
+          "sha256": "8718cba2505d28ec4a8a1b205bf3bb0c786a35e82bf41b0b0cdb7bd619b4812e"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5156240",
-          "sha256": "6e904d054537c9fcd4357c881f3a8a0240c0fd29cc4fa860ca83e3baa62f5c3f"
+          "byteLength": "5400060",
+          "sha256": "3a995b6d9fb84710425fb666b7c5f140d72c5f2dd7771ceb15d43b6fe6b14993"
         }
       }
     },
@@ -89,14 +89,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1353056",
-          "sha256": "1da96e04fdd031ca0f5964257a05c0df70ca8e37e6cbef9c1eb13329105d5dda"
+          "byteLength": "1437266",
+          "sha256": "488711b37ef5d87819f03693a12d5954ef3114ff9233aff72d2a897a81ea1c6f"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "6361017",
-          "sha256": "dabb7c482cb146ec84e256f8b35f4e740e448e51e61edbb6586cca2f0c6167a3"
+          "byteLength": "6586080",
+          "sha256": "608072a10d26a13979bccea5b05e88bc75e7e4cb4bd8b006d600ccda9de4a0ec"
         }
       }
     },
@@ -113,14 +113,14 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1295512",
-          "sha256": "b5d9cb87c53b95375c6991fb33f4ff58e35d4c70c275d2178e8a2d84c8e91787"
+          "byteLength": "1377524",
+          "sha256": "327c111080a36c6ac8f61c11b9dfdc8fe52bfbe9126924ac2ba8bbd817cf2cb2"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5884906",
-          "sha256": "9683773a475d18f86ba2cdff6b6441fc496ba28beb4d2b4f357fdfb067f8001e"
+          "byteLength": "6101748",
+          "sha256": "473dd6a5d3106b752e938418ac8a57e14306f800ba1d2f0c77bc298113ea6eb6"
         }
       }
     },
@@ -137,14 +137,254 @@
         "resources": {
           "kind": "source-root",
           "mediaType": "application/vnd.playsrc.resource-graph+json",
-          "byteLength": "1211169",
-          "sha256": "e2af48cf86abdc95049c0b169d3a6b1ceac593ad97f2deb3e104c2c3fb5c21e8"
+          "byteLength": "1291844",
+          "sha256": "a5af8ce4b0ec79b6902e24e3dd9a8b23a1c315f69704e25e9a3642b78c436fec"
         },
         "dependencyLedger": {
           "kind": "derived-object",
           "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
-          "byteLength": "5384035",
-          "sha256": "8435501c234899650e23339d7ebe94b700b63abfdf33608303d1588cdb150545"
+          "byteLength": "5598001",
+          "sha256": "8e065c8eac7d466b1e64ee121b7ed2085a05eaaf70aab91c4154dae342283486"
+        }
+      }
+    },
+    {
+      "target": "cp_badlands",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "25981141",
+          "sha256": "872f6e77abda907d095000009cfbe8c50d62d15e304c80c7dc86a6591ebc08e3"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1281432",
+          "sha256": "21017f73b9da4ca5d6ef65bdb4222b3e94bc7757678fab6baf621ca9895dccd3"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "4894674",
+          "sha256": "bb277a0d7821c32b470ac3ad15ac2f18f4f431f3a0219eae437d32a124950ee0"
+        }
+      }
+    },
+    {
+      "target": "cp_granary",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "60353484",
+          "sha256": "6080d8b69cd526aa3e76252d61138ccd4d371953ea0ef2787e5a56bd3399f08d"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1316210",
+          "sha256": "c29d336a76455bd07938741cec8fd071b468cbeca900c8688b479704b6f56148"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5344221",
+          "sha256": "4c563fdf97a4f435ed7f7a4a04049fa72be7c12611a728e47b54202deb997977"
+        }
+      }
+    },
+    {
+      "target": "cp_well",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "69715720",
+          "sha256": "d66a82edd7aaefe3290bef2d0397d2380f958d5c4e99f4dc57d4d4431a8f92b4"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1378633",
+          "sha256": "4834102aa71fe75515c8ef8bb78267d2ead4d1b249a08198c1d8e1cab842dfc5"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5950100",
+          "sha256": "37fd5d893a2ddc72e3694901f977a401a8463b1116ff51dcb29d30cbbd5aeb12"
+        }
+      }
+    },
+    {
+      "target": "cp_freight_final1",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "77271944",
+          "sha256": "f997458041ce58e0b1c7eaa9bea12bc683552e198d44551f01d45c425868dd86"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1341861",
+          "sha256": "3690dcc233026d828317b170ddb9acf95ddb3c6b8d9ff6e7092068d431373f62"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5375799",
+          "sha256": "7eda1268f5abb7b7a259089d39410eacecf1f5c6838330c3a8681dc34eb64d31"
+        }
+      }
+    },
+    {
+      "target": "cp_gullywash_final1",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "24500234",
+          "sha256": "6f60fa38954ea1fd104c27eb73a83282ab6ceea02cbcce033999c6b61ced233f"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1261112",
+          "sha256": "10cd0d7f0e14b88ee7f67a8923aa75522085365db66f3c6cffb5a70ada6841ff"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "4999832",
+          "sha256": "23fb741c880b2a376723255f0c7dd1aee93289ed43ab73a0adbf554ff46a92b7"
+        }
+      }
+    },
+    {
+      "target": "cp_process_final",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "19794859",
+          "sha256": "52c74027ac179b9686af9ce40d7418f08ef6845d945587b4ccae335cf7081a71"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1269214",
+          "sha256": "f2c3460d0028d51a223ce64d1002e19f285a34b3b70a3ec89662e16638a8c00d"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5307684",
+          "sha256": "9d4102a0d51346808a7e351863886b35f154dc69d1544c1950fc874ccb279ec9"
+        }
+      }
+    },
+    {
+      "target": "koth_viaduct",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "41690668",
+          "sha256": "b3574e496550311f5036997ed7bf3d1007be7fe28236f8f33a2352fe0518729c"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1233710",
+          "sha256": "c037940ef5e1ef30bbeb8ee8be58ba72f3241e4b6d48da4a1f89224cfa9248a7"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "5110883",
+          "sha256": "bde22d34224ada2e6593d470e35aaec999967345155b2f0595d5f590bdd482bf"
+        }
+      }
+    },
+    {
+      "target": "koth_sawmill",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "27758576",
+          "sha256": "3efbcfc7fd6be31e2a6949b1ec51d410072409253dbf230f97054642cc8cc5a3"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1189390",
+          "sha256": "0fa42bde20301f21a6a2b69cf42029717773f41d1b697aecd024f7ce8ef9752d"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "4121972",
+          "sha256": "f15d010e1dcbcda08ee5cea35a1ad03116c2b24a154bdee8412bff055ef6c3bd"
+        }
+      }
+    },
+    {
+      "target": "koth_harvest_final",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "26691032",
+          "sha256": "441e18e3b8053aa55e9ddef7a4bc6681756518045701adee0d13eaf3b052320a"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1131606",
+          "sha256": "bcddd7737cea04c3d10e5af4688da47a626dd004e023fbdb3e58bbfce24c86fd"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "3792980",
+          "sha256": "2dfedfea68e3755ec996735b32597b75fe40a2c2566f97875f2c88058c6d072f"
+        }
+      }
+    },
+    {
+      "target": "koth_lakeside_final",
+      "contentBuild": "24245096",
+      "objects": {
+        "bsp": {
+          "kind": "source-object",
+          "mediaType": "application/octet-stream",
+          "byteLength": "41123424",
+          "sha256": "1d9a761337c213122ce98e9e1f79bfc3cb7ec550851c8f0237c4db76f50d7fe7"
+        },
+        "resources": {
+          "kind": "source-root",
+          "mediaType": "application/vnd.playsrc.resource-graph+json",
+          "byteLength": "1212996",
+          "sha256": "07491546a06072429ee0e880b57441345198ee481f1437e3db53d05c91eef2cc"
+        },
+        "dependencyLedger": {
+          "kind": "derived-object",
+          "mediaType": "application/vnd.playsrc.source-dependency-ledger+json",
+          "byteLength": "4176161",
+          "sha256": "4b5c64870d7dda3fd79e2979f6bebb7d73ba0e0522ac32615e1cb13d9cf364fa"
         }
       }
     }

@@ -37,7 +37,11 @@ describe("TF2 production release", () => {
   test("admits every checked configured map descriptor", () => {
     const parsed = parseTf2Release(checkedRelease)
     expect(parsed.defaultTarget).toBe("jump_beef")
-    expect(parsed.targets.map((target) => target.target)).toEqual(["jump_beef", "pl_upward", "ctf_2fort", "cp_dustbowl", "cp_gorge"])
+    expect(parsed.targets.map((target) => target.target)).toEqual([
+      "jump_beef", "pl_upward", "ctf_2fort", "cp_dustbowl", "cp_gorge",
+      "cp_badlands", "cp_granary", "cp_well", "cp_freight_final1", "cp_gullywash_final1", "cp_process_final",
+      "koth_viaduct", "koth_sawmill", "koth_harvest_final", "koth_lakeside_final",
+    ])
     expect(parsed.targets[1].objects.bsp.sha256).toBe("15cbf91981b0d9902c645d1992d196b7e630742aa85111ed834d231f3c3a5709")
     expect(parsed.targets[2].objects.bsp.sha256).toBe("cbd191411c0be57099da73458167001ec80d58bf37c71cb3c36b2911b6e80fd7")
     expect(parsed.targets[3].objects.bsp.sha256).toBe("f2595d3f6af19f21d7beaeed7ecb7a130246a5b934641a44f0f68d54edfc421e")
