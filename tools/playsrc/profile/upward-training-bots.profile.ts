@@ -589,6 +589,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(nativeFailure).toBeUndefined()
     expect(sample.lifecycle).toEqual([])
     expect(sample.missedPublications).toBe(0)
+    expect(sample.dropped).toBe(0)
     expect(sample.ended - sample.started).toBeGreaterThanOrEqual(5000)
     expect(sample.ended - sample.started).toBeLessThanOrEqual(10000)
     expect(sample.lastFrame).toBeGreaterThan(sample.firstFrame)

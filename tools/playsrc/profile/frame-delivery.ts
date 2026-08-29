@@ -85,7 +85,7 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   equal(roster(ordinary.sample.before.botProbe), roster(traced.sample.before.botProbe), "bot identity/team/class roster")
   for (const run of [ordinary, traced]) {
     const sample = run.sample, elapsed = sample.ended - sample.started
-    if (elapsed < 5000 || elapsed > 10000 || sample.missedPublications || sample.lifecycle.length
+    if (elapsed < 5000 || elapsed > 10000 || sample.missedPublications || sample.dropped || sample.lifecycle.length
       || sample.before.bots !== expectedBots || sample.after.bots !== expectedBots || sample.lastFrame - sample.firstFrame !== sample.frames.length) throw new Error("Incomplete or changed comparison window")
     if (!run.nativeAdmission?.length || run.nativeAdmission.some((record: any) => {
       const native = record.native
