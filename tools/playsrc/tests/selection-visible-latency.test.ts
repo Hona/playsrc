@@ -62,3 +62,15 @@ test("frozen, empty and zero-latency native boundaries cannot be filtered out", 
   expect(selectionVisibleLatency(100, 100, [{ startedEpoch: 100, endedEpoch: 100, matches: true }]).upperMilliseconds).toBe(0)
   expect(() => selectionVisibleLatency(100, 5100, [{ startedEpoch: 200, endedEpoch: 199, matches: false }])).toThrow("unordered")
 })
+
+test("a settled world reference cannot move late pixels into an ended sample", () => {
+  const result=selectionVisibleLatency(100,500,[
+    {startedEpoch:90,endedEpoch:95,matches:false},
+    {startedEpoch:200,endedEpoch:220,matches:false},
+    {startedEpoch:400,endedEpoch:420,matches:false},
+    {startedEpoch:600,endedEpoch:620,matches:true},
+  ])
+  expect(result.endCensored).toBe(true)
+  expect(result.upperMilliseconds).toBeNull()
+  expect(result.censoredMilliseconds).toBe(400)
+})

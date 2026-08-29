@@ -33,7 +33,13 @@ export async function analyzeNativeSelectionPixels(directory: string) {
     return decodeScreenshot(bytes)
   }))
   const latencies = references.map((reference: any, index: number) => {
-    const image = images[reference.index]!, facts = reference.facts
+    // An owner acknowledgement is not presented pixels. The final guarded
+    // world capture supplies the settled glyph mask; the unchanged scan below
+    // still dates the FIRST matching pixels inside the original sample window.
+    // Keep the initial owner capture too, including any stale class-panel frame.
+    const referenceIndex = reference.scene === "world" ? captures.length - 1 : reference.index
+    const image = images[referenceIndex]!, facts = reference.facts
+    if (captures[referenceIndex].startedEpoch < facts.timeOrigin + facts.draw.at) throw new Error("Native reference precedes its selected draw owner")
     const windows = captures[reference.index].method === "windows-native-desktop"
     if (!windows && captures[reference.index].admission.snapshot.screens.length !== 1) throw new Error("Native selection sample requires one exact primary display")
     if (captures.some((capture: any) => JSON.stringify(windows ? capture.nativeRecords[0].facts.bounds : capture.admission.page.bounds)
@@ -41,7 +47,7 @@ export async function analyzeNativeSelectionPixels(directory: string) {
     const rectangles = captures.map((capture: any, index: number) => nativeSelectionRect(images[index]!,
       windows ? capture.admission.pixels.bounds : capture.admission.snapshot.screens[0],
       windows ? capture.nativeRecords[0].facts.bounds : { left: capture.admission.page.bounds.X, top: capture.admission.page.bounds.Y, width: capture.admission.page.bounds.Width, height: capture.admission.page.bounds.Height }, facts))
-    const { x, y, width, height, scale } = rectangles[reference.index]!
+    const { x, y, width, height, scale } = rectangles[referenceIndex]!
     if (rectangles.some(rect => rect.width !== width || rect.height !== height || rect.scale !== scale)) throw new Error("Authored native sample scale changed")
     const colors = new Map<string, number[]>()
     for (let row = y; row < y + height; row++) for (let column = x; column < x + width; column++) {
@@ -69,7 +75,7 @@ export async function analyzeNativeSelectionPixels(directory: string) {
       return { startedEpoch: interval.startedEpoch, endedEpoch: interval.endedEpoch,
         matches: !pixelsMatch ? false : interval.startedEpoch >= drawEpoch ? true : null }
     }))
-    return { scene: reference.scene, input: input.name, glyphPixels: mask.length, reference: captures[reference.index].file,
+    return { scene: reference.scene, input: input.name, glyphPixels: mask.length, reference: captures[referenceIndex].file, initialOwnerReference: captures[reference.index].file,
       over250Milliseconds: result.upperMilliseconds === null || result.upperMilliseconds > 250, ...result }
   })
   await writeFile(path.join(directory, "selection-latency.json"), JSON.stringify(latencies, null, 2))
