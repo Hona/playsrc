@@ -3,13 +3,16 @@ import { profileSampleSeconds } from "./profile-window"
 /** Effective choices, not an environment dump. The capture consumes this same
  * plan that is durably retained before browser/map admission. */
 function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
-  const createServer = environment.PROFILE_STARTUP_CREATE_SERVER === "1"
+  const sustainedKoth = environment.PROFILE_KOTH_SUSTAINED === "1"
+  if (sustainedKoth && !["koth_sawmill", "koth_lakeside_final"].includes(environment.PROFILE_MAP_TARGET ?? "")) throw new Error("Sustained KOTH requires an explicit admitted target")
+  const createServer = sustainedKoth || environment.PROFILE_STARTUP_CREATE_SERVER === "1"
   const exerciseClasses = environment.PROFILE_UPWARD_CLASS_SWITCH === "1"
   const acceptance = environment.PROFILE_INTEGRATED_ACCEPTANCE === "1"
   const stockOnly = environment.PROFILE_ACCEPTANCE_STOCK_ONLY === "1"
   return Object.freeze({
     schema: "playsrc-upward-capture-plan-v1" as const,
-    target: createServer ? "ctf_2fort" as const : "pl_upward" as const,
+    target: sustainedKoth ? environment.PROFILE_MAP_TARGET as "koth_sawmill" | "koth_lakeside_final" : createServer ? "ctf_2fort" as const : "pl_upward" as const,
+    ...(sustainedKoth ? { sustainedSeconds: 90 as const } : {}),
     entry: createServer ? "create-server" as const : "training" as const,
     exerciseClasses, acceptance, stockOnly,
     combat: !stockOnly && environment.PROFILE_PARTICLE_COMBAT === "1",
@@ -46,7 +49,7 @@ export type UpwardCapturePlan = ReturnType<typeof upwardCapturePlan> | ReturnTyp
 
 export function validateUpwardCapturePlan(value: any): asserts value is UpwardCapturePlan {
   if (!value || !["playsrc-upward-capture-plan-v1", "playsrc-upward-capture-plan-v2"].includes(value.schema)
-    || !["pl_upward", "ctf_2fort"].includes(value.target) || !["training", "create-server"].includes(value.entry)
+     || !["pl_upward", "ctf_2fort", "koth_sawmill", "koth_lakeside_final"].includes(value.target) || !["training", "create-server"].includes(value.entry)
     || ["exerciseClasses", "acceptance", "stockOnly", "combat", "warmReload"].some(key => typeof value[key] !== "boolean")
     || !(value.playersOverride === null || typeof value.playersOverride === "string")
     || !["red", "blue"].includes(value.coldTeam) || !["red", "blue"].includes(value.warmTeam)
@@ -57,6 +60,8 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
   if (value.schema === "playsrc-upward-capture-plan-v2" && typeof value.replacement !== "boolean") throw new Error("Invalid replacement capture plan")
   const resolve = value.schema === "playsrc-upward-capture-plan-v1" ? baseCapturePlan : upwardCapturePlan
   const resolved = resolve({
+    PROFILE_KOTH_SUSTAINED: value.sustainedSeconds === 90 ? "1" : "0",
+    PROFILE_MAP_TARGET: value.target,
     PROFILE_STARTUP_CREATE_SERVER: value.entry === "create-server" ? "1" : "0",
     PROFILE_UPWARD_CLASS_SWITCH: value.exerciseClasses ? "1" : "0",
     PROFILE_INTEGRATED_ACCEPTANCE: value.acceptance ? "1" : "0",

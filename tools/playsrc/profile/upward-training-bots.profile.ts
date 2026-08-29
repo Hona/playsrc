@@ -41,6 +41,7 @@ import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } fr
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
 import { selectionLoadingControl } from "./selection-loading-control"
+import { observeSustainedKoth } from "./sustained-koth"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -61,6 +62,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const correctnessOnly = process.env.PROFILE_CLASS_INPUT_CORRECTNESS === "1"
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
+  const sustained = "sustainedSeconds" in capturePlan
   if (correctnessOnly && (deliveryMode || !exerciseClasses || acceptance || combat || capturePlan.warmReload || capturePlan.replacement || entry !== "training")) throw new Error("Class correctness requires its explicit standalone training plan")
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
   const createServer = entry === "create-server"
@@ -245,7 +247,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       cdp.send("Performance.enable"), cdp.send("HeapProfiler.enable"),
       cdp.send("Profiler.enable").then(() => cdp.send("Profiler.setSamplingInterval", { interval: 1000 })),
     ])).catch(error => { profilerPreparationError = error })
-    await page.bringToFront()
+    if (!sustained) await page.bringToFront()
     if (windowsReader) await checkNativeWindow()
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 100_000 })
     const startupMilliseconds = Date.now() - started
@@ -257,7 +259,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
       const dialog = layer.getByRole("dialog", { name: "CREATE SERVER" })
       await dialog.locator("[data-vgui-name='MapList']").click()
-      await page.getByRole("option", { name: "ctf_2fort" }).click()
+      await page.getByRole("option", { name: target, exact: true }).click()
       await dialog.getByRole("tab", { name: "GAME" }).click()
       await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("23")
       playerCount = 24
@@ -375,7 +377,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   // Establish the actual Page -> CDP window -> native drawing window before
   // warm navigation/replacement/resize, not while the new window is animating.
   if (nativeReader || windowsReader) {
-    await page.bringToFront()
+    if (!sustained) await page.bringToFront()
     await checkNativeWindow()
     await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
     if (nativeReader) requireMacPageAdmission(nativeAdmission[0]!)
@@ -446,7 +448,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (!canvasBox) throw new Error("Visible class input surface is absent")
   const capturePoint = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 }
   await replay?.ready()
-  await page.bringToFront()
+   if (!sustained) await page.bringToFront()
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   if (correctnessOnly) {
@@ -472,6 +474,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return
   }
   const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
+  if (sustained) {
+    profilePhases.enter("sustained-koth")
+    await observeSustainedKoth({ page, browserCdp, directory, checkNativeWindow, sourceFingerprint, sourceCommit: sourceCommit.stdout.trim() })
+  }
   if (diagnosticMinimumTick !== undefined) {
     if (deliveryMode !== "rpc" || !Number.isSafeInteger(diagnosticMinimumTick)) throw new Error("Tick-targeted sampling is diagnostic only")
     await expect.poll(async () => Number(await root.getAttribute("data-snapshot-tick")), { timeout: 15_000 }).toBeGreaterThanOrEqual(diagnosticMinimumTick)

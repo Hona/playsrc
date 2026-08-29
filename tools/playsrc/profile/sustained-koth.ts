@@ -1,99 +1,102 @@
-import { deliveryTimeline } from "./frame-delivery"
-import { summarizeFrameTimes } from "./profile-window"
+import type { CDPSession, Page } from "@playwright/test"
+import { writeFile } from "node:fs/promises"
+import path from "node:path"
+import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
+import { captureProcessMemory } from "./process-memory"
+import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
+import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
 
-// Minimum admission:5s startup +35s natural waiting/preround +90s soak +6s
-// detailed capture +15s extraction. The active-round gate rechecks the full111s
-// remainder; a slower startup fails rather than reducing gameplay age.
-export const SUSTAINED_KOTH = Object.freeze({ soakMilliseconds: 90_000, sampleMilliseconds: 6_000, extractionMilliseconds: 15_000, minimumBrowserMilliseconds: 151_000, allocationAccounting: "late-detailed-only" })
 export function requireSustainedBudget(remaining: number) {
-  const required = SUSTAINED_KOTH.soakMilliseconds + SUSTAINED_KOTH.sampleMilliseconds + SUSTAINED_KOTH.extractionMilliseconds
-  if (!Number.isFinite(remaining) || remaining < required) throw new Error(`Sustained KOTH needs ${required}ms after natural active-round admission; only ${remaining}ms remain. Never shorten the90s soak.`)
-}
-export function sustainedKothTarget(value: string | undefined) {
-  if (value !== "koth_harvest_final" && value !== "koth_viaduct") throw new Error("Sustained KOTH requires configured Harvest or Viaduct")
-  return value
+  // Do not silently shorten the soak or spend the deep-sample/retention budget.
+  if (!Number.isFinite(remaining) || remaining < 120_000) throw new Error(`Sustained KOTH needs 120000 ms after live admission (90000 uninterrupted + deep sample/retention); only ${remaining} ms remain`)
 }
 
-/** Lightweight bounded records, not a renderer/Worker wrapper or a GC trigger. */
-export function installSustainedObservation(host: any = globalThis) {
-  // Includes the full175s cap at the admitted165Hz display, not just60Hz RAF.
-  const limit = 32768
-  let active = false, used = false, started = 0, ended = 0, dropped = 0, raf = 0
-  const frames: any[] = [], callbacks: number[] = [], ticks: any[] = [], inputs: any[] = [], lifecycle: any[] = []
-  let observer: MutationObserver | undefined, lastFrame = 0, lastTick = 0, missedFrames = 0
-  const state = () => host.document.querySelector("main")?.dataset ?? {}
-  const append = (records: any[], value: any) => { if (records.length < limit) records.push(value); else dropped++ }
-  const changed = (event: any) => { if (active) append(lifecycle, { at: host.performance.now(), type: event.type, visible: host.document.visibilityState, focused: host.document.hasFocus() }) }
-  host.addEventListener("blur", changed); host.addEventListener("resize", changed); host.document.addEventListener("visibilitychange", changed)
-  const input = (event: any) => {
-    if (!active) return
-    append(inputs, { at: host.performance.now(), type: event.type, code: event.code, trusted: event.isTrusted, camera: state().cameraPosition, completedAt: null })
+/** One live map generation; no forced collection, restart, or clock changes.
+ * Full instrumentation stays inactive until the existing late deep sample. */
+export async function observeSustainedKoth(options: {
+  page: Page; browserCdp: CDPSession; directory: string; checkNativeWindow: () => Promise<void>;
+  sourceFingerprint: string; sourceCommit: string
+}) {
+  const { page, browserCdp, directory, checkNativeWindow } = options
+  const file = (name: string) => path.join(directory, `sustained-${name}`)
+  const records: any[] = [], memory: any[] = []
+  const read = () => page.evaluate(() => {
+    const p = (globalThis as any).__playsrcProfile, main = document.querySelector<HTMLElement>("main")!
+    return { at: performance.now(), epoch: performance.timeOrigin + performance.now(), generation: main.dataset.generation,
+      tick: main.dataset.snapshotTick, round: p.round, bots: p.bots, points: p.controlPoints,
+      camera: p.player?.camera, quality: p.videoQuality, heap: (performance as any).memory ?? null,
+      gpuApi: (globalThis as any).__playsrcGpuTextureAccounting, assets: p.memoryAssets,
+      failures: p.failure, losses: (globalThis as any).__playsrcFrameProfiler.losses, audio: p.audio?.stats() }
+  })
+  const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory,
+    scope: "One-second logical texture/API, JS heap, roster and resource observations. Missed seconds remain gaps, never interpolated. API live bytes are not physical GPU residency; heap drops alone do not prove GC. No long-term leak-freedom claim." }))
+  const processSnapshot = async () => {
+    const processes = await browserCdp.send("SystemInfo.getProcessInfo")
+    memory.push({ at: Date.now(), processes: await captureProcessMemory(processes.processInfo),
+      workers: await Promise.all(page.workers().map(worker => worker.evaluate(() => ({ url: location.href,
+        memory: (globalThis as any).__playsrcWorkerMemory ?? null })).catch(error => ({ error: String(error) })))) })
   }
-  host.document.addEventListener("keydown", input, { passive: true })
-  for (const type of ["pointerdown", "wheel", "mousemove"]) host.document.addEventListener(type, (event: any) => {
-    if (active && (type !== "mousemove" || event.movementX || event.movementY)) append(lifecycle, { at: host.performance.now(), type: `unexpected-${type}` })
-  }, { passive: true })
-  const opportunity = () => { if (active) { append(callbacks, host.performance.now()); raf = host.requestAnimationFrame(opportunity) } }
-  host.__playsrcSustained = {
-    start() {
-      if (used) throw new Error("Sustained observer permits one uninterrupted interval")
-      const surface = host.document.querySelector("canvas.world-canvas"), main = host.document.querySelector("main")
-      if (!surface || !main) throw new Error("Sustained gameplay surface is absent")
-      started = host.performance.now(); active = used = true
-      lastFrame = Number(surface.dataset.displayFrame); lastTick = Number(main.dataset.snapshotTick)
-      host.__playsrcDeliveryRpc.start(started)
-      observer = new host.MutationObserver(() => {
-        const at = host.performance.now(), data = state(), nextFrame = Number(surface.dataset.displayFrame), tick = Number(data.snapshotTick)
-        if (nextFrame < lastFrame || tick < lastTick) append(lifecycle, { at, type: "counter-reset" })
-        if (nextFrame !== lastFrame) {
-          missedFrames += Math.max(0, nextFrame - lastFrame - 1)
-          append(frames, { at, frame: nextFrame, tick, camera: data.cameraPosition, performance: data.performance })
-          for (const input of inputs) if (input.completedAt === null && input.camera !== data.cameraPosition) input.completedAt = at
-          lastFrame = nextFrame
-        }
-        if (tick !== lastTick) { append(ticks, { at, before: lastTick, tick }); lastTick = tick }
-      })
-      observer.observe(surface, { attributes: true, attributeFilter: ["data-display-frame"] })
-      observer.observe(main, { attributes: true, attributeFilter: ["data-snapshot-tick"] })
-      raf = host.requestAnimationFrame(opportunity)
-      return started
-    },
-    stop() {
-      ended = host.performance.now(); active = false; observer?.disconnect(); host.cancelAnimationFrame(raf)
-      return { started, ended, timeOrigin: host.performance.timeOrigin, frames, callbacks, ticks, inputs, lifecycle, dropped, missedFrames, rpc: host.__playsrcDeliveryRpc.stop() }
-    },
+  // Preserve waiting-for-players and setup. Admission is not included in the
+  // 90 seconds and cannot be accelerated to make the workflow fit its cap.
+  await page.waitForFunction(() => { const p = (globalThis as any).__playsrcProfile
+    return p.round?.state === 4 && !p.round.waitingForPlayers && !p.round.inSetup && p.bots?.length === 23
+  }, undefined, { timeout: 45_000 })
+  records.push(await read()); await retain()
+  requireSustainedBudget(Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now())
+  // Observe the authored objective from a stable test camera without moving,
+  // freezing, replacing or retiring any player/bot/effect entity.
+  await page.evaluate(() => {
+    const p = (globalThis as any).__playsrcProfile, point = p.controlPoints.points[0]
+    if (!point) throw new Error("KOTH objective camera is unavailable")
+    p.displacementCameraOverride = { ...p.player.camera,
+      position: [point.position[0] - 300, point.position[1], point.position[2] + 160], yawDegrees: 0, pitchDegrees: 20 }
+  })
+  await page.evaluate(installDeliveryObserver)
+  await checkNativeWindow()
+  await page.locator("canvas.world-canvas").screenshot({ path: file("early.png") })
+  await processSnapshot()
+  const categories = ["disabled-by-default-display.framedisplayed", "blink.user_timing", "v8.gc"]
+  const available = (await browserCdp.send("Tracing.getCategories")).categories
+  if (categories.some(category => !available.includes(category))) throw new Error("Native sustained display/GC trace categories unavailable")
+  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: 8192, includedCategories: categories } })
+  let failure: unknown, sample: any
+  const started = await page.evaluate(start => { const at = performance.now(); (globalThis as any).__playsrcDeliveryObserver.start(at); performance.mark(start, { startTime: at }); return at }, TRACE_START)
+  try {
+    for (let index = 0; index < 92; index++) {
+      await checkNativeWindow()
+      const state = await read(); records.push(state)
+      if (state.bots.length !== 23 || state.generation !== records[0].generation || state.round.state !== 4 || state.round.waitingForPlayers || state.round.inSetup) throw new Error("Sustained active full roster/generation was interrupted")
+      if (state.failures || state.losses.length) throw new Error("Sustained rendering reported a resource failure")
+      if (index % 5 === 0) await retain()
+      if (index === 45) await processSnapshot()
+      if (state.at - started >= 90_000) break
+      await page.waitForTimeout(Math.min(1000, 90_000 - (state.at - started)))
+    }
+  } catch (error) { failure = error }
+  finally {
+    sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
+    const completion = new Promise<{ stream?: string; dataLossOccurred?: boolean }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Sustained trace completion exceeded 10 seconds")), 10_000)
+      browserCdp.once("Tracing.tracingComplete", value => { clearTimeout(timer); resolve(value) })
+    })
+    await browserCdp.send("Tracing.end")
+    const complete = await completion
+    if (!complete.stream) throw new Error("Sustained display trace stream unavailable")
+    const raw = await drainTraceStream(browserCdp, complete.stream)
+    const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
+      identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
+      probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
+    await writeFile(file("delivery.json"), JSON.stringify({ sample, evidence: evidence.artifact, complete: evidence.manifest.complete,
+      completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
+      compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
+      nativeDelivery: evidence.analysis, gcEvents: evidence.events.filter(event => event.cat?.split(",").includes("v8.gc")),
+      gcScope: "Only recorded V8 GC events are observations of collection. An empty event list is unobserved/inconclusive, not absence of GC.", failure: failure ? String(failure) : null }))
+    await processSnapshot(); await retain()
+    if (!evidence.manifest.complete) throw new Error("Sustained presentation evidence incomplete")
   }
-}
-
-export function summarizeSustainedWindow(sample: any, started: number, ended: number) {
-  const ticks = sample.ticks.filter((tick: any) => tick.at >= started && tick.at < ended)
-  const rpc = sample.rpc.records.filter((call: any) => call.kind === "observe" && call.received >= started && call.received < ended)
-  const input = sample.inputs.filter((input: any) => input.at >= started && input.at < ended)
-  const distribution = (key: string) => summarizeFrameTimes(rpc.map((call: any) => call.timings[key]).filter(Number.isFinite))
-  return {
-    submissions: deliveryTimeline(started, ended, sample.frames.map((frame: any) => frame.at)),
-    raf: deliveryTimeline(started, ended, sample.callbacks),
-    tickPublications: deliveryTimeline(started, ended, sample.ticks.map((tick: any) => tick.at)),
-    observedTicks: ticks.reduce((sum: number, tick: any) => sum + tick.tick - tick.before, 0),
-    observedTicksPerSecond: ticks.reduce((sum: number, tick: any) => sum + tick.tick - tick.before, 0) * 1000 / (ended - started),
-    workerObserve: { calls: rpc.length, queue: distribution("queueMilliseconds"), service: distribution("transactMilliseconds"), roundTrip: summarizeFrameTimes(rpc.map((call: any) => call.elapsedMilliseconds)), censoredEnd: sample.rpc.pending ?? [] },
-    input: { acknowledged: summarizeFrameTimes(input.filter((input: any) => input.completedAt !== null).map((input: any) => input.completedAt - input.at)),
-      censored: input.filter((input: any) => input.completedAt === null).map((input: any) => ({ ...input, milliseconds: ended - input.at })) },
-    scope: "Completed submissions/RAF and observed snapshot publication ticks are not physical/compositor FPS or instantaneous Worker ticks. Input is DOM delivery to changed-camera submission, not input-to-photon. Queue overlaps are not CPU time.",
-  }
-}
-
-export function sustainedRunIssues(sample: any, lateStarted: number, lateEnded: number, acceptance = true): string[] {
-  if (!sample || !Number.isFinite(sample.started) || !Number.isFinite(sample.ended) || sample.ended <= sample.started) return ["Missing continuous gameplay interval"]
-  const issues: string[] = []
-  if (acceptance && lateStarted - sample.started < SUSTAINED_KOTH.soakMilliseconds) issues.push("Detailed sample began before90 uninterrupted real seconds")
-  if (!Number.isFinite(lateEnded - lateStarted) || lateEnded - lateStarted < 5000 || lateEnded - lateStarted > 10_000) issues.push("Detailed sample is outside5–10seconds")
-  if (sample.dropped || sample.rpc?.dropped || sample.missedFrames) issues.push("Incomplete continuous telemetry")
-  if (sample.lifecycle?.length) issues.push("Visibility, geometry, input or generation changed")
-  if (!sample.rpc?.records?.some((call: any) => call.kind === "observe")) issues.push("Worker observe service/queue telemetry is absent")
-  const whole = summarizeSustainedWindow(sample, sample.started, sample.ended)
-  if (acceptance && whole.observedTicksPerSecond < 65) issues.push("Whole-interval observed simulation is below65Hz")
-  if (acceptance && lateEnded > lateStarted && summarizeSustainedWindow(sample, lateStarted, lateEnded).observedTicksPerSecond < 63) issues.push("Late observed simulation is below63Hz")
-  if (acceptance && !sample.inputs?.some((input: any) => input.completedAt !== null)) issues.push("No planned input reached a changed-camera submission")
-  return issues
+  if (failure) throw failure
+  if (sample.ended - sample.started < 90_000 || sample.dropped || sample.missedPublications || sample.lifecycle.length) throw new Error("Sustained window incomplete or interrupted")
+  await checkNativeWindow()
+  await page.locator("canvas.world-canvas").screenshot({ path: file("late.png") })
 }

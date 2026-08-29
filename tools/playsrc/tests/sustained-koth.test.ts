@@ -1,73 +1,21 @@
 import { expect, test } from "bun:test"
-import { requireSustainedBudget, sustainedKothTarget, SUSTAINED_KOTH, summarizeSustainedWindow, installSustainedObservation, sustainedRunIssues } from "../profile/sustained-koth"
-import { parseHeadedProfile, profileMinimumRemainingMilliseconds, profileBrowserLaunch } from "../src/profile-runner"
-test("the native owner uses the same explicit browser channel as the sustained child", () => {
-  expect(profileBrowserLaunch("sustained-harvest", { args: ["--example"] })).toEqual({ channel: "msedge", args: ["--example"] })
-  expect(profileBrowserLaunch("sustained-viaduct", {})).toEqual({ channel: "msedge" })
-  expect(profileBrowserLaunch("sustained-harvest-setup", {})).toEqual({ channel: "msedge" })
-  expect(profileMinimumRemainingMilliseconds("sustained-harvest-setup")).toBe(60_000)
-  expect(profileMinimumRemainingMilliseconds("sustained-harvest-diagnostic")).toBe(70_000)
-  expect(profileBrowserLaunch("gameplay", { channel: "chrome" })).toEqual({ channel: "chrome" })
-})
-test("retained entropy is explicit and never forwarded as a Playwright option", () => {
-  const identity = "a".repeat(64)
-  expect(parseHeadedProfile(["sustained-harvest", "--sustained-entropy", identity]).sustainedEntropy).toBe(identity)
-  expect(parseHeadedProfile(["sustained-viaduct", "--sustained-entropy", identity]).playwright).toEqual([])
-  expect(profileMinimumRemainingMilliseconds("sustained-harvest")).toBe(SUSTAINED_KOTH.minimumBrowserMilliseconds)
-  expect(() => parseHeadedProfile(["gameplay", "--sustained-entropy", identity])).toThrow()
-  expect(() => parseHeadedProfile(["sustained-harvest", "--sustained-entropy", "../bad"])).toThrow()
-})
-test("sustained KOTH never truncates natural soak to fit a startup overrun", () => {
-  expect(SUSTAINED_KOTH.soakMilliseconds).toBe(90_000)
-  expect(() => requireSustainedBudget(111_000)).not.toThrow()
-  for (const value of [110_999, NaN, -1]) expect(() => requireSustainedBudget(value)).toThrow()
-  expect(sustainedKothTarget("koth_viaduct")).toBe("koth_viaduct")
-  expect(sustainedKothTarget("koth_harvest_final")).toBe("koth_harvest_final")
-  expect(() => sustainedKothTarget("pl_upward")).toThrow()
-})
-test("whole-interval buckets retain empty seconds and censored input stalls", () => {
-  const sample = { frames: [{ at: 1250 }], callbacks: [1250], ticks: [{ at: 1250, before: 100, tick: 104 }], rpc: { records: [] }, inputs: [{ at: 20, completedAt: null }] }
-  const result = summarizeSustainedWindow(sample, 0, 3000)
-  expect(result.submissions.buckets.map(bucket => bucket.count)).toEqual([0, 1, 0])
-  expect(result.submissions.quarterSecondBuckets).toHaveLength(12)
-  expect(result.observedTicks).toBe(4)
-  expect(result.input.censored[0].milliseconds).toBe(2980)
-  expect(result.submissions.terminalGap).toBe(1750)
+import { requireSustainedBudget } from "../profile/sustained-koth"
+import { upwardCapturePlan, validateUpwardCapturePlan } from "../profile/upward-capture-plan"
+import { profileMinimumRemainingMilliseconds } from "../src/profile-runner"
+
+test("sustained admission never truncates the 90 second soak to fit", () => {
+  for (const budget of [NaN, 90_000, 119_999]) expect(() => requireSustainedBudget(budget)).toThrow()
+  expect(() => requireSustainedBudget(120_000)).not.toThrow()
+  expect(profileMinimumRemainingMilliseconds("koth-sustained-sawmill")).toBe(150_000)
+  expect(profileMinimumRemainingMilliseconds("koth-sustained-lakeside")).toBe(150_000)
 })
 
-test("a short soak or absent simulation/input telemetry cannot become acceptance", () => {
-  expect(sustainedRunIssues(null, 0, 0)).toEqual(["Missing continuous gameplay interval"])
-  const sample = { started: 0, ended: 96000, frames: [], callbacks: [], ticks: [], inputs: [], lifecycle: [], dropped: 0, missedFrames: 0, rpc: { records: [], dropped: 0 } }
-  expect(sustainedRunIssues(sample, 89000, 95000)).toContain("Detailed sample began before90 uninterrupted real seconds")
-  const issues = sustainedRunIssues(sample, 90000, 96000)
-  expect(issues).toContain("Whole-interval observed simulation is below65Hz")
-  expect(issues).toContain("Late observed simulation is below63Hz")
-  expect(issues).toContain("Worker observe service/queue telemetry is absent")
-  expect(issues).toContain("No planned input reached a changed-camera submission")
-  sample.rpc.records.push({ kind: "observe", sent: 0, received: 100, elapsedMilliseconds: 100, timings: {} } as never)
-  expect(sustainedRunIssues(sample, 100, 6100, false)).toEqual([])
-  expect(sustainedRunIssues(sample, 100, 6100)).toContain("Detailed sample began before90 uninterrupted real seconds")
-})
-
-test("continuous observer records real publication changes, input tails, resets and no restarted window", () => {
-  let now = 100, changed: () => void = () => {}
-  const events = new Map<string, Function>(), documentEvents = new Map<string, Function>()
-  const main = { dataset: { snapshotTick: "10", cameraPosition: "0,0,0" } }, canvas = { dataset: { displayFrame: "1" } }
-  const host: any = { performance: { now: () => now }, addEventListener: (type: string, fn: Function) => events.set(type, fn),
-    document: { querySelector: (selector: string) => selector === "main" ? main : canvas, addEventListener: (type: string, fn: Function) => documentEvents.set(type, fn), visibilityState: "visible", hasFocus: () => true },
-    MutationObserver: class { constructor(fn: () => void) { changed = fn } observe() {} disconnect() {} },
-    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, __playsrcDeliveryRpc: { start() {}, stop: () => ({ records: [], pending: [], dropped: 0 }) } }
-  installSustainedObservation(host)
-  const observer = host.__playsrcSustained
-  expect(observer.start()).toBe(100)
-  documentEvents.get("keydown")!({ type: "keydown", code: "KeyA", isTrusted: true })
-  now = 115; canvas.dataset.displayFrame = "2"; main.dataset.snapshotTick = "12"; main.dataset.cameraPosition = "1,0,0"; changed()
-  now = 130; main.dataset.snapshotTick = "1"; changed()
-  events.get("resize")!({ type: "resize" })
-  const sample = observer.stop()
-  expect(sample.frames).toHaveLength(1)
-  expect(sample.inputs[0].completedAt - sample.inputs[0].at).toBe(15)
-  expect(sample.ticks[0]).toEqual({ at: 115, before: 10, tick: 12 })
-  expect(sample.lifecycle.map((event: any) => event.type)).toEqual(["counter-reset", "resize"])
-  expect(() => observer.start()).toThrow("one uninterrupted")
+test("sustained plans authenticate the target and unchanged create-server roster", () => {
+  for (const target of ["koth_sawmill", "koth_lakeside_final"]) {
+    const plan = upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: target, PROFILE_SAMPLE_SECONDS: "5" })
+    expect(plan).toMatchObject({ target, entry: "create-server", sustainedSeconds: 90, playersOverride: null, warmReload: false, sampleSeconds: 5 })
+    expect(() => validateUpwardCapturePlan(plan)).not.toThrow()
+    expect(() => validateUpwardCapturePlan({ ...plan, sustainedSeconds: 15 })).toThrow()
+  }
+  expect(() => upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "pl_upward" })).toThrow()
 })
