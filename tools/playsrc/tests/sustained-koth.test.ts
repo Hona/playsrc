@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { requireSustainedBudget } from "../profile/sustained-koth"
 import { upwardCapturePlan, validateUpwardCapturePlan } from "../profile/upward-capture-plan"
 import { profileMinimumRemainingMilliseconds } from "../src/profile-runner"
-import { SUSTAINED_KOTH, checkSustainedObservation, sustainedGcEvidence, sustainedTrends } from "../profile/sustained-koth-evidence"
+import { SUSTAINED_KOTH, checkSustainedObservation, sustainedGcEvidence, sustainedTrends, assertMatchingSustainedTransitionHistories } from "../profile/sustained-koth-evidence"
 
 test("sustained admission never truncates the 90 second soak to fit", () => {
   for (const budget of [NaN, 90_000, 119_999]) expect(() => requireSustainedBudget(budget)).toThrow()
@@ -25,13 +25,61 @@ test("full soak cannot enable deep CPU/allocation tracing or unbounded buffers",
 
 test("lifecycle admission rejects replacement, duplicate/changed roster, setup reentry, failures and regressed clocks", () => {
   const initial = observation()
-  expect(() => checkSustainedObservation(observation(1000), initial)).not.toThrow()
+  expect(() => checkSustainedObservation(observation(1000), initial, initial)).not.toThrow()
   for (const mutation of [
-    (s: any) => s.bots.pop(), (s: any) => s.bots[22] = s.bots[0], (s: any) => s.bots[0].class++,
+    (s: any) => s.bots.pop(), (s: any) => s.bots[22] = s.bots[0], (s: any) => s.bots[0].identity = 100,
+    (s: any) => s.bots[0].team = 3,
     (s: any) => s.generation = "2", (s: any) => s.round.waitingForPlayers = true, (s: any) => s.round.inSetup = true,
     (s: any) => s.round.state = 5, (s: any) => s.at = -1, (s: any) => s.tick = "-1",
     (s: any) => s.failures = "device lost", (s: any) => s.losses.push("validation error"),
-  ]) { const changed = observation(1000); mutation(changed); expect(() => checkSustainedObservation(changed, initial)).toThrow() }
+  ]) { const changed = observation(1000); mutation(changed); expect(() => checkSustainedObservation(changed, initial, initial)).toThrow() }
+})
+
+test("natural class changes and per-actor counter drops are recorded without truncating combat", () => {
+  const first = observation(), firing = observation(1000), respawn = observation(2000), late = observation(90000)
+  firing.bots[0]!.shots = 20
+  respawn.bots[0]!.class = late.bots[0]!.class = 7
+  respawn.bots[0]!.shots = 2; late.bots[0]!.shots = 5
+  // Another actor's increase must not hide the first actor's reset.
+  respawn.bots[1]!.shots = late.bots[1]!.shots = 100
+  const transition = checkSustainedObservation(respawn, first, firing)
+  expect(transition.classes).toEqual([{ identity: 2, from: 1, to: 7 }])
+  expect(transition.counterResets).toEqual([{ identity: 2, counter: "shots", from: 20, to: 2 }])
+  expect([transition.fromTick, transition.toTick]).toEqual(["66", "133"])
+  const trends = sustainedTrends([first, firing, respawn, late], 0, 90000)
+  expect(trends.whole.shots).toBe(125)
+  expect(trends.history.transitions).toHaveLength(1)
+  expect(trends.observationDelivery.buckets).toHaveLength(90)
+  expect(trends.history.scope).toContain("unobserved")
+})
+
+test("intermediate tick and time regressions fail even when still beyond the initial sample", () => {
+  const initial = observation(), previous = observation(2000)
+  expect(() => checkSustainedObservation(observation(1000), initial, previous)).toThrow("clock regressed")
+  const next = { ...observation(3000), tick: "100" }
+  expect(() => checkSustainedObservation(next, initial, previous)).toThrow("clock regressed")
+  expect(() => sustainedTrends([initial, previous, next], 0, 90000)).toThrow("clock regressed")
+  expect(() => checkSustainedObservation({ ...observation(3000), tick: previous.tick }, initial, previous)).not.toThrow()
+})
+
+test("before/after authentication requires matching class/reset history, not just endpoint classes", () => {
+  const before = [observation(), observation(1000), observation(2000), observation(3000)]
+  before.forEach(record => record.bots.forEach(bot => Object.assign(bot, { hits: 0, deaths: 0 })))
+  before[1]!.bots[0]!.shots = 10
+  before[2]!.bots[0]!.class = 7 // Returns to its initial class before the last observation.
+  before[2]!.bots[0]!.shots = before[3]!.bots[0]!.shots = 2
+  const after = structuredClone(before)
+  after.forEach(record => { record.at += 5000; record.tick = String(BigInt(record.tick) + 400n); record.bots.reverse() })
+  expect(() => assertMatchingSustainedTransitionHistories(before, after)).not.toThrow()
+  const changed = structuredClone(before); changed[2]!.bots[0]!.class = 8
+  expect(() => assertMatchingSustainedTransitionHistories(before, changed)).toThrow("histories differ")
+  changed[2]!.bots[0]!.class = 7; changed[2]!.bots[0]!.shots = 1
+  expect(() => assertMatchingSustainedTransitionHistories(before, changed)).toThrow("histories differ")
+  const shifted = structuredClone(before); shifted[2]!.tick = "134"
+  expect(() => assertMatchingSustainedTransitionHistories(before, shifted)).toThrow("histories differ")
+  expect(() => assertMatchingSustainedTransitionHistories(before, [before[0]!, before.at(-1)!])).toThrow("histories differ")
+  expect(() => assertMatchingSustainedTransitionHistories([], [])).toThrow("missing")
+  expect(() => assertMatchingSustainedTransitionHistories([observation()], [observation()])).toThrow("incomplete")
 })
 
 test("early/late sparse observations retain zero buckets and distinguish live API bytes from creation/upload", () => {

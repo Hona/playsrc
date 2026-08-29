@@ -17,6 +17,7 @@ export async function observeSustainedKoth(options: {
   const { page, browserCdp, directory, checkNativeWindow } = options
   const file = (name: string) => path.join(directory, `sustained-${name}`)
   const records: any[] = [], memory: any[] = []
+  const transitions: ReturnType<typeof checkSustainedObservation>[] = []
   const read = () => page.evaluate(() => {
     const p = (globalThis as any).__playsrcProfile, main = document.querySelector<HTMLElement>("main")!
     return { at: performance.now(), epoch: performance.timeOrigin + performance.now(), generation: main.dataset.generation,
@@ -28,7 +29,7 @@ export async function observeSustainedKoth(options: {
       ownership: p.rendererOwnership?.() ?? null,
       failures: p.failure, losses: (globalThis as any).__playsrcFrameProfiler.losses, audio: p.audio?.stats() }
   })
-  const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory,
+  const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory, transitions,
     scope: "One-second logical texture/API, JS heap, roster and resource observations. Missed seconds remain gaps, never interpolated. API live bytes are not physical GPU residency; heap drops alone do not prove GC. No long-term leak-freedom claim." }))
   const processSnapshot = async () => {
     const processes = await browserCdp.send("SystemInfo.getProcessInfo")
@@ -66,8 +67,9 @@ export async function observeSustainedKoth(options: {
   try {
     for (let index = 0; index < SUSTAINED_KOTH.historyRecords - 1; index++) {
       await checkNativeWindow()
-      const state = await read(); records.push(state)
-      checkSustainedObservation(state, records[0])
+      const previous = records.at(-1)!, state = await read(); records.push(state)
+      const transition = checkSustainedObservation(state, records[0], previous)
+      if (transition.classes.length || transition.counterResets.length) transitions.push(transition)
       if (index % 5 === 0) await retain()
       // OS process snapshots stay outside active gameplay. Spawning a shell
       // halfway through would contaminate the interval being measured.
@@ -92,7 +94,7 @@ export async function observeSustainedKoth(options: {
       completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
       compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
       nativeDelivery: evidence.analysis, gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
-      trends: sustainedTrends(records, sample.started, sample.ended),
+      trends: failure ? null : sustainedTrends(records, sample.started, sample.ended),
       changingPresentedFrames: null, changingPixelEvidence: "Not established by display events or two endpoint screenshots; requires native changing-surface evidence",
       failure: failure ? String(failure) : null }))
     await processSnapshot(); await retain()
