@@ -40,6 +40,7 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
   ]) expect(() => compareDeliveryEvidence(ordinary, boundary, traced, changed)).toThrow()
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, botProbe: "2:3:9" } } }, traceBoundary)).toThrow("roster")
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, bots: 23 } } }, traceBoundary)).toThrow("changed comparison")
+  expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, dropped: 1 } }, traceBoundary)).toThrow("changed comparison")
   const fullSample = { ...sample, before: { ...sample.before, bots: 23, botProbe: Array.from({ length: 23 }, (_, index) => `${index + 2}:${2 + index % 2}:${1 + index % 9}`).join("|") }, after: { ...sample.after, bots: 23 } }
   const fullBoundary = { ...boundary, capturePlan: { ...boundary.capturePlan, entry: "create-server", target: "ctf_2fort" } }
   expect(compareDeliveryEvidence({ ...ordinary, sample: fullSample }, fullBoundary, { ...presentation, sample: fullSample }, fullBoundary).ordinary.ticks).toBe(10)
