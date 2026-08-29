@@ -8,7 +8,8 @@ import { expect, test } from "./application-test"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
-import { classInputViolations, prepareClassCapture } from "./class-input-sequence"
+import { CLASS_INPUT_SEQUENCE, classInputViolations, prepareClassCapture } from "./class-input-sequence"
+import { CLASS_CORRECTNESS_PLAN, installClassCorrectnessObserver, verifyClassInputs } from "./class-input-correctness"
 import { TRACE_START, TRACE_END, analyzeCompositorStalls, assertVisibleGameplayTruth, summarizeCompositorStages, summarizeCompositorTruth, summarizeActivePresentationSilence, type ChromiumTraceEvent } from "./compositor-truth"
 import { summarizeWebGpuTrace } from "./webgpu-trace"
 import { summarizeCompositorFreezes, summarizeFreezeTimeline } from "./freeze-timeline"
@@ -56,8 +57,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const deliveryMode = testInfo.project.metadata.frameDeliveryMode as "ordinary" | "presentation" | "cpu" | "rpc" | "traced" | undefined
   if (deliveryMode && !["ordinary", "presentation", "cpu", "rpc", "traced"].includes(deliveryMode)) throw new Error("Unknown delivery comparison mode")
   const passiveDelivery = Boolean(deliveryMode && deliveryMode !== "traced")
+  const correctnessOnly = process.env.PROFILE_CLASS_INPUT_CORRECTNESS === "1"
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
+  if (correctnessOnly && (deliveryMode || !exerciseClasses || acceptance || combat || capturePlan.warmReload || capturePlan.replacement || entry !== "training")) throw new Error("Class correctness requires its explicit standalone training plan")
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
   const createServer = entry === "create-server"
   const label = process.env.PROFILE_UPWARD_TRAINING_LABEL ?? "latest"
@@ -100,7 +103,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
       throw error
     }
   }
-  const capturePlanArtifact = await retainCapturePlan(evidenceDirectory, capturePlan)
+  const capturePlanArtifact = correctnessOnly
+    ? await retainEvidenceBlob(evidenceDirectory, Buffer.from(JSON.stringify(CLASS_CORRECTNESS_PLAN)), "plan.json")
+    : await retainCapturePlan(evidenceDirectory, capturePlan)
   await testInfo.attach("capture-plan", { body: JSON.stringify(capturePlanArtifact), contentType: "application/json" })
   console.log(`PLAYSRC_CAPTURE_PLAN ${JSON.stringify(capturePlanArtifact)}`)
   const replay = deliveryMode === "traced" || exerciseClasses || capturePlan.gameplayReplay === "required"
@@ -114,7 +119,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (deliveryMode) expect(await applicationBuildIdentity(applicationRoot)).toBe(sourceFingerprint)
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
   if (deliveryMode === "rpc") await page.addInitScript({ content: `(${installDeliveryRpcObserver.toString()})();` })
-  if (!passiveDelivery) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  if (correctnessOnly) await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})(globalThis,"lifecycle");(${installClassCorrectnessObserver.toString()})();` })
+  if (!passiveDelivery && !correctnessOnly) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
   if (!passiveDelivery) await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
@@ -442,6 +448,28 @@ test("profile authored headed Upward offline-practice default roster and actual 
   await page.bringToFront()
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
+  if (correctnessOnly) {
+    profilePhases.enter("class-input-correctness")
+    if (Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Date.now() + 175_000) - Date.now() < 35_000) throw new Error("Insufficient bounded time for all three correctness windows and retention")
+    await replay?.mark(0)
+    const verified = await verifyClassInputs(page, directory, checkNativeWindow)
+    await replay?.mark(1)
+    const journal = await stopReplay(true)
+    expect(journal?.artifact?.complete).toBe(true)
+    const sourceFingerprintAfter = await applicationBuildIdentity(applicationRoot)
+    expect(sourceFingerprintAfter).toBe(sourceFingerprint)
+    const identity = await page.evaluate(() => ({ applicationGeneration: (globalThis as any).__playsrcProfile.applicationGeneration,
+      viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+      state: { ...document.querySelector<HTMLElement>("main")!.dataset } }))
+    await writeFile(path.join(directory, "class-input-correctness-acceptance.json"), JSON.stringify({
+      ...verified, applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
+      harnessRoot: repositoryRoot, harnessFingerprint: process.env.PLAYSRC_PROFILE_HARNESS_FINGERPRINT,
+      browserVersion: context.browser()!.version(), capturePlanArtifact, identity, nativeAdmission: nativeRecords(), journal,
+      claims: { functionalClassInputs: verified.records.length, minigunPrefireToPyroTransitions: verified.records.filter(record => record.prefire).length, performanceSample: false, stable60: false },
+    }, null, 2))
+    retainIncomplete = undefined
+    return
+  }
   const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
   if (diagnosticMinimumTick !== undefined) {
     if (deliveryMode !== "rpc" || !Number.isSafeInteger(diagnosticMinimumTick)) throw new Error("Tick-targeted sampling is diagnostic only")
@@ -929,9 +957,9 @@ test("profile authored headed Upward offline-practice default roster and actual 
   let visibleScoreboardRows: number | null = null
   const exercise = async () => {
     if (!exerciseClasses) return
-    const classes = ["heavyweapons", "pyro", "medic", "spy", "engineer", "sniper", "scout", "demoman", "soldier"] as const
-    const digits = [5, 3, 7, 9, 6, 8, 1, 4, 2] as const
-    const identities = [6, 7, 5, 8, 9, 2, 1, 4, 3] as const
+    const classes = CLASS_INPUT_SEQUENCE.map(value => value.name)
+    const digits = CLASS_INPUT_SEQUENCE.map(value => value.digit)
+    const identities = CLASS_INPUT_SEQUENCE.map(value => value.identity)
     const now = () => performance.now()
     const deadline = now() + seconds * 1000
     const action = (value: string) => page.evaluate(value => { (globalThis as any).__playsrcProfile.classInputAction = value }, value)

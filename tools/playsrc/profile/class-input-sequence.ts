@@ -1,5 +1,13 @@
 import type { ClassSwitchLifecycleEvent } from "./class-switch-lifecycle"
 
+export const CLASS_INPUT_SEQUENCE = Object.freeze([
+  { name: "heavyweapons", digit: 5, identity: 6 }, { name: "pyro", digit: 3, identity: 7 },
+  { name: "medic", digit: 7, identity: 5 }, { name: "spy", digit: 9, identity: 8 },
+  { name: "engineer", digit: 6, identity: 9 }, { name: "sniper", digit: 8, identity: 2 },
+  { name: "scout", digit: 1, identity: 1 }, { name: "demoman", digit: 4, identity: 4 },
+  { name: "soldier", digit: 2, identity: 3 },
+].map(value => Object.freeze(value)))
+
 /** Observe interference; never cancel, rewrite, or suppress real input. */
 export function classInputViolations(events: readonly ClassSwitchLifecycleEvent[]) {
   return events.filter(event => {
