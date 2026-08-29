@@ -151,9 +151,12 @@ export function publicationObjectByteLimit(kind:ObjectDescriptor["kind"]):number
   return kind==="source-object"?MAX_PUBLICATION_SOURCE_BYTES:MAX_PUBLICATION_OBJECT_BYTES
 }
 
-export function sortPublicationDescriptors(descriptors: readonly ObjectDescriptor[]): readonly ObjectDescriptor[] {
-  const rank = (kind: ObjectDescriptor["kind"]) => kind === "catalog" ? 2 : kind.endsWith("root") ? 1 : 0
-  return Object.freeze([...descriptors].sort((left, right) => rank(left.kind) - rank(right.kind) || left.sha256.localeCompare(right.sha256)))
+function publicationRank(kind: ObjectDescriptor["kind"]): number {
+  return kind === "catalog" ? 2 : kind.endsWith("root") ? 1 : 0
+}
+
+export function sortPublicationDescriptors<T extends Pick<ObjectDescriptor, "kind" | "sha256">>(descriptors: readonly T[]): readonly T[] {
+  return Object.freeze([...descriptors].sort((left, right) => publicationRank(left.kind) - publicationRank(right.kind) || left.sha256.localeCompare(right.sha256)))
 }
 
 export async function publishTf2Release(config: LocalConfig, target: string | undefined): Promise<void> {
@@ -182,15 +185,31 @@ export async function publishTf2Release(config: LocalConfig, target: string | un
   progress()
   const timer = setInterval(progress, 1000)
   try {
-    for (const descriptor of descriptors) {
-      const source = releaseObjectPath(config, descriptor)
-      await verifyFile(source, descriptor)
-      const outcome = await publishImmutableObject(descriptor, await readFile(source), adapter)
-      objects.push({ sha256: descriptor.sha256, byteLength: descriptor.byteLength, kind: descriptor.kind, outcome })
-      // Count completed remote readback, not bytes merely sent or found by name.
-      verifiedBytes += Number(descriptor.byteLength)
-      if (outcome === "Uploaded") uploaded++
-      else alreadyPresent++
+    // Verify all leaves before publishing roots, and all roots before the catalog.
+    for (const rank of [0, 1, 2]) {
+      const phase = descriptors.filter(descriptor => publicationRank(descriptor.kind) === rank)
+      let next = 0, failed = false
+      const workers = await Promise.allSettled(Array.from({ length: Math.min(5, phase.length) }, async () => {
+        while (!failed && next < phase.length) {
+          const descriptor = phase[next++]!
+          try {
+            const source = releaseObjectPath(config, descriptor)
+            await verifyFile(source, descriptor)
+            const outcome = await publishImmutableObject(descriptor, await readFile(source), adapter)
+            objects.push({ sha256: descriptor.sha256, byteLength: descriptor.byteLength, kind: descriptor.kind, outcome })
+            // Count completed remote readback, not bytes merely sent or found by name.
+            verifiedBytes += Number(descriptor.byteLength)
+            if (outcome === "Uploaded") uploaded++
+            else alreadyPresent++
+          } catch (error) {
+            failed = true
+            throw error
+          }
+        }
+      }))
+      // Drain already-started files before closing their shared R2 transport.
+      const failure = workers.find(worker => worker.status === "rejected")
+      if (failure?.status === "rejected") throw failure.reason
     }
   } finally {
     clearInterval(timer)
@@ -202,7 +221,7 @@ export async function publishTf2Release(config: LocalConfig, target: string | un
     defaultTarget: artifact.release.defaultTarget,
     targets: artifact.release.targets.map((target) => target.target),
     assetOrigin: CLOUDFLARE_ASSET_ORIGIN,
-    objects,
+    objects: sortPublicationDescriptors(objects),
     totals: {
       objects: objects.length,
       bytes: objects.reduce((total, object) => total + Number(object.byteLength), 0),
