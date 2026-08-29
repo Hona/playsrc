@@ -11,8 +11,8 @@ on:
         description: JSON receipt from the exact approved static package's headed cold and warm-upgrade movie/menu/playable-frame gate
         required: false
         type: string
-      waive_v0011_startup_receipt:
-        description: Explicitly authorized v0.0.11-only startup receipt waiver; asset and binding checks remain mandatory
+      waive_v0012_startup_receipt:
+        description: Explicitly authorized v0.0.12-only startup receipt waiver; asset and binding checks remain mandatory
         required: false
         type: boolean
         default: false
@@ -132,7 +132,7 @@ jobs:
         env:
           PLAYSRC_STATIC_STARTUP_RECEIPT: ${{ inputs.startup_receipt }}
           PLAYSRC_RELEASE_VERSION: ${{ inputs.version }}
-          PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: ${{ inputs.waive_v0011_startup_receipt }}
+          PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: ${{ inputs.waive_v0012_startup_receipt }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

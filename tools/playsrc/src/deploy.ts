@@ -207,8 +207,8 @@ export async function deployCloudflare(target: string | undefined): Promise<void
 }
 
 export function assertReleaseStartupAcceptance(expected: { packageSha256: string; wasmSha256: string }, environment: NodeJS.ProcessEnv = process.env): void {
-  if (environment.PLAYSRC_RELEASE_VERSION === "0.0.11" && environment.PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT === "true") {
-    console.warn("User-authorized v0.0.11 startup receipt waiver: exact-package headed startup is not certified; asset, binding and package checks remain mandatory")
+  if (environment.PLAYSRC_RELEASE_VERSION === "0.0.12" && environment.PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT === "true") {
+    console.warn("User-authorized v0.0.12 startup receipt waiver: exact-package headed startup is not certified; asset, binding and package checks remain mandatory")
     return
   }
   let startup: unknown
