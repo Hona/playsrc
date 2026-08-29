@@ -107,7 +107,8 @@ export function installDeliveryObserver(host: any = globalThis) {
   let active = false, observer: MutationObserver | undefined, raf = 0
   let frames: Array<{ at: number; frame: number; cameraPosition?: string; phaseFrame?: number; performance?: string;
     preparedRevision?: string; viewRevision?: string; snapRevision?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
-  let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0
+  let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0, dropped = 0
+  const limit = 20_000
   const state = () => {
     const data = host.document.querySelector("main")?.dataset ?? {}
     return { tick: Number(data.snapshotTick), bots: Number(data.botCount), cameraPosition: data.cameraPosition,
@@ -123,7 +124,7 @@ export function installDeliveryObserver(host: any = globalThis) {
     if (active && (event.type !== "mousemove" || event.movementX || event.movementY)) lifecycle.push(`unexpected ${event.type}`)
   }
   for (const type of ["keydown", "pointerdown", "mousemove"]) host.document.addEventListener(type, input, { passive: true })
-  const tick = () => { if (active) { opportunities.push(host.performance.now()); raf = host.requestAnimationFrame(tick) } }
+  const tick = () => { if (active) { if (opportunities.length < limit) opportunities.push(host.performance.now()); else dropped++; raf = host.requestAnimationFrame(tick) } }
   host.__playsrcDeliveryObserver = {
     start(at = host.performance.now()) {
       if (active) throw new Error("Delivery observer already active")
@@ -132,16 +133,17 @@ export function installDeliveryObserver(host: any = globalThis) {
       started = at; firstFrame = lastFrame = Number(canvas.dataset.displayFrame)
       host.__playsrcDeliveryRpc?.start(at)
       before = state()
-      frames = []; opportunities = []; lifecycle = []; missedPublications = 0; active = true
+      frames = []; opportunities = []; lifecycle = []; missedPublications = 0; dropped = 0; active = true
       observer = new host.MutationObserver(() => {
         const frame = Number(canvas.dataset.displayFrame)
         if (frame !== lastFrame) {
           if (frame < lastFrame) lifecycle.push("completed-frame counter reset")
           missedPublications += Math.max(0, frame - lastFrame - 1)
           const data = host.document.querySelector("main")?.dataset
-          frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
+          if (frames.length < limit) frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
             preparedRevision: canvas.dataset.displayPreparedRevision, viewRevision: canvas.dataset.displayViewRevision, snapRevision: canvas.dataset.displaySnapRevision,
-            ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); lastFrame = frame
+            ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); else dropped++
+          lastFrame = frame
         }
       })
       observer!.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
@@ -150,7 +152,7 @@ export function installDeliveryObserver(host: any = globalThis) {
     stop(at = host.performance.now()) {
       active = false; observer?.disconnect(); host.cancelAnimationFrame(raf)
       const response = movementInput && frames.find(frame => frame.cameraPosition !== movementInput!.cameraPosition)
-      return { started, ended: at, firstFrame, lastFrame, before, after: state(), frames, raf: opportunities, lifecycle, missedPublications,
+      return { started, ended: at, firstFrame, lastFrame, before, after: state(), frames, raf: opportunities, lifecycle, missedPublications, dropped,
         ...(host.__playsrcDeliveryRpc ? { rpc: host.__playsrcDeliveryRpc.stop() } : {}),
         movementInput, inputToChangedSubmissionMilliseconds: response && movementInput ? response.at - movementInput.at : null,
         inputCensoredMilliseconds: !response && movementInput ? at - movementInput.at : null,
