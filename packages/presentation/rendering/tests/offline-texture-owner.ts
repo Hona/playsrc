@@ -62,6 +62,10 @@ async function buildOfflineTextureOwner(reference: boolean, browser?: { entry: s
     }
     offlineInvalidate() { this.#loadOrdinal++; }
     offlineClearEffects() { this.#clearParticleBatches(); }
+    offlineStageParticles(items, camera) {
+      this.#stageParticleBatches(items, camera);
+      return this.#particleBatchMeshes;
+    }
     offlineDispose() { this.#active.disposables.dispose(); this.#particleVisibility.dispose(); }
     offlineBuildScene(backend, map, payload, hash, request) {
       if (this.#backend !== backend) this.#particleVisibility.attach(backend);
@@ -87,6 +91,7 @@ async function buildOfflineTextureOwner(reference: boolean, browser?: { entry: s
     plugins: [{ name: "offline-owner-access-only", setup(builder) {
       builder.onLoad({ filter: /\/rendering\/src\/index\.ts$/ }, () => ({ loader: "ts", contents: source.replace(declaration, addition) + `
         export { textureFromAuthored, textureFromAuthoredCubemap };
+        export { disposeWebGpuBackend };
         export { modelKey as offlineModelKey };
         export const OfflineThree = THREE;
         export { SharedTextureResidency, OwnedResourceGeneration };
@@ -114,7 +119,7 @@ async function buildOfflineTextureOwner(reference: boolean, browser?: { entry: s
 
 /** Actual Three compiler/Bindings/Textures; only the WebGPU API is recorded.
  * No rendering device, browser, display, pixels, frame loop or GPU timings. */
-export async function offlinePipelineDevice(module: any, recordCommands = false) {
+export async function offlinePipelineDevice(module: any, recordCommands = false, sampleCount: 1 | 4 = 1) {
   const simple = offlineTextureDevice(module), device = simple.backend.device
   let submits = 0
   const programs: any[] = []
@@ -161,7 +166,7 @@ export async function offlinePipelineDevice(module: any, recordCommands = false)
   const context = { configure() {}, unconfigure() {}, getCurrentTexture: () => swapchain }
   const canvas = { width: 1280, height: 720, style: {}, addEventListener() {}, removeEventListener() {},
     setAttribute() {}, getContext() { if (!recordCommands) throw new Error("Offline compilation must not acquire a canvas context"); return context } }
-  const renderer = new module.OfflineThree.WebGPURenderer({ canvas, device, antialias: false })
+  const renderer = new module.OfflineThree.WebGPURenderer({ canvas, device, antialias: sampleCount === 4 })
   await renderer.init()
   return { ...simple, renderer, backend: renderer.backend, programs, recordedSubmissions: () => submits }
 }

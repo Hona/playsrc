@@ -5,11 +5,8 @@ import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 import { captureProcessMemory } from "./process-memory"
 import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
-
-export function requireSustainedBudget(remaining: number) {
-  // Do not silently shorten the soak or spend the deep-sample/retention budget.
-  if (!Number.isFinite(remaining) || remaining < 120_000) throw new Error(`Sustained KOTH needs 120000 ms after live admission (90000 uninterrupted + deep sample/retention); only ${remaining} ms remain`)
-}
+import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence } from "./sustained-koth-evidence"
+export { requireSustainedBudget } from "./sustained-koth-evidence"
 
 /** One live map generation; no forced collection, restart, or clock changes.
  * Full instrumentation stays inactive until the existing late deep sample. */
@@ -24,8 +21,11 @@ export async function observeSustainedKoth(options: {
     const p = (globalThis as any).__playsrcProfile, main = document.querySelector<HTMLElement>("main")!
     return { at: performance.now(), epoch: performance.timeOrigin + performance.now(), generation: main.dataset.generation,
       tick: main.dataset.snapshotTick, round: p.round, bots: p.bots, points: p.controlPoints,
-      camera: p.player?.camera, quality: p.videoQuality, heap: (performance as any).memory ?? null,
+      camera: p.displacementCameraOverride ?? p.player?.camera, quality: p.videoQuality,
+      heap: (performance as any).memory ? { usedJSHeapSize: (performance as any).memory.usedJSHeapSize,
+        totalJSHeapSize: (performance as any).memory.totalJSHeapSize, jsHeapSizeLimit: (performance as any).memory.jsHeapSizeLimit } : null,
       gpuApi: (globalThis as any).__playsrcGpuTextureAccounting, assets: p.memoryAssets,
+      ownership: p.rendererOwnership?.() ?? null,
       failures: p.failure, losses: (globalThis as any).__playsrcFrameProfiler.losses, audio: p.audio?.stats() }
   })
   const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory,
@@ -55,21 +55,22 @@ export async function observeSustainedKoth(options: {
   await checkNativeWindow()
   await page.locator("canvas.world-canvas").screenshot({ path: file("early.png") })
   await processSnapshot()
-  const categories = ["disabled-by-default-display.framedisplayed", "blink.user_timing", "v8.gc"]
+  requireSustainedBudget(Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now())
+  const categories = [...SUSTAINED_KOTH.categories]
   const available = (await browserCdp.send("Tracing.getCategories")).categories
   if (categories.some(category => !available.includes(category))) throw new Error("Native sustained display/GC trace categories unavailable")
   await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
-    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: 8192, includedCategories: categories } })
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: SUSTAINED_KOTH.traceKilobytes, includedCategories: categories } })
   let failure: unknown, sample: any
   const started = await page.evaluate(start => { const at = performance.now(); (globalThis as any).__playsrcDeliveryObserver.start(at); performance.mark(start, { startTime: at }); return at }, TRACE_START)
   try {
-    for (let index = 0; index < 92; index++) {
+    for (let index = 0; index < SUSTAINED_KOTH.historyRecords - 1; index++) {
       await checkNativeWindow()
       const state = await read(); records.push(state)
-      if (state.bots.length !== 23 || state.generation !== records[0].generation || state.round.state !== 4 || state.round.waitingForPlayers || state.round.inSetup) throw new Error("Sustained active full roster/generation was interrupted")
-      if (state.failures || state.losses.length) throw new Error("Sustained rendering reported a resource failure")
+      checkSustainedObservation(state, records[0])
       if (index % 5 === 0) await retain()
-      if (index === 45) await processSnapshot()
+      // OS process snapshots stay outside active gameplay. Spawning a shell
+      // halfway through would contaminate the interval being measured.
       if (state.at - started >= 90_000) break
       await page.waitForTimeout(Math.min(1000, 90_000 - (state.at - started)))
     }
@@ -83,20 +84,24 @@ export async function observeSustainedKoth(options: {
     await browserCdp.send("Tracing.end")
     const complete = await completion
     if (!complete.stream) throw new Error("Sustained display trace stream unavailable")
-    const raw = await drainTraceStream(browserCdp, complete.stream)
+    const raw = await drainTraceStream(browserCdp, complete.stream, SUSTAINED_KOTH.traceBytes)
     const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
       identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
       probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
     await writeFile(file("delivery.json"), JSON.stringify({ sample, evidence: evidence.artifact, complete: evidence.manifest.complete,
       completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
       compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
-      nativeDelivery: evidence.analysis, gcEvents: evidence.events.filter(event => event.cat?.split(",").includes("v8.gc")),
-      gcScope: "Only recorded V8 GC events are observations of collection. An empty event list is unobserved/inconclusive, not absence of GC.", failure: failure ? String(failure) : null }))
+      nativeDelivery: evidence.analysis, gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
+      trends: sustainedTrends(records, sample.started, sample.ended),
+      changingPresentedFrames: null, changingPixelEvidence: "Not established by display events or two endpoint screenshots; requires native changing-surface evidence",
+      failure: failure ? String(failure) : null }))
     await processSnapshot(); await retain()
     if (!evidence.manifest.complete) throw new Error("Sustained presentation evidence incomplete")
   }
   if (failure) throw failure
   if (sample.ended - sample.started < 90_000 || sample.dropped || sample.missedPublications || sample.lifecycle.length) throw new Error("Sustained window incomplete or interrupted")
+  const trend = sustainedTrends(records, sample.started, sample.ended)
+  if (!(trend.whole.shots! > 0 && (trend.whole.hits! > 0 || trend.whole.deaths! > 0))) throw new Error("Sustained KOTH lacks observed real combat activity")
   await checkNativeWindow()
   await page.locator("canvas.world-canvas").screenshot({ path: file("late.png") })
 }

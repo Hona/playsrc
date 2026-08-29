@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu"
+import { disposeWebGpuBackend } from "./webgpu-backend-disposal"
 import { invalidFrameEnvelope } from "./frame-validation"
 import { ParticleVisibilityQueries, type ParticleVisibilitySample } from "./particle-visibility"
 import type { SpriteCardInput } from "./sprite-card"
@@ -2228,7 +2229,7 @@ class RendererOwner implements Renderer {
       this.#restoreTextureBindingLifetime = undefined
       this.#restoreBufferNames?.()
       this.#restoreBufferNames = undefined
-      backend.dispose()
+      disposeWebGpuBackend(backend)
       try {
         context?.unconfigure()
       } catch {
@@ -6147,7 +6148,7 @@ class RendererOwner implements Renderer {
       this.#hudMaterials?.dispose()
       this.#hudMaterials = undefined
       this.#exposureSampler = undefined
-      oldBackend.dispose()
+      disposeWebGpuBackend(oldBackend)
       this.#backend = await this.#createBackend()
       this.#particleVisibility.attach(this.#backend)
       this.#deviceGeneration += 1
@@ -6280,7 +6281,7 @@ class RendererOwner implements Renderer {
     this.#hudMaterials?.dispose()
     this.#hudMaterials = undefined
     this.#exposureSampler = undefined
-    this.#backend.dispose()
+    disposeWebGpuBackend(this.#backend)
     try {
       this.#backend.backend.context?.unconfigure()
     } catch {

@@ -117,11 +117,12 @@ export function installDeliveryObserver(host: any = globalThis) {
   }
   let before: ReturnType<typeof state>
   let movementInput: { at: number; cameraPosition?: string } | null = null
-  const changed = () => { if (active) lifecycle.push("visibility/focus changed") }
+  const recordLifecycle = (event: string) => { if (lifecycle.length < limit) lifecycle.push(event); else dropped++ }
+  const changed = () => { if (active) recordLifecycle("visibility/focus changed") }
   host.addEventListener("blur", changed); host.document.addEventListener("visibilitychange", changed)
   const input = (event: any) => {
     if (event.type === "keydown" && event.code === "KeyW") movementInput = { at: host.performance.now(), cameraPosition: state().cameraPosition }
-    if (active && (event.type !== "mousemove" || event.movementX || event.movementY)) lifecycle.push(`unexpected ${event.type}`)
+    if (active && (event.type !== "mousemove" || event.movementX || event.movementY)) recordLifecycle(`unexpected ${event.type}`)
   }
   for (const type of ["keydown", "pointerdown", "mousemove"]) host.document.addEventListener(type, input, { passive: true })
   const tick = () => { if (active) { if (opportunities.length < limit) opportunities.push(host.performance.now()); else dropped++; raf = host.requestAnimationFrame(tick) } }
@@ -137,7 +138,7 @@ export function installDeliveryObserver(host: any = globalThis) {
       observer = new host.MutationObserver(() => {
         const frame = Number(canvas.dataset.displayFrame)
         if (frame !== lastFrame) {
-          if (frame < lastFrame) lifecycle.push("completed-frame counter reset")
+          if (frame < lastFrame) recordLifecycle("completed-frame counter reset")
           missedPublications += Math.max(0, frame - lastFrame - 1)
           const data = host.document.querySelector("main")?.dataset
           if (frames.length < limit) frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,

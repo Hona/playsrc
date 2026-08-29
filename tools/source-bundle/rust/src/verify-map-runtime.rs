@@ -22,10 +22,10 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention", "--texture-owner-scene", "--texture-owner-models"].contains(&arguments[2].as_str()) || [4, 5].contains(&arguments.len()) && arguments[2] == "--sustained-bots" || arguments.len() == 5 && arguments[2] == "--control-point-crossing" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention", "--texture-owner-scene", "--texture-owner-models", "--particle-owner-output"].contains(&arguments[2].as_str()) || [4, 5].contains(&arguments.len()) && arguments[2] == "--sustained-bots" || arguments.len() == 5 && arguments[2] == "--control-point-crossing" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
-            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --control-point-crossing from to | --payload-retention | --sustained-bots label [replay-sha256]]".to_owned(),
+            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --control-point-crossing from to | --payload-retention | --particle-owner-output | --sustained-bots label [replay-sha256]]".to_owned(),
         );
     }
     let target = &arguments[0];
@@ -114,7 +114,12 @@ fn main() -> Result<(), String> {
     }
     let owner_models = arguments.get(2).is_some_and(|option| option == "--texture-owner-models");
     let owner_scene = owner_models || arguments.get(2).is_some_and(|option| option == "--texture-owner-scene");
-    if arguments.len() == 3 && !owner_scene || arguments.get(2).is_some_and(|value|value=="--control-point-crossing") {
+    let particle_owner = arguments.get(2).is_some_and(|option| option == "--particle-owner-output");
+    if particle_owner && !["koth_sawmill", "koth_lakeside_final"].contains(&target.as_str()) { return Err("particle owner diagnostic requires an admitted KOTH target".into()); }
+    let particle_directory = config.source_cache_dir.join("evidence/koth-sustained-offline").join(target);
+    let mut particle_records = Vec::new();
+    if particle_owner { fs::create_dir_all(&particle_directory).map_err(|e|e.to_string())?; }
+    if arguments.len() == 3 && !owner_scene && !particle_owner || arguments.get(2).is_some_and(|value|value=="--control-point-crossing") {
         let crossing=if arguments.len()==5{Some((arguments[3].parse::<u32>().map_err(|_|"invalid from area")?,arguments[4].parse::<u32>().map_err(|_|"invalid to area")?))}else{None};
         let mut frames = Vec::new();
         let result = playsrc_tf2_wasm::verify_control_point_match(&bsp, &resources, crossing, |snapshot| {
@@ -128,7 +133,7 @@ fn main() -> Result<(), String> {
     }
     let section = playsrc_tf2_wasm::ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
     let resource_hash: [u8; 32] = Sha256::digest(&resources).into();
-    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), u32::from(!owner_scene), &section, 1, resource_hash.as_ptr(), 1) };
+    let handle = unsafe { playsrc_tf2_wasm::playsrc_compile_map(bsp.as_ptr(), bsp.len(), u32::from(!owner_scene && !particle_owner), &section, 1, resource_hash.as_ptr(), 1) };
     struct OwnedHandle(u32);
     impl Drop for OwnedHandle { fn drop(&mut self) { playsrc_tf2_wasm::playsrc_dispose(self.0); } }
     let _owner = OwnedHandle(handle);
@@ -219,7 +224,21 @@ fn main() -> Result<(), String> {
         unsafe { playsrc_tf2_wasm::playsrc_simulation_error_copy(detail.as_mut_ptr(), detail.len()); }
         return Err(format!("native map particle simulation failed: {}", String::from_utf8_lossy(&detail)));
     }
-    if playsrc_tf2_wasm::playsrc_legacy_particle_frames(handle) == 1 {
+    if particle_owner {
+        for index in 0..60_u32 {
+            particle_request[8..12].copy_from_slice(&(1.0 + index as f32 / 60.0).to_le_bytes());
+            particle_request[12..16].copy_from_slice(&(1.0 + (index + 1) as f32 / 60.0).to_le_bytes());
+            if unsafe { playsrc_tf2_wasm::playsrc_particle_transact(handle, particle_request.as_ptr(), particle_request.len()) } != 1 { return Err("native authored particle frame failed".into()); }
+            if [0, 1, 15, 30, 59].contains(&index) {
+                let mut bytes = vec![0; playsrc_tf2_wasm::playsrc_particle_output_length(handle)];
+                if bytes.len() > 8 * 1024 * 1024 || unsafe { playsrc_tf2_wasm::playsrc_particle_output_copy(handle, bytes.as_mut_ptr(), bytes.len()) } != bytes.len() { return Err("particle diagnostic output exceeds bound or copy failed".into()); }
+                let name = format!("frame-{index}.bin");
+                fs::write(particle_directory.join(&name), &bytes).map_err(|e|e.to_string())?;
+                particle_records.push(serde_json::json!({"name":name,"bytes":bytes.len(),"sha256":hex_hash(&bytes),"request":particle_request.to_vec()}));
+            }
+        }
+    }
+    if !particle_owner && playsrc_tf2_wasm::playsrc_legacy_particle_frames(handle) == 1 {
         let mut visual=b"PLVQ".to_vec();
         for value in [3_u32,1,1280,1,0] {visual.extend_from_slice(&value.to_le_bytes());}
         visual.extend_from_slice(&0.0_f32.to_le_bytes());
@@ -247,6 +266,17 @@ fn main() -> Result<(), String> {
     let records=u32::from_le_bytes(particle_output[8..12].try_into().unwrap()) as usize;
     let record_end=records.checked_mul(436).and_then(|bytes|bytes.checked_add(40)).filter(|end|*end<=particle_output.len()).ok_or("native particle output record range")?;
     let sky_particles = particle_output[40..record_end].chunks_exact(436).filter(|record| record[15] == 1).count();
+    if particle_owner {
+        let mut presentation = vec![0; playsrc_tf2_wasm::playsrc_presentation_length(handle)];
+        if unsafe { playsrc_tf2_wasm::playsrc_presentation_copy(handle, presentation.as_mut_ptr(), presentation.len()) } != presentation.len() { return Err("particle presentation copy failed".into()); }
+        for (name, bytes) in [("final.bin", &particle_output), ("presentation.pspr", &presentation), ("resources.psdb", &resources)] {
+            fs::write(particle_directory.join(name), bytes).map_err(|e|e.to_string())?;
+            particle_records.push(serde_json::json!({"name":name,"bytes":bytes.len(),"sha256":hex_hash(bytes)}));
+        }
+        let record = serde_json::json!({"target":target,"bspSha256":hash,"graphSha256":arguments[1],"files":particle_records,"scope":"Native fixed-input map emitter diagnostic; not recorded browser combat, real elapsed soak, GPU execution or pixels"});
+        fs::write(particle_directory.join("manifest.json"),serde_json::to_vec(&record).unwrap()).map_err(|e|e.to_string())?;
+        println!("{record}"); return Ok(());
+    }
     let output = config.source_cache_dir.join("evidence/map-runtime");
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
     fs::write(output.join(format!("{target}.psmp")), &payload)

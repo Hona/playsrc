@@ -103,15 +103,16 @@ test("ordinary observation retains the existing phase publication and its own fr
 })
 
 test("sustained observations bound frame and RAF retention and report overflow", () => {
-  let mutation = () => {}, raf = () => {}
+  let mutation = () => {}, raf = () => {}, blur = () => {}
   const canvas = { dataset: { displayFrame: "1" } }
-  const host: any = { performance: { now: () => 10 }, addEventListener() {}, document: { addEventListener() {}, querySelector: () => canvas },
+  const host: any = { performance: { now: () => 10 }, addEventListener(_name: string, fn: () => void) { blur = fn }, document: { addEventListener() {}, querySelector: () => canvas },
     MutationObserver: class { constructor(fn: () => void) { mutation = fn } observe() {} disconnect() {} },
     requestAnimationFrame(fn: () => void) { raf = fn; return 1 }, cancelAnimationFrame() {} }
   installDeliveryObserver(host); host.__playsrcDeliveryObserver.start()
-  for (let index = 0; index < 20_002; index++) { canvas.dataset.displayFrame = String(index + 2); mutation(); raf() }
+  for (let index = 0; index < 20_002; index++) { canvas.dataset.displayFrame = String(index + 2); mutation(); raf(); blur() }
   const sample = host.__playsrcDeliveryObserver.stop(20)
   expect(sample.frames).toHaveLength(20_000)
   expect(sample.raf).toHaveLength(20_000)
-  expect(sample.dropped).toBe(4)
+  expect(sample.lifecycle).toHaveLength(20_000)
+  expect(sample.dropped).toBe(6)
 })
