@@ -464,6 +464,12 @@ pub fn compile(bsp: &Bsp) -> Result<World, Error> {
     world.identity = world_identity(&world);
     Ok(world)
 }
+#[derive(Default)]
+struct BrushTraceScratch {
+    pending: Vec<(i32, [f32; 3], [f32; 3], usize)>,
+    ordered: Vec<usize>,
+}
+
 impl World {
     pub fn with_displacement_inputs(
         mut self,
@@ -571,8 +577,20 @@ impl World {
         hull: Hull,
         mask: u32,
     ) -> Result<Trace, Error> {
+        self.trace_hull_with_scratch(start, end, hull, mask, &mut BrushTraceScratch::default())
+    }
+
+    fn trace_hull_with_scratch(
+        &self,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        mask: u32,
+        scratch: &mut BrushTraceScratch,
+    ) -> Result<Trace, Error> {
         let mut trace = if let Some(model) = self.models.first() {
-            self.trace_headnode(model.head_node, start, end, hull, mask, BrushOwner::World)?
+            self.order_brushes(model.head_node, start, end, hull, scratch)?;
+            self.trace_brushes(start, end, hull, mask, &scratch.ordered, BrushOwner::World)?
         } else {
             self.trace_brushes(start, end, hull, mask, &[], BrushOwner::World)?
         };
@@ -663,10 +681,12 @@ impl World {
         mask: u32,
         owner: BrushOwner,
     ) -> Result<Trace, Error> {
-        let brushes = self.ordered_brushes(head_node, start, end, hull)?;
-        self.trace_brushes(start, end, hull, mask, &brushes, owner)
+        let mut scratch = BrushTraceScratch::default();
+        self.order_brushes(head_node, start, end, hull, &mut scratch)?;
+        self.trace_brushes(start, end, hull, mask, &scratch.ordered, owner)
     }
 
+    #[cfg(test)]
     fn ordered_brushes(
         &self,
         head_node: i32,
@@ -674,6 +694,23 @@ impl World {
         end: [f32; 3],
         hull: Hull,
     ) -> Result<Vec<usize>, Error> {
+        let mut scratch = BrushTraceScratch::default();
+        self.order_brushes(head_node, start, end, hull, &mut scratch)?;
+        Ok(scratch.ordered)
+    }
+
+    fn order_brushes(
+        &self,
+        head_node: i32,
+        start: [f32; 3],
+        end: [f32; 3],
+        hull: Hull,
+        scratch: &mut BrushTraceScratch,
+    ) -> Result<(), Error> {
+        // Storage only: every query still traverses the current BSP and builds
+        // fresh first-visit membership in the same near/far and leaf order.
+        scratch.pending.clear();
+        scratch.ordered.clear();
         if start
             .into_iter()
             .chain(end)
@@ -694,9 +731,9 @@ impl World {
         // The root is already the current traversal, not a deferred branch.
         // Allocate pending storage only when a split actually needs it.
         let mut current = Some((head_node, add(start, center), add(end, center), 0_usize));
-        let mut pending = Vec::new();
+        let pending = &mut scratch.pending;
         let mut seen = BrushVisits::new();
-        let mut ordered = Vec::new();
+        let ordered = &mut scratch.ordered;
         while let Some((mut child, first, mut second, depth)) = current {
             let mut traversal_depth = depth;
             while child >= 0 {
@@ -775,7 +812,7 @@ impl World {
             }
             current = pending.pop();
         }
-        Ok(ordered)
+        Ok(())
     }
 
     fn trace_brushes(
@@ -1334,6 +1371,59 @@ mod tests {
         // Far branches remain LIFO even when one contains an invalid leaf.
         world.nodes[0].children[1] = i32::MIN;
         assert_eq!(world.ordered_brushes(0, [0.0; 3], [0.0; 3], hull), Err(error(ErrorCode::InvalidReference, Some(i32::MAX as usize))));
+    }
+
+    #[test]
+    fn reused_brush_storage_retraverses_after_changes_and_errors() {
+        let mut world = compile(&fixture()).unwrap();
+        let mut scratch = BrushTraceScratch::default();
+        let point = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        let start = [32.0, 0.0, 0.0];
+        let end = [-32.0, 0.0, 0.0];
+        world.models[0].head_node = 0;
+        world.nodes[0].children = [-1, -2];
+        world.leaves.push(world.leaves[0].clone());
+        world.leaves[1].first_leaf_brush = 1;
+        world.leaf_brushes = vec![1, 0];
+        let reference = world.trace_hull(start, end, point, 1).unwrap();
+        assert_eq!(world.trace_hull_with_scratch(start, end, point, 1, &mut scratch).unwrap(), reference);
+        assert_eq!(scratch.ordered, [1, 0]);
+        let storage = (scratch.ordered.as_ptr(), scratch.ordered.capacity(), scratch.pending.as_ptr(), scratch.pending.capacity());
+        for _ in 0..32 {
+            assert_eq!(world.trace_hull_with_scratch(start, end, point, 1, &mut scratch).unwrap(), reference);
+            assert_eq!((scratch.ordered.as_ptr(), scratch.ordered.capacity(), scratch.pending.as_ptr(), scratch.pending.capacity()), storage);
+        }
+        world.leaf_brushes.swap(0, 1);
+        assert_eq!(world.trace_hull_with_scratch(start, end, point, 1, &mut scratch).unwrap().brush, Some(0));
+        assert_eq!(scratch.ordered, [0, 1]);
+        world.nodes[0].children[1] = i32::MIN;
+        assert_eq!(world.trace_hull_with_scratch(start, end, point, 1, &mut scratch), Err(error(ErrorCode::InvalidReference, Some(i32::MAX as usize))));
+        world.nodes[0].children[1] = -2;
+        assert_eq!(world.trace_hull_with_scratch(start, end, point, 1, &mut scratch).unwrap(), world.trace_hull(start, end, point, 1).unwrap());
+        world.leaves.iter_mut().for_each(|leaf| leaf.leaf_brush_count = 0);
+        let empty = world.trace_hull_with_scratch(start, end, point, 1, &mut scratch).unwrap();
+        assert_eq!(empty.fraction, 1.0);
+        assert!(scratch.ordered.is_empty());
+    }
+
+    #[test]
+    fn snapshot_world_queries_reuse_bsp_storage_without_reusing_answers() {
+        let world = compile(&fixture()).unwrap();
+        let snapshot = Snapshot::compile(&world, 1, vec![], SnapshotLimits::default()).unwrap();
+        let mut scratch = QueryScratch::default();
+        let point = Hull { mins: [0.0; 3], maxs: [0.0; 3] };
+        assert_eq!(scratch.storage_bytes(), 0);
+        for (start, end, mask) in [([-32.0, 0.0, 0.0], [32.0, 0.0, 0.0], 1), ([32.0, 0.0, 0.0], [-32.0, 0.0, 0.0], 1), ([0.0; 3], [1.0; 3], 1), ([0.0; 3], [1.0; 3], 0)] {
+            let request = SnapshotTraceRequest { start, end, mask, hull: point, scope: TraceScope::WorldOnly, ignored: &[] };
+            let expected = world.trace_snapshot_hull(&snapshot, request, |_| true).unwrap();
+            assert_eq!(world.trace_snapshot_hull_with_scratch(&snapshot, request, &mut scratch, |_| true).unwrap(), expected);
+            let retained = scratch.storage_bytes();
+            assert!(retained > 0);
+            for _ in 0..32 {
+                assert_eq!(world.trace_snapshot_hull_with_scratch(&snapshot, request, &mut scratch, |_| true).unwrap(), expected);
+                assert_eq!(scratch.storage_bytes(), retained);
+            }
+        }
     }
 
     #[test]

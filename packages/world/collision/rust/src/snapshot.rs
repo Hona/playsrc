@@ -477,6 +477,16 @@ impl BroadphaseNode {
 #[derive(Default)]
 pub struct QueryScratch {
     candidates: Vec<usize>,
+    brushes: super::BrushTraceScratch,
+}
+
+impl QueryScratch {
+    /// Retained vector capacity, not allocator overhead or process resident memory.
+    pub fn storage_bytes(&self) -> usize {
+        self.candidates.capacity() * std::mem::size_of::<usize>()
+            + self.brushes.ordered.capacity() * std::mem::size_of::<usize>()
+            + self.brushes.pending.capacity() * std::mem::size_of::<(i32, [f32; 3], [f32; 3], usize)>()
+    }
 }
 
 fn bounds_intersect(left: Hull, right: Hull) -> bool {
@@ -1140,7 +1150,7 @@ impl World {
         let mut world_trace = if request.scope == TraceScope::EntitiesOnly {
             miss(request.start, request.end)
         } else {
-            self.trace_hull(request.start, request.end, request.hull, request.mask)?
+            self.trace_hull_with_scratch(request.start, request.end, request.hull, request.mask, &mut scratch.brushes)?
         };
         world_trace.world = self.identity;
         world_trace.snapshot = Some(snapshot.identity);
