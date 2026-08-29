@@ -1,4 +1,4 @@
-export function installBrowserFrameProfiler(host: any = globalThis): any {
+export function installBrowserFrameProfiler(host: any = globalThis, mode: "full" | "lifecycle" = "full"): any {
   if (host.__playsrcFrameProfiler) return host.__playsrcFrameProfiler
 
   const pendingShaderHashes = new Set<Promise<void>>()
@@ -47,6 +47,9 @@ export function installBrowserFrameProfiler(host: any = globalThis): any {
     },
   }
   Object.defineProperty(host, "__playsrcFrameProfiler", { configurable: true, value: state })
+  // Correctness-only runs consume the existing renderer/client publication
+  // hooks. They do not wrap GPU calls, sample CPU/heap, or claim frame timings.
+  if (mode === "lifecycle") return state
 
   // Observe the application's actual adapter/device promises. Never request a
   // second adapter, force a backend, or infer WebGPU identity from ANGLE.
