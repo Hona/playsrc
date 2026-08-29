@@ -139,7 +139,7 @@ fn main() -> Result<(), String> {
     let _owner = OwnedHandle(handle);
     let result = (|| {
         let error = playsrc_tf2_wasm::playsrc_result_error(handle);
-        if error != 0 { return Err(format!("native HDR compilation failed: {error}")); }
+        if error != 0 { return Err(format!("native map compilation failed: {error}")); }
         if arguments.len() == 6 {
             let position = arguments[3..].iter().map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
             let view = [position[0], position[1], position[2], position[0], position[1], position[2], 0.0, 0.0, 75.0, 16.0 / 9.0, 1.0, 30_000.0, 0.0, -1.0];
