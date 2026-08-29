@@ -45,4 +45,39 @@ mod tests{
         assert_eq!(value.beam.colors[2],[0.0,0.0,0.0,1.0]);assert_eq!(value.beam.colors[0],[64.0/255.0,32.0/255.0,16.0/255.0,1.0]);
         let behind=View{origin:[-100.0,100.0,0.0],..view};assert!(geometry(&behind,[0.0;3],[200.0,0.0,0.0],10.0,20.0,[255;4],1.0).unwrap().halo.is_none());
     }
+
+    #[test]
+    fn asynchronous_raster_delivery_changes_only_the_halo_not_beam_or_geometry() {
+        use crate::pixel_visibility::{Parameters, Query, DEFAULT_FADE_TIME};
+        // Adjacent actual raster results at a spotlight color-quantization edge.
+        // These two availability schedules are an explicit unit control, not a
+        // replacement for a recorded frame or permission to omit its halo.
+        let start = [-927.5399780273438, 1839.4599609375, 430.9739990234375];
+        let end = [start[0], start[1], 256.03125];
+        let view = View::perspective([-1412.2822265625, 1872.0, 324.03125], 0.0, 0.0,
+            59.840444, 16.0 / 9.0, 7.0, 28377.92, 720);
+        let proxy = view.proxy(Parameters { position: start, size: 8.0, aspect: 1.0, screen_space: false }).unwrap();
+        let mut prior = Query::default();
+        prior.sample(346, 0.125, DEFAULT_FADE_TIME, Some((191, 210)));
+        assert!(prior.issue(346, Some(&proxy)));
+        let mut pending = prior;
+        let pending_fraction = pending.sample(347, 0.030125, DEFAULT_FADE_TIME, None);
+        let mut completed = prior;
+        let completed_fraction = completed.sample(347, 0.030125, DEFAULT_FADE_TIME, Some((208, 225)));
+        let draw = |fraction| geometry(&view, start, end, 64.0, 102.3, [73, 73, 80, 64], fraction).unwrap();
+        let pending_draw = draw(pending_fraction);
+        let completed_draw = draw(completed_fraction);
+        assert_eq!(pending_draw.beam.positions, completed_draw.beam.positions);
+        assert_eq!(pending_draw.beam.colors, completed_draw.beam.colors);
+        let pending_halo = pending_draw.halo.unwrap();
+        let completed_halo = completed_draw.halo.unwrap();
+        assert_eq!(pending_halo.positions, completed_halo.positions);
+        assert_eq!(pending_halo.colors, [[12.0 / 255.0, 12.0 / 255.0, 13.0 / 255.0, 1.0]; 4]);
+        assert_eq!(completed_halo.colors, [[12.0 / 255.0, 12.0 / 255.0, 14.0 / 255.0, 1.0]; 4]);
+        let bytes = |quad: Quad| quad.colors.into_iter().flatten().flat_map(f32::to_le_bytes).collect::<Vec<_>>();
+        assert_eq!(bytes(pending_halo).iter().zip(bytes(completed_halo)).filter(|(a, b)| **a != *b).count(), 12);
+        assert!(!pending.issue(347, Some(&proxy))); // A pending read does not issue another query.
+        assert!(completed.issue(347, Some(&proxy)));
+        assert_eq!(pending.sample(348, 0.020305, DEFAULT_FADE_TIME, Some((208, 225))), completed_fraction);
+    }
 }

@@ -33,5 +33,8 @@ export function workloadState(frame: any) {
   } })
 }
 export function assertMatchingWorkloadState(expected: unknown, actual: unknown) {
+  // Live asynchronous raster feedback is not replayed by the command clock.
+  // Its halo colors still belong to this strict scene witness: never omit them
+  // or turn a rejected scene into a pass merely because gameplay hashes match.
   if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error("Actual initial bot/round/model/scene state differs; comparison rejected")
 }
