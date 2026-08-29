@@ -3,6 +3,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 mod payload_retention;
+mod sustained_bots;
+mod native_allocations;
+#[global_allocator]
+static ALLOCATOR: native_allocations::Allocator = native_allocations::Allocator;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,10 +22,10 @@ fn digest_identity(value: &str) -> bool {
 
 fn main() -> Result<(), String> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention", "--texture-owner-scene", "--texture-owner-models"].contains(&arguments[2].as_str()) || arguments.len() == 5 && arguments[2] == "--control-point-crossing" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
+    if !(arguments.len() == 2 || arguments.len() == 3 && ["--control-point-match", "--payload-retention", "--texture-owner-scene", "--texture-owner-models"].contains(&arguments[2].as_str()) || [4, 5].contains(&arguments.len()) && arguments[2] == "--sustained-bots" || arguments.len() == 5 && arguments[2] == "--control-point-crossing" || arguments.len() == 6 && arguments[2] == "--view") || !digest_identity(&arguments[1])
     {
         return Err(
-            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --control-point-crossing from to | --payload-retention]".to_owned(),
+            "usage: playsrc-verify-map-runtime <target> <retained-graph-sha256> [--view x y z | --control-point-match | --control-point-crossing from to | --payload-retention | --sustained-bots label [replay-sha256]]".to_owned(),
         );
     }
     let target = &arguments[0];
@@ -97,6 +101,12 @@ fn main() -> Result<(), String> {
     let resources =
         encode_resource_set(&entries).map_err(|error| format!("resource set: {error:?}"))?;
     drop(entries);
+    if arguments.get(2).is_some_and(|option| option == "--sustained-bots") {
+        if !["koth_harvest_final", "koth_viaduct"].contains(&target.as_str()) { return Err("sustained bot workload requires Harvest or Viaduct".into()); }
+        let result = sustained_bots::run(&bsp, &resources, &config.source_cache_dir.join("evidence/sustained-bots"), &arguments[3], arguments.get(4).map(String::as_str))?;
+        println!("{result}");
+        return Ok(());
+    }
     if arguments.get(2).is_some_and(|option| option == "--payload-retention") {
         let profiles = payload_retention::verify(&bsp, &resources)?;
         println!("{}", serde_json::json!({"target": target, "graphSha256": arguments[1], "bspSha256": hash, "profiles": profiles}));
