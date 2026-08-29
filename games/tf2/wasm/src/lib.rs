@@ -1,6 +1,6 @@
 mod gameplay_protocol;
 mod admission_metrics;
-mod gameplay_replay;
+pub mod gameplay_replay;
 mod memory;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod encoding_allocations;
@@ -1743,6 +1743,16 @@ pub struct CompiledArtifact {
 
 /// Bounded native acceptance through the same compiled-map transaction used by
 /// the browser. This does not replace headed presentation or timing evidence.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn inspect_native_gameplay<T>(handle: u32, inspect: impl FnOnce(&playsrc_tf2::Snapshot) -> T) -> Option<T> {
+    with(handle, |slot| slot.latest_game_snapshot.as_ref().map(inspect)).flatten()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_movement_query_storage_bytes(handle: u32) -> Option<usize> {
+    with(handle, |slot| slot.gameplay_world.as_ref().map(|world| world.movement_queries.lock().expect("movement queries").storage_bytes())).flatten()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn verify_control_point_match(bsp: &[u8], resources: &[u8], crossing:Option<(u32,u32)>, mut observe: impl FnMut(&playsrc_tf2::Snapshot)) -> Result<(), String> {
     let section = ResourceSection { pointer: resources.as_ptr(), length: resources.len() };
