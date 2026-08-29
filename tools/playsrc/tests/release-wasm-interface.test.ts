@@ -21,19 +21,21 @@ test("release refuses missing or renamed binding exports and invalid modules", (
   expect(() => assertReleaseWasmInterface(moduleBytes(102, 1), new Uint8Array([0]))).toThrow()
 })
 
-test("startup receipt waiver requires explicit authorization for exactly v0.0.11", () => {
+test("startup receipt waiver requires explicit authorization for exactly v0.0.12", () => {
   const expected = { packageSha256: "a".repeat(64), wasmSha256: "b".repeat(64) }
   for (const environment of [
     {},
-    { PLAYSRC_RELEASE_VERSION: "0.0.11" },
-    { PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: "true" },
-    { PLAYSRC_RELEASE_VERSION: "0.0.11", PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: "false" },
+    { PLAYSRC_RELEASE_VERSION: "0.0.12" },
+    { PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" },
+    { PLAYSRC_RELEASE_VERSION: "0.0.12", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "false" },
+    { PLAYSRC_RELEASE_VERSION: "0.0.13", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" },
+    { PLAYSRC_RELEASE_VERSION: "0.0.11", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" },
     { PLAYSRC_RELEASE_VERSION: "0.0.12", PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: "true" },
   ]) expect(() => assertReleaseStartupAcceptance(expected, environment)).toThrow("startup receipt")
   expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_STATIC_STARTUP_RECEIPT: "{}" })).toThrow("absent or mismatched")
   const warning = spyOn(console, "warn").mockImplementation(() => {})
   try {
-    expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_RELEASE_VERSION: "0.0.11", PLAYSRC_WAIVE_V0011_STARTUP_RECEIPT: "true" })).not.toThrow()
+    expect(() => assertReleaseStartupAcceptance(expected, { PLAYSRC_RELEASE_VERSION: "0.0.12", PLAYSRC_WAIVE_V0012_STARTUP_RECEIPT: "true" })).not.toThrow()
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("headed startup is not certified"))
   } finally { warning.mockRestore() }
 })
