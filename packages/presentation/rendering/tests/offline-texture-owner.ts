@@ -1,6 +1,7 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
+import { instrumentParticleAliasSource } from "../../../../tools/playsrc/profile/particle-alias-route"
 
 /** No browser or GPU. Expose the unchanged production owner solely in an
  * offline test bundle; replace only its native compilation/device boundary. */
@@ -10,7 +11,11 @@ export async function loadOfflineTextureOwner(reference = false) {
   return (await loadedOwners)[reference ? 1 : 0]!
 }
 
-async function buildOfflineTextureOwner(reference: boolean) {
+export async function buildParticleCorrectnessBundle(entry: string, output: string) {
+  return buildOfflineTextureOwner(false, { entry, output })
+}
+
+async function buildOfflineTextureOwner(reference: boolean, browser?: { entry: string; output: string }) {
   const config = await loadLocalConfig()
   const directory = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/texture-replacement/alias-investigation")
   await mkdir(directory, { recursive: true })
@@ -37,7 +42,8 @@ async function buildOfflineTextureOwner(reference: boolean) {
       const particleTextures = new Map(), particleBatchMaterials = new Map(), particlePipelineMeshes = new THREE.Group();
       this.#buildParticleMaterials(inputs, new Map(states), disposables, createSourceWaterFogUniforms(), particleDepth,
         particleTextures, particleBatchMaterials, particlePipelineMeshes, TSL.float(1), false);
-      this.#active = { disposables, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes };
+      this.#active = { disposables, particleDepth, particleTextures, particleBatchMaterials, particlePipelineMeshes,
+        reflectionTarget: null, refractionTarget: null, waterMaterials: new Map() };
       disposables.activate(); return this.#active;
     }
     offlineAttach(backend, textures) {
@@ -76,7 +82,8 @@ async function buildOfflineTextureOwner(reference: boolean) {
       this.#world.remove(scene.group);
     }
   `
-  const result = await Bun.build({ entrypoints: [sourcePath], target: "bun", format: "esm", minify: false,
+  if (browser) source = instrumentParticleAliasSource(source, false)
+  const result = await Bun.build({ entrypoints: [browser?.entry ?? sourcePath], target: browser ? "browser" : "bun", format: "esm", minify: false,
     plugins: [{ name: "offline-owner-access-only", setup(builder) {
       builder.onLoad({ filter: /\/rendering\/src\/index\.ts$/ }, () => ({ loader: "ts", contents: source.replace(declaration, addition) + `
         export { textureFromAuthored, textureFromAuthoredCubemap };
@@ -100,9 +107,9 @@ async function buildOfflineTextureOwner(reference: boolean) {
     } }],
   })
   if (!result.success || result.outputs.length !== 1) throw new Error(`Offline owner bundle failed: ${result.logs}`)
-  const file = path.join(directory, reference ? "owner-loop-reference.mjs" : "owner-loop.mjs")
+  const file = browser?.output ?? path.join(directory, reference ? "owner-loop-reference.mjs" : "owner-loop.mjs")
   await Bun.write(file, result.outputs[0]!)
-  return { module: await import(file + `?revision=${Bun.hash(source)}`), sourcePath, sourceSha256: new Bun.CryptoHasher("sha256").update(source).digest("hex") }
+  return { module: browser ? undefined : await import(file + `?revision=${Bun.hash(source)}`), sourcePath, sourceSha256: new Bun.CryptoHasher("sha256").update(source).digest("hex") }
 }
 
 /** Actual Three compiler/Bindings/Textures; only the WebGPU API is recorded.
