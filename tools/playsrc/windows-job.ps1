@@ -22,7 +22,7 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
-if($Action -in 'Wait','Status','Result','Logs','Artifacts') {
+if($Action -in 'Wait','Status','Result','Logs','Artifacts','Recover') {
  $invocation=[Environment]::CommandLine
  if($MyInvocation.InvocationName -eq '.' -or $invocation -notmatch '(?i)\s-File\s' -or $invocation -notmatch '(?i)\s-NonInteractive(?:\s|$)' -or $invocation -match '(?i)\s-NoExit(?:\s|$)'){throw 'Readback requires its own noninteractive -File helper'}
  $heldFile=Join-Path $config.sourceCacheDir 'evidence/tf2-browser-performance/chromium-profile.lock'
@@ -158,7 +158,7 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     $running = Test-Path (Join-Path $directory 'running')
     if ($Action -eq 'Recover') {
       if (!$Task -or !$selectedTask -or $selectedTask.State -ne 'Ready' -or !$taskInfo.LastTaskResult -or $processes.Count -or !$running -or $result) { throw 'Recovery requires this recorded failed task, no live job processes, and no completed result' }
-      $record = @{task=$Task;taskInfo=$taskInfo;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();runningRecord=(Get-Content -Raw (Join-Path $directory 'running'));outcome='interrupted-before-result'}
+      $record = @{task=$Task;taskInfo=$taskInfo;at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();runningRecord=(Read-PlainJobText (Join-Path $directory 'running'));outcome='interrupted-before-result'}
       $record | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $directory "$Task-recovery.json")
       Remove-Item -LiteralPath (Join-Path $directory 'running')
       $running = $false
