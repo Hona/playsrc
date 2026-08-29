@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import path from "node:path"
 import { gunzipSync } from "node:zlib"
-import { parseGameplayReplay, validateReplayLifecycle } from "./gameplay-replay"
+import { parseGameplayReplay, replayWorkClockBytes, validateReplayLifecycle } from "./gameplay-replay"
 import type { CommandWorkload, WorkloadMutation, WorkloadObserve } from "../../../games/tf2/browser/src/command-workload"
 import { validateWorkload } from "../../../games/tf2/browser/src/command-workload"
 import { RecordedClientRenderFrames } from "../../../games/tf2/browser/src/client-render-frame"
@@ -43,9 +43,7 @@ async function verifiedWorkload(captureFile: string) {
   const probes = JSON.parse(gunzipSync(probeBytes, { maxOutputLength: 32 * 1024 * 1024 }).toString())
   require(probes.dropped === 0, "Workload phase contains dropped evidence")
   const observes = projectObserves(replay.records)
-  require(replay.version === 4, "Workload requires recorded NextBot work-clock inputs")
-  const workClockHex = Buffer.concat(replay.records.filter(record => record.kind === 2)
-    .map(record => record.bytes.subarray(56 + record.bytes.readUInt32LE(48)))).toString("hex")
+  const workClockHex = replayWorkClockBytes(replay.records, replay.version).toString("hex")
   const lastTick = replay.records.filter(record => record.kind === 2).at(-1)!.bytes.readBigUInt64LE(0)
   require(Array.isArray(capture.identity.presentationInputs), "Missing presentation input history")
   const presentations = capture.identity.presentationInputs.filter((entry: any) => BigInt(entry.lastHostTick) <= lastTick)
