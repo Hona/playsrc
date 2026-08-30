@@ -6,6 +6,7 @@ import { loadLocalConfig } from "../src/config"
 import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { profileArtifact } from "./profile-artifacts"
 
 test("authored team doors real-time motion and reentry", async ({ page, context }) => {
   const { sourceCacheDir } = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
@@ -41,8 +42,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       while (sampling) {
         const file = `motion-${String(captures.length).padStart(3, "0")}.page.png`, before = Date.now()
         await page.screenshot({ path: path.join(directory, file) })
-        const bytes = await readFile(path.join(directory, file))
-        captures.push({ file, before, after: Date.now(), bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), privacy: "client-only-review-required" })
+        captures.push({ file, before, after: Date.now(), privacy: "client-only-review-required" })
       }
     })()
     const hover = async (team: "red" | "blue" | "auto" | null, wait: number) => {
@@ -71,7 +71,15 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       root.__playsrcFrameProfiler.active = false
       return { doors: root.__playsrcProfile.teamDoorFrames, frames: root.__playsrcFrameProfiler }
     })
-    await writeFile(path.join(directory, "team-door-motion.json"), JSON.stringify({ activeMilliseconds, observation, actions, captures, heapBefore, heapAfter: await cdp.send("Runtime.getHeapUsage") }))
+    const heapAfter = await cdp.send("Runtime.getHeapUsage")
+    await profileArtifact(async () => {
+      for (const capture of captures as { file: string; bytes?: number; sha256?: string }[]) {
+        const bytes = await readFile(path.join(directory, capture.file))
+        capture.bytes = bytes.length
+        capture.sha256 = createHash("sha256").update(bytes).digest("hex")
+      }
+      await writeFile(path.join(directory, "team-door-motion.json"), JSON.stringify({ activeMilliseconds, observation, actions, captures, heapBefore, heapAfter }))
+    })
     expect(activeMilliseconds).toBeGreaterThanOrEqual(5000)
     expect(activeMilliseconds).toBeLessThan(10000)
     expect(captures.length).toBeGreaterThan(30)
@@ -79,7 +87,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
   finally {
     sampling = false
     await captureTask?.catch(() => {})
-    await writeFile(path.join(directory, "team-door-admission.json"), JSON.stringify({ admissions, records: native.records, actions, captures, failure }))
     await native.close()
+    await profileArtifact(async () => { await writeFile(path.join(directory, "team-door-admission.json"), JSON.stringify({ admissions, records: native.records, actions, captures, failure })) })
   }
 })
