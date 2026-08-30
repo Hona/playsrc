@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { defineConfig, type Plugin, type UserConfig } from "vite"
 import { generationPlugin } from "./generation-plugin"
+import { bootstrapPreloadPlugin } from "./bootstrap-preload-plugin"
 import { applicationBuildIdentity } from "../../../tools/playsrc/src/build-identity"
 
 function localRuntime(ensureCoherentBuild?: () => Promise<void>): Plugin {
@@ -60,7 +61,7 @@ export function tf2ViteConfiguration(
   }
   return {
     base: deployment ? "/tf2/" : "/",
-    plugins: [preact(), localRuntime(ensureCoherentBuild), generationPlugin(generation)],
+    plugins: [preact(), localRuntime(ensureCoherentBuild), generationPlugin(generation), bootstrapPreloadPlugin()],
     worker: { plugins: () => [generationPlugin(generation)] },
     resolve: {
       alias: {
