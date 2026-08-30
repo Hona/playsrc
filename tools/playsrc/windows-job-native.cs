@@ -251,13 +251,14 @@ public static class PlaysrcNativeJob {
    receipt.ownerCreatedAt=new DateTimeOffset(owner.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    receipt.helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    var ownerHandle=owner.Handle; // Hold identity, not a recycled PID.
-   int faulted=0;
+   int faulted=0,guardDone=0;
    using(var guard=new Timer(_=>{
+    if(Volatile.Read(ref guardDone)!=0)return;
     string reason=null;long bytes=0;
     try {using(var self=Process.GetCurrentProcess())bytes=self.PrivateMemorySize64;
-     if(owner.HasExited)reason="owner-exited";else if(Now>=request.deadline)reason="deadline";else if(bytes>536870912)reason="private-memory-limit";
+     if(WaitForSingleObject(ownerHandle,0)==0)reason="owner-exited";else if(Now>=request.deadline)reason="deadline";else if(bytes>536870912)reason="private-memory-limit";
     }catch{reason="owner-readback-failed";}
-    if(reason==null || Interlocked.Exchange(ref faulted,1)!=0)return;
+    if(reason==null || Volatile.Read(ref guardDone)!=0 || Interlocked.Exchange(ref faulted,1)!=0)return;
     try{Save(Path.Combine(request.run,"native-fault.json"),new {reason=reason,pid=receipt.helperPid,createdAt=receipt.helperCreatedAt,at=Now,privateBytes=bytes});}catch{}
     // OS closes the non-inheritable job handle and tears down its owned tree.
     Environment.Exit(124);
@@ -301,6 +302,7 @@ public static class PlaysrcNativeJob {
     Save(Path.Combine(request.run,"native-result.json"),receipt);
     if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);
     if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);
+    Interlocked.Exchange(ref guardDone,1);
    }
    }
   }
