@@ -1,7 +1,10 @@
 import { deliveryTimeline } from "./frame-delivery"
 import { summarizeFrameTimes } from "./profile-window"
 
-export const SUSTAINED_KOTH = Object.freeze({ soakMilliseconds: 90_000, sampleMilliseconds: 6_000, extractionMilliseconds: 15_000, minimumBrowserMilliseconds: 165_000, allocationAccounting: "late-detailed-only" })
+// Minimum admission:5s startup +35s natural waiting/preround +90s soak +6s
+// detailed capture +15s extraction. The active-round gate rechecks the full111s
+// remainder; a slower startup fails rather than reducing gameplay age.
+export const SUSTAINED_KOTH = Object.freeze({ soakMilliseconds: 90_000, sampleMilliseconds: 6_000, extractionMilliseconds: 15_000, minimumBrowserMilliseconds: 151_000, allocationAccounting: "late-detailed-only" })
 export function requireSustainedBudget(remaining: number) {
   const required = SUSTAINED_KOTH.soakMilliseconds + SUSTAINED_KOTH.sampleMilliseconds + SUSTAINED_KOTH.extractionMilliseconds
   if (!Number.isFinite(remaining) || remaining < required) throw new Error(`Sustained KOTH needs ${required}ms after natural active-round admission; only ${remaining}ms remain. Never shorten the90s soak.`)
