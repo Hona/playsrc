@@ -143,8 +143,6 @@ if ($Action -notin 'Run','PrepareProfile','Build','BuildStage','Test','Diagnosti
     if($launchFile){$ownerFile=[IO.Path]::ChangeExtension($launchFile,'owner.json');if(Test-Path -LiteralPath $ownerFile){$files+=@{name='job/launch-owner.json';path=$ownerFile}}}
     if($launchFile -and (Test-Path -LiteralPath "$launchFile.bootstrap.log")){$files+=@{name='job/bootstrap.log';path="$launchFile.bootstrap.log"}}
     if($launchFile -and (Test-Path -LiteralPath "$launchFile.metadata.json")){$files+=@{name='job/launch-metadata.json';path="$launchFile.metadata.json"}}
-    $consoleOwner=Join-Path $result.run 'console-owner.json';if(Test-Path -LiteralPath $consoleOwner){$files+=@{name='job/console-owner.json';path=$consoleOwner}}
-    $consoleLock=Join-Path $result.run 'console-lock.json';if(Test-Path -LiteralPath $consoleLock){$files+=@{name='job/console-lock.json';path=$consoleLock}}
     $commandLog = Join-Path $result.run 'command.log'
     if (Test-Path $commandLog) {
       $files += @{name='job/command.log';path=$commandLog}

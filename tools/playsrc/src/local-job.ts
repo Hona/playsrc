@@ -176,6 +176,16 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   if (job.schema !== "playsrc-local-job-v1" || job.id !== id || !SHA.test(job.commit)
     || JSON.stringify(job.config) !== JSON.stringify(config)) throw new Error("Local job identity/configuration differs")
   const checkout = path.join(directory, "checkout")
+  const preparationFile = path.join(directory, "profile-preparation.json")
+  const readPreparation = async (before: number) => {
+    if (args[0] !== "profile") return null
+    const link = await readFile(preparationFile, "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return null })
+    if (!link) return null
+    const value = (await readLocalTaskResult(directory, JSON.parse(link).task)).result
+    if (value?.outcome !== "passed" || value.commit !== job.commit || value.preparationProfile !== args[1]
+      || !Number.isSafeInteger(value.startedAt) || !Number.isSafeInteger(value.finishedAt) || value.startedAt > value.finishedAt || value.finishedAt > before) return null
+    return { task: value.task, run: value.run, commit: value.commit, startedAt: value.startedAt, finishedAt: value.finishedAt }
+  }
   if (process.platform === "win32") {
     if (!task?.startsWith("playsrc-local-job-") || !ID.test(task.slice("playsrc-local-job-".length))) throw new Error("Windows delegated workloads require the scheduled native job bridge")
     const launcher = JSON.parse(await readFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-launch.owner.json`), "utf8"))
@@ -218,9 +228,11 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     lock = process.platform === "win32" ? await acquireHeadedProfileLock(lockPath, `job:${id}:${args.join(" ")}`, LIMIT - 15_000, { signal: cancellation.signal }) : undefined
   } catch (error) {
     stopMonitoring()
+    const leftQueueAt = Date.now(), preparation = await readPreparation(leftQueueAt), finishedAt = Date.now()
     const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit: null, checkout,
-      command: plan.command, interactive: plan.interactive, startedAt: admittedAt, finishedAt: Date.now(),
-      outcome: cancellation.signal.aborted ? "cancelled" : "failed", failure: String(error), run, native: null, lockWaitMilliseconds: Date.now() - admittedAt }
+      command: plan.command, interactive: plan.interactive, startedAt: admittedAt, finishedAt,
+      outcome: cancellation.signal.aborted ? "cancelled" : "failed", failure: String(error), run, native: null, lockWaitMilliseconds: leftQueueAt - admittedAt,
+      preparation, pipelineWallMilliseconds: finishedAt - Math.min(preparation?.startedAt ?? admittedAt, admittedAt) }
     await writeFile(path.join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx" })
     return result
   }
@@ -277,20 +289,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   } catch (error) { failure = String(error); outcome = "failed" }
    // A preparation link records wall time, never authorizes a desktop or skips
    // current input validation. Read the immutable task result, not a latest log.
-   let preparation: { task: string; run: string; commit: string; startedAt: number; finishedAt: number } | null = null
-   const preparationFile = path.join(directory, "profile-preparation.json")
-   if (args[0] === "profile") {
-     const link = await readFile(preparationFile, "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return null })
-     if (link) {
-       const previous = await readLocalTaskResult(directory, JSON.parse(link).task)
-       const value = previous.result
-       if (value?.outcome === "passed" && value.commit === job.commit && value.preparationProfile === args[1]
-         && Number.isSafeInteger(value.startedAt) && Number.isSafeInteger(value.finishedAt) && value.startedAt <= value.finishedAt
-         && value.finishedAt <= (native?.startedAt ?? Date.now())) {
-         preparation = { task: value.task, run: value.run, commit: value.commit, startedAt: value.startedAt, finishedAt: value.finishedAt }
-       }
-     }
-   }
+   const preparation = await readPreparation(native?.startedAt ?? Date.now())
    const finishedAt = Date.now()
    const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, interactive: plan.interactive, port, startedAt, finishedAt, outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0,
      preparationProfile: args[0] === "prepare-profile" ? args[1] : null, preparation, pipelineWallMilliseconds: finishedAt - Math.min(preparation?.startedAt ?? startedAt, startedAt) }
