@@ -86,7 +86,7 @@ $directory=Join-Path $config.sourceCacheDir "evidence/windows-job-ui-tests/$([Gu
 New-Item -ItemType Directory -Path $directory|Out-Null
 function Quote([string]$value){return "'"+$value.Replace("'","''")+"'"}
 $observerName="playsrc-dialog-observer-$([Guid]::NewGuid())"
-$command="& $(Quote $PSCommandPath) -Job $(Quote $Job) -Case $(Quote $Case) -Observe $(Quote $directory) *> $(Quote (Join-Path $directory 'observer.log'))"
+$command="try { & $(Quote $PSCommandPath) -Job $(Quote $Job) -Case $(Quote $Case) -Observe $(Quote $directory) *> $(Quote (Join-Path $directory 'observer.log')) } catch { `$_ | Out-String | Set-Content -LiteralPath $(Quote (Join-Path $directory 'observer-error.log')); exit 1 }"
 $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 $action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
 $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
@@ -100,7 +100,8 @@ try {
  $duration=if($Case -eq 'cancel'){30000}else{250};$exit=if($Case -eq 'failure'){1}else{0}
  $launch=& powershell.exe -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'windows-job.ps1') -Job $Job -Action Diagnostic -Milliseconds $duration -DiagnosticExit $exit|ConvertFrom-Json
  if($LASTEXITCODE){throw 'Diagnostic launch failed'}
- $launch|ConvertTo-Json -Compress|Set-Content -Encoding UTF8 (Join-Path $directory 'request.json')
+ $launch|ConvertTo-Json -Compress|Set-Content -Encoding UTF8 (Join-Path $directory 'request.tmp')
+ Move-Item -LiteralPath (Join-Path $directory 'request.tmp') -Destination (Join-Path $directory 'request.json')
  $second=$null
  if($Case -eq 'queue') {
    $second=& powershell.exe -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'windows-job.ps1') -Job $Job -Action Diagnostic -Milliseconds 250|ConvertFrom-Json
