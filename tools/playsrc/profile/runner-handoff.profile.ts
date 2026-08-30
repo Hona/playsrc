@@ -8,9 +8,9 @@ import { requireStartupNative } from "./static-startup-gate"
 import { loadLocalConfig } from "../src/config"
 
 // A short real headed lifecycle check, not a gameplay/performance benchmark.
-test("prepared runner hands off a visible browser and releases before extraction", async ({ page }) => {
+test("prepared runner hands off a visible browser and releases before extraction", async ({ page }, testInfo) => {
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
-  await page.setContent('<!doctype html><title>playsrc runner handoff</title><style>html,body{margin:0;background:#183c60}canvas{display:block}</style><canvas width="640" height="360"></canvas><script>let n=0;const c=document.querySelector("canvas"),g=c.getContext("2d");function draw(){g.fillStyle=++n%120<60?"#41bf8d":"#ffb347";g.fillRect(0,0,640,360);requestAnimationFrame(draw)}draw()</script>')
+  await page.setContent('<!doctype html><title>playsrc runner handoff</title><style>html,body{margin:0;background:#183c60}canvas{display:block}</style><canvas width="640" height="360"></canvas><script>window.phase=0;const c=document.querySelector("canvas"),g=c.getContext("2d");function draw(){g.fillStyle=window.phase?"#ffb347":"#41bf8d";g.fillRect(0,0,640,360);window.drawn=window.phase;requestAnimationFrame(draw)}draw()</script>')
   const reader = await startupNativeReader(page, (await loadLocalConfig()).sourceCacheDir)
   const records: unknown[] = []
   let before: Buffer, after: Buffer
@@ -18,7 +18,8 @@ test("prepared runner hands off a visible browser and releases before extraction
     requireStartupNative(await reader.read())
     records.push(await reader.diagnoseOwnedWindow(path.join(directory, "handoff-before.native.png")))
     before = await page.locator("canvas").screenshot()
-    await page.waitForTimeout(1100)
+    await page.evaluate(() => { (window as any).phase = 1 })
+    await page.waitForFunction(() => (window as any).drawn === 1)
     requireStartupNative(await reader.read())
     records.push(await reader.diagnoseOwnedWindow(path.join(directory, "handoff-after.native.png")))
     after = await page.locator("canvas").screenshot()
@@ -37,5 +38,6 @@ test("prepared runner hands off a visible browser and releases before extraction
     await writeFile(path.join(directory, "handoff.json"), JSON.stringify({ performanceSample: false, extractionStartedAt, extractionFinishedAt: Date.now(), released, records, before: hash(before), after: hash(after) }, null, 2))
     await writeFile(path.join(directory, "handoff-before.png"), before)
     await writeFile(path.join(directory, "handoff-after.png"), after)
+    await testInfo.attach("post-desktop-artifacts", { body: JSON.stringify({ extractionStartedAt, desktopReleasedAt: released.desktopReleasedAt }), contentType: "application/json" })
   })
 })
