@@ -120,7 +120,7 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
     [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
-    foreach($record in 'identity.json','ownership.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json') {
+    foreach($record in 'identity.json','ownership.json','desktop-prepared.json','desktop-request.json','desktop-grant.json','desktop-release.json','desktop-released.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json') {
       $file=Join-Path $result.run $record
       if(Test-Path -LiteralPath $file){$files+=@{name="job/$record";path=$file}}
     }

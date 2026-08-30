@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { readFile, writeFile, rename } from "node:fs/promises"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { repositoryRoot } from "./config"
 import { processIsAlive } from "./profile-lock"
@@ -155,17 +155,20 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
 /** The profile owner calls this only after its silent preparation. The native
  * supervisor retains the SAME FIFO resource reservation and process tree across
  * the transition; ownership.json is never a desktop authorization. */
-export async function withWindowsDesktop<T>(preparedIdentity: string, signal: AbortSignal,
+export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, unknown>>, signal: AbortSignal,
   work: (release: (succeeded: boolean) => Promise<void>) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
   if (process.platform !== "win32") return work(async () => {})
   const file = process.env.PLAYSRC_LOCAL_JOB_OWNER
-  if (!file || !/^[a-f0-9]{64}$/.test(preparedIdentity)) throw new Error("Missing prepared native desktop identity")
+  if (!file) throw new Error("Missing prepared native desktop identity")
   const owner = JSON.parse(await readFile(file, "utf8")) as NativeJobReceipt
   await borrowedWindowsJobLock(process.env.PLAYSRC_LOCAL_JOB_LOCK!, owner.invocation)
   if (!owner.interactive) throw new Error("Background ownership cannot authorize a desktop")
   const dispatch = JSON.parse(await readFile(path.join(owner.run, "dispatch.json"), "utf8"))
   if (dispatch.pid !== process.pid || dispatch.helperPid !== process.ppid || dispatch.helperCreatedAt !== owner.helperCreatedAt
     || dispatch.job !== owner.job || dispatch.task !== owner.task || dispatch.run !== owner.run) throw new Error("Desktop requester is not the owned profile process")
+  const preparedBytes = JSON.stringify(prepared)
+  const preparedIdentity = createHash("sha256").update(preparedBytes).digest("hex")
+  await writeFile(path.join(owner.run, "desktop-prepared.json"), preparedBytes, { flag: "wx" })
   const request = { job: owner.job, task: owner.task, run: owner.run, lockToken: owner.lockToken,
     stage: randomUUID(), preparedIdentity, childPid: process.pid, childCreatedAt: dispatch.createdAt,
     helperPid: owner.helperPid, helperCreatedAt: owner.helperCreatedAt }

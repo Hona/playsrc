@@ -21,7 +21,7 @@ export async function finishProfileArtifacts(succeeded: boolean): Promise<void> 
   const deadline = Number(process.env.PLAYSRC_PROFILE_DEADLINE)
   for (;;) {
     if (Date.now() >= deadline) throw new Error("Desktop teardown exceeded the profile deadline")
-    const receipt = await readFile(`${file}.released`, "utf8").catch(error => {
+    const receipt = await readFile(path.join(directory, "desktop-extraction-released.json"), "utf8").catch(error => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       return null
     })

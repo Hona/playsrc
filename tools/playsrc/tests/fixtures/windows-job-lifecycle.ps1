@@ -32,7 +32,9 @@ public static partial class PlaysrcNativeJob {
     if(scenario=="preparation-failure")throw new Exception("preparation failed");
     if(scenario=="preparation-cancel")throw new OperationCanceledException("preparation cancelled");
     if(receipt.interactive) {
-     var stage=new DesktopRequest{job=request.job,task=request.task,run=request.run,lockToken=request.lockToken,childPid=receipt.childPid,childCreatedAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,stage=Guid.NewGuid().ToString(),preparedIdentity=new String('a',64)};
+     var bytes=Encoding.UTF8.GetBytes("{\"testOnly\":true}");File.WriteAllBytes(Path.Combine(request.run,"desktop-prepared.json"),bytes);
+     string prepared;using(var hash=SHA256.Create())prepared=BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-","").ToLowerInvariant();
+     var stage=new DesktopRequest{job=request.job,task=request.task,run=request.run,lockToken=request.lockToken,childPid=receipt.childPid,childCreatedAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,stage=Guid.NewGuid().ToString(),preparedIdentity=prepared};
      Save(Path.Combine(request.run,"desktop-request.json"),stage);
      DesktopTransition(request,receipt,owner,IntPtr.Zero);
      Assert(closed && receipt.consent.dismissedAt<=receipt.desktopStartedAt,"browser before dismissed consent");
