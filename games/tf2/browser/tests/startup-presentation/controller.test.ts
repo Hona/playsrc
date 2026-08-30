@@ -120,6 +120,38 @@ describe("TF2 startup presentation lifecycle", () => {
     expect(playback.controller.state()).toEqual({ kind: "Failed", stage: "Playback", reason: "device" })
   })
 
+  test("a late media preparation cannot overwrite a fatal menu failure", async () => {
+    const f = fixture()
+    f.controller.start()
+    f.menuReady.reject(new Error("menu failure"))
+    await tick()
+    f.mediaReady.resolve(f.session)
+    await tick()
+    expect(f.controller.state()).toEqual({ kind: "Failed", stage: "MenuPreparation", reason: "menu failure" })
+    expect(f.calls).not.toContain("play")
+    expect(f.calls.filter(value => value === "media:destroy")).toHaveLength(1)
+  })
+
+  test("pending play success cannot hide a fatal error or resurrect destroyed media", async () => {
+    for (const result of ["started", "gesture-required"] as const) {
+      const f = fixture()
+      const playback = deferred<"started" | "gesture-required">()
+      f.controller.start()
+      f.mediaReady.resolve({ ...f.session, play: () => playback.promise })
+      await tick()
+      f.events().failed("decode failed")
+      playback.resolve(result)
+      await tick()
+      expect(f.controller.state()).toEqual({ kind: "Failed", stage: "Playback", reason: "decode failed" })
+      f.menuReady.resolve(f.menu)
+      await tick()
+      expect(f.calls).not.toContain("menu:reveal")
+      f.controller.destroy()
+      expect(f.calls.filter(value => value === "media:destroy")).toHaveLength(1)
+      expect(f.calls.filter(value => value === "menu:destroy")).toHaveLength(1)
+    }
+  })
+
   test("destroys every acquired owner once and rejects stale completions", async () => {
     const f = fixture()
     f.controller.start(); f.mediaReady.resolve(f.session); f.menuReady.resolve(f.menu); await tick()

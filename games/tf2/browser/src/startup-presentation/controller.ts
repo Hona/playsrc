@@ -78,6 +78,11 @@ export function createTf2StartupController(request: Tf2StartupControllerRequest)
   const fail = (stage: Extract<Tf2StartupState, { kind: "Failed" }>["stage"], reason: unknown): void => {
     if (current.kind === "Destroyed" || current.kind === "Failed") return
     const text = reason instanceof Error ? reason.message : String(reason)
+    // Media and hidden-menu preparation race independently. Failure retires
+    // both continuations, including a play() promise already in flight.
+    generation += 1
+    releaseMedia()
+    if (menu && !menuDestroyed) { menuDestroyed = true; menu.destroy() }
     publish(frozen({ kind: "Failed", stage, reason: text }))
   }
   const releaseMedia = (): void => {
