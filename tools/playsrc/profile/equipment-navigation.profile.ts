@@ -7,9 +7,7 @@ import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { captureProcessMemory } from "./process-memory"
-import { decodeScreenshot } from "./screenshot-pixels"
-import { nativeSelectionRect } from "./selection-transition-analysis"
-import { selectionVisibleLatency } from "./selection-visible-latency"
+import { analyzeEquipmentNavigation } from "./equipment-navigation-analysis"
 import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
 import { profileArtifact } from "./profile-artifacts"
 
@@ -74,6 +72,11 @@ test("equipment trusted input to native visible pages", async ({ page, context }
       if (!sampling) throw new Error(`No native reference for ${name} within the bounded sample`)
       index = await nextCapture!
     }
+    const first = index
+    while (index <= first) {
+      if (!sampling) throw new Error(`No settled native reference for ${name} within the bounded sample`)
+      index = await nextCapture!
+    }
     references.push({ name, index, facts })
   }
   try {
@@ -120,31 +123,7 @@ test("equipment trusted input to native visible pages", async ({ page, context }
     const heapAfter = await cdp.send("Runtime.getHeapUsage"), residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
     await page.screenshot({ path: path.join(directory, "equipment.page.png") })
     expect(errors).toEqual([])
-    await profileArtifact(async () => {
-    await writeFile(path.join(directory, "equipment-measurement.json"), JSON.stringify({ cpu, startedEpoch, endedEpoch, evidence, references, heapBefore, heapAfter, residentBefore, residentAfter }, null, 2))
-    const images = await Promise.all(captures.map(async capture => decodeScreenshot(await readFile(path.join(directory, capture.file)))))
-    const latencies = references.map(reference => {
-      const image = images[reference.index]!
-      const rects = captures.map((capture, index) => nativeSelectionRect(images[index]!, capture.admission.pixels.bounds, capture.nativeRecords[0].facts.bounds, reference.facts))
-      const expected = rects[reference.index]!
-      let distinct = 0
-      for (let y = 0; y < expected.height; y++) for (let x = 0; x < expected.width; x++) {
-        const at = ((expected.y + y) * image.width + expected.x + x) * image.channels
-        if (image.pixels[at]! > 100) distinct++
-      }
-      expect(distinct, `${reference.name} must contain actual authored pixels`).toBeGreaterThan(16)
-      return { name: reference.name, input: reference.facts.input, ...selectionVisibleLatency(reference.facts.input.inputEpoch, endedEpoch, captures.map((capture, index) => {
-        const sampled = images[index]!, rect = rects[index]!
-        let different = 0
-        for (let y = 0; y < expected.height; y++) for (let x = 0; x < expected.width; x++) {
-          const a = ((expected.y + y) * image.width + expected.x + x) * image.channels, b = ((rect.y + y) * sampled.width + rect.x + x) * sampled.channels
-          if ([0, 1, 2].some(channel => Math.abs(image.pixels[a + channel]! - sampled.pixels[b + channel]!) > 2)) different++
-        }
-        return { ...capture.admission.pixels, matches: different < expected.width * expected.height * 0.01 }
-      })) }
-    })
-    await writeFile(path.join(directory, "equipment-latency.json"), JSON.stringify(latencies, null, 2))
-    })
+    await profileArtifact(() => writeFile(path.join(directory, "equipment-measurement.json"), JSON.stringify({ cpu, startedEpoch, endedEpoch, evidence, references, heapBefore, heapAfter, residentBefore, residentAfter }, null, 2)))
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false; await loop?.catch(() => {})
@@ -162,6 +141,7 @@ test("equipment trusted input to native visible pages", async ({ page, context }
     await profileArtifact(async () => {
       const pageMedia = await mediaRecord(path.join(directory, "equipment.page.png")).catch(error => ({ unavailable: String(error) }))
       await writeFile(path.join(directory, "equipment-native.json"), JSON.stringify({ captures, pageMedia, references, hits, errors, failure }, null, 2))
+      await analyzeEquipmentNavigation(directory)
     })
     await reader.close()
   }
@@ -175,6 +155,12 @@ test.describe("equipment transaction faults", () => {
     const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, { sourceCacheDir } = await loadLocalConfig()
     const reader = await startupNativeReader(page, sourceCacheDir), records: unknown[] = [], media: string[] = []
     guardStartupInput(page, async () => { requireStartupNative(await reader.read()) })
+    await page.addInitScript(() => {
+      const inputs: unknown[] = (globalThis as any).__equipmentTransactionInputs = []
+      for (const kind of ["pointerup", "keydown"]) window.addEventListener(kind, event => {
+        if (event.isTrusted) inputs.push({ kind, code: (event as KeyboardEvent).code, inputEpoch: performance.timeOrigin + event.timeStamp })
+      }, true)
+    })
     const equipment = page.locator(".equipment-layer"), main = page.locator("main")
     const control = (name: string) => equipment.locator(`[data-vgui-name='${name}']`)
     const gate = Promise.withResolvers<void>(), intercepted = Promise.withResolvers<string>()
@@ -195,14 +181,28 @@ test.describe("equipment transaction faults", () => {
       await page.screenshot({ path: path.join(directory, `${name}.page.png`) })
       media.push(path.join(directory, `${name}.desktop.png`), path.join(directory, `${name}.page.png`))
       requireStartupNative(await reader.read())
-      records.push({ kind: "capture", name, native })
+      records.push({ kind: "capture", name, native, inputs: await page.evaluate(() => (globalThis as any).__equipmentTransactionInputs) })
     }
     try {
       await page.goto("/", { waitUntil: "domcontentloaded" })
       await expect(main).toHaveAttribute("data-phase", "MainMenu")
       await page.locator("[data-vgui-name='CharacterSetupButton']").click()
-      await control("Class3").click()
+      await expect(control("Class1")).toBeVisible()
+      await page.keyboard.press("ArrowRight")
+      await page.keyboard.down("Enter"); await page.keyboard.down("Enter")
+      await expect(control("Class3")).toBeVisible()
+      await expect(control("Itemslot-0")).toHaveCount(0)
+      await capture("held-enter")
+      await page.keyboard.up("Enter")
       await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 20_000 })
+      await page.keyboard.press("Backquote")
+      const entry = page.locator("[aria-label='Console command']")
+      await entry.fill("echo equipment input ownership")
+      await page.keyboard.press("ArrowLeft")
+      await expect(entry).toHaveValue("echo equipment input ownership")
+      await page.keyboard.press("Escape")
+      await expect(main).toHaveAttribute("data-console-visible", "false")
+      await expect(control("Itemslot-0")).toBeVisible()
       await page.waitForTimeout(2100)
       if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Transaction test requires genuine native idle")
       await capture("loadout")
@@ -237,6 +237,10 @@ test.describe("equipment transaction faults", () => {
       await page.reload({ waitUntil: "domcontentloaded" })
       await expect(main).toHaveAttribute("data-phase", "MainMenu")
       expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
+    } catch (error) {
+      records.push({ kind: "failure", error: String(error) })
+      await capture("failed-transaction").catch(error => records.push({ kind: "capture-unavailable", error: String(error) }))
+      throw error
     } finally {
       gate.resolve()
       await reader.close()
