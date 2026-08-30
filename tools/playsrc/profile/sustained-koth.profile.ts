@@ -37,6 +37,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
   let traceStarted = false, observerStarted = false, worker: ReturnType<typeof page.workers>[number] | undefined
   let cpu: Awaited<ReturnType<typeof prepareWorkerCpuCapture>> | undefined
   let cpuStarted = false, mainCpuStarted = false, workerCpu: any, mainCpu: any, replayArtifact: any, compositor: any
+  let allocationTracking = false, allocationStart: any, allocationEnd: any
   const entropyDirectory = path.join(sourceCacheDir, "profiles/sustained-koth/entropy")
   const entropyIdentity = process.env.PROFILE_SUSTAINED_ENTROPY
   let entropy: Buffer | undefined
@@ -96,8 +97,9 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     })
     worker = page.workers().find(worker => worker.url().includes("gameplay-worker"))
     if (!worker) throw new Error("Gameplay Worker missing")
-    if (!await worker.evaluate(() => (globalThis as any).__playsrcWorkerMemoryTracking(true))) throw new Error("Allocation accounting unavailable")
-    cpu = await prepareWorkerCpuCapture(browser, cdp, page)
+    if (!await worker.evaluate(() => (globalThis as any).__playsrcWorkerMemoryTracking(false))) throw new Error("Allocation accounting unavailable")
+    cpu = await prepareWorkerCpuCapture(browser, cdp, page, 10_000)
+    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 1000 })
     await pixels("natural-setup")
     await page.waitForFunction(() => {
       const p = (globalThis as any).__playsrcProfile
@@ -118,15 +120,16 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       const began = Date.now()
       const [state, processMemory, heap, wasm, workerHeap] = await Promise.all([snapshot(), memory.read(processIds), cdp.send("Runtime.getHeapUsage"),
         worker!.evaluate(() => ({ ...((globalThis as any).__playsrcWorkerMemory ?? {}) })), cpu!.heapUsage()])
-      records.push({ began, ended: Date.now(), state, processMemory, heap, wasm, workerHeap })
+      records.push({ began, ended: Date.now(), state, processMemory, heap, wasm, workerHeap, requestedAllocationTracking: allocationTracking })
       if (state.data.phase !== "Ready" || state.bots.length !== 23 || state.round.state !== 4 || state.round.waitingForPlayers || state.round.inSetup) throw new Error("Natural active full-roster gameplay was interrupted")
       if (records.length > 128) throw new Error("Sustained telemetry exceeded its bound")
       return state.at
     }
-    let at = await collect(), nextMemory = started + 2000, nextInput = started, nextNative = Date.now()
+    let at = await collect(), nextMemory = started + 2000, nextInput = started, nextNative = Date.now(), agedPixels = false
     while (at - started < SUSTAINED_KOTH.soakMilliseconds) {
       if (Date.now() >= deadline - SUSTAINED_KOTH.sampleMilliseconds - SUSTAINED_KOTH.extractionMilliseconds) throw new Error("Sustained soak exhausted its reserved budget; no shortening")
       if (Date.now() >= nextNative) { await check(); nextNative = Date.now() + 500 }
+      if (!agedPixels && at - started >= 85_000) { await pixels("aged-before-sample"); agedPixels = true }
       if (at >= nextInput) {
         await check()
         const key = inputPlan.length % 2 === 0 ? "a" : "d"
@@ -138,13 +141,24 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       at = await page.evaluate(() => performance.now())
       if (at >= nextMemory) { at = await collect(); nextMemory += 2000 }
     }
-    await pixels("aged-before-sample")
-    await cpu.start(); cpuStarted = true
-    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 1000 }); await cdp.send("Profiler.start"); mainCpuStarted = true
     lateStarted = await page.evaluate(() => performance.now())
+    allocationStart = await worker.evaluate(() => {
+      const memory = (globalThis as any).__playsrcWorkerMemory
+      if (!(globalThis as any).__playsrcWorkerMemoryTracking(true)) throw new Error("Allocation accounting rejected")
+      return { at: performance.now(), timeOrigin: performance.timeOrigin, memory }
+    })
+    allocationTracking = true
+    await cpu.start(); cpuStarted = true
+    await cdp.send("Profiler.start"); mainCpuStarted = true
     const end = Date.now() + SUSTAINED_KOTH.sampleMilliseconds
     while (Date.now() < end) { await check(); await collect(); await page.waitForTimeout(Math.min(1000, Math.max(0, end - Date.now()))) }
     lateEnded = await page.evaluate(() => performance.now())
+    allocationEnd = await worker.evaluate(() => {
+      if (!(globalThis as any).__playsrcWorkerMemoryTracking(false)) throw new Error("Allocation accounting stop rejected")
+      return { at: performance.now(), timeOrigin: performance.timeOrigin, memory: (globalThis as any).__playsrcWorkerMemory }
+    })
+    allocationTracking = false
+    if (allocationEnd.at - allocationStart.at > 10_000) throw new Error("Allocation accounting exceeded its late capture bound")
     if (lateEnded - lateStarted < 5000 || lateEnded - lateStarted > 10_000) throw new Error("Detailed sample outside5–10seconds")
     workerCpu = await cpu.stop(); cpuStarted = false
     mainCpu = (await cdp.send("Profiler.stop")).profile; mainCpuStarted = false
@@ -182,8 +196,9 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     const phases = sampled ? Object.fromEntries([["whole", sampled.started, sampled.ended], ["early", sampled.started, Math.min(sampled.started + 10_000, sampled.ended)], ["late", lateStarted, lateEnded]]
       .filter(([, from, to]) => Number(to) > Number(from)).map(([name, from, to]) => [name, { ...summarizeSustainedWindow(sampled, Number(from), Number(to)),
         compositor: window ? summarizeCompositorTruth(compositor.events, Number(to) - Number(from), { startedMicroseconds: Number(from) * 1000 + window.offsetMicroseconds, endedMicroseconds: Number(to) * 1000 + window.offsetMicroseconds }) : null }])) : null
-    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, plan: SUSTAINED_KOTH,
+    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
       records, sampled, phases, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
+      allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
   }
   if (error) throw new Error(error)
