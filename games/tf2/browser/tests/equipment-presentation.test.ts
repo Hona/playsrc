@@ -267,6 +267,24 @@ test("a held equipment Enter presses the button but changes only one page on rel
   } finally { ui.destroy() }
 })
 
+test("page replacement retains browser keyboard ownership until the next Source focus frame", () => {
+  const { ui, root } = navigationFixture()
+  try {
+    ui.show(nativeEquipment); ui.frame(0)
+    const focused = root.ownerDocument.activeElement!
+    for (const type of ["keydown", "keyup"]) {
+      const event = new FakeEvent(type, { key: "Enter", code: "Enter" })
+      event.target = focused; root.ownerDocument.dispatchEvent(event)
+    }
+    expect(ui.snapshot().page).toBe("loadout")
+    expect(root.contains(root.ownerDocument.activeElement)).toBe(true)
+    const tab = new FakeEvent("keydown", { key: "Tab", code: "Tab", repeat: true })
+    tab.target = root.ownerDocument.activeElement
+    root.ownerDocument.dispatchEvent(tab)
+    expect(tab.defaultPrevented).toBe(true)
+  } finally { ui.destroy() }
+})
+
 test("grid arrows preserve row boundaries, cross pages horizontally and select empty cells without equipping", () => {
   const calls: unknown[] = []
   const { ui, activate, key } = navigationFixture(async (...args) => { calls.push(args); return nativeEquipment })

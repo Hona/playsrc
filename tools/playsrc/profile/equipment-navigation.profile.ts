@@ -247,6 +247,13 @@ test.describe("equipment transaction faults", () => {
       await capture("held-enter")
       await page.keyboard.up("Enter")
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
+      await page.keyboard.down("Tab"); await page.keyboard.down("Tab"); await page.keyboard.up("Tab")
+      expect(await page.evaluate(() => !!document.activeElement?.closest(".equipment-layer"))).toBe(true)
+      await page.keyboard.press("Enter")
+      await expect(control("Itemitem-6")).toBeVisible()
+      await capture("tab-slot")
+      await page.keyboard.press("Escape")
+      await expect(control("Itemslot-0")).toBeVisible()
       expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
       await control("Itemslot-0").click()
       fault = "reject"
