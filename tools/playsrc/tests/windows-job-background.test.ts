@@ -46,7 +46,10 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION || !!pro
       else {
         expect(error).toBeNull()
         expect(value!.outcome).toBe(kind === "success" ? "completed" : kind === "cancel" ? "cancelled" : "failed")
-        expect(value!.exitCode).toBe(kind === "success" ? 0 : kind === "preflight" ? null : 1)
+        // Job Object termination can finish before the root handle is signaled;
+        // retain an unobserved exit as null, never invent a cancellation code.
+        if (kind === "cancel") expect([null, 1]).toContain(value!.exitCode)
+        else expect(value!.exitCode).toBe(kind === "success" ? 0 : kind === "preflight" ? null : 1)
         expect(value!.interactive).toBe(false)
         expect(value!.uiInvocations).toBe(0)
         expect(value!.consent).toBeNull(); expect(value!.completion).toBeNull(); expect(value!.treeEmpty).toBe(true)
