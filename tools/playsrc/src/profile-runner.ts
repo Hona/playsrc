@@ -130,6 +130,7 @@ const PROFILES = Object.freeze({
   "equipment-navigation": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment trusted input"], minimumRemainingMilliseconds: 60_000 },
   "equipment-navigation-cpu": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment trusted input"], environment: { PLAYSRC_EQUIPMENT_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   "equipment-navigation-transactions": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment pending"], minimumRemainingMilliseconds: 90_000 },
+  "equipment-navigation-lifecycle": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment map replacement"], minimumRemainingMilliseconds: 110_000 },
   "vgui-raster-parity": { config: "playwright.vgui-raster-parity.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 45_000 },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },

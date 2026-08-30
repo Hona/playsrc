@@ -183,9 +183,10 @@ test.describe("equipment transaction faults", () => {
       await route.abort("failed")
     })
     const capture = async (name: string) => {
+      requireStartupNative(await reader.read())
+      await page.screenshot({ path: path.join(directory, `${name}.page.png`) })
       const native = await reader.read(path.join(directory, `${name}.desktop.png`), "window")
       requireStartupNative(native)
-      await page.screenshot({ path: path.join(directory, `${name}.page.png`) })
       media.push(path.join(directory, `${name}.desktop.png`), path.join(directory, `${name}.page.png`))
       requireStartupNative(await reader.read())
       records.push({ kind: "capture", name, native, inputs: await page.evaluate(() => (globalThis as any).__equipmentTransactionInputs) })
@@ -202,8 +203,11 @@ test.describe("equipment transaction faults", () => {
       await page.keyboard.press("ArrowLeft")
       await expect(entry).toHaveValue("echo equipment input ownership")
       await page.keyboard.press("Escape")
-      await expect(main).toHaveAttribute("data-console-visible", "false")
+      await expect(main).toHaveAttribute("data-console-visible", "true")
+      await expect(entry).toHaveValue("echo equipment input ownership")
       await expect(control("Itemslot-0")).toBeVisible()
+      await page.keyboard.press("Backquote")
+      await expect(main).toHaveAttribute("data-console-visible", "false")
       await page.waitForTimeout(2100)
       if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Transaction test requires genuine native idle")
       await capture("loadout")
@@ -215,6 +219,13 @@ test.describe("equipment transaction faults", () => {
       fault = "delay"
       await control("Itemitem-127").click()
       await Promise.race([intercepted.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("Cold equipment resource was not intercepted")), 5000))])
+      const back = await control("BackButton").boundingBox()
+      const point = { x: back!.x + back!.width * 0.95, y: back!.y + back!.height * 0.5 }
+      expect(await page.evaluate(point => !!document.elementFromPoint(point.x, point.y)?.closest("[data-vgui-name='BackButton']"), point)).toBe(true)
+      await page.mouse.click(point.x, point.y)
+      await expect(control("Itemslot-0")).toBeVisible({ timeout: 1500 })
+      await capture("back-cancelled-pending")
+      await control("Itemslot-0").click(); await control("Itemitem-127").click()
       await page.keyboard.press("Escape")
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 1500 })
       expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(before)
@@ -224,6 +235,7 @@ test.describe("equipment transaction faults", () => {
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
       await expect.poll(() => page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).not.toBe(before)
       const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
+      await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl")
       await capture("equipped-retry")
       await control("BackButton").click(); await control("BackButton").click()
       await expect(equipment).toBeHidden()
@@ -257,4 +269,73 @@ test.describe("equipment transaction faults", () => {
         media: await Promise.all(media.map(mediaRecord)) }, null, 2)))
     }
   })
+})
+
+test("equipment map replacement and disconnect cancel uncommitted selection", async ({ page, context }) => {
+  test.setTimeout(120_000)
+  const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, { sourceCacheDir } = await loadLocalConfig()
+  const reader = await startupNativeReader(page, sourceCacheDir), records: unknown[] = [], media: string[] = []
+  guardStartupInput(page, async () => { requireStartupNative(await reader.read()) })
+  await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureWeaponPoses: true } })
+  let gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(), armed = false
+  await context.route(url => url.hostname === "127.0.0.1" && /^\/objects\/sha256\/[a-f0-9]{64}$/.test(url.pathname), async route => {
+    if (!armed) { await route.continue(); return }
+    armed = false
+    const held = gate
+    records.push({ kind: "held-resource", url: route.request().url(), at: Date.now() })
+    entered.resolve(); await held.promise
+    if (!route.request().failure()) await route.continue()
+  })
+  const equipment = page.locator(".equipment-layer"), main = page.locator("main")
+  const control = (name: string) => equipment.locator(`[data-vgui-name='${name}']`)
+  const command = async (text: string) => {
+    if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+    await page.locator("[aria-label='Console command']").fill(text); await page.keyboard.press("Enter")
+  }
+  const holdEquip = async (slot = 0, definition = 127) => {
+    await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 20_000 })
+    await control(`Itemslot-${slot}`).click()
+    gate = Promise.withResolvers<void>(); entered = Promise.withResolvers<void>(); armed = true
+    await control(`Itemitem-${definition}`).click()
+    await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("Equipment lifecycle resource gate was not reached")), 5000))])
+  }
+  const capture = async (name: string) => {
+    const native = await reader.read(path.join(directory, `${name}.desktop.png`), "window")
+    requireStartupNative(native); requireStartupNative(await reader.read())
+    await page.screenshot({ path: path.join(directory, `${name}.page.png`) })
+    media.push(path.join(directory, `${name}.desktop.png`), path.join(directory, `${name}.page.png`))
+    records.push({ name, native })
+  }
+  try {
+    await page.goto("/", { waitUntil: "domcontentloaded" })
+    await expect(main).toHaveAttribute("data-phase", "MainMenu")
+    await page.waitForTimeout(2100)
+    if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Equipment lifecycle requires genuine native idle")
+    await page.locator("[data-vgui-name='CharacterSetupButton']").click(); await control("Class3").click()
+    const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
+    await holdEquip()
+    await command("map pl_upward")
+    await expect(equipment).toBeHidden({ timeout: 1500 })
+    gate.resolve()
+    await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 55_000 })
+    if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
+    await page.locator(".team-selection-layer [data-vgui-name='teambutton1']").click()
+    await page.locator(".class-selection-layer [data-vgui-name='soldier']").click()
+    await expect(main).toHaveAttribute("data-phase", "Ready")
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__playsrcProfile.weaponPose?.definition)).toBe(18)
+    expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
+    await capture("map-cancelled-equip")
+    await page.keyboard.press("Comma")
+    await page.locator(".class-selection-layer [data-vgui-name='EditLoadoutButton']").click()
+    await holdEquip(7, 378)
+    await command("disconnect")
+    await expect(equipment).toBeHidden({ timeout: 1500 })
+    gate.resolve()
+    await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 15_000 })
+    expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
+    await capture("disconnect-cancelled-equip")
+  } finally {
+    gate.resolve(); await reader.close()
+    await profileArtifact(async () => writeFile(path.join(directory, "equipment-lifecycle.json"), JSON.stringify({ records, media: await Promise.all(media.map(mediaRecord)) }, null, 2)))
+  }
 })

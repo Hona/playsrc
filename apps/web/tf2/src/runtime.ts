@@ -6394,7 +6394,8 @@ export class Tf2Application {
 
   async #teardownGameplay(): Promise<void> {
     this.#equipmentAdmissionEpoch += 1
-    if (this.#equipment?.visible()) this.#equipment.hide()
+    if (this.#equipment?.visible()) this.#equipment.hide(false)
+    this.#equipmentReturn = undefined
     this.#paused = true
     this.#neutral()
     this.#generation += 1
