@@ -137,6 +137,11 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       expect(observation.doors.some((frame: any) => frame.panels.some((panel: any) => panel.name === name && panel.animation === "hover_disabled"))).toBe(true)
       expect(observation.doors.at(-1).panels.find((panel: any) => panel.name === name).sequence).toBe("hoverclose")
     }
+    for (const name of disabledTeam ? [disabledTeam === "red" ? "reddoor" : "bluedoor"] : ["autodoor", "bluedoor", "reddoor"]) {
+      const final = observation.doors.at(-1).panels.find((panel: any) => panel.name === name)
+      expect(final.cycle).toBe(1)
+      expect(final.timing.transitioning).toBe(false)
+    }
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false
