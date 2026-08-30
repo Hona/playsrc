@@ -27,7 +27,7 @@ const modules = await Promise.all(inputRecord.records.map(async (record: any) =>
   return { variant: record.variant, bytes: bytes.toString("base64"), sha256: record.sha256 }
 }))
 
-test("headed x86 browser executes exact scalar and SIMD decoder kernels", async ({ page }, testInfo) => {
+test("headed browser executes exact scalar and SIMD decoder kernels", async ({ page }, testInfo) => {
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   const native = await startupNativeReader(page, config.sourceCacheDir)
   guardStartupInput(page, async () => requireStartupNative(await native.read()))
@@ -60,7 +60,7 @@ test("headed x86 browser executes exact scalar and SIMD decoder kernels", async 
         const pcmSha256 = await digest(pcm)
         const record = { variant: entry.variant, moduleSha256: await digest(binary), valid, compileMilliseconds: compiled-began, instantiateMilliseconds: instantiated-compiled,
           firstDecodeMilliseconds: first.milliseconds, samples: first.count, pcmSha256, linearBytes: e.memory.buffer.byteLength, batches: [] as number[] }
-        records.push(record); states.push({ invoke, record })
+        records.push(record); states.push({ invoke, record, memory: e.memory as WebAssembly.Memory })
         if (entry.variant === "simd") {
           const samples = new Int16Array(pcm.buffer), canvas = document.querySelector("canvas")!, context = canvas.getContext("2d")!
           context.strokeStyle="#66dfb7"; context.beginPath()
@@ -78,7 +78,7 @@ test("headed x86 browser executes exact scalar and SIMD decoder kernels", async 
         }
         await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))
       }
-      for(const record of records){const values=[...record.batches].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1)})}
+      for(const state of states){const record=state.record,values=[...record.batches].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1),finalLinearBytes:state.memory.buffer.byteLength})}
       document.querySelector("#result")!.textContent=records.map((r:any)=>`${r.variant}: median ${r.median.toFixed(4)} ms, p95 ${r.p95.toFixed(4)} ms; ${r.samples} exact PCM samples`).join("\n")
       return { records, sampleMilliseconds:performance.now()-sampleStart, userAgent:navigator.userAgent, platform:navigator.platform, hardwareConcurrency:navigator.hardwareConcurrency,
         browserEvidence:true, sustainedGameplayEvidence:false, scope:"Configured decoder kernel; host input allocation/copy excluded identically, decoder allocations and output replacement/free included. No gameplay or freeze claim." }
