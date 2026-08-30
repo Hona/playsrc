@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { requireSustainedBudget } from "../profile/sustained-koth"
 import { upwardCapturePlan, validateUpwardCapturePlan } from "../profile/upward-capture-plan"
 import { profileMinimumRemainingMilliseconds } from "../src/profile-runner"
+import path from "node:path"
 import { SUSTAINED_KOTH, checkSustainedObservation, sustainedGcEvidence, sustainedTrends, assertMatchingSustainedTransitionHistories, liveSustainedAttachments } from "../profile/sustained-koth-evidence"
 
 test("sustained admission never truncates the 90 second soak to fit", () => {
@@ -152,4 +153,12 @@ test("short freeze diagnosis is labelled separately and never changes the90s fin
   expect(() => validateUpwardCapturePlan(diagnostic)).not.toThrow()
   expect(upwardCapturePlan({ ...input, PROFILE_KOTH_DIAGNOSTIC: "0" })).not.toHaveProperty("diagnosticSeconds")
   expect(() => upwardCapturePlan({ ...input, PROFILE_KOTH_RETIREMENT_ONLY: "1" })).toThrow()
+})
+
+test("late native admission checks retain their own budget after prelude and soak", async () => {
+  const source = await Bun.file(path.resolve(import.meta.dir, "../profile/upward-training-bots.profile.ts")).text()
+  const monitor = source.slice(source.indexOf("const nativeMonitor ="), source.indexOf("const sample = await Promise.all"))
+  expect(monitor).toContain("let checks = 0")
+  expect(monitor).toContain("++checks >= 32")
+  expect(monitor).not.toContain("nativeRecords().length >= 32")
 })
