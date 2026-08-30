@@ -12,7 +12,7 @@ import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PL
 import { TF2_PRESENTATION_SCHEMA, Tf2WorkerClient, Tf2WorkerError, mergePublicationSnapshots, type CoverageSample, type LoadedGame, type ResourceConfiguration, type SimulationPublication, type VisibilityResult } from "@playsrc/game-tf2-browser"
 import { Tf2EquipmentProfile, Tf2EquipmentPresentation, equippedWeaponSlots, equipmentPipelinePoseRequests, type Tf2EquipmentPreview } from "@playsrc/game-tf2-browser/equipment"
 import { selectionTransitionMark, selectionTransitionDraw } from "./selection-transition-profile"
-import { teamModelPlayback, type TeamModelPlayback } from "./team-model-playback"
+import { teamModelPlayback, TeamModelSkinning, type TeamModelPlayback } from "./team-model-playback"
 import { initializeTf2GameUiIntegration, type Tf2GameUiIntegration } from "@playsrc/game-tf2-browser/gameui-integration"
 import type { Tf2GameUiRequest, Tf2LoadingPhase } from "@playsrc/game-tf2-browser/gameui"
 import {
@@ -480,6 +480,7 @@ export class Tf2Application {
   #pendingClassSelectionTeam?: 2 | 3
   readonly #teamSelectionPoses = new Map<string, PosedModel>()
   readonly #teamSelectionAnimations = new Map<string, TeamModelPlayback>()
+  readonly #teamSelectionSkinning = new TeamModelSkinning()
   #teamSelectionUpdateTask: Promise<void> | undefined
   #teamSelectionUpdateTime = 0
   #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
@@ -1972,6 +1973,7 @@ export class Tf2Application {
     this.#pendingProjectileTimeline = []
     this.#teamSelectionPoses.clear()
     this.#teamSelectionAnimations.clear()
+    this.#teamSelectionSkinning.clear()
     this.#pendingClassSelectionTeam = undefined
     this.#pendingPresentation = undefined
     this.#preparedPresentation = undefined
@@ -2522,11 +2524,12 @@ export class Tf2Application {
           const selected = requests.find((candidate) => candidate.request.identity === item.identity)
           if (!selected) throw new Error("TF2 team-door pose identity differs from its authored request")
           this.#teamSelectionPoses.set(selected.panel, item)
+          this.#teamSelectionSkinning.observe(selected.panel, item)
           this.#teamSelectionAnimations.set(selected.panel, { ...selected.state, sampledSeconds: selected.request.elapsedSeconds, transitioning: item.transitioning })
         }
       }
       const panels: readonly ModelPanelPass[] = authored.map((panel, index) => {
-        const pose = this.#teamSelectionPoses.get(panel.name)
+        const pose = this.#teamSelectionSkinning.needsPose(panel.name) ? this.#teamSelectionPoses.get(panel.name) : undefined
         return Object.freeze({
           identity: panel.name,
           model: panel.model,
