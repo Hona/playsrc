@@ -4,11 +4,13 @@ export function installDeliveryRpcObserver(host: any = globalThis, kinds?: reado
   const NativeWorker = host.Worker
   const limit = 16_384
   let active = false, started = 0, dropped = 0, records: any[] = [], workers = 0
+  const ledgers: Array<{ worker: number; pending: Map<number, { kind: string; at: number }> }> = []
   host.Worker = class extends NativeWorker {
     constructor(url: any, options: any) {
       super(url, options)
       if (!String(url).includes("gameplay-worker")) return
       const worker = ++workers, pending = new Map<number, { kind: string; at: number }>()
+      ledgers.push({ worker, pending })
       const post = this.postMessage.bind(this)
       this.postMessage = (message: any, ...rest: any[]) => {
         if (Number.isSafeInteger(message?.id)) {
@@ -35,6 +37,12 @@ export function installDeliveryRpcObserver(host: any = globalThis, kinds?: reado
   }
   host.__playsrcDeliveryRpc = {
     start(at: number) { started = at; records = []; dropped = 0; active = true },
-    stop() { active = false; return { records, dropped, workers, scope: "Client request-to-existing-reply-hook, with original Worker timing fields; no Worker debugger or payload retention" } },
+    stop() {
+      active = false
+      const ended = host.performance.now()
+      const pending = ledgers.flatMap(({ worker, pending }) => [...pending].filter(([, request]) => !kinds || kinds.includes(request.kind)).map(([id, request]) => ({ worker, id,
+        kind: request.kind, sent: request.at, censoredStart: request.at < started, censoredEnd: true, elapsedMilliseconds: ended - request.at })))
+      return { records, pending, dropped, workers, scope: "Client request-to-existing-reply-hook, with original Worker timing fields; no Worker debugger or payload retention" }
+    },
   }
 }
