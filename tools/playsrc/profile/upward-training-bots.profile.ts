@@ -41,7 +41,7 @@ import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } fr
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
 import { selectionLoadingControl } from "./selection-loading-control"
-import { observeSustainedKoth } from "./sustained-koth"
+import { observeSustainedKoth, retireSustainedKoth } from "./sustained-koth"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -123,7 +123,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
   if (deliveryMode === "rpc") await page.addInitScript({ content: `(${installDeliveryRpcObserver.toString()})();` })
   if (correctnessOnly) await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})(globalThis,"lifecycle");(${installClassCorrectnessObserver.toString()})();` })
-  if (!passiveDelivery && !correctnessOnly) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  if (!passiveDelivery && !correctnessOnly) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})(globalThis,${sustained ? '"attachments"' : "false"});(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
   if (!passiveDelivery) await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
@@ -1485,6 +1485,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
   })}`)
+  if (sustained) await retireSustainedKoth(page, directory, checkNativeWindow)
   if (acceptance) expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
   assertUpwardProfile(report, { expectedBots, playerCount, classes: exerciseClasses, classPasses: acceptance ? 1 : 2,
     workerRequired: capturePlan.workerCpu === "required",
