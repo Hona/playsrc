@@ -40,13 +40,14 @@ describe("actual Worker CDP sampling transport", () => {
           message: JSON.stringify({ method: "Runtime.executionContextCreated", params: { context: { id: 17 } } }) })
         if (message.method === "Runtime.evaluate") evaluated.push(params.sessionId)
         queueMicrotask(() => browser.emit("Target.receivedMessageFromTarget", { sessionId: params.sessionId,
-          message: JSON.stringify({ id: message.id, result: message.method === "Profiler.stop" ? { profile: { samples: [1] } } : { result: { value: { clocks: [], tasks: [] } } } }) }))
+          message: JSON.stringify({ id: message.id, result: message.method === "Profiler.stop" ? { profile: { samples: [1] } } : message.method === "Runtime.getHeapUsage" ? { usedSize: 32, totalSize: 64 } : { result: { value: { clocks: [], tasks: [] } } } }) }))
       }
       return {}
     }
     const controller = await prepareWorkerCpuCapture(browser, { send: async () => ({ targetInfo: { browserContextId: "context" } }) } as any,
-      { workers: () => targets.slice(0, 2).map(target => ({ url: () => target.url })) } as any)
+      { workers: () => targets.slice(0, 2).map(target => ({ url: () => target.url })) } as any, 10_000)
     await expect(controller.stop()).rejects.toThrow("prepared but never started")
+    expect(await controller.heapUsage()).toMatchObject([{ targetId: "game", executionContextId: 17, usage: { usedSize: 32, totalSize: 64 } }])
     expect(commands.some(value => value.method === "Profiler.start" || value.method === "Profiler.stop")).toBe(false)
     await controller.start()
     await expect(controller.start()).rejects.toThrow("already started")
@@ -58,6 +59,10 @@ describe("actual Worker CDP sampling transport", () => {
     expect(commands.filter(value => value.method === "Runtime.evaluate").map(value => value.params.contextId)).toEqual([17, 17])
     expect(captured.map(value => value.target.targetId)).toEqual(["game"])
     expect(controller.unsampledTargets.map(value => value.targetId)).toEqual(["helper"])
+  })
+
+  test("invalid capture bounds fail before any target attachment", async () => {
+    for (const duration of [4999, 12001, NaN]) await expect(prepareWorkerCpuCapture({} as any, {} as any, {} as any, duration)).rejects.toThrow("Invalid bounded")
   })
 
   test("isolates nested sessions and joins out-of-order command IDs", async () => {
