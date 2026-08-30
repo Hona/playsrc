@@ -46,7 +46,9 @@ test("source-location constants compile identically from distinct absolute roots
       const errors = await new Response(child.stderr).text()
       expect(await child.exited, errors).toBe(0)
       const bytes = await readFile(output)
-      expect(bytes.toString()).toContain("/playsrc/fixture.rs")
+      // LLVM IR escapes the host separator retained by file!() after the
+      // directory prefix is remapped. Compare roots on the same target host.
+      expect(bytes.toString()).toContain(`/playsrc${process.platform === "win32" ? "\\\\" : "/"}fixture.rs`)
       expect(bytes.toString()).not.toContain(root)
       outputs.push(bytes)
     }
