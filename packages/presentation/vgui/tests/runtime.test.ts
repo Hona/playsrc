@@ -191,6 +191,24 @@ describe("generic Source VGUI runtime", () => {
     runtime.destroy()
   })
 
+  test("focused buttons own Enter through release instead of also firing the dialog default", () => {
+    const { runtime, requests } = setup()
+    const button = (name: string) => operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name,
+      properties: [{ name: "command", value: name }, { name: "wide", value: "100" }, { name: "tall", value: "25" }] }).panel!
+    const defaultButton = button("Default"), focused = button("Focused")
+    operation(runtime, { kind: "set-default-button", group: 1, panel: defaultButton })
+    operation(runtime, { kind: "request-focus", panel: focused })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    const modifiers = { key: "Enter", shift: false, control: false, alt: false, meta: false }
+    operation(runtime, { kind: "key-press", ...modifiers, repeat: false })
+    operation(runtime, { kind: "key-typed", ...modifiers })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(requests.filter(request => request.kind === "command")).toEqual([])
+    operation(runtime, { kind: "key-release", ...modifiers })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(requests.filter(request => request.kind === "command").map(request => request.command)).toEqual(["Focused"])
+    operation(runtime, { kind: "destroy" })
+  })
   test("CExButton borders use disabled, selected, armed, default precedence without changing Button colors", () => {
     const controls = ["CExButton", "CExImageButton"].map(name => ({
       name, baseControl: "Button" as const, element: "button" as const, role: "button", focusable: true,

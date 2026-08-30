@@ -67,9 +67,7 @@ export class Tf2EquipmentPresentation {
     this.#runtime = initialized.runtime
     this.#apply({ kind: "set-panel-state", panel: 1, visible: false, proportional: true })
     request.root.addEventListener("pointerover", this.#enterItem)
-    request.root.addEventListener("focusin", this.#enterItem)
     request.root.addEventListener("pointerout", this.#leaveItem)
-    request.root.addEventListener("focusout", this.#leaveItem)
   }
 
   #apply(operation: VguiOperation): VguiPanelId | undefined {
@@ -464,8 +462,8 @@ export class Tf2EquipmentPresentation {
   destroy(): void {
     this.#destroyed = true; this.#visible = false; this.#cancelEquip()
     this.#releaseSurface?.(); this.#request.onPreview(null)
-    this.#request.root.removeEventListener("pointerover", this.#enterItem); this.#request.root.removeEventListener("focusin", this.#enterItem)
-    this.#request.root.removeEventListener("pointerout", this.#leaveItem); this.#request.root.removeEventListener("focusout", this.#leaveItem)
+    this.#request.root.removeEventListener("pointerover", this.#enterItem)
+    this.#request.root.removeEventListener("pointerout", this.#leaveItem)
     this.#itemPanels.clear(); this.#hover = undefined; this.#apply({ kind: "destroy" })
   }
 }
