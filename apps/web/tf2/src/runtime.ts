@@ -121,6 +121,7 @@ import {consoleLimits,resolveConfiguredConsoleResources,type ResolvedConsoleReso
 import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNames, type BrowserConfiguration, type BrowserTargetConfiguration } from "./config"
 import { createApplicationGenerationRecovery, installedMapProfileIdentity, resourceGenerationMatches } from "./application-generation"
 import { playStartupVideo } from "./startup-playback"
+import { loadStartupMetadata, startupMetadataFacts, validateStartupMetadata } from "./startup-media"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { browserOwnsKey } from "@playsrc/vgui"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, sourceMouseButtonCode, type PhysicalBinding } from "./input"
@@ -1293,6 +1294,19 @@ export class Tf2Application {
     const url = URL.createObjectURL(new Blob([bytes], { type: "video/webm" }))
     let destroyed = false
     let admitted = false
+    const generation = Number(video.dataset.startupMediaGeneration ?? 0) + 1
+    video.dataset.startupMediaGeneration = String(generation)
+    const chronology: unknown[] = []
+    const observe = (event: string) => {
+      if (chronology.length === 16) chronology.shift()
+      chronology.push({ event, at: Math.round(performance.now()), currentTime: video.currentTime, paused: video.paused,
+        ...startupMetadataFacts(video, descriptor.browserRepresentation, generation, video.currentSrc === url) })
+      this.#presentationRoot.dataset.startupMediaProbe = JSON.stringify({ build: __PLAYSRC_APPLICATION_BUILD__, sha256: descriptor.browserRepresentation.sha256, chronology })
+    }
+    const mediaEvents = ["loadedmetadata", "durationchange", "canplay", "playing", "waiting", "stalled", "error", "abort", "emptied"]
+    const mediaEvent = (event: Event) => observe(event.type)
+    for (const event of mediaEvents) video.addEventListener(event, mediaEvent)
+    const removeMediaObservation = () => { for (const event of mediaEvents) video.removeEventListener(event, mediaEvent) }
     const completed = () => events.completed()
     const failed = () => events.failed(video.error ? `MediaError:${video.error.code}` : "Startup media failed")
     video.controls = false
@@ -1301,27 +1315,15 @@ export class Tf2Application {
     video.autoplay = false
     video.playsInline = true
     video.disablePictureInPicture = true
-    video.src = url
     video.addEventListener("ended", completed)
     video.addEventListener("error", failed)
     try {
-      await new Promise<void>((resolve, reject) => {
-        const loaded = () => { cleanup(); resolve() }
-        const error = () => { cleanup(); reject(new Error(video.error ? `MediaError:${video.error.code}` : "Startup media decode failed")) }
-        const cleanup = () => { video.removeEventListener("loadedmetadata", loaded); video.removeEventListener("error", error) }
-        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) resolve()
-        else {
-          video.addEventListener("loadedmetadata", loaded)
-          video.addEventListener("error", error)
-          video.load()
-        }
-      })
-      const expected = descriptor.browserRepresentation
-      if (video.videoWidth !== expected.video.width || video.videoHeight !== expected.video.height
-        || Math.abs(video.duration * 1_000_000 - expected.durationMicroseconds) > 1_000) {
-        throw new Error("Configured startup media metadata differs")
-      }
+      observe("load-request")
+      await loadStartupMetadata(video, url, this.#operation.signal)
+      validateStartupMetadata(video, descriptor.browserRepresentation, generation, video.currentSrc === url)
     } catch (error) {
+      observe("preparation-failed")
+      removeMediaObservation()
       video.removeEventListener("ended", completed)
       video.removeEventListener("error", failed)
       video.removeAttribute("src")
@@ -1330,13 +1332,19 @@ export class Tf2Application {
       throw error
     }
     const startPlayback = async (): Promise<"started"> => {
+      observe("gesture-play-request")
       await video.play()
+      observe("gesture-play-resolved")
       admitted = true
       return "started"
     }
     return Object.freeze({
       play: async () => {
-        const result = await playStartupVideo(video)
+        observe("play-request")
+        let result: "started" | "gesture-required"
+        try { result = await playStartupVideo(video) }
+        catch (error) { observe("play-rejected"); throw error }
+        observe(result === "started" ? "play-resolved" : "gesture-required")
         admitted = result === "started"
         return result
       },
@@ -1350,6 +1358,7 @@ export class Tf2Application {
         if (destroyed) return
         destroyed = true
         admitted = false
+        removeMediaObservation()
         video.pause()
         video.removeEventListener("ended", completed)
         video.removeEventListener("error", failed)

@@ -9,6 +9,7 @@ import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } f
 import { decodeTf2TeamSelectionServerState } from "./team-selection/model"
 import { decodeEquipmentState } from "./equipment/codec"
 import initializeWasm, { initThreadPool } from "./wasm-generated/tf2_wasm.js"
+import { initializeAuthenticatedWasm, WasmInitializationError } from "./wasm-initialization"
 import { APPLICATION_BUILD as __PLAYSRC_APPLICATION_BUILD__, WASM_SHA256 as __PLAYSRC_WASM_SHA256__ } from "virtual:playsrc-generation"
 
 const MAX_WASM_BYTES = 64 * 1024 * 1024
@@ -111,7 +112,7 @@ const resourceSets = new ResourceGenerations((section) => {
 })
 const supplementalGenerations = new Set<number>()
 const modelOutputLeases = new Map<number, { handle: number; pointer: number; capacity: number; slot: number }>()
-const modelLeaseOwnership = new Int32Array(new SharedArrayBuffer(64 * Int32Array.BYTES_PER_ELEMENT))
+let modelLeaseOwnership: Int32Array
 const freeModelLeaseSlots = Array.from({ length: 64 }, (_, index) => 63 - index)
 let leasedModelBytes = 0
 let replies: ReplyWriter | undefined
@@ -242,16 +243,16 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     return
   }
   try {
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", request.wasm))
-    const actual = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")
-    if (actual !== request.wasmSha256) {
-      fail(request.id, "WasmUnavailable")
-      return
-    }
-    const candidate = await initializeWasm({ module_or_path: request.wasm }) as unknown as WasmExports
-    if (
-      !(candidate.memory instanceof WebAssembly.Memory) ||
-      ![
+    const { candidate, actual, mailbox, modelOwnership } = await initializeAuthenticatedWasm({
+      bytes: request.wasm,
+      expectedSha256: request.wasmSha256,
+      threads: request.threads,
+      isolated: scope.crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function" ? SharedArrayBuffer : undefined,
+      replyBytes: REPLY_BYTES,
+      instantiate: async bytes => await initializeWasm({ module_or_path: bytes }) as unknown as WasmExports,
+      startThreadPool: initThreadPool,
+      validateExports: candidate => [
         candidate.playsrc_alloc,
         candidate.playsrc_free,
         candidate.playsrc_resource_decode_authenticated,
@@ -316,12 +317,9 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_simulation_error_length,
         candidate.playsrc_simulation_error_copy,
         candidate.playsrc_dispose,
-      ].every((value) => typeof value === "function")
-    ) {
-      fail(request.id, "WasmUnavailable")
-      return
-    }
-    await initThreadPool(request.threads)
+      ].every((value) => typeof value === "function"),
+    })
+    modelLeaseOwnership = modelOwnership
     wasm = candidate
     Object.defineProperty(scope, "__playsrcWorkerMemoryTracking", { configurable: true,
       value: (enabled: boolean) => candidate.playsrc_memory_track_allocations(Number(enabled)) === 1 })
@@ -346,12 +344,11 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         shared: candidate.memory.buffer instanceof SharedArrayBuffer,
       }),
     })
-    const mailbox = new SharedArrayBuffer(REPLY_BYTES)
     post({ id: request.id, kind: "initialized", applicationBuild: __PLAYSRC_APPLICATION_BUILD__, presentationSchema: TF2_PRESENTATION_SCHEMA, wasmSha256: actual,
       replies: { mailbox, memory: candidate.memory, modelOwnership: modelLeaseOwnership.buffer as SharedArrayBuffer } })
     replies = new ReplyWriter(mailbox)
-  } catch {
-    fail(request.id, "WasmUnavailable")
+  } catch (error) {
+    fail(request.id, "WasmUnavailable", 0, error instanceof WasmInitializationError ? error.message : "initialize/publish: runtime publication failed")
   }
 }
 

@@ -9,7 +9,13 @@
     <title>playsrc · TF2 jump practice</title>
   </head>
   <body>
+    <section id="bootstrap-status" role="status" aria-live="polite" style="position:fixed;inset:0;z-index:100;background:#000;color:#fff;padding:2rem;font:16px/1.5 system-ui;overflow:auto">
+      <h1>Starting TF2</h1>
+      <p>Loading the application…</p>
+      <noscript><p>TF2 requires JavaScript. Enable it to start the application.</p></noscript>
+      <a href="" style="color:inherit">Reload</a>
+    </section>
     <div id="app"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/bootstrap.ts"></script>
   </body>
 </html>
