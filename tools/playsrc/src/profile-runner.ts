@@ -159,9 +159,16 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
   const playwright: string[] = []
   for (let index = 0; index < options.length; index++) {
     const option = options[index]!
+    const flag = option.split("=", 1)[0]!
     if (option === "--workers" && options[index + 1] !== "1" || option.startsWith("--workers=") && option !== "--workers=1"
-      || option === "--fully-parallel" || option === "--ui" || option === "--debug") {
+      || option === "-j" && options[index + 1] !== "1" || /^-j.+/.test(option) && option !== "-j1"
+      || ["--fully-parallel", "--ui", "--ui-host", "--ui-port", "--debug"].includes(flag)) {
       throw new Error("Headed profiles require one bounded noninteractive sampling worker")
+    }
+    if (["--config", "--browser", "--tsconfig", "--run-agents"].includes(flag) || /^-c/.test(option)) throw new Error("Profiles cannot replace their owned browser/configuration interface")
+    if (flag === "--reporter") {
+      const reporters = option.includes("=") ? option.slice(option.indexOf("=") + 1) : options[index + 1]
+      if (!reporters || reporters.split(",").some(name => !["line", "list", "dot", "json", "junit", "null", "github", "blob"].includes(name))) throw new Error("Profiles require a non-GUI built-in reporter; HTML/browser-opening or executable reporters are not admitted")
     }
   }
   for (let index = 0; index < options.length; index++) {
@@ -336,6 +343,7 @@ export function prepareHeadedProfile(arguments_: readonly string[], root = repos
 async function runProfile(arguments_: readonly string[], root: string, mode: "prepare" | "interactive"): Promise<number> {
   const started = Date.now()
   const { profile, fresh, freshBrowser, sustainedEntropy, playwright } = parseHeadedProfile(arguments_)
+  const listing = playwright.some(option => option === "--list" || option === "--help" || option === "-h")
   const configurationStarted = Date.now()
   const config = await loadLocalConfig(root)
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
@@ -384,6 +392,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
   let cleanupFailure: string | null = null
   let admission: { remainingMilliseconds: number; minimumRemainingMilliseconds: number } | null = null
   const checkBrowserBudget = () => {
+    if (mode === "prepare" || listing) return
     admission = { remainingMilliseconds: remaining(), minimumRemainingMilliseconds: profileMinimumRemainingMilliseconds(profile, { ...process.env, ...environment }) }
     requireBrowserBudget(admission.remainingMilliseconds, admission.minimumRemainingMilliseconds)
   }
@@ -440,7 +449,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
         const use = configuration.use ?? {}
         return profileBrowserLaunch(profile, { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) })
       })
-      if (process.platform !== "win32" || mode === "prepare") preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
+      if (!listing && (process.platform !== "win32" || mode === "prepare")) preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
     }
     const verifyPrepared = async () => {
     if (sustainedEntropy && sustainedEntropy !== await fileFingerprint(path.join(config.sourceCacheDir, "profiles/sustained-koth/entropy", `${sustainedEntropy}.bin`))) throw new Error("Prepared sustained entropy differs from its requested identity")
@@ -456,7 +465,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
       return exitCode
     }
     checkBrowserBudget()
-    if (preparedBrowser) {
+    if (preparedBrowser && !listing) {
       const began = Date.now()
       checkBrowserBudget()
       browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, freshBrowser))
@@ -471,7 +480,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
     cancellation.signal.throwIfAborted()
     browserStarted = Date.now()
     currentPhase = "headed-browser"
-    const desktopChannel = process.platform === "win32" ? randomUUID() : undefined
+    const desktopChannel = process.platform === "win32" && !listing ? randomUUID() : undefined
     let desktopWork: Promise<void> | undefined
     const handled = new Set<string>()
     const optionalJson = async (file: string) => {
@@ -570,7 +579,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
       child!.once("exit", (code) => { childExited = true; resolve(code ?? 1) })
     }) } finally { clearInterval(desktopMonitor); await desktopWork }
     workerMilliseconds = Date.now() - browserStarted
-    if (process.platform !== "win32") browserMilliseconds = Date.now() - browserStarted
+    if (process.platform !== "win32" && !listing) browserMilliseconds = Date.now() - browserStarted
     if (extractionStarted) attempts.push({ phase: "background-extraction", durationMilliseconds: Date.now() - extractionStarted, complete: exitCode === 0 })
     try { playwrightPhases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
@@ -622,6 +631,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
           runId,
           profile,
           mode,
+          listing,
           command: ["bun", path.join(repositoryRoot, mode === "prepare" ? "tools/playsrc/src/profile-prepare.ts" : "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
           repository: root,
           harnessRepository: repositoryRoot,

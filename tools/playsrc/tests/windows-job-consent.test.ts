@@ -59,6 +59,10 @@ test("only validated interactive workloads use consent; readback and background 
   expect(native).not.toMatch(/BringWindowToTop|BlockInput|SendInput|SwitchDesktop/)
   expect(localJobCommand(["diagnostic", "250", "0"]).command[0]).toBe("tools/playsrc/src/local-job-diagnostic.ts")
   for (const args of [["--ready", "test"], ["diagnostic", "30001", "0"], ["diagnostic", "1", "2"]]) expect(() => localJobCommand(args)).toThrow()
+  for (const args of [["--config", "other.ts"], ["-cother.ts"], ["--ui-port=8000"], ["--debug=cli"], ["--browser=firefox"], ["--tsconfig=other.json"], ["--run-agents=all"], ["--reporter=html"], ["--reporter", "./other.ts"], ["-j8"]]) {
+    expect(() => localJobCommand(["profile", "gameplay", ...args])).toThrow()
+  }
+  expect(localJobCommand(["profile", "gameplay", "--list"]).interactive).toBe(false)
 })
 
 test("background receipts require ZERO UI invocations for every outcome", () => {
