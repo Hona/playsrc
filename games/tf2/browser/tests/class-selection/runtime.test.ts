@@ -22,6 +22,18 @@ function fixture(roster: readonly { fake: boolean; team: number; class: number }
 }
 
 describe("authored TF2 class selection VGUI integration", () => {
+  test("consumes owned repeats without selecting, cancelling or leaking a browser default", () => {
+    const { integration, requests } = fixture()
+    integration.dispatch({ kind: "show", team: 2, current: 3 })
+    for (const code of ["Space", "Enter", "Digit2", "Escape", "Comma"]) {
+      let prevented = false
+      expect(integration.handleKey({ code, repeat: true, preventDefault() { prevented = true }, stopImmediatePropagation() {} }, code === "Comma")).toBe(true)
+      expect(prevented).toBe(true)
+      expect(integration.state().visible).toBe(true)
+    }
+    expect(requests).toEqual([])
+    integration.destroy()
+  })
   test("projects authoritative local/bot counts and keeps admission out of the old local class", () => {
     const { integration } = fixture([
       { fake: false, team: 2, class: 3 }, { fake: true, team: 2, class: 1 },
