@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isDirectVguiImageMaterial, shadeVguiImage, shadeVguiImageIncrementally, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
+import { isDirectVguiImageMaterial, shadeVguiImage, shadeVguiImageIncrementally, VguiImageRasterizer, VguiRasterCache, type VguiImageRasterRequest, type VguiImageRasterTexturePixels } from "../src/image-renderer"
 import type { VguiImageMaterialPresentation, VguiImageMaterialTexture } from "../src"
 
 const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
@@ -14,6 +14,17 @@ const texture = (identity: string): VguiImageMaterialTexture => Object.freeze({
 })
 
 describe("bounded authored VGUI raster ownership", () => {
+  test("resizing a retained resource does not dispose it, while eviction and clear do", () => {
+    const disposed: object[] = [], value = {}
+    const cache = new VguiRasterCache<object>(12, 2, entry => disposed.push(entry))
+    cache.set("same", value, 4); cache.set("same", value, 8)
+    expect(disposed).toEqual([])
+    cache.set("next", {}, 8)
+    expect(disposed).toEqual([value])
+    cache.clear(); cache.clear()
+    expect(disposed).toHaveLength(2)
+    expect(cache.snapshot()).toEqual({ entries: 0, bytes: 0 })
+  })
   test("evicts least-recently-used decoded buffers by exact retained bytes", () => {
     const cache = new VguiRasterCache<Uint8Array>(12, 3)
     const first = new Uint8Array(4)
@@ -97,6 +108,51 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
   tint: Object.freeze([255, 255, 255, 255]),
   geometry: Object.freeze({ kind: "stretch", rotation: 0 }),
   material,
+})
+
+test("matching raster consumers share one encoded image and release its URL after pending decode", async () => {
+  // Storage/lifecycle unit only; the headed parity fixture checks real PNG pixels.
+  const names = ["fetch", "createImageBitmap", "ImageData"] as const
+  const descriptors = names.map(name => Object.getOwnPropertyDescriptor(globalThis, name))
+  const createUrl = URL.createObjectURL, revokeUrl = URL.revokeObjectURL
+  let encodes = 0, uploads = 0
+  const revoked: string[] = []
+  Object.assign(globalThis, {
+    fetch: async () => new Response(new Uint8Array([0])),
+    createImageBitmap: async () => ({ close() {} }),
+    ImageData: class { constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) {} },
+  })
+  URL.createObjectURL = () => `blob:raster-${encodes}`
+  URL.revokeObjectURL = value => { revoked.push(value) }
+  const document = { createElement: () => ({ width: 0, height: 0,
+    getContext: () => ({ clearRect() {}, drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray([255, 128, 0, 127]) }), putImageData() { uploads++ } }),
+    toBlob(callback: (blob: Blob) => void) { encodes++; callback(new Blob(["encoded fixture"])) },
+  }) } as unknown as Document
+  const rasterizer = new VguiImageRasterizer(document)
+  const image = () => ({ width: 0, height: 0, naturalWidth: 1, naturalHeight: 1, isConnected: true, src: "",
+    getAttribute(name: string) { return String((this as any)[name]) }, async decode() {} }) as unknown as HTMLImageElement
+  try {
+    const targets = Array.from({ length: 50 }, image), input = request(baseMaterial())
+    await Promise.all(targets.map(target => rasterizer.render(target, input)))
+    expect(encodes).toBe(1); expect(uploads).toBe(1)
+    expect(new Set(targets.map(target => target.src)).size).toBe(1)
+    await rasterizer.render(targets[0]!, input)
+    expect(encodes).toBe(1)
+    await Promise.all([rasterizer.render(targets[0]!, { ...input, tint: [100, 100, 100, 100] }), rasterizer.render(targets[0]!, input)])
+    expect(targets[0]!.src).toBe("blob:raster-1")
+    const pending = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(), target = image()
+    target.decode = async () => { entered.resolve(); await pending.promise }
+    const rendering = rasterizer.render(target, input)
+    await entered.promise
+    rasterizer.destroy()
+    expect(revoked).toEqual(["blob:raster-2"])
+    pending.resolve(); await rendering
+    expect(revoked).toEqual(["blob:raster-2", "blob:raster-1"])
+  } finally {
+    rasterizer.destroy()
+    names.forEach((name, index) => { const descriptor = descriptors[index]; if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete (globalThis as any)[name] })
+    URL.createObjectURL = createUrl; URL.revokeObjectURL = revokeUrl
+  }
 })
 
 describe("configured VGUI image material raster", () => {
