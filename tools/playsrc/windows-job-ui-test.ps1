@@ -75,17 +75,13 @@ public static class DiagnosticDialog {
    if(![DiagnosticDialog]::PostMessageW($handle,0x100,[IntPtr]27,[IntPtr]0)){throw 'Escape key delivery failed'}
    [void][DiagnosticDialog]::PostMessageW($handle,0x101,[IntPtr]27,[IntPtr]0)
  }
- if($Case -eq 'cancel') {
+ if($Case -in 'cancel','crash-running') {
    $commandLog=Join-Path $identity.run 'command.log'
-   while(!(Test-Path -LiteralPath $commandLog) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
-   [IO.File]::WriteAllText((Join-Path $identity.run 'cancel'),'native diagnostic cancellation')
+   do {Start-Sleep -Milliseconds 20;$started=(Test-Path -LiteralPath $commandLog) -and (Select-String -LiteralPath $commandLog -SimpleMatch 'native diagnostic workload' -Quiet)}while(!$started -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline)
+   if(!$started){throw 'Diagnostic workload did not start before termination test'}
+   if($Case -eq 'cancel'){[IO.File]::WriteAllText((Join-Path $identity.run 'cancel'),'native diagnostic cancellation')}
  }
  if($Case -in 'crash','crash-running') {
-   if($Case -eq 'crash-running') {
-     $commandLog=Join-Path $identity.run 'command.log'
-     do {Start-Sleep -Milliseconds 20;$started=(Test-Path -LiteralPath $commandLog) -and (Select-String -LiteralPath $commandLog -SimpleMatch 'native diagnostic workload' -Quiet)}while(!$started -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline)
-     if(!$started){throw 'Diagnostic workload did not start before crash test'}
-   }
    $helper.Kill();if(!$helper.WaitForExit(2000)){throw 'Exact diagnostic helper did not exit'}
  }
  @{case=$Case;job=$Job;task=$identity.task;run=$identity.run;helperPid=$helper.Id;helperCreatedAt=$display.helperCreatedAt;window=$handle.ToInt64();controls=$names;actionStartedAt=$began;actionFinishedAt=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();purpose='diagnostic observer request, NOT an authorization receipt; check native decision/outcome'}|ConvertTo-Json -Depth 6|Set-Content -Encoding UTF8 (Join-Path $Observe 'interaction.json')
@@ -131,13 +127,17 @@ try {
    $count=0;$log=Join-Path $native.run 'command.log'
    if(Test-Path -LiteralPath $log){$count=@(Select-String -LiteralPath $log -SimpleMatch 'native diagnostic workload').Count}
    if($count -gt 1 -or ($native.commandStartedAt -eq 0 -and $count -ne 0 -and $Case -ne 'crash-running')){throw 'More than one dispatch or a denied dispatch'}
+   if($native.consent.decision -in 'approved','approved-timeout' -and $Case -notin 'failure','cancel','crash-running') {
+     if($native.outcome -ne 'completed' -or !$native.commandStartedAt -or $count -ne 1){throw 'Approved diagnostic did not actually dispatch and complete once'}
+   }
+   if($Case -in 'failure','cancel','crash-running' -and $count -ne 1){throw 'Termination test did not execute its diagnostic workload'}
    try {$live=[Diagnostics.Process]::GetProcessById([int]$native.helperPid);if(([DateTimeOffset]$live.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() -eq $native.helperCreatedAt){throw 'Native helper leaked'}}catch [ArgumentException]{}finally{if($live){$live.Dispose()}}
    $results+=,$native
  }
  $first=$results[0]
  if($Case -in 'deny','close','escape' -and ($first.outcome -ne 'denied' -or $first.commandStartedAt)){throw 'Deny/close/Escape did not deny'}
- if($Case -eq 'approve' -and ($first.consent.decision -ne 'approved' -or $first.commandStartedAt-$first.consent.decidedAt -ge 1000 -or $first.consent.visibleMilliseconds -ge 3000)){throw 'Approve did not dispatch immediately'}
- if($Case -in 'timeout','queue' -and ($first.consent.decision -ne 'approved-timeout' -or $first.consent.visibleMilliseconds -lt 3000)){throw 'Unattended visible timeout was not proven'}
+ if($Case -eq 'approve' -and ($first.consent.decision -ne 'approved' -or !$first.commandStartedAt -or $first.commandStartedAt-$first.consent.decidedAt -ge 1000 -or $first.consent.visibleMilliseconds -ge 3000)){throw 'Approve did not dispatch immediately'}
+ if($Case -eq 'timeout' -and ($first.consent.decision -ne 'approved-timeout' -or $first.consent.visibleMilliseconds -lt 3000)){throw 'Unattended visible timeout was not proven'}
  if($Case -eq 'failure' -and $first.outcome -ne 'failed'){throw 'Workload failure was not preserved'}
  if($Case -eq 'cancel' -and $first.outcome -ne 'cancelled'){throw 'Cancellation was not preserved'}
  if($Case -in 'crash','crash-running' -and ($first.outcome -ne 'failed' -or $first.consent)){throw 'Helper crash acquired consent or did not stay failed'}
