@@ -162,3 +162,14 @@ test("late native admission checks retain their own budget after prelude and soa
   expect(monitor).toContain("++checks >= 32")
   expect(monitor).not.toContain("nativeRecords().length >= 32")
 })
+
+test("ordinary Disconnect stays in the browser stage and light trace parsing uses owned background artifacts", async () => {
+  const source = await Bun.file(path.resolve(import.meta.dir, "../profile/upward-training-bots.profile.ts")).text()
+  const retirement = source.indexOf("if (sustained) await retireSustainedKoth(")
+  const extraction = source.indexOf('await profileArtifact(async () => {\n  profilePhases.enter("trace-analysis-retention")')
+  expect(retirement).toBeGreaterThan(source.indexOf("await finishPixelAudits(measured)"))
+  expect(extraction).toBeGreaterThan(retirement)
+  const light = await Bun.file(path.resolve(import.meta.dir, "../profile/koth-rendering-observation.ts")).text()
+  expect(light.match(/await profileArtifact\(async \(\) => \{/g)).toHaveLength(2)
+  expect(light.match(/const \{ complete, raw \} = await stopLightTrace/g)).toHaveLength(2)
+})
