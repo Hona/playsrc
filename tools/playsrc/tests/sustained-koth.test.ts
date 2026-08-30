@@ -4,6 +4,8 @@ import { parseHeadedProfile, profileMinimumRemainingMilliseconds, profileBrowser
 test("the native owner uses the same explicit browser channel as the sustained child", () => {
   expect(profileBrowserLaunch("sustained-harvest", { args: ["--example"] })).toEqual({ channel: "msedge", args: ["--example"] })
   expect(profileBrowserLaunch("sustained-viaduct", {})).toEqual({ channel: "msedge" })
+  expect(profileBrowserLaunch("sustained-harvest-setup", {})).toEqual({ channel: "msedge" })
+  expect(profileMinimumRemainingMilliseconds("sustained-harvest-setup")).toBe(60_000)
   expect(profileBrowserLaunch("gameplay", { channel: "chrome" })).toEqual({ channel: "chrome" })
 })
 test("retained entropy is explicit and never forwarded as a Playwright option", () => {
