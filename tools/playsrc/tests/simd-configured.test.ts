@@ -56,7 +56,8 @@ test.skipIf(!process.env.PLAYSRC_LOCAL_JOB_OWNER && process.env.RUN_CONFIGURED_S
     const result = JSON.stringify({ commit, platform: process.platform, arch: process.arch, engine: process.versions, browserEvidence: false, input: { path: path.join(config.sourceCacheDir, "evidence/tf2-wasm-simd-performance/configured/cow1.mp3"), bytes: input.length, sha256: hash(input) }, records }, null, 2)
     const resultPath = path.join(directory, "result.json")
     await writeFile(resultPath, result)
-    const index = path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(repositoryRoot)).slice(0, 8), "comparison.json")
+    const index = path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(path.resolve(repositoryRoot))).slice(0, 8), "comparison.json")
+    await mkdir(path.dirname(index), { recursive: true })
     await writeFile(index, JSON.stringify({ path: resultPath, sha256: hash(Buffer.from(result)) }))
     console.log(`SIMD parity evidence: ${directory}`)
   } finally { if (!borrowed) await releaseHeadedProfileLock(lockPath, lock.token) }
