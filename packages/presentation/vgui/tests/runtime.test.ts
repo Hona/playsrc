@@ -151,6 +151,46 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("Panel reads authored corner masks case-insensitively without changing Button state paint", () => {
+    const { runtime, root } = setup()
+    // SDK Panel.h: TL=1, TR=2, BL=4, BR=8. Panel construction rounds all
+    // corners; ApplySettings uses KeyValues' case-insensitive RoundedCorners.
+    const emptySides = { left: [], top: [], right: [], bottom: [] }
+    operation(runtime, { kind: "replace-scheme", scheme: { ...scheme,
+      colors: scheme.colors.map(color => /Button\..*BgColor/.test(color.name) ? { ...color, value: "255 255 255 255" } : color),
+      borders: ["ButtonBorder", "ButtonDepressedBorder", "ButtonKeyFocusBorder"].map(name => ({
+        ...scheme.borders[0]!, name, backgroundType: 2, sides: emptySides,
+      })),
+      images: [1, 2, 3, 4].map(corner => ({ ...scheme.images[0]!, name: `vgui/hud/8x800corner${corner}`,
+        browserUrl: `data:image/png;base64,corner${corner}` })),
+    } })
+    for (const [property, value, textures] of [
+      ["roundedcorners", "0", []], // configured ToggleChatButton
+      ["roundedcorners", "1", [1]], // configured FindAGameButton
+      ["RoUnDeDcOrNeRs", "5", [1, 4]],
+      ["RoundedCorners", "10", [2, 3]],
+      [null, null, [1, 2, 3, 4]], // ITEMS/SHOP have no override
+    ] as const) {
+      const id = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Corners", properties: [
+        { name: "wide", value: "100" }, { name: "tall", value: "26" },
+        ...(property ? [{ name: property, value: value! }] : []),
+      ] }).panel!
+      const element = descendants(root).find(value => value.dataset.vguiPanel === String(id))!
+      const check = () => {
+        operation(runtime, { kind: "frame", timeSeconds: 0 })
+        for (const corner of [1, 2, 3, 4]) expect(element.style.backgroundImage.includes(`corner${corner}`)).toBe((textures as readonly number[]).includes(corner))
+        expect(element.style.backgroundSize).toContain("8px 8px")
+      }
+      check()
+      operation(runtime, { kind: "request-focus", panel: id }); check()
+      operation(runtime, { kind: "pointer-move", x: 10, y: 10, pointerId: 1 }); check()
+      operation(runtime, { kind: "pointer-press", button: "left", x: 10, y: 10, pointerId: 1, clicks: 1 }); check()
+      operation(runtime, { kind: "set-panel-state", panel: id, enabled: false }); check()
+      operation(runtime, { kind: "delete-panel", panel: id })
+    }
+    runtime.destroy()
+  })
+
   test("focused buttons own Enter through release instead of also firing the dialog default", () => {
     const { runtime, requests } = setup()
     const button = (name: string) => operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name,

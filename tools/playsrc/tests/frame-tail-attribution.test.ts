@@ -16,7 +16,7 @@ describe("visible gameplay frame-tail attribution", () => {
     ])
     expect(result.frames[0]!.stacks[0]).toMatchObject({ samples: 1, estimatedMilliseconds: 40 })
   })
-  test("retains every long frame and correlates GC, worker scheduling, CPU stacks and actual visible input", () => {
+  test("retains every long frame and correlates GC, worker scheduling, CPU stacks and completed input without claiming visibility", () => {
     const result = attributeFrameTails({
       frames: [
         { at: 10, displayFrame: 1, mouseRevision: 0 },
@@ -24,10 +24,12 @@ describe("visible gameplay frame-tail attribution", () => {
         { at: 1100, displayFrame: 3, mouseRevision: 2 },
       ],
       workers: [{ kind: "models", started: 20, finished: 42, timings: { queueMilliseconds: 7 } }],
-      inputs: [{ at: 12, revision: 1, kind: "mouse" }, { at: 60, revision: 2, kind: "mouse" }],
+      inputs: [{ at: 12, revision: 1, kind: "mouse" }, { at: 60, revision: 2, kind: "mouse" }, { at: 1090, revision: 3, kind: "mouse" }],
       longAnimationFrames: [{ at: 25, duration: 60, styleAndLayoutMilliseconds: 5 }],
       trace: [
-        { name: "MinorGC", ph: "X", ts: 30_000, dur: 8_000, args: { usedHeapSizeBefore: 900, usedHeapSizeAfter: 400 } },
+        { name: "MinorGC", ph: "X", pid: 10, tid: 1, ts: 30_000, dur: 8_000, args: { usedHeapSizeBefore: 900, usedHeapSizeAfter: 400 } },
+        { name: "MajorGC", ph: "X", pid: 10, tid: 2, ts: 30_000, dur: 1_000_000 },
+        { name: "MajorGC", ph: "X", pid: 20, tid: 1, ts: 30_000, dur: 1_000_000 },
         { name: "V8.GC_SCAVENGER_SCAVENGE", ph: "X", ts: 31_000, dur: 7_000 },
       ],
       cpu: {
@@ -36,6 +38,7 @@ describe("visible gameplay frame-tail attribution", () => {
         samples: [1, 1], timeDeltas: [30_000, 50_000],
       },
       traceOffsetMicroseconds: 0,
+      mainThread: { pid: 10, tid: 1 },
     })
 
     expect(result.frames.map(frame => frame.milliseconds)).toEqual([35, 1055])
@@ -45,6 +48,8 @@ describe("visible gameplay frame-tail attribution", () => {
       stacks: [{ samples: 1, frames: ["render"] }],
     })
     expect(result.garbageCollection).toMatchObject({ count: 1, minor: 1, major: 0, reclaimedBytes: 500 })
-    expect(result.inputToVisibleMilliseconds).toMatchObject({ count: 2, max: 1040 })
+    expect(result.inputToCompletedSubmissionMilliseconds).toMatchObject({ count: 2, max: 1040 })
+    expect(result.inputsWithoutCompletedSubmission).toBe(1)
+    expect(result.inputToVisibleMilliseconds).toBeNull()
   })
 })

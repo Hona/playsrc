@@ -49,7 +49,7 @@ for (const failure of ["import", "configuration"]) test(`prelaunch ${failure} fa
       mock.module(${JSON.stringify(import.meta.resolve("../src/config"))}, () => ({ repositoryRoot: ${JSON.stringify(directory)}, loadLocalConfig: async () => ({ sourceCacheDir: ${JSON.stringify(directory)} }) }));
       mock.module(${JSON.stringify(import.meta.resolve("../src/build-identity"))}, () => ({ applicationBuildIdentity: async () => "source" }));
       mock.module(${JSON.stringify(import.meta.resolve("../src/profile-identity"))}, () => ({ configuredProfileIdentity: async () => "configured", generatedProfileIdentity: async () => "generated" }));
-      mock.module(${JSON.stringify(import.meta.resolve("../src/profile-browser"))}, () => ({ browserLease: async () => {}, profileNodeExecutable: () => "node", prepareBrowserLaunch: async () => { throw new Error("BROWSER PREFLIGHT MUST NOT RUN") }, retireProfileBrowser: async () => { throw new Error("NO BROWSER TO RETIRE") }, prepareProfileBrowser: async () => { throw new Error("BROWSER MUST NOT LAUNCH") } }));
+      mock.module(${JSON.stringify(import.meta.resolve("../src/profile-browser"))}, () => ({ browserLease: async () => {}, profileNodeExecutable: () => "node", effectiveProfileBrowserLaunch: () => { throw new Error("BROWSER MUST NOT LAUNCH") }, prepareBrowserLaunch: async () => { throw new Error("BROWSER PREFLIGHT MUST NOT RUN") }, retireProfileBrowser: async () => { throw new Error("NO BROWSER TO RETIRE") }, prepareProfileBrowser: async () => { throw new Error("BROWSER MUST NOT LAUNCH") } }));
       const { runHeadedProfile } = await import(${JSON.stringify(import.meta.resolve("../src/profile-runner"))});
       process.exitCode = await runHeadedProfile(["gameplay"]);
     `

@@ -130,6 +130,35 @@ test("late failures are reported without taking over a reopened page", async () 
   } finally { ui.destroy() }
 })
 
+test("the native wrapping revision does not discard a committed equipment change", async () => {
+  const weapon = nativeEquipment.inventory.find(item => item.item.definitionIndex === 127)!
+  const next = { ...nativeEquipment, revision: 0, classes: nativeEquipment.classes.map(player => player.class === 3
+    ? { ...player, items: player.items.map(item => item.slot === 0 ? { ...weapon.item, slot: 0 } : item) } : player) }
+  const { ui, root, activate } = navigationFixture(async () => next)
+  try {
+    ui.show({ ...nativeEquipment, revision: 0xffff_ffff }, 3)
+    activate("Itemslot-0"); activate("Itemitem-127")
+    await Promise.resolve(); await Promise.resolve()
+    expect(byName(root, "Itemslot-0").textContent).toContain(weapon.displayName)
+  } finally { ui.destroy() }
+})
+
+test("a late commit for another class does not rebuild or refocus the active loadout", async () => {
+  const pending = Promise.withResolvers<Tf2EquipmentState>()
+  const { ui, activate, key } = navigationFixture(() => pending.promise)
+  try {
+    ui.show(nativeEquipment, 3); activate("Itemslot-0"); activate("Itemitem-18")
+    ui.show(nativeEquipment, 8); ui.frame(0)
+    key("ArrowDown")
+    const before = ui.snapshot().vgui
+    const focused = before.input.keyFocus
+    expect(before.panels.find(panel => panel.id === focused)?.name).toBe("Itemslot-2")
+    pending.resolve({ ...nativeEquipment, revision: nativeEquipment.revision + 1 })
+    await Promise.resolve(); await Promise.resolve(); ui.frame(0)
+    expect(ui.snapshot().vgui.input.keyFocus).toBe(focused)
+  } finally { ui.destroy() }
+})
+
 test("equipment leaves composing keys to their text owner", () => {
   const { ui } = navigationFixture()
   try {

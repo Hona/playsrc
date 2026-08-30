@@ -1,7 +1,13 @@
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { expect, type Page, type Locator } from "@playwright/test"
-import { repositoryRoot } from "../src/config"
+
+export function drawPlaneEvidenceUrl(applicationRoot: string, lightingParity: boolean): string {
+  // The diagnostic must patch the application's actual module/prototype, not
+  // a second copy imported from an isolated controller checkout.
+  const root = applicationRoot.replaceAll("\\", "/").replace(/\/$/, "")
+  return encodeURI(`/@fs/${root}/packages/presentation/rendering/src/${lightingParity ? "draw-lighting-evidence" : "skinning-evidence"}.ts`)
+}
 
 /** Post-sample (or correctness-only) GPU evidence. No simulation pause, bot
  * changes or sampled-boundary changes. An aligned camera is local to each
@@ -11,7 +17,7 @@ export async function auditDrawPlaneParity(page: Page, canvas: Locator, director
   await page.evaluate(async ({ url, lightingParity }) => {
     const module = await import(/* @vite-ignore */ url)
     ;(globalThis as any).__skinningEvidence = lightingParity ? module.installDrawLightingEvidence() : module.installSkinningEvidence()
-  }, { url: `/@fs/${repositoryRoot}/packages/presentation/rendering/src/${lightingParity ? "draw-lighting-evidence" : "skinning-evidence"}.ts`, lightingParity })
+  }, { url: drawPlaneEvidenceUrl(process.cwd(), lightingParity), lightingParity })
   const records = []
   try {
     for (const pass of ["main", "viewmodel"]) {

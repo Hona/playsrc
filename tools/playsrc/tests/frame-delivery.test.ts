@@ -40,6 +40,7 @@ test("paired evidence rejects a changed source, resolution, quality, camera or a
   ]) expect(() => compareDeliveryEvidence(ordinary, boundary, traced, changed)).toThrow()
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, botProbe: "2:3:9" } } }, traceBoundary)).toThrow("roster")
   expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, before: { ...sample.before, bots: 23 } } }, traceBoundary)).toThrow("changed comparison")
+  expect(() => compareDeliveryEvidence(ordinary, boundary, { ...traced, sample: { ...sample, dropped: 1 } }, traceBoundary)).toThrow("changed comparison")
   const fullSample = { ...sample, before: { ...sample.before, bots: 23, botProbe: Array.from({ length: 23 }, (_, index) => `${index + 2}:${2 + index % 2}:${1 + index % 9}`).join("|") }, after: { ...sample.after, bots: 23 } }
   const fullBoundary = { ...boundary, capturePlan: { ...boundary.capturePlan, entry: "create-server", target: "ctf_2fort" } }
   expect(compareDeliveryEvidence({ ...ordinary, sample: fullSample }, fullBoundary, { ...presentation, sample: fullSample }, fullBoundary).ordinary.ticks).toBe(10)
@@ -91,13 +92,48 @@ test("the report producer labels model preparation and render submission as sepa
 test("ordinary observation retains the existing phase publication and its own frame join", () => {
   let mutation = () => {}
   const canvas = { dataset: { displayFrame: "1" } }
-  const root = { dataset: { displayFrame: "1", performance: "1,2,3,4,5:6,7,8,9" } }
+  const root = { dataset: { displayFrame: "1", snapshotTick: "300", performance: "1,2,3,4,5:6,7,8,9" } }
   const host: any = { performance: { now: () => 10 }, addEventListener() {}, document: { addEventListener() {}, querySelector: (selector: string) => selector === "main" ? root : canvas },
     MutationObserver: class { constructor(fn: () => void) { mutation = fn } observe() {} disconnect() {} },
     requestAnimationFrame() { return 1 }, cancelAnimationFrame() {} }
   installDeliveryObserver(host); host.__playsrcDeliveryObserver.start()
   canvas.dataset.displayFrame = "2"
   mutation()
-  expect(host.__playsrcDeliveryObserver.stop(20).frames[0]).toMatchObject({ frame: 2, phaseFrame: 1, performance: root.dataset.performance })
+  expect(host.__playsrcDeliveryObserver.stop(20).frames[0]).toMatchObject({ frame: 2, phaseFrame: 1, producerTick: "300", performance: root.dataset.performance })
   expect(root.dataset.displayFrame).toBe("1") // Stale phase joins are retained, never relabeled.
+})
+
+test("one-second freezes retain zero quarters and censored silence rather than a mean-only result", () => {
+  const result = deliveryTimeline(0, 4000, [10, 26, 1040, 1056, 2556])
+  expect(result.intervalStatistics.maximumMilliseconds).toBe(1500)
+  expect(result.intervalStatistics.over1000Milliseconds).toBe(2)
+  expect(result.buckets.map(bucket => bucket.count)).toEqual([2, 2, 1, 0])
+  expect(result.quarterSecondBuckets.filter(bucket => bucket.count === 0)).toHaveLength(13)
+  expect(result.terminalGap).toBe(1444)
+})
+
+test("prelude and soak reuse a single observer without accumulating input listeners", () => {
+  let listeners = 0
+  const host: any = { performance: { now: () => 0 }, addEventListener() { listeners++ },
+    document: { addEventListener() { listeners++ } } }
+  installDeliveryObserver(host)
+  const owner = host.__playsrcDeliveryObserver, count = listeners
+  installDeliveryObserver(host)
+  expect(host.__playsrcDeliveryObserver).toBe(owner)
+  expect(listeners).toBe(count)
+})
+
+test("sustained observations bound frame and RAF retention and report overflow", () => {
+  let mutation = () => {}, raf = () => {}, blur = () => {}
+  const canvas = { dataset: { displayFrame: "1" } }
+  const host: any = { performance: { now: () => 10 }, addEventListener(_name: string, fn: () => void) { blur = fn }, document: { addEventListener() {}, querySelector: () => canvas },
+    MutationObserver: class { constructor(fn: () => void) { mutation = fn } observe() {} disconnect() {} },
+    requestAnimationFrame(fn: () => void) { raf = fn; return 1 }, cancelAnimationFrame() {} }
+  installDeliveryObserver(host); host.__playsrcDeliveryObserver.start()
+  for (let index = 0; index < 20_002; index++) { canvas.dataset.displayFrame = String(index + 2); mutation(); raf(); blur() }
+  const sample = host.__playsrcDeliveryObserver.stop(20)
+  expect(sample.frames).toHaveLength(20_000)
+  expect(sample.raf).toHaveLength(20_000)
+  expect(sample.lifecycle).toHaveLength(20_000)
+  expect(sample.dropped).toBe(6)
 })

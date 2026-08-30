@@ -9,7 +9,7 @@ import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import type { WindowsDesktopState } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
-import { browserLease, prepareBrowserLaunch, prepareProfileBrowser, retireProfileBrowser, profileNodeExecutable, type PreparedBrowser, type BrowserLaunch } from "./profile-browser"
+import { browserLease, prepareBrowserLaunch, prepareProfileBrowser, retireProfileBrowser, profileNodeExecutable, effectiveProfileBrowserLaunch, type PreparedBrowser, type BrowserLaunch } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
 import { replaceProfileLeaseFile } from "./profile-lease-rename"
 import { fileFingerprint } from "./file-fingerprint"
@@ -48,6 +48,12 @@ const PROFILES = Object.freeze({
   "sustained-viaduct-setup": { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_KOTH_SETUP_ONLY: "1", PROFILE_MAP_TARGET: "koth_viaduct", PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 60_000 },
   "sustained-harvest-diagnostic": { config: "playwright.profile.config.ts", target: "koth_harvest_final", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_KOTH_DIAGNOSTIC: "1", PROFILE_MAP_TARGET: "koth_harvest_final", PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 70_000 },
   "sustained-viaduct-diagnostic": { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_KOTH_DIAGNOSTIC: "1", PROFILE_MAP_TARGET: "koth_viaduct", PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 70_000 },
+  "koth-sustained-sawmill": { config: "playwright.profile.config.ts", target: "koth_sawmill", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_sawmill", PROFILE_SAMPLE_SECONDS: "5", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 150_000 },
+  "koth-sustained-lakeside": { config: "playwright.profile.config.ts", target: "koth_lakeside_final", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_lakeside_final", PROFILE_SAMPLE_SECONDS: "5", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 150_000 },
+  "koth-retirement-sawmill": { config: "playwright.profile.config.ts", target: "koth_sawmill", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_KOTH_RETIREMENT_ONLY: "1", PROFILE_MAP_TARGET: "koth_sawmill", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 140_000 },
+  "koth-retirement-lakeside": { config: "playwright.profile.config.ts", target: "koth_lakeside_final", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_KOTH_RETIREMENT_ONLY: "1", PROFILE_MAP_TARGET: "koth_lakeside_final", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 140_000 },
+  "koth-freeze-sawmill": { config: "playwright.profile.config.ts", target: "koth_sawmill", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_KOTH_DIAGNOSTIC: "1", PROFILE_UPWARD_TRAINING_INTERACTION: "1", PROFILE_MAP_TARGET: "koth_sawmill", PROFILE_SAMPLE_SECONDS: "5", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 150_000 },
+  "koth-freeze-lakeside": { config: "playwright.profile.config.ts", target: "koth_lakeside_final", environment: { PROFILE_SCENARIOS: "upward-training-bots", PROFILE_KOTH_SUSTAINED: "1", PROFILE_KOTH_DIAGNOSTIC: "1", PROFILE_UPWARD_TRAINING_INTERACTION: "1", PROFILE_MAP_TARGET: "koth_lakeside_final", PROFILE_SAMPLE_SECONDS: "5", PLAYSRC_PROFILE_BROWSER_CHANNEL: "chrome" }, minimumRemainingMilliseconds: 150_000 },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" }, minimumRemainingMilliseconds: environment => environment.PROFILE_MAP_AUTONOMOUS === "1" ? 160_000 : environment.PROFILE_MAP_TARGET === "cp_well" && !environment.PROFILE_MAP_PIPELINE_PROBE && !environment.PROFILE_MAP_LEGACY_SPRITE && !environment.PROFILE_MAP_LEGACY_GLOW && !environment.PROFILE_SPAWN_ONLY ? 130_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "macos-window-identity": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "macos-window-identity" } },
   "sprite-orientation": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "sprite-orientation" } },
@@ -103,6 +109,8 @@ const PROFILES = Object.freeze({
   "integrated-lifecycle": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "integrated-lifecycle" } },
   gameui: { config: "playwright.gameui-profile.config.ts", target: "jump_beef" },
   "button-parity": { config: "playwright.button-parity-profile.config.ts", target: "jump_beef" },
+  "button-corners": { config: "playwright.button-corners-profile.config.ts", target: "jump_beef" },
+  "button-corners-scaled": { config: "playwright.button-corners-profile.config.ts", target: "jump_beef", environment: { PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1.25" } },
   "button-parity-scaled": { config: "playwright.button-parity-profile.config.ts", target: "jump_beef", environment: { PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1.25" } },
   "button-controls": { config: "playwright.button-controls-profile.config.ts", target: "jump_beef" },
   "main-menu": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "main-menu" } },
@@ -115,6 +123,7 @@ const PROFILES = Object.freeze({
   "equipment-navigation": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment trusted input"], minimumRemainingMilliseconds: 60_000 },
   "equipment-navigation-cpu": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment trusted input"], environment: { PLAYSRC_EQUIPMENT_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   "equipment-navigation-transactions": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment pending"], minimumRemainingMilliseconds: 90_000 },
+  "equipment-navigation-lifecycle": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", arguments: ["--grep", "equipment map replacement"], minimumRemainingMilliseconds: 110_000 },
   "vgui-raster-parity": { config: "playwright.vgui-raster-parity.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 45_000 },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
@@ -128,8 +137,7 @@ export type HeadedProfile = keyof typeof PROFILES
 export function profileBrowserLaunch(profile: HeadedProfile, configured: BrowserLaunch): BrowserLaunch {
   const plan = PROFILES[profile]
   const environment: Readonly<NodeJS.ProcessEnv> = "environment" in plan ? plan.environment : {}
-  const channel = environment.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? configured.channel
-  return { ...configured, ...(channel ? { channel } : {}) }
+  return effectiveProfileBrowserLaunch({ channel: configured.channel, launchOptions: configured }, environment)
 }
 
 export function profileMinimumRemainingMilliseconds(profile: HeadedProfile, environment: Readonly<NodeJS.ProcessEnv> = process.env): number {

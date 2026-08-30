@@ -41,6 +41,7 @@ import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } fr
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
 import { selectionLoadingControl } from "./selection-loading-control"
+import { observeSustainedKoth, retireSustainedKoth } from "./koth-rendering-observation"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
@@ -61,6 +62,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const correctnessOnly = process.env.PROFILE_CLASS_INPUT_CORRECTNESS === "1"
   const capturePlan = upwardCapturePlan(process.env)
   const { target, entry, exerciseClasses, acceptance, combat } = capturePlan
+  const sustained = "sustainedSeconds" in capturePlan
   if (correctnessOnly && (deliveryMode || !exerciseClasses || acceptance || combat || capturePlan.warmReload || capturePlan.replacement || entry !== "training")) throw new Error("Class correctness requires its explicit standalone training plan")
   const seconds = capturePlan.sampleSeconds ?? 0 // Stock-only returns before sampling.
   const createServer = entry === "create-server"
@@ -121,7 +123,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (deliveryMode) await page.addInitScript({ content: `(${installDeliveryObserver.toString()})();` })
   if (deliveryMode === "rpc") await page.addInitScript({ content: `(${installDeliveryRpcObserver.toString()})();` })
   if (correctnessOnly) await page.addInitScript({ content: `(${installBrowserFrameProfiler.toString()})(globalThis,"lifecycle");(${installClassCorrectnessObserver.toString()})();` })
-  if (!passiveDelivery && !correctnessOnly) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})();(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
+  if (!passiveDelivery && !correctnessOnly) await page.addInitScript({ content: `(${installGpuTextureAccounting.toString()})(globalThis,${sustained ? '"attachments"' : "false"});(${installBrowserFrameProfiler.toString()})();${capturePlan.renderOwners
     ? `globalThis.__playsrcFrameProfiler.renderOwnerPlan=${JSON.stringify(capturePlan.renderOwners)};` : ""}` })
   if (!passiveDelivery) await page.addInitScript(captureClientFrames => {
     performance.setResourceTimingBufferSize(4096)
@@ -203,7 +205,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const root = page.locator("main")
   const layer = page.locator(".local-match-layer")
   const loads: Array<{
-    cache: "cold" | "warm"
+    cache: "cold" | "warm" | "reentry"
     startupMilliseconds: number
     readyMilliseconds: number
     requests: number
@@ -227,7 +229,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     playerCount: number
     launch: any
   }> = []
-  const loadPractice = async (cache: "cold" | "warm") => {
+  const loadPractice = async (cache: "cold" | "warm" | "reentry") => {
     profilePhases.enter(`map-${cache}`)
     const started = Date.now()
     const previousRequests = network.requests
@@ -237,7 +239,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const previousCacheHits = network.cacheHits
     networkStage = `${cache}-startup`
     if (cache === "cold") await page.goto(process.env.PLAYSRC_PROFILE_ORIGIN ? "/tf2" : "/", { waitUntil: "domcontentloaded", timeout: 30_000 })
-    else await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
+    else if (cache === "warm") await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
     // Enable domains while ordinary startup is already in flight, without
     // delaying or moving its Ready observation. No sampling/heap read starts
     // here; their existing pre-sample boundaries below remain authoritative.
@@ -245,7 +247,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       cdp.send("Performance.enable"), cdp.send("HeapProfiler.enable"),
       cdp.send("Profiler.enable").then(() => cdp.send("Profiler.setSamplingInterval", { interval: 1000 })),
     ])).catch(error => { profilerPreparationError = error })
-    await page.bringToFront()
+    if (!sustained) await page.bringToFront()
     if (windowsReader) await checkNativeWindow()
     await expect(root).toHaveAttribute("data-phase", "MainMenu", { timeout: 100_000 })
     const startupMilliseconds = Date.now() - started
@@ -257,7 +259,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
       const dialog = layer.getByRole("dialog", { name: "CREATE SERVER" })
       await dialog.locator("[data-vgui-name='MapList']").click()
-      await page.getByRole("option", { name: "ctf_2fort" }).click()
+      await page.getByRole("option", { name: target, exact: true }).click()
       await dialog.getByRole("tab", { name: "GAME" }).click()
       await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("23")
       playerCount = 24
@@ -370,12 +372,18 @@ test("profile authored headed Upward offline-practice default roster and actual 
       watchdogFailures: persistence.watchdogFailures,
       playerCount, launch,
     })
+    // A rejected sustained budget must retain the actual Ready/compilation
+    // owner timings too, not only a generic wall-clock admission failure.
+    if (sustained) await writeFile(path.join(directory, "sustained-loading.json"), JSON.stringify({
+      applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint, capturePlan, loads,
+      scope: "Actual cold entry and Ready boundaries; not a sustained performance sample or permission to omit waiting/setup time",
+    }))
   }
   await loadPractice("cold")
   // Establish the actual Page -> CDP window -> native drawing window before
   // warm navigation/replacement/resize, not while the new window is animating.
   if (nativeReader || windowsReader) {
-    await page.bringToFront()
+    if (!sustained) await page.bringToFront()
     await checkNativeWindow()
     await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
     if (nativeReader) requireMacPageAdmission(nativeAdmission[0]!)
@@ -446,7 +454,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   if (!canvasBox) throw new Error("Visible class input surface is absent")
   const capturePoint = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 }
   await replay?.ready()
-  await page.bringToFront()
+   if (!sustained) await page.bringToFront()
   await canvas.focus()
   expect(await page.evaluate(() => document.hasFocus())).toBe(true)
   if (correctnessOnly) {
@@ -472,6 +480,10 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return
   }
   const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
+  if (sustained && !capturePlan.retirementOnly) {
+    profilePhases.enter("sustained-koth")
+    await observeSustainedKoth({ page, browserCdp, directory, checkNativeWindow, sourceFingerprint, sourceCommit: sourceCommit.stdout.trim(), diagnosticSeconds: capturePlan.diagnosticSeconds })
+  }
   if (diagnosticMinimumTick !== undefined) {
     if (deliveryMode !== "rpc" || !Number.isSafeInteger(diagnosticMinimumTick)) throw new Error("Tick-targeted sampling is diagnostic only")
     await expect.poll(async () => Number(await root.getAttribute("data-snapshot-tick")), { timeout: 15_000 }).toBeGreaterThanOrEqual(diagnosticMinimumTick)
@@ -583,6 +595,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(nativeFailure).toBeUndefined()
     expect(sample.lifecycle).toEqual([])
     expect(sample.missedPublications).toBe(0)
+    expect(sample.dropped).toBe(0)
     expect(sample.ended - sample.started).toBeGreaterThanOrEqual(5000)
     expect(sample.ended - sample.started).toBeLessThanOrEqual(10000)
     expect(sample.lastFrame).toBeGreaterThan(sample.firstFrame)
@@ -615,6 +628,21 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
       if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
     })
+  if (capturePlan.retirementOnly) {
+    // Separate correctness workload, never a shorter sustained performance run.
+    // No CPU/allocation sampler is active. Ordinary UI reentry happens only in
+    // this diagnostic, not in the uninterrupted 90-second acceptance path.
+    await writeFile(path.join(directory, "retirement-initial.png"), before)
+    await auditDrawPlaneParity(page, canvas, directory, "retirement-initial", true, checkNativeWindow)
+    await retireSustainedKoth(page, directory, checkNativeWindow, "retirement-initial")
+    await loadPractice("reentry")
+    await auditDrawPlaneParity(page, canvas, directory, "retirement-reentry", true, checkNativeWindow)
+    await retireSustainedKoth(page, directory, checkNativeWindow, "retirement-reentry")
+    await writeFile(path.join(directory, "retirement-correctness.json"), JSON.stringify({ capturePlan, loads,
+      sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, nativeAdmission: nativeRecords(),
+      full23: true, sustainedAcceptance: false, performanceSample: false, totalWallMilliseconds: Date.now() - wallStarted }))
+    return
+  }
   if (process.env.PROFILE_DRAW_LIGHTING_PARITY_ONLY === "1") { await auditParity(); return }
   if (process.env.PROFILE_ENGINEER_UI_ONLY === "1") {
     await auditEngineerMenus(page, root, directory, label, combatCommand)
@@ -1117,12 +1145,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
   let sampling = true
   let nativeFailure: string | null = null
   const nativeMonitor = (async () => {
+    let checks = 0
     while (sampling && (nativeReader || windowsReader)) {
       await new Promise(resolve => setTimeout(resolve, 500))
       if (!sampling) break
       try { await checkNativeWindow() } catch (error) { nativeFailure = String(error); break }
       if (nativeAdmission.at(-1)?.error) break
-      if (nativeRecords().length >= 32) break
+      // Earlier prelude/soak observations must not exhaust the late sample's
+      // native guard. Bound this sampling window, not the complete run ledger.
+      if (++checks >= 32) break
     }
   })()
   const sample = await Promise.all([measurementPromise.finally(() => { sampling = false }), exercise(), interaction, combatActions])
@@ -1234,6 +1265,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
   }
   await finishPixelAudits(measured)
+  if (sustained) await retireSustainedKoth(page, directory, checkNativeWindow)
   retainIncomplete = undefined
   await profileArtifact(async () => {
   profilePhases.enter("trace-analysis-retention")
@@ -1291,6 +1323,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     frames: completed, workers, inputs: measurement.input, longAnimationFrames: measurement.longAnimationFrames,
     trace: traceEvents, cpu: cpuProfile,
     traceOffsetMicroseconds: exactTraceWindow?.offsetMicroseconds ?? 0,
+    mainThread: exactTraceWindow && Number.isSafeInteger(exactTraceWindow.pid) && Number.isSafeInteger(exactTraceWindow.tid)
+      ? { pid: exactTraceWindow.pid!, tid: exactTraceWindow.tid! } : undefined,
   })
   const gpuProcessBefore = processBefore?.processInfo.find(process => process.type === "GPU")
   const gpuProcessAfter = processAfter?.processInfo.find(process => process.type === "GPU")
@@ -1303,6 +1337,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const report = {
     nativeAdmission: nativeRecords(), replacement, nodeBuilds: measurement.nodeBuilds ?? [], geometry, pipelinePreparation: measurement.pipelinePreparation,
     schema: "playsrc-tf2-upward-training-bots-profile-v4", label, headed: true, target, entry, launch, capturePlan, capturePlanArtifact,
+    ...(sustained ? { sustainedAcceptance: !capturePlan.diagnosticSeconds, diagnosticContextSeconds: capturePlan.diagnosticSeconds ?? null } : {}),
     sourceFingerprint,
     roster: measurement.roster.map((bot: any) => ({ identity: bot.identity, class: bot.class, team: bot.team, difficulty: bot.difficulty })),
     activeBots: measurement.roster.length, teams: { red: measurement.scoreboard.red.playerCount, blue: measurement.scoreboard.blue.playerCount },

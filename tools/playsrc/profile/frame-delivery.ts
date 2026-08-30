@@ -85,7 +85,7 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
   equal(roster(ordinary.sample.before.botProbe), roster(traced.sample.before.botProbe), "bot identity/team/class roster")
   for (const run of [ordinary, traced]) {
     const sample = run.sample, elapsed = sample.ended - sample.started
-    if (elapsed < 5000 || elapsed > 10000 || sample.missedPublications || sample.lifecycle.length
+    if (elapsed < 5000 || elapsed > 10000 || sample.missedPublications || sample.dropped || sample.lifecycle.length
       || sample.before.bots !== expectedBots || sample.after.bots !== expectedBots || sample.lastFrame - sample.firstFrame !== sample.frames.length) throw new Error("Incomplete or changed comparison window")
     if (!run.nativeAdmission?.length || run.nativeAdmission.some((record: any) => {
       const native = record.native
@@ -104,10 +104,12 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
 /** Read-only observer shared by ordinary and traced modes. No Worker wrappers,
  * app profile globals, requestAnimationFrame replacement or renderer hooks. */
 export function installDeliveryObserver(host: any = globalThis) {
+  if (host.__playsrcDeliveryObserver) return
   let active = false, observer: MutationObserver | undefined, raf = 0
   let frames: Array<{ at: number; frame: number; cameraPosition?: string; phaseFrame?: number; performance?: string;
-    preparedRevision?: string; viewRevision?: string; snapRevision?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
-  let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0
+    preparedRevision?: string; viewRevision?: string; snapRevision?: string; producerTick?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
+  let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0, dropped = 0
+  const limit = 20_000
   const state = () => {
     const data = host.document.querySelector("main")?.dataset ?? {}
     return { tick: Number(data.snapshotTick), bots: Number(data.botCount), cameraPosition: data.cameraPosition,
@@ -116,14 +118,15 @@ export function installDeliveryObserver(host: any = globalThis) {
   }
   let before: ReturnType<typeof state>
   let movementInput: { at: number; cameraPosition?: string } | null = null
-  const changed = () => { if (active) lifecycle.push("visibility/focus changed") }
+  const recordLifecycle = (event: string) => { if (lifecycle.length < limit) lifecycle.push(event); else dropped++ }
+  const changed = () => { if (active) recordLifecycle("visibility/focus changed") }
   host.addEventListener("blur", changed); host.document.addEventListener("visibilitychange", changed)
   const input = (event: any) => {
     if (event.type === "keydown" && event.code === "KeyW") movementInput = { at: host.performance.now(), cameraPosition: state().cameraPosition }
-    if (active && (event.type !== "mousemove" || event.movementX || event.movementY)) lifecycle.push(`unexpected ${event.type}`)
+    if (active && (event.type !== "mousemove" || event.movementX || event.movementY)) recordLifecycle(`unexpected ${event.type}`)
   }
   for (const type of ["keydown", "pointerdown", "mousemove"]) host.document.addEventListener(type, input, { passive: true })
-  const tick = () => { if (active) { opportunities.push(host.performance.now()); raf = host.requestAnimationFrame(tick) } }
+  const tick = () => { if (active) { if (opportunities.length < limit) opportunities.push(host.performance.now()); else dropped++; raf = host.requestAnimationFrame(tick) } }
   host.__playsrcDeliveryObserver = {
     start(at = host.performance.now()) {
       if (active) throw new Error("Delivery observer already active")
@@ -132,16 +135,18 @@ export function installDeliveryObserver(host: any = globalThis) {
       started = at; firstFrame = lastFrame = Number(canvas.dataset.displayFrame)
       host.__playsrcDeliveryRpc?.start(at)
       before = state()
-      frames = []; opportunities = []; lifecycle = []; missedPublications = 0; active = true
+      frames = []; opportunities = []; lifecycle = []; missedPublications = 0; dropped = 0; active = true
       observer = new host.MutationObserver(() => {
         const frame = Number(canvas.dataset.displayFrame)
         if (frame !== lastFrame) {
-          if (frame < lastFrame) lifecycle.push("completed-frame counter reset")
+          if (frame < lastFrame) recordLifecycle("completed-frame counter reset")
           missedPublications += Math.max(0, frame - lastFrame - 1)
           const data = host.document.querySelector("main")?.dataset
-          frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
+          if (frames.length < limit) frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
+            producerTick: data?.snapshotTick,
             preparedRevision: canvas.dataset.displayPreparedRevision, viewRevision: canvas.dataset.displayViewRevision, snapRevision: canvas.dataset.displaySnapRevision,
-            ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); lastFrame = frame
+            ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); else dropped++
+          lastFrame = frame
         }
       })
       observer!.observe(canvas, { attributes: true, attributeFilter: ["data-display-frame"] })
@@ -150,7 +155,7 @@ export function installDeliveryObserver(host: any = globalThis) {
     stop(at = host.performance.now()) {
       active = false; observer?.disconnect(); host.cancelAnimationFrame(raf)
       const response = movementInput && frames.find(frame => frame.cameraPosition !== movementInput!.cameraPosition)
-      return { started, ended: at, firstFrame, lastFrame, before, after: state(), frames, raf: opportunities, lifecycle, missedPublications,
+      return { started, ended: at, firstFrame, lastFrame, before, after: state(), frames, raf: opportunities, lifecycle, missedPublications, dropped,
         ...(host.__playsrcDeliveryRpc ? { rpc: host.__playsrcDeliveryRpc.stop() } : {}),
         movementInput, inputToChangedSubmissionMilliseconds: response && movementInput ? response.at - movementInput.at : null,
         inputCensoredMilliseconds: !response && movementInput ? at - movementInput.at : null,

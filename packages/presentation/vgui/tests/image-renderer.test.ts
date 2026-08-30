@@ -110,48 +110,49 @@ const request = (material: VguiImageMaterialPresentation): VguiImageRasterReques
   material,
 })
 
-test("matching raster consumers share one encoded image and release its URL after pending decode", async () => {
-  // Storage/lifecycle unit only; the headed parity fixture checks real PNG pixels.
+test("matching raster consumers share one bitmap and close it after pending creation", async () => {
+  // Storage/lifecycle unit only; the headed parity fixture checks real pixels.
   const names = ["fetch", "createImageBitmap", "ImageData"] as const
   const descriptors = names.map(name => Object.getOwnPropertyDescriptor(globalThis, name))
-  const createUrl = URL.createObjectURL, revokeUrl = URL.revokeObjectURL
-  let encodes = 0, uploads = 0
-  const revoked: string[] = []
+  let bitmaps = 0, pause = false
+  const closed: number[] = [], drawn: number[] = []
+  const pending = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>()
   Object.assign(globalThis, {
     fetch: async () => new Response(new Uint8Array([0])),
-    createImageBitmap: async () => ({ close() {} }),
+    createImageBitmap: async (source: unknown) => {
+      if (source instanceof Blob) return { close() {} }
+      const id = ++bitmaps
+      if (pause) { entered.resolve(); await pending.promise }
+      return { id, close() { closed.push(id) } }
+    },
     ImageData: class { constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) {} },
   })
-  URL.createObjectURL = () => `blob:raster-${encodes}`
-  URL.revokeObjectURL = value => { revoked.push(value) }
   const document = { createElement: () => ({ width: 0, height: 0,
-    getContext: () => ({ clearRect() {}, drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray([255, 128, 0, 127]) }), putImageData() { uploads++ } }),
-    toBlob(callback: (blob: Blob) => void) { encodes++; callback(new Blob(["encoded fixture"])) },
+    getContext: () => ({ clearRect() {}, drawImage() {}, putImageData() {}, getImageData: () => ({ data: new Uint8ClampedArray([255, 128, 0, 127]) }) }),
   }) } as unknown as Document
   const rasterizer = new VguiImageRasterizer(document)
-  const image = () => ({ width: 0, height: 0, naturalWidth: 1, naturalHeight: 1, isConnected: true, src: "",
-    getAttribute(name: string) { return String((this as any)[name]) }, async decode() {} }) as unknown as HTMLImageElement
+  const canvas = () => ({ width: 0, height: 0, isConnected: true,
+    getContext: () => ({ drawImage(bitmap: { id: number }) { drawn.push(bitmap.id) } }) }) as unknown as HTMLCanvasElement
   try {
-    const targets = Array.from({ length: 50 }, image), input = request(baseMaterial())
+    const targets = Array.from({ length: 50 }, canvas), input = request(baseMaterial())
     await Promise.all(targets.map(target => rasterizer.render(target, input)))
-    expect(encodes).toBe(1); expect(uploads).toBe(1)
-    expect(new Set(targets.map(target => target.src)).size).toBe(1)
+    expect(bitmaps).toBe(1)
+    expect(drawn).toEqual(Array(50).fill(1))
     await rasterizer.render(targets[0]!, input)
-    expect(encodes).toBe(1)
+    expect(drawn).toHaveLength(50)
     await Promise.all([rasterizer.render(targets[0]!, { ...input, tint: [100, 100, 100, 100] }), rasterizer.render(targets[0]!, input)])
-    expect(targets[0]!.src).toBe("blob:raster-1")
-    const pending = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(), target = image()
-    target.decode = async () => { entered.resolve(); await pending.promise }
-    const rendering = rasterizer.render(target, input)
+    expect(drawn).toHaveLength(50)
+    pause = true
+    const rendering = rasterizer.render(canvas(), { ...input, tint: [50, 50, 50, 50] })
     await entered.promise
     rasterizer.destroy()
-    expect(revoked).toEqual(["blob:raster-2"])
+    expect(closed).toEqual([1, 2])
     pending.resolve(); await rendering
-    expect(revoked).toEqual(["blob:raster-2", "blob:raster-1"])
+    expect(closed).toEqual([1, 2, 3])
+    expect(drawn).toHaveLength(50)
   } finally {
     rasterizer.destroy()
     names.forEach((name, index) => { const descriptor = descriptors[index]; if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete (globalThis as any)[name] })
-    URL.createObjectURL = createUrl; URL.revokeObjectURL = revokeUrl
   }
 })
 

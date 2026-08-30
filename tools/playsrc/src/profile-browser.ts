@@ -26,6 +26,11 @@ export async function prepareBrowserLaunch(launch: BrowserLaunch): Promise<Prepa
   } finally { clearTimeout(timer) }
 }
 
+export function effectiveProfileBrowserLaunch(use: { channel?: string; launchOptions?: BrowserLaunch }, environment: Readonly<NodeJS.ProcessEnv>): BrowserLaunch {
+  const channel = environment.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? use.channel
+  return { ...use.launchOptions, ...(channel ? { channel } : {}) }
+}
+
 async function optionalJson(filename: string): Promise<any> {
   try { return JSON.parse(await readFile(filename, "utf8")) }
   catch (error) {

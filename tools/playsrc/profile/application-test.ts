@@ -1,6 +1,7 @@
 import { test as base, expect } from "@playwright/test"
 import { ProfilePhases } from "./profile-phases"
 import { finishProfileArtifacts, prepareProfileWorkerBrowser } from "./profile-artifacts"
+import { rejectAfterApplicationFailureEvidence } from "./application-failure-evidence"
 
 const startupInputGuards = new WeakMap<object, () => Promise<void>>()
 export function guardStartupInput(page: object, guard: () => Promise<void>): void { startupInputGuards.set(page, guard) }
@@ -72,7 +73,7 @@ export const test = headedBrowser.extend<{
     const fail = (message: string) => {
       if (finished) return
       finished = true
-      rejectFailure(new Error(message))
+      void rejectAfterApplicationFailureEvidence(page, new Error(message)).catch(rejectFailure)
     }
     await page.exposeBinding("__playsrcApplicationState", async (_source, state: ApplicationState) => {
       const previous = transitions.at(-1)
