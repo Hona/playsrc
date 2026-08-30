@@ -20,3 +20,17 @@ test("RPC diagnosis keeps the real send/reply contract and never retains payload
   expect(host.__playsrcProfile).toBeUndefined()
   expect(host.__playsrcFrameProfiler).toBeUndefined()
 })
+
+test("sustained observe filtering retains unfinished requests as censored, not zero service", () => {
+  let now = 0
+  const host: any = { performance: { now: () => now }, Worker: class { postMessage() {} } }
+  installDeliveryRpcObserver(host, ["observe"])
+  const worker = new host.Worker("/gameplay-worker.ts")
+  worker.postMessage({ id: 1, kind: "observe" })
+  worker.postMessage({ id: 2, kind: "models" })
+  now = 10; host.__playsrcDeliveryRpc.start(now)
+  now = 20; worker.__playsrcProfileReply({ id: 2, timings: { totalMilliseconds: 20 } })
+  const result = host.__playsrcDeliveryRpc.stop()
+  expect(result.records).toEqual([])
+  expect(result.pending).toEqual([{ worker: 1, id: 1, kind: "observe", sent: 0, censoredStart: true, censoredEnd: true, elapsedMilliseconds: 20 }])
+})
