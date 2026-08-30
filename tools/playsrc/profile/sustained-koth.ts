@@ -20,7 +20,7 @@ export function installSustainedObservation(host: any = globalThis) {
   const state = () => host.document.querySelector("main")?.dataset ?? {}
   const append = (records: any[], value: any) => { if (records.length < limit) records.push(value); else dropped++ }
   const changed = (event: any) => { if (active) append(lifecycle, { at: host.performance.now(), type: event.type, visible: host.document.visibilityState, focused: host.document.hasFocus() }) }
-  host.addEventListener("blur", changed); host.document.addEventListener("visibilitychange", changed)
+  host.addEventListener("blur", changed); host.addEventListener("resize", changed); host.document.addEventListener("visibilitychange", changed)
   const input = (event: any) => {
     if (!active) return
     append(inputs, { at: host.performance.now(), type: event.type, code: event.code, trusted: event.isTrusted, camera: state().cameraPosition, completedAt: null })
@@ -68,7 +68,7 @@ export function summarizeSustainedWindow(sample: any, started: number, ended: nu
     tickPublications: deliveryTimeline(started, ended, sample.ticks.map((tick: any) => tick.at)),
     observedTicks: ticks.reduce((sum: number, tick: any) => sum + tick.tick - tick.before, 0),
     observedTicksPerSecond: ticks.reduce((sum: number, tick: any) => sum + tick.tick - tick.before, 0) * 1000 / (ended - started),
-    workerObserve: { calls: rpc.length, queue: distribution("queueMilliseconds"), service: distribution("transactMilliseconds"), roundTrip: summarizeFrameTimes(rpc.map((call: any) => call.elapsedMilliseconds)) },
+    workerObserve: { calls: rpc.length, queue: distribution("queueMilliseconds"), service: distribution("transactMilliseconds"), roundTrip: summarizeFrameTimes(rpc.map((call: any) => call.elapsedMilliseconds)), censoredEnd: sample.rpc.pending ?? [] },
     input: { acknowledged: summarizeFrameTimes(input.filter((input: any) => input.completedAt !== null).map((input: any) => input.completedAt - input.at)),
       censored: input.filter((input: any) => input.completedAt === null).map((input: any) => ({ ...input, milliseconds: ended - input.at })) },
     scope: "Completed submissions/RAF and observed snapshot publication ticks are not physical/compositor FPS or instantaneous Worker ticks. Input is DOM delivery to changed-camera submission, not input-to-photon. Queue overlaps are not CPU time.",
