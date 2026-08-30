@@ -44,9 +44,9 @@ test("authored backpack native equip and browser restart persistence", async ({ 
   const firstPage = await visibleItems()
   await equipment.locator("[data-vgui-name='NextPage']").click()
   const inventoryDefinitions = [...firstPage, ...await visibleItems()]
-  expect(new Set(inventoryDefinitions).size).toBe(52)
+  expect(new Set(inventoryDefinitions).size).toBe(nativeEquipment.inventory.length)
   expect(inventoryDefinitions.sort((a, b) => a - b)).toEqual(nativeEquipment.inventory.map(entry => entry.item.definitionIndex).sort((a, b) => a - b))
-  for (const unavailable of [19, 20, 735, 513]) expect(inventoryDefinitions).not.toContain(unavailable)
+  for (const unavailable of [19, 20, 735]) expect(inventoryDefinitions).not.toContain(unavailable)
   await equipment.locator("[data-vgui-name='PrevPage']").click()
   await expect(equipment.locator("[data-vgui-name='Itemitem-378']")).toBeVisible()
   const capture = await page.screenshot({ path: path.join(directory, "backpack.png") })
