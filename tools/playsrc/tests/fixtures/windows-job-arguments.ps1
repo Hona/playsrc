@@ -10,4 +10,4 @@ $empty=ArgumentArray '[]' 20
 $one=ArgumentArray '["a.test.ts"]' 20
 $rejected=0
 foreach($bad in '[null]','[1]','[["a"]]','"test"') {try {$null=ArgumentArray $bad 20}catch{$rejected++}}
-@{many=$many;emptyCount=$empty.Count;one=$one;rejected=$rejected}|ConvertTo-Json -Compress
+@{many=[string[]]$many;emptyCount=$empty.Count;one=[string[]]$one;rejected=$rejected}|ConvertTo-Json -Compress
