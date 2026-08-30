@@ -69,7 +69,8 @@ export type WorkerCpuCapture = Readonly<{
   }
 }>
 
-export async function prepareWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSession, page: Page) {
+export async function prepareWorkerCpuCapture(browser: CDPSession, pageCdp: CDPSession, page: Page, maximumMilliseconds = 12_000) {
+  if (!Number.isSafeInteger(maximumMilliseconds) || maximumMilliseconds < 5000 || maximumMilliseconds > 12_000) throw new Error("Invalid bounded Worker CPU capture duration")
   const { targetInfo: owner } = await pageCdp.send("Target.getTargetInfo")
   const urls = new Set(page.workers().map(worker => worker.url()))
   const { targetInfos } = await browser.send("Target.getTargets")
@@ -117,7 +118,7 @@ export async function prepareWorkerCpuCapture(browser: CDPSession, pageCdp: CDPS
       async start() {
         if (started) throw new Error("Worker CPU capture already started")
         started = true
-        deadline = setTimeout(() => { deadlineStopped = true; void stop().catch(() => undefined) }, 12_000)
+        deadline = setTimeout(() => { deadlineStopped = true; void stop().catch(() => undefined) }, maximumMilliseconds)
         await Promise.all(attached.map(async ({ target, session, contextId }) => {
           const expression = `(${installWorkerTaskProfiler.toString()})(globalThis, ${JSON.stringify(target.targetId)})`
           const result = await session.send("Runtime.evaluate", { expression, contextId })
