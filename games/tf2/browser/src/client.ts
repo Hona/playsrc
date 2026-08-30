@@ -77,6 +77,12 @@ export type LoadedGame = Readonly<{
     materialResolutionMilliseconds: number
     entityParseMilliseconds: number
     presentationCompileMilliseconds: number
+    presentationBundleMilliseconds: number
+    presentationModelsMilliseconds: number
+    presentationTexturesMilliseconds: number
+    presentationParticlesMilliseconds: number
+    presentationEnvironmentMilliseconds: number
+    presentationSerializationMilliseconds: number
     modelResolutionMilliseconds: number
     particleAndInputMilliseconds: number
     runtimeMapMilliseconds: number
@@ -613,6 +619,12 @@ export class Tf2WorkerClient {
           materialResolutionMilliseconds: loaded.timings.materialResolutionMilliseconds,
           entityParseMilliseconds: loaded.timings.entityParseMilliseconds,
           presentationCompileMilliseconds: loaded.timings.presentationCompileMilliseconds,
+          presentationBundleMilliseconds: loaded.timings.presentationBundleMilliseconds,
+          presentationModelsMilliseconds: loaded.timings.presentationModelsMilliseconds,
+          presentationTexturesMilliseconds: loaded.timings.presentationTexturesMilliseconds,
+          presentationParticlesMilliseconds: loaded.timings.presentationParticlesMilliseconds,
+          presentationEnvironmentMilliseconds: loaded.timings.presentationEnvironmentMilliseconds,
+          presentationSerializationMilliseconds: loaded.timings.presentationSerializationMilliseconds,
           modelResolutionMilliseconds: loaded.timings.modelResolutionMilliseconds,
           particleAndInputMilliseconds: loaded.timings.particleAndInputMilliseconds,
           runtimeMapMilliseconds: loaded.timings.runtimeMapMilliseconds,

@@ -104,9 +104,10 @@ export function compareDeliveryEvidence(ordinary: any, ordinaryBoundary: any, tr
 /** Read-only observer shared by ordinary and traced modes. No Worker wrappers,
  * app profile globals, requestAnimationFrame replacement or renderer hooks. */
 export function installDeliveryObserver(host: any = globalThis) {
+  if (host.__playsrcDeliveryObserver) return
   let active = false, observer: MutationObserver | undefined, raf = 0
   let frames: Array<{ at: number; frame: number; cameraPosition?: string; phaseFrame?: number; performance?: string;
-    preparedRevision?: string; viewRevision?: string; snapRevision?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
+    preparedRevision?: string; viewRevision?: string; snapRevision?: string; producerTick?: string }> = [], opportunities: number[] = [], lifecycle: string[] = []
   let started = 0, firstFrame = 0, lastFrame = 0, missedPublications = 0, dropped = 0
   const limit = 20_000
   const state = () => {
@@ -142,6 +143,7 @@ export function installDeliveryObserver(host: any = globalThis) {
           missedPublications += Math.max(0, frame - lastFrame - 1)
           const data = host.document.querySelector("main")?.dataset
           if (frames.length < limit) frames.push({ at: host.performance.now(), frame, cameraPosition: data?.cameraPosition,
+            producerTick: data?.snapshotTick,
             preparedRevision: canvas.dataset.displayPreparedRevision, viewRevision: canvas.dataset.displayViewRevision, snapRevision: canvas.dataset.displaySnapRevision,
             ...(data?.performance ? { phaseFrame: Number(data.displayFrame), performance: data.performance } : {}) }); else dropped++
           lastFrame = frame

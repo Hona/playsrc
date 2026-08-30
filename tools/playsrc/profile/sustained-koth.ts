@@ -8,6 +8,64 @@ import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-t
 import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence, liveSustainedAttachments } from "./sustained-koth-evidence"
 export { requireSustainedBudget } from "./sustained-koth-evidence"
 
+async function stopLightTrace(browser: CDPSession) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const completion = new Promise<{ stream?: string; dataLossOccurred?: boolean }>((resolve, reject) => {
+    browser.once("Tracing.tracingComplete", resolve)
+    timer = setTimeout(() => reject(new Error("KOTH lightweight trace completion exceeded 10 seconds")), 10_000)
+  })
+  try {
+    await browser.send("Tracing.end")
+    const complete = await completion
+    if (!complete.stream) throw new Error("KOTH lightweight trace stream unavailable")
+    return { complete, raw: await drainTraceStream(browser, complete.stream, SUSTAINED_KOTH.traceBytes) }
+  } finally { clearTimeout(timer) }
+}
+
+/** Keep the actual Ready-to-live frames when the later 90-second admission
+ * fails. This is a labelled prelude, never counted toward the required soak. */
+async function observePrelude(options: Parameters<typeof observeSustainedKoth>[0]) {
+  const { page, browserCdp, directory, checkNativeWindow } = options
+  const categories = [...SUSTAINED_KOTH.categories]
+  await page.evaluate(installDeliveryObserver)
+  await checkNativeWindow()
+  await browserCdp.send("Tracing.start", { transferMode: "ReturnAsStream", streamFormat: "json", streamCompression: "gzip",
+    traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: SUSTAINED_KOTH.traceKilobytes, includedCategories: categories } })
+  await page.evaluate(start => { const at = performance.now(); (globalThis as any).__playsrcDeliveryObserver.start(at); performance.mark(start, { startTime: at }) }, TRACE_START)
+  let pending = Promise.resolve(), busy = false, failure: unknown
+  let rejectNative!: (error: unknown) => void
+  const nativeFailure = new Promise<never>((_, reject) => { rejectNative = reject })
+  const monitor = setInterval(() => {
+    if (busy) return
+    busy = true
+    pending = checkNativeWindow().catch(error => { failure ??= error; rejectNative(error) }).finally(() => { busy = false })
+  }, 500)
+  try {
+    await Promise.race([nativeFailure, page.waitForFunction(() => { const p = (globalThis as any).__playsrcProfile
+      return p.round?.state === 4 && !p.round.waitingForPlayers && !p.round.inSetup && p.bots?.length === 23
+    }, undefined, { timeout: 45_000 })])
+  } catch (error) { failure = error }
+  finally {
+    clearInterval(monitor); await pending
+    const sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
+    const { complete, raw } = await stopLightTrace(browserCdp)
+    const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete && !failure,
+      dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
+      identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, scope: "Ready-to-live prelude only; not the 90-second sustained sample" },
+      probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
+    await writeFile(path.join(directory, "sustained-prelude.json"), JSON.stringify({ sample, evidence: evidence.artifact,
+      complete: evidence.manifest.complete, failure: failure ? String(failure) : null, sustainedAcceptance: false,
+      completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)),
+      raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
+      compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
+      gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
+      scope: "All observed prelude gaps retained, including500–1500ms stalls and zero buckets. Producer tick is the latest DOM publication at submission, not a displayed-tick or Worker-progress certificate. Presented content identity/input-to-photon remain separate evidence." }))
+    if (!evidence.manifest.complete && !failure) failure = new Error("KOTH prelude trace incomplete")
+    if (sample.dropped || sample.missedPublications || sample.lifecycle.length) failure ??= new Error("KOTH prelude observation interrupted or overflowed")
+  }
+  if (failure) throw failure
+}
+
 /** One live map generation; no forced collection, restart, or clock changes.
  * Full instrumentation stays inactive until the existing late deep sample. */
 export async function observeSustainedKoth(options: {
@@ -39,9 +97,7 @@ export async function observeSustainedKoth(options: {
   }
   // Preserve waiting-for-players and setup. Admission is not included in the
   // 90 seconds and cannot be accelerated to make the workflow fit its cap.
-  await page.waitForFunction(() => { const p = (globalThis as any).__playsrcProfile
-    return p.round?.state === 4 && !p.round.waitingForPlayers && !p.round.inSetup && p.bots?.length === 23
-  }, undefined, { timeout: 45_000 })
+  await observePrelude(options)
   records.push(await read()); await retain()
   requireSustainedBudget(Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now())
   // Observe the authored objective from a stable test camera without moving,
@@ -79,14 +135,7 @@ export async function observeSustainedKoth(options: {
   } catch (error) { failure = error }
   finally {
     sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
-    const completion = new Promise<{ stream?: string; dataLossOccurred?: boolean }>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Sustained trace completion exceeded 10 seconds")), 10_000)
-      browserCdp.once("Tracing.tracingComplete", value => { clearTimeout(timer); resolve(value) })
-    })
-    await browserCdp.send("Tracing.end")
-    const complete = await completion
-    if (!complete.stream) throw new Error("Sustained display trace stream unavailable")
-    const raw = await drainTraceStream(browserCdp, complete.stream, SUSTAINED_KOTH.traceBytes)
+    const { complete, raw } = await stopLightTrace(browserCdp)
     const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
       identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
       probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
