@@ -112,6 +112,8 @@ const PROFILES = Object.freeze({
   "selection-transition": { config: "playwright.selection-transition.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 60_000 },
   "selection-transition-cpu": { config: "playwright.selection-transition.config.ts", target: "pl_upward", environment: { PLAYSRC_SELECTION_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
+  "equipment-navigation": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward" },
+  "equipment-navigation-cpu": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", environment: { PLAYSRC_EQUIPMENT_CPU: "1" } },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
