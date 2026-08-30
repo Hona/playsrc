@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { teamModelPlayback } from "../src/team-model-playback"
+import { teamModelPlayback, TeamModelSkinning } from "../src/team-model-playback"
 
 const panel = { sequence: "hoveropen", modelRevision: 1, animationRevision: 1 }
 test("samples exact terminal pose even when a render interval crosses its duration", () => {
@@ -31,4 +31,22 @@ test("short sequences keep sampling until the studio transition owner has finish
   const ended = { ...initial.state, sampledSeconds: 5 / 30, transitioning: true }
   expect(teamModelPlayback(ended, hover, 1.18, 5 / 30).sample).toBe(true)
   expect(teamModelPlayback({ ...ended, transitioning: false }, hover, 1.21, 5 / 30).sample).toBe(false)
+})
+
+test("retains exact template pixels until deformation and restores idle through the same skinned owner", () => {
+  const state = new TeamModelSkinning()
+  const idle = { sequence: 0, cycle: 0, boneMatrices: Float32Array.of(1, 0, 0, 2), flex: [] }
+  state.observe("door", idle)
+  expect(state.needsPose("door")).toBe(false)
+  state.observe("door", { ...idle, cycle: 1, boneMatrices: idle.boneMatrices.slice() })
+  expect(state.needsPose("door")).toBe(false)
+  state.observe("door", { ...idle, sequence: 1, boneMatrices: Float32Array.of(0.5, 0, 0, 2) })
+  expect(state.needsPose("door")).toBe(true)
+  state.observe("door", idle)
+  expect(state.needsPose("door")).toBe(true)
+  state.observe("disabled-first", { ...idle, sequence: 1 })
+  expect(state.needsPose("disabled-first")).toBe(true)
+  state.clear()
+  state.observe("door", idle)
+  expect(state.needsPose("door")).toBe(false)
 })
