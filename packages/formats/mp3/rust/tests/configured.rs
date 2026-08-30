@@ -60,6 +60,10 @@ fn configured_mono_matches_public_minimp3_sse_pcm() {
         (decoded.sample_rate, decoded.channels, decoded.samples.len()),
         (44100, 1, 73728)
     );
+    assert_eq!(
+        decoded.samples.capacity(),
+        decoded.samples.len().next_power_of_two()
+    );
     let mut digest = Sha256::new();
     for sample in &decoded.samples {
         digest.update(sample.to_le_bytes());

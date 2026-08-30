@@ -53,6 +53,13 @@ pub fn decode(bytes: &[u8], max_input: usize, max_samples: usize) -> Result<Deco
             return Err(Error::OutputLimit);
         }
         let start = output.samples.len();
+        if start + count > output.samples.capacity() {
+            // Reserve a frame without increasing the former per-sample push
+            // capacity bound (power-of-two growth for this i16 buffer).
+            output
+                .samples
+                .reserve_exact((start + count).next_power_of_two() - start);
+        }
         output.samples.resize(start + count, 0);
         quantize(
             &pcm[..count],
