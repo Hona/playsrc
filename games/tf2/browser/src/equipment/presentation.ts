@@ -11,7 +11,8 @@ export type Tf2EquipmentPresentationRequest = Readonly<{
   root: HTMLElement; resources: Tf2VguiResources; viewport: VguiViewport; reducedMotion: boolean
   clock: Readonly<{ nowSeconds(): number }>; random: Readonly<{ nextUnit(): number }>
   modelSurface?: HTMLCanvasElement
-  onEquip(playerClass: Tf2Class, slot: number, definitionIndex: number | null): Promise<Tf2EquipmentState>
+  onEquip(playerClass: Tf2Class, slot: number, definitionIndex: number | null, signal: AbortSignal): Promise<Tf2EquipmentState>
+  onError(error: unknown, current: boolean): void
   onClose(): void
   onPreview(preview: Tf2EquipmentPreview | null): void
 }>
@@ -32,14 +33,19 @@ export class Tf2EquipmentPresentation {
   #viewport: VguiViewport
   #state: Tf2EquipmentState | undefined
   #class: Tf2Class = 1
+  #closeClass: Tf2Class | undefined
   #page: "classes" | "loadout" | "backpack" | "slot" = "classes"
   #slot = 0
   #visible = false
-  #busy = false
+  #pending: AbortController | undefined
+  #destroyed = false
   #pageNumber = 0
   #content: VguiPanelId | undefined
   #releaseSurface: (() => void) | undefined
   #selected: number | null = null
+  #cell = -1
+  readonly #cells: VguiPanelId[] = []
+  readonly #navigation = new Map<VguiPanelId, Map<string, VguiPanelId>>()
   readonly #itemPanels = new Map<VguiPanelId, Tf2SupportedItem>()
   #hover: { panel: VguiPanelId; item: Tf2SupportedItem; since: number } | undefined
   #tooltip: VguiPanelId | undefined
@@ -81,7 +87,11 @@ export class Tf2EquipmentPresentation {
   }
 
   show(state: Tf2EquipmentState, playerClass?: Tf2Class): void {
+    this.#cancelEquip()
     this.#state = state; this.#visible = true; this.#selected = null; this.#pageNumber = 0
+    this.#closeClass = playerClass
+    this.#cell = -1
+    this.#slot = playerClass === 8 ? 1 : 0
     this.#page = playerClass ? "loadout" : "classes"; if (playerClass) this.#class = playerClass
     this.#request.root.style.display = "block"
     this.#apply({ kind: "set-panel-state", panel: 1, visible: true })
@@ -90,15 +100,18 @@ export class Tf2EquipmentPresentation {
   visible(): boolean { return this.#visible }
   snapshot() { return { visible: this.#visible, page: this.#page, class: this.#class, vgui: this.#runtime.snapshot() } }
   hide(): void {
+    this.#cancelEquip()
     this.#clearTooltip()
     this.#visible = false; this.#releaseSurface?.(); this.#releaseSurface = undefined
     this.#apply({ kind: "set-panel-state", panel: 1, visible: false }); this.#request.root.style.display = "none"
     this.#request.onPreview(null); this.#request.onClose()
   }
-  #render(): void {
+  #render(restoreFocus?: string): void {
     if (!this.#visible || !this.#state) return
     this.#clearTooltip()
     this.#itemPanels.clear()
+    this.#cells.length = 0
+    this.#navigation.clear()
     this.#releaseSurface?.(); this.#releaseSurface = undefined
     if (this.#page !== "loadout") this.#request.onPreview(null)
     this.#runtime.deferPresentation(() => {
@@ -134,7 +147,7 @@ export class Tf2EquipmentPresentation {
           this.#item(root, supported, `slot ${slot}`, `c${right ? scalar(authored, "item_xpos_offcenter_b")! : scalar(authored, "item_xpos_offcenter_a")!}`, String(Number(scalar(authored, "item_ypos")) + row * Number(scalar(authored, "item_ydelta"))), block(authored, "modelpanels_kv"), true)
         })
         const model = block(document, "classmodelpanel")
-        const surface = this.#create(root, "CTFPlayerModelPanel", "EquipmentPlayer", Object.fromEntries(["xpos", "ypos", "wide", "tall"].map(key => [key, scalar(model, key)!])))
+        const surface = this.#create(root, "CTFPlayerModelPanel", "EquipmentPlayer", Object.fromEntries(["xpos", "ypos", "wide", "tall", "zpos"].map(key => [key, scalar(model, key)!])))
         const bounds = this.#runtime.snapshot().panels.find(panel => panel.id === surface)!.bounds
         if (this.#request.modelSurface) this.#releaseSurface = attachEquipmentSurface(this.#runtime, surface, this.#request.modelSurface, this.#viewport, bounds)
         const settings = block(model, "model")
@@ -148,7 +161,7 @@ export class Tf2EquipmentPresentation {
       for (let cell = 0; cell < 50; cell++) {
         const item = inventory[this.#pageNumber * 50 + cell]
         this.#item(root, item, item ? `item ${item.item.definitionIndex}` : "", `c${Number(scalar(authored, "item_backpack_offcenter_x")) + (cell % 10) * (width + Number(scalar(authored, "item_backpack_xdelta")))}`,
-          String(Number(scalar(authored, "item_ypos")) + Math.floor(cell / 10) * (height + Number(scalar(authored, "item_backpack_ydelta")))), template, false)
+          String(Number(scalar(authored, "item_ypos")) + Math.floor(cell / 10) * (height + Number(scalar(authored, "item_backpack_ydelta")))), template, false, cell === this.#cell)
       }
       if (page === "slot") this.#button(root, "UnequipButton", "UNEQUIP", "unequip", "c-50", "r40", "120")
       const pages = Math.ceil(inventory.length / 50)
@@ -157,14 +170,21 @@ export class Tf2EquipmentPresentation {
         this.#button(root, "NextPage", ">", "next", "c260", "288", "25", "20")
       }
     })
+    if (this.#pending) this.#setEquipEnabled(false)
+    const panels = this.#runtime.snapshot().panels
+    if (this.#page === "loadout") this.#linkLoadoutNavigation(panels.filter(panel => panel.name.startsWith("Itemslot-")))
+    const focusName = restoreFocus ?? (this.#page === "classes" ? `Class${this.#class}` : this.#page === "loadout" ? `Itemslot-${this.#slot}` : `Itemitem-${this.#selected}`)
+    const focus = panels.find(panel => panel.name === focusName) ?? panels.find(panel => panel.name === "BackButton")
+    if (focus) this.#apply({ kind: "request-focus", panel: focus.id })
   }
 
-  #item(parent: VguiPanelId, item: Tf2SupportedItem | undefined, command: string, x: string, y: string, template: Tf2UiResourceNode, name: boolean): void {
-    const selected = item?.item.definitionIndex === this.#selected
+  #item(parent: VguiPanelId, item: Tf2SupportedItem | undefined, command: string, x: string, y: string, template: Tf2UiResourceNode, name: boolean, cellSelected = false): void {
+    const selected = cellSelected || item?.item.definitionIndex === this.#selected
     const button = this.#button(parent, `Item${command.replaceAll(" ", "-") || `${x}-${y}`}`, "", command, x, y, scalar(template, "wide")!, scalar(template, "tall")!, {
       border: selected ? "BackpackItemSelectedBorder" : `BackpackItemBorder${QUALITY_SUFFIX[item?.item.quality ?? 0]}`,
       tooltiptext: "",
     })
+    if (!name) this.#cells.push(button)
     if (!item) { this.#apply({ kind: "set-panel-state", panel: button, enabled: command !== "" }); return }
     this.#itemPanels.set(button, item)
     this.#apply({ kind: "mutate-control", panel: button, mutation: { accessibleName: item.displayName, description: item.description.map(line => line.text).join("\n") } })
@@ -285,41 +305,158 @@ export class Tf2EquipmentPresentation {
     return this.#page === "slot" ? inventory.filter(item => item.classSlots.some(slot => slot.class === this.#class && slot.slot === this.#slot)) : inventory
   }
   #command(command: string): void {
-    if (!this.#visible || this.#busy) return
+    if (!this.#visible) return
     if (command === "back") {
-      if (this.#page === "classes") { this.hide(); return }
+      if (this.#page === "classes" || this.#page === "loadout" && this.#class === this.#closeClass) { this.hide(); return }
       this.#page = this.#page === "slot" ? "loadout" : "classes"
-    } else if (command === "backpack") { this.#page = "backpack"; this.#pageNumber = 0 }
-    else if (command.startsWith("class ")) { this.#class = Number(command.slice(6)) as Tf2Class; this.#page = "loadout" }
-    else if (command.startsWith("slot ")) { this.#slot = Number(command.slice(5)); this.#page = "slot"; this.#pageNumber = 0 }
-    else if (command === "prev") this.#pageNumber = Math.max(0, this.#pageNumber - 1)
-    else if (command === "next") this.#pageNumber = Math.min(Math.max(0, Math.ceil(this.#pageItems().length / 50) - 1), this.#pageNumber + 1)
+    } else if (command === "backpack") { this.#page = "backpack"; this.#pageNumber = 0; this.#selected = null; this.#cell = -1 }
+    else if (command.startsWith("class ")) { this.#class = Number(command.slice(6)) as Tf2Class; this.#slot = this.#class === 8 ? 1 : 0; this.#page = "loadout" }
+    else if (command.startsWith("slot ")) {
+      this.#slot = Number(command.slice(5)); this.#page = "slot"; this.#pageNumber = 0
+      this.#selected = this.#state!.classes[this.#class - 1]!.items.find(item => item.slot === this.#slot)?.definitionIndex ?? null
+      this.#cell = this.#pageItems().findIndex(item => item.item.definitionIndex === this.#selected)
+    }
+    else if (command === "prev" || command === "next") {
+      const next = Math.max(0, Math.min(Math.max(0, Math.ceil(this.#pageItems().length / 50) - 1), this.#pageNumber + (command === "prev" ? -1 : 1)))
+      if (next === this.#pageNumber) return
+      this.#pageNumber = next
+      this.#selected = this.#cell < 0 ? null : this.#pageItems()[next * 50 + this.#cell]?.item.definitionIndex ?? null
+    }
     else if (command === "unequip" || command.startsWith("item ")) {
       const definition = command === "unequip" ? null : Number(command.slice(5))
       if (this.#page === "backpack" && definition !== null) {
         const item = this.#state!.inventory.find(item => item.item.definitionIndex === definition)!
         const slot = item.classSlots.find(slot => slot.class === this.#class) ?? item.classSlots[0]!
         this.#class = slot.class; this.#slot = slot.slot; this.#selected = definition; this.#page = "slot"; this.#pageNumber = 0
+        this.#cell = this.#pageItems().findIndex(item => item.item.definitionIndex === definition)
       } else {
-        this.#busy = true
-        void this.#request.onEquip(this.#class, this.#slot, definition).then(state => { this.#state = state; this.#page = "loadout"; this.#selected = null })
-          .finally(() => { this.#busy = false; this.#render() })
+        if (this.#pending) return
+        const pending = new AbortController()
+        this.#pending = pending
+        const playerClass = this.#class, slot = this.#slot
+        this.#setEquipEnabled(false)
+        void (async () => {
+          try {
+            pending.signal.throwIfAborted()
+            const state = await this.#request.onEquip(playerClass, slot, definition, pending.signal)
+            if (this.#destroyed) return
+            // A dispatched native mutation can finish after Back. Retain its
+            // authoritative state, but never replay its old navigation.
+            const changed = !this.#state || state.revision > this.#state.revision
+            if (changed) this.#state = state
+            if (this.#pending === pending) {
+              this.#page = "loadout"; this.#selected = null
+              this.#render()
+              if (this.#pending === pending) this.#pending = undefined
+            } else if (changed && this.#visible) this.#render()
+          } catch (error) {
+            if (this.#destroyed) return
+            const current = this.#pending === pending
+            if (current) { this.#pending = undefined; this.#setEquipEnabled(true) }
+            if (!(error instanceof DOMException && error.name === "AbortError")) this.#request.onError(error, current)
+          }
+        })()
         return
       }
     } else return
+    this.#cancelEquip()
     this.#render()
   }
-  handleKey(event: Pick<KeyboardEvent, "code" | "preventDefault" | "stopImmediatePropagation">): boolean {
-    if (!this.#visible || event.code !== "Escape") return false
-    this.#command("back"); event.preventDefault(); event.stopImmediatePropagation(); return true
+  #cancelEquip(): void {
+    this.#pending?.abort()
+    this.#pending = undefined
+  }
+  #setEquipEnabled(enabled: boolean): void {
+    this.#runtime.deferPresentation(() => {
+      for (const panel of this.#runtime.snapshot().panels) {
+        if (panel.name.startsWith("Itemitem-") || panel.name === "UnequipButton") this.#apply({ kind: "set-panel-state", panel: panel.id, enabled })
+      }
+    })
+  }
+  #linkLoadoutNavigation(panels: readonly Readonly<{ id: VguiPanelId; bounds: Readonly<{ x: number; y: number; width: number; height: number }> }>[]): void {
+    // CBaseLoadoutPanel links the closest directional score, including the
+    // reciprocal edge, in model-panel order.
+    for (const panel of panels) this.#navigation.set(panel.id, new Map())
+    const directions = [["ArrowUp", "ArrowDown", 0, -1], ["ArrowDown", "ArrowUp", 0, 1], ["ArrowLeft", "ArrowRight", -1, 0], ["ArrowRight", "ArrowLeft", 1, 0]] as const
+    for (const panel of panels) for (const [key, reverse, dx, dy] of directions) {
+      const links = this.#navigation.get(panel.id)!
+      if (links.has(key)) continue
+      let score = (this.#viewport.width + this.#viewport.height) * 2.5, best: VguiPanelId | undefined
+      for (const candidate of panels) {
+        if (candidate === panel) continue
+        const x = candidate.bounds.x + Math.trunc(candidate.bounds.width / 2) - panel.bounds.x - Math.trunc(panel.bounds.width / 2)
+        const y = candidate.bounds.y + Math.trunc(candidate.bounds.height / 2) - panel.bounds.y - Math.trunc(panel.bounds.height / 2)
+        const distance = Math.hypot(x, y), dot = distance ? (x * dx + y * dy) / distance : 0
+        const value = distance * (1.5 - dot)
+        if (dot > 0 && value < score) { score = value; best = candidate.id }
+      }
+      if (best !== undefined) { links.set(key, best); this.#navigation.get(best)!.set(reverse, panel.id) }
+    }
+  }
+  #navigate(key: string): void {
+    if (this.#pending) return
+    const snapshot = this.#runtime.snapshot(), focused = snapshot.input.calculatedKeyFocus
+    let target: VguiPanelId | null | undefined
+    if (this.#page === "loadout") target = focused === null ? undefined : this.#navigation.get(focused)?.get(key)
+    else if (this.#page === "classes") {
+      const classes = snapshot.panels.filter(panel => /^Class[1-9]$/.test(panel.name))
+      const index = classes.findIndex(panel => panel.id === focused)
+      const name = key === "ArrowDown" ? "BackpackButton" : key === "ArrowUp" && index < 0 ? classes[0]?.name
+        : index >= 0 && (key === "ArrowLeft" || key === "ArrowRight") ? classes[(index + (key === "ArrowLeft" ? -1 : 1) + classes.length) % classes.length]?.name : undefined
+      target = snapshot.panels.find(panel => panel.name === name)?.id
+    } else {
+      let cell = this.#cell, page = this.#pageNumber
+      if (cell < 0) cell = 0
+      else {
+        const row = Math.floor(cell / 10) + (key === "ArrowUp" ? -1 : key === "ArrowDown" ? 1 : 0)
+        let column = cell % 10 + (key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : 0)
+        if (row < 0 || row >= 5) return
+        if (column < 0 && page > 0) { page--; column += 10 }
+        if (column >= 10 && page < Math.ceil(this.#pageItems().length / 50) - 1) { page++; column -= 10 }
+        if (column < 0 || column >= 10) return
+        cell = row * 10 + column
+      }
+      const previous = this.#cell
+      this.#cell = cell; this.#selected = this.#pageItems()[page * 50 + cell]?.item.definitionIndex ?? null
+      if (page !== this.#pageNumber) { this.#pageNumber = page; this.#render() }
+      else this.#runtime.deferPresentation(() => {
+        if (previous >= 0) this.#apply({ kind: "mutate-control", panel: this.#cells[previous]!, mutation: { border: `BackpackItemBorder${QUALITY_SUFFIX[this.#pageItems()[page * 50 + previous]?.item.quality ?? 0]}` } })
+        this.#apply({ kind: "mutate-control", panel: this.#cells[cell]!, mutation: { border: "BackpackItemSelectedBorder" } })
+      })
+      const panel = this.#runtime.snapshot().panels.find(panel => panel.id === this.#cells[cell])
+      target = panel?.enabled ? panel.id : null
+    }
+    if (target !== undefined) {
+      this.#apply({ kind: "request-focus", panel: target })
+      this.#apply({ kind: "frame", timeSeconds: this.#request.clock.nowSeconds() })
+    }
+  }
+  handleKey(event: Pick<KeyboardEvent, "code" | "preventDefault" | "stopImmediatePropagation"> & Partial<Pick<KeyboardEvent, "repeat" | "isComposing">>): boolean {
+    if (!this.#visible || event.isComposing) return false
+    if ((this.#page === "slot" || this.#page === "backpack") && this.#cell >= 0 && this.#selected === null && (event.code === "Enter" || event.code === "NumpadEnter")) {
+      event.preventDefault(); event.stopImmediatePropagation(); return true
+    }
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
+      event.preventDefault(); event.stopImmediatePropagation(); this.#navigate(event.code); return true
+    }
+    const command = event.code === "Escape" ? "back" : this.#page === "backpack" || this.#page === "slot"
+      ? event.code === "PageUp" ? "prev" : event.code === "PageDown" ? "next" : undefined : undefined
+    if (!command) return false
+    event.preventDefault(); event.stopImmediatePropagation()
+    if (!event.repeat || command !== "back") this.#command(command)
+    return true
   }
   frame(timeSeconds: number): void {
     if (!this.#visible) return
     this.#apply({ kind: "frame", timeSeconds })
     if (this.#hover && timeSeconds >= this.#hover.since + 0.1) this.#showTooltip()
   }
-  setViewport(viewport: VguiViewport): void { this.#viewport = viewport; this.#apply({ kind: "set-viewport", viewport }); this.#render() }
+  setViewport(viewport: VguiViewport): void {
+    const snapshot = this.#runtime.snapshot(), focused = snapshot.panels.find(panel => panel.id === snapshot.input.keyFocus)?.name
+    this.#viewport = viewport; this.#apply({ kind: "set-viewport", viewport }); this.#render(focused)
+  }
   destroy(): void {
+    this.#destroyed = true; this.#visible = false; this.#cancelEquip()
     this.#releaseSurface?.(); this.#request.onPreview(null)
     this.#request.root.removeEventListener("pointerover", this.#enterItem); this.#request.root.removeEventListener("focusin", this.#enterItem)
     this.#request.root.removeEventListener("pointerout", this.#leaveItem); this.#request.root.removeEventListener("focusout", this.#leaveItem)
