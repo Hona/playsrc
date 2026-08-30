@@ -372,6 +372,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
       watchdogFailures: persistence.watchdogFailures,
       playerCount, launch,
     })
+    // A rejected sustained budget must retain the actual Ready/compilation
+    // owner timings too, not only a generic wall-clock admission failure.
+    if (sustained) await writeFile(path.join(directory, "sustained-loading.json"), JSON.stringify({
+      applicationCommit: sourceCommit.stdout.trim(), sourceFingerprint, capturePlan, loads,
+      scope: "Actual cold entry and Ready boundaries; not a sustained performance sample or permission to omit waiting/setup time",
+    }))
   }
   await loadPractice("cold")
   // Establish the actual Page -> CDP window -> native drawing window before
