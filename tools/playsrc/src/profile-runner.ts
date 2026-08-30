@@ -127,6 +127,8 @@ const PROFILES = Object.freeze({
   "team-door-disabled-blue": { config: "playwright.team-door-lifecycle.config.ts", target: "pl_upward", environment: { PLAYSRC_TEAM_DOOR_DISABLED: "blue" }, minimumRemainingMilliseconds: 90_000 },
   "selection-transition-cpu": { config: "playwright.selection-transition.config.ts", target: "pl_upward", environment: { PLAYSRC_SELECTION_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
+  "equipment-navigation": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward" },
+  "equipment-navigation-cpu": { config: "playwright.equipment-navigation.config.ts", target: "pl_upward", environment: { PLAYSRC_EQUIPMENT_CPU: "1" } },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },
   "shared-lighting": { config: "playwright.shared-lighting-profile.config.ts", target: "jump_beef" },
   "application-lifecycle": { config: "playwright.profile.config.ts", target: "jump_beef", arguments: ["--grep", "TF2 application generation lifecycle"] },
