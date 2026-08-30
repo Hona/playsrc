@@ -92,6 +92,8 @@ public static class PlaysrcNativeJob {
  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+ [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int command);
  [StructLayout(LayoutKind.Sequential)] struct Rect {public int left,top,right,bottom;}
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out Rect rect);
  [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr window);
@@ -112,13 +114,16 @@ public static class PlaysrcNativeJob {
   // closing so a nested timer/button cannot decide twice.
   callback=(window,notification,wparam,lparam,data)=>{
    try {
+    // One ordinary activation of THIS requested message box, never a browser
+    // or another user's window. Do not retry if the user switches away.
+    if(notification==0){ShowWindow(window,5);SetForegroundWindow(window);}
     if(notification==2 || notification==4) {
      record.sessionId=ConsoleSession();
      if(owner.HasExited || (!completion && File.Exists(Path.Combine(request.run,"cancel"))))throw new Exception("Job cancelled");
      if(Now>=request.deadline)throw new Exception("Job deadline exceeded");
     }
     if(notification==4 && !selected) {
-     if(!IsWindowVisible(window) || IsIconic(window))throw new Exception("Prompt is not displayed");
+     if(!IsWindowVisible(window) || IsIconic(window) || GetForegroundWindow()!=window)throw new Exception("Prompt is not displayed in the foreground");
      if(!clock.IsRunning) {
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
       if(request.diagnostic)Pixels(window,Path.Combine(request.run,completion?"completion.png":"consent.png"),record);
@@ -154,7 +159,7 @@ public static class PlaysrcNativeJob {
     buttonCount=completion?0u:2u,buttons=completion?IntPtr.Zero:buttons,defaultButton=completion?1:101,callback=callback,width=400};
    int button,radio;bool verification;int result=TaskDialogIndirect(ref config,out button,out radio,out verification);
    record.dismissedAt=Now;
-   if(result!=0 || !selected || record.displayedAt==0)throw new Exception("Native dialog did not produce a displayed decision (HRESULT "+result+")");
+   if(result!=0 || !selected || record.displayedAt==0)throw new Exception(record.error??("Native dialog did not produce a displayed decision (HRESULT "+result+")"));
    if(!completion && record.error==null)ConsoleSession();
   } catch(Exception error) {record.error=error.Message;record.decision="display-failed";record.dismissedAt=Now;}
   finally {GC.KeepAlive(callback);if(buttons!=IntPtr.Zero){int size=Marshal.SizeOf(typeof(Button));Marshal.DestroyStructure(buttons,typeof(Button));Marshal.DestroyStructure(IntPtr.Add(buttons,size),typeof(Button));Marshal.FreeHGlobal(buttons);}}
