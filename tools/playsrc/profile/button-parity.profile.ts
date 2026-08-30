@@ -56,7 +56,7 @@ test("configured CEx borders retain authored square edges and state colors", asy
           children: [...element.children].map(child => ({ name: (child as HTMLElement).dataset.vguiName,
             raster: (child as HTMLElement).dataset.vguiRaster, hidden: (child as HTMLElement).hidden, style: child.getAttribute("style") })) }
       }),
-      pixelNearCorner: pixel(2, 2), pixelEdge: pixel(0, 2) })
+      pixelNearCorner: pixel(4, 2), pixelOverlap: pixel(2, 2), pixelEdge: pixel(0, 2) })
     await writeFile(path.join(directory, "captures.json"), JSON.stringify(records, null, 2))
     return { pixel }
   }
@@ -66,12 +66,15 @@ test("configured CEx borders retain authored square edges and state colors", asy
   const button = page.locator(selector)
   await act(() => page.mouse.move(600, 300))
   const normal = await capture("normal", selector)
-  expect(normal.pixel(2, 2)).toEqual(fill)
+   // The authored TF2SettingsButton overlaps the first two CSS pixels. At
+   // fractional DPR its last covered pixel blends with this control; retain
+   // that overlap above, and sample this button's unobscured fill separately.
+   expect(normal.pixel(4, 2)).toEqual(fill)
   expect(normal.pixel(0, 2)).toEqual(edge)
   await act(() => button.hover())
-  expect((await capture("armed", selector)).pixel(2, 2)).toEqual(armed)
+   expect((await capture("armed", selector)).pixel(4, 2)).toEqual(armed)
   await act(() => page.mouse.down())
-  expect((await capture("depressed", selector)).pixel(2, 2)).toEqual(armed)
+   expect((await capture("depressed", selector)).pixel(4, 2)).toEqual(armed)
   await act(() => page.mouse.move(600, 300))
   await act(() => page.mouse.up()) // Cancel rather than launch the external forum command.
   // Button::OnCursorExited deliberately retains armed while selected. Exercise
@@ -80,7 +83,7 @@ test("configured CEx borders retain authored square edges and state colors", asy
   await act(() => page.mouse.move(600, 300))
   await expect(button).toHaveAttribute("data-armed", "false")
   await expect(button).toHaveAttribute("data-focused", "true")
-  expect((await capture("restored-authored-focus", selector)).pixel(2, 2)).toEqual(fill)
+   expect((await capture("restored-authored-focus", selector)).pixel(4, 2)).toEqual(fill)
   await capture("disabled", '[data-vgui-name="AchievementsButton"]')
   await act(() => page.locator('[data-vgui-name="SettingsButton"]').click())
   await capture("options", '[data-vgui-runtime="tf2-options"]')
