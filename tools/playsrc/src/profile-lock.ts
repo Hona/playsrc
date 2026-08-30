@@ -22,6 +22,10 @@ export class ProfileQueueTimeout extends Error {
   }
 }
 
+export function retryExclusiveOpenDenial(code: string | undefined, platform: NodeJS.Platform, firstDeniedAt: number | undefined, now: number): boolean {
+  return code === "EPERM" && platform === "win32" && (firstDeniedAt === undefined || now - firstDeniedAt < 100)
+}
+
 export async function readTicket(filename: string, read: (filename: string) => Promise<string> = file => readFile(file, "utf8"), platform = process.platform): Promise<Ticket | null> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -65,6 +69,7 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
   let claimed = false
   let handedOff = false
   let claimError: unknown
+  let firstOpenDenial: number | undefined
   const tryClaim = () => {
     if (!eligible || claimed || claimError || options.signal?.aborted || Date.now() - started >= maximumWaitMilliseconds) return
     let file: number | undefined
@@ -74,7 +79,15 @@ export async function acquireHeadedProfileLock(lockPath: string, profile: string
       claimed = true
       changed()
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "EEXIST") firstOpenDenial = undefined
+      else if (file === undefined && retryExclusiveOpenDenial(code, process.platform, firstOpenDenial, Date.now())) {
+        // O_EXCL is still the sole grant. A delete-pending Windows file can
+        // briefly reject CREATE_NEW with EPERM rather than EEXIST; never unlink
+        // it or reinterpret this denial as acquisition. The existing10ms
+        // handoff timer retries for at most100ms, within the original deadline.
+        firstOpenDenial ??= Date.now()
+      } else {
         claimError = error
         if (file !== undefined) unlinkSync(lockPath)
         changed()
