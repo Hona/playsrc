@@ -1,5 +1,5 @@
-# SSH is the transport. Task Scheduler only bridges SSH's noninteractive
-# session to the existing user's physical console; it runs the normal profiler.
+# SSH is the transport. Only headed profiles bridge to the physical console;
+# background tasks use the same bounded scheduler ownership without a desktop.
 param(
   [ValidateSet('Run','Build','BuildStage','Test','Diagnostic','Cancel','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
@@ -120,7 +120,7 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
     [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
-    foreach($record in 'identity.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json','failure-native-request.json','failure-native-helper.json','failure-native-result.json','failure-native-fault.json','failure-completion-displayed.json') {
+    foreach($record in 'identity.json','ownership.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json') {
       $file=Join-Path $result.run $record
       if(Test-Path -LiteralPath $file){$files+=@{name="job/$record";path=$file}}
     }
@@ -233,14 +233,19 @@ if($JobArguments -eq '[]') {
   $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+(ArgumentArray $TestArguments 19)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}else{@('profile',$Profile)+$extra}
 }
 $arguments = ($workload|ForEach-Object {Quote $_}) -join ' '
+$planText = & $bun (Join-Path $root 'tools/playsrc/src/local-job.ts') plan @workload
+if($LASTEXITCODE){throw 'Workload classification failed; nothing scheduled'}
+$plan = $planText | ConvertFrom-Json
+if($plan.interactive -isnot [bool]){throw 'Missing workload classification'}
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
 # Windows PowerShell 5 turns redirected native stderr into ErrorRecords. Queue
 # progress is not a terminating exception; the actual native exit code owns it.
-$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); `$ErrorActionPreference='Continue'; & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --task $(Quote $name) $arguments > $(Quote $log) 2> $(Quote "$log.bootstrap.log"); `$code=`$LASTEXITCODE; `$ErrorActionPreference='Stop'; exit `$code } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog) -Workload $(Quote (ConvertTo-Json -InputObject @($workload) -Compress)); `$ErrorActionPreference='Continue'; & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --task $(Quote $name) $arguments > $(Quote $log) 2> $(Quote "$log.bootstrap.log"); `$code=`$LASTEXITCODE; `$ErrorActionPreference='Stop'; exit `$code } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 New-Item -ItemType File -Path $log | Out-Null
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
-$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+$logonType = if($plan.interactive){'Interactive'}else{'S4U'}
+$principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType $logonType -RunLevel Limited
 # Task Scheduler defaults to 7 (BELOW_NORMAL/background), unlike an ordinary
 # interactive launch. 5 is NORMAL, not an above-normal/realtime benchmark boost.
 # https://learn.microsoft.com/windows/win32/taskschd/tasksettings-priority

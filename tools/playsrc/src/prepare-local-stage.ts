@@ -38,7 +38,7 @@ if (import.meta.main) {
     // The local-job owner still bounds the entire stage, including this wait.
     const lockPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", "chromium-profile.lock")
     const borrowed = await borrowedWindowsJobLock(lockPath, ["build-stage", ...process.argv.slice(2)])
-    if (process.platform === "win32" && !borrowed) throw new Error("Windows preparation requires local-job run <job> build-stage ... and its displayed per-job decision")
+    if (process.platform === "win32" && !borrowed) throw new Error("Windows preparation requires local-job run <job> build-stage ... and its checked job ownership")
     const lock = borrowed ?? await acquireHeadedProfileLock(lockPath, `prepare-${stage.kind}`)
     try { console.log(JSON.stringify(await prepareLocalStage(config, stage))) }
     finally { if (!borrowed) await releaseHeadedProfileLock(lockPath, lock.token) }

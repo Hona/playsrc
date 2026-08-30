@@ -19,15 +19,16 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION)("sessio
   const lock = await acquireHeadedProfileLock(lockPath, "session-zero-rejection-test", 10_000)
   try {
     const result = await runWindowsNativeJob({ job: randomUUID(), task: `playsrc-local-job-${randomUUID()}`, run,
-      action: "diagnostic session-zero rejection", invocation: ["diagnostic", "0", "1"],
-      command: [process.execPath, "-e", "throw Error('A session-zero diagnostic must never dispatch')"], cwd: repositoryRoot,
-      lockPath, lockToken: lock.token, deadline: Date.now() + 15_000, diagnostic: true, preflightFailure: null }, process.env, async () => {})
+      action: "profile gameplay session-zero rejection", invocation: ["profile", "gameplay"],
+      command: [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", repositoryRoot, "gameplay"], cwd: repositoryRoot,
+      lockPath, lockToken: lock.token, deadline: Date.now() + 15_000, preflightFailure: null }, process.env, async () => {})
     expect(result.outcome).toBe("failed")
     expect(result.error).toContain("matching physical console")
     expect(result.childPid).toBe(0)
     expect(result.consent).toBeNull()
     expect(result.completion).toBeNull()
     expect(result.treeEmpty).toBe(true)
+    expect(result.uiInvocations).toBe(0)
     console.log(`Actual session-zero rejection receipt: ${path.join(run, "native-result.json")}`)
   } finally { await releaseHeadedProfileLock(lockPath, lock.token) }
 }, 30_000)

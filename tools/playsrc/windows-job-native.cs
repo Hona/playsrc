@@ -2,41 +2,38 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
-// One scheduled job, one decision, one owned process tree. All UI is native
+// One scheduled job, one validated classification, one owned process tree. UI is
 // TaskDialogIndirect; no game/window focus, input suppression or desktop repair.
 // https://learn.microsoft.com/windows/win32/api/commctrl/nf-commctrl-taskdialogindirect
 // https://learn.microsoft.com/windows/win32/procthread/job-objects
-public static class PlaysrcNativeJob {
+public static partial class PlaysrcNativeJob {
  public sealed class Request {
-  public string job, task, run, action, executable, cwd, lockPath, lockToken, manifest;
-  public string preflightFailure,recordPrefix;
-  public string[] arguments, invocation;
+  public string job, task, run, action, cwd, lockPath, lockToken, manifest;
+  public string preflightFailure;
+  public string[] command, invocation;
   public int ownerPid;
   public long deadline;
-  public bool diagnostic;
  }
  public sealed class Dialog {
-  public string decision, error, pixels, sha256;
-  public long displayedAt, decidedAt, dismissedAt, visibleMilliseconds, window, bytes;
+   public string decision, error;
+   public long displayedAt, decidedAt, dismissedAt, visibleMilliseconds, window;
   public int sessionId;
  }
  public sealed class Receipt {
   public string schema="playsrc-native-job-v1", job, task, run, action, lockToken, outcome="failed", error;
   public string[] invocation;
-  public int ownerPid, helperPid, sessionId, childPid;
+  public int ownerPid, helperPid, sessionId, childPid, uiInvocations;
   public int? exitCode;
   public long ownerCreatedAt, helperCreatedAt, childCreatedAt, startedAt, finishedAt, commandStartedAt, teardownAt;
   public long helperPeakPrivateBytes;
-  public bool treeEmpty;
+  public bool treeEmpty, interactive;
   public Dialog consent, completion;
  }
  static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
@@ -120,17 +117,6 @@ public static class PlaysrcNativeJob {
   }
   return true;
  }
- static void Pixels(IntPtr window,string file,Dialog record) {
-  if(!Presented(window))throw new Exception("Diagnostic dialog is not visibly presented; no pixel claim");
-  // Client pixels only: no rounded frame corners, shadows or private desktop.
-  Rect rect;Check(GetClientRect(window,out rect),"Dialog bounds");var origin=new Point();Check(ClientToScreen(window,ref origin),"Dialog client origin");
-  int width=rect.right-rect.left,height=rect.bottom-rect.top;
-  if(width<=0 || height<=0 || (long)width*height>4000000)throw new Exception("Invalid dialog pixel bounds");
-  using(var bitmap=new Bitmap(width,height)) {using(var graphics=Graphics.FromImage(bitmap))graphics.CopyFromScreen(origin.x,origin.y,0,0,bitmap.Size);bitmap.Save(file,System.Drawing.Imaging.ImageFormat.Png);}
-  if(!Presented(window))throw new Exception("Dialog visibility changed during diagnostic capture");
-  record.pixels=file;record.bytes=new FileInfo(file).Length;
-  using(var hash=SHA256.Create())record.sha256=BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(file))).Replace("-","").ToLowerInvariant();
- }
  static Dialog Show(Request request,bool completion,string outcome,Process owner) {
   var record=new Dialog();var clock=new Stopwatch();bool selected=false;IntPtr buttons=IntPtr.Zero;
   DialogCallback callback=null;
@@ -152,8 +138,7 @@ public static class PlaysrcNativeJob {
      if(!clock.IsRunning) {
       if(!Presented(window))throw new Exception("Prompt was not visibly presented");
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
-      if(request.diagnostic)Pixels(window,Path.Combine(request.run,request.recordPrefix+(completion?"completion.png":"consent.png")),record);
-      Save(Path.Combine(request.run,request.recordPrefix+(completion?"completion-displayed.json":"consent-displayed.json")),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
+      Save(Path.Combine(request.run,completion?"completion-displayed.json":"consent-displayed.json"),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
      }
      // After confirmed presentation, switching to another app is non-response,
      // not a display failure or proof of AFK. Sampling has its own idle guard.
@@ -245,13 +230,13 @@ public static class PlaysrcNativeJob {
    jobList=Marshal.AllocHGlobal(IntPtr.Size);Marshal.WriteIntPtr(jobList,job);
    Check(UpdateProcThreadAttribute(attributes,0,new UIntPtr(0x2000d),jobList,new UIntPtr((uint)IntPtr.Size),IntPtr.Zero,IntPtr.Zero),"Set atomic owned-job list");
    var startup=new ExtendedStartup{basic=new Startup{size=Marshal.SizeOf(typeof(ExtendedStartup)),flags=0x100,input=input,output=log,error=log},attributes=attributes};
-   var command=new StringBuilder(Quote(request.executable));foreach(string argument in request.arguments)command.Append(' ').Append(Quote(argument));
+    var command=new StringBuilder(Quote(request.command[0]));for(int index=1;index<request.command.Length;index++)command.Append(' ').Append(Quote(request.command[index]));
    // Never run even one workload instruction outside this owned job.
-   Check(CreateProcessW(request.executable,command,IntPtr.Zero,IntPtr.Zero,true,0x08000000|0x80000|4,IntPtr.Zero,request.cwd,ref startup,out child),"Create atomically owned suspended workload");
+    Check(CreateProcessW(request.command[0],command,IntPtr.Zero,IntPtr.Zero,true,0x08000000|0x80000|4,IntPtr.Zero,request.cwd,ref startup,out child),"Create atomically owned suspended workload");
    receipt.childPid=(int)child.pid;
    using(var process=Process.GetProcessById(receipt.childPid))receipt.childCreatedAt=new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    Save(Path.Combine(request.run,"dispatch.json"),new {pid=receipt.childPid,createdAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,job=request.job,task=request.task,run=request.run});
-   ConsoleSession();
+    if(receipt.interactive)ConsoleSession();
    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before dispatch");
    receipt.commandStartedAt=Now;
    if(ResumeThread(child.thread)==uint.MaxValue)throw Native("Resume workload");resumed=true;
@@ -277,11 +262,10 @@ public static class PlaysrcNativeJob {
   }
  }
 
- public static void Run(string file,int parentPid) {
+  public static void Run(string file,int parentPid,bool interactive) {
   var request=Json.Deserialize<Request>(File.ReadAllText(file));
-  if(request.recordPrefix!="" && (request.recordPrefix!="failure-" || String.IsNullOrEmpty(request.preflightFailure)))throw new Exception("Invalid failure-only notification request");
   if(request.ownerPid!=parentPid || request.deadline<=Now || request.deadline-Now>175000)throw new Exception("Invalid native owner/deadline");
-  var receipt=new Receipt{job=request.job,task=request.task,run=request.run,action=request.action,invocation=request.invocation,lockToken=request.lockToken,ownerPid=parentPid,helperPid=Process.GetCurrentProcess().Id,startedAt=Now};
+   var receipt=new Receipt{job=request.job,task=request.task,run=request.run,action=request.action,invocation=request.invocation,interactive=interactive,lockToken=request.lockToken,ownerPid=parentPid,helperPid=Process.GetCurrentProcess().Id,startedAt=Now};
   IntPtr context=IntPtr.Zero;UIntPtr cookie=UIntPtr.Zero;
   using(var owner=Process.GetProcessById(parentPid)) {
    receipt.ownerCreatedAt=new DateTimeOffset(owner.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
@@ -296,37 +280,29 @@ public static class PlaysrcNativeJob {
      if(WaitForSingleObject(ownerHandle,0)==0)reason="owner-exited";else if(Now>=request.deadline)reason="deadline";else if(bytes>536870912)reason="private-memory-limit";
     }catch{reason="owner-readback-failed";}
     if(reason==null || Volatile.Read(ref guardDone)!=0 || Interlocked.Exchange(ref faulted,1)!=0)return;
-    try{Save(Path.Combine(request.run,request.recordPrefix+"native-fault.json"),new {reason=reason,pid=receipt.helperPid,createdAt=receipt.helperCreatedAt,at=Now,privateBytes=bytes});}catch{}
+     try{Save(Path.Combine(request.run,"native-fault.json"),new {reason=reason,pid=receipt.helperPid,createdAt=receipt.helperCreatedAt,at=Now,privateBytes=bytes});}catch{}
     // OS closes the non-inheritable job handle and tears down its owned tree.
     Environment.Exit(124);
    },null,0,100)) {
    try {
     var held=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(request.lockPath));
     if((string)held["token"]!=request.lockToken || Convert.ToInt32(held["pid"])!=parentPid)throw new Exception("Machine-wide ownership differs");
-    if(request.recordPrefix=="failure-") {
-     string dispatch=Path.Combine(request.run,"dispatch.json");
-     if(File.Exists(dispatch)) {
-      var previous=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(dispatch));
-      if((string)previous["job"]!=request.job || (string)previous["task"]!=request.task || (string)previous["run"]!=request.run)throw new Exception("Interrupted dispatch identity differs");
-      receipt.childPid=Convert.ToInt32(previous["pid"]);receipt.childCreatedAt=Convert.ToInt64(previous["createdAt"]);
-      try {using(var process=Process.GetProcessById(receipt.childPid)) {
-       if(new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()==receipt.childCreatedAt && !process.WaitForExit(2000))throw new Exception("Interrupted owned process teardown is unconfirmed");
-      }}catch(ArgumentException){} // Exact original process is already gone.
+     if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
+     if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
+     receipt.sessionId=Process.GetCurrentProcess().SessionId;
+     if(interactive) {
+      receipt.sessionId=ConsoleSession();
+      var activation=new Activation{size=Marshal.SizeOf(typeof(Activation)),source=request.manifest};
+      context=CreateActCtxW(ref activation);if(context==new IntPtr(-1))throw Native("Native dialog activation context");
+      Check(ActivateActCtx(context,out cookie),"Activate native common controls");
+      receipt.uiInvocations++;receipt.consent=Show(request,false,null,owner);
+      Save(Path.Combine(request.run,"consent.json"),receipt);
      }
-     receipt.treeEmpty=true;
-    }
-    receipt.sessionId=ConsoleSession();
-    var activation=new Activation{size=Marshal.SizeOf(typeof(Activation)),source=request.manifest};
-    context=CreateActCtxW(ref activation);if(context==new IntPtr(-1))throw Native("Native dialog activation context");
-    Check(ActivateActCtx(context,out cookie),"Activate native common controls");
-    if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
-    if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
-    receipt.consent=Show(request,false,null,owner);
-    Save(Path.Combine(request.run,"consent.json"),receipt);
-    if(receipt.consent.error!=null) {receipt.error=receipt.consent.error;receipt.treeEmpty=true;if(File.Exists(Path.Combine(request.run,"cancel")))receipt.outcome="cancelled";}
-    else if(receipt.consent.decision=="denied") {receipt.outcome="denied";receipt.treeEmpty=true;}
-    else if(receipt.consent.decision=="approved" || receipt.consent.decision=="approved-timeout") {
-     Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_CONSENT",Path.Combine(request.run,"consent.json"));
+     if(interactive && receipt.consent.error!=null) {receipt.error=receipt.consent.error;receipt.treeEmpty=true;if(File.Exists(Path.Combine(request.run,"cancel")))receipt.outcome="cancelled";}
+     else if(interactive && receipt.consent.decision=="denied") {receipt.outcome="denied";receipt.treeEmpty=true;}
+     else if(!interactive || receipt.consent.decision=="approved" || receipt.consent.decision=="approved-timeout") {
+      Save(Path.Combine(request.run,"ownership.json"),receipt);
+      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_OWNER",Path.Combine(request.run,"ownership.json"));
      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_LOCK",request.lockPath);
      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_DEADLINE",(request.deadline-7000).ToString());
      Execute(request,receipt,owner);
@@ -345,10 +321,10 @@ public static class PlaysrcNativeJob {
       if(verification["error"]!=null)throw new Exception((string)verification["error"]);
      } catch(Exception error) {receipt.outcome="failed";receipt.error=error.Message;}
     }
-    if(receipt.treeEmpty && cookie!=UIntPtr.Zero)receipt.completion=Show(request,true,receipt.outcome,owner);
+     if(interactive && receipt.outcome=="completed" && receipt.commandStartedAt!=0 && receipt.treeEmpty && cookie!=UIntPtr.Zero) {receipt.uiInvocations++;receipt.completion=Show(request,true,receipt.outcome,owner);}
     if(!receipt.treeEmpty){receipt.outcome="failed";receipt.error="Owned child teardown unconfirmed; "+receipt.error;}
     receipt.finishedAt=Now;
-    Save(Path.Combine(request.run,request.recordPrefix+"native-result.json"),receipt);
+     Save(Path.Combine(request.run,"native-result.json"),receipt);
     if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);
     if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);
     Interlocked.Exchange(ref guardDone,1);

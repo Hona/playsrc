@@ -60,7 +60,7 @@ test("local jobs reuse ordinary tests and headed profilers, without inherited re
     .toEqual({ PATH: "native-tools", CARGO_HOME: "native-cargo", PLAYSRC_DEV_PORT: "49123" })
 })
 
-test.skipIf(process.platform === "win32")("origin checkout is exact and isolated; ordinary test failures and mutations stay red (non-Windows fixture; Windows requires scheduled UI)", async () => {
+test.skipIf(process.platform === "win32")("origin checkout is exact and isolated; ordinary test failures and mutations stay red (non-Windows fixture; Windows requires scheduled ownership)", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-local-job-"))
   const source = path.join(directory, "source"), origin = path.join(directory, "origin.git")
   const git = (args: string[], cwd = source) => {
