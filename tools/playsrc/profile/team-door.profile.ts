@@ -12,16 +12,21 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
   const { sourceCacheDir } = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   if (!directory) throw new Error("Use the checked team-door profile runner")
   const native = await startupNativeReader(page, sourceCacheDir)
-  const admissions: unknown[] = [], captures: unknown[] = [], actions: unknown[] = []
+  const admissions: unknown[] = [], captures: { file: string; before: number; after: number; data: string; timestamp: number; privacy: string; bytes?: number; sha256?: string }[] = [], actions: unknown[] = []
   const cdp = await context.newCDPSession(page)
   const check = async (name: string) => {
-    const observation = await native.read(path.join(directory, `${name}.desktop.png`))
+    const observation = await native.read(sampling ? undefined : path.join(directory, `${name}.desktop.png`))
     admissions.push(observation)
     requireStartupNative(observation)
   }
   await page.addInitScript(installBrowserFrameProfiler)
   await page.addInitScript(() => { (globalThis as any).__playsrcProfile = { captureTeamDoors: false } })
-  let sampling = false, captureTask: Promise<void> | undefined, failure: string | null = null
+  let sampling = false, failure: string | null = null
+  cdp.on("Page.screencastFrame", frame => {
+    if (sampling && captures.length < 1024) captures.push({ file: `motion-${String(captures.length).padStart(3, "0")}.page.png`,
+      before: Date.now(), after: Date.now(), timestamp: frame.metadata.timestamp! * 1000, data: frame.data, privacy: "client-only-review-required" })
+    void cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => {})
+  })
   try {
     await page.goto("/", { waitUntil: "domcontentloaded" })
     await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu")
@@ -38,13 +43,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     await page.evaluate(() => { (globalThis as any).__playsrcProfile.captureTeamDoors = true; (globalThis as any).__playsrcFrameProfiler.active = true })
     const started = Date.now()
     sampling = true
-    captureTask = (async () => {
-      while (sampling) {
-        const file = `motion-${String(captures.length).padStart(3, "0")}.page.png`, before = Date.now()
-        await page.screenshot({ path: path.join(directory, file) })
-        captures.push({ file, before, after: Date.now(), privacy: "client-only-review-required" })
-      }
-    })()
+    await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 2 })
     const hover = async (team: "red" | "blue" | "auto" | null, wait: number) => {
       actions.push({ at: Date.now(), team })
       if (team) await page.locator(`.team-selection-layer [data-vgui-name='teambutton${team === "blue" ? 0 : team === "red" ? 1 : 2}']`).hover()
@@ -62,7 +61,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     await hover(null, 650)
     await page.waitForTimeout(Math.max(0, 6000 - (Date.now() - started)))
     sampling = false
-    await captureTask
+    await cdp.send("Page.stopScreencast")
     const activeMilliseconds = Date.now() - started
     await check("after-motion")
     const observation = await page.evaluate(() => {
@@ -73,8 +72,10 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     })
     const heapAfter = await cdp.send("Runtime.getHeapUsage")
     await profileArtifact(async () => {
-      for (const capture of captures as { file: string; bytes?: number; sha256?: string }[]) {
-        const bytes = await readFile(path.join(directory, capture.file))
+      for (const capture of captures) {
+        const bytes = Buffer.from(capture.data, "base64")
+        await writeFile(path.join(directory, capture.file), bytes)
+        capture.data = ""
         capture.bytes = bytes.length
         capture.sha256 = createHash("sha256").update(bytes).digest("hex")
       }
@@ -86,7 +87,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false
-    await captureTask?.catch(() => {})
+    await cdp.send("Page.stopScreencast").catch(() => {})
     await native.close()
     await profileArtifact(async () => { await writeFile(path.join(directory, "team-door-admission.json"), JSON.stringify({ admissions, records: native.records, actions, captures, failure })) })
   }
