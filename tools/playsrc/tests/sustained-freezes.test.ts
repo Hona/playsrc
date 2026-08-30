@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test"
 import { sustainedFreezes } from "../profile/sustained-freezes"
+test("simulation diagnostics do not install a main-isolate CPU profiler inside the sample", async () => {
+  const source = await Bun.file(new URL("../profile/sustained-koth.profile.ts", import.meta.url)).text()
+  expect(source).not.toContain('cdp.send("Profiler.start")')
+  expect(source).toContain('operation("worker-cpu-start"')
+})
 test("freeze attribution keeps straddling observe calls, native spans, zeros and censored ends", () => {
   const sample = { timeOrigin: 10000, rpc: { records: [{ id: 1, kind: "observe", sent: 50, received: 1600, timings: { transactMilliseconds: 1200 } }],
     pending: [{ id: 2, kind: "models", sent: 1900, censoredEnd: true }] }, inputs: [{ at: 150, completedAt: 1600 }] }
