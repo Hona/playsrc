@@ -130,8 +130,7 @@ export type HeadedProfile = keyof typeof PROFILES
 export function profileBrowserLaunch(profile: HeadedProfile, configured: BrowserLaunch): BrowserLaunch {
   const plan = PROFILES[profile]
   const environment: Readonly<NodeJS.ProcessEnv> = "environment" in plan ? plan.environment : {}
-  const channel = environment.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? configured.channel
-  return { ...configured, ...(channel ? { channel } : {}) }
+  return effectiveProfileBrowserLaunch({ channel: configured.channel, launchOptions: configured }, environment)
 }
 
 export function profileMinimumRemainingMilliseconds(profile: HeadedProfile, environment: Readonly<NodeJS.ProcessEnv> = process.env): number {
