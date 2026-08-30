@@ -18,7 +18,7 @@ test.skipIf(!process.env.PLAYSRC_LOCAL_JOB_OWNER && process.env.RUN_CONFIGURED_S
   try {
     const cargo = path.join(config.sourceCacheDir, "toolchains/rust/cargo/bin", process.platform === "win32" ? "cargo.exe" : "cargo")
     const cases = [
-      ["audio", "-p", "playsrc-audio", "--lib"],
+      ["audio", "-p", "playsrc-audio"],
       ["koth", "-p", "playsrc-tf2", "--test", "configured_koth", "viaduct_authored_logic_capture_io_and_generated_clocks", "--", "--ignored"],
     ]
     for (const [name, ...args] of cases) {
