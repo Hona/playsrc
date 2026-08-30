@@ -212,6 +212,32 @@ test("class and loadout directional focus activates the real button and survives
   } finally { ui.destroy() }
 })
 
+test("a held equipment Enter presses the button but changes only one page on release", () => {
+  const { ui, root } = navigationFixture()
+  const send = (type: string, repeat = false) => {
+    const snapshot = ui.snapshot().vgui
+    const name = snapshot.panels.find(panel => panel.id === snapshot.input.keyFocus)!.name
+    const event = new FakeEvent(type, { key: "Enter", code: "Enter", repeat })
+    event.target = byName(root, name)
+    root.ownerDocument.dispatchEvent(event)
+  }
+  try {
+    ui.show(nativeEquipment); ui.frame(0)
+    send("keydown")
+    expect(ui.snapshot().page).toBe("classes")
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "Class1")!.state.depressed).toBe(true)
+    send("keydown", true)
+    expect(ui.snapshot().page).toBe("classes")
+    send("keyup")
+    expect(ui.snapshot().page).toBe("loadout")
+    ui.frame(0)
+    send("keydown")
+    root.ownerDocument.defaultView.dispatchEvent(new FakeEvent("blur"))
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "Itemslot-0")!.state.depressed).toBe(false)
+    expect(ui.snapshot().page).toBe("loadout")
+  } finally { ui.destroy() }
+})
+
 test("grid arrows preserve row boundaries, cross pages horizontally and select empty cells without equipping", () => {
   const calls: unknown[] = []
   const { ui, activate, key } = navigationFixture(async (...args) => { calls.push(args); return nativeEquipment })

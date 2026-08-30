@@ -3757,7 +3757,7 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     if (sameName(message.name, "KeyCodePressed")) {
-      this.controlKeyPressed(panel, String(message.fields.code ?? ""), Boolean(message.fields.shift), Boolean(message.fields.control || message.fields.meta))
+      this.controlKeyPressed(panel, String(message.fields.code ?? ""), Boolean(message.fields.shift), Boolean(message.fields.control || message.fields.meta), Boolean(message.fields.repeat))
       return
     }
     if (sameName(message.name, "KeyCodeTyped")) {
@@ -4015,7 +4015,7 @@ class SourceVguiRuntime implements VguiRuntime {
     this.reapplyPanelPresentation(panel)
   }
 
-  private controlKeyPressed(panel: PanelState, key: string, shift: boolean, control: boolean): void {
+  private controlKeyPressed(panel: PanelState, key: string, shift: boolean, control: boolean, repeat: boolean): void {
     const sourceControl = panel.sourceControl
     if (sameName(sourceControl, "SectionedListPanel") && panel.sectionedItems.length > 0) {
       const prior = panel.activeIndex ?? 0
@@ -4037,9 +4037,17 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name)) && (key === "Enter" || key === "Space")) {
+      if (repeat) return
       panel.armed = true
       panel.properties.set("keyDown", "1")
-      if (panel.activation !== 1) this.clickControl(panel)
+      if (panel.activation === 0) this.clickControl(panel)
+      else if (panel.activation === 2) {
+        this.setSelected(panel, true, false)
+        panel.depressed = true
+        const sound = panel.properties.get("sound_depressed")
+        if (sound) this.pendingRequests.push(Object.freeze({ kind: "sound", panel: panel.id, logicalIdentity: sound }))
+      }
+      this.reapplyPanelPresentation(panel)
       return
     }
     if (["TextEntry", "ComboBox"].some((name) => sameName(sourceControl, name))) this.editKey(panel, key, shift, control)
@@ -4049,9 +4057,11 @@ class SourceVguiRuntime implements VguiRuntime {
     const sourceControl = panel.sourceControl
     if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some((name) => sameName(sourceControl, name))
       && panel.properties.get("keyDown") === "1" && (key === "Enter" || key === "Space")) {
-      if (panel.activation !== 0) this.clickControl(panel)
+      if (panel.enabled && panel.activation !== 0 && (panel.activation !== 2 || panel.selected)) this.clickControl(panel)
       panel.properties.delete("keyDown")
       panel.armed = false
+      panel.depressed = false
+      this.reapplyPanelPresentation(panel)
     }
   }
 
@@ -5883,16 +5893,29 @@ class SourceVguiRuntime implements VguiRuntime {
     })
     this.listen(this.document, "visibilitychange", () => {
       if (!this.document.hidden) return
+      this.cancelBrowserButtonPresses()
       if (this.capture !== null) this.apply({ kind: "set-pointer-capture", panel: null, initiatingButton: null, pointerId: null })
       this.apply({ kind: "request-focus", panel: null })
       this.browserFrame()
     })
     if (window) {
       this.listen(window, "blur", () => {
+        this.cancelBrowserButtonPresses()
         if (this.capture !== null) this.apply({ kind: "set-pointer-capture", panel: null, initiatingButton: null, pointerId: null })
         this.apply({ kind: "request-focus", panel: null })
         this.browserFrame()
       })
+    }
+  }
+
+  private cancelBrowserButtonPresses(): void {
+    for (const panel of this.panels.values()) {
+      if (panel.properties.get("keyDown") !== "1") continue
+      panel.properties.delete("keyDown")
+      panel.armed = false
+      panel.depressed = false
+      if (panel.activation === 2) this.setSelected(panel, false, false)
+      this.reapplyPanelPresentation(panel)
     }
   }
 
