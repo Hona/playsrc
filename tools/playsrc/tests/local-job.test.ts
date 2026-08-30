@@ -3,7 +3,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
-import { availableDevelopmentPort, localJobCommand, localJobEnvironment, prepareLocalJob, readLocalTaskResult, runLocalJob, validateRevision } from "../src/local-job"
+import { availableDevelopmentPort, localJobEnvironment, prepareLocalJob, readLocalTaskResult, runLocalJob, validateRevision } from "../src/local-job"
+import { localJobCommand } from "../src/local-job-command"
 import { resolveCargoExecutable } from "../src/tf2-wasm-build"
 
 test("configured compiler paths do not depend on SSH PATH/PATHEXT discovery", async () => {

@@ -5,9 +5,7 @@ import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { finished } from "node:stream/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
-import { parseHeadedProfile } from "./profile-runner"
-import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
-import { parseLocalPreparationStage } from "./prepare-local-stage"
+import { localJobCommand } from "./local-job-command"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 import { runWindowsNativeJob, type NativeJobReceipt } from "./windows-job-native"
 
@@ -54,32 +52,6 @@ export function validateRevision(ref: string, commit: string): void {
     || ref.includes("..") || ref.includes("//") || ref.endsWith("/") || ref.endsWith(".lock")) {
     throw new Error("Expected an explicit refs/heads/... or refs/tags/... and an exact 40-character commit")
   }
-}
-
-export function localJobCommand(args: readonly string[]): { command: string[]; interactive: boolean } {
-  if (!Array.isArray(args) || args.length > 20 || args.some(value => typeof value !== "string" || value.length > 1024 || value.includes("\0"))) throw new Error("Invalid workload arguments")
-  const [kind, ...options] = args
-  if (kind === "test") {
-    if (options.some(value => !/^[A-Za-z0-9_./-]+\.test\.ts$/.test(value) || value.startsWith("-") || value.startsWith("/") || value.split("/").includes(".."))) {
-      throw new Error("test accepts only repository-relative .test.ts files")
-    }
-    return { command: ["test", ...options], interactive: false }
-  }
-  if (kind === "profile") {
-    parseHeadedProfile(options)
-    return { command: ["tools/playsrc/src/profile-runner.ts", ...options], interactive: true }
-  }
-  if (kind === "build" && options.length === 1 && (TF2_TARGET_NAMES as readonly string[]).includes(options[0]!)) {
-    return { command: ["tools/playsrc/src/cli.ts", "dev", options[0]!, "--prepare-only"], interactive: false }
-  }
-  if (kind === "build-stage") {
-    parseLocalPreparationStage(options)
-    return { command: ["tools/playsrc/src/prepare-local-stage.ts", ...options], interactive: false }
-  }
-  if (kind === "diagnostic" && options.length === 2 && /^\d{1,5}$/.test(options[0]!) && Number(options[0]) <= 30_000 && /^[01]$/.test(options[1]!)) {
-    return { command: ["tools/playsrc/src/local-job-diagnostic.ts", ...options], interactive: false }
-  }
-  throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|resources <map>, or profile <normal profile name> [normal profiler options]")
 }
 
 /** Remote transport never supplies a browser endpoint, fixture, or asset server.
