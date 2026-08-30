@@ -2735,8 +2735,8 @@ class SourceVguiRuntime implements VguiRuntime {
             kind: "nine-slice" as const,
             sourceCornerWidth: border.sourceCornerWidth,
             sourceCornerHeight: border.sourceCornerHeight,
-            drawCornerWidth: border.drawCornerWidth,
-            drawCornerHeight: border.drawCornerHeight,
+            drawCornerWidth: this.proportional(border.drawCornerWidth, null),
+            drawCornerHeight: this.proportional(border.drawCornerHeight, null),
           })
       this.presentMaterialRaster(panel, image, border.kind === "scalable-image" ? border.color : WHITE, geometry, "border-raster", border.paintFirst ? -1 : 2)
       panel.element.style.border = "0"
@@ -2753,7 +2753,7 @@ class SourceVguiRuntime implements VguiRuntime {
       panel.element.style.borderImageRepeat = border.tiled ? "repeat" : "stretch"
     } else {
       panel.element.style.borderImageSlice = `${border.sourceCornerHeight} ${border.sourceCornerWidth} fill`
-      panel.element.style.borderImageWidth = `${border.drawCornerHeight}px ${border.drawCornerWidth}px`
+      panel.element.style.borderImageWidth = `${this.proportional(border.drawCornerHeight, null)}px ${this.proportional(border.drawCornerWidth, null)}px`
       panel.element.style.borderImageRepeat = "stretch"
     }
   }
