@@ -586,9 +586,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
     }
     cancellation.signal.throwIfAborted()
     const verificationStarted = Date.now()
-    if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
-      || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity(root)) throw new Error("Source/configuration/generated WASM changed during the command; evidence is not executable-current")
-    if (path.resolve(root) !== path.resolve(repositoryRoot) && harnessIdentity !== await applicationBuildIdentity(repositoryRoot)) throw new Error("Profiler harness changed during the command")
+    await verifyPrepared()
     sourceVerificationMilliseconds = Date.now() - verificationStarted
     outcome = exitCode === 0 ? "passed" : "failed"
   } catch (error) {
