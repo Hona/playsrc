@@ -16,6 +16,37 @@ import {
 const cloneInput = (): any => structuredClone(configuredTf2UiResourceInput)
 
 describe("configured TF2 UI resource descriptor", () => {
+  test("main-menu corner authority distinguishes dashboard masks from genuinely rounded ITEMS/SHOP", () => {
+    // Independently checked against the configured archive bytes, build 24245096.
+    const resources = cloneInput().resources
+    const find = (nodes: any[], name: string): any => {
+      for (const node of nodes) {
+        if (node.name === name) return node
+        const child = find(node.children, name)
+        if (child) return child
+      }
+    }
+    const props = (node: any) => Object.fromEntries(node.children.filter((child: any) => child.value !== null).map((child: any) => [child.name.toLowerCase(), child.value]))
+    const menu = resources.find((source: any) => source.logicalPath === "resource/ui/mainmenuoverride.res")
+    const dashboard = resources.find((source: any) => source.logicalPath === "resource/ui/matchmakingdashboard.res")
+    const scheme = resources.find((source: any) => source.logicalPath === "resource/clientscheme.res")
+    expect(menu.sha256).toBe("5f628eb8ec62ea557cf49bc13e587b48c5e7ebd480742e1795e1653c5ae8ed92")
+    expect(dashboard.sha256).toBe("edde2b40a83a8513251773799a37967ea8d3c4d578d4a7043c2378e158e29289")
+    for (const name of ["CharacterSetupButton", "GeneralStoreButton", "SettingsButton", "ReportBugButton"]) {
+      const properties = props(find(menu.document, name))
+      expect(properties.controlname).toBe("CExImageButton")
+      expect(properties.roundedcorners).toBeUndefined()
+      for (const state of ["default", "armed", "selected", "disabled"]) expect(properties[`border_${state}`]).toBeUndefined()
+    }
+    for (const [name, mask] of [["ToggleChatButton", "0"], ["FindAGameButton", "1"], ["ResumeButton", "1"], ["QuitButton", "0"]]) {
+      expect(props(find(dashboard.document, name!)).roundedcorners).toBe(mask)
+    }
+    for (const name of ["ButtonBorder", "ButtonDepressedBorder", "ButtonKeyFocusBorder"]) {
+      expect(props(find(scheme.document, name))).toEqual({ inset: "0 0 0 0", backgroundtype: "2" })
+    }
+    expect(props(find(menu.document, "NewUserForumsButton")).border_default).toBe("MainMenuSubButtonBorder")
+  })
+
   test("authored configured offline-practice maps have their exact drawable training screenshots", () => {
     const dependencies = new Set(bundleManifest.dependencies.map(dependency => dependency.logicalPath))
     for (const map of ["pl_upward", "koth_viaduct", "koth_lakeside_final", "koth_sawmill"]) {
