@@ -1,4 +1,5 @@
 export { initializeDeveloperConsole } from "./developer-console"
+export { browserOwnsKey } from "./browser-input"
 export { initializeClientDiagnostics } from "./client-diagnostics"
 export { admitLocalPlatformFonts, classifyBrowserPlatform } from "./platform-fonts"
 export { evaluateVguiSchemeCondition, resolveVguiSchemeFonts } from "./scheme-fonts"

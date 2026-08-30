@@ -46,6 +46,7 @@ import {
   type VguiViewport,
 } from "./runtime-contract"
 import { VGUI_CSS } from "./style"
+import { browserOwnsKey, vguiTextTarget } from "./browser-input"
 import { asciiFold, resourcePropertyReader } from "./resource-properties"
 import { PanelProperties } from "./panel-properties"
 import { isDirectVguiImageMaterial, VguiImageRasterizer, type VguiImageRasterGeometry } from "./image-renderer"
@@ -5811,8 +5812,13 @@ class SourceVguiRuntime implements VguiRuntime {
 
   private installBrowserAdapter(): void {
     const window = this.document.defaultView
-    const listenerCount = 12 + (window ? 1 : 0)
+    const listenerCount = 14 + (window ? 1 : 0)
     if (listenerCount > this.limits.maxListeners) throw new RuntimeFault("ListenerLimit", "browser-adapter")
+    for (const type of ["contextmenu", "dragstart"]) {
+      this.listen(this.host, type, event => {
+        if (!vguiTextTarget(event.target, this.host)) event.preventDefault()
+      })
+    }
     this.listen(this.host, "pointermove", (raw) => {
       const event = raw as PointerEvent
       event.preventDefault()
@@ -5841,7 +5847,7 @@ class SourceVguiRuntime implements VguiRuntime {
     }, { passive: false })
     this.listen(this.document, "keydown", (raw) => {
       const event = raw as KeyboardEvent
-      if (!this.browserEventBelongsToHost(event)) return
+      if (!this.browserEventBelongsToHost(event) || browserOwnsKey(event)) return
       const key = this.browserKey(event.key)
       if (["Tab", "Enter", "Space", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace", "Delete"].includes(key)) event.preventDefault()
       this.apply({ kind: "key-press", key, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey, repeat: event.repeat })

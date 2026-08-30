@@ -12,6 +12,9 @@ export class FakeEvent {
   readonly ctrlKey: boolean
   readonly metaKey: boolean
   readonly shiftKey: boolean
+  readonly repeat: boolean
+  readonly isComposing: boolean
+  readonly keyCode: number
   readonly button: number
   readonly buttons: number
   readonly pointerId: number
@@ -29,6 +32,9 @@ export class FakeEvent {
       ctrlKey?: boolean
       metaKey?: boolean
       shiftKey?: boolean
+      repeat?: boolean
+      isComposing?: boolean
+      keyCode?: number
       button?: number
       buttons?: number
       pointerId?: number
@@ -44,6 +50,9 @@ export class FakeEvent {
     this.ctrlKey = init.ctrlKey ?? false
     this.metaKey = init.metaKey ?? false
     this.shiftKey = init.shiftKey ?? false
+    this.repeat = init.repeat ?? false
+    this.isComposing = init.isComposing ?? false
+    this.keyCode = init.keyCode ?? 0
     this.button = init.button ?? 0
     this.buttons = init.buttons ?? 0
     this.pointerId = init.pointerId ?? 1

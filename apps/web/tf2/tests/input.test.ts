@@ -144,6 +144,21 @@ test("keeps an action held until every physical source releases", () => {
   expect(buttons.held("+attack")).toBe(false)
 })
 
+test("release identifies the original binding even after repeats, rebind and context teardown", () => {
+  const buttons = new PhysicalButtonState()
+  buttons.press("keyboard:Tab", "+showscores")
+  buttons.press("mouse:1", "+showscores")
+  for (let repeat = 0; repeat < 20; repeat++) expect(buttons.press("keyboard:Tab", "+jump")).toBe(false)
+  expect(buttons.action("keyboard:Tab")).toBe("+showscores")
+  expect(buttons.action("mouse:1")).toBe("+showscores")
+  buttons.release("keyboard:Tab")
+  expect(buttons.action("keyboard:Tab")).toBeUndefined()
+  expect(buttons.held("+showscores")).toBe(true)
+  buttons.clear()
+  expect(buttons.action("mouse:1")).toBeUndefined()
+  expect(buttons.release("mouse:1")).toBe(false)
+})
+
 test("coalesces a 400-sample continuous browser clock into its latest value", () => {
   const queue = new SimulationClockQueue()
   for (let sample = 0; sample < 400; sample += 1) {
