@@ -49,6 +49,8 @@ export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { jo
   for (const [index, stage] of value.desktop.entries()) {
     if (stage.schema !== "playsrc-native-desktop-v1" || ["job", "task", "run", "lockToken", "childPid", "childCreatedAt", "helperPid", "helperCreatedAt"].some(key => stage[key as keyof NativeDesktopReceipt] !== value[key as keyof NativeJobReceipt])) throw new Error("Desktop stage process identity differs")
     if (!stage.stage || stages.has(stage.stage) || !/^[a-f0-9]{64}$/.test(stage.preparedIdentity) || ![stage.preparedAt, stage.desktopStartedAt, stage.desktopReleasedAt].every(Number.isSafeInteger) || stage.preparedAt < previousEnd) throw new Error("Desktop stages overlap or reuse authorization")
+    if (stage.preparedAt > value.teardownAt || stage.desktopStartedAt > value.teardownAt || stage.desktopReleasedAt > value.teardownAt
+      || (stage.consent?.dismissedAt ?? 0) > value.finishedAt || (stage.completion?.dismissedAt ?? 0) > value.finishedAt) throw new Error("Desktop stage is outside its owned job lifetime")
     stages.add(stage.stage)
     if (index < value.desktop.length - 1 && !stage.desktopReleasedAt) throw new Error("Prior desktop stage has not ended")
     if (stage.consent?.displayedAt && stage.consent.displayedAt < stage.preparedAt) throw new Error("Consent precedes authenticated preparation")
@@ -169,7 +171,7 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
  * the transition; ownership.json is never a desktop authorization. */
 let desktopSequence = 0
 export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, unknown>>, signal: AbortSignal,
-  work: (release: (succeeded: boolean) => Promise<NativeDesktopReceipt | undefined>) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
+  verify: () => Promise<void>, work: (release: (succeeded: boolean) => Promise<NativeDesktopReceipt | undefined>) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
   if (process.platform !== "win32") return work(async () => undefined)
   const file = process.env.PLAYSRC_LOCAL_JOB_OWNER
   if (!file) throw new Error("Missing prepared native desktop identity")
@@ -213,6 +215,8 @@ export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, un
     throw new Error("Desktop transition exceeded the unchanged job deadline")
   }
   signal.throwIfAborted()
+  await verify()
+  signal.throwIfAborted()
   await publish("request.json", request)
   await wait("grant.json", true)
   let releasing: Promise<NativeDesktopReceipt> | undefined
@@ -226,6 +230,6 @@ export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, un
     return released
   })()
   let success = false
-  try { signal.throwIfAborted(); const result = await work(release); success = succeeded(result); return result }
+  try { signal.throwIfAborted(); await verify(); signal.throwIfAborted(); const result = await work(release); success = succeeded(result); return result }
   finally { await release(success) }
 }

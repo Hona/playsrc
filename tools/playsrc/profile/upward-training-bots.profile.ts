@@ -1225,6 +1225,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const settings = await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality))
   const browserIdentity = await page.evaluate(() => ({ platform: navigator.platform, userAgent: navigator.userAgent }))
   const after = await canvas.screenshot({ timeout: 20_000 })
+  const capturedNetwork = structuredClone(network)
+  const capturedLayers = { count: compositorLayers.length, treeChanges: layerTreeChanges, paints: structuredClone(layerPaints) }
   if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1" || process.env.PROFILE_DRAW_LIGHTING_PARITY === "1") await auditParity()
   if (acceptance && exerciseClasses) {
     const stock = await acceptStockLoadouts(page, directory, label)
@@ -1322,15 +1324,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
       issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
     settings,
-    browser: { ...browserIdentity, controllerPlatform: process.platform, origin: capturedOrigin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
+    browser: { ...browserIdentity, controllerPlatform: process.platform, origin: capturedOrigin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network: capturedNetwork, storage, userMachineEvidence: false },
     firstPlayableBoundary: "application-completed-frame-not-compositor",
     frameIntervals: summarizeFrameTimes(intervals), ...summarizeDeliveryMeasurement(measurement),
     presentationDom: {
       ...measurement.dom,
       layers: {
-        count: compositorLayers.length, drawing: layerDetails.length, treeChanges: layerTreeChanges,
+        count: capturedLayers.count, drawing: layerDetails.length, treeChanges: capturedLayers.treeChanges,
         estimatedRasterBytes: layerDetails.reduce((total, layer) => total + layer.estimatedRasterBytes, 0),
-        painted: { count: layerPaints.length, cssPixels: layerPaints.reduce((total, paint) => total + paint.width * paint.height, 0), rectangles: layerPaints.slice(0, 32) },
+        painted: { count: capturedLayers.paints.length, cssPixels: capturedLayers.paints.reduce((total, paint) => total + paint.width * paint.height, 0), rectangles: capturedLayers.paints.slice(0, 32) },
         details: layerDetails,
       },
       layout: { count: performanceDelta("LayoutCount"), milliseconds: Number((performanceDelta("LayoutDuration") * 1000).toFixed(3)) },
