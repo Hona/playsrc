@@ -124,8 +124,8 @@ export function transitionTf2TeamSelection(
   if (!state.visible || !state.server) return outcome("ignored", state)
   if (event.kind === "update") {
     if (!validServer(event.server)) return outcome("illegal", state)
-    const focused = state.focused && available(event.server, state.focused) ? state.focused : initialFocus(event.server)
-    const hovered = state.hovered && available(event.server, state.hovered) ? state.hovered : null
+    const focused = state.focused && (state.focused === "red" || state.focused === "blue" || available(event.server, state.focused)) ? state.focused : initialFocus(event.server)
+    const hovered = state.hovered && (state.hovered === "red" || state.hovered === "blue" || available(event.server, state.hovered)) ? state.hovered : null
     return outcome("applied", Object.freeze({ ...state, server: event.server, focused, hovered }))
   }
   if (event.kind === "cancel") {
@@ -139,11 +139,12 @@ export function transitionTf2TeamSelection(
     if (event.team === state.hovered) return outcome("ignored", state)
     return outcome("applied", Object.freeze({ ...state, hovered: event.team }))
   }
-  if (!available(state.server, event.team)) return outcome("ignored", state)
   if (event.kind === "focus") {
+    if ((event.team === "auto" || event.team === "spectate") && !available(state.server, event.team)) return outcome("ignored", state)
     if (event.team === state.focused) return outcome("ignored", state)
     return outcome("applied", Object.freeze({ ...state, focused: event.team }))
   }
+  if (!available(state.server, event.team)) return outcome("ignored", state)
   const sameTeam = event.team === "red" && state.server.localTeam === 2
     || event.team === "blue" && state.server.localTeam === 3
     || event.team === "spectate" && state.server.localTeam === 1

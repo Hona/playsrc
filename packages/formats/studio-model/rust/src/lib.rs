@@ -9,11 +9,13 @@ use std::{
 mod eye;
 mod lighting;
 mod presentation;
+mod sequence_transition;
 mod static_lighting;
 mod viewmodel;
 pub use eye::*;
 pub use lighting::*;
 pub use presentation::*;
+pub use sequence_transition::*;
 pub use static_lighting::*;
 pub use viewmodel::*;
 

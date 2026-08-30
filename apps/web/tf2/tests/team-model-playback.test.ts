@@ -1,0 +1,26 @@
+import { expect, test } from "bun:test"
+import { teamModelPlayback } from "../src/team-model-playback"
+
+const panel = { sequence: "hoveropen", modelRevision: 1, animationRevision: 1 }
+test("samples exact terminal pose even when a render interval crosses its duration", () => {
+  const initial = teamModelPlayback(undefined, panel, 1, 30 / 65)
+  const middle = { ...initial.state, sampledSeconds: 0.1, previousSeconds: 0.1 }
+  const terminal = teamModelPlayback(middle, panel, 2, 30 / 65)
+  expect(terminal.sample).toBe(true)
+  expect(terminal.elapsed).toBe(30 / 65)
+  expect(teamModelPlayback({ ...terminal.state, sampledSeconds: terminal.elapsed }, panel, 3, 30 / 65).sample).toBe(false)
+})
+test("idle, same-sequence commands, interrupted changes and recreated panels cannot reuse an old endpoint", () => {
+  const done = { ...teamModelPlayback(undefined, panel, 1, 1).state, sampledSeconds: 1 }
+  for (const next of [
+    { ...panel, sequence: "idle", animationRevision: 2 },
+    { ...panel, animationRevision: 2 },
+    { ...panel, modelRevision: 2 },
+  ]) {
+    const step = teamModelPlayback(done, next, 2, 1)
+    expect(step.sample).toBe(true)
+    expect(step.elapsed).toBe(0)
+    expect(step.previousElapsed).toBe(0)
+  }
+  expect(teamModelPlayback(undefined, { ...panel, sequence: "idle" }, 0, 0).sample).toBe(true)
+})
