@@ -647,6 +647,8 @@ name = "playsrc-mp3"
 version = "0.1.0"
 dependencies = [
  "nanomp3",
+ "playsrc-vpk",
+ "serde_json",
  "sha2 0.10.9",
 ]
 

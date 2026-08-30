@@ -52,17 +52,64 @@ pub fn decode(bytes: &[u8], max_input: usize, max_samples: usize) -> Result<Deco
         {
             return Err(Error::OutputLimit);
         }
-        for (index, sample) in pcm[..count].iter().enumerate() {
-            output.samples.push(pcm_sample(
-                *sample,
-                (index / usize::from(output.channels)) % 16 == 0,
-            ));
-        }
+        let start = output.samples.len();
+        output.samples.resize(start + count, 0);
+        quantize(
+            &pcm[..count],
+            &mut output.samples[start..],
+            usize::from(output.channels),
+        );
     }
     if output.samples.is_empty() {
         return Err(Error::InvalidStream);
     }
     Ok(output)
+}
+
+fn quantize(input: &[f32], output: &mut [i16], channels: usize) {
+    assert_eq!(input.len(), output.len());
+    assert!(channels == 1 || channels == 2);
+    // The first interleaved frame of each synthesis group uses scalar-pair
+    // rounding. The remaining samples are independent nearest-even lanes.
+    for (input, output) in input
+        .chunks(16 * channels)
+        .zip(output.chunks_mut(16 * channels))
+    {
+        let pair = input.len().min(channels);
+        for (sample, value) in input[..pair].iter().zip(&mut output[..pair]) {
+            *value = pcm_sample(*sample, true);
+        }
+        quantize_nearest(&input[pair..], &mut output[pair..]);
+    }
+}
+
+fn quantize_nearest(input: &[f32], output: &mut [i16]) {
+    assert_eq!(input.len(), output.len());
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let at = {
+        use core::arch::wasm32::*;
+        let mut at = 0;
+        while input.len() - at >= 4 {
+            // Four readable f32 inputs and four writable i16 outputs. Neither
+            // load nor store requires vector alignment or touches a tail lane.
+            unsafe {
+                let sample = f32x4_mul(
+                    v128_load(input.as_ptr().add(at).cast()),
+                    f32x4_splat(32768.0),
+                );
+                let rounded = i32x4_trunc_sat_f32x4(f32x4_nearest(sample));
+                let packed = i16x8_narrow_i32x4(rounded, rounded);
+                v128_store64_lane::<0>(packed, output.as_mut_ptr().add(at).cast());
+            }
+            at += 4;
+        }
+        at
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let at = 0;
+    for (sample, value) in input[at..].iter().zip(&mut output[at..]) {
+        *value = pcm_sample(*sample, false);
+    }
 }
 
 // minimp3's PC synthesis uses scalar quantization for the pair at positions
@@ -101,5 +148,84 @@ mod tests {
         assert_eq!(decode(&[], 1, 1).unwrap_err(), Error::InvalidStream);
         assert_eq!(decode(b"ID3", 2, 100).unwrap_err(), Error::InputLimit);
         assert_eq!(decode(b"ID3", 3, 100).unwrap_err(), Error::InvalidStream);
+    }
+
+    #[test]
+    fn synthesis_groups_preserve_every_lane_and_short_tail() {
+        check_synthesis_groups();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn check_wasm_synthesis_groups() {
+        check_synthesis_groups();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    mod wasm_decode {
+        use std::sync::Mutex;
+        static PCM: Mutex<Vec<i16>> = Mutex::new(Vec::new());
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn test_input_alloc(length: usize) -> *mut u8 {
+            assert!(length <= 32 * 1024 * 1024);
+            Box::into_raw(vec![0_u8; length].into_boxed_slice()) as *mut u8
+        }
+
+        #[unsafe(no_mangle)]
+        /// # Safety
+        /// Pass one allocation returned by test_input_alloc with its exact length.
+        pub unsafe extern "C" fn test_decode(pointer: *mut u8, length: usize) -> usize {
+            let input =
+                unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(pointer, length)) };
+            let decoded = super::decode(&input, 32 * 1024 * 1024, 32 * 1024 * 1024).unwrap();
+            let mut pcm = PCM.lock().unwrap();
+            *pcm = decoded.samples;
+            pcm.len()
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn test_pcm_pointer() -> *const i16 {
+            PCM.lock().unwrap().as_ptr()
+        }
+    }
+
+    fn check_synthesis_groups() {
+        let values = [
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            f32::from_bits(0xffc12345),
+            -32767.5 / 32768.0,
+            32766.5 / 32768.0,
+            -1.0 / 32768.0,
+            -2.5 / 32768.0,
+            2.5 / 32768.0,
+            1.0,
+            -1.0,
+        ];
+        for channels in [1, 2] {
+            for offset in 0..values.len() {
+                let input: Vec<_> = (0..97)
+                    .map(|index| values[(index + offset) % values.len()])
+                    .collect();
+                for length in 0..input.len() {
+                    let mut output = vec![12345; length + 2];
+                    quantize(&input[..length], &mut output[1..length + 1], channels);
+                    assert_eq!(output[0], 12345);
+                    assert_eq!(output[length + 1], 12345);
+                    for index in 0..length {
+                        assert_eq!(
+                            output[index + 1],
+                            pcm_sample(input[index], (index / channels) % 16 == 0)
+                        );
+                    }
+                }
+            }
+        }
     }
 }

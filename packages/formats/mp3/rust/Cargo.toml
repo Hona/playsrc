@@ -12,3 +12,5 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 sha2 = "0.10.9"
+serde_json = "1"
+playsrc-vpk = { path = "../../vpk/rust", default-features = false }

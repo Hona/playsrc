@@ -2,17 +2,32 @@ import { expect, test } from "bun:test"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { threadedWasmRustFlags } from "../src/tf2-wasm-build"
+import { audioWasmRustFlags, threadedWasmRustFlags } from "../src/tf2-wasm-build"
 
 test("threaded WASM flags retain memory contracts and encode paths with spaces as single arguments", () => {
   const flags = threadedWasmRustFlags("/build one/app", "/build one/cargo", "/build one/rust")
-  expect(flags).toContain("-Ctarget-feature=+atomics,+bulk-memory")
+  expect(flags).toContain("-Ctarget-feature=+atomics,+bulk-memory,+simd128")
   expect(flags).toContain("-Clink-arg=--shared-memory")
   expect(flags).toContain("-Clink-arg=--max-memory=4294967296")
   expect(flags).toContain("--remap-path-prefix=/build one/app=/playsrc")
   expect(flags).toContain("--remap-path-prefix=/build one/cargo=/cargo")
   expect(flags).toContain("--remap-path-prefix=/build one/rust=/rust")
   expect(flags.join("\x1f").split("\x1f")).toEqual(flags)
+})
+
+test("audio enables standard SIMD independently without importing gameplay memory or TLS", () => {
+  const flags = audioWasmRustFlags("C:/build one/app", "C:/build one/cargo", "C:/build one/rust")
+  expect(flags).toEqual([
+    "-Ctarget-feature=+simd128",
+    "--remap-path-prefix=C:/build one/app=/playsrc",
+    "--remap-path-prefix=C:/build one/cargo=/cargo",
+    "--remap-path-prefix=C:/build one/rust=/rust",
+  ])
+  expect(flags.join("\x1f").split("\x1f")).toEqual(flags)
+  for (const build of [flags, threadedWasmRustFlags("app", "cargo", "rust")]) {
+    expect(build.filter(flag => flag.startsWith("-Ctarget-feature="))).toHaveLength(1)
+    expect(build.some(flag => flag.includes("relaxed-simd") || flag.includes("fast-math"))).toBe(false)
+  }
 })
 
 test("source-location constants compile identically from distinct absolute roots", async () => {

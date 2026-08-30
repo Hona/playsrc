@@ -243,6 +243,10 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     return
   }
   try {
+    if (!WebAssembly.validate(request.wasm)) {
+      fail(request.id, "WasmUnavailable", 0, "This browser cannot validate the required WebAssembly module (standard SIMD128 and shared memory)")
+      return
+    }
     const { candidate, actual, mailbox, modelOwnership } = await initializeAuthenticatedWasm({
       bytes: request.wasm,
       expectedSha256: request.wasmSha256,

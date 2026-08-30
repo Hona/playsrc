@@ -1,4 +1,5 @@
 import { AudioError } from "./error"
+import { compileAudioModule } from "./wasm"
 import type { Listener, NeutralVoice, SoundSource } from "./source"
 
 export type PcmResource = Readonly<{ identity: string; sampleRate: number; numberOfChannels: number; bits: number; length: number; duration: number; loopStartSeconds: number | null }>
@@ -60,8 +61,7 @@ export async function createSourceAudioSystem(context: AudioContext, moduleUrl: 
     module = fetch(moduleUrl).then(async response => {
       if (!response.ok) throw new AudioError("BrowserFailure", "Audio module is unavailable")
       const bytes = await response.arrayBuffer()
-      if (bytes.byteLength > 8 * 1024 * 1024) throw new AudioError("Capacity", "Audio module exceeds its bound")
-      return WebAssembly.compile(bytes)
+      return compileAudioModule(bytes)
     })
     moduleCache.set(moduleUrl.href, module)
     void module.catch(() => moduleCache.delete(moduleUrl.href))
