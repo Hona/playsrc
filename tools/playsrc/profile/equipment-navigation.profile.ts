@@ -13,6 +13,11 @@ import { selectionVisibleLatency } from "./selection-visible-latency"
 import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
 import { profileArtifact } from "./profile-artifacts"
 
+async function mediaRecord(file: string) {
+  const bytes = await readFile(file)
+  return { path: file, byteLength: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }
+}
+
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 })
 
 test("equipment trusted input to native visible pages", async ({ page, context }) => {
@@ -154,7 +159,89 @@ test("equipment trusted input to native visible pages", async ({ page, context }
       }).catch(error => ({ unavailable: String(error) }))
       await profileArtifact(() => writeFile(path.join(directory, "equipment-failure.json"), JSON.stringify({ failure, evidence }, null, 2)))
     }
-    await profileArtifact(() => writeFile(path.join(directory, "equipment-native.json"), JSON.stringify({ captures, references, hits, errors, failure }, null, 2)))
+    await profileArtifact(async () => {
+      const pageMedia = await mediaRecord(path.join(directory, "equipment.page.png")).catch(error => ({ unavailable: String(error) }))
+      await writeFile(path.join(directory, "equipment-native.json"), JSON.stringify({ captures, pageMedia, references, hits, errors, failure }, null, 2))
+    })
     await reader.close()
   }
+})
+
+test.describe("equipment transaction faults", () => {
+  test.use({ allowRecoverableApplicationFailure: true })
+  test("equipment pending Back, retry, resource failure and reopen", async ({ page, context }) => {
+    test.setTimeout(100_000)
+    if (process.platform !== "win32") throw new Error("Equipment transaction acceptance requires native Windows")
+    const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, { sourceCacheDir } = await loadLocalConfig()
+    const reader = await startupNativeReader(page, sourceCacheDir), records: unknown[] = [], media: string[] = []
+    guardStartupInput(page, async () => { requireStartupNative(await reader.read()) })
+    const equipment = page.locator(".equipment-layer"), main = page.locator("main")
+    const control = (name: string) => equipment.locator(`[data-vgui-name='${name}']`)
+    const gate = Promise.withResolvers<void>(), intercepted = Promise.withResolvers<string>()
+    let fault: "none" | "delay" | "reject" = "none"
+    await context.route(url => url.hostname === "127.0.0.1" && /^\/objects\/sha256\/[a-f0-9]{64}$/.test(url.pathname), async route => {
+      const selected = fault
+      if (selected === "none") { await route.continue(); return }
+      fault = "none"
+      records.push({ kind: "local-resource-fault", fault: selected, url: route.request().url(), at: Date.now() })
+      if (selected === "reject") { await route.abort("failed"); return }
+      intercepted.resolve(route.request().url())
+      await gate.promise
+      await route.continue()
+    })
+    const capture = async (name: string) => {
+      const native = await reader.read(path.join(directory, `${name}.desktop.png`), "window")
+      requireStartupNative(native)
+      await page.screenshot({ path: path.join(directory, `${name}.page.png`) })
+      media.push(path.join(directory, `${name}.desktop.png`), path.join(directory, `${name}.page.png`))
+      requireStartupNative(await reader.read())
+      records.push({ kind: "capture", name, native })
+    }
+    try {
+      await page.goto("/", { waitUntil: "domcontentloaded" })
+      await expect(main).toHaveAttribute("data-phase", "MainMenu")
+      await page.locator("[data-vgui-name='CharacterSetupButton']").click()
+      await control("Class3").click()
+      await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 20_000 })
+      await page.waitForTimeout(2100)
+      if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Transaction test requires genuine native idle")
+      await capture("loadout")
+      await control("Itemslot-0").hover()
+      await expect(control("ItemTooltip")).toBeVisible()
+      await capture("tooltip")
+      await control("Itemslot-0").click()
+      const before = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
+      fault = "delay"
+      await control("Itemitem-127").click()
+      await Promise.race([intercepted.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("Cold equipment resource was not intercepted")), 5000))])
+      await page.keyboard.press("Escape")
+      await expect(control("Itemslot-0")).toBeVisible({ timeout: 1500 })
+      expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(before)
+      await capture("cancelled-pending")
+      gate.resolve()
+      await control("BackButton").click(); await control("BackButton").click()
+      await expect(equipment).toBeHidden()
+      await page.locator("[data-vgui-name='CharacterSetupButton']").click(); await control("Class3").click()
+      await control("Itemslot-0").click(); await control("Itemitem-127").click()
+      await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
+      await expect.poll(() => page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).not.toBe(before)
+      const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
+      await capture("equipped-retry")
+      await control("Itemslot-0").click()
+      fault = "reject"
+      await control("Itemitem-228").click()
+      await expect(main).toHaveAttribute("data-phase", "Failed", { timeout: 15_000 })
+      await expect(equipment).toBeHidden()
+      expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
+      await capture("resource-failure")
+      await page.reload({ waitUntil: "domcontentloaded" })
+      await expect(main).toHaveAttribute("data-phase", "MainMenu")
+      expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
+    } finally {
+      gate.resolve()
+      await reader.close()
+      await profileArtifact(async () => writeFile(path.join(directory, "equipment-transactions.json"), JSON.stringify({ kind: "local-resource-fault-injection-not-a-performance-sample", records,
+        media: await Promise.all(media.map(mediaRecord)) }, null, 2)))
+    }
+  })
 })
