@@ -32,9 +32,10 @@ test("deployment embeds the selected approved WASM rather than an unrelated loca
     const plugin=tf2ViteConfiguration(undefined,true).plugins!.find((p:any)=>p?.name==='playsrc-generation') as any
     const source=await plugin.load('\0virtual:playsrc-generation')
     expect(source).toContain(`WASM_SHA256=${JSON.stringify(configuration.wasm.sha256)}`)
-    const bundle:any={entry:{type:'chunk',modules:{'\0virtual:playsrc-generation':{}},code:source}}
+    const bundle:any={entry:{type:'chunk',modules:{'\0virtual:playsrc-generation':{}},code:source},bootstrap:{type:'chunk',isEntry:true,modules:{},code:'import("./main.js")'}}
     await plugin.generateBundle({},bundle)
     assertStaticBundleGeneration(bundle.entry.code,configuration as any)
+    assertStaticBundleGeneration(bundle.bootstrap.code,configuration as any)
     const mixed=bundle.entry.code.replaceAll('b'.repeat(64),'d'.repeat(64))
     expect(()=>assertStaticBundleGeneration(mixed,configuration as any)).toThrow('generation differs')
     expect(()=>assertStaticBundleGeneration(source,configuration as any)).toThrow('seal is absent')

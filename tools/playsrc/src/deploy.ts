@@ -9,7 +9,7 @@ import { readTf2Release } from "./tf2-release"
 import { parseResourceCatalogBytes, parseResourceGraphBytes, resourceChunkObject, selectCatalogTarget } from "@playsrc/asset-store/graph"
 import type { ObjectDescriptor } from "@playsrc/asset-store"
 import type { BrowserConfiguration } from "../../../apps/web/tf2/src/config"
-import { assertStaticBundleGeneration } from "../../../apps/web/tf2/generation-plugin"
+import { assertStaticBundleGeneration, STATIC_GENERATION_BUNDLE_PREFIXES } from "../../../apps/web/tf2/generation-plugin"
 import { assertWasmBindings, captureWasmBindings } from "./wasm-bindings"
 import { staticStartupPackage } from "../profile/static-startup-package"
 import { assertStaticStartupReceipt } from "../profile/static-startup-gate"
@@ -79,7 +79,7 @@ async function verifyStaticTree(configuration: BrowserConfiguration): Promise<vo
   if (!entries.some((entry) => entry.endsWith(".js")) || !entries.some((entry) => entry.endsWith(".css"))) {
     throw new DeploymentError("TF2 static deployment assets are incomplete")
   }
-  for (const prefix of ["index-", "gameplay-worker-"]) {
+  for (const prefix of STATIC_GENERATION_BUNDLE_PREFIXES) {
     const matches = entries.filter((entry) => entry.startsWith(prefix) && entry.endsWith(".js"))
     if (matches.length !== 1) {
       throw new DeploymentError(`TF2 ${prefix.slice(0, -1)} bundle application generation differs`)

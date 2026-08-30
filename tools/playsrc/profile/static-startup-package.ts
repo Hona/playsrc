@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises"
 import path from "node:path"
 import { parseBrowserConfiguration } from "../../../apps/web/tf2/src/config"
 import { parseTf2Release, TF2_APPLICATION_ORIGIN } from "../../../apps/web/tf2/src/deployment"
-import { assertStaticBundleGeneration } from "../../../apps/web/tf2/generation-plugin"
+import { assertStaticBundleGeneration, STATIC_GENERATION_BUNDLE_PREFIXES } from "../../../apps/web/tf2/generation-plugin"
 import { objectPath } from "@playsrc/asset-store"
 
 export const startupDigest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex")
@@ -33,7 +33,7 @@ export async function staticStartupPackage(directory: string) {
   if (deployment.applicationBuild !== configuration.applicationBuild || release.objects.wasm.sha256 !== configuration.wasm.sha256
     || release.objects.wasm.byteLength !== configuration.wasm.byteLength) throw new Error("Static release/configuration identity differs")
   const inventory = await files(directory)
-  for (const prefix of ["index-", "gameplay-worker-"]) {
+  for (const prefix of STATIC_GENERATION_BUNDLE_PREFIXES) {
     const entries = inventory.filter(file => file.name.startsWith(`tf2/assets/${prefix}`) && file.name.endsWith(".js"))
     if (entries.length !== 1) throw new Error("Static startup entry identity is ambiguous")
     assertStaticBundleGeneration(await readFile(path.join(directory, entries[0]!.name), "utf8"), configuration)
