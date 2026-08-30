@@ -180,7 +180,7 @@ test.describe("equipment transaction faults", () => {
       if (selected === "reject") { await route.abort("failed"); return }
       intercepted.resolve(route.request().url())
       await gate.promise
-      await route.continue()
+      await route.abort("failed")
     })
     const capture = async (name: string) => {
       const native = await reader.read(path.join(directory, `${name}.desktop.png`), "window")
@@ -219,7 +219,12 @@ test.describe("equipment transaction faults", () => {
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 1500 })
       expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(before)
       await capture("cancelled-pending")
+      await control("Itemslot-0").click(); await control("Itemitem-127").click()
       gate.resolve()
+      await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
+      await expect.poll(() => page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).not.toBe(before)
+      const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
+      await capture("equipped-retry")
       await control("BackButton").click(); await control("BackButton").click()
       await expect(equipment).toBeHidden()
       await page.locator("[data-vgui-name='CharacterSetupButton']").click()
@@ -229,11 +234,8 @@ test.describe("equipment transaction faults", () => {
       await expect(control("Itemslot-0")).toHaveCount(0)
       await capture("held-enter")
       await page.keyboard.up("Enter")
-      await control("Itemslot-0").click(); await control("Itemitem-127").click()
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
-      await expect.poll(() => page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).not.toBe(before)
-      const saved = await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))
-      await capture("equipped-retry")
+      expect(await page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).toBe(saved)
       await control("Itemslot-0").click()
       fault = "reject"
       await control("Itemitem-228").click()
