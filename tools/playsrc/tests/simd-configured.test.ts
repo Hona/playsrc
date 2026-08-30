@@ -53,7 +53,11 @@ test.skipIf(!process.env.PLAYSRC_LOCAL_JOB_OWNER && process.env.RUN_CONFIGURED_S
       records.push({ variant, file, bytes: bytes.length, sha256: hash(bytes), samples: count, pcmSha256 })
     }
     const commit = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repositoryRoot }).stdout.toString().trim()
-    await writeFile(path.join(directory, "result.json"), JSON.stringify({ commit, platform: process.platform, arch: process.arch, engine: process.versions, browserEvidence: false, input: { bytes: input.length, sha256: hash(input) }, records }, null, 2))
+    const result = JSON.stringify({ commit, platform: process.platform, arch: process.arch, engine: process.versions, browserEvidence: false, input: { path: path.join(config.sourceCacheDir, "evidence/tf2-wasm-simd-performance/configured/cow1.mp3"), bytes: input.length, sha256: hash(input) }, records }, null, 2)
+    const resultPath = path.join(directory, "result.json")
+    await writeFile(resultPath, result)
+    const index = path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(repositoryRoot)).slice(0, 8), "comparison.json")
+    await writeFile(index, JSON.stringify({ path: resultPath, sha256: hash(Buffer.from(result)) }))
     console.log(`SIMD parity evidence: ${directory}`)
   } finally { if (!borrowed) await releaseHeadedProfileLock(lockPath, lock.token) }
 }, 175_000)
