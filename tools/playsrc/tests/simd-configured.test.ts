@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { rustEnvironment } from "../src/setup"
@@ -34,9 +34,14 @@ test.skipIf(!process.env.PLAYSRC_LOCAL_JOB_OWNER && process.env.RUN_CONFIGURED_S
     expect(hash(input)).toBe("6d5029641d1a058b5316d4fd49b7ee923ec6490bb5ce93e40fa25ccaa169aad5")
     const records = []
     for (const simd of [false, true]) {
-      const variant = simd ? "simd" : "scalar", target = path.join(directory, `target-${variant}`)
+      // MSVC's host build-script linker still has a bounded output path. Keep
+      // Cargo scratch short and owned by this checkout; retain module bytes in
+      // the unique evidence run rather than relying on mutable Cargo output.
+      const variant = simd ? "simd" : "scalar", target = path.join(config.sourceCacheDir, "simd-tests", hash(Buffer.from(repositoryRoot)).slice(0, 8), variant)
       await run(variant, ["rustc", "--locked", "-p", "playsrc-mp3", "--lib", "--crate-type=cdylib", "--target", "wasm32-unknown-unknown", "--target-dir", target, "--release", "-Z", "build-std=panic_abort,std", "--", "--cfg", "test"], `-Ctarget-feature=${simd ? "+" : "-"}simd128`)
-      const file = path.join(target, "wasm32-unknown-unknown/release/playsrc_mp3.wasm"), bytes = await readFile(file)
+      const file = path.join(directory, `${variant}.wasm`)
+      await copyFile(path.join(target, "wasm32-unknown-unknown/release/playsrc_mp3.wasm"), file)
+      const bytes = await readFile(file)
       const { instance } = await WebAssembly.instantiate(bytes), e = instance.exports as any
       e.check_wasm_synthesis_groups()
       const pointer = e.test_input_alloc(input.length)
