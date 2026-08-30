@@ -2182,7 +2182,9 @@ export class Tf2Application {
     const priorTask = this.#equipmentAdmissionTask
     const epoch = this.#equipmentAdmissionEpoch, operation = this.#operation
     const task = (async () => {
-      await priorTask?.catch(error => { if (error?.name !== "AbortError") throw error })
+      // Each admission reports its own failure. A cancelled selection's failed
+      // resource request must not poison the next independently owned request.
+      await priorTask?.catch(() => {})
       if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
       const client = this.#client!
       const previous = this.#equipmentAdmissions.get(generation)

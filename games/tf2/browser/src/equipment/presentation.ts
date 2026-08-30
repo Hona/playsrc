@@ -346,7 +346,7 @@ export class Tf2EquipmentPresentation {
             if (this.#destroyed) return
             // A dispatched native mutation can finish after Back. Retain its
             // authoritative state, but never replay its old navigation.
-            const changed = !this.#state || state.revision > this.#state.revision
+            const changed = !this.#state || ((state.revision - this.#state.revision) | 0) > 0
             if (changed) this.#state = state
             if (this.#pending === pending) {
               this.#page = "loadout"; this.#selected = null
