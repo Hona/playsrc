@@ -70,6 +70,14 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
     expect(exited.animationRevision).toBeGreaterThan(entered.animationRevision)
     expect(integration.dispatch({ kind: "select", team: "red" }).disposition).toBe("ignored")
   })
+
+  test("retains model entity identities when optional neighbouring panels disappear", () => {
+    const { integration, server } = fixture()
+    const before = integration.modelPanels().find(panel => panel.name === "spectate")!.panelId
+    integration.dispatch({ kind: "update", server: { ...server, autoAssignVisible: false } })
+    expect(integration.modelPanels().find(panel => panel.name === "spectate")!.panelId).toBe(before)
+    expect(new Set(integration.modelPanels().map(panel => panel.panelId)).size).toBe(integration.modelPanels().length)
+  })
   test("consumes owned repeats without autoassigning or moving authored focus", () => {
     const { integration, requests } = fixture()
     const focused = integration.state().focused

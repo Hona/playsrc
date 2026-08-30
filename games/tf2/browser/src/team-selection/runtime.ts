@@ -58,6 +58,7 @@ const LIMITS: VguiRuntimeLimits = Object.freeze({
 
 export type Tf2TeamSelectionModelPanel = Readonly<{
   name: typeof MODEL_NAMES[number]
+  panelId: VguiPanelId
   model: string
   skin: number
   fov: number
@@ -378,6 +379,7 @@ class Integration implements Tf2TeamSelectionIntegration {
         && child.value === null && scalar(child, "name") === animation)
       return [Object.freeze({
         name,
+        panelId: snapshot.id,
         model: scalar(model, "modelname") ?? "",
         skin: authoredNumber(model, "skin"),
         fov: authoredNumber(authored, "fov"),

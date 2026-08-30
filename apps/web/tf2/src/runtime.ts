@@ -2488,7 +2488,7 @@ export class Tf2Application {
     const authored = this.#teamSelectionModelPanels
     const viewport = this.#viewport()
     this.#teamSelectionRenderTask = (async () => {
-      const requests = authored.flatMap((panel, index) => {
+      const requests = authored.flatMap((panel) => {
         const artifact = artifacts.models.get(panel.model.toLowerCase())
         const timing = artifact?.sequences.find((sequence) => sequence.label.toLowerCase() === panel.sequence.toLowerCase())
         if (!artifact || !timing) throw new Error(`TF2 authored team-door sequence is unavailable: ${panel.model}:${panel.sequence}`)
@@ -2496,7 +2496,7 @@ export class Tf2Application {
         this.#teamSelectionAnimations.set(panel.name, step.state)
         if (!step.sample) return []
         const request = Object.freeze({
-          identity: 0x1000 + index,
+          identity: 0x1000 + panel.panelId,
           entityModelPanel: true,
           entityAnimationRevision: panel.animationRevision,
           modelPanelReset: step.reset,
