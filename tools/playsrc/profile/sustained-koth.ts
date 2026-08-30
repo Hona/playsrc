@@ -1,7 +1,7 @@
 import { deliveryTimeline } from "./frame-delivery"
 import { summarizeFrameTimes } from "./profile-window"
 
-export const SUSTAINED_KOTH = Object.freeze({ soakMilliseconds: 90_000, sampleMilliseconds: 6_000, extractionMilliseconds: 15_000, minimumBrowserMilliseconds: 165_000 })
+export const SUSTAINED_KOTH = Object.freeze({ soakMilliseconds: 90_000, sampleMilliseconds: 6_000, extractionMilliseconds: 15_000, minimumBrowserMilliseconds: 165_000, allocationAccounting: "late-detailed-only" })
 export function requireSustainedBudget(remaining: number) {
   const required = SUSTAINED_KOTH.soakMilliseconds + SUSTAINED_KOTH.sampleMilliseconds + SUSTAINED_KOTH.extractionMilliseconds
   if (!Number.isFinite(remaining) || remaining < required) throw new Error(`Sustained KOTH needs ${required}ms after natural active-round admission; only ${remaining}ms remain. Never shorten the90s soak.`)
