@@ -61,7 +61,7 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
         const pcm = new Uint8Array(e.memory.buffer, e.test_pcm_pointer(), first.count * 2).slice()
         const pcmSha256 = await digest(pcm)
         const record = { variant: entry.variant, moduleSha256: await digest(binary), valid, compileMilliseconds: compiled-began, instantiateMilliseconds: instantiated-compiled,
-          firstDecodeMilliseconds: first.milliseconds, samples: first.count, pcmSha256, linearBytes: e.memory.buffer.byteLength, batches: [] as number[] }
+          firstDecodeMilliseconds: first.milliseconds, samples: first.count, pcmSha256, linearBytes: e.memory.buffer.byteLength, batches: [] as number[], calls: [] as number[] }
         records.push(record); states.push({ invoke, record, memory: e.memory as WebAssembly.Memory,
           pcm: () => new Uint8Array(e.memory.buffer, e.test_pcm_pointer(), first.count * 2).slice() })
         if (entry.variant === "simd") {
@@ -76,15 +76,20 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
       const sampleStart=performance.now(); let round=0
       while(performance.now()-sampleStart<5000) {
         for(const i of round++%2===0?[0,1,1,0]:[1,0,0,1]) {
-          let elapsed=0;for(let n=0;n<32;n++)elapsed+=states[i]!.invoke().milliseconds
+          let elapsed=0;for(let n=0;n<32;n++){
+            const value=states[i]!.invoke().milliseconds
+            if(states[i]!.record.calls.length>=65536)throw Error("Decoder sample count exceeded its bound")
+            states[i]!.record.calls.push(value);elapsed+=value
+          }
           states[i]!.record.batches.push(elapsed/32)
         }
         await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()))
       }
-      for(const state of states){const record=state.record,values=[...record.batches].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1),finalLinearBytes:state.memory.buffer.byteLength,finalPcmSha256:await digest(state.pcm())})}
-      document.querySelector("#result")!.textContent=records.map((r:any)=>`${r.variant}: median ${r.median.toFixed(4)} ms, p95 ${r.p95.toFixed(4)} ms; ${r.samples} exact PCM samples`).join("\n")
-      return { records, sampleMilliseconds:performance.now()-sampleStart, userAgent:navigator.userAgent, platform:navigator.platform, hardwareConcurrency:navigator.hardwareConcurrency,
-        browserEvidence:true, sustainedGameplayEvidence:false, scope:"Configured decoder kernel; host input allocation/copy excluded identically, decoder allocations and output replacement/free included. No gameplay or freeze claim." }
+      const sampleEnd=performance.now()
+      for(const state of states){const record=state.record,values=[...record.batches].sort((a,b)=>a-b),calls=[...record.calls].sort((a,b)=>a-b);Object.assign(record,{median:values[Math.floor(values.length/2)],p95:values[Math.floor(values.length*.95)],maximum:values.at(-1),callMedian:calls[Math.floor(calls.length/2)],callP95:calls[Math.floor(calls.length*.95)],callP99:calls[Math.floor(calls.length*.99)],callMaximum:calls.at(-1),finalLinearBytes:state.memory.buffer.byteLength,finalPcmSha256:await digest(state.pcm())})}
+      document.querySelector("#result")!.textContent=records.map((r:any)=>`${r.variant}: batch median ${r.median.toFixed(4)} ms/call\n  individual calls: p95 ${r.callP95.toFixed(4)} ms, MAX ${r.callMaximum.toFixed(4)} ms`).join("\n")
+      return { records, timeOrigin:performance.timeOrigin,sampleStartedMilliseconds:sampleStart,sampleEndedMilliseconds:sampleEnd,sampleMilliseconds:sampleEnd-sampleStart, userAgent:navigator.userAgent, platform:navigator.platform, hardwareConcurrency:navigator.hardwareConcurrency,
+        browserEvidence:true, sustainedGameplayEvidence:false, scope:"Configured decoder kernel; edge checks, first decode and eight warmup decodes precede sampling. Every measured call retained; ABBA batches contain 32 calls. Host input allocation/copy excluded identically, decoder allocations and output replacement/free included. No gameplay or freeze claim." }
     }, { modules, encoded: input.toString("base64") })
     const after = await native.read(); requireStartupNative(after); admissions.push(after)
     for (const record of result.records) {
@@ -97,7 +102,8 @@ test("headed browser executes exact scalar and SIMD decoder kernels", async ({ p
   finally {
     await native.close()
     await profileArtifact(async () => {
-      await writeFile(path.join(directory, "simd-decoder.json"), JSON.stringify({ commit, inputRecord, result: result ?? null, admissions, failure }, null, 2))
+      const image=pixels?{file:"simd-decoder.png",bytes:pixels.length,sha256:hash(pixels)}:null
+      await writeFile(path.join(directory, "simd-decoder.json"), JSON.stringify({ commit, inputRecord, result: result ?? null, admissions, failure, image }, null, 2))
       if (pixels) {
         await writeFile(path.join(directory, "simd-decoder.png"), pixels)
         await testInfo.attach("simd-decoder", { body: pixels, contentType: "image/png" })
