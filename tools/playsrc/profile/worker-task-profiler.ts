@@ -31,7 +31,7 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
       sequence, requestId: request.id, kind: request.kind, generation: request.generation ?? null,
       queuedAt: request.queuedAt ?? null, nowSeconds: request.nowSeconds ?? null,
       started: host.performance.now(), finished: null as number | null,
-      startMark: `${prefix}:start`, endMark: `${prefix}:end`, responses: [] as any[], memory: [] as any[],
+      startMark: `${prefix}:start`, endMark: `${prefix}:end`, responses: [] as any[], memory: [] as any[], observes: [] as any[],
     }
     state.tasks.push(task)
     state.current = task
@@ -64,6 +64,9 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
   host.__playsrcWorkerProfileReply = (response: any) => {
     if (state.active && state.current) state.current.responses.push(response)
   }
+  host.__playsrcWorkerProfileObserve = (span: any) => {
+    if (state.active && state.current) state.current.observes.push(span)
+  }
   // The game supplies only allocation counters, not module/heap references.
   host.__playsrcWorkerProfileMemory = (linearBytes: number, liveBytes: number, highWaterBytes: number) => {
     // usize counters cross the WASM32 ABI as signed JS i32 results.
@@ -77,6 +80,7 @@ export function installWorkerTaskProfiler(host: any = globalThis, identity = "te
       host.postMessage = originalPost
       delete host.__playsrcWorkerProfileMemory
       delete host.__playsrcWorkerProfileReply
+      delete host.__playsrcWorkerProfileObserve
       return { timeOrigin: state.timeOrigin, limit, dropped: state.dropped, tasks: state.tasks, clocks: [started, ended] }
     },
   }

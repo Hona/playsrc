@@ -9,6 +9,7 @@ function worker() {
     performance: { timeOrigin: 1234, now: () => ++at, mark: (name: string) => marks.push(name), clearMarks() {} },
     onmessage(event: any) {
       host.__playsrcWorkerProfileMemory?.(64, 30, 40)
+      host.__playsrcWorkerProfileObserve?.({ requestId: event.data.id, started: 10, finished: 1310, nowSeconds: 90, acknowledgedTick: "6000", result: 1 })
       host.postMessage({ id: event.data.id, kind: "simulation", output: event.data.output, timings: { transactMilliseconds: 131 } }, [event.data.output])
       host.__playsrcWorkerProfileMemory?.(128, 35, 42)
       return 42
@@ -66,6 +67,8 @@ describe("injected Worker task profiling", () => {
     expect(marks).toContain("playsrc-worker-task:worker-1:1:7:start")
     expect(host.onmessage).toBe(original)
     expect(host.__playsrcWorkerProfileMemory).toBeUndefined()
+    expect(result.tasks[0].observes).toEqual([{ requestId: 7, started: 10, finished: 1310, nowSeconds: 90, acknowledgedTick: "6000", result: 1 }])
+    expect(host.__playsrcWorkerProfileObserve).toBeUndefined()
   })
 
   test("bounds records without dropping or changing real Worker messages", () => {

@@ -9,11 +9,13 @@ import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
+import { installBrowserFrameProfiler } from "./browser-frame-profiler"
+import { sustainedFreezes } from "./sustained-freezes"
 import { SUSTAINED_KOTH, sustainedKothTarget, requireSustainedBudget, installSustainedObservation, summarizeSustainedWindow, sustainedRunIssues } from "./sustained-koth"
 import { windowsProcessMemory } from "./windows-process-memory"
 import { prepareWorkerCpuCapture } from "./worker-cpu-profiler"
 import { drainTraceStream, retainCompositorEvidence, retainEvidenceBlob } from "./compositor-evidence"
-import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
+import { TRACE_START, TRACE_END, summarizeCompositorTruth, chromiumPresentationEventName } from "./compositor-truth"
 import { startGameplayReplayJournal } from "./gameplay-replay"
 
 test("sustained natural full-roster KOTH with whole-interval delivery and late CPU evidence", async ({ page, context }) => {
@@ -38,6 +40,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
   let cpu: Awaited<ReturnType<typeof prepareWorkerCpuCapture>> | undefined
   let cpuStarted = false, mainCpuStarted = false, workerCpu: any, mainCpu: any, replayArtifact: any, compositor: any
   let allocationTracking = false, allocationStart: any, allocationEnd: any
+  let lateSimulation: any
   const entropyDirectory = path.join(sourceCacheDir, "profiles/sustained-koth/entropy")
   const entropyIdentity = process.env.PROFILE_SUSTAINED_ENTROPY
   let entropy: Buffer | undefined
@@ -59,7 +62,17 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await check()
     captures.push({ name: `${name}.png`, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), state: await snapshot() })
   }
-  await page.addInitScript({ content: `globalThis.__playsrcProfile={};(${installDeliveryRpcObserver.toString()})(globalThis,["observe"]);(${installSustainedObservation.toString()})();` })
+  const pulse = async () => {
+    const requestedEpoch = Date.now()
+    await check()
+    const key = inputPlan.length % 2 === 0 ? "a" : "d", sent = await page.evaluate(() => performance.now())
+    const downStartedEpoch = Date.now()
+    await page.keyboard.down(key)
+    const downCompletedEpoch = Date.now()
+    try { await page.waitForTimeout(150) } finally { await page.keyboard.up(key) }
+    inputPlan.push({ key, sent, requestedEpoch, downStartedEpoch, downCompletedEpoch, releasedEpoch: Date.now() })
+  }
+  await page.addInitScript({ content: `globalThis.__playsrcProfile={};(${installDeliveryRpcObserver.toString()})(globalThis,undefined,65536);(${installSustainedObservation.toString()})();(${installBrowserFrameProfiler.toString()})(globalThis,"lifecycle");` })
   try {
     const admission = await check()
     if (admission.idleMilliseconds < 2000) throw new Error("Sustained KOTH requires two seconds of real interactive-console idle")
@@ -87,6 +100,9 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await expect(main).toHaveAttribute("data-bot-count", "23", { timeout: 15_000 })
     expect(JSON.parse(await main.getAttribute("data-local-match-settings") ?? "null")).toMatchObject({ entry: "create-server", mapIdentity: target,
       configuration: { quota: 23, maximumPlayers: 24, difficulty: 1, mode: "normal", offlinePractice: false } })
+    await check()
+    // Element focus inside an already native-admitted window; no OS activation.
+    await page.locator("canvas.world-canvas").focus()
     await replay.ready(); await replay.mark(0); await replay.mark(1); replayArtifact = await replay.stop()
     if (!replayArtifact.complete || !replayArtifact.entropy) throw new Error("Authenticated startup/entropy capture incomplete")
     const capturedEntropy = await readFile(path.join(directory, replayArtifact.entropy.file))
@@ -131,17 +147,14 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       if (Date.now() >= nextNative) { await check(); nextNative = Date.now() + 500 }
       if (!agedPixels && at - started >= 85_000) { await pixels("aged-before-sample"); agedPixels = true }
       if (at >= nextInput) {
-        await check()
-        const key = inputPlan.length % 2 === 0 ? "a" : "d"
-        const sent = await page.evaluate(() => performance.now()); await page.keyboard.down(key)
-        await page.waitForTimeout(150); await page.keyboard.up(key)
-        inputPlan.push({ key, sent }); nextInput += 10_000
+        await pulse(); nextInput += 10_000
       }
       await page.waitForTimeout(250)
       at = await page.evaluate(() => performance.now())
       if (at >= nextMemory) { at = await collect(); nextMemory += 2000 }
     }
     lateStarted = await page.evaluate(() => performance.now())
+    await page.evaluate(() => { (globalThis as any).__playsrcFrameProfiler.active = true })
     allocationStart = await worker.evaluate(() => {
       const memory = (globalThis as any).__playsrcWorkerMemory
       if (!(globalThis as any).__playsrcWorkerMemoryTracking(true)) throw new Error("Allocation accounting rejected")
@@ -151,8 +164,14 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await cpu.start(); cpuStarted = true
     await cdp.send("Profiler.start"); mainCpuStarted = true
     const end = Date.now() + SUSTAINED_KOTH.sampleMilliseconds
+    await pulse()
     while (Date.now() < end) { await check(); await collect(); await page.waitForTimeout(Math.min(1000, Math.max(0, end - Date.now()))) }
     lateEnded = await page.evaluate(() => performance.now())
+    lateSimulation = await page.evaluate(() => {
+      const profiler = (globalThis as any).__playsrcFrameProfiler
+      profiler.active = false
+      return { publications: profiler.simulation, dropped: profiler.simulationDropped, frames: profiler.completedFrames, counters: profiler.counters }
+    })
     allocationEnd = await worker.evaluate(() => {
       if (!(globalThis as any).__playsrcWorkerMemoryTracking(false)) throw new Error("Allocation accounting stop rejected")
       return { at: performance.now(), timeOrigin: performance.timeOrigin, memory: (globalThis as any).__playsrcWorkerMemory }
@@ -194,13 +213,28 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       main: mainCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(mainCpu)), "main.cpuprofile") : null }
     const window = compositor?.analysis.window
     const issues = sustainedRunIssues(sampled, lateStarted, lateEnded)
+    if (lateSimulation?.dropped) issues.push("Late simulation publication evidence was dropped")
     if (!compositor?.manifest.complete) issues.push("Compositor evidence is incomplete")
     if (issues.length) error ??= issues.join("; ")
     const phases = sampled ? Object.fromEntries([["whole", sampled.started, sampled.ended], ["early", sampled.started, Math.min(sampled.started + 10_000, sampled.ended)], ["late", lateStarted, lateEnded]]
       .filter(([, from, to]) => Number(to) > Number(from)).map(([name, from, to]) => [name, { ...summarizeSustainedWindow(sampled, Number(from), Number(to)),
         compositor: window ? summarizeCompositorTruth(compositor.events, Number(to) - Number(from), { startedMicroseconds: Number(from) * 1000 + window.offsetMicroseconds, endedMicroseconds: Number(to) * 1000 + window.offsetMicroseconds }) : null }])) : null
+    const presentationName = compositor ? chromiumPresentationEventName(compositor.events) : undefined
+    const presentationStreams = new Map<string, number[]>()
+    if (window && presentationName) for (const event of compositor.events) {
+      if (event.name !== presentationName || !Number.isFinite(event.ts)) continue
+      const stream = `${event.pid}:${event.tid}`, times = presentationStreams.get(stream) ?? []
+      times.push((event.ts - window.offsetMicroseconds) / 1000); presentationStreams.set(stream, times)
+    }
+    const freezeWindows = sampled ? [["whole", sampled.started, sampled.ended], ["early", sampled.started, Math.min(sampled.started + 10_000, sampled.ended)], ["late", lateStarted, lateEnded]] : []
+    const freezes = Object.fromEntries(freezeWindows.filter(([, from, to]) => Number(to) > Number(from)).map(([name, from, to]) => [name, {
+      submissions: sustainedFreezes(sampled, Number(from), Number(to), sampled.frames.map((frame: any) => frame.at), Array.isArray(workerCpu) ? workerCpu : []),
+      tickPublications: sustainedFreezes(sampled, Number(from), Number(to), sampled.ticks.map((tick: any) => tick.at), Array.isArray(workerCpu) ? workerCpu : []),
+      presented: [...presentationStreams].map(([stream, times]) => ({ stream, eventName: presentationName,
+        ...sustainedFreezes(sampled, Number(from), Number(to), [...new Set(times)].sort((a, b) => a - b), Array.isArray(workerCpu) ? workerCpu : []) })),
+    }]))
     await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
-      records, sampled, phases, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
+      records, sampled, phases, freezes, lateSimulation, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
       allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
   }

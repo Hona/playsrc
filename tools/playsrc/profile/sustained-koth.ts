@@ -60,14 +60,14 @@ export function installSustainedObservation(host: any = globalThis) {
     },
     stop() {
       ended = host.performance.now(); active = false; observer?.disconnect(); host.cancelAnimationFrame(raf)
-      return { started, ended, frames, callbacks, ticks, inputs, lifecycle, dropped, missedFrames, rpc: host.__playsrcDeliveryRpc.stop() }
+      return { started, ended, timeOrigin: host.performance.timeOrigin, frames, callbacks, ticks, inputs, lifecycle, dropped, missedFrames, rpc: host.__playsrcDeliveryRpc.stop() }
     },
   }
 }
 
 export function summarizeSustainedWindow(sample: any, started: number, ended: number) {
   const ticks = sample.ticks.filter((tick: any) => tick.at >= started && tick.at < ended)
-  const rpc = sample.rpc.records.filter((call: any) => call.received >= started && call.received < ended)
+  const rpc = sample.rpc.records.filter((call: any) => call.kind === "observe" && call.received >= started && call.received < ended)
   const input = sample.inputs.filter((input: any) => input.at >= started && input.at < ended)
   const distribution = (key: string) => summarizeFrameTimes(rpc.map((call: any) => call.timings[key]).filter(Number.isFinite))
   return {
@@ -90,7 +90,7 @@ export function sustainedRunIssues(sample: any, lateStarted: number, lateEnded: 
   if (!Number.isFinite(lateEnded - lateStarted) || lateEnded - lateStarted < 5000 || lateEnded - lateStarted > 10_000) issues.push("Detailed sample is outside5–10seconds")
   if (sample.dropped || sample.rpc?.dropped || sample.missedFrames) issues.push("Incomplete continuous telemetry")
   if (sample.lifecycle?.length) issues.push("Visibility, geometry, input or generation changed")
-  if (!sample.rpc?.records?.length) issues.push("Worker observe service/queue telemetry is absent")
+  if (!sample.rpc?.records?.some((call: any) => call.kind === "observe")) issues.push("Worker observe service/queue telemetry is absent")
   const whole = summarizeSustainedWindow(sample, sample.started, sample.ended)
   if (whole.observedTicksPerSecond < 65) issues.push("Whole-interval observed simulation is below65Hz")
   if (lateEnded > lateStarted && summarizeSustainedWindow(sample, lateStarted, lateEnded).observedTicksPerSecond < 63) issues.push("Late observed simulation is below63Hz")
