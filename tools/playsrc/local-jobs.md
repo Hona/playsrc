@@ -59,10 +59,11 @@ foreground/unobscured/browser-ownership checks still apply. No game window is
 forced forward and no user input/app is suppressed. Direct Windows profile or
 stage runners without native job ownership fail closed; use `local-job run`.
 
-The total job budget remains **175 seconds**, including FIFO wait, helper
+Windows 10 or newer is required for atomic Job Object assignment. The total
+job budget remains **175 seconds**, including FIFO wait, helper
 startup, prompts and cleanup (never more than three minutes waiting for a lock).
 Sampling gets only the remaining budget, not reset clocks. Native commands are
-created suspended, assigned to an owned kill-on-close Windows Job Object, then
+created suspended **in** an owned kill-on-close Windows Job Object, then
 resumed only after approval. Completion is shown only after the owned tree is
 empty and source verification has finished: **completed**, **failed**,
 **cancelled** or **denied**, with “hands-off is no longer needed for this job.”

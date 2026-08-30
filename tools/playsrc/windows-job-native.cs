@@ -199,12 +199,15 @@ public static class PlaysrcNativeJob {
  [StructLayout(LayoutKind.Sequential)] struct ExtendedLimit {public BasicLimit basic;public Io io;public UIntPtr processMemory,jobMemory,peakProcess,peakJob;}
  [StructLayout(LayoutKind.Sequential)] struct Accounting {public long a,b,c,d;public uint faults,total,active,terminated;}
  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] struct Startup {public int size;public string reserved,desktop,title;public uint x,y,width,height,xChars,yChars,fill,flags;public ushort show,reserved2;public IntPtr bytes,input,output,error;}
+ [StructLayout(LayoutKind.Sequential)] struct ExtendedStartup {public Startup basic;public IntPtr attributes;}
  [StructLayout(LayoutKind.Sequential)] struct ProcessInfo {public IntPtr process,thread;public uint pid,tid;}
  [StructLayout(LayoutKind.Sequential)] struct Security {public int length;public IntPtr descriptor;[MarshalAs(UnmanagedType.Bool)] public bool inherit;}
  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr security,IntPtr name);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int kind,ref ExtendedLimit info,int size);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job,int kind,out Accounting info,int size,IntPtr returned);
- [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref UIntPtr bytes);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,UIntPtr attribute,IntPtr value,UIntPtr bytes,IntPtr previous,IntPtr returned);
+ [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr job,uint exit);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr process,uint exit);
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
@@ -212,7 +215,7 @@ public static class PlaysrcNativeJob {
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint exit);
  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string name,uint access,uint share,ref Security security,uint creation,uint flags,IntPtr template);
- [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string application,StringBuilder command,IntPtr processSecurity,IntPtr threadSecurity,bool inherit,uint flags,IntPtr environment,string cwd,ref Startup startup,out ProcessInfo process);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string application,StringBuilder command,IntPtr processSecurity,IntPtr threadSecurity,bool inherit,uint flags,IntPtr environment,string cwd,ref ExtendedStartup startup,out ProcessInfo process);
  static string Quote(string value) {
   var output=new StringBuilder("\"");int slashes=0;
   foreach(char c in value){if(c=='\\'){slashes++;continue;}output.Append('\\',c=='\"'?slashes*2+1:slashes);output.Append(c);slashes=0;}
@@ -220,7 +223,7 @@ public static class PlaysrcNativeJob {
  }
  static uint Active(IntPtr job) {Accounting info;Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"Query owned tree");return info.active;}
  static void Execute(Request request,Receipt receipt,Process owner) {
-  IntPtr job=IntPtr.Zero,log=IntPtr.Zero,input=IntPtr.Zero;var child=new ProcessInfo();bool resumed=false;
+  IntPtr job=IntPtr.Zero,log=IntPtr.Zero,input=IntPtr.Zero,attributes=IntPtr.Zero,jobList=IntPtr.Zero;var child=new ProcessInfo();bool resumed=false,attributesInitialized=false;
   try {
    job=CreateJobObjectW(IntPtr.Zero,IntPtr.Zero);if(job==IntPtr.Zero)throw Native("Create owned job");
    var limits=new ExtendedLimit();limits.basic.flags=0x2000; // KILL_ON_JOB_CLOSE, no breakaway
@@ -229,13 +232,23 @@ public static class PlaysrcNativeJob {
    log=CreateFileW(Path.Combine(request.run,"command.log"),0x40000000,1,ref security,1,0,IntPtr.Zero);
    if(log==new IntPtr(-1))throw Native("Create command log");
    input=CreateFileW("NUL",0x80000000,3,ref security,3,0,IntPtr.Zero);if(input==new IntPtr(-1))throw Native("Open null input");
-   var startup=new Startup{size=Marshal.SizeOf(typeof(Startup)),flags=0x100,input=input,output=log,error=log};
+   // Windows 10+ JOB_LIST assigns ownership atomically at creation. Creating a
+   // suspended process and then assigning it leaves a helper-crash gap that
+   // can strand an unassigned suspended child. There is no fallback to that gap.
+   // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
+   UIntPtr attributeBytes=UIntPtr.Zero;
+   InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref attributeBytes);
+   if(attributeBytes.ToUInt64()==0 || attributeBytes.ToUInt64()>65536)throw Native("Size atomic job attributes");
+   attributes=Marshal.AllocHGlobal((int)attributeBytes.ToUInt64());
+   Check(InitializeProcThreadAttributeList(attributes,1,0,ref attributeBytes),"Initialize atomic job attributes");attributesInitialized=true;
+   jobList=Marshal.AllocHGlobal(IntPtr.Size);Marshal.WriteIntPtr(jobList,job);
+   Check(UpdateProcThreadAttribute(attributes,0,new UIntPtr(0x2000d),jobList,new UIntPtr((uint)IntPtr.Size),IntPtr.Zero,IntPtr.Zero),"Set atomic owned-job list");
+   var startup=new ExtendedStartup{basic=new Startup{size=Marshal.SizeOf(typeof(ExtendedStartup)),flags=0x100,input=input,output=log,error=log},attributes=attributes};
    var command=new StringBuilder(Quote(request.executable));foreach(string argument in request.arguments)command.Append(' ').Append(Quote(argument));
-   // Never run even one workload instruction until assignment succeeds.
-   Check(CreateProcessW(request.executable,command,IntPtr.Zero,IntPtr.Zero,true,0x08000000|4,IntPtr.Zero,request.cwd,ref startup,out child),"Create suspended workload");
+   // Never run even one workload instruction outside this owned job.
+   Check(CreateProcessW(request.executable,command,IntPtr.Zero,IntPtr.Zero,true,0x08000000|0x80000|4,IntPtr.Zero,request.cwd,ref startup,out child),"Create atomically owned suspended workload");
    receipt.childPid=(int)child.pid;
    using(var process=Process.GetProcessById(receipt.childPid))receipt.childCreatedAt=new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
-   Check(AssignProcessToJobObject(job,child.process),"Assign owned workload");
    Save(Path.Combine(request.run,"dispatch.json"),new {pid=receipt.childPid,createdAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,job=request.job,task=request.task,run=request.run});
    ConsoleSession();
    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before dispatch");
@@ -256,6 +269,8 @@ public static class PlaysrcNativeJob {
    else receipt.treeEmpty=child.process==IntPtr.Zero;
    if(child.thread!=IntPtr.Zero)CloseHandle(child.thread);if(child.process!=IntPtr.Zero)CloseHandle(child.process);
    if(log!=IntPtr.Zero && log!=new IntPtr(-1))CloseHandle(log);if(input!=IntPtr.Zero && input!=new IntPtr(-1))CloseHandle(input);
+   if(attributesInitialized)DeleteProcThreadAttributeList(attributes);
+   if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);if(jobList!=IntPtr.Zero)Marshal.FreeHGlobal(jobList);
    receipt.teardownAt=Now;
   }
  }
