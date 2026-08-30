@@ -3,6 +3,7 @@
 import { TF2_PRESENTATION_SCHEMA, type InitialView, type WorkerFailureCode, type WorkerRequest, type WorkerResponse } from "./protocol"
 import { ResourceGenerations } from "./resource-generations"
 import { MAX_GRAPH_CHUNKS } from "@playsrc/asset-store/graph"
+import { supportsSimd128 } from "@playsrc/wasm"
 import { reclaimModelReads } from "./model-read-ownership"
 import { ReplyWriter, REPLY_BYTES, type SharedReply, type ReplyRange } from "./reply-transport"
 import { ADMISSION_EVENT_BYTES, MAX_ADMISSION_EVENTS, decodeAdmissionMetrics } from "./admission-metrics"
@@ -243,8 +244,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     return
   }
   try {
-    if (!WebAssembly.validate(request.wasm)) {
-      fail(request.id, "WasmUnavailable", 0, "This browser cannot validate the required WebAssembly module (standard SIMD128 and shared memory)")
+    if (!supportsSimd128()) {
+      fail(request.id, "WasmUnavailable", 0, "This browser lacks required standard WebAssembly SIMD128 support")
       return
     }
     const { candidate, actual, mailbox, modelOwnership } = await initializeAuthenticatedWasm({
