@@ -121,9 +121,16 @@ test("equipment trusted input to native visible pages", async ({ page, context }
         longTasks: f.longTasks, longAnimationFrames: f.longAnimationFrames, completedFrames: f.completedFrames }
     })
     const heapAfter = await cdp.send("Runtime.getHeapUsage"), residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
+    const retention: unknown[] = []
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await click("Class3"); await click("BackpackButton"); await page.keyboard.press("Escape")
+      await expect(page.locator(selector("Class3"))).toBeVisible()
+      retention.push({ cycle, heap: await cdp.send("Runtime.getHeapUsage"), dom: await cdp.send("Memory.getDOMCounters") })
+    }
+    requireStartupNative(await reader.read())
     await page.screenshot({ path: path.join(directory, "equipment.page.png") })
     expect(errors).toEqual([])
-    await profileArtifact(() => writeFile(path.join(directory, "equipment-measurement.json"), JSON.stringify({ cpu, startedEpoch, endedEpoch, evidence, references, heapBefore, heapAfter, residentBefore, residentAfter }, null, 2)))
+    await profileArtifact(() => writeFile(path.join(directory, "equipment-measurement.json"), JSON.stringify({ cpu, startedEpoch, endedEpoch, evidence, references, heapBefore, heapAfter, residentBefore, residentAfter, retention }, null, 2)))
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false; await loop?.catch(() => {})
@@ -187,13 +194,7 @@ test.describe("equipment transaction faults", () => {
       await page.goto("/", { waitUntil: "domcontentloaded" })
       await expect(main).toHaveAttribute("data-phase", "MainMenu")
       await page.locator("[data-vgui-name='CharacterSetupButton']").click()
-      await expect(control("Class1")).toBeVisible()
-      await page.keyboard.press("ArrowRight")
-      await page.keyboard.down("Enter"); await page.keyboard.down("Enter")
-      await expect(control("Class3")).toBeVisible()
-      await expect(control("Itemslot-0")).toHaveCount(0)
-      await capture("held-enter")
-      await page.keyboard.up("Enter")
+      await control("Class3").click()
       await expect(equipment).toHaveAttribute("data-preview-model", "models/player/soldier.mdl", { timeout: 20_000 })
       await page.keyboard.press("Backquote")
       const entry = page.locator("[aria-label='Console command']")
@@ -221,7 +222,13 @@ test.describe("equipment transaction faults", () => {
       gate.resolve()
       await control("BackButton").click(); await control("BackButton").click()
       await expect(equipment).toBeHidden()
-      await page.locator("[data-vgui-name='CharacterSetupButton']").click(); await control("Class3").click()
+      await page.locator("[data-vgui-name='CharacterSetupButton']").click()
+      await page.keyboard.press("ArrowLeft"); await page.keyboard.press("ArrowRight")
+      await page.keyboard.down("Enter"); await page.keyboard.down("Enter")
+      await expect(control("Class3")).toBeVisible()
+      await expect(control("Itemslot-0")).toHaveCount(0)
+      await capture("held-enter")
+      await page.keyboard.up("Enter")
       await control("Itemslot-0").click(); await control("Itemitem-127").click()
       await expect(control("Itemslot-0")).toBeVisible({ timeout: 20_000 })
       await expect.poll(() => page.evaluate(() => localStorage.getItem("playsrc.tf2.local-equipment.v1"))).not.toBe(before)

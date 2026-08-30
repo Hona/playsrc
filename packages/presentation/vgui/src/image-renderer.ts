@@ -269,7 +269,7 @@ export class VguiRasterCache<Value> {
   readonly #maximumEntries: number
   #bytes = 0
 
-  constructor(maximumBytes = 64 * 1024 * 1024, maximumEntries = 512) {
+  constructor(maximumBytes = 64 * 1024 * 1024, maximumEntries = 512, private readonly dispose?: (value: Value) => void) {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || !Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
       throw new Error("VGUI raster cache bounds are invalid")
     }
@@ -287,8 +287,12 @@ export class VguiRasterCache<Value> {
 
   set(identity: string, value: Value, bytes: number): void {
     if (!identity || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error("VGUI raster cache entry is invalid")
-    this.delete(identity)
-    if (bytes > this.#maximumBytes) return
+    const previous = this.#entries.get(identity)
+    if (previous?.value === value) {
+      this.#entries.delete(identity)
+      this.#bytes -= previous.bytes
+    } else this.delete(identity)
+    if (bytes > this.#maximumBytes) { this.dispose?.(value); return }
     this.#entries.set(identity, Object.freeze({ value, bytes }))
     this.#bytes += bytes
     while (this.#bytes > this.#maximumBytes || this.#entries.size > this.#maximumEntries) {
@@ -301,11 +305,11 @@ export class VguiRasterCache<Value> {
     if (!entry) return
     this.#entries.delete(identity)
     this.#bytes -= entry.bytes
+    this.dispose?.(entry.value)
   }
 
   clear(): void {
-    this.#entries.clear()
-    this.#bytes = 0
+    for (const identity of this.#entries.keys()) this.delete(identity)
   }
 
   snapshot(): Readonly<{ entries: number; bytes: number }> {
@@ -316,9 +320,12 @@ export class VguiRasterCache<Value> {
 export class VguiImageRasterizer {
   readonly #document: Document
   readonly #textures = new VguiRasterCache<Promise<VguiImageRasterTexturePixels>>()
-  readonly #renders = new VguiRasterCache<Promise<Uint8ClampedArray>>()
-  readonly #presented = new WeakMap<HTMLCanvasElement, string>()
-  readonly #pending = new WeakMap<HTMLCanvasElement, object>()
+  readonly #renders = new VguiRasterCache<{ ready: Promise<void>; url?: string; users: number; retained: boolean }>(64 * 1024 * 1024, 512, entry => {
+    entry.retained = false
+    if (entry.users === 0 && entry.url) URL.revokeObjectURL(entry.url)
+  })
+  readonly #presented = new WeakMap<HTMLImageElement, string>()
+  readonly #pending = new WeakMap<HTMLImageElement, object>()
   #destroyed = false
 
   constructor(document: Document) { this.#document = document }
@@ -357,33 +364,56 @@ export class VguiImageRasterizer {
     return loading
   }
 
-  async render(canvas: HTMLCanvasElement, request: VguiImageRasterRequest): Promise<void> {
+  async render(image: HTMLImageElement, request: VguiImageRasterRequest): Promise<void> {
     const signature = JSON.stringify(request)
     const publication = {}
-    this.#pending.set(canvas, publication)
-    if (this.#presented.get(canvas) === signature && canvas.width === request.width && canvas.height === request.height) return
-    let rendering = this.#renders.get(signature)
-    if (!rendering) {
-      rendering = (async () => {
+    this.#pending.set(image, publication)
+    if (this.#presented.get(image) === signature && image.naturalWidth === request.width && image.naturalHeight === request.height) return
+    let entry = this.#renders.get(signature)
+    if (!entry) {
+      entry = { ready: Promise.resolve(), users: 0, retained: true }
+      const created = entry
+      created.ready = (async () => {
         const sources = [request.material.base, request.material.second, request.material.detail].filter((value): value is VguiImageMaterialTexture => value !== null)
         const loaded = await Promise.all(sources.map((texture) => this.#load(texture)))
-        return shadeVguiImageIncrementally(
+        const pixels = await shadeVguiImageIncrementally(
           request,
           new Map(sources.map((texture, index) => [texture.logicalIdentity, loaded[index]!])),
           () => new Promise<void>(resolve => setTimeout(resolve, 0)),
         )
+        if (this.#destroyed) return
+        // One immutable painted resource is shared by all matching controls.
+        // Per-control 2D contexts otherwise upload the same cached pixels again.
+        const canvas = this.#document.createElement("canvas")
+        canvas.width = request.width; canvas.height = request.height
+        try {
+          const context = canvas.getContext("2d")
+          if (!context) throw new Error("VGUI presentation canvas is unavailable")
+          context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
+          const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("VGUI raster encoding failed")), "image/png"))
+          if (this.#destroyed) return
+          if (created.retained) this.#renders.set(signature, created, pixels.byteLength + blob.size)
+          created.url = URL.createObjectURL(blob)
+        } finally { canvas.width = 0; canvas.height = 0 }
       })()
-      this.#renders.set(signature, rendering, request.width * request.height * 4)
-      void rendering.catch(() => this.#renders.delete(signature))
+      this.#renders.set(signature, created, request.width * request.height * 4)
+      void created.ready.catch(() => { if (this.#renders.get(signature) === created) this.#renders.delete(signature) })
     }
-    const pixels = await rendering
-    if (this.#destroyed || !canvas.isConnected || this.#pending.get(canvas) !== publication) return
-    if (canvas.width !== request.width) canvas.width = request.width
-    if (canvas.height !== request.height) canvas.height = request.height
-    const context = canvas.getContext("2d")
-    if (!context) throw new Error("VGUI presentation canvas is unavailable")
-    context.putImageData(new ImageData(pixels, request.width, request.height), 0, 0)
-    this.#presented.set(canvas, signature)
+    entry.users++
+    try {
+      await entry.ready
+      if (this.#destroyed || !image.isConnected || this.#pending.get(image) !== publication) return
+      if (image.getAttribute("width") !== String(request.width)) image.width = request.width
+      if (image.getAttribute("height") !== String(request.height)) image.height = request.height
+      this.#presented.delete(image)
+      if (image.src !== entry.url) image.src = entry.url!
+      try { await image.decode() }
+      catch (error) { if (!this.#destroyed && this.#pending.get(image) === publication) throw error; return }
+      if (!this.#destroyed && this.#pending.get(image) === publication) this.#presented.set(image, signature)
+    } finally {
+      entry.users--
+      if (!entry.retained && entry.users === 0 && entry.url) URL.revokeObjectURL(entry.url)
+    }
   }
 
   destroy(): void {

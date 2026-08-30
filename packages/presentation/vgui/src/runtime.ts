@@ -2962,10 +2962,12 @@ class SourceVguiRuntime implements VguiRuntime {
     rect: VguiRect = Object.freeze({ x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height }),
   ): void {
     if (!image.material || rect.width <= 0 || rect.height <= 0) return
-    let raster = panel.chromeElements.get(key) as HTMLCanvasElement | undefined
+    let raster = panel.chromeElements.get(key) as HTMLImageElement | undefined
     if (!raster) {
       if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
-      raster = this.document.createElement("canvas")
+      raster = this.document.createElement("img")
+      raster.alt = ""
+      raster.setAttribute("aria-hidden", "true")
       raster.dataset.vguiRaster = key
       raster.style.position = "absolute"
       raster.style.pointerEvents = "none"
@@ -4077,6 +4079,7 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     if (key === "Enter") {
+      if (["Button", "CheckButton", "RadioButton", "FrameSystemButton", "MenuItem"].some(name => sameName(sourceControl, name))) return
       if (sameName(sourceControl, "QueryBox") || sameName(sourceControl, "MessageBox")) {
         this.closeQuery(panel, true)
         return
