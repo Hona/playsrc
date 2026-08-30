@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import path from "node:path"
+import { mkdir } from "node:fs/promises"
 import { loadLocalConfig } from "../../../../tools/playsrc/src/config"
 import { parseResourceSet } from "../../../asset-store/src/graph"
 import { parsePresentationArtifacts } from "../../../../games/tf2/browser/src/artifacts"
@@ -10,6 +11,8 @@ import { loadOfflineTextureOwner, offlinePipelineDevice } from "./offline-textur
 for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skipIf(process.env.PLAYSRC_OFFLINE_KOTH !== "1")(`${target} authored particle values, compiler layouts and create/retire/reentry ownership`, async () => {
   const referenceMode = process.env.PLAYSRC_OFFLINE_KOTH_REFERENCE === "1"
   const config = await loadLocalConfig(), directory = path.join(config.sourceCacheDir, "evidence/koth-sustained-offline", target)
+  const output = path.join(directory, "canvas-output-v1")
+  await mkdir(output, { recursive: true })
   const manifest = await Bun.file(path.join(directory, "manifest.json")).json()
   expect(manifest.target).toBe(target); expect(manifest.bspSha256).toBe(tf2MapBsp(target).sha256)
   const read = async (name: string) => {
@@ -26,12 +29,15 @@ for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skip
   expect(frames).toHaveLength(5)
   if (target === "koth_sawmill") expect(frames.some(frame => frame.items.length > 0)).toBe(true)
   for (const sampleCount of [1, 4] as const) {
-  const loaded = await loadOfflineTextureOwner(), m = loaded.module, device = await offlinePipelineDevice(m, false, sampleCount)
+  const loaded = await loadOfflineTextureOwner(), m = loaded.module, device = await offlinePipelineDevice(m, true, sampleCount)
   const owner = new m.RendererOwner({ canvas: { width: 1280, height: 720 }, configuration: m.SOURCE_LDR, sampleCount,
     textureQuality: { mipOffset: 0, trilinear: true, anisotropy: 1 } })
   const scene = owner.offlineParticleScene(device.renderer, artifacts.particleTextures, artifacts.materialStates)
   const camera = { position: [0, 0, 0], yawDegrees: 90, pitchDegrees: 5, verticalFovDegrees: 75, near: 1, far: 30000 }
   await owner.prepareParticlePipelines(camera)
+  // Compilation alone does not allocate the canvas output's depth attachment.
+  // Exercise the actual Three output pass against the recording API as well.
+  device.renderer.render(scene.particlePipelineMeshes, new m.OfflineThree.PerspectiveCamera(75, 16 / 9, 1, 30000))
   const geometryState = (entries: any[]) => entries.map(({ key, capacity, mesh }) => ({ key, capacity, visible: mesh.visible,
     drawRange: { ...mesh.geometry.drawRange }, renderOrder: mesh.renderOrder,
     attributes: Object.entries(mesh.geometry.attributes).map(([name, attribute]: any) => ({ name, size: attribute.itemSize,
@@ -77,7 +83,7 @@ for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skip
     outstandingColorBytes: outstanding.filter((value: any) => value.format === "rgba16float")
       .reduce((sum: number, value: any) => sum + value.size.width * value.size.height * value.size.depthOrArrayLayers * value.samples * 8, 0),
     outstandingOpaqueDepthTextures: outstanding.filter((value: any) => value.format === "depth24plus").length }
-  await Bun.write(path.join(directory, `owner-${referenceMode ? "reference" : "candidate"}-msaa${sampleCount}.json`), JSON.stringify({ target, sampleCount, sourceSha256: loaded.sourceSha256, graphSha256: manifest.graphSha256,
+  await Bun.write(path.join(output, `owner-${referenceMode ? "reference" : "candidate"}-msaa${sampleCount}.json`), JSON.stringify({ target, sampleCount, sourceSha256: loaded.sourceSha256, graphSha256: manifest.graphSha256,
     samples, created, destroyed, programs, materials, outstanding, gpuApi, scope: "Bun CPU microcost and recorded API/compiler ownership only. Fixed native inputs are not recorded combat. No browser, GPU execution, pixels, physical residency, GC or sustained frame/input acceptance." }))
   if (referenceMode) {
     expect(outstanding.some((value: any) => value.format === "rgba16float")).toBe(true)
@@ -86,7 +92,7 @@ for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skip
     expect(outstanding).toEqual([])
     // Separate processes preserve the same Three global declaration sequence,
     // rather than normalizing away differences in generated shader programs.
-    const referenceFile = Bun.file(path.join(directory, `owner-reference-msaa${sampleCount}.json`))
+    const referenceFile = Bun.file(path.join(output, `owner-reference-msaa${sampleCount}.json`))
     const reference = await referenceFile.json()
     expect(reference.graphSha256).toBe(manifest.graphSha256)
     expect(programs).toEqual(reference.programs)
