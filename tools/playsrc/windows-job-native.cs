@@ -225,6 +225,25 @@ public static partial class PlaysrcNativeJob {
    public string schema="playsrc-native-desktop-v1";
    public long preparedAt,desktopStartedAt,desktopReleasedAt;
    public Dialog consent,completion;
+   public ConsoleState console;
+  }
+  public sealed class ConsoleState {
+   public int consoleSessionId,processSessionId,level=1,sessionId,state=0,flags=1,protocol=0;
+   public uint idleMilliseconds;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct LastInput {public uint size,time;}
+  [DllImport("user32.dll",SetLastError=true)] static extern bool GetLastInputInfo(ref LastInput input);
+  static ConsoleState RequireIdle(Request request,Process owner) {
+   long deadline=Math.Min(request.deadline-7000,Now+10000);
+   do {
+    int session=ConsoleSession(); // All recorded WTS fields above were checked.
+    var input=new LastInput{size=8};Check(GetLastInputInfo(ref input),"Read genuine console idle");
+    uint idle=unchecked((uint)Environment.TickCount-input.time);
+    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled during browser admission");
+    if(idle>=2000)return new ConsoleState{consoleSessionId=session,processSessionId=session,sessionId=session,idleMilliseconds=idle};
+    Thread.Sleep(50);
+   } while(Now<deadline);
+   throw new Exception("Windows physical console requires two seconds of genuine idle before profiling");
   }
   static string DesktopDirectory(Request request,int index) {return Path.Combine(request.run,"desktop",index.ToString("D4"));}
   static DesktopRequest ReadDesktop(Request request,Receipt receipt,string directory,string file,DesktopStage expected) {
@@ -256,7 +275,7 @@ public static partial class PlaysrcNativeJob {
     if(!receipt.interactive)throw new Exception("Background command requested desktop ownership");
     var ready=ReadDesktop(request,receipt,directory,"request.json",null);
     foreach(var previous in receipt.desktop)if(previous.stage==ready.stage)throw new Exception("Desktop stage authorization cannot be reused");
-    stage=Json.Deserialize<DesktopStage>(Json.Serialize(ready));stage.preparedAt=Now;receipt.desktop.Add(stage);
+    stage=Json.Deserialize<DesktopStage>(Json.Serialize(ready));stage.succeeded=false;stage.preparedAt=Now;receipt.desktop.Add(stage);
     request.dialogDirectory=directory;
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled before desktop consent");
     receipt.sessionId=ConsoleSession();
@@ -269,6 +288,7 @@ public static partial class PlaysrcNativeJob {
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled after desktop consent");
     ReadDesktop(request,receipt,directory,"request.json",stage);
     stage.desktopStartedAt=Now;
+    using(var requester=Process.GetProcessById(stage.childPid))stage.console=RequireIdle(request,requester);
     Save(Path.Combine(directory,"grant.json"),stage);
    }
    directory=DesktopDirectory(request,receipt.desktop.Count-1);

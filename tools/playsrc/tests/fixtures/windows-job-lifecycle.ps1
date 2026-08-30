@@ -10,6 +10,7 @@ $source=[regex]::Replace($source,'(?s)static int ConsoleSession\(\) \{.*?\n \}',
 $source=[regex]::Replace($source,'(?s)static Dialog Show\(Request request,bool completion,string outcome,Process owner\) \{.*?\n \}', 'static Dialog Show(Request request,bool completion,string outcome,Process owner) { return TestShow(request,completion); }')
 $source=[regex]::Replace($source,'(?s)static void Execute\(Request request,Receipt receipt,Process owner\) \{.*?\n \}', 'static void Execute(Request request,Receipt receipt,Process owner) { TestExecute(request,receipt,owner); }')
 $source=[regex]::Replace($source,'(?s)static void RequireDesktopEmpty\(IntPtr job\) \{.*?\n  \}', 'static void RequireDesktopEmpty(IntPtr job) { Assert(closed,"teardown before consent closure"); }')
+$source=[regex]::Replace($source,'(?s)static ConsoleState RequireIdle\(Request request,Process owner\) \{.*?\n  \}', 'static ConsoleState RequireIdle(Request request,Process owner) { return new ConsoleState{idleMilliseconds=3000}; }')
 if($source.Contains('TaskDialogIndirect(ref config') -or $source.Contains('Check(CreateProcessW(') -or !$source.Contains('return TestSession();')){throw 'Test isolation substitution failed; refusing UI or workload dispatch'}
 $fixture=@'
 public static partial class PlaysrcNativeJob {

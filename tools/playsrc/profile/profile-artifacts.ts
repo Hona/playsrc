@@ -7,6 +7,8 @@ import path from "node:path"
 const artifacts: Array<() => Promise<void>> = []
 let workerDirectory: string | undefined
 let nativeTeardown: (() => Promise<void>) | undefined
+let nativeProbe: { prepare(): Promise<void>; close(): void } | undefined
+export function registerProfileNativeProbe(probe: { prepare(): Promise<void>; close(): void }): void { nativeProbe = probe }
 async function publish(name: string, value: unknown) {
   const file = path.join(workerDirectory!, name)
   await writeFile(`${file}.tmp`, JSON.stringify(value), { flag: "wx" })
@@ -36,9 +38,7 @@ export async function prepareProfileNativeBrowser(workerIndex: number, executabl
 }
 async function beginWorkerBrowser(workerIndex: number, kind: "playwright" | "native-edge", launch: unknown): Promise<string> {
   if (!Number.isSafeInteger(workerIndex) || workerIndex < 0) throw new Error("Invalid profile worker identity")
-  const { prepareStartupNativeProbe } = await import("./native-startup")
-  const { loadLocalConfig } = await import("../src/config")
-  await prepareStartupNativeProbe((await loadLocalConfig()).sourceCacheDir)
+  await nativeProbe?.prepare()
   workerDirectory = path.join(process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!, `desktop-worker-${workerIndex}`)
   await mkdir(workerDirectory)
   await publish("request.json", { token: process.env.PLAYSRC_PROFILE_DESKTOP_CHANNEL, workerPid: process.pid, kind, launch })
@@ -55,8 +55,7 @@ export async function finishProfileArtifacts(succeeded: boolean): Promise<void> 
   if (!token) return
   if (!workerDirectory) throw new Error("Worker did not enter its owned browser stage")
   await nativeTeardown?.()
-  const { closeStartupNativeProbe } = await import("./native-startup")
-  closeStartupNativeProbe()
+  nativeProbe?.close()
   await publish("release.json", { token, succeeded })
   const receipt = await receive("released.json")
   // Authenticated native stage receipt is available to extraction checks too.

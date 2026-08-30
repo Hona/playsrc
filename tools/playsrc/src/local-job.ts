@@ -284,14 +284,16 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
      if (link) {
        const previous = await readLocalTaskResult(directory, JSON.parse(link).task)
        const value = previous.result
-       if (value?.outcome === "passed" && value.commit === job.commit && value.preparationProfile === args[1]) {
+       if (value?.outcome === "passed" && value.commit === job.commit && value.preparationProfile === args[1]
+         && Number.isSafeInteger(value.startedAt) && Number.isSafeInteger(value.finishedAt) && value.startedAt <= value.finishedAt
+         && value.finishedAt <= (native?.startedAt ?? Date.now())) {
          preparation = { task: value.task, run: value.run, commit: value.commit, startedAt: value.startedAt, finishedAt: value.finishedAt }
        }
      }
    }
    const finishedAt = Date.now()
    const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, interactive: plan.interactive, port, startedAt, finishedAt, outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0,
-     preparationProfile: args[0] === "prepare-profile" ? args[1] : null, preparation, pipelineWallMilliseconds: finishedAt - (preparation?.startedAt ?? startedAt) }
+     preparationProfile: args[0] === "prepare-profile" ? args[1] : null, preparation, pipelineWallMilliseconds: finishedAt - Math.min(preparation?.startedAt ?? startedAt, startedAt) }
   await writeFile(path.join(run, "result.json.tmp"), JSON.stringify(result, null, 2), { flag: "wx" })
   await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
   if (args[0] === "prepare-profile" && task && outcome === "passed") {
