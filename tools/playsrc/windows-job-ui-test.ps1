@@ -3,7 +3,7 @@
 # It never invokes a performance workload or interacts with another application.
 param(
  [Parameter(Mandatory=$true)][string]$Job,
- [ValidateSet('approve','deny','close','escape','race','timeout','failure','cancel','queue')][string]$Case='timeout',
+ [ValidateSet('approve','deny','close','escape','race','timeout','failure','cancel','queue','crash','crash-running')][string]$Case='timeout',
  [string]$Observe
 )
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
@@ -66,7 +66,7 @@ public static class DiagnosticDialog {
    $remaining=3000-($began-$display.dialog.displayedAt)
    if($remaining -gt 0){Start-Sleep -Milliseconds $remaining}
  }
- if($Case -in 'approve','deny','race','cancel','failure') {
+ if($Case -in 'approve','deny','race','cancel','failure','crash-running') {
    $button=if($Case -in 'deny','race'){$deny}else{$approve}
    if(![DiagnosticDialog]::PostMessageW($button,0xF5,[IntPtr]0,[IntPtr]0) -and $Case -ne 'race'){throw 'Native button delivery failed'}
  } elseif($Case -eq 'close') {
@@ -80,7 +80,15 @@ public static class DiagnosticDialog {
    while(!(Test-Path -LiteralPath $commandLog) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
    [IO.File]::WriteAllText((Join-Path $identity.run 'cancel'),'native diagnostic cancellation')
  }
- @{case=$Case;job=$Job;task=$identity.task;run=$identity.run;helperPid=$helper.Id;helperCreatedAt=$display.helperCreatedAt;window=$handle.ToInt64();controls=$names;actionStartedAt=$began;actionFinishedAt=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();authorization='real native control delivery; diagnostic only'}|ConvertTo-Json -Depth 6|Set-Content -Encoding UTF8 (Join-Path $Observe 'interaction.json')
+ if($Case -in 'crash','crash-running') {
+   if($Case -eq 'crash-running') {
+     $commandLog=Join-Path $identity.run 'command.log'
+     do {Start-Sleep -Milliseconds 20;$started=(Test-Path -LiteralPath $commandLog) -and (Select-String -LiteralPath $commandLog -SimpleMatch 'native diagnostic workload' -Quiet)}while(!$started -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline)
+     if(!$started){throw 'Diagnostic workload did not start before crash test'}
+   }
+   $helper.Kill();if(!$helper.WaitForExit(2000)){throw 'Exact diagnostic helper did not exit'}
+ }
+ @{case=$Case;job=$Job;task=$identity.task;run=$identity.run;helperPid=$helper.Id;helperCreatedAt=$display.helperCreatedAt;window=$handle.ToInt64();controls=$names;actionStartedAt=$began;actionFinishedAt=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();purpose='diagnostic observer request, NOT an authorization receipt; check native decision/outcome'}|ConvertTo-Json -Depth 6|Set-Content -Encoding UTF8 (Join-Path $Observe 'interaction.json')
  $helper.Dispose()
  exit 0
 }
@@ -100,7 +108,7 @@ try {
  $deadline=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+10000
  while(!(Test-Path -LiteralPath (Join-Path $directory 'ready')) -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $deadline){Start-Sleep -Milliseconds 20}
  if(!(Test-Path -LiteralPath (Join-Path $directory 'ready'))){throw 'Diagnostic observer failed to start'}
- $duration=if($Case -eq 'cancel'){30000}else{250};$exit=if($Case -eq 'failure'){1}else{0}
+ $duration=if($Case -in 'cancel','crash-running'){30000}else{250};$exit=if($Case -eq 'failure'){1}else{0}
  $launch=& powershell.exe -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'windows-job.ps1') -Job $Job -Action Diagnostic -Milliseconds $duration -DiagnosticExit $exit|ConvertFrom-Json
  if($LASTEXITCODE){throw 'Diagnostic launch failed'}
  $launch|ConvertTo-Json -Compress|Set-Content -Encoding UTF8 (Join-Path $directory 'request.tmp')
@@ -122,7 +130,7 @@ try {
    if($native.completion.displayedAt -lt $native.teardownAt){throw 'Completion preceded teardown'}
    $count=0;$log=Join-Path $native.run 'command.log'
    if(Test-Path -LiteralPath $log){$count=@(Select-String -LiteralPath $log -SimpleMatch 'native diagnostic workload').Count}
-   if($count -gt 1 -or ($native.commandStartedAt -eq 0 -and $count -ne 0)){throw 'More than one dispatch or a denied dispatch'}
+   if($count -gt 1 -or ($native.commandStartedAt -eq 0 -and $count -ne 0 -and $Case -ne 'crash-running')){throw 'More than one dispatch or a denied dispatch'}
    try {$live=[Diagnostics.Process]::GetProcessById([int]$native.helperPid);if(([DateTimeOffset]$live.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() -eq $native.helperCreatedAt){throw 'Native helper leaked'}}catch [ArgumentException]{}finally{if($live){$live.Dispose()}}
    $results+=,$native
  }
@@ -132,6 +140,7 @@ try {
  if($Case -in 'timeout','queue' -and ($first.consent.decision -ne 'approved-timeout' -or $first.consent.visibleMilliseconds -lt 3000)){throw 'Unattended visible timeout was not proven'}
  if($Case -eq 'failure' -and $first.outcome -ne 'failed'){throw 'Workload failure was not preserved'}
  if($Case -eq 'cancel' -and $first.outcome -ne 'cancelled'){throw 'Cancellation was not preserved'}
+ if($Case -in 'crash','crash-running' -and ($first.outcome -ne 'failed' -or $first.consent)){throw 'Helper crash acquired consent or did not stay failed'}
  if($Case -eq 'race' -and $first.consent.decision -notin 'denied','approved-timeout'){throw 'Unexpected boundary race decision'}
  if($Case -eq 'queue' -and ($results.Count -ne 2 -or $results[1].consent.displayedAt -le $first.completion.dismissedAt)){throw 'Queued dialogs overlapped'}
  @{case=$Case;assertions='real controls, exact task/run/creation identity, at-most-one dispatch, owned teardown and completion';passed=$true}|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $directory 'verification.json')
