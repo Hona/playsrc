@@ -5,6 +5,7 @@ import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 import { captureProcessMemory } from "./process-memory"
 import { sustainedWorkerMemory } from "./sustained-worker-memory"
 import { retainBeforeApplicationFailure } from "./application-failure-evidence"
+import { profileArtifact } from "./profile-artifacts"
 import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
 import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence, liveSustainedAttachments } from "./sustained-koth-evidence"
@@ -51,6 +52,7 @@ async function observePrelude(options: Parameters<typeof observeSustainedKoth>[0
     clearInterval(monitor); await pending
     const sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
     const { complete, raw } = await stopLightTrace(browserCdp)
+    await profileArtifact(async () => {
     const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete && !failure,
       dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
       identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, scope: "Ready-to-live prelude only; not the 90-second sustained sample" },
@@ -62,7 +64,9 @@ async function observePrelude(options: Parameters<typeof observeSustainedKoth>[0
       compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
       gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
       scope: "All observed prelude gaps retained, including500–1500ms stalls and zero buckets. Producer tick is the latest DOM publication at submission, not a displayed-tick or Worker-progress certificate. Presented content identity/input-to-photon remain separate evidence." }))
-    if (!evidence.manifest.complete && !failure) failure = new Error("KOTH prelude trace incomplete")
+    if (!evidence.manifest.complete && !failure) throw new Error("KOTH prelude trace incomplete")
+    })
+    if ((!raw.complete || complete.dataLossOccurred) && !failure) failure = new Error("KOTH prelude trace collection incomplete")
     if (sample.dropped || sample.missedPublications || sample.lifecycle.length) failure ??= new Error("KOTH prelude observation interrupted or overflowed")
   }
   if (failure) throw failure
@@ -140,6 +144,7 @@ export async function observeSustainedKoth(options: {
   const finish = () => stopped ??= (async () => {
     sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
     const { complete, raw } = await stopLightTrace(browserCdp)
+    await profileArtifact(async () => {
     const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete && !failure, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
       identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
       probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
@@ -150,9 +155,11 @@ export async function observeSustainedKoth(options: {
       trends: failure ? null : sustainedTrends(records, sample.started, sample.ended),
       changingPresentedFrames: null, changingPixelEvidence: "Not established by display events or two endpoint screenshots; requires native changing-surface evidence",
       failure: failure ? String(failure) : null }))
+    if (!evidence.manifest.complete && !failure) throw new Error("Sustained presentation evidence incomplete")
+    })
     if (!failure) await processSnapshot()
     await retain()
-    if (!evidence.manifest.complete && !failure) throw new Error("Sustained presentation evidence incomplete")
+    if ((!raw.complete || complete.dataLossOccurred) && !failure) throw new Error("KOTH trace collection incomplete")
   })()
   const releaseFailureOwner = retainBeforeApplicationFailure(page, async error => { failure ??= error; await finish() })
   try {

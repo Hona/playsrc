@@ -1265,6 +1265,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
   }
   await finishPixelAudits(measured)
+  if (sustained) await retireSustainedKoth(page, directory, checkNativeWindow)
   retainIncomplete = undefined
   await profileArtifact(async () => {
   profilePhases.enter("trace-analysis-retention")
@@ -1512,7 +1513,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
     traveled: report.traveled, longAnimationFrames: report.longAnimationFrames,
     cpu: report.cpu.topSelf.slice(0, 8), pixels: report.pixels,
   })}`)
-  if (sustained) await retireSustainedKoth(page, directory, checkNativeWindow)
   if (acceptance) expect(report.teams).toEqual({ red: playerCount / 2, blue: playerCount / 2 })
   assertUpwardProfile(report, { expectedBots, playerCount, classes: exerciseClasses, classPasses: acceptance ? 1 : 2,
     workerRequired: capturePlan.workerCpu === "required",
