@@ -118,7 +118,7 @@ test.skipIf(process.platform === "win32")("origin checkout is exact and isolated
     await expect(runLocalJob(job.id, ["test"], source)).rejects.toThrow()
     await rm(path.join(job.directory, "running"))
     await writeFile(path.join(job.directory, "checkout", "pass.test.ts"), "changed")
-    await expect(runLocalJob(job.id, ["test"], source)).rejects.toThrow("changed")
+    expect((await runLocalJob(job.id, ["test"], source)).failure).toContain("changed")
     await expect(prepareLocalJob("refs/heads/fixture", "0".repeat(40), source)).rejects.toThrow()
     expect(git(["status", "--porcelain"])).toBe("?? user-work.txt")
   } finally { await rm(directory, { recursive: true, force: true }) }

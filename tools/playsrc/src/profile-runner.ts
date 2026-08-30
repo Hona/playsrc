@@ -313,7 +313,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   await mkdir(runDirectory, { recursive: true })
   const configurationMilliseconds = Date.now() - configurationStarted
   const lockPath = path.join(evidence, "chromium-profile.lock")
-  const borrowed = await borrowedWindowsJobLock(lockPath, ["profile", ...arguments_].join(" "))
+  const borrowed = await borrowedWindowsJobLock(lockPath, ["profile", ...arguments_])
   if (process.platform === "win32" && !borrowed) throw new Error("Windows profiles require local-job run <job> profile ... and its displayed per-job decision")
   const runDeadline = Math.min(started + MAX_RUN_MILLISECONDS, borrowed?.deadline ?? Infinity)
   const cancellation = new AbortController()

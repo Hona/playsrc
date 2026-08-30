@@ -10,6 +10,7 @@ export type NativeDialog = {
 }
 export type NativeJobReceipt = {
   schema: "playsrc-native-job-v1"; job: string; task: string; run: string; action: string; lockToken: string
+  invocation: readonly string[]
   ownerPid: number; ownerCreatedAt: number; helperPid: number; helperCreatedAt: number; sessionId: number
   childPid: number; childCreatedAt: number; commandStartedAt: number; teardownAt: number
   startedAt: number; finishedAt: number; outcome: "completed" | "failed" | "cancelled" | "denied"
@@ -22,9 +23,10 @@ export function approvedNativeDecision(value: NativeDialog | null): boolean {
   return value.decision === "approved" || value.decision === "approved-timeout" && value.visibleMilliseconds >= 3_000 && value.decidedAt - value.displayedAt >= 3_000
 }
 
-export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { job: string; task: string; run: string; action: string; lockToken: string; ownerPid: number; helperPid: number; spawnedAt: number }): NativeJobReceipt {
+export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { job: string; task: string; run: string; action: string; invocation: readonly string[]; lockToken: string; ownerPid: number; helperPid: number; spawnedAt: number }): NativeJobReceipt {
   if (!value || value.schema !== "playsrc-native-job-v1"
     || ["job", "task", "run", "action", "lockToken", "ownerPid", "helperPid"].some(key => value[key as keyof NativeJobReceipt] !== expected[key as keyof typeof expected])
+    || JSON.stringify(value.invocation) !== JSON.stringify(expected.invocation)
     || ![value.ownerCreatedAt, value.helperCreatedAt, value.startedAt, value.finishedAt, value.teardownAt, value.childPid, value.childCreatedAt, value.commandStartedAt, value.exitCode].every(Number.isSafeInteger)
     || value.helperCreatedAt < expected.spawnedAt - 1_000 || value.ownerCreatedAt > value.helperCreatedAt
     || value.startedAt < value.helperCreatedAt || value.finishedAt < value.startedAt || !value.treeEmpty
@@ -38,7 +40,9 @@ export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { jo
 
 export async function runWindowsNativeJob(request: {
   job: string; task: string; run: string; action: string; command: string[]; cwd: string
+  invocation: readonly string[]
   lockPath: string; lockToken: string; deadline: number; diagnostic: boolean
+  preflightFailure: string | null
 }, env: NodeJS.ProcessEnv, verifySource: () => Promise<void>): Promise<NativeJobReceipt> {
   const file = path.join(request.run, "native-request.json")
   await writeFile(file, JSON.stringify({ ...request, executable: request.command[0], arguments: request.command.slice(1), ownerPid: process.pid,
@@ -84,13 +88,13 @@ export async function runWindowsNativeJob(request: {
 
 /** Only the actual child of the live native consent helper may borrow the
  * outer job lock. A token/--ready supplied by a caller is not authorization. */
-export async function borrowedWindowsJobLock(lockPath: string, action: string) {
+export async function borrowedWindowsJobLock(lockPath: string, invocation: readonly string[]) {
   const file = process.env.PLAYSRC_LOCAL_JOB_CONSENT
   if (!file) return null
   if (process.platform !== "win32" || process.env.PLAYSRC_LOCAL_JOB_LOCK !== lockPath) throw new Error("Native job lock path differs")
   const consent = JSON.parse(await readFile(file, "utf8")) as NativeJobReceipt
   const held = JSON.parse(await readFile(lockPath, "utf8")) as { pid: number; token: string }
-  if (consent.schema !== "playsrc-native-job-v1" || consent.action !== action || consent.helperPid !== process.ppid
+  if (consent.schema !== "playsrc-native-job-v1" || JSON.stringify(consent.invocation) !== JSON.stringify(invocation) || consent.helperPid !== process.ppid
     || path.join(consent.run, "consent.json") !== file || held.pid !== consent.ownerPid || held.token !== consent.lockToken
     || !processIsAlive(held.pid) || !approvedNativeDecision(consent.consent)) throw new Error("No live per-job native approval/ownership")
   // Creation-time readback defeats recycled helper or lock-owner PIDs.

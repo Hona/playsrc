@@ -1,105 +1,101 @@
-# Run the same checkout locally or on Windows
+# Native delegated jobs
 
-The Windows development environment must already work (`git`, Bun, Node,
-configured TF2 content and toolchains). No remote browser service is needed.
-SSH transports commands and reads files. Git transports source. Task Scheduler
-is used only when a headed command must cross from SSH into the user's existing
-interactive console.
-
-From a configured checkout, prepare any commit reachable from an origin branch:
+Use an already configured checkout (`git`, Bun, Node and the configured native
+content/toolchains). SSH transports commands/files; Git transports source. No
+remote browser, installation discovery, security changes or production routing.
 
 ```sh
 bun tools/playsrc/src/local-job.ts prepare refs/heads/my-branch <40-character-commit>
+# Optional final argument: an existing idle job ID, to retain its compiler cache.
+bun tools/playsrc/src/local-job.ts run <job> test tools/playsrc/tests/windows-desktop.test.ts
+bun tools/playsrc/src/local-job.ts run <job> build jump_beef
+bun tools/playsrc/src/local-job.ts run <job> build-stage wasm
+bun tools/playsrc/src/local-job.ts run <job> build-stage producer
+bun tools/playsrc/src/local-job.ts run <job> build-stage resources jump_beef
+bun tools/playsrc/src/local-job.ts run <job> profile gameplay
 ```
 
-This makes a separate detached checkout in the configured `sourceCacheDir`,
-copies only the three local configuration roots and runs `bun install
---frozen-lockfile`. It never modifies the original checkout, downloads a different
-toolchain, or transfers generated browser/WASM artifacts from another host.
-Keep the returned job ID. Preparation opens no window.
+Preparation creates a detached checkout in `sourceCacheDir/local-jobs`, copies
+only the three configured roots and installs frozen dependencies. It opens no
+UI and never resets the developer's checkout. A stage prepares only its normal
+artifact owner; the final ordinary build still verifies the complete closure.
+Builds/tests open no browser.
 
-To advance that same dedicated checkout, pass its ID as the third argument to
-`prepare`. A clean, idle job can switch to the next exact commit without deleting
-its native compiler cache. Previous run receipts retain their original commits.
-An interrupted dependency installation must finish before the next run.
+## Windows consent and ownership
 
-Prebuild before requesting the short interactive window:
-
-```sh
-bun tools/playsrc/src/local-job.ts run <job-id> build jump_beef
-```
-
-This uses normal `bun dev jump_beef --prepare-only`: build, verify local server
-readiness, close. It opens no browser. Cold compiler work does not need to consume
-the gameplay capture window.
-
-If a cold combined build exceeds the command budget, prepare one owner at a time
-instead of repeatedly starting the whole build:
-
-```sh
-bun tools/playsrc/src/local-job.ts run <job-id> build-stage producer
-bun tools/playsrc/src/local-job.ts run <job-id> build-stage wasm
-bun tools/playsrc/src/local-job.ts run <job-id> build-stage resources jump_beef
-bun tools/playsrc/src/local-job.ts run <job-id> build jump_beef
-```
-
-Each stage has the same 175-second job deadline, retains the normal verified
-build outputs, and checks build identity before/after. It opens no listener or
-browser. The final normal build still verifies/publishes the complete closure;
-no stage is a Ready boundary. Do not run stages concurrently or steal Cargo locks.
-The console bridge also accepts `-Action BuildStage -Stage wasm` (or `producer`,
-or `resources -Target jump_beef`) with the same job ID.
-
-When SSH cannot traverse the user's configured toolchain mount, run the same
-build through `windows-job.ps1 -Action Build -Job <job-id> -Target jump_beef`.
-It uses the existing unelevated user session, opens no browser and changes no
-mount trust, security policy or toolchain installation.
-
-Run ordinary tests, directly or through SSH:
-
-```sh
-bun tools/playsrc/src/local-job.ts run <job-id> test tools/playsrc/tests/windows-desktop.test.ts
-```
-
-In a physical Windows terminal, after a fresh hands-off agreement:
-
-```sh
-bun tools/playsrc/src/local-job.ts run <job-id> --ready profile gameplay
-```
-
-From SSH, the thin session bridge runs that same command:
+Every Windows `run` above returns a scheduled task identity immediately. The
+same bridge is available explicitly:
 
 ```powershell
-powershell.exe -NoProfile -File tools/playsrc/windows-job.ps1 -Job <job-id> -Profile gameplay -Ready
+powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Profile gameplay
+# Also: -Action Build -Target jump_beef
+#       -Action BuildStage -Stage resources -Target jump_beef
+#       -Action Test -TestArguments '["tools/playsrc/tests/windows-desktop.test.ts"]'
 ```
 
-The launch returns immediately. `-Action Status -Job <job-id>` and `-Action Logs
--Job <job-id>` return a current snapshot or log tail immediately; there is no SSH
-wait loop. Helper consoles stay hidden, but the game browser is always headed.
+The unelevated, **Normal-priority** interactive scheduled session owns the UI,
+never SSH/session 0. All workloads, including legacy Build and ordinary tests,
+queue on the same checked machine-wide FIFO as profiles. The owner holds it
+through consent, execution, child teardown and completion notification. Staged
+builds/profiles borrow that checked live ownership instead of reacquiring it.
+Prepared staged-build checkouts must include this ownership contract.
 
-`--ready`/`-Ready` is explicit authorization for this attempt, not a way to
-override desktop admission. The ordinary profiler still owns the machine lock,
-physical-console checks, headed browser, input/window guards, server, deadlines
-and evidence. A free loopback port avoids the developer's existing server.
-Profiles use native local builds and localhost, never a production URL, remote
-CDP connection, request-interception broker or controller-host asset relay.
-Scheduled launches explicitly use Windows **Normal** process priority (task
-priority 5), not Task Scheduler's default background/BelowNormal priority 7.
-The task records its actual entry priority; browser process boundary snapshots
-also retain their observed priorities. No process is boosted above Normal.
-The invoking checkout supplies the profiler harness; `--application-root` binds
-the server and executable identity to the prepared checkout without editing it.
-See [frame delivery](profile/frame-delivery.md) for ordinary/traced comparisons.
+A real native message box identifies the action/profile, job, task and run:
 
-Read `command.log` and `result.json` in the returned run directory over SSH/SCP;
-ordinary profiler evidence stays in its normal configured cache directory.
-Exit failures and source/configuration changes fail the job. Overlapping runs
-in one checkout are rejected. A forcibly interrupted job leaves its `running`
-marker for inspection; do not remove it until its processes have stopped.
-`-Action Recover -Job <id> -Task <recorded-task>` retains an interruption record
-and removes that marker only for a recorded failed task with no live job process
-and no completed result. Admission is asynchronous so its deadline remains live.
-The next status read removes the recorded completed task from the launching
-account; the deliberately unelevated task does not unregister itself. A forced
-termination may require removing that exact returned task name after inspection.
-Do not delete another job's task, locks, browser profiles or user processes.
+- **Approve** dispatches immediately; **Deny**, close and Escape do not launch.
+- No answer for **3 seconds after verified display** authorizes this job (AFK).
+- Missing/hidden UI, a locked or mismatched session, helper failure, malformed
+  receipts and stale identities **never** become timeout approval.
+- One task token is consumed once, including scheduler retries. Use a new task
+  for another attempt. Caller-supplied `--ready`/`-Ready` no longer exists.
+
+The prompt is dismissed before browser admission. Approval is **not** evidence
+of idle/foreground: the unchanged two-second genuine-idle and native
+foreground/unobscured/browser-ownership checks still apply. No game window is
+forced forward and no user input/app is suppressed. Direct Windows profile or
+stage runners without native job ownership fail closed; use `local-job run`.
+
+The total job budget remains **175 seconds**, including FIFO wait, helper
+startup, prompts and cleanup (never more than three minutes waiting for a lock).
+Sampling gets only the remaining budget, not reset clocks. Native commands are
+created suspended, assigned to an owned kill-on-close Windows Job Object, then
+resumed only after approval. Completion is shown only after the owned tree is
+empty and source verification has finished: **completed**, **failed**,
+**cancelled** or **denied**, with “hands-off is no longer needed for this job.”
+The completion message also dismisses after three seconds. Native receipts
+retain notification failures even when a desktop cannot display completion.
+
+## Readback and cancellation
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Task <returned-task> -Action Status
+# -Action Result | Logs | Wait | Artifacts | Cancel
+```
+
+These calls never request consent or create a window. Cancel addresses only the
+recorded task/run, including a queued task; it does not kill a user process.
+Readback binds to that task, never a newer/older job's successful log. Collection
+includes source/command identity, native decision, creation-time identities,
+helper faults, owned teardown and completion records. Diagnostic pixels stay
+in configured cache storage, not source control or automatic artifact uploads.
+The next status call retires a finished task from the launching account.
+
+A forcibly interrupted process can leave `running`. Inspect its exact task and
+process identities first. `-Action Recover` preserves an interruption record
+and clears the marker only when that failed task has no live job process or
+completed result. Never delete another task's lock, browser or user processes.
+
+## Harmless native UI verification
+
+```powershell
+# Real prompt; a short native command, never a browser or performance sample.
+powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Action Diagnostic -Milliseconds 250 -DiagnosticExit 0
+# Native control delivery against only an exact diagnostic dialog:
+powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job-ui-test.ps1 -Job <job> -Case approve
+# Cases: deny, close, escape, race, timeout, failure, cancel, queue.
+```
+
+The verifier records actual controls/pixels and asserts outcomes, immediate
+dispatch, no overlapping queued dialogs, at-most-one launch and no live helper.
+It cannot approve a performance workload. Synthetic receipt tests are separate
+and are not native UI evidence or task authorization.

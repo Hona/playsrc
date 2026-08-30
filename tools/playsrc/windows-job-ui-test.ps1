@@ -26,8 +26,11 @@ public static class DiagnosticDialog {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window,int id);
+ delegate bool Child(IntPtr window,IntPtr data);
+ [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent,Child callback,IntPtr data);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr window,StringBuilder text,int count);
  public static string Text(IntPtr window){var text=new StringBuilder(128);GetWindowTextW(window,text,text.Capacity);return text.ToString();}
+ public static IntPtr Button(IntPtr parent,string name){IntPtr found=IntPtr.Zero;EnumChildWindows(parent,(window,data)=>{if(Text(window).Replace("&","")==name)found=window;return true;},IntPtr.Zero);return found;}
 }
 '@
  [IO.File]::WriteAllText((Join-Path $Observe 'ready'),"$PID")
@@ -54,8 +57,8 @@ public static class DiagnosticDialog {
  $handle=[IntPtr][long]$display.dialog.window;[uint32]$pidOfWindow=0
  [void][DiagnosticDialog]::GetWindowThreadProcessId($handle,[ref]$pidOfWindow)
  if($pidOfWindow -ne $helper.Id -or ![DiagnosticDialog]::IsWindowVisible($handle)){throw 'Native diagnostic window differs'}
- $approve=[DiagnosticDialog]::GetDlgItem($handle,100);$deny=[DiagnosticDialog]::GetDlgItem($handle,101)
- $names=@([DiagnosticDialog]::Text($approve),[DiagnosticDialog]::Text($deny))
+ $approve=[DiagnosticDialog]::Button($handle,'Approve');$deny=[DiagnosticDialog]::Button($handle,'Deny')
+ $names=@([DiagnosticDialog]::Text($approve).Replace('&',''),[DiagnosticDialog]::Text($deny).Replace('&',''))
  Step 'controls-read'
  if($names -notcontains 'Approve' -or $names -notcontains 'Deny'){throw 'Native Approve/Deny controls were not found'}
  $began=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()

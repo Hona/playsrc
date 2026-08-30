@@ -6,7 +6,7 @@ import { localJobCommand } from "../src/local-job"
 
 // Synthetic receipt tests, NOT evidence of displayed UI or task authorization.
 const consent: NativeDialog = { decision: "approved", error: null, displayedAt: 2000, decidedAt: 2400, dismissedAt: 2401, visibleMilliseconds: 400, window: 1, sessionId: 3 }
-const expected = { job: "job", task: "task", run: "run", action: "diagnostic 250 0", lockToken: "lock", ownerPid: 10, helperPid: 11, spawnedAt: 1000 }
+const expected = { job: "job", task: "task", run: "run", action: "diagnostic 250 0", invocation: ["diagnostic", "250", "0"], lockToken: "lock", ownerPid: 10, helperPid: 11, spawnedAt: 1000 }
 const receipt: NativeJobReceipt = { ...expected, schema: "playsrc-native-job-v1", ownerCreatedAt: 500, helperCreatedAt: 1000, sessionId: 3,
   childPid: 12, childCreatedAt: 2500, commandStartedAt: 2501, teardownAt: 2800, startedAt: 1100, finishedAt: 6500,
   outcome: "completed", exitCode: 0, treeEmpty: true, error: null, consent, completion: { ...consent, decision: "dismissed-timeout", displayedAt: 3000, decidedAt: 6000, dismissedAt: 6001, visibleMilliseconds: 3000 } }
@@ -23,7 +23,7 @@ test("receipt binds job/task/run/creation-time/lock and teardown; malformed or s
   expect(validateNativeJobReceipt(receipt, expected)).toEqual(receipt)
   for (const changed of [{ task: "other" }, { job: "other" }, { run: "other" }, { helperPid: 44 }, { ownerPid: 44 }, { lockToken: "other" },
     { helperCreatedAt: -1 }, { treeEmpty: false }, { outcome: "denied" }, { exitCode: 1 }, { commandStartedAt: 0 },
-    { commandStartedAt: 2300 }, { consent: { ...consent, decision: "denied" } }, { teardownAt: 7000 }]) {
+    { commandStartedAt: 2300 }, { invocation: ["diagnostic 250", "0"] }, { consent: { ...consent, decision: "denied" } }, { teardownAt: 7000 }]) {
     expect(() => validateNativeJobReceipt({ ...receipt, ...changed } as NativeJobReceipt, expected)).toThrow()
   }
   for (const outcome of ["failed", "cancelled", "denied"] as const) {
