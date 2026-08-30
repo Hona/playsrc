@@ -57,6 +57,7 @@ export function validateRevision(ref: string, commit: string): void {
 }
 
 export function localJobCommand(args: readonly string[]): { command: string[]; interactive: boolean } {
+  if (!Array.isArray(args) || args.length > 20 || args.some(value => typeof value !== "string" || value.length > 1024 || value.includes("\0"))) throw new Error("Invalid workload arguments")
   const [kind, ...options] = args
   if (kind === "test") {
     if (options.some(value => !/^[A-Za-z0-9_./-]+\.test\.ts$/.test(value) || value.startsWith("-") || value.startsWith("/") || value.split("/").includes(".."))) {
@@ -143,8 +144,14 @@ export async function prepareLocalJob(ref: string, commit: string, root = reposi
   validateRevision(ref, commit)
   if (reuse !== undefined && !ID.test(reuse)) throw new Error("Invalid reusable job ID")
   const config = await loadLocalConfig(root)
+  if (process.platform === "win32" && process.env.PLAYSRC_LOCAL_JOB_OWNER) throw new Error("Preparation cannot recursively acquire an admitted job lock")
+  const deadline = Date.now() + LIMIT
+  const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
+  const lock = process.platform === "win32" ? await acquireHeadedProfileLock(lockPath, `prepare:${commit}`, LIMIT - 15_000) : undefined
+  try {
   const env = localJobEnvironment(process.env)
-  const origin = await execute(["git", "remote", "get-url", "origin"], root, env)
+  const run = (command: string[], cwd: string, log?: string) => execute(command, cwd, env, log, Math.max(1, deadline - Date.now()))
+  const origin = await run(["git", "remote", "get-url", "origin"], root)
   const id = reuse ?? randomUUID(), directory = path.join(config.sourceCacheDir, "local-jobs", id), checkout = path.join(directory, "checkout")
   await mkdir(directory, { recursive: true })
   const preparing = await open(path.join(directory, "running"), "wx")
@@ -156,26 +163,27 @@ export async function prepareLocalJob(ref: string, commit: string, root = reposi
       return readFile(path.join(directory, "job.json"), "utf8")
     })) as Job
     if (previous.id !== id || previous.origin !== origin) throw new Error("Reusable job origin differs")
-    await assertCheckout(checkout, previous)
+    await assertCheckout(checkout, previous, deadline)
   }
   const job: Job = { schema: "playsrc-local-job-v1", id, origin, ref, commit, config }
   await writeFile(path.join(directory, `request-${randomUUID()}.json`), JSON.stringify(job, null, 2), { flag: "wx" })
   // No reset/clean/stash in the developer's checkout, no source or generated
   // artifact copying from a controller host, and no alternate toolchain setup.
   if (!reuse) {
-    await execute(["git", "init", checkout], root, env)
-    await execute(["git", "remote", "add", "origin", origin], checkout, env)
+    await run(["git", "init", checkout], root)
+    await run(["git", "remote", "add", "origin", origin], checkout)
   }
-  await execute(["git", "fetch", "--no-tags", "origin", ref], checkout, env, path.join(directory, `fetch-${randomUUID()}.log`))
-  await execute(["git", "merge-base", "--is-ancestor", commit, "FETCH_HEAD"], checkout, env)
-  await execute(["git", "checkout", "--detach", commit], checkout, env)
+  await run(["git", "fetch", "--no-tags", "origin", ref], checkout, path.join(directory, `fetch-${randomUUID()}.log`))
+  await run(["git", "merge-base", "--is-ancestor", commit, "FETCH_HEAD"], checkout)
+  await run(["git", "checkout", "--detach", commit], checkout)
   if (!reuse) await writeFile(path.join(checkout, "playsrc.local.json"), JSON.stringify(config, null, 2), { flag: "wx" })
   await writeFile(pending, JSON.stringify(job, null, 2))
-  await execute([process.execPath, "install", "--frozen-lockfile"], checkout, env, path.join(directory, `install-${randomUUID()}.log`))
-  await assertCheckout(checkout, job)
+  await run([process.execPath, "install", "--frozen-lockfile"], checkout, path.join(directory, `install-${randomUUID()}.log`))
+  await assertCheckout(checkout, job, deadline)
   await rename(pending, path.join(directory, "job.json"))
   return { id, directory, commit }
   } finally { await preparing.close(); await rm(path.join(directory, "running")) }
+  } finally { if (lock) await releaseHeadedProfileLock(lockPath, lock.token) }
 }
 
 async function assertCheckout(checkout: string, job: Job, deadline = Date.now() + LIMIT): Promise<void> {
@@ -199,7 +207,8 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   if (process.platform === "win32") {
     if (!task?.startsWith("playsrc-local-job-") || !ID.test(task.slice("playsrc-local-job-".length))) throw new Error("Windows delegated workloads require the scheduled native job bridge")
     const launcher = JSON.parse(await readFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-launch.owner.json`), "utf8"))
-    if (launcher.pid !== process.ppid || !Number.isSafeInteger(launcher.startedEpoch) || launcher.sessionId < 1) throw new Error("Scheduled launcher identity differs")
+    if (launcher.pid !== process.ppid || !Number.isSafeInteger(launcher.startedEpoch) || launcher.sessionId < 0
+      || launcher.interactive !== plan.interactive || JSON.stringify(launcher.invocation) !== JSON.stringify(args)) throw new Error("Scheduled launcher identity/classification differs")
     // Scheduler retry or duplicate invocation of the same task cannot consume
     // a second decision or launch again. A new attempt needs a new task token.
     await writeFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-claim.json`), JSON.stringify({ job: id, task, launcher, pid: process.pid, claimedAt: Date.now() }), { flag: "wx" })
@@ -212,7 +221,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   let running: Awaited<ReturnType<typeof open>> | undefined
   try {
   running = await open(path.join(directory, "running"), "wx")
-  const owner = { pid: process.pid, startedAt: admittedAt, job: id, task, command: plan.command }
+   const owner = { pid: process.pid, startedAt: admittedAt, job: id, task, command: plan.command, interactive: plan.interactive }
   const phase = async (name: string) => {
     const text = JSON.stringify({ ...owner, phase: name })
     await running!.write(text, 0, "utf8"); await running!.truncate(Buffer.byteLength(text))
@@ -247,10 +256,10 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   let outcome = "failed"
   try {
     if (process.platform === "win32") {
-      await phase("native-consent-command-completion")
+      await phase(plan.interactive ? "native-consent-command-completion" : "native-background-command")
       const action = args.map(value => value.replace(/[\x00-\x1f]/g, " ")).join(" ").slice(0, 512)
       native = await runWindowsNativeJob({ job: id, task: task!, run, action, invocation: args, command, cwd: checkout,
-        lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, diagnostic: args[0] === "diagnostic", preflightFailure }, localJobEnvironment(process.env, port), async () => {
+        lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, preflightFailure }, localJobEnvironment(process.env, port), async () => {
           await phase("verify-source")
           if (preflightFailure) throw new Error(preflightFailure)
           await assertCheckout(checkout, job, startedAt + LIMIT - 4_000)
@@ -267,7 +276,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
       await assertCheckout(checkout, job)
     }
   } catch (error) { failure = String(error); outcome = "failed" }
-  const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
+   const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, interactive: plan.interactive, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
   await writeFile(path.join(run, "result.json.tmp"), JSON.stringify(result, null, 2), { flag: "wx" })
   await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
   return result
@@ -280,7 +289,12 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
 if (import.meta.main) {
   try {
     const [operation, ...args] = process.argv.slice(2)
-    if (operation === "prepare" && (args.length === 2 || args.length === 3)) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!, repositoryRoot, args[2])))
+    if (operation === "plan") console.log(JSON.stringify(localJobCommand(args)))
+    else if (operation === "validate-native" && args.length === 1) {
+      const { validateNativeJobRequest } = await import("./windows-job-native")
+      console.log(JSON.stringify(await validateNativeJobRequest(JSON.parse(await readFile(args[0]!, "utf8")))))
+    }
+    else if (operation === "prepare" && (args.length === 2 || args.length === 3)) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!, repositoryRoot, args[2])))
     else if (operation === "result" && args.length === 2 && ID.test(args[0]!)) {
       const config = await loadLocalConfig()
       console.log(JSON.stringify(await readLocalTaskResult(path.join(config.sourceCacheDir, "local-jobs", args[0]!), args[1]!)))

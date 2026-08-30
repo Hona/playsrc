@@ -33,14 +33,23 @@ powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -J
 #       -Action Test -TestArguments '["tools/playsrc/tests/windows-desktop.test.ts"]'
 ```
 
-The unelevated, **Normal-priority** interactive scheduled session owns the UI,
-never SSH/session 0. All workloads, including legacy Build and ordinary tests,
-queue on the same checked machine-wide FIFO as profiles. The owner holds it
-through consent, execution, child teardown and completion notification. Staged
-builds/profiles borrow that checked live ownership instead of reacquiring it.
-Prepared staged-build checkouts must include this ownership contract.
+All workloads, including preparation, builds and ordinary tests, queue on the
+same checked machine-wide FIFO as profiles. Lock ownership is **not** UI consent.
+Builds, build stages, tests and CLI diagnostics use an unelevated Normal-priority
+S4U scheduled task: no interactive console, unlocked desktop, mouse/keyboard
+idle, consent dialog or completion/failure/cancellation message is required.
+Errors still fail the job and remain in results/logs. Preparation and readback
+are also silent. Background never means permission to run a headless browser.
 
-A real native message box identifies the action/profile, job, task and run:
+Only a validated headed profile uses the interactive scheduled session and UI.
+The same workload classifier is checked before scheduling, by the launcher and
+at native dispatch; neither a caller UI flag nor a substituted command can
+reclassify a profile. Unknown work fails closed without a dialog. Stages and
+profiles borrow checked live ownership rather than recursively acquiring it.
+Both the isolated controller and prepared checkout must include this contract.
+
+For an interactive profile, a real native message box identifies the action,
+job, task and run:
 
 - **Approve** dispatches immediately; **Deny**, close and Escape do not launch.
 - No answer for **3 seconds after verified display** authorizes this job (AFK).
@@ -64,13 +73,12 @@ job budget remains **175 seconds**, including FIFO wait, helper
 startup, prompts and cleanup (never more than three minutes waiting for a lock).
 Sampling gets only the remaining budget, not reset clocks. Native commands are
 created suspended **in** an owned kill-on-close Windows Job Object, then
-resumed only after approval. Completion is shown only after the owned tree is
-empty and source verification has finished: **completed**, **failed**,
-**cancelled** or **denied**, with “hands-off is no longer needed for this job.”
-The completion message also dismisses after three seconds. A crashed helper
-never retries the workload: after its kill-on-close teardown, the same owner
-attempts one bounded failure-only notification. Native receipts retain both
-the original failure and any inability to display completion.
+resumed after validated classification (and displayed approval for a profile).
+Only a successfully completed interactive job gets a completion notification,
+after its owned tree is empty and source verification finishes. It dismisses
+after three seconds. Denial, failure, cancellation, preflight errors and helper faults are logs-only;
+there is no failure-only notification helper or retry. Background receipts
+require `interactive: false`, null consent/completion and zero UI invocations.
 
 ## Readback and cancellation
 
@@ -92,18 +100,16 @@ process identities first. `-Action Recover` preserves an interruption record
 and clears the marker only when that failed task has no live job process or
 completed result. Never delete another task's lock, browser or user processes.
 
-## Harmless native UI verification
+## Silent native regression checks
 
 ```powershell
-# Real prompt; a short native command, never a browser or performance sample.
+# Short background command; ZERO dialogs, never a browser/performance sample.
 powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Action Diagnostic -Milliseconds 250 -DiagnosticExit 0
-# Native control delivery against only an exact diagnostic dialog:
-powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job-ui-test.ps1 -Job <job> -Case approve
-# Cases: deny, close, escape, race, timeout, failure, cancel, queue,
-#        crash (before decision), crash-running (owned diagnostic child).
+# From the noninteractive transport, not inside an already locked job:
+bun test tools/playsrc/tests/windows-job-background.test.ts tools/playsrc/tests/windows-job-session.test.ts tools/playsrc/tests/windows-job-lifecycle.test.ts
 ```
 
-The verifier records actual controls/pixels and asserts outcomes, immediate
-dispatch, no overlapping queued dialogs, at-most-one launch and no live helper.
-It cannot approve a performance workload. Synthetic receipt tests are separate
-and are not native UI evidence or task authorization.
+These exercise actual background exit/cancellation/helper-crash cleanup and
+interactive session-zero rejection without dialogs. The lifecycle fixture
+checks every branch using isolated test-only receipts, not UI evidence or
+authorization. The former every-job diagnostic UI launcher has been removed.
