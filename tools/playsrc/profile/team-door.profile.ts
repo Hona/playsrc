@@ -74,7 +74,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       await page.keyboard.press("ArrowRight")
       for (let index = 0; index < (disabledTeam === "red" ? 3 : 2); index++) await page.keyboard.press("ArrowRight")
       actions.push({ at: Date.now(), focus: disabledTeam })
-      await page.waitForTimeout(2350)
+      await page.waitForTimeout(350)
       await page.keyboard.press("ArrowRight")
       await page.waitForTimeout(350)
       await check("before-reopen")
@@ -87,6 +87,15 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       await hover(null, 100)
       await hover(disabledTeam, 350)
       await hover(null, 350)
+      await page.keyboard.press("Backquote")
+      await page.locator("[aria-label='Console command']").fill("tf_bot_kick all")
+      await page.keyboard.press("Enter")
+      await expect(page.locator("main")).toHaveAttribute("data-bot-count", "0")
+      await page.keyboard.press("Backquote")
+      await expect(page.locator(`.team-selection-layer [data-vgui-name='teambutton${disabledTeam === "red" ? 1 : 0}']`)).toHaveAttribute("aria-disabled", "false")
+      actions.push({ at: Date.now(), enabled: disabledTeam })
+      await hover(disabledTeam, 550)
+      await hover(null, 650)
     } else {
     for (const team of ["auto", "blue", "red"] as const) {
       await hover(team, 550)
@@ -126,7 +135,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     if (disabledTeam) {
       const name = disabledTeam === "red" ? "reddoor" : "bluedoor"
       expect(observation.doors.some((frame: any) => frame.panels.some((panel: any) => panel.name === name && panel.animation === "hover_disabled"))).toBe(true)
-      expect(observation.doors.at(-1).panels.find((panel: any) => panel.name === name).sequence).toBe("fullidle")
+      expect(observation.doors.at(-1).panels.find((panel: any) => panel.name === name).sequence).toBe("hoverclose")
     }
   } catch (error) { failure = String(error); throw error }
   finally {

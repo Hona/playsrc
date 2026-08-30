@@ -480,6 +480,8 @@ export class Tf2Application {
   #pendingClassSelectionTeam?: 2 | 3
   readonly #teamSelectionPoses = new Map<string, PosedModel>()
   readonly #teamSelectionAnimations = new Map<string, TeamModelPlayback>()
+  #teamSelectionUpdateTask: Promise<void> | undefined
+  #teamSelectionUpdateTime = 0
   #teamAdmission?: Readonly<{ generation: number; resolve(): void; reject(error: Error): void }>
   #hudRootCounts?: Readonly<{ playerStatus: number; ammo: number }>
   #hudContext?: SessionHudContext
@@ -2469,6 +2471,7 @@ export class Tf2Application {
     this.#classSelection?.dispatch({ kind: "hide" })
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) await document.exitPointerLock()
+    this.#teamSelectionUpdateTime = 0
     this.#teamSelection.dispatch({ kind: "show", server })
   }
 
@@ -2553,6 +2556,20 @@ export class Tf2Application {
       if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
       this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "TF2 team model rendering failed") })
     }).finally(() => { this.#teamSelectionRenderTask = undefined })
+  }
+
+  #updateTeamSelection(timeSeconds: number): void {
+    if (!this.#teamSelection?.state().visible || !this.#client || this.#teamSelectionUpdateTask
+      || timeSeconds < this.#teamSelectionUpdateTime) return
+    this.#teamSelectionUpdateTime = timeSeconds + 0.1
+    const generation = this.#generation, epoch = this.#selectionViewportEpoch
+    this.#teamSelectionUpdateTask = this.#client.teamSelection(generation).then(server => {
+      if (generation !== this.#generation || epoch !== this.#selectionViewportEpoch || !this.#teamSelection?.state().visible) return
+      if (JSON.stringify(server) !== JSON.stringify(this.#teamSelection.state().server)) this.#teamSelection.dispatch({ kind: "update", server })
+    }).catch(error => {
+      if (generation === this.#generation && epoch === this.#selectionViewportEpoch && this.#teamSelection?.state().visible)
+        this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "TF2 team state update failed") })
+    }).finally(() => { this.#teamSelectionUpdateTask = undefined })
   }
 
   #hudPresentationObservation(
@@ -4637,7 +4654,10 @@ export class Tf2Application {
       if (this.#view.localMatchVisible) this.#localMatch?.frame(timeSeconds)
       if (this.#equipment?.visible()) { this.#equipment.frame(timeSeconds); this.#renderEquipment() }
       if (this.#classSelection?.state().visible) this.#classSelection.frame(timeSeconds)
-      if (this.#teamSelection?.state().visible) this.#teamSelection.frame(timeSeconds)
+      if (this.#teamSelection?.state().visible) {
+        this.#updateTeamSelection(timeSeconds)
+        this.#teamSelection.frame(timeSeconds)
+      }
     } catch (error) {
       this.#paused = true
       this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "VGUI frame failed") })
