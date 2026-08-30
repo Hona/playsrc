@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { requireSustainedBudget, sustainedKothTarget, SUSTAINED_KOTH, summarizeSustainedWindow, installSustainedObservation } from "../profile/sustained-koth"
+import { requireSustainedBudget, sustainedKothTarget, SUSTAINED_KOTH, summarizeSustainedWindow, installSustainedObservation, sustainedRunIssues } from "../profile/sustained-koth"
 import { parseHeadedProfile, profileMinimumRemainingMilliseconds } from "../src/profile-runner"
 test("retained entropy is explicit and never forwarded as a Playwright option", () => {
   const identity = "a".repeat(64)
@@ -25,6 +25,17 @@ test("whole-interval buckets retain empty seconds and censored input stalls", ()
   expect(result.observedTicks).toBe(4)
   expect(result.input.censored[0].milliseconds).toBe(2980)
   expect(result.submissions.terminalGap).toBe(1750)
+})
+
+test("a short soak or absent simulation/input telemetry cannot become acceptance", () => {
+  expect(sustainedRunIssues(null, 0, 0)).toEqual(["Missing continuous gameplay interval"])
+  const sample = { started: 0, ended: 96000, frames: [], callbacks: [], ticks: [], inputs: [], lifecycle: [], dropped: 0, missedFrames: 0, rpc: { records: [], dropped: 0 } }
+  expect(sustainedRunIssues(sample, 89000, 95000)).toContain("Detailed sample began before90 uninterrupted real seconds")
+  const issues = sustainedRunIssues(sample, 90000, 96000)
+  expect(issues).toContain("Whole-interval observed simulation is below65Hz")
+  expect(issues).toContain("Late observed simulation is below63Hz")
+  expect(issues).toContain("Worker observe service/queue telemetry is absent")
+  expect(issues).toContain("No planned input reached a changed-camera submission")
 })
 
 test("continuous observer records real publication changes, input tails, resets and no restarted window", () => {
