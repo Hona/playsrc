@@ -101,20 +101,32 @@ public static class PlaysrcNativeJob {
  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int command);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
  [StructLayout(LayoutKind.Sequential)] struct Rect {public int left,top,right,bottom;}
  [StructLayout(LayoutKind.Sequential)] struct Point {public int x,y;}
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out Rect rect);
  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr window,out Rect rect);
  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr window,ref Point point);
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+ [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
  [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr window);
+ static bool Presented(IntPtr window) {
+  if(!IsWindowVisible(window) || IsIconic(window))return false;
+  Rect rect;if(!GetClientRect(window,out rect) || rect.right<20 || rect.bottom<20)return false;
+  var origin=new Point();if(!ClientToScreen(window,ref origin))return false;
+  foreach(var point in new[]{new Point{x=8,y=8},new Point{x=rect.right-8,y=8},new Point{x=8,y=rect.bottom-8},new Point{x=rect.right-8,y=rect.bottom-8},new Point{x=rect.right/2,y=rect.bottom/2}}) {
+   if(GetAncestor(WindowFromPoint(new Point{x=origin.x+point.x,y=origin.y+point.y}),2)!=window)return false;
+  }
+  return true;
+ }
  static void Pixels(IntPtr window,string file,Dialog record) {
-  if(GetForegroundWindow()!=window)throw new Exception("Diagnostic dialog is not foreground; no pixel claim");
+  if(!Presented(window))throw new Exception("Diagnostic dialog is not visibly presented; no pixel claim");
   // Client pixels only: no rounded frame corners, shadows or private desktop.
   Rect rect;Check(GetClientRect(window,out rect),"Dialog bounds");var origin=new Point();Check(ClientToScreen(window,ref origin),"Dialog client origin");
   int width=rect.right-rect.left,height=rect.bottom-rect.top;
   if(width<=0 || height<=0 || (long)width*height>4000000)throw new Exception("Invalid dialog pixel bounds");
   using(var bitmap=new Bitmap(width,height)) {using(var graphics=Graphics.FromImage(bitmap))graphics.CopyFromScreen(origin.x,origin.y,0,0,bitmap.Size);bitmap.Save(file,System.Drawing.Imaging.ImageFormat.Png);}
-  if(GetForegroundWindow()!=window)throw new Exception("Foreground changed during diagnostic capture");
+  if(!Presented(window))throw new Exception("Dialog visibility changed during diagnostic capture");
   record.pixels=file;record.bytes=new FileInfo(file).Length;
   using(var hash=SHA256.Create())record.sha256=BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(file))).Replace("-","").ToLowerInvariant();
  }
@@ -125,9 +137,10 @@ public static class PlaysrcNativeJob {
   // closing so a nested timer/button cannot decide twice.
   callback=(window,notification,wparam,lparam,data)=>{
    try {
-    // One ordinary activation of THIS requested message box, never a browser
-    // or another user's window. Do not retry if the user switches away.
-    if(notification==0){ShowWindow(window,5);SetForegroundWindow(window);}
+    // A normal topmost native alert, scoped ONLY to this requested message box.
+    // Windows may deny foreground activation while the user types in another
+    // app; actual on-screen presentation, not stolen focus, starts the timer.
+    if(notification==0){ShowWindow(window,5);Check(SetWindowPos(window,new IntPtr(-1),0,0,0,0,0x13),"Present requested message box");SetForegroundWindow(window);}
     if(notification==2 || notification==4) {
      record.sessionId=ConsoleSession();
      if(owner.HasExited || (!completion && File.Exists(Path.Combine(request.run,"cancel"))))throw new Exception("Job cancelled");
@@ -136,7 +149,7 @@ public static class PlaysrcNativeJob {
     if(notification==4 && !selected) {
      if(!IsWindowVisible(window) || IsIconic(window))throw new Exception("Prompt is not displayed");
      if(!clock.IsRunning) {
-      if(GetForegroundWindow()!=window)throw new Exception("Prompt was not presented in the foreground");
+      if(!Presented(window))throw new Exception("Prompt was not visibly presented");
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
       if(request.diagnostic)Pixels(window,Path.Combine(request.run,request.recordPrefix+(completion?"completion.png":"consent.png")),record);
       Save(Path.Combine(request.run,request.recordPrefix+(completion?"completion-displayed.json":"consent-displayed.json")),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});

@@ -227,11 +227,15 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     if (await Bun.file(path.join(directory, `${task.slice("playsrc-local-job-".length)}-cancel`)).exists()) await writeFile(path.join(run, "cancel"), "Cancellation requested while queued\n", { flag: "wx" })
   }
   const startedAt = owner.startedAt
-  let port: number | undefined, preflightFailure: string | null = null
+  let port: number | undefined, preflightFailure: string | null = null, harnessCommit: string | null = null
   try {
     await phase("source-validation")
     if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
     await assertCheckout(checkout, job, admittedAt + LIMIT - 10_000)
+    if (process.platform === "win32") {
+      harnessCommit = await execute(["git", "rev-parse", "HEAD"], repositoryRoot, localJobEnvironment(process.env), undefined, Math.max(1, admittedAt + LIMIT - 10_000 - Date.now()))
+      await assertCheckout(repositoryRoot, { ...job, commit: harnessCommit }, admittedAt + LIMIT - 10_000)
+    }
     await phase("reserve-ports")
     if (plan.interactive || args[0] === "build") port = await availableDevelopmentPort()
   } catch (error) { preflightFailure = String(error) }
@@ -250,6 +254,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
           await phase("verify-source")
           if (preflightFailure) throw new Error(preflightFailure)
           await assertCheckout(checkout, job, startedAt + LIMIT - 4_000)
+          await assertCheckout(repositoryRoot, { ...job, commit: harnessCommit! }, startedAt + LIMIT - 4_000)
         })
       outcome = native.outcome === "completed" ? "passed" : native.outcome
       failure = native.error ?? (outcome === "passed" ? null : `Native job ${outcome} (exit ${native.exitCode})`)
@@ -262,7 +267,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
       await assertCheckout(checkout, job)
     }
   } catch (error) { failure = String(error); outcome = "failed" }
-  const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
+  const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
   await writeFile(path.join(run, "result.json.tmp"), JSON.stringify(result, null, 2), { flag: "wx" })
   await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
   return result
