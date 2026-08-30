@@ -45,9 +45,16 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
   let started = 0, lateStarted = 0, lateEnded = 0, sampled: any, error: string | null = null
   let traceStarted = false, observerStarted = false, worker: ReturnType<typeof page.workers>[number] | undefined
   let cpu: Awaited<ReturnType<typeof prepareWorkerCpuCapture>> | undefined
-  let cpuStarted = false, mainCpuStarted = false, workerCpu: any, mainCpu: any, replayArtifact: any, compositor: any
+  let cpuStarted = false, workerCpu: any, replayArtifact: any, compositor: any
   let allocationTracking = false, allocationStart: any, allocationEnd: any
   let lateSimulation: any
+  const operations: Array<{ name: string; startedEpoch: number; finishedEpoch: number; complete: boolean }> = []
+  const operation = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+    const record = { name, startedEpoch: Date.now(), finishedEpoch: 0, complete: false }
+    operations.push(record)
+    try { const value = await action(); record.complete = true; return value }
+    finally { record.finishedEpoch = Date.now() }
+  }
   const entropyDirectory = path.join(sourceCacheDir, "profiles/sustained-koth/entropy")
   const entropyIdentity = process.env.PROFILE_SUSTAINED_ENTROPY
   let entropy: Buffer | undefined
@@ -131,7 +138,6 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     if (!worker) throw new Error("Gameplay Worker missing")
     if (!await worker.evaluate(() => (globalThis as any).__playsrcWorkerMemoryTracking(false))) throw new Error("Allocation accounting unavailable")
     cpu = await prepareWorkerCpuCapture(browser, cdp, page, 10_000)
-    await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 1000 })
     await pixels("natural-setup")
     if (setupOnly) { setupComplete = true; return }
     await check()
@@ -184,8 +190,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       return { at: performance.now(), timeOrigin: performance.timeOrigin, memory }
     })
     allocationTracking = true
-    await cpu.start(); cpuStarted = true
-    await cdp.send("Profiler.start"); mainCpuStarted = true
+    await operation("worker-cpu-start", () => cpu!.start()); cpuStarted = true
     const end = Date.now() + SUSTAINED_KOTH.sampleMilliseconds
     await pulse()
     while (Date.now() < end) { await check(); await collect(); await page.waitForTimeout(Math.min(1000, Math.max(0, end - Date.now()))) }
@@ -202,8 +207,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     allocationTracking = false
     if (allocationEnd.at - allocationStart.at > 10_000) throw new Error("Allocation accounting exceeded its late capture bound")
     if (lateEnded - lateStarted < 5000 || lateEnded - lateStarted > 10_000) throw new Error("Detailed sample outside5–10seconds")
-    workerCpu = await cpu.stop(); cpuStarted = false
-    mainCpu = (await cdp.send("Profiler.stop")).profile; mainCpuStarted = false
+    workerCpu = await operation("worker-cpu-stop", () => cpu!.stop()); cpuStarted = false
     sampled = await page.evaluate(mark => { const sample = (globalThis as any).__playsrcSustained.stop(); performance.mark(mark, { startTime: sample.ended }); return sample }, TRACE_END)
     observerStarted = false
     await pixels("aged-after-sample")
@@ -215,7 +219,6 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
   finally {
     if (!replayArtifact) replayArtifact = await replay.stop(false).catch(failure => ({ failure: String(failure) }))
     if (cpuStarted) workerCpu = await cpu?.stop().catch(failure => ({ failure: String(failure) }))
-    if (mainCpuStarted) mainCpu = await cdp.send("Profiler.stop").catch(failure => ({ failure: String(failure) }))
     if (observerStarted) sampled = await page.evaluate(mark => { const sample = (globalThis as any).__playsrcSustained.stop(); performance.mark(mark, { startTime: sample.ended }); return sample }, TRACE_END).catch(() => null)
     if (traceStarted) {
       try {
@@ -232,8 +235,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await worker?.evaluate(() => (globalThis as any).__playsrcWorkerMemoryTracking(false)).catch(() => {})
     await cpu?.close().catch(() => {})
     memory.close(); await native.close(); await Promise.all([cdp.detach(), browser.detach()])
-    const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null,
-      main: mainCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(mainCpu)), "main.cpuprofile") : null }
+    const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null, main: null }
     const window = compositor?.analysis.window
     const issues = setupOnly ? [] : sustainedRunIssues(sampled, lateStarted, lateEnded, !diagnostic)
     if (lateSimulation?.dropped) issues.push("Late simulation publication evidence was dropped")
@@ -263,6 +265,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
         activeSoakMilliseconds: lateStarted ? lateStarted - started : null,
         firstRecordedTick: records[0]?.state.data.snapshotTick, lastRecordedTick: records.at(-1)?.state.data.snapshotTick },
       records, sampled, phases, freezes, lateSimulation, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
+      instrumentation: { mainCpu: false, workerCpu: true, operations, note: "Main CPU sampling is not installed: V8 profiler startup heap iteration must not be mistaken for a gameplay freeze. Worker startup/stop spans remain visible in the continuous window." },
       allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
   }
