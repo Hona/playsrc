@@ -389,6 +389,9 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   let childExited = false
   let browserMilliseconds = 0
   let browserStarted: number | undefined
+  let browserEnded: number | undefined
+  let extractionStarted: number | undefined
+  let workerMilliseconds = 0
   let playwrightPhases: unknown = null
   let windowsConsole: Awaited<ReturnType<typeof requireWindowsProfileConsole>> = null
   const timingPath = path.join(runDirectory, "playwright-phases.json")
@@ -443,9 +446,9 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     if (preparedBrowser && preparedBrowser.executableSha256 !== await fileFingerprint(preparedBrowser.executable)) throw new Error("Prepared browser executable changed before desktop admission")
     }
     await verifyPrepared()
-    const preparedIdentity = createHash("sha256").update(JSON.stringify({ identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_ })).digest("hex")
+    const prepared = { identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_, root, runDirectory, owner: owner?.metadata, preparedAt: Date.now() }
     checkBrowserBudget()
-    exitCode = await withWindowsDesktop(preparedIdentity, cancellation.signal, async release => {
+    exitCode = await withWindowsDesktop(prepared, cancellation.signal, async release => {
       await verifyPrepared()
       windowsConsole = await requireWindowsProfileConsole(remaining())
       if (preparedBrowser) {
@@ -479,7 +482,8 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         if (request.token !== desktopChannel || typeof request.succeeded !== "boolean") throw new Error("Profiler extraction handoff differs")
         await release(request.succeeded)
         currentPhase = "background-extraction"
-        await writeFile(`${extractionFile}.released`, JSON.stringify({ token: desktopChannel, at: Date.now() }), { flag: "wx" })
+        extractionStarted = Date.now()
+        await writeFile(path.join(runDirectory, "desktop-extraction-released.json"), JSON.stringify({ token: desktopChannel, at: Date.now() }), { flag: "wx" })
       })().catch(error => { failure = String(error); cancel() })
     }, 25) : undefined
     const command = [
@@ -519,12 +523,15 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       child!.once("error", reject)
       child!.once("exit", (code) => { childExited = true; resolve(code ?? 1) })
     }) } finally { clearInterval(extractionMonitor); await extraction }
-    browserMilliseconds = Date.now() - browserStarted
+    workerMilliseconds = Date.now() - browserStarted
+    browserMilliseconds = (browserEnded ?? Date.now()) - browserStarted
+    if (extractionStarted) attempts.push({ phase: "background-extraction", durationMilliseconds: Date.now() - extractionStarted, complete: exitCode === 0 })
     return exitCode
     }, async () => {
       if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
       await heartbeatWrites
       if (browser) await measure("browser-teardown", () => retireProfileBrowser(browserPath, browser!, lock!.token, () => Math.max(0, runDeadline - Date.now())))
+      browserEnded = Date.now()
     }, code => code === 0)
     try { playwrightPhases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
@@ -551,7 +558,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     const cleanupStarted = Date.now()
     if (progress) clearInterval(progress)
     if (heartbeat) clearInterval(heartbeat)
-    if (browserStarted && !childExited) browserMilliseconds = Date.now() - browserStarted
+    if (browserStarted && !childExited) { workerMilliseconds = Date.now() - browserStarted; browserMilliseconds = (browserEnded ?? Date.now()) - browserStarted }
     await heartbeatWrites
     try {
       if (owner) {
@@ -572,7 +579,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       process.off("SIGTERM", cancel)
         const finished = Date.now()
         const report = Object.freeze({
-          schema: "playsrc-browser-profile-run-v4",
+          schema: "playsrc-browser-profile-run-v5",
           runId,
           profile,
           command: ["bun", path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
@@ -605,6 +612,8 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
             ownerStartup: owner?.metadata.startup ?? null,
             origin: process.env.PLAYSRC_PROFILE_ORIGIN ?? "development-owner",
             headedBrowserMilliseconds: browserMilliseconds,
+            playwrightWorkerMilliseconds: workerMilliseconds,
+            desktopEndedAt: browserEnded ?? null,
             browserOwnerMilliseconds,
             browserReused: browser?.reused ?? false,
             browserRetention: browser ? { token: browser.token, idleMilliseconds: process.platform === "win32" ? 0 : OWNER_IDLE_MILLISECONDS, contexts: "fresh-per-test", retirementReport: `${browserPath}.${browser.token}.retirement.json` } : null,

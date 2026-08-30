@@ -41,7 +41,13 @@ idle, consent dialog or completion/failure/cancellation message is required.
 Errors still fail the job and remain in results/logs. Preparation and readback
 are also silent. Background never means permission to run a headless browser.
 
-Only a validated headed profile uses the interactive scheduled session and UI.
+Only a validated headed profile uses the interactive scheduled session. A profile
+is **composite**, not an all-interactive command: its owned native process starts
+silently, borrows the existing FIFO resource reservation, authenticates source,
+content and generated inputs, builds/prepares its normal development owner,
+starts non-GUI servers and resolves/hashes the browser executable **before** UI.
+Preparation failure, cancellation or insufficient remaining browser budget is
+silent. No caller readiness flag or manual build-command sequence is needed.
 The same workload classifier is checked before scheduling, by the launcher and
 at native dispatch; neither a caller UI flag nor a substituted command can
 reclassify a profile. Unknown work fails closed without a dialog. Stages and
@@ -51,7 +57,7 @@ Both the isolated controller and prepared checkout must include this contract.
 For an interactive profile, a real native message box identifies the action,
 job, task and run:
 
-- **Approve** dispatches immediately; **Deny**, close and Escape do not launch.
+- **Approve** begins browser admission immediately; **Deny**, close and Escape do not launch a browser.
 - No answer for **3 seconds after verified display** authorizes this job (AFK).
 - Missing/hidden UI, a locked or mismatched session, helper failure, malformed
   receipts and stale identities **never** become timeout approval.
@@ -73,12 +79,31 @@ job budget remains **175 seconds**, including FIFO wait, helper
 startup, prompts and cleanup (never more than three minutes waiting for a lock).
 Sampling gets only the remaining budget, not reset clocks. Native commands are
 created suspended **in** an owned kill-on-close Windows Job Object, then
-resumed after validated classification (and displayed approval for a profile).
-Only a successfully completed interactive job gets a completion notification,
-after its owned tree is empty and source verification finishes. It dismisses
-after three seconds. Denial, failure, cancellation, preflight errors and helper faults are logs-only;
+resumed silently after validated classification. Only its prepared browser stage
+can request displayed approval; there is no second lock acquisition or queue
+between approval and browser admission.
+The native supervisor retains the same kill-on-close process tree throughout
+preparation, consent, browser use and background extraction. `ownership.json`
+(`PLAYSRC_LOCAL_JOB_OWNER`) authenticates this full lifetime, **not** permission
+to use the desktop. The single-use `desktop-grant.json` binds a prepared-input
+hash and exact child/helper creation identities to this task/run/stage. Changed
+inputs refuse launch; the stage cannot be reused by another helper or retry.
+
+Only a successfully completed interactive **stage** gets a completion notification,
+after the actual browser/input teardown and `desktop-released.json`, before slow
+background extraction, source verification and report retention. The resource
+reservation remains held so extraction cannot contaminate another measurement;
+it is not a desktop lease. The notification dismisses after three seconds.
+Denial, failure, cancellation, preflight errors and helper faults are logs-only;
 there is no failure-only notification helper or retry. Background receipts
 require `interactive: false`, null consent/completion and zero UI invocations.
+
+Profile authors use the existing application fixture and `profileArtifact` for
+post-browser analysis/retention. Its worker teardown closes test contexts, the
+profile owner closes the real browser, and the native supervisor acknowledges
+desktop release before those closures run. Background extraction cannot reopen
+the retired endpoint. `profile runner-handoff` is a short real headed runner
+check, with no gameplay benchmark or content build.
 
 ## Readback and cancellation
 

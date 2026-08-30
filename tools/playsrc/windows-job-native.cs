@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -170,9 +171,9 @@ public static partial class PlaysrcNativeJob {
    Marshal.StructureToPtr(new Button{id=100,text="Approve"},buttons,false);
    Marshal.StructureToPtr(new Button{id=101,text="Deny"},IntPtr.Add(buttons,size),false);
    var config=new DialogConfig {size=(uint)Marshal.SizeOf(typeof(DialogConfig)),flags=0x8|0x800,commonButtons=completion?1u:0u,
-    title="playsrc delegated job",instruction=completion?"Job "+outcome:"Approve delegated job?",
+     title="playsrc delegated job",instruction=completion?"Browser stage "+outcome:"Approve prepared browser stage?",
     content="Action: "+request.action+"\nJob: "+request.job+"\nTask: "+request.task+"\nRun: "+Path.GetFileName(request.run)+"\n\n"+
-     (completion?"This job has stopped. Hands-off is no longer needed for this job.\nThis message closes automatically after 3 seconds.":"Approve starts immediately. Deny, Escape or close will not start the job.\nNo answer for 3 seconds after display means approval (AFK).\nPerformance sampling still requires genuine idle and an unobscured browser."),
+      (completion?"Browser and input use have ended. Hands-off is no longer needed.\nBackground artifact work may still be finishing.\nThis message closes automatically after 3 seconds.":"Preparation is complete. Approve starts browser admission now.\nDeny, Escape or close will not launch the browser.\nNo answer for 3 seconds after display means approval (AFK).\nPerformance sampling still requires genuine idle and an unobscured browser."),
     buttonCount=completion?0u:2u,buttons=completion?IntPtr.Zero:buttons,defaultButton=completion?1:101,callback=callback,width=400};
    int button,radio;bool verification;int result=TaskDialogIndirect(ref config,out button,out radio,out verification);
    record.dismissedAt=Now;
@@ -226,8 +227,10 @@ public static partial class PlaysrcNativeJob {
    var value=Json.Deserialize<DesktopRequest>(File.ReadAllText(Path.Combine(request.run,file)));
    if(value.job!=receipt.job || value.task!=receipt.task || value.run!=receipt.run || value.lockToken!=receipt.lockToken
     || value.childPid!=receipt.childPid || value.childCreatedAt!=receipt.childCreatedAt || value.helperPid!=receipt.helperPid || value.helperCreatedAt!=receipt.helperCreatedAt
-    || String.IsNullOrEmpty(value.stage) || value.preparedIdentity==null || value.preparedIdentity.Length!=64)throw new Exception("Desktop stage identity differs");
+    || String.IsNullOrEmpty(value.stage) || value.preparedIdentity==null || value.preparedIdentity.Length!=64
+    || receipt.stage!=null && (value.stage!=receipt.stage || value.preparedIdentity!=receipt.preparedIdentity))throw new Exception("Desktop stage identity differs");
    using(var process=Process.GetProcessById(value.childPid))if(process.HasExited || new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()!=value.childCreatedAt)throw new Exception("Desktop stage process changed");
+   using(var hash=SHA256.Create())if(BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(Path.Combine(request.run,"desktop-prepared.json")))).Replace("-","").ToLowerInvariant()!=value.preparedIdentity)throw new Exception("Desktop prepared identity changed");
    var held=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(request.lockPath));
    if((string)held["token"]!=receipt.lockToken || Convert.ToInt32(held["pid"])!=receipt.ownerPid)throw new Exception("Desktop stage lost resource ownership");
    return value;
@@ -249,9 +252,9 @@ public static partial class PlaysrcNativeJob {
     receipt.stage=ready.stage;receipt.preparedIdentity=ready.preparedIdentity;receipt.preparedAt=Now;
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled before desktop consent");
     receipt.sessionId=ConsoleSession();
-    receipt.uiInvocations++;receipt.consent=StageDialog(request,false,owner);
+    receipt.consent=StageDialog(request,false,owner);receipt.uiInvocations++;
     Save(Path.Combine(request.run,"consent.json"),receipt);
-    if(receipt.consent.error!=null)throw new Exception(receipt.consent.error);
+    if(receipt.consent.error!=null) {if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException(receipt.consent.error);throw new Exception(receipt.consent.error);}
     if(receipt.consent.decision=="denied") {receipt.outcome="denied";throw new OperationCanceledException("Desktop stage denied");}
     if(receipt.consent.decision!="approved" && receipt.consent.decision!="approved-timeout")throw new Exception("Unrecognized native decision");
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled after desktop consent");
@@ -266,7 +269,7 @@ public static partial class PlaysrcNativeJob {
     receipt.desktopReleasedAt=Now;
     Save(Path.Combine(request.run,"desktop-released.json"),receipt);
     if(release.succeeded && !owner.HasExited && !File.Exists(Path.Combine(request.run,"cancel"))) {
-     receipt.uiInvocations++;receipt.completion=StageDialog(request,true,owner);
+     receipt.completion=StageDialog(request,true,owner);receipt.uiInvocations++;
     }
    }
   }
