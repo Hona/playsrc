@@ -11,6 +11,7 @@ const consent: NativeDialog = { decision: "approved", error: null, displayedAt: 
 const expected = { job: "job", task: "task", run: "run", action: "profile gameplay", invocation: ["profile", "gameplay"], interactive: true, lockToken: "lock", ownerPid: 10, helperPid: 11, spawnedAt: 1000 }
 const desktop: NativeDesktopReceipt = { ...expected, schema: "playsrc-native-desktop-v1", helperCreatedAt: 1000, childPid: 12, childCreatedAt: 1500,
   stage: "stage", preparedIdentity: "a".repeat(64), preparedAt: 1900, desktopStartedAt: 2500, desktopReleasedAt: 2800, succeeded: true,
+  console: { consoleSessionId: 3, processSessionId: 3, level: 1, sessionId: 3, state: 0, flags: 1, protocol: 0, idleMilliseconds: 3000 },
   consent, completion: { ...consent, decision: "dismissed-timeout", displayedAt: 3000, decidedAt: 6000, dismissedAt: 6001, visibleMilliseconds: 3000 } }
 const receipt: NativeJobReceipt = { ...expected, schema: "playsrc-native-job-v2", ownerCreatedAt: 500, helperCreatedAt: 1000, sessionId: 3, desktop: [desktop],
   childPid: 12, childCreatedAt: 1500, commandStartedAt: 1501, teardownAt: 6400, startedAt: 1100, finishedAt: 6500,
@@ -32,7 +33,7 @@ test("receipt binds job/task/run/creation-time/lock and teardown; malformed or s
     expect(() => validateNativeJobReceipt({ ...receipt, ...changed } as NativeJobReceipt, expected)).toThrow()
   }
   for (const outcome of ["failed", "cancelled", "denied"] as const) {
-    const value = { ...receipt, outcome, exitCode: 1, desktop: [{ ...desktop, desktopStartedAt: 0, desktopReleasedAt: 0, consent: { ...consent, decision: "denied" }, completion: null }], uiInvocations: 1, error: "not launched" }
+    const value = { ...receipt, outcome, exitCode: 1, desktop: [{ ...desktop, succeeded: false, desktopStartedAt: 0, desktopReleasedAt: 0, consent: { ...consent, decision: "denied" }, completion: null }], uiInvocations: 1, error: "not launched" }
     expect(validateNativeJobReceipt(value, expected).outcome).toBe(outcome)
   }
 })

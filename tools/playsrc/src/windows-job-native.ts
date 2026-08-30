@@ -5,6 +5,7 @@ import path from "node:path"
 import { repositoryRoot } from "./config"
 import { processIsAlive } from "./profile-lock"
 import { localJobCommand } from "./local-job-command"
+import type { WindowsDesktopState } from "../profile/windows-desktop"
 
 export type NativeDialog = {
   decision: string; error: string | null; displayedAt: number; decidedAt: number; dismissedAt: number
@@ -24,12 +25,19 @@ export type NativeDesktopReceipt = {
   childPid: number; childCreatedAt: number; helperPid: number; helperCreatedAt: number
   stage: string; preparedIdentity: string; preparedAt: number; desktopStartedAt: number; desktopReleasedAt: number
   succeeded: boolean; consent: NativeDialog | null; completion: NativeDialog | null
+  console: WindowsDesktopState | null
 }
 
 export function approvedNativeDecision(value: NativeDialog | null): boolean {
   if (!value || value.error || ![value.displayedAt, value.decidedAt, value.dismissedAt, value.visibleMilliseconds, value.window, value.sessionId].every(Number.isSafeInteger)
     || value.window <= 0 || value.sessionId <= 0 || value.displayedAt <= 0 || value.decidedAt < value.displayedAt || value.dismissedAt < value.decidedAt || value.visibleMilliseconds < 0) return false
   return value.decision === "approved" || value.decision === "approved-timeout" && value.visibleMilliseconds >= 3_000 && value.decidedAt - value.displayedAt >= 3_000
+}
+
+function admittedNativeConsole(value: WindowsDesktopState | null, sessionId: number): boolean {
+  return !!value && [value.consoleSessionId, value.processSessionId, value.level, value.sessionId, value.state, value.flags, value.protocol, value.idleMilliseconds].every(Number.isSafeInteger)
+    && sessionId > 0 && value.consoleSessionId === sessionId && value.processSessionId === sessionId && value.sessionId === sessionId
+    && value.level === 1 && value.state === 0 && value.flags === 1 && value.protocol === 0 && value.idleMilliseconds >= 2000 && value.idleMilliseconds <= 0xffff_ffff
 }
 
 export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { job: string; task: string; run: string; action: string; invocation: readonly string[]; interactive: boolean; lockToken: string; ownerPid: number; helperPid: number; spawnedAt: number }): NativeJobReceipt {
@@ -51,7 +59,9 @@ export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { jo
     if (!stage.stage || stages.has(stage.stage) || !/^[a-f0-9]{64}$/.test(stage.preparedIdentity) || ![stage.preparedAt, stage.desktopStartedAt, stage.desktopReleasedAt].every(Number.isSafeInteger) || stage.preparedAt < previousEnd) throw new Error("Desktop stages overlap or reuse authorization")
     if (stage.preparedAt > value.teardownAt || stage.desktopStartedAt > value.teardownAt || stage.desktopReleasedAt > value.teardownAt
       || (stage.consent?.dismissedAt ?? 0) > value.finishedAt || (stage.completion?.dismissedAt ?? 0) > value.finishedAt) throw new Error("Desktop stage is outside its owned job lifetime")
+    if ((stage.console !== null || stage.succeeded) && !admittedNativeConsole(stage.console, value.sessionId)) throw new Error("Desktop stage lacks genuine native console admission")
     stages.add(stage.stage)
+    if (stage.succeeded && (!stage.desktopStartedAt || !stage.desktopReleasedAt)) throw new Error("Successful desktop stage did not finish")
     if (index < value.desktop.length - 1 && !stage.desktopReleasedAt) throw new Error("Prior desktop stage has not ended")
     if (stage.consent?.displayedAt && stage.consent.displayedAt < stage.preparedAt) throw new Error("Consent precedes authenticated preparation")
     if (stage.desktopStartedAt && (!approvedNativeDecision(stage.consent) || stage.desktopStartedAt < stage.consent!.dismissedAt || stage.desktopReleasedAt < stage.desktopStartedAt)) throw new Error("Desktop has no checked scoped approval/release")
@@ -171,8 +181,8 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
  * the transition; ownership.json is never a desktop authorization. */
 let desktopSequence = 0
 export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, unknown>>, signal: AbortSignal,
-  verify: () => Promise<void>, work: (release: (succeeded: boolean) => Promise<NativeDesktopReceipt | undefined>) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
-  if (process.platform !== "win32") return work(async () => undefined)
+  verify: () => Promise<void>, work: (release: (succeeded: boolean) => Promise<NativeDesktopReceipt | undefined>, grant: NativeDesktopReceipt | undefined) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
+  if (process.platform !== "win32") return work(async () => undefined, undefined)
   const file = process.env.PLAYSRC_LOCAL_JOB_OWNER
   if (!file) throw new Error("Missing prepared native desktop identity")
   const owner = JSON.parse(await readFile(file, "utf8")) as NativeJobReceipt
@@ -207,7 +217,8 @@ export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, un
         for (const key of ["job", "task", "run", "lockToken", "stage", "preparedIdentity", "childPid", "childCreatedAt", "helperPid", "helperCreatedAt"] as const) {
           if (receipt[key] !== request[key]) throw new Error("Desktop stage receipt differs")
         }
-        if (receipt.schema !== "playsrc-native-desktop-v1" || !approvedNativeDecision(receipt.consent) || !receipt.desktopStartedAt) throw new Error("Desktop stage was not authorized")
+        if (receipt.schema !== "playsrc-native-desktop-v1" || !approvedNativeDecision(receipt.consent) || !receipt.desktopStartedAt
+          || !admittedNativeConsole(receipt.console, owner.sessionId)) throw new Error("Desktop stage was not authorized")
         return receipt
       }
       await Bun.sleep(25)
@@ -218,7 +229,7 @@ export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, un
   await verify()
   signal.throwIfAborted()
   await publish("request.json", request)
-  await wait("grant.json", true)
+  const grant = await wait("grant.json", true)
   let releasing: Promise<NativeDesktopReceipt> | undefined
   const release = (success: boolean) => releasing ??= (async () => {
     // No release receipt on unconfirmed teardown. The native Job Object's
@@ -230,6 +241,6 @@ export async function withWindowsDesktop<T>(prepared: Readonly<Record<string, un
     return released
   })()
   let success = false
-  try { signal.throwIfAborted(); await verify(); signal.throwIfAborted(); const result = await work(release); success = succeeded(result); return result }
+  try { signal.throwIfAborted(); await verify(); signal.throwIfAborted(); const result = await work(release, grant); success = succeeded(result); return result }
   finally { await release(success) }
 }

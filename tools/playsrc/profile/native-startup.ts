@@ -11,6 +11,7 @@ import { createHash } from "node:crypto"
 import { WINDOWS_OWNED_UI, WINDOWS_LOCAL_PERMISSION, ownedDiagnosticWindow, assertOwnedEphemeralBrowser } from "./windows-owned-ui"
 import { mkdir, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
+import { registerProfileNativeProbe } from "./profile-artifacts"
 
 export class NativeStartupProbeError extends Error {
   constructor(message: string, readonly receipt: unknown) { super(message) }
@@ -194,6 +195,13 @@ export async function prepareStartupNativeProbe(cacheDir: string): Promise<void>
   if (process.platform !== "win32") return
   nativeProbeResponse(await (windowsProbe ??= openWindowsProbe(cacheDir)).read(0))
 }
+
+// Only profiles which actually import this probe prepare it. Other profiles do
+// not gain an unused resident PowerShell process during their measured work.
+registerProfileNativeProbe({
+  async prepare() { const { loadLocalConfig } = await import("../src/config"); await prepareStartupNativeProbe((await loadLocalConfig()).sourceCacheDir) },
+  close: closeStartupNativeProbe,
+})
 
 export function windowsForegroundMatches(native: { foreground: number; foregroundAfter: number }, windowId: number, focused: boolean): boolean {
   return native.foreground === windowId && native.foregroundAfter === windowId && focused

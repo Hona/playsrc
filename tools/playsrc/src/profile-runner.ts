@@ -6,7 +6,7 @@ import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget } from "../profile/profile-target"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
-import { requireWindowsProfileConsole } from "../profile/windows-desktop"
+import type { WindowsDesktopState } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
 import { browserLease, prepareBrowserLaunch, prepareProfileBrowser, retireProfileBrowser, profileNodeExecutable, type PreparedBrowser, type BrowserLaunch } from "./profile-browser"
@@ -396,7 +396,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
   let extractionStarted: number | undefined
   let workerMilliseconds = 0
   let playwrightPhases: unknown = null
-  let windowsConsole: Awaited<ReturnType<typeof requireWindowsProfileConsole>> = null
+  let windowsConsole: WindowsDesktopState | null = null
   const timingPath = path.join(runDirectory, "playwright-phases.json")
   const terminate = (signal: NodeJS.Signals) => {
     if (child?.pid && !childExited) {
@@ -500,8 +500,8 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
           if (childExited || !isAlive(request.workerPid)) throw new Error("Prepared browser worker exited before consent")
           const prepared = { identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_, root, runDirectory, owner: owner?.metadata, worker: entry, preparedAt: Date.now() }
           let stageStarted: number | undefined
-          await withWindowsDesktop(prepared, cancellation.signal, verifyPrepared, async release => {
-            windowsConsole = await requireWindowsProfileConsole(remaining())
+          await withWindowsDesktop(prepared, cancellation.signal, verifyPrepared, async (release, grant) => {
+            windowsConsole = grant!.console
             stageStarted = Date.now()
             if (request.kind === "playwright") browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, true))
             browserOwnerMilliseconds += Date.now() - stageStarted
@@ -621,7 +621,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
           runId,
           profile,
           mode,
-          command: ["bun", path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
+          command: ["bun", path.join(repositoryRoot, mode === "prepare" ? "tools/playsrc/src/profile-prepare.ts" : "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
           repository: root,
           harnessRepository: repositoryRoot,
           harnessFingerprint: harnessIdentity,
