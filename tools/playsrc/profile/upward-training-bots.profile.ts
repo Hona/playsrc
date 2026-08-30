@@ -5,6 +5,7 @@ import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { applicationBuildIdentity } from "../src/build-identity"
 import { expect, test } from "./application-test"
+import { profileArtifact } from "./profile-artifacts"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { installGpuTextureAccounting } from "./gpu-texture-accounting"
 import { summarizeClassSwitchLifecycle } from "./class-switch-lifecycle"
@@ -554,9 +555,14 @@ test("profile authored headed Upward offline-practice default roster and actual 
       finally { clearTimeout(timer) }
       expect(completion.stream).toBeTruthy()
       const raw = await drainTraceStream(presentationCdp, completion.stream!)
+      const origin = new URL(page.url()).origin
+      const applicationConfiguration = await (await page.request.get("/playsrc-config.json")).json()
+      await diagnosticCdp?.detach()
+      await presentationCdp.detach()
+      await profileArtifact(async () => {
       const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(completion.dataLossOccurred), mainCpu,
-        categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter: await applicationBuildIdentity(applicationRoot), sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint, origin: new URL(page.url()).origin,
-          mode: deliveryMode, nativeAdmission: nativeRecords(), applicationConfiguration: (await (await page.request.get("/playsrc-config.json")).json()),
+        categories: presentationCategories, identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter: await applicationBuildIdentity(applicationRoot), sourceUnchanged: await applicationBuildIdentity(applicationRoot) === sourceFingerprint, origin,
+          mode: deliveryMode, nativeAdmission: nativeRecords(), applicationConfiguration,
           instrumentation: diagnosticCpu ? "CPU diagnosis only: main/Worker samplers plus native display marks; not ordinary acceptance" : "Read-only submission/RAF observer and native display/user-timing trace only; no application, Worker, CPU or heap sampler" },
         probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.missedPublications } })
       const compositor = summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined)
@@ -572,8 +578,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         expect(gpuCapture.error).toBeNull()
         expect(gpuCapture.samples.filter(entry => [0, 1].includes(entry.status)).length).toBeGreaterThan(1)
       }
-      await diagnosticCdp?.detach()
-      await presentationCdp.detach()
+      })
     }
     expect(nativeFailure).toBeUndefined()
     expect(sample.lifecycle).toEqual([])
@@ -627,6 +632,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const memoryBefore = await captureProcessMemory(processBefore?.processInfo, { remote: Boolean(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT) })
   const browserVersion = await browserCdp.send("Browser.getVersion")
   const applicationGeneration = await page.evaluate(() => (globalThis as any).__playsrcProfile.applicationGeneration ?? null)
+  const capturedOrigin = new URL(page.url()).origin
   const availableCategories = (await browserCdp.send("Tracing.getCategories")).categories
   const traceFinished = new Promise<{ stream?: string; dataLossOccurred: boolean }>(resolve => browserCdp.once("Tracing.tracingComplete", resolve))
   let compositorLayers: Array<{ layerId: string; backendNodeId?: number; width: number; height: number; drawsContent: boolean; paintCount: number }> = []
@@ -713,7 +719,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
         snapshotTransport: snapshotBoundaries, processes: { before: memoryBefore, after: memoryAfter } },
       identity: { sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, sourceFingerprintAfter,
         sourceUnchanged: sourceFingerprint === sourceFingerprintAfter, applicationGeneration, browserVersion,
-        gpu: system?.gpu ?? null, availableCategories, origin: new URL(page.url()).origin,
+        gpu: system?.gpu ?? null, availableCategories, origin: capturedOrigin,
         label, headed: true, target, entry, launch, interrupted, workerCpu: workerArtifact, capturePlan: capturePlanArtifact,
         nativeScreenshot, beforeScreenshotSha256: createHash("sha256").update(before).digest("hex"), ...details }, probes })
   }
@@ -732,8 +738,11 @@ test("profile authored headed Upward offline-practice default roster and actual 
     process.off("SIGTERM", interrupt)
     interrupted = true
     await Promise.allSettled([finishNative(), stopReplay(false)])
+    await (await finishNative()).memory
+    await profileArtifact(async () => {
     const evidence = await retainInterrupted()
     console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
+    })
   }
   // Preserve the authored order: sampler setup before movement input. A slow
   // Profiler.start must not advance the player before the original input edge.
@@ -1173,46 +1182,12 @@ test("profile authored headed Upward offline-practice default roster and actual 
     for (const record of measured.simulationPublications) joins.push({ kind: "simulation-publication", at: record.at, end: record.at + record.decodeMilliseconds, detail: record })
     for (const record of measured.longAnimationFrames) joins.push({ kind: "long-animation-frame", at: record.at, end: record.at + record.duration, detail: record })
   }
-  profilePhases.enter("trace-analysis-retention")
-  const evidence = await retainNativeEvidence(
-    { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
-    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact,
-      gameplayReplayLifecycle: replayCapture?.lifecycle, nativeAdmission: nativeRecords(), replacement,
-      workloadState: initialWorkloadState,
-      workloadIdentity: process.env.PROFILE_COMMAND_WORKLOAD ?? null, authorWorkload, preparationTimings, clientFrameInputs, presentationInputs })
-  const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
-  // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
-  await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
-  console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
-  profilePhases.enter("diagnostics-and-pixels")
-  retainIncomplete = undefined
-  if (replayArtifact && !replayArtifact.complete) throw new Error(`Gameplay replay incomplete; diagnostics retained: ${replayArtifact.error}`)
-  if (interrupted) throw new Error("Capture interrupted; partial diagnostics retained, not passing evidence")
-  if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
-  if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
-  if (workload) {
-    let failure: string | null = null
-    try {
-      assertMatchingWorkloadState(workload.initialState, evidence.manifest.identity.workloadState)
-      if (!replayArtifact?.file) throw new Error("Actual workload journal is absent")
-      compareWorkloadJournal(await readFile(workload.journalFile), await readFile(path.join(evidenceDirectory, replayArtifact.file)), workload.plan.sampleEnded / 1000)
-    } catch (error) { failure = String(error) }
-    await writeFile(path.join(directory, `${label}-workload-validation.json`), JSON.stringify({ identity: process.env.PROFILE_COMMAND_WORKLOAD,
-      accepted: failure === null, failure, expected: workload.initialState, actual: evidence.manifest.identity.workloadState }, null, 2))
-    if (failure) throw new Error(failure)
-  }
-  if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
-  const { allocation, processAfter, memoryAfter } = await memory
-  const memoryEvidence = await loadAllocationMemoryEvidence(path.join(evidenceDirectory, evidence.artifact.file), evidence)
-  if (allocation.errors.length || !allocation.heapBefore || !allocation.heapAfter) throw new Error(`Allocation capture failed; diagnostics retained: ${allocation.errors.join("; ")}`)
-  const heapBefore = allocation.heapBefore.value, heapAfter = allocation.heapAfter.value
-  const cpuProfile = mainCapture.profile
+  // Finish browser-dependent diagnostics before background trace decoding. The
+  // active sample, input release and native capture endpoints above are unchanged.
+  await memory
   await page.evaluate(() => { (globalThis as any).__playsrcProfile.worldLightingEvidenceRevision = 1 })
   await page.waitForFunction(() => (globalThis as any).__playsrcProfile.worldLighting?.revision === 1)
   const geometry = await page.evaluate(() => (globalThis as any).__playsrcProfile.worldLighting)
-  const measurement = measured
-  const traceEvents: ChromiumTraceEvent[] = evidence.events
-  const exactTraceWindow = evidence.manifest.analysis.window
   const layerDetails = await Promise.all(compositorLayers.filter(layer => layer.drawsContent).map(async layer => {
     const [reasons, node] = await Promise.all([
       cdp.send("LayerTree.compositingReasons", { layerId: layer.layerId }).catch(() => null),
@@ -1247,7 +1222,54 @@ test("profile authored headed Upward offline-practice default roster and actual 
       protocols: Object.fromEntries([...new Set(resources.map(entry => entry.nextHopProtocol))].map(protocol => [protocol || "unavailable", resources.filter(entry => entry.nextHopProtocol === protocol).length])),
     }
   })
+  const settings = await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality))
+  const browserIdentity = await page.evaluate(() => ({ platform: navigator.platform, userAgent: navigator.userAgent }))
   const after = await canvas.screenshot({ timeout: 20_000 })
+  if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1" || process.env.PROFILE_DRAW_LIGHTING_PARITY === "1") await auditParity()
+  if (acceptance && exerciseClasses) {
+    const stock = await acceptStockLoadouts(page, directory, label)
+    await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(stock, null, 2))
+    expect(await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)).toEqual([])
+  }
+  await finishPixelAudits(measured)
+  retainIncomplete = undefined
+  await profileArtifact(async () => {
+  profilePhases.enter("trace-analysis-retention")
+  const evidence = await retainNativeEvidence(
+    { started: measured?.started ?? 0, ended: measured?.ended ?? 0, joins, dropped: measured ? measured.gpuOperationsDropped + measured.simulationPublicationsDropped + measured.renderOwners.reduce((n: number, r: any) => n + r.dropped, 0) : 1 },
+    { viewport: measured?.viewport ?? null, sampleError: sample.error, gameplayReplay: replayArtifact,
+      gameplayReplayLifecycle: replayCapture?.lifecycle, nativeAdmission: nativeRecords(), replacement,
+      workloadState: initialWorkloadState,
+      workloadIdentity: process.env.PROFILE_COMMAND_WORKLOAD ?? null, authorWorkload, preparationTimings, clientFrameInputs, presentationInputs })
+  const sourceFingerprintAfter = evidence.manifest.identity.sourceFingerprintAfter
+  // Reference durable evidence before subsequent CPU/heap extraction, screenshots, or assertions can fail.
+  await testInfo.attach("compositor-evidence", { body: JSON.stringify(evidence.artifact), contentType: "application/json" })
+  console.log(`PLAYSRC_COMPOSITOR_EVIDENCE ${JSON.stringify(evidence.artifact)}`)
+  profilePhases.enter("diagnostics-and-pixels")
+  if (replayArtifact && !replayArtifact.complete) throw new Error(`Gameplay replay incomplete; diagnostics retained: ${replayArtifact.error}`)
+  if (interrupted) throw new Error("Capture interrupted; partial diagnostics retained, not passing evidence")
+  if (workerCapture.error) throw new Error(`Worker CPU capture failed; raw compositor evidence retained: ${workerCapture.error}`)
+  if (!measured) throw new Error(`Gameplay sampling failed; compositor evidence retained: ${sample.error}`)
+  if (workload) {
+    let failure: string | null = null
+    try {
+      assertMatchingWorkloadState(workload.initialState, evidence.manifest.identity.workloadState)
+      if (!replayArtifact?.file) throw new Error("Actual workload journal is absent")
+      compareWorkloadJournal(await readFile(workload.journalFile), await readFile(path.join(evidenceDirectory, replayArtifact.file)), workload.plan.sampleEnded / 1000)
+    } catch (error) { failure = String(error) }
+    await writeFile(path.join(directory, `${label}-workload-validation.json`), JSON.stringify({ identity: process.env.PROFILE_COMMAND_WORKLOAD,
+      accepted: failure === null, failure, expected: workload.initialState, actual: evidence.manifest.identity.workloadState }, null, 2))
+    if (failure) throw new Error(failure)
+  }
+  if (evidence.manifest.mainCpu?.errors.length || !mainCapture.profile) throw new Error(`Main CPU capture failed; diagnostics retained: ${evidence.manifest.mainCpu?.errors.join("; ")}`)
+  const { allocation, processAfter, memoryAfter } = await memory
+  const memoryEvidence = await loadAllocationMemoryEvidence(path.join(evidenceDirectory, evidence.artifact.file), evidence)
+  if (allocation.errors.length || !allocation.heapBefore || !allocation.heapAfter) throw new Error(`Allocation capture failed; diagnostics retained: ${allocation.errors.join("; ")}`)
+  const heapBefore = allocation.heapBefore.value, heapAfter = allocation.heapAfter.value
+  const cpuProfile = mainCapture.profile
+  const measurement = measured
+  const traceEvents: ChromiumTraceEvent[] = evidence.events
+  const exactTraceWindow = evidence.manifest.analysis.window
   const completed = measurement.frames as Array<{ at: number; tick: number; detail: Record<string, number>; renderer: { passes: Array<{ submissions: number }> } }>
   const compositor=measurement.compositorFrames as Array<{at:number;submittedAt:number;submissionMilliseconds:number}>
   const intervals = completed.slice(1).map((frame, index) => frame.at - completed[index]!.at)
@@ -1299,8 +1321,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     compositorEvidence: { ...evidence.artifact, complete: evidence.manifest.complete, errors: evidence.manifest.errors,
       issues: evidence.manifest.analysis.issues, incidents: evidence.manifest.analysis.incidents.map(({ work, joins, ...incident }) => incident) },
     presentationOpportunities:{frames:compositor.length,framesPerSecond:Number((compositor.length/measurement.elapsed*1000).toFixed(3)),animationCallbacks:measurement.presentationCallbacks.length,intervals:summarizeFrameTimes(compositor.slice(1).map((frame,index)=>frame.at-compositor[index]!.at)),submissionLatency:summarizeDistribution(compositor.map(frame=>frame.submissionMilliseconds))},
-    settings: await page.evaluate(() => structuredClone((globalThis as any).__playsrcProfile.videoQuality)),
-    browser: { platform: await page.evaluate(() => navigator.platform), userAgent: await page.evaluate(() => navigator.userAgent), controllerPlatform: process.platform, origin: new URL(page.url()).origin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
+    settings,
+    browser: { ...browserIdentity, controllerPlatform: process.platform, origin: capturedOrigin, channel: process.env.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? "playwright-chromium", viewport: measurement.viewport, visible: measurement.visible, focused: measurement.focused, lifecycle: measurement.browserLifecycle, gpu: system?.gpu ?? null, processes: { before: processBefore?.processInfo ?? null, after: processAfter?.processInfo ?? null, memoryBefore, memoryAfter }, network, storage, userMachineEvidence: false },
     firstPlayableBoundary: "application-completed-frame-not-compositor",
     frameIntervals: summarizeFrameTimes(intervals), ...summarizeDeliveryMeasurement(measurement),
     presentationDom: {
@@ -1418,17 +1440,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
     writeFile(path.join(directory, `${label}-before.png`), before),
     writeFile(path.join(directory, `${label}-after.png`), after),
   ])
-  if (process.env.PROFILE_UPWARD_SKINNING_PARITY === "1" || process.env.PROFILE_DRAW_LIGHTING_PARITY === "1") {
-    // Strictly after sampling and memory extraction; never rerun an unchanged
-    // expensive sample to iterate on the differential correctness oracle.
-    await auditParity()
-  }
-  if (acceptance && exerciseClasses) {
-    const stock = await acceptStockLoadouts(page, directory, label)
-    await writeFile(path.join(directory, `${label}-stock.json`), JSON.stringify(stock, null, 2))
-    const losses = await page.evaluate(() => (globalThis as any).__playsrcFrameProfiler.losses)
-    expect(losses).toEqual([])
-  }
   assertVisibleGameplayTruth({ visible: measurement.visible, focused: measurement.focused, ticks: report.simulation.ticks, displayFrames: actualFrames, submissions: measurement.counters.submissions, beforeSha256: report.pixels.beforeSha256, afterSha256: report.pixels.afterSha256 })
   expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
   expect(geometry.geometry.samples.some((sample: any) => sample.modelDepth > 0)).toBe(true)
@@ -1476,6 +1487,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(report.pipelinePreparation.reusedPreparedModels).toBeGreaterThan(0)
     expect(report.nodeBuilds.filter((build: any) => build.material.includes("/models/player/"))).toEqual([])
   }
+  })
+  async function finishPixelAudits(report: any) {
   if (process.env.PROFILE_CLASS_UI_AUDIT === "1") {
     await auditEngineerMenus(page, root, directory, label, combatCommand)
   }
@@ -1487,7 +1500,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   }
   if (process.env.PROFILE_STATIC_PROP_AUDIT === "1") {
     // This independent pixel/depth fixture runs after the complete gameplay
-    // sample and its trace export, on the same visible page and checked lease.
+    // sample, on the same visible page and checked lease before trace decoding.
     expect(report.nodeBuilds.filter((build: any) => build.material.includes("/models/props_"))).toEqual([])
     const uses = report.pipelinePreparation.firstStaticPropUses
     expect(uses.filter((use: any) => use.generation === 2 && use.pass === "main").length).toBeGreaterThan(0)
@@ -1510,5 +1523,6 @@ test("profile authored headed Upward offline-practice default roster and actual 
     expect(results.map(result => [result.builds, result.newPrograms, result.colorMismatches, result.depthMismatches])).toEqual(Array.from({ length: 4 }, () => [0, 0, 0, 0]))
     expect(retiredDraws).toBe(0)
     expect(nativeAdmission.filter(value => value.error || (value.occluders as unknown[])?.length)).toEqual([])
+  }
   }
 })
