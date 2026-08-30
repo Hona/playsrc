@@ -21,6 +21,8 @@ import { startGameplayReplayJournal } from "./gameplay-replay"
 test("sustained natural full-roster KOTH with whole-interval delivery and late CPU evidence", async ({ page, context }) => {
   if (process.platform !== "win32") throw new Error("Sustained acceptance requires the approved native Windows local job")
   const target = sustainedKothTarget(process.env.PROFILE_MAP_TARGET)
+  const setupOnly = process.env.PROFILE_KOTH_SETUP_ONLY === "1"
+  let setupComplete = false
   const { sourceCacheDir } = await loadLocalConfig(process.cwd())
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   if (!directory) throw new Error("Use the checked bounded profile runner")
@@ -117,6 +119,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     cpu = await prepareWorkerCpuCapture(browser, cdp, page, 10_000)
     await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 1000 })
     await pixels("natural-setup")
+    if (setupOnly) { setupComplete = true; return }
     await page.waitForFunction(() => {
       const p = (globalThis as any).__playsrcProfile
       return p?.bots?.length === 23 && p.round?.state === 4 && !p.round.waitingForPlayers && !p.round.inSetup
@@ -212,9 +215,9 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null,
       main: mainCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(mainCpu)), "main.cpuprofile") : null }
     const window = compositor?.analysis.window
-    const issues = sustainedRunIssues(sampled, lateStarted, lateEnded)
+    const issues = setupOnly ? [] : sustainedRunIssues(sampled, lateStarted, lateEnded)
     if (lateSimulation?.dropped) issues.push("Late simulation publication evidence was dropped")
-    if (!compositor?.manifest.complete) issues.push("Compositor evidence is incomplete")
+    if (!setupOnly && !compositor?.manifest.complete) issues.push("Compositor evidence is incomplete")
     if (issues.length) error ??= issues.join("; ")
     const phases = sampled ? Object.fromEntries([["whole", sampled.started, sampled.ended], ["early", sampled.started, Math.min(sampled.started + 10_000, sampled.ended)], ["late", lateStarted, lateEnded]]
       .filter(([, from, to]) => Number(to) > Number(from)).map(([name, from, to]) => [name, { ...summarizeSustainedWindow(sampled, Number(from), Number(to)),
@@ -233,7 +236,8 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       presented: [...presentationStreams].map(([stream, times]) => ({ stream, eventName: presentationName,
         ...sustainedFreezes(sampled, Number(from), Number(to), [...new Set(times)].sort((a, b) => a - b), Array.isArray(workerCpu) ? workerCpu : []) })),
     }]))
-    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
+    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, setupOnly, setupComplete,
+      acceptanceEligible: !setupOnly, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
       records, sampled, phases, freezes, lateSimulation, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
       allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
