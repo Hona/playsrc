@@ -6,6 +6,7 @@ test("the native owner uses the same explicit browser channel as the sustained c
   expect(profileBrowserLaunch("sustained-viaduct", {})).toEqual({ channel: "msedge" })
   expect(profileBrowserLaunch("sustained-harvest-setup", {})).toEqual({ channel: "msedge" })
   expect(profileMinimumRemainingMilliseconds("sustained-harvest-setup")).toBe(60_000)
+  expect(profileMinimumRemainingMilliseconds("sustained-harvest-diagnostic")).toBe(70_000)
   expect(profileBrowserLaunch("gameplay", { channel: "chrome" })).toEqual({ channel: "chrome" })
 })
 test("retained entropy is explicit and never forwarded as a Playwright option", () => {
@@ -43,6 +44,9 @@ test("a short soak or absent simulation/input telemetry cannot become acceptance
   expect(issues).toContain("Late observed simulation is below63Hz")
   expect(issues).toContain("Worker observe service/queue telemetry is absent")
   expect(issues).toContain("No planned input reached a changed-camera submission")
+  sample.rpc.records.push({ kind: "observe", sent: 0, received: 100, elapsedMilliseconds: 100, timings: {} } as never)
+  expect(sustainedRunIssues(sample, 100, 6100, false)).toEqual([])
+  expect(sustainedRunIssues(sample, 100, 6100)).toContain("Detailed sample began before90 uninterrupted real seconds")
 })
 
 test("continuous observer records real publication changes, input tails, resets and no restarted window", () => {
