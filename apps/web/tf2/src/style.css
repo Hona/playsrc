@@ -24,6 +24,10 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   width: 100%;
   height: 100%;
   background: #000;
+  /* The game view has no native widget chrome; VGUI owns visible focus. */
+  outline: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .vgui-layer {

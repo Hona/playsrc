@@ -1323,6 +1323,7 @@ class DeveloperConsoleImplementation implements DeveloperConsole {
   }
 
   private onKeydown(event: KeyboardEvent): void {
+    if (event.isComposing || event.keyCode === 229) return
     if (
       (event.code === "Backquote" || event.key === "`" || event.key === "~") &&
       !event.altKey &&
@@ -1330,7 +1331,7 @@ class DeveloperConsoleImplementation implements DeveloperConsole {
       !event.metaKey
     ) {
       event.preventDefault()
-      this.requestVisibility("entry-backquote")
+      if (!event.repeat) this.requestVisibility("entry-backquote")
       return
     }
     if (event.key === "Enter") {

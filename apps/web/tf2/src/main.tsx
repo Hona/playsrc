@@ -99,6 +99,9 @@ function App() {
         aria-hidden="true"
         onClick={(event) => void runtime.current?.requestPointer(event.currentTarget)}
         onContextMenu={(event) => event.preventDefault()}
+        onMouseDown={(event) => { if (event.button !== 0) event.preventDefault() }}
+        onAuxClick={(event) => event.preventDefault()}
+        onDragStart={(event) => event.preventDefault()}
       />
       <div ref={startup} class="startup-layer" aria-label="Valve startup movie">
         <video

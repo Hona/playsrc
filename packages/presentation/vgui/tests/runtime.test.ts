@@ -635,11 +635,47 @@ describe("generic Source VGUI runtime", () => {
     expect(descendants(root).filter((node) => node.dataset.vguiPanel !== undefined)).toHaveLength(snapshot.panels.length)
     expect(snapshot.panels.find((panel) => panel.control === "CheckButton")?.role).toBe("checkbox")
     expect(snapshot.panels.find((panel) => panel.control === "QueryBox")?.role).toBe("dialog")
-    expect(snapshot.ownedResources.listeners).toBe(13)
+    expect(snapshot.ownedResources.listeners).toBe(15)
 
     operation(runtime, { kind: "destroy" })
     expect(runtime.snapshot().ownedResources).toEqual({ nodes: 0, listeners: 0, observers: 0, timers: 0 })
     expect(root.children).toHaveLength(0)
+  })
+
+  test("scopes native menus and drag suppression to non-text Source controls and removes listeners", () => {
+    const { root, runtime } = setup()
+    const button = operation(runtime, { kind: "create-panel", parent: 1, control: "Button", name: "Action" }).panel!
+    const entry = operation(runtime, { kind: "create-panel", parent: 1, control: "TextEntry", name: "Edit" }).panel!
+    const host = descendants(root).find(node => node.dataset.vguiRuntime === "test-runtime")!
+    const buttonElement = descendants(root).find(node => node.dataset.vguiPanel === String(button))!
+    const entryElement = descendants(root).find(node => node.dataset.vguiPanel === String(entry))!
+    for (const type of ["contextmenu", "dragstart"]) {
+      for (const [element, prevented] of [[buttonElement, true], [entryElement, false], [root, false]] as const) {
+        const event = new FakeEvent(type, { bubbles: true })
+        element.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(prevented)
+      }
+    }
+    operation(runtime, { kind: "destroy" })
+    const after = new FakeEvent("contextmenu")
+    host.dispatchEvent(after)
+    expect(after.defaultPrevented).toBe(false)
+  })
+
+  test("does not route IME or browser shortcuts through VGUI key-typed", () => {
+    const { root, runtime } = setup()
+    const entry = operation(runtime, { kind: "create-panel", parent: 1, control: "TextEntry", name: "Edit" }).panel!
+    const element = descendants(root).find(node => node.dataset.vguiPanel === String(entry))!
+    operation(runtime, { kind: "request-focus", panel: entry })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    for (const init of [{ key: "Tab", code: "Tab", ctrlKey: true }, { key: "Enter", code: "Enter", isComposing: true }, { key: "Backspace", code: "Backspace", keyCode: 229 }]) {
+      const event = new FakeEvent("keydown", init)
+      event.target = element
+      root.ownerDocument.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+      expect(runtime.snapshot().input.keyFocus).toBe(entry)
+    }
+    operation(runtime, { kind: "destroy" })
   })
 
   test("atomically reuses code controls, selects conditions and suffixes, localizes variables, and rejects unknown controls", () => {

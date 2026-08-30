@@ -122,6 +122,7 @@ import { loadBrowserConfiguration, parseBrowserConfiguration, tf2SelectableMapNa
 import { createApplicationGenerationRecovery, installedMapProfileIdentity, resourceGenerationMatches } from "./application-generation"
 import { playStartupVideo } from "./startup-playback"
 import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
+import { browserOwnsKey } from "@playsrc/vgui"
 import { PhysicalBindingIndex, PhysicalButtonState, applyPointerDelta, pointerLockRequestRequired, rawPointerMovementUnsupported, sourceMouseButtonCode, type PhysicalBinding } from "./input"
 import { TF2_BALANCED_VIDEO_SETTINGS, TF2_SELECTED_OPTIONS, tf2VideoConfiguration, tf2VideoConvars, tf2VideoSettingsFromConvars, type AdapterRequestResult, type SettingsAdapterRequest, type Tf2VideoConfiguration } from "@playsrc/settings"
 import { SimulationClockQueue } from "./simulation-clock"
@@ -5915,31 +5916,38 @@ export class Tf2Application {
     this.#set({ scoreboardVisible: visible })
   }
 
-  #activateBoundAction(identity: string, action: string): void {
+  #activateBoundAction(identity: string, action: string, repeat = false): boolean {
     if (action === "+forward" || action === "+back" || action === "+moveleft" || action === "+moveright" || action === "+duck") {
-      this.#buttons.press(identity, action)
+      if (!repeat) this.#buttons.press(identity, action)
     } else if (action === "+jump") {
-      if (this.#buttons.press(identity, action)) this.#jumpPressed = true
+      if (!repeat && this.#buttons.press(identity, action)) this.#jumpPressed = true
     } else if (action === "+attack") {
-      if (this.#buttons.press(identity, action)) this.#firePressed = true
+      if (!repeat && this.#buttons.press(identity, action)) this.#firePressed = true
     } else if (action === "+attack2") {
-      if(this.#snapshot?.placement){this.#buildingRequest={action:"rotate"};return}
-      if (this.#buttons.press(identity, action)) this.#detonatePressed = true
+      if (!repeat) {
+        if(this.#snapshot?.placement){this.#buildingRequest={action:"rotate"};return true}
+        if (this.#buttons.press(identity, action)) this.#detonatePressed = true
+      }
     } else if (action === "+reload") {
-      if (this.#buttons.press(identity, action)) this.#reloadPressed = true
+      if (!repeat && this.#buttons.press(identity, action)) this.#reloadPressed = true
     } else if (action === "+showscores") {
-      if (this.#buttons.press(identity, action)) this.#setScoreboardVisible(true)
-
+      if (!repeat && this.#buttons.action(identity) === undefined) {
+        this.#buttons.press(identity, action)
+        this.#setScoreboardVisible(true)
+      }
     } else if (action === "lastinv") {
-      this.#selectWeapon = "last"
+      if (!repeat) this.#selectWeapon = "last"
     } else if (/^slot[1-6]$/.test(action) && this.#snapshot && this.#equipmentProfile?.state()) {
-      this.#selectWeapon = equippedWeaponSlots(this.#snapshot, this.#equipmentProfile.state()!.inventory)
+      if (!repeat) this.#selectWeapon = equippedWeaponSlots(this.#snapshot, this.#equipmentProfile.state()!.inventory)
         .find(value => value.slot === Number(action.slice(4)) - 1)?.weapon
-    }
-
+    } else return false
+    return true
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (browserOwnsKey(event) || event.metaKey || !document.hasFocus()) return
+    const target = event.target as Node | null
+    if (target !== document.body && target !== document.documentElement && (!target || !this.#presentationRoot.contains(target))) return
     if (this.#localMatch?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#equipment?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
@@ -5976,17 +5984,23 @@ export class Tf2Application {
       }
     }
     if (this.#options?.handleKey(event)) return
-    if (event.code === "Backquote") {
-      if (!this.#consoleEnabled || this.#keyboardAction(event) !== "toggleconsole"
+    if (this.#keyboardAction(event) === "toggleconsole") {
+      if (!this.#consoleEnabled
         || (this.#vguiRoot.contains(event.target as Node) && !this.#view.consoleVisible)
         || this.#optionsRoot.contains(event.target as Node)) return
       event.preventDefault()
-      this.toggleConsole()
+      event.stopImmediatePropagation()
+      if (!event.repeat) this.toggleConsole()
       return
     }
     if (this.#equipment?.visible() || this.#view.consoleVisible || this.#view.optionsVisible || this.#view.localMatchVisible || this.#teamSelection?.state().visible
-      || this.#view.gameUi !== "in-game" || event.repeat) return
+      || this.#classSelection?.state().visible || this.#view.gameUi !== "in-game") return
+    // VGUI controls retain their own editing/navigation even if a control keeps
+    // focus during a transition. The world and the unfocused body are gameplay.
+    if (target !== this.#canvas && target !== document.body && target !== document.documentElement && target !== this.#presentationRoot) return
     if (this.#snapshot?.class === 8 && this.#snapshot.weapon === 53 && /^Digit[1-9]$/u.test(event.code)) {
+      event.preventDefault()
+      if (event.repeat) return
       const classes: readonly Tf2Class[] = [1, 3, 7, 4, 6, 9, 5, 2, 8]
       const selected = classes[Number(event.code.slice(5)) - 1]!
       this.#disguise = Object.freeze({ class: selected, team: this.#snapshot.team === 2 ? 3 : 2 })
@@ -5996,47 +6010,51 @@ export class Tf2Application {
     }
     const action = this.#keyboardAction(event)
     if (!action) return
-    if (action === "+showscores") event.preventDefault()
     if (action === "changeteam") {
       event.preventDefault()
-      void this.#showTeamSelection()
+      if (!event.repeat) void this.#showTeamSelection()
       return
     }
     if(this.#engineer?.menu()&&/^slot[1-4]$/.test(action)){
       event.preventDefault()
+      if (event.repeat) return
       const request=this.#engineer.select(Number(action.slice(4)))
       if(request){this.#buildingRequest=request;if(request.action==="destroy")this.#selectWeapon=42}
       return
     }
     if (action === "changeclass") {
       event.preventDefault()
-      this.#showClassSelection()
+      if (!event.repeat) this.#showClassSelection()
       return
     }
-    void this.resumeAudio()
-    this.#activateBoundAction(`keyboard:${event.code}`, action)
+    if (this.#activateBoundAction(`keyboard:${event.code}`, action, event.repeat)) {
+      event.preventDefault()
+      if (!event.repeat) void this.resumeAudio()
+    }
   }
 
   readonly #keyUp = (event: KeyboardEvent): void => {
-    const showingScores = this.#buttons.held("+showscores")
-    this.#buttons.release(`keyboard:${event.code}`)
-    if (showingScores && !this.#buttons.held("+showscores")) {
-      event.preventDefault()
-      this.#setScoreboardVisible(false)
-    }
+    this.#releaseBoundAction(`keyboard:${event.code}`)
   }
 
   readonly #mouseDown = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
+    event.preventDefault()
     void this.resumeAudio()
     const action = this.#mouseAction(event)
     if (action) this.#activateBoundAction(`mouse:${event.button}`, action)
   }
 
   readonly #mouseUp = (event: MouseEvent): void => {
-    const showingScores = this.#buttons.held("+showscores")
-    this.#buttons.release(`mouse:${event.button}`)
-    if (showingScores && !this.#buttons.held("+showscores")) this.#setScoreboardVisible(false)
+    this.#releaseBoundAction(`mouse:${event.button}`)
+  }
+
+  #releaseBoundAction(identity: string): void {
+    const action = this.#buttons.action(identity)
+    this.#buttons.release(identity)
+    // IN_ScoreUp hides the panel on each -showscores command, independently
+    // of KeyUp retaining another physical source in in_score.
+    if (action === "+showscores") this.#setScoreboardVisible(false)
   }
 
   readonly #mouseMove = (event: MouseEvent): void => {

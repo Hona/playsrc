@@ -554,7 +554,14 @@ class Integration implements Tf2ClassSelectionIntegration {
 
   handleKey(event: Pick<KeyboardEvent, "code" | "repeat" | "preventDefault" | "stopImmediatePropagation">,
     changeClassBinding: boolean): boolean {
-    if (!this.#state.visible || event.repeat) return false
+    if (!this.#state.visible) return false
+    if (event.repeat) {
+      if (!/^(?:Digit|Numpad)[0-9]$/u.test(event.code)
+        && !["Enter", "NumpadEnter", "Space", "Escape"].includes(event.code) && !changeClassBinding) return false
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return true
+    }
     let transition: Tf2ClassSelectionTransition | undefined
     const digit = /^(?:Digit|Numpad)([0-9])$/u.exec(event.code)
     if (digit && digit[1] !== "0") {

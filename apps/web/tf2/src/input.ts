@@ -82,11 +82,16 @@ export class PhysicalButtonState {
     return this.#actions.has(action)
   }
 
+  action(identity: string): string | undefined {
+    return this.#physical.get(identity)
+  }
+
   clear(): void {
     this.#physical.clear()
     this.#actions.clear()
   }
 }
+
 
 export function sourceMouseButtonCode(button: number): string | null {
   const sourceButton = ([1, 3, 2, 4, 5] as const)[button]

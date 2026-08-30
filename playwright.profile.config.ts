@@ -76,5 +76,6 @@ export default headedProfileConfiguration({
                             ? "tracktrain.profile.ts"
                           : "input-latency.profile.ts",
   target: headedProfileTarget(),
+  ...(process.env.PROFILE_SCENARIOS === "browser-input" && process.platform === "win32" ? { channel: "msedge" as const } : {}),
   ...(process.env.PROFILE_SCENARIOS === "team-selection" ? { grep: /profile startup and input latency/u } : {}),
 })

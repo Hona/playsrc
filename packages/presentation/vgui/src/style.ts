@@ -26,6 +26,7 @@ export const VGUI_CSS = `
   isolation: isolate;
   touch-action: none;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .playsrc-vgui-source-control {
@@ -136,6 +137,8 @@ export const VGUI_CSS = `
 
 .playsrc-vgui-close {
   appearance: none;
+  border-radius: 0;
+  outline: 0;
   padding: 0;
   cursor: default;
   background: transparent;

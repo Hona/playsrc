@@ -350,7 +350,13 @@ class Integration implements Tf2TeamSelectionIntegration {
 
   handleKey(event: Pick<KeyboardEvent, "code" | "repeat" | "preventDefault" | "stopImmediatePropagation">,
     changeTeamBinding: boolean): boolean {
-    if (!this.#state.visible || event.repeat) return false
+    if (!this.#state.visible) return false
+    if (event.repeat) {
+      if (!["Space", "Enter", "NumpadEnter", "Escape", "ArrowLeft", "ArrowRight"].includes(event.code) && !changeTeamBinding) return false
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return true
+    }
     let eventToDispatch: Tf2TeamSelectionEvent | undefined
     if (event.code === "Space") eventToDispatch = { kind: "select", team: "auto" }
     else if (event.code === "Enter" || event.code === "NumpadEnter") {
