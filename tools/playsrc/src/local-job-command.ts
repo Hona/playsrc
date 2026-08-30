@@ -11,7 +11,7 @@ export function parseLocalPreparationStage(args: readonly string[]): LocalPrepar
 
 /** One authority for queue transport, native dispatch and ownership readback.
  * UI policy is derived from the workload, never a caller-supplied switch. */
-export function localJobCommand(args: readonly string[]): { command: string[]; interactive: boolean } {
+export function localJobCommand(args: readonly string[]): { command: string[]; interactive: boolean; controller?: true } {
   if (!Array.isArray(args) || args.length > 20 || args.some(value => typeof value !== "string" || value.length > 1024 || value.includes("\0"))) throw new Error("Invalid workload arguments")
   const [kind, ...options] = args
   if (kind === "test") {
@@ -20,9 +20,9 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
     }
     return { command: ["test", ...options], interactive: false }
   }
-  if (kind === "profile") {
+  if (kind === "profile" || kind === "prepare-profile") {
     parseHeadedProfile(options)
-    return { command: ["tools/playsrc/src/profile-runner.ts", ...options], interactive: true }
+    return { command: [kind === "profile" ? "tools/playsrc/src/profile-runner.ts" : "tools/playsrc/src/profile-prepare.ts", ...options], interactive: kind === "profile", controller: true }
   }
   if (kind === "build" && options.length === 1 && (TF2_TARGET_NAMES as readonly string[]).includes(options[0]!)) {
     return { command: ["tools/playsrc/src/cli.ts", "dev", options[0]!, "--prepare-only"], interactive: false }

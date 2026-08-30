@@ -52,7 +52,7 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION || !!pro
         else expect(value!.exitCode).toBe(kind === "success" ? 0 : kind === "preflight" ? null : 1)
         expect(value!.interactive).toBe(false)
         expect(value!.uiInvocations).toBe(0)
-        expect(value!.consent).toBeNull(); expect(value!.completion).toBeNull(); expect(value!.treeEmpty).toBe(true)
+        expect(value!.desktop).toEqual([]); expect(value!.treeEmpty).toBe(true)
       }
       expect((await readdir(run)).filter(file => /consent|completion|failure-native/.test(file))).toEqual([])
       const dispatch = await readFile(path.join(run, "dispatch.json"), "utf8").then(JSON.parse).catch(() => null)

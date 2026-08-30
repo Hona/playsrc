@@ -5,11 +5,12 @@ import path from "node:path"
 import type { Browser } from "@playwright/test"
 import { test as applicationTest, expect } from "./application-test"
 import { loadLocalConfig } from "../src/config"
+import { prepareProfileNativeBrowser } from "./profile-artifacts"
 
 // Playwright's ordinary browser contexts force focus/visibility with CDP. A
 // native default context with noDefaults observes actual tab/window lifecycle.
 export const test = applicationTest.extend<{}, { browser: Browser }>({
-  browser: [async ({ playwright }, use) => {
+  browser: [async ({ playwright }, use, workerInfo) => {
     const executable = process.env.PLAYSRC_PROFILE_NATIVE_EDGE
     if (!executable || !path.isAbsolute(executable)) throw new Error("PLAYSRC_PROFILE_NATIVE_EDGE must name the installed visible Edge executable")
     const config = await loadLocalConfig()
@@ -20,10 +21,20 @@ export const test = applicationTest.extend<{}, { browser: Browser }>({
     if (!address || typeof address === "string") throw new Error("Native Edge debug port is unavailable")
     await new Promise<void>((resolve) => reservation.close(() => resolve()))
     const endpoint = `http://127.0.0.1:${address.port}`
-    const child = spawn(executable, [`--remote-debugging-port=${address.port}`, `--user-data-dir=${directory}`, "--no-first-run", "--no-default-browser-check", "--enable-automation", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] })
+    let child: ReturnType<typeof spawn> | undefined
+    let stopped: Promise<void> | undefined
+    const stop = () => stopped ??= (async () => {
+      if (!child || child.exitCode !== null) return
+      child.kill("SIGTERM")
+      const deadline = Math.min(Number(process.env.PLAYSRC_PROFILE_DEADLINE ?? Infinity), Date.now() + 4000)
+      while (child.exitCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+      if (child.exitCode === null) throw new Error("Native Edge teardown unconfirmed")
+    })()
+    if (process.env.PLAYSRC_PROFILE_DESKTOP_CHANNEL) await prepareProfileNativeBrowser(workerInfo.workerIndex, executable, stop)
+    child = spawn(executable, [`--remote-debugging-port=${address.port}`, `--user-data-dir=${directory}`, "--no-first-run", "--no-default-browser-check", "--enable-automation", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] })
     let diagnostics = ""
     child.stderr!.on("data", (bytes) => { diagnostics = (diagnostics + String(bytes)).slice(-8_192) })
-    const terminate = () => { child.kill("SIGTERM") }
+    const terminate = () => { child?.kill("SIGTERM") }
     process.once("SIGTERM", terminate)
     let browser: Browser | undefined
     try {
@@ -37,7 +48,7 @@ export const test = applicationTest.extend<{}, { browser: Browser }>({
       await use(browser)
     } finally {
       await browser?.close()
-      terminate()
+      await stop()
       process.removeListener("SIGTERM", terminate)
       await rm(directory, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
     }

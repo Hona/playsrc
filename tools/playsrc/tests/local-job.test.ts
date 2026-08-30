@@ -52,7 +52,8 @@ test("local jobs accept an explicit origin revision, never shell fragments or am
 
 test("local jobs reuse ordinary tests and headed profilers, without inherited remote routing", () => {
   expect(localJobCommand(["test", "tools/playsrc/tests/windows-desktop.test.ts"])).toEqual({ command: ["test", "tools/playsrc/tests/windows-desktop.test.ts"], interactive: false })
-  expect(localJobCommand(["profile", "gameplay", "--headed"])).toEqual({ command: ["tools/playsrc/src/profile-runner.ts", "gameplay", "--headed"], interactive: true })
+  expect(localJobCommand(["profile", "gameplay", "--headed"])).toEqual({ command: ["tools/playsrc/src/profile-runner.ts", "gameplay", "--headed"], interactive: true, controller: true })
+  expect(localJobCommand(["prepare-profile", "gameplay"])).toEqual({ command: ["tools/playsrc/src/profile-prepare.ts", "gameplay"], interactive: false, controller: true })
   expect(localJobCommand(["build", "jump_beef"])).toEqual({ command: ["tools/playsrc/src/cli.ts", "dev", "jump_beef", "--prepare-only"], interactive: false })
   for (const args of [["--ready", "profile", "gameplay"], ["test", "../outside.test.ts"], ["test", "--preload=x"], ["profile", "gameplay", "--headless"], ["profile", "bad"], ["deploy"]]) {
     expect(() => localJobCommand(args)).toThrow()
