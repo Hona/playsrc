@@ -47,7 +47,7 @@ export function headedProfileConfiguration(options: ProfileConfiguration): Playw
       deviceScaleFactor,
       ...(options.preciseMemory ? { launchOptions: { args: ["--enable-precise-memory-info"] } } : {}),
     },
-    ...(configuredOrigin ? {} : { webServer: {
+    ...(configuredOrigin || process.env.PLAYSRC_PROFILE_MANAGED === "1" ? {} : { webServer: {
       command: `bun tools/playsrc/src/cli.ts dev ${options.target ?? "jump_beef"}`,
       url: `${origin}/`,
       reuseExistingServer: true,

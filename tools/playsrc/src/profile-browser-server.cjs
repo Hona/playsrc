@@ -2,6 +2,20 @@
 // Bun owns scheduling/leases; no page, context, or executable evidence is reused
 // by this process. Each client connection owns fresh test contexts.
 const { chromium } = require("@playwright/test")
+const path = require("node:path")
+const { createRequire } = require("node:module")
+
+// Resolve the pinned Playwright registry without starting any browser process.
+// This is preparation, including channel existence/installation validation.
+if (process.argv[2] === "prepare") {
+  const launch = JSON.parse(process.argv[3])
+  const core = createRequire(createRequire(require.resolve("@playwright/test")).resolve("playwright"))
+  const { registry } = require(path.join(path.dirname(core.resolve("playwright-core")), "lib/coreBundle.js"))
+  const executable = registry.findExecutable(launch.channel || "chromium")
+  if (!executable) throw new Error("Unknown configured Chromium channel")
+  console.log(JSON.stringify({ executable: executable.executablePathOrDie("javascript") }))
+  process.exit(0)
+}
 
 let server
 let stopping = false

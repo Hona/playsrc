@@ -10,5 +10,5 @@ test.skipIf(process.platform !== "win32")("native lifecycle: zero background UI 
   const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", path.join(import.meta.dir, "fixtures/windows-job-lifecycle.ps1"), "-Directory", directory], { windowsHide: true, stdout: "pipe", stderr: "pipe" })
   const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
   expect({ code, errors }).toEqual({ code: 0, errors: "" })
-  expect(JSON.parse(output)).toEqual({ cases: 28, backgroundUiInvocations: 0, testOnly: true })
+  expect(JSON.parse(output)).toEqual({ cases: 32, backgroundUiInvocations: 0, testOnly: true })
 }, 30_000)

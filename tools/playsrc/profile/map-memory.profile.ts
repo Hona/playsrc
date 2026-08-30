@@ -5,6 +5,7 @@ import { execFile } from "node:child_process"
 import path from "node:path"
 import { promisify } from "node:util"
 import { expect, test, guardStartupInput } from "./application-test"
+import { profileArtifact } from "./profile-artifacts"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { divideProfileWindow, profileSampleSeconds } from "./profile-window"
 import { chooseTf2Team } from "./team-selection-evidence"
@@ -1069,11 +1070,13 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         .map(([identity, bytes]) => ({ identity, bytes })),
       heapSnapshot,
     }
+    await profileArtifact(async () => {
     const serialized = `${JSON.stringify(report, null, 2)}\n`
     const label = process.env.PROFILE_MEMORY_LABEL ?? "current"
     await writeFile(path.join(output, `${label}.json`), serialized)
     await writeFile(path.join(output, "report.json"), serialized)
     await testInfo.attach("headed-three-map-memory", { body: Buffer.from(serialized), contentType: "application/json" })
+    })
   } catch (error) {
     const failure = await page.evaluate(() => {
       const main = document.querySelector<HTMLElement>("main")

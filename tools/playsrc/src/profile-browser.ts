@@ -10,6 +10,21 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive } fr
 
 type BrowserOwner = { token: string; pid: number; browserPid: number; arguments: string[]; endpoint: string; identity: string; executable: string; executableSha256: string }
 export type BrowserLaunch = { channel?: string; args?: string[] }
+export type PreparedBrowser = { launch: BrowserLaunch; identity: string; executable: string; executableSha256: string }
+
+export async function prepareBrowserLaunch(launch: BrowserLaunch): Promise<PreparedBrowser> {
+  const child = spawn(profileNodeExecutable(), [path.join(import.meta.dir, "profile-browser-server.cjs"), "prepare", JSON.stringify(launch)], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+  const timer = setTimeout(() => child.kill(), 10_000)
+  try {
+    let output = "", diagnostic = ""
+    child.stdout.on("data", bytes => { output += bytes })
+    child.stderr.on("data", bytes => { diagnostic += bytes })
+    const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve) })
+    if (code !== 0) throw new Error(`Browser preparation failed: ${diagnostic}`)
+    const { executable } = JSON.parse(output)
+    return { launch, identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }
+  } finally { clearTimeout(timer) }
+}
 
 async function optionalJson(filename: string): Promise<any> {
   try { return JSON.parse(await readFile(filename, "utf8")) }
@@ -65,8 +80,8 @@ export async function acquireBrowserRetirementLock(filename: string, token: stri
   finally { clearInterval(handoff) }
 }
 
-export async function prepareProfileBrowser(filename: string, launch: BrowserLaunch, remaining: () => number, lockToken?: string, fresh = false): Promise<BrowserOwner & { reused: boolean }> {
-  const identity = await browserLaunchIdentity(launch)
+export async function prepareProfileBrowser(filename: string, prepared: PreparedBrowser, remaining: () => number, lockToken?: string, fresh = false): Promise<BrowserOwner & { reused: boolean }> {
+  const { identity, launch } = prepared
   let previous: BrowserOwner | undefined
   try { previous = JSON.parse(await readFile(filename, "utf8")) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
@@ -74,7 +89,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   if (previous && processIsAlive(previous.pid)) {
     const lease = await optionalJson(`${filename}.lease`)
     if (!fresh && lease?.token === previous.token && lease.expiresAt > Date.now() + 1_000
-      && previous.identity === identity && await fileFingerprint(previous.executable) === previous.executableSha256) {
+      && previous.identity === identity && previous.executable === prepared.executable && previous.executableSha256 === prepared.executableSha256) {
       await browserLease(filename, previous.token, remaining())
       return { ...previous, reused: true }
     }
@@ -89,7 +104,7 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   await browserLease(filename, token, remaining(), lockToken)
   const logPath = `${filename}.${token}.log`
   const log = openSync(logPath, "wx", 0o600)
-  const child = spawn(process.execPath, [import.meta.filename, filename, token, JSON.stringify(launch)], {
+  const child = spawn(process.execPath, [import.meta.filename, filename, token, JSON.stringify(prepared)], {
     cwd: repositoryRoot, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", log, log],
   })
   closeSync(log)
@@ -107,10 +122,17 @@ export async function prepareProfileBrowser(filename: string, launch: BrowserLau
   throw new Error("Headed browser startup exceeded the command deadline")
 }
 
+export async function retireProfileBrowser(filename: string, owner: BrowserOwner, lockToken: string, remaining: () => number): Promise<void> {
+  await browserLease(filename, owner.token, 0, lockToken)
+  while (processIsAlive(owner.pid) && remaining() > 0) await Bun.sleep(25)
+  if (processIsAlive(owner.pid) || processIsAlive(owner.browserPid)) throw new Error("Owned browser teardown unconfirmed")
+}
+
 if (import.meta.main) {
   const [filename, token, encoded] = process.argv.slice(2)
   if (!filename || !path.isAbsolute(filename) || !token || !encoded) throw new Error("Missing headed browser lease")
-  const launch = JSON.parse(encoded) as BrowserLaunch
+  const prepared = JSON.parse(encoded) as PreparedBrowser
+  const { launch } = prepared
   const child = spawn(profileNodeExecutable(), [path.join(import.meta.dir, "profile-browser-server.cjs"), JSON.stringify(launch)], { windowsHide: true, stdio: ["pipe", "pipe", "inherit"] })
   const exited = new Promise<void>((resolve, reject) => {
     child.once("error", reject)
@@ -130,8 +152,9 @@ if (import.meta.main) {
     exited.then(() => { throw new Error("Headed browser server exited before publishing its endpoint") }),
   ])
   if (!Number.isSafeInteger(browserPid) || browserPid < 1 || !Array.isArray(browserArguments) || browserArguments.some(value => typeof value !== "string")) throw new Error("Owned browser launch receipt differs")
+  if (path.resolve(executable) !== path.resolve(prepared.executable)) throw new Error("Launched browser differs from prepared executable")
   const owner: BrowserOwner = { token, pid: process.pid, browserPid, arguments: browserArguments, endpoint,
-    identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }
+    identity: prepared.identity, executable, executableSha256: prepared.executableSha256 }
   let stopping = false
   const stop = async (underLock = false) => {
     if (stopping) return

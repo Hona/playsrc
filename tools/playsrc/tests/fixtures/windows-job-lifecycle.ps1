@@ -4,10 +4,11 @@ param([Parameter(Mandatory=$true)][string]$Directory)
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $source=[IO.File]::ReadAllText((Join-Path $root 'windows-job-native.cs'))
-$source=$source.Replace('playsrc-native-job-v1','playsrc-native-job-test-only')
+$source=$source.Replace('playsrc-native-job-v2','playsrc-native-job-test-only')
 $source=[regex]::Replace($source,'(?s)static int ConsoleSession\(\) \{.*?\n \}', 'static int ConsoleSession() { return TestSession(); }')
 $source=[regex]::Replace($source,'(?s)static Dialog Show\(Request request,bool completion,string outcome,Process owner\) \{.*?\n \}', 'static Dialog Show(Request request,bool completion,string outcome,Process owner) { return TestShow(request,completion); }')
-$source=[regex]::Replace($source,'(?s)static void Execute\(Request request,Receipt receipt,Process owner\) \{.*?\n \}', 'static void Execute(Request request,Receipt receipt,Process owner) { TestExecute(request,receipt); }')
+$source=[regex]::Replace($source,'(?s)static void Execute\(Request request,Receipt receipt,Process owner\) \{.*?\n \}', 'static void Execute(Request request,Receipt receipt,Process owner) { TestExecute(request,receipt,owner); }')
+$source=[regex]::Replace($source,'(?s)static void RequireDesktopEmpty\(IntPtr job\) \{.*?\n  \}', 'static void RequireDesktopEmpty(IntPtr job) { Assert(closed,"teardown before consent closure"); }')
 if($source.Contains('TaskDialogIndirect(ref config') -or $source.Contains('Check(CreateProcessW(') -or !$source.Contains('return TestSession();')){throw 'Test isolation substitution failed; refusing UI or workload dispatch'}
 $fixture=@'
 public static partial class PlaysrcNativeJob {
@@ -23,16 +24,33 @@ public static partial class PlaysrcNativeJob {
   return new Dialog{decision=completion?"dismissed-timeout":scenario=="deny"||scenario=="close"||scenario=="escape"||scenario=="race-deny"?"denied":scenario=="display-fault"?"display-failed":scenario=="timeout"||scenario=="race-timeout"?"approved-timeout":"approved",
    error=scenario=="display-fault"?"display-fault":null,displayedAt=Now-3001,decidedAt=Now,dismissedAt=Now,visibleMilliseconds=3001,window=1,sessionId=Process.GetCurrentProcess().SessionId};
  }
- static void TestExecute(Request request,Receipt receipt) {
-  Assert(!receipt.interactive || closed,"dispatch before prompt closure");
-  Assert(!receipt.interactive || receipt.consent.dismissedAt<=Now,"dispatch before dismissal");
-  dispatches++;receipt.commandStartedAt=Now;receipt.childPid=123;receipt.childCreatedAt=Now;
-  receipt.outcome=scenario=="failure"?"failed":scenario=="cancel"?"cancelled":"completed";
-  receipt.exitCode=receipt.outcome=="completed"?0:1;receipt.treeEmpty=true;receipt.teardownAt=Now;
+  static void TestExecute(Request request,Receipt receipt,Process owner) {
+   Assert(prompts==0 && sessions==0,"UI before preparation");
+   dispatches++;receipt.commandStartedAt=Now;receipt.childPid=Process.GetCurrentProcess().Id;receipt.childCreatedAt=receipt.helperCreatedAt;
+   try {
+    Thread.Sleep(20);Assert(prompts==0 && receipt.desktopStartedAt==0,"preparation acquired desktop");
+    if(scenario=="preparation-failure")throw new Exception("preparation failed");
+    if(scenario=="preparation-cancel")throw new OperationCanceledException("preparation cancelled");
+    if(receipt.interactive) {
+     var stage=new DesktopRequest{job=request.job,task=request.task,run=request.run,lockToken=request.lockToken,childPid=receipt.childPid,childCreatedAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,stage=Guid.NewGuid().ToString(),preparedIdentity=new String('a',64)};
+     Save(Path.Combine(request.run,"desktop-request.json"),stage);
+     DesktopTransition(request,receipt,owner,IntPtr.Zero);
+     Assert(closed && receipt.consent.dismissedAt<=receipt.desktopStartedAt,"browser before dismissed consent");
+     if(scenario=="failure")throw new Exception("browser failed");
+     if(scenario=="cancel")throw new OperationCanceledException("browser cancelled");
+     stage.succeeded=true;Save(Path.Combine(request.run,"desktop-release.json"),stage);
+     DesktopTransition(request,receipt,owner,IntPtr.Zero);
+     Assert(receipt.desktopReleasedAt>=receipt.desktopStartedAt,"artifact work holds desktop");
+     Thread.Sleep(20);Assert(prompts==1,"authorization reused or repeated");
+    }
+    receipt.outcome=scenario=="failure"?"failed":scenario=="cancel"?"cancelled":"completed";
+   } catch(Exception error) {receipt.error=error.Message;if(receipt.outcome!="denied")receipt.outcome=error is OperationCanceledException?"cancelled":"failed";}
+   receipt.exitCode=receipt.outcome=="completed"?0:1;receipt.treeEmpty=true;receipt.teardownAt=Now;
+   if(receipt.desktopStartedAt!=0 && receipt.desktopReleasedAt==0)receipt.desktopReleasedAt=Now;
  }
  public static string TestLifecycle(string directory,string manifest) {
   int cases=0;
-  foreach(bool interactive in new[]{false,true}) foreach(string name in new[]{"approve","timeout","deny","close","escape","race-deny","race-timeout","display-fault","session-fault","failure","cancel","preflight","queued-cancel","queue-fault"}) {
+   foreach(bool interactive in new[]{false,true}) foreach(string name in new[]{"approve","timeout","deny","close","escape","race-deny","race-timeout","display-fault","session-fault","failure","cancel","preflight","queued-cancel","queue-fault","preparation-failure","preparation-cancel"}) {
    scenario=name;prompts=completions=sessions=dispatches=0;closed=false;
    var run=Path.Combine(directory,Guid.NewGuid().ToString());Directory.CreateDirectory(run);
    var request=new Request{job="test-only",task="test-only",run=run,action=name,manifest=manifest,invocation=new[]{interactive?"profile":"diagnostic"},command=new[]{"NEVER EXECUTED"},ownerPid=Process.GetCurrentProcess().Id,lockPath=Path.Combine(run,"lock.json"),lockToken="test-only",deadline=Now+15000,preflightFailure=name=="preflight"?"missing content":null};
@@ -45,14 +63,15 @@ public static partial class PlaysrcNativeJob {
    var receipt=Json.Deserialize<Receipt>(File.ReadAllText(Path.Combine(run,"native-result.json")));
    Assert(receipt.schema=="playsrc-native-job-test-only","test schema isolation");
    bool preflight=name=="preflight"||name=="queued-cancel"||name=="queue-fault";
-   bool rejected=preflight || interactive && (name=="session-fault"||name=="display-fault"||name=="deny"||name=="close"||name=="escape"||name=="race-deny");
-   Assert(dispatches==(rejected?0:1),"dispatch count");
-   Assert(prompts==(!interactive||preflight||name=="session-fault"?0:1),"prompt count");
+    bool prepared=!preflight && name!="preparation-failure" && name!="preparation-cancel";
+    bool rejected=!prepared || interactive && (name=="session-fault"||name=="display-fault"||name=="deny"||name=="close"||name=="escape"||name=="race-deny");
+    Assert(dispatches==(preflight?0:1),"preparation dispatch count");
+    Assert(prompts==(!interactive||!prepared||name=="session-fault"?0:1),"prompt count");
    Assert(completions==(interactive&&!rejected&&name!="failure"&&name!="cancel"?1:0),"completion count");
    Assert(receipt.uiInvocations==prompts+completions,"recorded UI count");
    Assert(interactive || sessions==0 && receipt.consent==null && receipt.completion==null && receipt.uiInvocations==0,"background acquired desktop/UI");
    Assert(receipt.treeEmpty && receipt.teardownAt>=receipt.commandStartedAt,"teardown ordering");
-   Assert(receipt.completion==null || receipt.completion.dismissedAt>=receipt.teardownAt,"completion before teardown");
+    Assert(receipt.completion==null || receipt.completion.dismissedAt>=receipt.desktopReleasedAt,"completion before desktop teardown");
    cases++;
   }
   return Json.Serialize(new {cases=cases,backgroundUiInvocations=0,testOnly=true});

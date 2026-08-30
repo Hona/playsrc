@@ -186,31 +186,56 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     await writeFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-claim.json`), JSON.stringify({ job: id, task, launcher, pid: process.pid, claimedAt: Date.now() }), { flag: "wx" })
   }
   const admittedAt = Date.now()
-  const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
-  // Acquire once, before claiming the checkout: two tasks for the same prepared
-  // job queue normally instead of the second barging into its running marker.
-  const lock = process.platform === "win32" ? await acquireHeadedProfileLock(lockPath, `job:${id}:${args.join(" ")}`, LIMIT - 15_000) : undefined
-  let running: Awaited<ReturnType<typeof open>> | undefined
-  try {
-  running = await open(path.join(directory, "running"), "wx")
-   const owner = { pid: process.pid, startedAt: admittedAt, job: id, task, command: plan.command, interactive: plan.interactive }
-  const phase = async (name: string) => {
-    const text = JSON.stringify({ ...owner, phase: name })
-    await running!.write(text, 0, "utf8"); await running!.truncate(Buffer.byteLength(text))
-  }
   const run = path.join(directory, randomUUID())
   await mkdir(run)
+  const owner = { pid: process.pid, startedAt: admittedAt, job: id, task, command: plan.command, interactive: plan.interactive }
   await writeFile(path.join(run, "identity.json"), JSON.stringify({ ...owner, run, commit: job.commit }), { flag: "wx" })
   if (task) {
     const link = path.join(directory, `${task.slice("playsrc-local-job-".length)}-run.json`)
     await writeFile(`${link}.tmp`, JSON.stringify({ job: id, task, run, pid: process.pid }), { flag: "wx" })
     await rename(`${link}.tmp`, link)
-    if (await Bun.file(path.join(directory, `${task.slice("playsrc-local-job-".length)}-cancel`)).exists()) await writeFile(path.join(run, "cancel"), "Cancellation requested while queued\n", { flag: "wx" })
+  }
+  const cancellation = new AbortController()
+  const cancel = () => {
+    if (cancellation.signal.aborted) return
+    cancellation.abort(new Error("Local job cancelled"))
+    void writeFile(path.join(run, "cancel"), "Local job cancellation\n").catch(() => undefined)
+  }
+  process.once("SIGINT", cancel); process.once("SIGTERM", cancel)
+  const cancelled = async () => {
+    const files = [path.join(run, "cancel"), ...(task ? [path.join(directory, `${task.slice("playsrc-local-job-".length)}-cancel`)] : [])]
+    if ((await Promise.all(files.map(file => Bun.file(file).exists()))).some(Boolean)) cancel()
+  }
+  const monitor = setInterval(() => { void cancelled().catch(error => cancellation.abort(error)) }, 50)
+  const stopMonitoring = () => { clearInterval(monitor); process.off("SIGINT", cancel); process.off("SIGTERM", cancel) }
+  const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
+  // Acquire once, before claiming the checkout: two tasks for the same prepared
+  // job queue normally instead of the second barging into its running marker.
+  let lock: Awaited<ReturnType<typeof acquireHeadedProfileLock>> | undefined
+  try {
+    await cancelled()
+    cancellation.signal.throwIfAborted()
+    lock = process.platform === "win32" ? await acquireHeadedProfileLock(lockPath, `job:${id}:${args.join(" ")}`, LIMIT - 15_000, { signal: cancellation.signal }) : undefined
+  } catch (error) {
+    stopMonitoring()
+    const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit: null, checkout,
+      command: plan.command, interactive: plan.interactive, startedAt: admittedAt, finishedAt: Date.now(),
+      outcome: cancellation.signal.aborted ? "cancelled" : "failed", failure: String(error), run, native: null, lockWaitMilliseconds: Date.now() - admittedAt }
+    await writeFile(path.join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx" })
+    return result
+  }
+  let running: Awaited<ReturnType<typeof open>> | undefined
+  try {
+  running = await open(path.join(directory, "running"), "wx")
+  const phase = async (name: string) => {
+    const text = JSON.stringify({ ...owner, phase: name })
+    await running!.write(text, 0, "utf8"); await running!.truncate(Buffer.byteLength(text))
   }
   const startedAt = owner.startedAt
   let port: number | undefined, preflightFailure: string | null = null, harnessCommit: string | null = null
   try {
     await phase("source-validation")
+    cancellation.signal.throwIfAborted()
     if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
     await assertCheckout(checkout, job, admittedAt + LIMIT - 10_000)
     if (process.platform === "win32") {
@@ -218,6 +243,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
       await assertCheckout(repositoryRoot, { ...job, commit: harnessCommit }, admittedAt + LIMIT - 10_000)
     }
     await phase("reserve-ports")
+    cancellation.signal.throwIfAborted()
     if (plan.interactive || args[0] === "build") port = await availableDevelopmentPort()
   } catch (error) { preflightFailure = String(error) }
   const command = plan.interactive
@@ -228,7 +254,8 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   let outcome = "failed"
   try {
     if (process.platform === "win32") {
-      await phase(plan.interactive ? "native-consent-command-completion" : "native-background-command")
+      if (cancellation.signal.aborted) await writeFile(path.join(run, "cancel"), "Cancellation before native dispatch\n")
+      await phase(plan.interactive ? "native-composite-command" : "native-background-command")
       const action = args.map(value => value.replace(/[\x00-\x1f]/g, " ")).join(" ").slice(0, 512)
       native = await runWindowsNativeJob({ job: id, task: task!, run, action, invocation: args, command, cwd: checkout,
         lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, preflightFailure }, localJobEnvironment(process.env, port), async () => {
@@ -253,6 +280,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
   return result
   } finally {
+    stopMonitoring()
     try { if (running) { await running.close(); await rm(path.join(directory, "running")) } }
     finally { if (lock) await releaseHeadedProfileLock(lockPath, lock.token) }
   }

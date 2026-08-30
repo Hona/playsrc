@@ -9,10 +9,11 @@ import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
-import { browserLease, prepareProfileBrowser, profileNodeExecutable, type BrowserLaunch } from "./profile-browser"
+import { browserLease, prepareBrowserLaunch, prepareProfileBrowser, retireProfileBrowser, profileNodeExecutable, type PreparedBrowser, type BrowserLaunch } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
 import { replaceProfileLeaseFile } from "./profile-lease-rename"
-import { borrowedWindowsJobLock } from "./windows-job-native"
+import { fileFingerprint } from "./file-fingerprint"
+import { borrowedWindowsJobLock, withWindowsDesktop } from "./windows-job-native"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -33,6 +34,7 @@ const PROFILES = Object.freeze({
   "startup-diagnostics": { config: "playwright.startup-diagnostics.config.ts", target: "jump_beef" },
   "browser-input": { config: "playwright.browser-input.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 90_000 },
   "browser-input-lifecycle": { config: "playwright.browser-input.config.ts", target: "pl_upward", environment: { PROFILE_INPUT_LIFECYCLE_ONLY: "1" }, minimumRemainingMilliseconds: 75_000 },
+  "runner-handoff": { config: "playwright.runner-handoff.config.ts", target: "jump_beef" },
   "damage-indicator": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "damage-indicator" }, minimumRemainingMilliseconds: environment => environment.PROFILE_DAMAGE_LIFECYCLE === "1" ? 70_000 : environment.PROFILE_DAMAGE_DYNAMIC === "1" ? 40_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "setup-round": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "setup-round" }, minimumRemainingMilliseconds: 140_000 },
   "soundscape-selection": { config: "playwright.profile.config.ts", target: "cp_granary", environment: { PROFILE_SCENARIOS: "soundscape-selection" }, minimumRemainingMilliseconds: 60_000 },
@@ -402,7 +404,6 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   const deadline = setTimeout(() => { timedOut = true; cancel() }, remaining())
   const hardDeadline = setTimeout(() => terminate("SIGKILL"), Math.max(1, runDeadline - Date.now()))
   try {
-    windowsConsole = await requireWindowsProfileConsole(remaining())
     // Preserve the full release matrix's earlier admission deadline.
     // Queue only while the selected workflow can still fit. Admission must not
     // spend its startup/sample/retention reservation waiting for another owner.
@@ -421,21 +422,36 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     configuredIdentity = await measure("configured-content-identity", () => configuredProfileIdentity(config, target, root))
     sourceIdentityMilliseconds = Date.now() - identityStarted
     const ownerIdentity = createHash("sha256").update(identity).update(configuredIdentity).update(process.env.PLAYSRC_DEV_PORT ?? "4173").digest("hex")
-    if (!process.env.PLAYSRC_PROFILE_ORIGIN) {
+    if (!process.env.PLAYSRC_PROFILE_ORIGIN && profile !== "runner-handoff") {
       owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining, root, borrowed ?? undefined))
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity(root))
     }
-    if (process.platform === "win32") windowsConsole = await requireWindowsProfileConsole(remaining())
     checkBrowserBudget()
+    let preparedBrowser: PreparedBrowser | undefined
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
-      const began = Date.now()
       const launch = await measure("controller-preflight", async () => {
         const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
         const use = configuration.use ?? {}
         return profileBrowserLaunch(profile, { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) })
       })
+      preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
+    }
+    const verifyPrepared = async () => {
+    if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
+      || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity(root)
+      || harnessIdentity !== await applicationBuildIdentity(repositoryRoot)) throw new Error("Prepared executable/configured inputs changed before desktop admission")
+    if (preparedBrowser && preparedBrowser.executableSha256 !== await fileFingerprint(preparedBrowser.executable)) throw new Error("Prepared browser executable changed before desktop admission")
+    }
+    await verifyPrepared()
+    const preparedIdentity = createHash("sha256").update(JSON.stringify({ identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_ })).digest("hex")
+    checkBrowserBudget()
+    exitCode = await withWindowsDesktop(preparedIdentity, cancellation.signal, async release => {
+      await verifyPrepared()
+      windowsConsole = await requireWindowsProfileConsole(remaining())
+      if (preparedBrowser) {
+      const began = Date.now()
       checkBrowserBudget()
-      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token, freshBrowser))
+      browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, freshBrowser))
       browserOwnerMilliseconds = Date.now() - began
     }
     heartbeat = setInterval(() => {
@@ -447,6 +463,25 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     cancellation.signal.throwIfAborted()
     browserStarted = Date.now()
     currentPhase = "headed-browser"
+    const desktopChannel = process.platform === "win32" ? randomUUID() : undefined
+    let extraction: Promise<void> | undefined
+    const extractionFile = path.join(runDirectory, "desktop-extraction.json")
+    const extractionMonitor = desktopChannel ? setInterval(() => {
+      if (extraction) return
+      extraction = (async () => {
+        const text = await readFile(extractionFile, "utf8").catch(error => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+          return null
+        })
+        if (!text) { extraction = undefined; return }
+        clearInterval(extractionMonitor)
+        const request = JSON.parse(text)
+        if (request.token !== desktopChannel || typeof request.succeeded !== "boolean") throw new Error("Profiler extraction handoff differs")
+        await release(request.succeeded)
+        currentPhase = "background-extraction"
+        await writeFile(`${extractionFile}.released`, JSON.stringify({ token: desktopChannel, at: Date.now() }), { flag: "wx" })
+      })().catch(error => { failure = String(error); cancel() })
+    }, 25) : undefined
     const command = [
       process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? profileNodeExecutable(),
       path.join(repositoryRoot, "node_modules", "@playwright", "test", "cli.js"),
@@ -476,14 +511,21 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         PLAYSRC_PROFILE_HARNESS_FINGERPRINT: harnessIdentity!,
         PLAYSRC_PROFILE_BROWSER_ENDPOINT: browser?.endpoint ?? process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT,
         PLAYSRC_PROFILE_DEADLINE: String(runDeadline),
+        PLAYSRC_PROFILE_DESKTOP_CHANNEL: desktopChannel,
       },
       stdio: ["ignore", "inherit", "inherit"],
     })
-    exitCode = await new Promise<number>((resolve, reject) => {
+    try { exitCode = await new Promise<number>((resolve, reject) => {
       child!.once("error", reject)
       child!.once("exit", (code) => { childExited = true; resolve(code ?? 1) })
-    })
+    }) } finally { clearInterval(extractionMonitor); await extraction }
     browserMilliseconds = Date.now() - browserStarted
+    return exitCode
+    }, async () => {
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+      await heartbeatWrites
+      if (browser) await measure("browser-teardown", () => retireProfileBrowser(browserPath, browser!, lock!.token, () => Math.max(0, runDeadline - Date.now())))
+    }, code => code === 0)
     try { playwrightPhases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
@@ -516,7 +558,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         if (outcome === "passed" || outcome === "deferred") await writeLease(metadataPath, owner.metadata.token, OWNER_IDLE_MILLISECONDS)
         else await measure("development-retirement", () => stopOwner(metadataPath, owner!.metadata, Math.max(1, Math.min(5_000, runDeadline - Date.now())), borrowed ?? undefined))
       }
-      if (browser) await browserLease(browserPath, browser.token, OWNER_IDLE_MILLISECONDS)
+      if (browser && process.platform !== "win32") await browserLease(browserPath, browser.token, OWNER_IDLE_MILLISECONDS)
     } catch (error) {
       cleanupFailure = error instanceof Error ? error.message : String(error)
       console.error(`[performance] cleanup failed: ${cleanupFailure}`)
@@ -565,7 +607,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
             headedBrowserMilliseconds: browserMilliseconds,
             browserOwnerMilliseconds,
             browserReused: browser?.reused ?? false,
-            browserRetention: browser ? { token: browser.token, idleMilliseconds: OWNER_IDLE_MILLISECONDS, contexts: "fresh-per-test", retirementReport: `${browserPath}.${browser.token}.retirement.json` } : null,
+            browserRetention: browser ? { token: browser.token, idleMilliseconds: process.platform === "win32" ? 0 : OWNER_IDLE_MILLISECONDS, contexts: "fresh-per-test", retirementReport: `${browserPath}.${browser.token}.retirement.json` } : null,
             playwright: playwrightPhases,
             cleanupMilliseconds: finished - cleanupStarted,
           }),
