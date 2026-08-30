@@ -47,8 +47,18 @@ test("dashboard square corners and authored rounded menu controls paint independ
       // (sha256 343e6cfd978e8d1d912ad1135dea57065485a43d62f4f6b1fd3cec19a33bea5a)
       // and its mirrored corners: at 8x8, (1,1) is discarded by alpha-test .1;
       // (6,6) is fully opaque. No CSS-radius assertion substitutes for pixels.
-      expect(samples[1]![1], `${name}/${state} transparent corner`).not.toEqual(fill)
-      expect(samples[6]![6], `${name}/${state} opaque corner`).toEqual(fill)
+      const opaque = (rgb: number[]) => rgb.every((channel, index) => Math.abs(channel - fill[index]!) <= 1)
+      if (dpr === 1) {
+        // '#' is source alpha 255; '.' includes alpha-test rejection and the
+        // four partially covered edge samples (~226/255). Inspect all 64 pixels.
+        // A one-byte RGB tolerance isolates geometry from existing material
+        // color conversion; straight filled corners above remain byte-exact.
+        const coverage = ["......##", "....####", "..######", "..######", ".#######", ".#######", "########", "########"]
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) expect(opaque(samples[y]![x]!), `${name}/${state} texture ${x},${y}`).toBe(coverage[y]![x] === "#")
+      } else {
+        expect(opaque(samples[1]![1]!), `${name}/${state} transparent corner`).toBe(false)
+        expect(opaque(samples[6]![6]!), `${name}/${state} opaque corner`).toBe(true)
+      }
     }
   }
   try {
