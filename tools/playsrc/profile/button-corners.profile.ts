@@ -6,6 +6,7 @@ import { loadLocalConfig } from "../src/config"
 import { decodeScreenshot } from "./screenshot-pixels"
 import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
+import { profileArtifact } from "./profile-artifacts"
 
 test("dashboard square corners and authored rounded menu controls paint independently", async ({ page }) => {
   const local = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
@@ -16,6 +17,7 @@ test("dashboard square corners and authored rounded menu controls paint independ
   const act = async (action: () => Promise<unknown>) => { await admit(); await action() }
   guardStartupInput(page, admit)
   const records: unknown[] = []
+  await profileArtifact(async () => { await writeFile(path.join(directory, "native-admission.json"), JSON.stringify(native.records, null, 2)) })
   const selector = (name: string) => `[data-vgui-name="${name}"]`
   // Configured ClientScheme TanDark / TFOrange / GreenSolid / CreditsGreen.
   // Not sampled from the candidate's DOM, canvas, or computed styles.
@@ -26,17 +28,20 @@ test("dashboard square corners and authored rounded menu controls paint independ
     await admit()
     const bytes = await control.screenshot()
     await admit()
+    const dpr = await page.evaluate(() => devicePixelRatio)
+    const bounds = await control.boundingBox()
+    const attributes = await control.evaluate(element => Object.fromEntries([...element.attributes].map(attribute => [attribute.name, attribute.value])))
+    await profileArtifact(async () => {
     const file = path.join(directory, `${name}-${state}.png`)
     await writeFile(file, bytes)
-    const image = decodeScreenshot(bytes), dpr = await page.evaluate(() => devicePixelRatio)
+    const image = decodeScreenshot(bytes)
     const pixel = (x: number, y: number) => {
       const offset = ((image.height - 1 - Math.floor(y * dpr)) * image.width + (side === "left" ? Math.floor(x * dpr) : image.width - 1 - Math.floor(x * dpr))) * image.channels
       return Array.from(image.pixels.subarray(offset, offset + 3))
     }
     const samples = Array.from({ length: 8 }, (_, y) => Array.from({ length: 8 }, (_, x) => pixel(x, y)))
     records.push({ name, state, file, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), dpr,
-      bounds: await control.boundingBox(), side, rounded, samples,
-      control: await control.evaluate(element => ({ attributes: Object.fromEntries([...element.attributes].map(attribute => [attribute.name, attribute.value])) })) })
+      bounds, side, rounded, samples, control: { attributes } })
     await writeFile(path.join(directory, "corners.json"), JSON.stringify(records, null, 2))
     // SDK Panel::DrawBox: each unmasked 8x8 corner is filled, not textured.
     // At fractional backing scale avoid the outer pixel's partial coverage.
@@ -63,6 +68,7 @@ test("dashboard square corners and authored rounded menu controls paint independ
         expect(opaque(samples[6]![6]!), `${name}/${state} opaque corner`).toBe(true)
       }
     }
+    })
   }
   try {
     if (await startupConsoleIdle(local.sourceCacheDir) < 2000) throw new Error("Corner acceptance requires native idle")
@@ -100,8 +106,11 @@ test("dashboard square corners and authored rounded menu controls paint independ
     await admit()
     const bytes = await page.screenshot()
     await admit()
-    await writeFile(path.join(directory, "main-menu.png"), bytes)
-    records.push({ name: "main-menu", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") })
+    await profileArtifact(async () => {
+      await writeFile(path.join(directory, "main-menu.png"), bytes)
+      records.push({ name: "main-menu", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") })
+      await writeFile(path.join(directory, "corners.json"), JSON.stringify(records, null, 2))
+    })
     // One relevant five-second steady-paint sample, not a gameplay FPS claim.
     const cdp = await page.context().newCDPSession(page)
     await cdp.send("Performance.enable")
@@ -119,11 +128,9 @@ test("dashboard square corners and authored rounded menu controls paint independ
     })
     await admit()
     const after = await cdp.send("Performance.getMetrics")
-    await writeFile(path.join(directory, "sample.json"), JSON.stringify({ sample, before, after }, null, 2))
+    await profileArtifact(async () => { await writeFile(path.join(directory, "sample.json"), JSON.stringify({ sample, before, after }, null, 2)) })
     await cdp.detach()
   } finally {
-    await writeFile(path.join(directory, "corners.json"), JSON.stringify(records, null, 2))
-    await writeFile(path.join(directory, "native-admission.json"), JSON.stringify(native.records, null, 2))
     await native.close()
   }
 })
