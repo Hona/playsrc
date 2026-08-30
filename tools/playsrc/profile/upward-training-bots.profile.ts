@@ -41,7 +41,7 @@ import { workloadState, assertMatchingWorkloadState, canonicalWorkloadState } fr
 import { deliveryTimeline, installDeliveryObserver, summarizeDeliveryMeasurement } from "./frame-delivery"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
 import { selectionLoadingControl } from "./selection-loading-control"
-import { observeSustainedKoth, retireSustainedKoth } from "./sustained-koth"
+import { observeSustainedKoth, retireSustainedKoth } from "./koth-rendering-observation"
 
 let retainIncomplete: (() => Promise<unknown>) | undefined
 let closeNativeAdmission: (() => Promise<void>) | undefined
