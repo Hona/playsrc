@@ -122,6 +122,8 @@ const PROFILES = Object.freeze({
   "class-selection": { config: "playwright.class-selection-profile.config.ts", target: "jump_beef" },
   "selection-transition": { config: "playwright.selection-transition.config.ts", target: "pl_upward", minimumRemainingMilliseconds: 60_000 },
   "team-door": { config: "playwright.team-door.config.ts", target: "jump_beef", minimumRemainingMilliseconds: 60_000 },
+  "team-door-disabled-red": { config: "playwright.team-door-lifecycle.config.ts", target: "pl_upward", environment: { PLAYSRC_TEAM_DOOR_DISABLED: "red" }, minimumRemainingMilliseconds: 90_000 },
+  "team-door-disabled-blue": { config: "playwright.team-door-lifecycle.config.ts", target: "pl_upward", environment: { PLAYSRC_TEAM_DOOR_DISABLED: "blue" }, minimumRemainingMilliseconds: 90_000 },
   "selection-transition-cpu": { config: "playwright.selection-transition.config.ts", target: "pl_upward", environment: { PLAYSRC_SELECTION_CPU: "1" }, minimumRemainingMilliseconds: 60_000 },
   equipment: { config: "playwright.equipment-profile.config.ts", target: "pl_upward" },
   "melee-unlocks": { config: "playwright.melee-profile.config.ts", target: "pl_upward" },

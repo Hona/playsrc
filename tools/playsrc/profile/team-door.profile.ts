@@ -7,6 +7,9 @@ import { startupConsoleIdle, startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { installBrowserFrameProfiler } from "./browser-frame-profiler"
 import { profileArtifact } from "./profile-artifacts"
+import { chooseTf2Team } from "./team-selection-evidence"
+
+const disabledTeam = process.env.PLAYSRC_TEAM_DOOR_DISABLED as "red" | "blue" | undefined
 
 test("authored team doors real-time motion and reentry", async ({ page, context }) => {
   const { sourceCacheDir } = await loadLocalConfig(), directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
@@ -32,10 +35,21 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     await expect(page.locator("main")).toHaveAttribute("data-phase", "MainMenu")
     await check("before-load")
     await page.keyboard.press("Backquote")
-    await page.locator("[aria-label='Console command']").fill("map jump_beef")
+    await page.locator("[aria-label='Console command']").fill(`map ${disabledTeam ? "pl_upward" : "jump_beef"}`)
     await page.keyboard.press("Enter")
     if (await page.locator("main").getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
     await expect(page.locator("main")).toHaveAttribute("data-team-selection-models", /reddoor:[^|]+:\d+:\d+/, { timeout: 75_000 })
+    if (disabledTeam) {
+      await chooseTf2Team(page, "red", () => check("before-team-choice"))
+      await expect(page.locator("main")).toHaveAttribute("data-phase", "Ready", { timeout: 60_000 })
+      await page.keyboard.press("Backquote")
+      await page.locator("[aria-label='Console command']").fill(`tf_bot_add 3 ${disabledTeam} soldier easy`)
+      await page.keyboard.press("Enter")
+      await expect(page.locator("main")).toHaveAttribute("data-bot-count", "3")
+      await page.keyboard.press("Backquote")
+      await page.keyboard.press("Period")
+      await expect(page.locator(`.team-selection-layer [data-vgui-name='teambutton${disabledTeam === "red" ? 1 : 0}']`)).toHaveAttribute("aria-disabled", "true")
+    }
     await page.waitForTimeout(2100)
     if (await startupConsoleIdle(sourceCacheDir) < 2000) throw new Error("Team-door motion requires genuine native idle")
     await check("before-motion")
@@ -50,6 +64,30 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
       else await page.mouse.move(4, 4)
       await page.waitForTimeout(wait)
     }
+    if (disabledTeam) {
+      await hover(null, 200)
+      await hover(disabledTeam, 2350)
+      await hover(null, 350)
+      await check("before-focus")
+      // Explicit navigation invokes enter/exit; an initial desktop focus alone
+      // is not a cursor-enter event in the authored PC menu.
+      await page.keyboard.press("ArrowRight")
+      for (let index = 0; index < (disabledTeam === "red" ? 3 : 2); index++) await page.keyboard.press("ArrowRight")
+      actions.push({ at: Date.now(), focus: disabledTeam })
+      await page.waitForTimeout(2350)
+      await page.keyboard.press("ArrowRight")
+      await page.waitForTimeout(350)
+      await check("before-reopen")
+      await page.keyboard.press("Escape")
+      await expect(page.locator("main")).toHaveAttribute("data-team-selection-visible", "false")
+      await page.keyboard.press("Period")
+      await expect(page.locator("main")).toHaveAttribute("data-team-selection-visible", "true")
+      actions.push({ at: Date.now(), reopen: true })
+      await hover(disabledTeam, 100)
+      await hover(null, 100)
+      await hover(disabledTeam, 350)
+      await hover(null, 350)
+    } else {
     for (const team of ["auto", "blue", "red"] as const) {
       await hover(team, 550)
       await hover(null, 650)
@@ -59,6 +97,7 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
     await hover(null, 70)
     await hover("red", 650)
     await hover(null, 650)
+    }
     await page.waitForTimeout(Math.max(0, 6000 - (Date.now() - started)))
     sampling = false
     await cdp.send("Page.stopScreencast")
@@ -79,11 +118,16 @@ test("authored team doors real-time motion and reentry", async ({ page, context 
         capture.bytes = bytes.length
         capture.sha256 = createHash("sha256").update(bytes).digest("hex")
       }
-      await writeFile(path.join(directory, "team-door-motion.json"), JSON.stringify({ activeMilliseconds, observation, actions, captures, heapBefore, heapAfter }))
+      await writeFile(path.join(directory, "team-door-motion.json"), JSON.stringify({ activeMilliseconds, disabledTeam, observation, actions, captures, heapBefore, heapAfter }))
     })
     expect(activeMilliseconds).toBeGreaterThanOrEqual(5000)
     expect(activeMilliseconds).toBeLessThan(10000)
     expect(captures.length).toBeGreaterThan(30)
+    if (disabledTeam) {
+      const name = disabledTeam === "red" ? "reddoor" : "bluedoor"
+      expect(observation.doors.some((frame: any) => frame.panels.some((panel: any) => panel.name === name && panel.animation === "hover_disabled"))).toBe(true)
+      expect(observation.doors.at(-1).panels.find((panel: any) => panel.name === name).sequence).toBe("fullidle")
+    }
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false
