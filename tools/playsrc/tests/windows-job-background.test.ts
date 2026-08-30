@@ -54,9 +54,10 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION || !!pro
       expect((await readdir(run)).filter(file => /consent|completion|failure-native/.test(file))).toEqual([])
       const dispatch = await readFile(path.join(run, "dispatch.json"), "utf8").then(JSON.parse).catch(() => null)
       if (dispatch) {
-        const script = `try{$p=[Diagnostics.Process]::GetProcessById(${dispatch.pid});if(([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() -eq ${dispatch.createdAt} -and !$p.WaitForExit(2000)){throw 'Owned child survived'}}catch [ArgumentException]{}`
+        const script = `$ErrorActionPreference='Stop';try{$p=[Diagnostics.Process]::GetProcessById(${dispatch.pid});if(([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() -eq ${dispatch.createdAt} -and !$p.WaitForExit(2000)){throw 'Owned child survived'}}catch [ArgumentException]{};exit 0`
         const check = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, stdout: "ignore", stderr: "pipe" })
-        expect(await check.exited).toBe(0)
+        const [errors, code] = await Promise.all([new Response(check.stderr).text(), check.exited])
+        expect({ code, errors }).toEqual({ code: 0, errors: "" })
       }
       console.log(`Background ${kind}: ${run}`)
     }
