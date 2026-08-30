@@ -49,6 +49,13 @@ test("configured CEx borders retain authored square edges and state colors", asy
       state: await control.evaluate(element => ({ armed: (element as HTMLElement).dataset.armed,
         depressed: (element as HTMLElement).dataset.depressed, selected: (element as HTMLElement).dataset.selected,
         focused: (element as HTMLElement).dataset.focused, disabled: element.getAttribute("aria-disabled") })),
+      paint: await control.evaluate(element => {
+        const bounds = element.getBoundingClientRect(), style = getComputedStyle(element)
+        return { style: element.getAttribute("style"), background: style.backgroundColor, clip: style.clipPath,
+          overlap: document.elementsFromPoint(bounds.x + 1, bounds.y + 2).map(node => (node as HTMLElement).dataset.vguiName ?? node.tagName),
+          children: [...element.children].map(child => ({ name: (child as HTMLElement).dataset.vguiName,
+            raster: (child as HTMLElement).dataset.vguiRaster, hidden: (child as HTMLElement).hidden, style: child.getAttribute("style") })) }
+      }),
       pixelNearCorner: pixel(2, 2), pixelEdge: pixel(0, 2) })
     await writeFile(path.join(directory, "captures.json"), JSON.stringify(records, null, 2))
     return { pixel }
