@@ -4,12 +4,14 @@ import { mkdir, readFile, writeFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot } from "../src/config"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "../src/profile-lock"
+import { borrowedWindowsJobLock } from "../src/windows-job-native"
 
 test.skipIf(process.platform!=="win32")("native readback helpers enforce independent lifetime and allocation limits", async()=>{
   const {sourceCacheDir}=await loadLocalConfig(),directory=path.join(sourceCacheDir,"evidence","tf2-perf-selection-pipeline",`readback-guard-${randomUUID()}`)
   await mkdir(directory,{recursive:true})
   const lockPath=path.join(sourceCacheDir,"evidence","tf2-browser-performance","chromium-profile.lock")
-  const lock=await acquireHeadedProfileLock(lockPath,"readback-guard-regression",100000)
+  const borrowed=await borrowedWindowsJobLock(lockPath,{testFile:import.meta.filename})
+  const lock=borrowed??await acquireHeadedProfileLock(lockPath,"readback-guard-regression",100000)
   const records=[]
   try {
     const text='#< CLIXML\r\n'+JSON.stringify({result:null,launchError:"retained failure"})+'\r\n'
@@ -47,5 +49,5 @@ test.skipIf(process.platform!=="win32")("native readback helpers enforce indepen
       expect(Date.now()-started).toBeLessThan(8000)
     } finally {await rm(fixture,{recursive:true,force:true})}
     console.log(JSON.stringify({directory,records}))
-  }finally{await releaseHeadedProfileLock(lockPath,lock.token)}
+  }finally{if(!borrowed)await releaseHeadedProfileLock(lockPath,lock.token)}
 },160000)

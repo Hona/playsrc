@@ -98,13 +98,20 @@ export async function runWindowsNativeJob(request: {
 
 /** Only the actual child of the live native consent helper may borrow the
  * outer job lock. A token/--ready supplied by a caller is not authorization. */
-export async function borrowedWindowsJobLock(lockPath: string, invocation: readonly string[]) {
+export async function borrowedWindowsJobLock(lockPath: string, invocation: readonly string[] | { testFile: string }) {
   const file = process.env.PLAYSRC_LOCAL_JOB_CONSENT
   if (!file) return null
   if (process.platform !== "win32" || process.env.PLAYSRC_LOCAL_JOB_LOCK !== lockPath) throw new Error("Native job lock path differs")
   const consent = JSON.parse(await readFile(file, "utf8")) as NativeJobReceipt
   const held = JSON.parse(await readFile(lockPath, "utf8")) as { pid: number; token: string }
-  if (consent.schema !== "playsrc-native-job-v1" || JSON.stringify(consent.invocation) !== JSON.stringify(invocation) || consent.helperPid !== process.ppid
+  // Bun exposes the current test file as argv[1], not the original suite argv.
+  // A native regression test may borrow only if it belongs to the approved
+  // test selection (or the explicitly selected whole suite).
+  const invocationMatches = "testFile" in invocation
+    ? consent.invocation?.[0] === "test" && !path.relative(process.cwd(), invocation.testFile).startsWith("..")
+      && (consent.invocation.length === 1 || consent.invocation.slice(1).some(file => path.resolve(file) === path.resolve(invocation.testFile)))
+    : JSON.stringify(consent.invocation) === JSON.stringify(invocation)
+  if (consent.schema !== "playsrc-native-job-v1" || !invocationMatches || consent.helperPid !== process.ppid
     || path.join(consent.run, "consent.json") !== file || held.pid !== consent.ownerPid || held.token !== consent.lockToken
     || !processIsAlive(held.pid) || !approvedNativeDecision(consent.consent)) throw new Error("No live per-job native approval/ownership")
   // Creation-time readback defeats recycled helper or lock-owner PIDs.
