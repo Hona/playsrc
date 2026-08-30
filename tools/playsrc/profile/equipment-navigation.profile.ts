@@ -11,6 +11,7 @@ import { decodeScreenshot } from "./screenshot-pixels"
 import { nativeSelectionRect } from "./selection-transition-analysis"
 import { selectionVisibleLatency } from "./selection-visible-latency"
 import { nativeEquipment } from "../../../games/tf2/browser/tests/fixtures/equipment"
+import { profileArtifact } from "./profile-artifacts"
 
 test.use({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 })
 
@@ -112,6 +113,9 @@ test("equipment trusted input to native visible pages", async ({ page, context }
         longTasks: f.longTasks, longAnimationFrames: f.longAnimationFrames, completedFrames: f.completedFrames }
     })
     const heapAfter = await cdp.send("Runtime.getHeapUsage"), residentAfter = await captureProcessMemory((await browser.send("SystemInfo.getProcessInfo")).processInfo)
+    await page.screenshot({ path: path.join(directory, "equipment.page.png") })
+    expect(errors).toEqual([])
+    await profileArtifact(async () => {
     await writeFile(path.join(directory, "equipment-measurement.json"), JSON.stringify({ cpu, startedEpoch, endedEpoch, evidence, references, heapBefore, heapAfter, residentBefore, residentAfter }, null, 2))
     const images = await Promise.all(captures.map(async capture => decodeScreenshot(await readFile(path.join(directory, capture.file)))))
     const latencies = references.map(reference => {
@@ -135,8 +139,7 @@ test("equipment trusted input to native visible pages", async ({ page, context }
       })) }
     })
     await writeFile(path.join(directory, "equipment-latency.json"), JSON.stringify(latencies, null, 2))
-    await page.screenshot({ path: path.join(directory, "equipment.page.png") })
-    expect(errors).toEqual([])
+    })
   } catch (error) { failure = String(error); throw error }
   finally {
     sampling = false; await loop?.catch(() => {})
@@ -149,9 +152,9 @@ test("equipment trusted input to native visible pages", async ({ page, context }
         return { inputs: p?.inputs, equipmentFrames: p?.equipmentFrames, worker: f?.worker, counters: f?.counters, modelPreparation: f?.modelPreparation,
           longTasks: f?.longTasks, longAnimationFrames: f?.longAnimationFrames, endedEpoch: Date.now() }
       }).catch(error => ({ unavailable: String(error) }))
-      await writeFile(path.join(directory, "equipment-failure.json"), JSON.stringify({ failure, evidence }, null, 2))
+      await profileArtifact(() => writeFile(path.join(directory, "equipment-failure.json"), JSON.stringify({ failure, evidence }, null, 2)))
     }
-    await writeFile(path.join(directory, "equipment-native.json"), JSON.stringify({ captures, references, hits, errors, failure }, null, 2))
+    await profileArtifact(() => writeFile(path.join(directory, "equipment-native.json"), JSON.stringify({ captures, references, hits, errors, failure }, null, 2)))
     await reader.close()
   }
 })
