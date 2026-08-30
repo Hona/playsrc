@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 import { captureProcessMemory } from "./process-memory"
+import { sustainedWorkerMemory } from "./sustained-worker-memory"
 import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
 import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence, liveSustainedAttachments } from "./sustained-koth-evidence"
@@ -97,10 +98,17 @@ export async function observeSustainedKoth(options: {
   const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory, transitions, seconds, sustainedAcceptance: !options.diagnosticSeconds,
     scope: "One-second logical texture/API, JS heap, roster and resource observations. Missed seconds remain gaps, never interpolated. API live bytes are not physical GPU residency; heap drops alone do not prove GC. No long-term leak-freedom claim." }))
   const processSnapshot = async () => {
-    const processes = await browserCdp.send("SystemInfo.getProcessInfo")
-    memory.push({ at: Date.now(), processes: await captureProcessMemory(processes.processInfo),
-      workers: await Promise.all(page.workers().map(worker => worker.evaluate(() => ({ url: location.href,
-        memory: (globalThis as any).__playsrcWorkerMemory ?? null })).catch(error => ({ error: String(error) })))) })
+    const record: any = { at: Date.now(), phase: "process-info" }
+    memory.push(record); await retain()
+    try {
+      const processes = await browserCdp.send("SystemInfo.getProcessInfo")
+      record.phase = "process-memory"; await retain()
+      record.processes = await captureProcessMemory(processes.processInfo)
+      record.phase = "worker-memory"; await retain()
+      record.workers = await sustainedWorkerMemory(page.workers())
+      record.phase = "complete"
+    } catch (error) { record.error = String(error); throw error }
+    finally { record.ended = Date.now(); await retain() }
   }
   // Preserve waiting-for-players and setup. Admission is not included in the
   // 90 seconds and cannot be accelerated to make the workflow fit its cap.
