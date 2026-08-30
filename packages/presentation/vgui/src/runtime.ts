@@ -2962,12 +2962,10 @@ class SourceVguiRuntime implements VguiRuntime {
     rect: VguiRect = Object.freeze({ x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height }),
   ): void {
     if (!image.material || rect.width <= 0 || rect.height <= 0) return
-    let raster = panel.chromeElements.get(key) as HTMLImageElement | undefined
+    let raster = panel.chromeElements.get(key) as HTMLCanvasElement | undefined
     if (!raster) {
       if (this.panels.size + this.auxiliaryNodes.size + 3 > this.limits.maxDomNodes) throw new RuntimeFault("DomLimit", `${panel.name}:${key}`)
-      raster = this.document.createElement("img")
-      raster.alt = ""
-      raster.setAttribute("aria-hidden", "true")
+      raster = this.document.createElement("canvas")
       raster.dataset.vguiRaster = key
       raster.style.position = "absolute"
       raster.style.pointerEvents = "none"
