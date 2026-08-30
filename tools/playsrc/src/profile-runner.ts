@@ -345,7 +345,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
   const configurationMilliseconds = Date.now() - configurationStarted
   const lockPath = path.join(evidence, "chromium-profile.lock")
   const borrowed = await borrowedWindowsJobLock(lockPath, [mode === "prepare" ? "prepare-profile" : "profile", ...arguments_])
-  if (process.platform === "win32" && !borrowed) throw new Error("Windows profiles require local-job run <job> profile ... and its displayed per-job decision")
+  if (process.platform === "win32" && !borrowed) throw new Error("Windows profiles require local-job and its checked native lifetime ownership")
   const runDeadline = Math.min(started + MAX_RUN_MILLISECONDS, borrowed?.deadline ?? Infinity)
   const cancellation = new AbortController()
   // Five seconds of the unchanged total cap belong to cleanup, not sampling.
@@ -500,8 +500,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
           if (childExited || !isAlive(request.workerPid)) throw new Error("Prepared browser worker exited before consent")
           const prepared = { identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_, root, runDirectory, owner: owner?.metadata, worker: entry, preparedAt: Date.now() }
           let stageStarted: number | undefined
-          await withWindowsDesktop(prepared, cancellation.signal, async release => {
-            await verifyPrepared()
+          await withWindowsDesktop(prepared, cancellation.signal, verifyPrepared, async release => {
             windowsConsole = await requireWindowsProfileConsole(remaining())
             stageStarted = Date.now()
             if (request.kind === "playwright") browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, true))
@@ -650,7 +649,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
             ownerMilliseconds: owner?.milliseconds ?? 0,
             ownerReused: owner?.reused ?? false,
             ownerStartup: owner?.metadata.startup ?? null,
-            origin: process.env.PLAYSRC_PROFILE_ORIGIN ?? "development-owner",
+            origin: profile === "runner-handoff" ? "authored-runner-fixture" : process.env.PLAYSRC_PROFILE_ORIGIN ?? "development-owner",
             headedBrowserMilliseconds: browserMilliseconds,
             playwrightWorkerMilliseconds: workerMilliseconds,
             desktopEndedAt: browserEnded ?? null,

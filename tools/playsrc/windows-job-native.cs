@@ -260,7 +260,8 @@ public static partial class PlaysrcNativeJob {
     request.dialogDirectory=directory;
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled before desktop consent");
     receipt.sessionId=ConsoleSession();
-    stage.consent=StageDialog(request,false,owner);receipt.uiInvocations++;
+    using(var requester=Process.GetProcessById(stage.childPid))stage.consent=StageDialog(request,false,requester);
+    receipt.uiInvocations++;
     Save(Path.Combine(directory,"consent.json"),stage);
     if(stage.consent.error!=null) {if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException(stage.consent.error);throw new Exception(stage.consent.error);}
     if(stage.consent.decision=="denied") {receipt.outcome="denied";throw new OperationCanceledException("Desktop stage denied");}
@@ -374,8 +375,8 @@ public static partial class PlaysrcNativeJob {
    try {
     var held=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(request.lockPath));
     if((string)held["token"]!=request.lockToken || Convert.ToInt32(held["pid"])!=parentPid)throw new Exception("Machine-wide ownership differs");
-    if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
-    if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
+     if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
+     if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
     receipt.sessionId=Process.GetCurrentProcess().SessionId;
      {
      Save(Path.Combine(request.run,"ownership.json"),receipt);

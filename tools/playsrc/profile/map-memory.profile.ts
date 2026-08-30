@@ -1070,8 +1070,9 @@ test("headed three-map peak browser, Worker, WASM, GPU, transfer, and Ready resi
         .map(([identity, bytes]) => ({ identity, bytes })),
       heapSnapshot,
     }
+    const retainedReport = structuredClone(report)
     await profileArtifact(async () => {
-    const serialized = `${JSON.stringify(report, null, 2)}\n`
+    const serialized = `${JSON.stringify(retainedReport, null, 2)}\n`
     const label = process.env.PROFILE_MEMORY_LABEL ?? "current"
     await writeFile(path.join(output, `${label}.json`), serialized)
     await writeFile(path.join(output, "report.json"), serialized)
