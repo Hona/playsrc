@@ -65,7 +65,7 @@ export type WorkerCpuCapture = Readonly<{
   execution: {
     timeOrigin: number; limit: number; dropped: number
     clocks: Array<{ name: string; before: number; after: number }>
-    tasks: Array<{ sequence: number; requestId: number; kind: string; started: number; finished: number; startMark: string; endMark: string; responses: any[]; memory: any[] }>
+    tasks: Array<{ sequence: number; requestId: number; kind: string; started: number; finished: number; startMark: string; endMark: string; responses: any[]; memory: any[]; observes?: any[] }>
   }
 }>
 

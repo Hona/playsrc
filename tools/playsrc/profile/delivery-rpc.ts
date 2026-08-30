@@ -1,8 +1,8 @@
 /** Observe the client's existing reply hook without attaching a Worker debugger,
  * replacing a timer, touching the mailbox, or retaining any payload/heap view. */
-export function installDeliveryRpcObserver(host: any = globalThis, kinds?: readonly string[]) {
+export function installDeliveryRpcObserver(host: any = globalThis, kinds?: readonly string[], limit = 16_384) {
   const NativeWorker = host.Worker
-  const limit = 16_384
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 65_536) throw new Error("Invalid RPC observation bound")
   let active = false, started = 0, dropped = 0, records: any[] = [], workers = 0
   const ledgers: Array<{ worker: number; pending: Map<number, { kind: string; at: number }> }> = []
   host.Worker = class extends NativeWorker {

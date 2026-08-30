@@ -988,7 +988,10 @@ function observe(request: Extract<WorkerRequest, { kind: "observe" }>): void {
   const inputCopyMilliseconds = performance.now() - inputCopyStarted
   const transactStarted = performance.now()
   const result = value.exports.playsrc_simulation_observe(value.handle, request.nowSeconds, pointer, request.command.byteLength, Number(request.suspended), request.snapshotTick)
-  const transactMilliseconds = performance.now() - transactStarted
+  const transactFinished = performance.now()
+  const transactMilliseconds = transactFinished - transactStarted
+  const observeProfile = (scope as typeof scope & { __playsrcWorkerProfileObserve?: (span: object) => void }).__playsrcWorkerProfileObserve
+  observeProfile?.({ requestId: request.id, started: transactStarted, finished: transactFinished, nowSeconds: request.nowSeconds, acknowledgedTick: String(request.snapshotTick), result })
   value.exports.playsrc_free(pointer, request.command.byteLength)
   if (result !== 1) {
     const length=value.exports.playsrc_simulation_error_length(),detailPointer=length?value.exports.playsrc_alloc(length)>>>0:0,copied=length?value.exports.playsrc_simulation_error_copy(detailPointer,length):0,reason=copied===length&&length?new TextDecoder().decode(new Uint8Array(value.exports.memory.buffer,detailPointer,length).slice()):undefined;if(detailPointer)value.exports.playsrc_free(detailPointer,length);fail(request.id,"TransitionFailed",value.exports.playsrc_simulation_error(),reason)
