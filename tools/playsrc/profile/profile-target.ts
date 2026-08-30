@@ -20,7 +20,7 @@ export function headedProfileTarget(environment: NodeJS.ProcessEnv = process.env
   }
   if (environment.PROFILE_COMBAT === "1" || environment.PROFILE_UPWARD_OUTDOORS === "1" || environment.PROFILE_SKY_COHERENCE === "1" || environment.PROFILE_ROUND_RULES === "1"
     || environment.PROFILE_PICKUPS === "1" || environment.PROFILE_MATERIAL_ANIMATION === "1" || environment.PROFILE_TRACKTRAIN === "1"
-    || environment.PROFILE_MEDIC_WEAPONS === "1" || ["browser-input", "demoman", "scoreboard", "upward-floor", "upward-training-bots"].includes(environment.PROFILE_SCENARIOS ?? "")) {
+    || environment.PROFILE_MEDIC_WEAPONS === "1" || ["demoman", "scoreboard", "upward-floor", "upward-training-bots"].includes(environment.PROFILE_SCENARIOS ?? "")) {
     return "pl_upward"
   }
   return fallback
