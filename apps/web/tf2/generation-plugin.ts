@@ -3,6 +3,8 @@ import type { BrowserConfiguration } from "./src/config"
 
 export type BundleGeneration = Readonly<{ applicationBuild: string; wasmSha256: string; resourceRoots: Readonly<Record<string, string>> }>
 
+export const STATIC_GENERATION_BUNDLE_PREFIXES = ["index-", "main-", "gameplay-worker-"] as const
+
 export function readBundledGeneration(source: string): BundleGeneration {
   const records = [...source.matchAll(/\/\*playsrc-generation:(.*?)\*\//g)]
   if (records.length !== 1) throw new Error("Static bundle generation seal is absent or ambiguous")
@@ -40,7 +42,7 @@ export function generationPlugin(current: () => BundleGeneration | Promise<Bundl
     },
     async generateBundle(_options, bundle) {
       if (!generation) return
-      for (const chunk of Object.values(bundle)) if (chunk.type === "chunk" && Object.hasOwn(chunk.modules, resolved)) {
+      for (const chunk of Object.values(bundle)) if (chunk.type === "chunk" && (chunk.isEntry || Object.hasOwn(chunk.modules, resolved))) {
         chunk.code += `\n/*playsrc-generation:${JSON.stringify(await generation)}*/\n`
       }
     },

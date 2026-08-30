@@ -42,7 +42,7 @@ test("exact static package catches a page/Worker/WASM mismatch before publicatio
     const configuration=createDeployedBrowserConfiguration(release,'a'.repeat(64))
     const generation={applicationBuild:configuration.applicationBuild,wasmSha256:configuration.wasm.sha256,resourceRoots:Object.fromEntries(configuration.targets.map(t=>[t.target,t.objects.resources.sha256]))}
     const source=`export const generation=${JSON.stringify(generation)};\n/*playsrc-generation:${JSON.stringify(generation)}*/`
-    await writeFile(path.join(current,'tf2/assets/index-test.js'),source);await writeFile(path.join(current,'tf2/assets/gameplay-worker-test.js'),source)
+    await writeFile(path.join(current,'tf2/assets/index-test.js'),source);await writeFile(path.join(current,'tf2/assets/main-test.js'),source);await writeFile(path.join(current,'tf2/assets/gameplay-worker-test.js'),source)
     await writeFile(path.join(current,'tf2/index.html'),'<script src="/tf2/assets/index-test.js"></script>')
     await writeFile(path.join(current,'tf2/playsrc-config.json'),JSON.stringify(configuration))
     await writeFile(path.join(current,'release.json'),JSON.stringify({applicationBuild:configuration.applicationBuild,release}))
@@ -70,6 +70,14 @@ test("exact static package catches a page/Worker/WASM mismatch before publicatio
     expect(fetched).toEqual(new Uint8Array(wasm))
     await router.verifyUnchanged()
     const bad=source.replaceAll(configuration.wasm.sha256,'b'.repeat(64))
+    for (const prefix of ['index', 'main', 'gameplay-worker']) {
+      const file=path.join(current,`tf2/assets/${prefix}-test.js`)
+      await writeFile(file,bad)
+      await expect(staticStartupPackage(current)).rejects.toThrow('generation differs')
+      await writeFile(file,'export const missingSeal=true')
+      await expect(staticStartupPackage(current)).rejects.toThrow('seal is absent')
+      await writeFile(file,source)
+    }
     await writeFile(path.join(current,'tf2/assets/gameplay-worker-test.js'),bad)
     await expect(staticStartupPackage(current)).rejects.toThrow('generation differs')
     await expect(router.response('https://playsrc.online/tf2/assets/gameplay-worker-test.js')).rejects.toThrow('changed')
