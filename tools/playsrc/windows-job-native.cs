@@ -37,7 +37,11 @@ public static class PlaysrcNativeJob {
  }
  static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
  static long Now {get{return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();}}
- static void Save(string file,object value) { using(var stream=new FileStream(file,FileMode.CreateNew,FileAccess.Write,FileShare.Read)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) {writer.Write(Json.Serialize(value));writer.Flush();stream.Flush(true);} }
+ static void Save(string file,object value) {
+  string temporary=file+"."+Guid.NewGuid()+".tmp";
+  try {using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) {writer.Write(Json.Serialize(value));writer.Flush();stream.Flush(true);} File.Move(temporary,file);}
+  finally {if(File.Exists(temporary))File.Delete(temporary);}
+ }
  static Exception Native(string operation) {return new Win32Exception(Marshal.GetLastWin32Error(),operation);}
  static void Check(bool ok,string operation) {if(!ok)throw Native(operation);}
 

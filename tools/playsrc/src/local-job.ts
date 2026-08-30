@@ -203,7 +203,11 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   const run = path.join(directory, randomUUID())
   await mkdir(run)
   await writeFile(path.join(run, "identity.json"), JSON.stringify({ ...owner, run, commit: job.commit }), { flag: "wx" })
-  if (task) await writeFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-run.json`), JSON.stringify({ job: id, task, run, pid: process.pid }), { flag: "wx" })
+  if (task) {
+    const link = path.join(directory, `${task.slice("playsrc-local-job-".length)}-run.json`)
+    await writeFile(`${link}.tmp`, JSON.stringify({ job: id, task, run, pid: process.pid }), { flag: "wx" })
+    await rename(`${link}.tmp`, link)
+  }
   await phase("reserve-ports")
   const startedAt = owner.startedAt, port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
   const command = plan.interactive
