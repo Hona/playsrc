@@ -1145,12 +1145,15 @@ test("profile authored headed Upward offline-practice default roster and actual 
   let sampling = true
   let nativeFailure: string | null = null
   const nativeMonitor = (async () => {
+    let checks = 0
     while (sampling && (nativeReader || windowsReader)) {
       await new Promise(resolve => setTimeout(resolve, 500))
       if (!sampling) break
       try { await checkNativeWindow() } catch (error) { nativeFailure = String(error); break }
       if (nativeAdmission.at(-1)?.error) break
-      if (nativeRecords().length >= 32) break
+      // Earlier prelude/soak observations must not exhaust the late sample's
+      // native guard. Bound this sampling window, not the complete run ledger.
+      if (++checks >= 32) break
     }
   })()
   const sample = await Promise.all([measurementPromise.finally(() => { sampling = false }), exercise(), interaction, combatActions])
