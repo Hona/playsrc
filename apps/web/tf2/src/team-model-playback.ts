@@ -19,7 +19,7 @@ export function teamModelPlayback(
   const reset = !prior || prior.modelRevision !== panel.modelRevision
   const changed = reset || prior?.animationRevision !== panel.animationRevision
   const current: TeamModelPlayback = changed
-    ? { ...panel, startedSeconds: now, previousSeconds: 0, lastPaintSeconds: now, sampledSeconds: null, transitioning: false }
+    ? { ...panel, startedSeconds: reset ? now : prior!.lastPaintSeconds, previousSeconds: 0, lastPaintSeconds: now, sampledSeconds: null, transitioning: false }
     : prior!
   const elapsed = Math.min(Math.max(0, now - current.startedSeconds), duration)
   return {
