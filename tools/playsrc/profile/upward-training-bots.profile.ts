@@ -205,7 +205,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
   const root = page.locator("main")
   const layer = page.locator(".local-match-layer")
   const loads: Array<{
-    cache: "cold" | "warm"
+    cache: "cold" | "warm" | "reentry"
     startupMilliseconds: number
     readyMilliseconds: number
     requests: number
@@ -229,7 +229,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     playerCount: number
     launch: any
   }> = []
-  const loadPractice = async (cache: "cold" | "warm") => {
+  const loadPractice = async (cache: "cold" | "warm" | "reentry") => {
     profilePhases.enter(`map-${cache}`)
     const started = Date.now()
     const previousRequests = network.requests
@@ -239,7 +239,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     const previousCacheHits = network.cacheHits
     networkStage = `${cache}-startup`
     if (cache === "cold") await page.goto(process.env.PLAYSRC_PROFILE_ORIGIN ? "/tf2" : "/", { waitUntil: "domcontentloaded", timeout: 30_000 })
-    else await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
+    else if (cache === "warm") await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 })
     // Enable domains while ordinary startup is already in flight, without
     // delaying or moving its Ready observation. No sampling/heap read starts
     // here; their existing pre-sample boundaries below remain authoritative.
@@ -480,7 +480,7 @@ test("profile authored headed Upward offline-practice default roster and actual 
     return
   }
   const diagnosticMinimumTick = testInfo.project.metadata.diagnosticMinimumTick as number | undefined
-  if (sustained) {
+  if (sustained && !capturePlan.retirementOnly) {
     profilePhases.enter("sustained-koth")
     await observeSustainedKoth({ page, browserCdp, directory, checkNativeWindow, sourceFingerprint, sourceCommit: sourceCommit.stdout.trim() })
   }
@@ -628,6 +628,21 @@ test("profile authored headed Upward offline-practice default roster and actual 
       await writeFile(path.join(directory, `${label}-native-admission.json`), JSON.stringify(nativeRecords()))
       if (nativeReader) requireMacPageAdmission(nativeAdmission.at(-1)!)
     })
+  if (capturePlan.retirementOnly) {
+    // Separate correctness workload, never a shorter sustained performance run.
+    // No CPU/allocation sampler is active. Ordinary UI reentry happens only in
+    // this diagnostic, not in the uninterrupted 90-second acceptance path.
+    await writeFile(path.join(directory, "retirement-initial.png"), before)
+    await auditDrawPlaneParity(page, canvas, directory, "retirement-initial", true, checkNativeWindow)
+    await retireSustainedKoth(page, directory, checkNativeWindow, "retirement-initial")
+    await loadPractice("reentry")
+    await auditDrawPlaneParity(page, canvas, directory, "retirement-reentry", true, checkNativeWindow)
+    await retireSustainedKoth(page, directory, checkNativeWindow, "retirement-reentry")
+    await writeFile(path.join(directory, "retirement-correctness.json"), JSON.stringify({ capturePlan, loads,
+      sourceCommit: sourceCommit.stdout.trim(), sourceFingerprint, nativeAdmission: nativeRecords(),
+      full23: true, sustainedAcceptance: false, performanceSample: false, totalWallMilliseconds: Date.now() - wallStarted }))
+    return
+  }
   if (process.env.PROFILE_DRAW_LIGHTING_PARITY_ONLY === "1") { await auditParity(); return }
   if (process.env.PROFILE_ENGINEER_UI_ONLY === "1") {
     await auditEngineerMenus(page, root, directory, label, combatCommand)

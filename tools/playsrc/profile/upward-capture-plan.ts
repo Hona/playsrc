@@ -4,6 +4,8 @@ import { profileSampleSeconds } from "./profile-window"
  * plan that is durably retained before browser/map admission. */
 function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   const sustainedKoth = environment.PROFILE_KOTH_SUSTAINED === "1"
+  const retirementOnly = environment.PROFILE_KOTH_RETIREMENT_ONLY === "1"
+  if (retirementOnly && !sustainedKoth) throw new Error("KOTH retirement requires an explicit KOTH plan")
   if (sustainedKoth && !["koth_sawmill", "koth_lakeside_final"].includes(environment.PROFILE_MAP_TARGET ?? "")) throw new Error("Sustained KOTH requires an explicit admitted target")
   const createServer = sustainedKoth || environment.PROFILE_STARTUP_CREATE_SERVER === "1"
   const exerciseClasses = environment.PROFILE_UPWARD_CLASS_SWITCH === "1"
@@ -13,6 +15,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     schema: "playsrc-upward-capture-plan-v1" as const,
     target: sustainedKoth ? environment.PROFILE_MAP_TARGET as "koth_sawmill" | "koth_lakeside_final" : createServer ? "ctf_2fort" as const : "pl_upward" as const,
     ...(sustainedKoth ? { sustainedSeconds: 90 as const } : {}),
+    ...(retirementOnly ? { retirementOnly: true as const } : {}),
     entry: createServer ? "create-server" as const : "training" as const,
     exerciseClasses, acceptance, stockOnly,
     combat: !stockOnly && environment.PROFILE_PARTICLE_COMBAT === "1",
@@ -20,7 +23,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     playersOverride: createServer ? null : environment.PROFILE_UPWARD_TRAINING_PLAYERS || null,
     coldTeam: environment.PROFILE_ACCEPTANCE_STOCK_TEAM === "blue" ? "blue" as const : "red" as const,
     warmTeam: environment.PROFILE_ACCEPTANCE_STOCK_TEAM === "blue" || acceptance ? "blue" as const : "red" as const,
-    sampleSeconds: stockOnly ? null : profileSampleSeconds(environment.PROFILE_SAMPLE_SECONDS),
+    sampleSeconds: stockOnly || retirementOnly ? null : profileSampleSeconds(environment.PROFILE_SAMPLE_SECONDS),
     classPasses: stockOnly || !exerciseClasses ? 0 : acceptance ? 1 : 2,
     interaction: stockOnly ? "stock-loadouts" : exerciseClasses ? "class-input"
       : environment.PROFILE_UPWARD_TRAINING_INTERACTION === "1" ? "movement-weapon" : "forward-movement",
@@ -63,6 +66,7 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
   const resolve = value.schema === "playsrc-upward-capture-plan-v1" ? baseCapturePlan : upwardCapturePlan
   const resolved = resolve({
     PROFILE_KOTH_SUSTAINED: value.sustainedSeconds === 90 ? "1" : "0",
+    PROFILE_KOTH_RETIREMENT_ONLY: value.retirementOnly ? "1" : "0",
     PROFILE_MAP_TARGET: value.target,
     PROFILE_STARTUP_CREATE_SERVER: value.entry === "create-server" ? "1" : "0",
     PROFILE_UPWARD_CLASS_SWITCH: value.exerciseClasses ? "1" : "0",

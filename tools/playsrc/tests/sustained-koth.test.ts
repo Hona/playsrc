@@ -137,3 +137,10 @@ test("sustained plans authenticate the target and unchanged create-server roster
   for (const option of ["PROFILE_UPWARD_TRAINING_WARM_RELOAD", "PROFILE_CLASS_REPLACEMENT", "PROFILE_UPWARD_CLASS_SWITCH", "PROFILE_PARTICLE_COMBAT"])
     expect(() => upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_sawmill", [option]: "1" })).toThrow()
 })
+
+test("retirement correctness is explicit, unsampled and cannot be called sustained acceptance", () => {
+  const plan = upwardCapturePlan({ PROFILE_KOTH_SUSTAINED: "1", PROFILE_MAP_TARGET: "koth_sawmill", PROFILE_KOTH_RETIREMENT_ONLY: "1" })
+  expect(plan).toMatchObject({ retirementOnly: true, sampleSeconds: null, workerCpu: "not-requested", sustainedSeconds: 90 })
+  expect(() => validateUpwardCapturePlan(plan)).not.toThrow()
+  expect(() => upwardCapturePlan({ PROFILE_KOTH_RETIREMENT_ONLY: "1" })).toThrow()
+})
