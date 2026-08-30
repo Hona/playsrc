@@ -5657,13 +5657,18 @@ pub unsafe extern "C" fn playsrc_game_advance(
             Ok(value) => value,
             Err(_) => fail!(16),
         };
-        let Some(rocket_results) = resolve_rocket_traces(
+        let rocket_results = match resolve_rocket_traces(
             &collision,
             &collision_snapshot,
             candidate.rocket_trace_requests(),
             candidate.tick(),
-        ) else {
-            fail!(17);
+        ) {
+            Ok(results) => results,
+            Err(detail) => {
+                *GAME_ADVANCE_DETAIL.get_or_init(|| Mutex::new(String::new())).lock().expect("game advance detail") =
+                    format!("; game-generation={generation} transaction-step={index} {detail}");
+                fail!(17);
+            }
         };
         consumed_rocket_results.extend_from_slice(&rocket_results);
         gameplay_world.replace_snapshot(collision_snapshot);
@@ -5909,10 +5914,29 @@ fn resolve_rocket_traces(
     snapshot: &playsrc_collision::Snapshot,
     requests: &[playsrc_tf2::RocketTraceRequest],
     result_tick: u64,
-) -> Option<Vec<playsrc_tf2::RocketTraceResult>> {
+) -> Result<Vec<playsrc_tf2::RocketTraceResult>, String> {
     requests
         .iter()
-        .map(|request| {
+        .enumerate()
+        .map(|(order, request)| {
+            // Only failure allocates this bounded causal record. No resource
+            // bytes or whole snapshot/geometry dumps cross the error boundary.
+            let failure = |reason: &str, trace: Option<playsrc_collision::Trace>, error: Option<playsrc_collision::Error>| {
+                let object = trace.and_then(|trace| match trace.hit {
+                    Some(playsrc_collision::Hit::Object { identity, .. }) => snapshot.records().iter().find(|record| record.identity == identity),
+                    _ => None,
+                }).map(|record| {
+                    let shape = match &record.shape {
+                        playsrc_collision::SnapshotShape::BrushModel { model } => format!("brush-model:{model}"),
+                        playsrc_collision::SnapshotShape::BoundingBox { bounds } => format!("bbox:{bounds:?}"),
+                        playsrc_collision::SnapshotShape::OrientedBox { bounds } => format!("obb:{bounds:?}"),
+                        playsrc_collision::SnapshotShape::Physics(shape) => format!("physics:{}", shape.identity),
+                    };
+                    format!("id={} role={:?} shape={} contents={} surface={} transform={:?}", record.identity, record.role, shape, record.contents, record.surface_flags, record.transform)
+                });
+                format!("rocket-trace reason={reason} order={order}/{} result-tick={result_tick} request={request:?} start-bits={:?} end-bits={:?} world={:?} snapshot={} trace={trace:?} error={error:?} object={object:?}",
+                    requests.len(), request.start.map(f32::to_bits), request.end.map(f32::to_bits), world.identity, snapshot.identity())
+            };
             let trace = world
                 .trace_snapshot_ray(
                     snapshot,
@@ -5925,17 +5949,17 @@ fn resolve_rocket_traces(
                     },
                     |_| true,
                 )
-                .ok()?;
+                .map_err(|error| failure("trace-error", None, Some(error)))?;
             let solid = trace.did_hit();
             let sky = solid && trace.is_sky();
-            Some(playsrc_tf2::RocketTraceResult {
+            Ok(playsrc_tf2::RocketTraceResult {
                 projectile: request.projectile,
                 tick: result_tick,
                 end: trace.end,
                 solid,
                 sky,
                 normal: if solid && !sky {
-                    Some(trace.plane?.normal)
+                    Some(trace.plane.ok_or_else(|| failure("missing-impact-plane", Some(trace), None))?.normal)
                 } else {
                     None
                 },
@@ -16452,6 +16476,17 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].solid);
         assert_eq!(results[0].direct_target, Some(42));
+        let inside = playsrc_tf2::RocketTraceRequest { projectile: 8, tick: 3, start: [0.0; 3], end: [0.5, 0.0, 0.0], mask: 1 };
+        let failure = resolve_rocket_traces(&world, &snapshot, &[inside], 4).unwrap_err();
+        assert!(failure.contains("reason=missing-impact-plane"), "{failure}");
+        assert!(failure.contains("start_solid: true"));
+        assert!(failure.contains("all_solid: true"));
+        assert!(failure.contains("id=42"));
+        assert!(failure.len() < 4096);
+        let invalid = playsrc_tf2::RocketTraceRequest { start: [f32::NAN, 0.0, 0.0], ..inside };
+        let failure = resolve_rocket_traces(&world, &snapshot, &[invalid], 4).unwrap_err();
+        assert!(failure.contains("reason=trace-error"), "{failure}");
+        assert!(failure.contains("code: InvalidHull"), "{failure}");
     }
 
     #[test]
