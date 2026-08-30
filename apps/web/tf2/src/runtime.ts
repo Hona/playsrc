@@ -5944,10 +5944,27 @@ export class Tf2Application {
     return true
   }
 
+  #gameplayKeyboardTarget(target: Node | null): boolean {
+    return this.#view.gameUi === "in-game" && !this.#equipment?.visible() && !this.#view.consoleVisible
+      && !this.#view.optionsVisible && !this.#view.localMatchVisible && !this.#teamSelection?.state().visible
+      && !this.#classSelection?.state().visible
+      && (target === this.#canvas || target === document.body || target === document.documentElement || target === this.#presentationRoot)
+  }
+
   readonly #keyDown = (event: KeyboardEvent): void => {
-    if (browserOwnsKey(event) || event.metaKey || !document.hasFocus()) return
+    if (event.isComposing || event.keyCode === 229 || event.metaKey || !document.hasFocus()) return
     const target = event.target as Node | null
     if (target !== document.body && target !== document.documentElement && (!target || !this.#presentationRoot.contains(target))) return
+    if (browserOwnsKey(event)) {
+      // Preserve physical bindings (for example CTRL-duck + W-forward), but
+      // never cancel browser-reserved chords. A browser focus/lock loss still
+      // neutralizes the game; this is not a promise to capture such shortcuts.
+      if (this.#gameplayKeyboardTarget(target)) {
+        const action = this.#keyboardAction(event)
+        if (action) this.#activateBoundAction(`keyboard:${event.code}`, action, event.repeat)
+      }
+      return
+    }
     if (this.#localMatch?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#equipment?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
@@ -5993,11 +6010,9 @@ export class Tf2Application {
       if (!event.repeat) this.toggleConsole()
       return
     }
-    if (this.#equipment?.visible() || this.#view.consoleVisible || this.#view.optionsVisible || this.#view.localMatchVisible || this.#teamSelection?.state().visible
-      || this.#classSelection?.state().visible || this.#view.gameUi !== "in-game") return
     // VGUI controls retain their own editing/navigation even if a control keeps
     // focus during a transition. The world and the unfocused body are gameplay.
-    if (target !== this.#canvas && target !== document.body && target !== document.documentElement && target !== this.#presentationRoot) return
+    if (!this.#gameplayKeyboardTarget(target)) return
     if (this.#snapshot?.class === 8 && this.#snapshot.weapon === 53 && /^Digit[1-9]$/u.test(event.code)) {
       event.preventDefault()
       if (event.repeat) return
@@ -6039,7 +6054,6 @@ export class Tf2Application {
 
   readonly #mouseDown = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.#canvas) return
-    event.preventDefault()
     void this.resumeAudio()
     const action = this.#mouseAction(event)
     if (action) this.#activateBoundAction(`mouse:${event.button}`, action)
