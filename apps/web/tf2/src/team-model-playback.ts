@@ -6,6 +6,7 @@ export type TeamModelPlayback = Readonly<{
   previousSeconds: number
   lastPaintSeconds: number
   sampledSeconds: number | null
+  transitioning: boolean
 }>
 
 /** Presentation scheduling only; the studio owner resolves cycle and pose. */
@@ -18,7 +19,7 @@ export function teamModelPlayback(
   const reset = !prior || prior.modelRevision !== panel.modelRevision
   const changed = reset || prior?.animationRevision !== panel.animationRevision
   const current: TeamModelPlayback = changed
-    ? { ...panel, startedSeconds: now, previousSeconds: 0, lastPaintSeconds: now, sampledSeconds: null }
+    ? { ...panel, startedSeconds: now, previousSeconds: 0, lastPaintSeconds: now, sampledSeconds: null, transitioning: false }
     : prior!
   const elapsed = Math.min(Math.max(0, now - current.startedSeconds), duration)
   return {
@@ -26,7 +27,7 @@ export function teamModelPlayback(
     elapsed,
     previousElapsed: Math.min(current.previousSeconds, elapsed),
     frameTime: Math.max(0, now - (prior?.lastPaintSeconds ?? now)),
-    sample: current.sampledSeconds === null || current.sampledSeconds < duration,
+    sample: current.sampledSeconds === null || current.sampledSeconds < duration || current.transitioning,
     reset,
   }
 }

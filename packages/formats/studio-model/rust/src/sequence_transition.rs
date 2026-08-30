@@ -16,6 +16,7 @@ pub struct SequenceTransitioner {
 
 impl SequenceTransitioner {
     pub fn clear(&mut self) { self.queue.clear(); }
+    pub fn is_transitioning(&self) -> bool { self.queue.len() > 1 }
 
     /// `previous_paint_time` also accounts for paints that reused a terminal pose.
     /// Finished sequences still participate in the next authored cross-fade.

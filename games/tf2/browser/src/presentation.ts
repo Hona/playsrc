@@ -391,6 +391,7 @@ export type PosedModel = Readonly<{
   cyclesPerSecond: number
   durationSeconds: number
   looping: boolean
+  transitioning: boolean
   previousCycle: number
   cycle: number
   boneMatrices: Float32Array
@@ -591,8 +592,8 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       wearable = Object.freeze({ itemId, effect, controlPoint, particleBytes })
     }
     const model = text(), activity = text(), sequence = u32(), framesPerSecond = f32(), weightedFrameCount = f32(),
-      cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8()
-    if (looping > 1 || u8() || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
+      cyclesPerSecond = f32(), durationSeconds = f32(), looping = u8(), transitioning = u8()
+    if (looping > 1 || transitioning > 1 || u8() || u8()) throw new ProjectilePresentationError("MalformedFact", "model pose timing")
     const previousCycle = f32(), cycle = f32()
     const present=u8();if(present>1||u8()||u8()||u8())throw new ProjectilePresentationError("MalformedFact","viewmodel state");const values=present===1?new Array<number>(15):null;for(let index=0;index<15;index+=1){const value=f32();if(values)values[index]=value}const passRestored=u8(),depthRestored=u8(),itemTranslucent=u8();if(u8())throw new ProjectilePresentationError("MalformedFact","viewmodel flags")
     const phase=u8(),drawDisposition=u8(),suppression=u8(),reflected=u8(),frontFace=u8(),cullFace=u8(),restoredCull=u8(),reserved=u8()
@@ -691,7 +692,7 @@ export function decodeModelPoseOutput(bytes: Uint8Array): readonly PosedModel[] 
       return Object.freeze({ primitive, indices, positions, normals })
     }))
     if (attachmentMode === 1 && (primitives.length !== 0 || eyes.length !== 0 || flex.length !== 0)) throw new ProjectilePresentationError("MalformedFact", "attachment-only pose contains geometry")
-    output.push(Object.freeze({ identity, cloak, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item", "wearable"] as const)[roleCode]!, wearable, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
+    output.push(Object.freeze({ identity, cloak, sampleTick, attachmentsOnly: attachmentMode === 1, attachmentsWorld: attachmentsWorld === 1, role: (["single", "hand", "item", "wearable"] as const)[roleCode]!, wearable, model, activity, sequence, framesPerSecond, weightedFrameCount, cyclesPerSecond, durationSeconds, looping: looping === 1, transitioning: transitioning === 1, previousCycle, cycle, boneMatrices, events, primitives, attachments, lighting, eyes, flex, viewmodel }))
   }
   if (at !== bytes.length) throw new ProjectilePresentationError("MalformedFact", "model pose output trailing bytes")
   return Object.freeze(output)
