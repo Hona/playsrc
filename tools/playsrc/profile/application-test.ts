@@ -1,6 +1,6 @@
 import { test as base, expect } from "@playwright/test"
 import { ProfilePhases } from "./profile-phases"
-import { finishProfileArtifacts } from "./profile-artifacts"
+import { finishProfileArtifacts, prepareProfileWorkerBrowser } from "./profile-artifacts"
 
 const startupInputGuards = new WeakMap<object, () => Promise<void>>()
 export function guardStartupInput(page: object, guard: () => Promise<void>): void { startupInputGuards.set(page, guard) }
@@ -9,7 +9,16 @@ export async function admitStartupInput(page: object, action: () => Promise<void
   await action()
 }
 
-const headedBrowser = process.env.PLAYSRC_PROFILE_CDP_ENDPOINT
+const headedBrowser = process.env.PLAYSRC_PROFILE_DESKTOP_CHANNEL
+  ? base.extend<{}, { browser: import("@playwright/test").Browser }>({
+      browser: [async ({ playwright, launchOptions, channel }, use, workerInfo) => {
+        const endpoint = await prepareProfileWorkerBrowser(workerInfo.workerIndex, { ...launchOptions, ...(channel ? { channel } : {}) })
+        const browser = await playwright.chromium.connect(endpoint)
+        try { await use(browser) }
+        finally { await browser.close() }
+      }, { scope: "worker" }],
+    })
+  : process.env.PLAYSRC_PROFILE_CDP_ENDPOINT
   ? base.extend<{}, { browser: import("@playwright/test").Browser }>({
       browser: [async ({ playwright }, use) => {
         const browser = await playwright.chromium.connectOverCDP(process.env.PLAYSRC_PROFILE_CDP_ENDPOINT!, { timeout: 20_000 })

@@ -17,7 +17,7 @@ using System.Web.Script.Serialization;
 public static partial class PlaysrcNativeJob {
  public sealed class Request {
   public string job, task, run, action, cwd, lockPath, lockToken, manifest;
-  public string preflightFailure;
+   public string preflightFailure, dialogDirectory;
   public string[] command, invocation;
   public int ownerPid;
   public long deadline;
@@ -30,15 +30,13 @@ public static partial class PlaysrcNativeJob {
  }
  public sealed class Receipt {
    public string schema="playsrc-native-job-v2", job, task, run, action, lockToken, outcome="failed", error;
-   public string stage, preparedIdentity;
-   public long preparedAt, desktopStartedAt, desktopReleasedAt;
+   public List<DesktopStage> desktop=new List<DesktopStage>();
   public string[] invocation;
   public int ownerPid, helperPid, sessionId, childPid, uiInvocations;
   public int? exitCode;
   public long ownerCreatedAt, helperCreatedAt, childCreatedAt, startedAt, finishedAt, commandStartedAt, teardownAt;
   public long helperPeakPrivateBytes;
   public bool treeEmpty, interactive;
-  public Dialog consent, completion;
  }
  static readonly JavaScriptSerializer Json=new JavaScriptSerializer();
  static long Now {get{return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();}}
@@ -142,7 +140,7 @@ public static partial class PlaysrcNativeJob {
      if(!clock.IsRunning) {
       if(!Presented(window))throw new Exception("Prompt was not visibly presented");
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
-      Save(Path.Combine(request.run,completion?"completion-displayed.json":"consent-displayed.json"),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
+       Save(Path.Combine(request.dialogDirectory,completion?"completion-displayed.json":"consent-displayed.json"),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
      }
      // After confirmed presentation, switching to another app is non-response,
      // not a display failure or proof of AFK. Sampling has its own idle guard.
@@ -217,20 +215,26 @@ public static partial class PlaysrcNativeJob {
   return output.Append('\\',slashes*2).Append('"').ToString();
  }
   static uint Active(IntPtr job) {Accounting info;Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"Query owned tree");return info.active;}
-  public sealed class DesktopRequest {
+  public class DesktopRequest {
    public string job,task,run,lockToken,stage,preparedIdentity;
    public int childPid,helperPid;
    public long childCreatedAt,helperCreatedAt;
    public bool succeeded;
   }
-  static DesktopRequest ReadDesktop(Request request,Receipt receipt,string file) {
-   var value=Json.Deserialize<DesktopRequest>(File.ReadAllText(Path.Combine(request.run,file)));
+  public sealed class DesktopStage : DesktopRequest {
+   public string schema="playsrc-native-desktop-v1";
+   public long preparedAt,desktopStartedAt,desktopReleasedAt;
+   public Dialog consent,completion;
+  }
+  static string DesktopDirectory(Request request,int index) {return Path.Combine(request.run,"desktop",index.ToString("D4"));}
+  static DesktopRequest ReadDesktop(Request request,Receipt receipt,string directory,string file,DesktopStage expected) {
+   var value=Json.Deserialize<DesktopRequest>(File.ReadAllText(Path.Combine(directory,file)));
    if(value.job!=receipt.job || value.task!=receipt.task || value.run!=receipt.run || value.lockToken!=receipt.lockToken
     || value.childPid!=receipt.childPid || value.childCreatedAt!=receipt.childCreatedAt || value.helperPid!=receipt.helperPid || value.helperCreatedAt!=receipt.helperCreatedAt
     || String.IsNullOrEmpty(value.stage) || value.preparedIdentity==null || value.preparedIdentity.Length!=64
-    || receipt.stage!=null && (value.stage!=receipt.stage || value.preparedIdentity!=receipt.preparedIdentity))throw new Exception("Desktop stage identity differs");
+    || expected!=null && (value.stage!=expected.stage || value.preparedIdentity!=expected.preparedIdentity))throw new Exception("Desktop stage identity differs");
    using(var process=Process.GetProcessById(value.childPid))if(process.HasExited || new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()!=value.childCreatedAt)throw new Exception("Desktop stage process changed");
-   using(var hash=SHA256.Create())if(BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(Path.Combine(request.run,"desktop-prepared.json")))).Replace("-","").ToLowerInvariant()!=value.preparedIdentity)throw new Exception("Desktop prepared identity changed");
+   using(var hash=SHA256.Create())if(BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(Path.Combine(directory,"prepared.json")))).Replace("-","").ToLowerInvariant()!=value.preparedIdentity)throw new Exception("Desktop prepared identity changed");
    var held=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(request.lockPath));
    if((string)held["token"]!=receipt.lockToken || Convert.ToInt32(held["pid"])!=receipt.ownerPid)throw new Exception("Desktop stage lost resource ownership");
    return value;
@@ -246,31 +250,36 @@ public static partial class PlaysrcNativeJob {
    } finally {if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);}
   }
   static void DesktopTransition(Request request,Receipt receipt,Process owner,IntPtr job) {
-   if(receipt.stage==null && File.Exists(Path.Combine(request.run,"desktop-request.json"))) {
+   var stage=receipt.desktop.Count==0?null:receipt.desktop[receipt.desktop.Count-1];
+   var directory=DesktopDirectory(request,receipt.desktop.Count);
+   if((stage==null || stage.desktopReleasedAt!=0) && File.Exists(Path.Combine(directory,"request.json"))) {
     if(!receipt.interactive)throw new Exception("Background command requested desktop ownership");
-    var ready=ReadDesktop(request,receipt,"desktop-request.json");
-    receipt.stage=ready.stage;receipt.preparedIdentity=ready.preparedIdentity;receipt.preparedAt=Now;
+    var ready=ReadDesktop(request,receipt,directory,"request.json",null);
+    foreach(var previous in receipt.desktop)if(previous.stage==ready.stage)throw new Exception("Desktop stage authorization cannot be reused");
+    stage=Json.Deserialize<DesktopStage>(Json.Serialize(ready));stage.preparedAt=Now;receipt.desktop.Add(stage);
+    request.dialogDirectory=directory;
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled before desktop consent");
     receipt.sessionId=ConsoleSession();
-    receipt.consent=StageDialog(request,false,owner);receipt.uiInvocations++;
-    Save(Path.Combine(request.run,"consent.json"),receipt);
-    if(receipt.consent.error!=null) {if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException(receipt.consent.error);throw new Exception(receipt.consent.error);}
-    if(receipt.consent.decision=="denied") {receipt.outcome="denied";throw new OperationCanceledException("Desktop stage denied");}
-    if(receipt.consent.decision!="approved" && receipt.consent.decision!="approved-timeout")throw new Exception("Unrecognized native decision");
+    stage.consent=StageDialog(request,false,owner);receipt.uiInvocations++;
+    Save(Path.Combine(directory,"consent.json"),stage);
+    if(stage.consent.error!=null) {if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException(stage.consent.error);throw new Exception(stage.consent.error);}
+    if(stage.consent.decision=="denied") {receipt.outcome="denied";throw new OperationCanceledException("Desktop stage denied");}
+    if(stage.consent.decision!="approved" && stage.consent.decision!="approved-timeout")throw new Exception("Unrecognized native decision");
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled after desktop consent");
-    ReadDesktop(request,receipt,"desktop-request.json");
-    receipt.desktopStartedAt=Now;
-    Save(Path.Combine(request.run,"desktop-grant.json"),receipt);
+    ReadDesktop(request,receipt,directory,"request.json",stage);
+    stage.desktopStartedAt=Now;
+    Save(Path.Combine(directory,"grant.json"),stage);
    }
-   if(receipt.desktopStartedAt!=0 && receipt.desktopReleasedAt==0 && File.Exists(Path.Combine(request.run,"desktop-release.json"))) {
-    var release=ReadDesktop(request,receipt,"desktop-release.json");
-    if(release.stage!=receipt.stage || release.preparedIdentity!=receipt.preparedIdentity)throw new Exception("Desktop release differs from authorization");
+   directory=DesktopDirectory(request,receipt.desktop.Count-1);
+   if(stage!=null && stage.desktopStartedAt!=0 && stage.desktopReleasedAt==0 && File.Exists(Path.Combine(directory,"release.json"))) {
+    var release=ReadDesktop(request,receipt,directory,"release.json",stage);
     RequireDesktopEmpty(job);
-    receipt.desktopReleasedAt=Now;
-    Save(Path.Combine(request.run,"desktop-released.json"),receipt);
+    stage.desktopReleasedAt=Now;stage.succeeded=release.succeeded;
+    Save(Path.Combine(directory,"released.json"),stage);
     if(release.succeeded && !owner.HasExited && !File.Exists(Path.Combine(request.run,"cancel"))) {
-     receipt.completion=StageDialog(request,true,owner);receipt.uiInvocations++;
+     stage.completion=StageDialog(request,true,owner);receipt.uiInvocations++;
     }
+    Save(Path.Combine(directory,"result.json"),stage);
    }
   }
   static void RequireDesktopEmpty(IntPtr job) {
@@ -323,7 +332,7 @@ public static partial class PlaysrcNativeJob {
      DesktopTransition(request,receipt,owner,job);
    }
     uint exit;Check(GetExitCodeProcess(child.process,out exit),"Read workload exit");receipt.exitCode=(int)exit;receipt.outcome=exit==0?"completed":"failed";
-    if(receipt.interactive && exit==0 && (receipt.desktopStartedAt==0 || receipt.desktopReleasedAt==0))throw new Exception("Interactive profile ended without its scoped desktop lifecycle");
+     if(receipt.interactive && exit==0 && (receipt.desktop.Count==0 || receipt.desktop[receipt.desktop.Count-1].desktopReleasedAt==0))throw new Exception("Interactive profile ended without its scoped desktop lifecycle");
    } catch(OperationCanceledException error) {if(receipt.outcome!="denied")receipt.outcome="cancelled";receipt.error=error.Message;}
   catch(Exception error) {receipt.outcome="failed";receipt.error=error.Message;}
   finally {
@@ -378,7 +387,12 @@ public static partial class PlaysrcNativeJob {
    } catch(Exception error) {receipt.error=error.Message;receipt.outcome=error is OperationCanceledException?"cancelled":"failed";if(receipt.childPid==0)receipt.treeEmpty=true;}
    finally {
     receipt.teardownAt=Now;
-    if(receipt.desktopStartedAt!=0 && receipt.desktopReleasedAt==0 && receipt.treeEmpty)receipt.desktopReleasedAt=receipt.teardownAt;
+    if(receipt.desktop.Count>0 && receipt.treeEmpty) {
+     var stage=receipt.desktop[receipt.desktop.Count-1];
+     if(stage.desktopStartedAt!=0 && stage.desktopReleasedAt==0)stage.desktopReleasedAt=receipt.teardownAt;
+     var file=Path.Combine(DesktopDirectory(request,receipt.desktop.Count-1),"result.json");
+     if(!File.Exists(file))Save(file,stage);
+    }
     if(receipt.treeEmpty) {
      Console.WriteLine(Json.Serialize(new {phase="teardown",job=request.job,run=request.run,helperPid=receipt.helperPid,treeEmpty=true}));
      var read=Task.Factory.StartNew(()=>Console.ReadLine());

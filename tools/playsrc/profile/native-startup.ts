@@ -188,6 +188,13 @@ while (($line=[Console]::ReadLine()) -ne $null) {
 
 export function closeStartupNativeProbe(){windowsProbe?.close();windowsProbe=undefined}
 
+/** Compile/start the read-only native probe during silent preparation. A zero
+ * browser PID asks for readiness only; it grants no idle/foreground admission. */
+export async function prepareStartupNativeProbe(cacheDir: string): Promise<void> {
+  if (process.platform !== "win32") return
+  nativeProbeResponse(await (windowsProbe ??= openWindowsProbe(cacheDir)).read(0))
+}
+
 export function windowsForegroundMatches(native: { foreground: number; foregroundAfter: number }, windowId: number, focused: boolean): boolean {
   return native.foreground === windowId && native.foregroundAfter === windowId && focused
 }

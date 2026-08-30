@@ -1,7 +1,7 @@
 # SSH is the transport. Only headed profiles bridge to the physical console;
 # background tasks use the same bounded scheduler ownership without a desktop.
 param(
-  [ValidateSet('Run','Build','BuildStage','Test','Diagnostic','Cancel','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
+  [ValidateSet('Run','PrepareProfile','Build','BuildStage','Test','Diagnostic','Cancel','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Grep = '',
@@ -67,7 +67,7 @@ if ($Action -eq 'Doctor') {
   & $bun -e $probe $cargo
   exit $LASTEXITCODE
 }
-if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
+if ($Action -notin 'Run','PrepareProfile','Build','BuildStage','Test','Diagnostic') {
   [PlaysrcReadbackGuard]::Stage='exact-task-query'
   $tasks = if (($Action -in 'Status','Recover') -and $Task) { @(Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
@@ -120,9 +120,21 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
     [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
-    foreach($record in 'identity.json','ownership.json','desktop-prepared.json','desktop-request.json','desktop-grant.json','desktop-release.json','desktop-released.json','consent.json','consent-displayed.json','completion-displayed.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json') {
+    if($result.preparation){
+      if((Split-Path $result.preparation.run) -ne $directory){throw 'Preparation result belongs to another job'}
+      $files+=@{name='job/preparation-result.json';path=(Join-Path $result.preparation.run 'result.json')}
+    }
+    foreach($record in 'identity.json','ownership.json','dispatch.json','native-request.json','native-helper.json','native-result.json','native-fault.json') {
       $file=Join-Path $result.run $record
       if(Test-Path -LiteralPath $file){$files+=@{name="job/$record";path=$file}}
+    }
+    for($index=0;$index -lt @($result.native.desktop).Count;$index++) {
+      if($index -ge 64){throw 'Desktop stage count exceeds its bound'}
+      $ordinal=$index.ToString('D4')
+      foreach($record in 'prepared.json','request.json','grant.json','release.json','released.json','result.json','consent.json','consent-displayed.json','completion-displayed.json') {
+        $file=Join-Path $result.run "desktop/$ordinal/$record"
+        if(Test-Path -LiteralPath $file){$files+=@{name="job/desktop-$ordinal-$record";path=$file}}
+      }
     }
     if ($Task) {
       $policyFile = Join-Path $directory "$($Task.Substring('playsrc-local-job-'.Length))-policy.json"
@@ -214,7 +226,7 @@ function ArgumentArray([string]$text,[int]$maximum) {
 if ($JobArguments -ne '[]') {
   $workload=ArgumentArray $JobArguments 20
   if($workload.Count -lt 1){throw 'Expected a workload'}
-} elseif ($Action -eq 'Run') {
+} elseif ($Action -in 'Run','PrepareProfile') {
   if ($Profile -notmatch '^[a-z0-9-]+$') { throw 'Expected a normal profile name' }
   if ($Grep.Length -gt 512 -or $Grep.Contains([char]0)) {throw 'Profile selection exceeds its bound'}
 } elseif ($Action -eq 'BuildStage') {
@@ -230,7 +242,7 @@ if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
 if($JobArguments -eq '[]') {
-  $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+(ArgumentArray $TestArguments 19)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}else{@('profile',$Profile)+$extra}
+  $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+(ArgumentArray $TestArguments 19)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}elseif($Action -eq 'PrepareProfile'){@('prepare-profile',$Profile)+$extra}else{@('profile',$Profile)+$extra}
 }
 $arguments = ($workload|ForEach-Object {Quote $_}) -join ' '
 $planText = & $bun (Join-Path $root 'tools/playsrc/src/local-job.ts') plan @workload

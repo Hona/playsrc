@@ -244,10 +244,10 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     }
     await phase("reserve-ports")
     cancellation.signal.throwIfAborted()
-    if (plan.interactive || args[0] === "build") port = await availableDevelopmentPort()
+    if (plan.controller || args[0] === "build") port = await availableDevelopmentPort()
   } catch (error) { preflightFailure = String(error) }
-  const command = plan.interactive
-    ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", checkout, ...plan.command.slice(1)]
+  const command = plan.controller
+    ? [process.execPath, path.join(repositoryRoot, plan.command[0]!), "--application-root", checkout, ...plan.command.slice(1)]
     : [process.execPath, ...plan.command]
   let failure: string | null = null
   let native: NativeJobReceipt | null = null
@@ -275,9 +275,29 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
       await assertCheckout(checkout, job)
     }
   } catch (error) { failure = String(error); outcome = "failed" }
-   const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, interactive: plan.interactive, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
+   // A preparation link records wall time, never authorizes a desktop or skips
+   // current input validation. Read the immutable task result, not a latest log.
+   let preparation: { task: string; run: string; commit: string; startedAt: number; finishedAt: number } | null = null
+   const preparationFile = path.join(directory, "profile-preparation.json")
+   if (args[0] === "profile") {
+     const link = await readFile(preparationFile, "utf8").catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return null })
+     if (link) {
+       const previous = await readLocalTaskResult(directory, JSON.parse(link).task)
+       const value = previous.result
+       if (value?.outcome === "passed" && value.commit === job.commit && value.preparationProfile === args[1]) {
+         preparation = { task: value.task, run: value.run, commit: value.commit, startedAt: value.startedAt, finishedAt: value.finishedAt }
+       }
+     }
+   }
+   const finishedAt = Date.now()
+   const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, harnessCommit, checkout, command, interactive: plan.interactive, port, startedAt, finishedAt, outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0,
+     preparationProfile: args[0] === "prepare-profile" ? args[1] : null, preparation, pipelineWallMilliseconds: finishedAt - (preparation?.startedAt ?? startedAt) }
   await writeFile(path.join(run, "result.json.tmp"), JSON.stringify(result, null, 2), { flag: "wx" })
   await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
+  if (args[0] === "prepare-profile" && task && outcome === "passed") {
+    await writeFile(`${preparationFile}.tmp`, JSON.stringify({ task }), { flag: "wx" })
+    await rename(`${preparationFile}.tmp`, preparationFile)
+  }
   return result
   } finally {
     stopMonitoring()

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { closeSync, openSync } from "node:fs"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { headedProfileTarget } from "../profile/profile-target"
@@ -330,7 +330,10 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
   throw new Error("Shared headed profile development owner exceeded the bounded profile runtime")
 }
 
-export async function runHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> {
+export function runHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> { return runProfile(arguments_, root, "interactive") }
+export function prepareHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> { return runProfile(arguments_, root, "prepare") }
+
+async function runProfile(arguments_: readonly string[], root: string, mode: "prepare" | "interactive"): Promise<number> {
   const started = Date.now()
   const { profile, fresh, freshBrowser, sustainedEntropy, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()
@@ -341,7 +344,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   await mkdir(runDirectory, { recursive: true })
   const configurationMilliseconds = Date.now() - configurationStarted
   const lockPath = path.join(evidence, "chromium-profile.lock")
-  const borrowed = await borrowedWindowsJobLock(lockPath, ["profile", ...arguments_])
+  const borrowed = await borrowedWindowsJobLock(lockPath, [mode === "prepare" ? "prepare-profile" : "profile", ...arguments_])
   if (process.platform === "win32" && !borrowed) throw new Error("Windows profiles require local-job run <job> profile ... and its displayed per-job decision")
   const runDeadline = Math.min(started + MAX_RUN_MILLISECONDS, borrowed?.deadline ?? Infinity)
   const cancellation = new AbortController()
@@ -429,7 +432,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining, root, borrowed ?? undefined))
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity(root))
     }
-    checkBrowserBudget()
+    if (mode === "interactive") checkBrowserBudget()
     let preparedBrowser: PreparedBrowser | undefined
     if (!process.env.PLAYSRC_PROFILE_CDP_ENDPOINT && !process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT) {
       const launch = await measure("controller-preflight", async () => {
@@ -437,7 +440,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         const use = configuration.use ?? {}
         return profileBrowserLaunch(profile, { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) })
       })
-      preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
+      if (process.platform !== "win32" || mode === "prepare") preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
     }
     const verifyPrepared = async () => {
     if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
@@ -446,12 +449,13 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     if (preparedBrowser && preparedBrowser.executableSha256 !== await fileFingerprint(preparedBrowser.executable)) throw new Error("Prepared browser executable changed before desktop admission")
     }
     await verifyPrepared()
-    const prepared = { identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_, root, runDirectory, owner: owner?.metadata, preparedAt: Date.now() }
+    if (mode === "prepare") {
+      cancellation.signal.throwIfAborted()
+      outcome = "passed"; exitCode = 0
+      return exitCode
+    }
     checkBrowserBudget()
-    exitCode = await withWindowsDesktop(prepared, cancellation.signal, async release => {
-      await verifyPrepared()
-      windowsConsole = await requireWindowsProfileConsole(remaining())
-      if (preparedBrowser) {
+    if (preparedBrowser) {
       const began = Date.now()
       checkBrowserBudget()
       browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, freshBrowser))
@@ -467,24 +471,66 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     browserStarted = Date.now()
     currentPhase = "headed-browser"
     const desktopChannel = process.platform === "win32" ? randomUUID() : undefined
-    let extraction: Promise<void> | undefined
-    const extractionFile = path.join(runDirectory, "desktop-extraction.json")
-    const extractionMonitor = desktopChannel ? setInterval(() => {
-      if (extraction) return
-      extraction = (async () => {
-        const text = await readFile(extractionFile, "utf8").catch(error => {
+    let desktopWork: Promise<void> | undefined
+    const handled = new Set<string>()
+    const optionalJson = async (file: string) => {
+        const text = await readFile(file, "utf8").catch(error => {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
           return null
         })
-        if (!text) { extraction = undefined; return }
-        clearInterval(extractionMonitor)
-        const request = JSON.parse(text)
-        if (request.token !== desktopChannel || typeof request.succeeded !== "boolean") throw new Error("Profiler extraction handoff differs")
-        await release(request.succeeded)
+        return text ? JSON.parse(text) : null
+    }
+    // The Playwright worker asks only when its actual browser fixture is needed.
+    // CLI/module loading remains silent. Each later worker gets a fresh scoped
+    // grant after the preceding browser has closed, never reuse of a decision.
+    const desktopMonitor = desktopChannel ? setInterval(() => {
+      if (desktopWork) return
+      desktopWork = (async () => {
+        for (const entry of (await readdir(runDirectory)).filter(name => /^desktop-worker-\d+$/.test(name)).sort()) {
+          if (handled.has(entry)) continue
+          const directory = path.join(runDirectory, entry)
+          const request = await optionalJson(path.join(directory, "request.json"))
+          if (!request) continue
+          handled.add(entry)
+          if (request.token !== desktopChannel || !["playwright", "native-edge"].includes(request.kind) || !Number.isSafeInteger(request.workerPid) || !isAlive(request.workerPid)) throw new Error("Profiler browser request differs")
+          if (extractionStarted) { attempts.push({ phase: "background-extraction", durationMilliseconds: Date.now() - extractionStarted, complete: true }); extractionStarted = undefined }
+          preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(request.launch))
+          await verifyPrepared()
+          checkBrowserBudget()
+          if (childExited || !isAlive(request.workerPid)) throw new Error("Prepared browser worker exited before consent")
+          const prepared = { identity, harnessIdentity, configuredIdentity, generatedIdentity, preparedBrowser, target, arguments_, root, runDirectory, owner: owner?.metadata, worker: entry, preparedAt: Date.now() }
+          let stageStarted: number | undefined
+          await withWindowsDesktop(prepared, cancellation.signal, async release => {
+            await verifyPrepared()
+            windowsConsole = await requireWindowsProfileConsole(remaining())
+            stageStarted = Date.now()
+            if (request.kind === "playwright") browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, preparedBrowser!, remaining, lock!.token, true))
+            browserOwnerMilliseconds += Date.now() - stageStarted
+            await writeFile(path.join(directory, "browser.json"), JSON.stringify({ token: desktopChannel, endpoint: browser?.endpoint ?? null }), { flag: "wx" })
+            for (;;) {
+              const finished = await optionalJson(path.join(directory, "release.json"))
+              if (finished) {
+                if (finished.token !== desktopChannel || typeof finished.succeeded !== "boolean") throw new Error("Profiler extraction handoff differs")
+                const native = await release(finished.succeeded)
+                await writeFile(path.join(directory, "released.json"), JSON.stringify({ token: desktopChannel, native, at: Date.now() }), { flag: "wx" })
+                return finished.succeeded
+              }
+              cancellation.signal.throwIfAborted()
+              if (remaining() <= 0 || childExited || !isAlive(request.workerPid)) throw new Error("Browser worker exited before owned teardown")
+              await Bun.sleep(25)
+            }
+          }, async () => {
+            const retiring = browser
+            browser = undefined
+            await heartbeatWrites
+            if (retiring) await measure("browser-teardown", () => retireProfileBrowser(browserPath, retiring, lock!.token, () => Math.max(0, runDeadline - Date.now())))
+            browserEnded = Date.now()
+            if (stageStarted) browserMilliseconds += browserEnded - stageStarted
+          }, succeeded => succeeded)
         currentPhase = "background-extraction"
         extractionStarted = Date.now()
-        await writeFile(path.join(runDirectory, "desktop-extraction-released.json"), JSON.stringify({ token: desktopChannel, at: Date.now() }), { flag: "wx" })
-      })().catch(error => { failure = String(error); cancel() })
+        }
+      })().catch(error => { failure = String(error); cancel() }).finally(() => { desktopWork = undefined })
     }, 25) : undefined
     const command = [
       process.env.PLAYSRC_PROFILE_PLAYWRIGHT_EXECUTABLE ?? profileNodeExecutable(),
@@ -522,17 +568,10 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     try { exitCode = await new Promise<number>((resolve, reject) => {
       child!.once("error", reject)
       child!.once("exit", (code) => { childExited = true; resolve(code ?? 1) })
-    }) } finally { clearInterval(extractionMonitor); await extraction }
+    }) } finally { clearInterval(desktopMonitor); await desktopWork }
     workerMilliseconds = Date.now() - browserStarted
-    browserMilliseconds = (browserEnded ?? Date.now()) - browserStarted
+    if (process.platform !== "win32") browserMilliseconds = Date.now() - browserStarted
     if (extractionStarted) attempts.push({ phase: "background-extraction", durationMilliseconds: Date.now() - extractionStarted, complete: exitCode === 0 })
-    return exitCode
-    }, async () => {
-      if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
-      await heartbeatWrites
-      if (browser) await measure("browser-teardown", () => retireProfileBrowser(browserPath, browser!, lock!.token, () => Math.max(0, runDeadline - Date.now())))
-      browserEnded = Date.now()
-    }, code => code === 0)
     try { playwrightPhases = JSON.parse(await readFile(timingPath, "utf8")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
@@ -582,6 +621,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
           schema: "playsrc-browser-profile-run-v5",
           runId,
           profile,
+          mode,
           command: ["bun", path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", root, ...arguments_],
           repository: root,
           harnessRepository: repositoryRoot,

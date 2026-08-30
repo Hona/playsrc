@@ -13,6 +13,9 @@ bun tools/playsrc/src/local-job.ts run <job> build-stage wasm
 bun tools/playsrc/src/local-job.ts run <job> build-stage producer
 bun tools/playsrc/src/local-job.ts run <job> build-stage resources jump_beef
 bun tools/playsrc/src/local-job.ts run <job> profile gameplay
+# Explicitly prepare cold profiles without a browser in a separate bounded task:
+bun tools/playsrc/src/local-job.ts run <job> prepare-profile gameplay
+# Wait for that task, then use the same ordinary profile command above.
 ```
 
 Preparation creates a detached checkout in `sourceCacheDir/local-jobs`, copies
@@ -29,6 +32,7 @@ same bridge is available explicitly:
 ```powershell
 powershell.exe -NoProfile -NonInteractive -File tools/playsrc/windows-job.ps1 -Job <job> -Profile gameplay
 # Also: -Action Build -Target jump_beef
+#       -Action PrepareProfile -Profile gameplay
 #       -Action BuildStage -Stage resources -Target jump_beef
 #       -Action Test -TestArguments '["tools/playsrc/tests/windows-desktop.test.ts"]'
 ```
@@ -48,6 +52,12 @@ content and generated inputs, builds/prepares its normal development owner,
 starts non-GUI servers and resolves/hashes the browser executable **before** UI.
 Preparation failure, cancellation or insufficient remaining browser budget is
 silent. No caller readiness flag or manual build-command sequence is needed.
+For a cold workload, `PrepareProfile` runs the complete normal non-GUI preparation
+in its own 175-second task; it never opens/preloads a browser. A later `Run`
+revalidates all inputs and keeps its own unchanged 175-second bound. The result
+links the exact preparation task/run and reports full preparation-to-finish wall
+time, including queue and the gap between commands. Visible admission/loading
+still belongs to the approved interval and is never subtracted from that run.
 The same workload classifier is checked before scheduling, by the launcher and
 at native dispatch; neither a caller UI flag nor a substituted command can
 reclassify a profile. Unknown work fails closed without a dialog. Stages and
@@ -85,24 +95,27 @@ between approval and browser admission.
 The native supervisor retains the same kill-on-close process tree throughout
 preparation, consent, browser use and background extraction. `ownership.json`
 (`PLAYSRC_LOCAL_JOB_OWNER`) authenticates this full lifetime, **not** permission
-to use the desktop. The single-use `desktop-grant.json` binds a prepared-input
+to use the desktop. Each single-use `desktop/<ordinal>/grant.json` binds a prepared-input
 hash and exact child/helper creation identities to this task/run/stage. Changed
 inputs refuse launch; the stage cannot be reused by another helper or retry.
 
 Only a successfully completed interactive **stage** gets a completion notification,
-after the actual browser/input teardown and `desktop-released.json`, before slow
+after the actual browser/input teardown and `desktop/<ordinal>/released.json`, before slow
 background extraction, source verification and report retention. The resource
 reservation remains held so extraction cannot contaminate another measurement;
 it is not a desktop lease. The notification dismisses after three seconds.
 Denial, failure, cancellation, preflight errors and helper faults are logs-only;
 there is no failure-only notification helper or retry. Background receipts
-require `interactive: false`, null consent/completion and zero UI invocations.
+require `interactive: false`, an empty `desktop` list and zero UI invocations.
 
 Profile authors use the existing application fixture and `profileArtifact` for
 post-browser analysis/retention. Its worker teardown closes test contexts, the
 profile owner closes the real browser, and the native supervisor acknowledges
 desktop release before those closures run. Background extraction cannot reopen
-the retired endpoint. `profile runner-handoff` is a short real headed runner
+the retired endpoint. Later Playwright workers/projects request their own fresh
+browser stage; CLI/module initialization and each worker's browser preparation
+are silent. The job's original deadline and FIFO ownership span all stages.
+`profile runner-handoff` is a short real headed runner
 check, with no gameplay benchmark or content build.
 
 ## Readback and cancellation

@@ -25,8 +25,7 @@ test("prepared runner hands off a visible browser and releases before extraction
     after = await page.locator("canvas").screenshot()
   } finally { await reader.close() }
   await profileArtifact(async () => {
-    const owner = JSON.parse(await readFile(process.env.PLAYSRC_LOCAL_JOB_OWNER!, "utf8"))
-    const released = JSON.parse(await readFile(path.join(owner.run, "desktop-released.json"), "utf8"))
+    const { native: released } = JSON.parse(await readFile(process.env.PLAYSRC_PROFILE_DESKTOP_RECEIPT!, "utf8"))
     const extractionStartedAt = Date.now()
     expect(released.desktopReleasedAt).toBeGreaterThan(released.desktopStartedAt)
     expect(extractionStartedAt).toBeGreaterThanOrEqual(released.desktopReleasedAt)
