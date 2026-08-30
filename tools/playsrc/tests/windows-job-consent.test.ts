@@ -27,7 +27,7 @@ test("receipt binds job/task/run/creation-time/lock and teardown; malformed or s
     expect(() => validateNativeJobReceipt({ ...receipt, ...changed } as NativeJobReceipt, expected)).toThrow()
   }
   for (const outcome of ["failed", "cancelled", "denied"] as const) {
-    const value = { ...receipt, outcome, childPid: 0, childCreatedAt: 0, commandStartedAt: 0, consent: { ...consent, decision: "denied" }, error: "not launched" }
+    const value = { ...receipt, outcome, childPid: 0, childCreatedAt: 0, commandStartedAt: 0, exitCode: null, consent: { ...consent, decision: "denied" }, error: "not launched" }
     expect(validateNativeJobReceipt(value, expected).outcome).toBe(outcome)
   }
 })

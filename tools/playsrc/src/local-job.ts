@@ -257,7 +257,7 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
           await assertCheckout(repositoryRoot, { ...job, commit: harnessCommit! }, startedAt + LIMIT - 4_000)
         })
       outcome = native.outcome === "completed" ? "passed" : native.outcome
-      failure = native.error ?? (outcome === "passed" ? null : `Native job ${outcome} (exit ${native.exitCode})`)
+      failure = native.error ?? (outcome === "passed" ? null : `Native job ${outcome} (exit ${native.exitCode ?? "unobserved"})`)
     } else {
       if (preflightFailure) throw new Error(preflightFailure)
       await phase("command")

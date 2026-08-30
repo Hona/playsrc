@@ -14,7 +14,7 @@ export type NativeJobReceipt = {
   ownerPid: number; ownerCreatedAt: number; helperPid: number; helperCreatedAt: number; sessionId: number
   childPid: number; childCreatedAt: number; commandStartedAt: number; teardownAt: number
   startedAt: number; finishedAt: number; outcome: "completed" | "failed" | "cancelled" | "denied"
-  exitCode: number; treeEmpty: boolean; error: string | null; consent: NativeDialog | null; completion: NativeDialog | null
+  exitCode: number | null; treeEmpty: boolean; error: string | null; consent: NativeDialog | null; completion: NativeDialog | null
 }
 
 export function approvedNativeDecision(value: NativeDialog | null): boolean {
@@ -27,7 +27,8 @@ export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { jo
   if (!value || value.schema !== "playsrc-native-job-v1"
     || ["job", "task", "run", "action", "lockToken", "ownerPid", "helperPid"].some(key => value[key as keyof NativeJobReceipt] !== expected[key as keyof typeof expected])
     || JSON.stringify(value.invocation) !== JSON.stringify(expected.invocation)
-    || ![value.ownerCreatedAt, value.helperCreatedAt, value.startedAt, value.finishedAt, value.teardownAt, value.childPid, value.childCreatedAt, value.commandStartedAt, value.exitCode].every(Number.isSafeInteger)
+    || ![value.ownerCreatedAt, value.helperCreatedAt, value.startedAt, value.finishedAt, value.teardownAt, value.childPid, value.childCreatedAt, value.commandStartedAt].every(Number.isSafeInteger)
+    || value.exitCode !== null && !Number.isSafeInteger(value.exitCode) || value.childPid === 0 && value.exitCode !== null
     || value.helperCreatedAt < expected.spawnedAt - 1_000 || value.ownerCreatedAt > value.helperCreatedAt
     || value.startedAt < value.helperCreatedAt || value.finishedAt < value.startedAt || !value.treeEmpty
     || !["completed", "failed", "cancelled", "denied"].includes(value.outcome)) throw new Error("Malformed or mismatched native job receipt")
