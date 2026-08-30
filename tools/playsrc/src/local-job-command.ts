@@ -21,8 +21,9 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
     return { command: ["test", ...options], interactive: false }
   }
   if (kind === "profile" || kind === "prepare-profile") {
-    parseHeadedProfile(options)
-    return { command: [kind === "profile" ? "tools/playsrc/src/profile-runner.ts" : "tools/playsrc/src/profile-prepare.ts", ...options], interactive: kind === "profile", controller: true }
+    const parsed = parseHeadedProfile(options)
+    const listing = parsed.playwright.some(option => option === "--list" || option === "--help" || option === "-h")
+    return { command: [kind === "profile" ? "tools/playsrc/src/profile-runner.ts" : "tools/playsrc/src/profile-prepare.ts", ...options], interactive: kind === "profile" && !listing, controller: true }
   }
   if (kind === "build" && options.length === 1 && (TF2_TARGET_NAMES as readonly string[]).includes(options[0]!)) {
     return { command: ["tools/playsrc/src/cli.ts", "dev", options[0]!, "--prepare-only"], interactive: false }

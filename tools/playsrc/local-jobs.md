@@ -63,6 +63,10 @@ at native dispatch; neither a caller UI flag nor a substituted command can
 reclassify a profile. Unknown work fails closed without a dialog. Stages and
 profiles borrow checked live ownership rather than recursively acquiring it.
 Both the isolated controller and prepared checkout must include this contract.
+Configuration/browser/tsconfig overrides, UI/debug modes and browser-opening or
+executable reporters cannot replace the owned stage interface. Read-only
+`--list`/help requests remain background-only; selection and non-GUI reporters
+still use the registered profile.
 
 For an interactive profile, a real native message box identifies the action,
 job, task and run:
