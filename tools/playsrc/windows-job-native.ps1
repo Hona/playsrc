@@ -10,5 +10,5 @@ try {
   if($plan.interactive -isnot [bool]){throw 'Missing native workload classification'}
   $parent=(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
   Add-Type -Path (Join-Path $PSScriptRoot 'windows-job-native.cs') -ReferencedAssemblies System.Web.Extensions,System.Drawing
-  [PlaysrcNativeJob]::Run($Request,[int]$parent,$plan.interactive)
+  [PlaysrcNativeJob]::Run($validated,[int]$parent)
 } catch { [Console]::Error.WriteLine($_.Exception.ToString()); exit 1 }

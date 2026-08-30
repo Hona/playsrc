@@ -264,7 +264,11 @@ if (import.meta.main) {
     if (operation === "plan") console.log(JSON.stringify(localJobCommand(args)))
     else if (operation === "validate-native" && args.length === 1) {
       const { validateNativeJobRequest } = await import("./windows-job-native")
-      console.log(JSON.stringify(await validateNativeJobRequest(JSON.parse(await readFile(args[0]!, "utf8")))))
+      const request = JSON.parse(await readFile(args[0]!, "utf8"))
+      const { interactive } = await validateNativeJobRequest(request)
+      // Dispatch the validated snapshot, never reread a mutable request after
+      // classifying it (including the native helper's direct -File entry).
+      console.log(JSON.stringify({ request, interactive }))
     }
     else if (operation === "prepare" && (args.length === 2 || args.length === 3)) console.log(JSON.stringify(await prepareLocalJob(args[0]!, args[1]!, repositoryRoot, args[2])))
     else if (operation === "result" && args.length === 2 && ID.test(args[0]!)) {
