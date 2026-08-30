@@ -1,6 +1,4 @@
-import { supportsSimd128 } from "@playsrc/wasm"
-
-export type WasmInitializationStage = "integrity" | "simd" | "shared-memory" | "instantiate" | "exports" | "thread-pool" | "reply-memory"
+export type WasmInitializationStage = "integrity" | "shared-memory" | "instantiate" | "exports" | "thread-pool" | "reply-memory"
 
 const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "CompileError", "LinkError", "RuntimeError", "SecurityError", "NotSupportedError", "DataCloneError", "AbortError"])
 
@@ -30,8 +28,6 @@ export async function initializeAuthenticatedWasm<T extends { memory: WebAssembl
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", request.bytes))
     const actual = Array.from(digest, value => value.toString(16).padStart(2, "0")).join("")
     if (actual !== request.expectedSha256) throw new WasmInitializationError(stage, "SHA256 mismatch")
-    stage = "simd"
-    if (!supportsSimd128()) throw new WasmInitializationError(stage, "Standard WebAssembly SIMD128 unavailable")
     stage = "shared-memory"
     const SharedMemory = request.sharedArrayBuffer
     if (!request.isolated || !SharedMemory) throw new WasmInitializationError(stage, `Cross-origin isolated shared memory unavailable (${facts})`)

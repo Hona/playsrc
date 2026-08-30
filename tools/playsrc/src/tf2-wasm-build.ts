@@ -18,7 +18,7 @@ export class Tf2WasmBuildError extends Error {
 
 export function threadedWasmRustFlags(root: string, cargoHome: string, sysroot: string): string[] {
   return [
-    "-Ctarget-feature=+atomics,+bulk-memory,+simd128",
+    "-Ctarget-feature=+atomics,+bulk-memory",
     "-Clink-arg=--shared-memory",
     "-Clink-arg=--max-memory=4294967296",
     "-Clink-arg=--import-memory",
@@ -35,8 +35,8 @@ function wasmSourcePathFlags(root: string, cargoHome: string, sysroot: string): 
 }
 
 export function audioWasmRustFlags(root: string, cargoHome: string, sysroot: string): string[] {
-  // Audio has its own unshared memory; only the deterministic SIMD and source
-  // remapping contract is common with the threaded gameplay build.
+  // Audio has its own unshared memory and measured decoder SIMD requirement.
+  // Gameplay keeps its independently qualified target features.
   return ["-Ctarget-feature=+simd128", ...wasmSourcePathFlags(root, cargoHome, sysroot)]
 }
 

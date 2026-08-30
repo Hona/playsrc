@@ -27,6 +27,11 @@ Builds/tests open no browser. The browser stage installs only the Chromium and
 supporting binaries selected by the pinned Playwright package and records the
 executable hash; it never launches a browser or selects a fallback channel.
 
+`simd-decoder` compares the configured MP3 decoder's scalar reference and SIMD
+module in the real headed browser, not gameplay FPS. Prepare its authenticated
+fixtures with `test tools/playsrc/tests/simd-configured.test.ts` at the exact
+checkout commit, then use `PrepareProfile simd-decoder` and ordinary `Run`.
+
 ## Windows consent and ownership
 
 Every Windows `run` above returns a scheduled task identity immediately. The
