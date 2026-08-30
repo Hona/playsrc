@@ -92,6 +92,8 @@ const PROFILES = Object.freeze({
   "integrated-lifecycle": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "integrated-lifecycle" } },
   gameui: { config: "playwright.gameui-profile.config.ts", target: "jump_beef" },
   "button-parity": { config: "playwright.button-parity-profile.config.ts", target: "jump_beef" },
+  "button-parity-scaled": { config: "playwright.button-parity-profile.config.ts", target: "jump_beef", environment: { PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1.25" } },
+  "button-controls": { config: "playwright.button-controls-profile.config.ts", target: "jump_beef" },
   "main-menu": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "main-menu" } },
   hud: { config: "playwright.hud-profile.config.ts", target: "jump_beef" },
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },
