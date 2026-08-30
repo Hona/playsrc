@@ -24,3 +24,11 @@ test("idle, same-sequence commands, interrupted changes and recreated panels can
   }
   expect(teamModelPlayback(undefined, { ...panel, sequence: "idle" }, 0, 0).sample).toBe(true)
 })
+
+test("short sequences keep sampling until the studio transition owner has finished fading", () => {
+  const hover = { ...panel, sequence: "hover" }
+  const initial = teamModelPlayback(undefined, hover, 1, 5 / 30)
+  const ended = { ...initial.state, sampledSeconds: 5 / 30, transitioning: true }
+  expect(teamModelPlayback(ended, hover, 1.18, 5 / 30).sample).toBe(true)
+  expect(teamModelPlayback({ ...ended, transitioning: false }, hover, 1.21, 5 / 30).sample).toBe(false)
+})

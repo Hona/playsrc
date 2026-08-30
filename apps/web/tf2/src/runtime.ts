@@ -2521,7 +2521,7 @@ export class Tf2Application {
           const selected = requests.find((candidate) => candidate.request.identity === item.identity)
           if (!selected) throw new Error("TF2 team-door pose identity differs from its authored request")
           this.#teamSelectionPoses.set(selected.panel, item)
-          this.#teamSelectionAnimations.set(selected.panel, { ...selected.state, sampledSeconds: selected.request.elapsedSeconds })
+          this.#teamSelectionAnimations.set(selected.panel, { ...selected.state, sampledSeconds: selected.request.elapsedSeconds, transitioning: item.transitioning })
         }
       }
       const panels: readonly ModelPanelPass[] = authored.map((panel, index) => {

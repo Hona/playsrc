@@ -2487,6 +2487,7 @@ struct ModelPoseRequest {
     class_selection: bool,
     model_panel: bool,
     entity_model_panel: bool,
+    pose_transitioning: bool,
     model_panel_reset: bool,
     flex_controllers: Option<BTreeMap<String, f32>>,
     actor_identity: u32,
@@ -2903,6 +2904,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             class_selection: kind == 3,
             model_panel: matches!(kind, 3 | 4 | 6),
             entity_model_panel: kind == 8,
+            pose_transitioning: false,
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
             actor_identity: if kind == 7 { 0 } else { actor_identity },
@@ -3378,6 +3380,12 @@ fn encode_model_poses(
                 entry.insert(pose);
             }
             let pose = sampled_poses.get(&pose_key).ok_or(())?;
+            let mut entity_request;
+            let request = if request.entity_model_panel {
+                entity_request = request.clone();
+                entity_request.pose_transitioning = class_scenes.get(&request.identity).ok_or(())?.transitions.is_transitioning();
+                &entity_request
+            } else { request };
             stage = "world-model-primitives";
             let selected = playsrc_studio_model::select_primitives(
                 model,
@@ -3691,7 +3699,7 @@ fn encode_model_pose_part(
     ] {
         out.extend_from_slice(&value.0.to_le_bytes());
     }
-    out.extend_from_slice(&[u8::from(timing.looping), 0, 0, 0]);
+    out.extend_from_slice(&[u8::from(timing.looping), u8::from(request.pose_transitioning), 0, 0]);
     out.extend_from_slice(&previous_cycle.to_le_bytes());
     out.extend_from_slice(&cycle.to_le_bytes());
     if let Some(view) = view {

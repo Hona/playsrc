@@ -5654,6 +5654,7 @@ mod tests {
         let mut transitions = crate::SequenceTransitioner::default();
         assert!(transitions.update(&model, 0, 1.0, 1.0, 0.99, &parameters).unwrap().is_empty());
         let layers = transitions.update(&model, 1, 0.0, 1.02, 1.0, &parameters).unwrap();
+        assert!(transitions.is_transitioning());
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].sequence, 0);
         assert!((f32::from_bits(layers[0].weight.0) - 0.972).abs() < 1e-5);
@@ -5667,6 +5668,7 @@ mod tests {
         let interrupted = transitions.update(&model, 0, 0.0, 1.05, 1.04, &parameters).unwrap();
         assert_eq!(interrupted.iter().map(|v| v.sequence).collect::<Vec<_>>(), [1, 0]);
         assert!(transitions.update(&model, 0, 1.0, 1.3, 1.29, &parameters).unwrap().is_empty());
+        assert!(!transitions.is_transitioning());
         // A terminal pose may have been reused for many paints; its next fade
         // starts at the previous paint, not at its last expensive pose sample.
         let resumed = transitions.update(&model, 1, 0.0, 5.02, 5.0, &parameters).unwrap();
