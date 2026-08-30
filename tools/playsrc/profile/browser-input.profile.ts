@@ -7,6 +7,7 @@ import { startupNativeReader } from "./native-startup"
 import { requireStartupNative, startupPixelEvidence } from "./static-startup-gate"
 
 test("game-owned repeated keydowns retain scores, focus and release", async ({ page }) => {
+  const lifecycleOnly = process.env.PROFILE_INPUT_LIFECYCLE_ONLY === "1"
   const config = await loadLocalConfig()
   const output = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   if (!output) throw new Error("Run through the checked headed profile owner")
@@ -38,6 +39,8 @@ test("game-owned repeated keydowns retain scores, focus and release", async ({ p
     const file = `${name}.page.png`
     await writeFile(path.join(output, file), bytes)
     captures.push({ file, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), pixels: startupPixelEvidence(bytes) })
+    observations.push({ phase: name, state: await state(), application: await main.evaluate(element => ({ ...(element as HTMLElement).dataset })) })
+    await writeFile(path.join(output, "browser-input.json"), JSON.stringify({ observations, captures, native: native.records }, null, 2))
   }
   const state = () => page.evaluate(() => ({ focused: document.hasFocus(), active: document.activeElement?.className,
     scroll: [scrollX, scrollY], locked: document.pointerLockElement?.className ?? null,
@@ -49,7 +52,10 @@ test("game-owned repeated keydowns retain scores, focus and release", async ({ p
     await admit()
     await page.keyboard.press("Backquote")
     const entry = page.locator("[aria-label='Console command']")
-    const command = async (text: string) => { await entry.fill(text); await entry.press("Enter") }
+    const command = async (text: string) => {
+      if (await main.getAttribute("data-console-visible") !== "true") await page.keyboard.press("Backquote")
+      await entry.fill(text); await entry.press("Enter")
+    }
     await command("map pl_upward")
     await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 90_000 })
     await command("jointeam red")
@@ -59,6 +65,7 @@ test("game-owned repeated keydowns retain scores, focus and release", async ({ p
     await expect(main).toHaveAttribute("data-phase", "Ready")
     await page.keyboard.press("Backquote")
     await expect(main).toHaveAttribute("data-console-visible", "false")
+    if (!lifecycleOnly) {
     await capture("closed")
     // Repeated down calls use Chromium's trusted autoRepeat delivery. A single
     // down plus a timer does NOT generate OS/browser repeated keydown events.
@@ -187,14 +194,27 @@ test("game-owned repeated keydowns retain scores, focus and release", async ({ p
     if (await main.getAttribute("data-gameui") !== "pause") await page.keyboard.press("Escape")
     await page.locator("[data-vgui-name='ResumeButton']").click()
     await expect(main).toHaveAttribute("data-gameui", "in-game")
-    await page.keyboard.down("ArrowUp")
+    }
+    const scoreKey = lifecycleOnly ? "Tab" : "ArrowUp"
+    await page.keyboard.down(scoreKey)
     await page.keyboard.press("Backquote")
     await command("map pl_upward")
-    await page.keyboard.up("ArrowUp")
+    await page.keyboard.up(scoreKey)
     await expect(main).toHaveAttribute("data-scoreboard-visible", "false")
     await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 60_000 })
+    await capture("replacement-ready")
+    if (await main.getAttribute("data-team-selection-visible") === "true") {
+      await command("jointeam red")
+      await expect(main).toHaveAttribute("data-class-selection-visible", "true")
+    }
+    if (await main.getAttribute("data-class-selection-visible") === "true") {
+      await command("joinclass soldier")
+      await expect(main).toHaveAttribute("data-class-selection-visible", "false")
+    }
     if (await main.getAttribute("data-console-visible") === "true") await page.keyboard.press("Backquote")
     await page.keyboard.press("Escape")
+    await capture("replacement-escape")
+    await expect(main).toHaveAttribute("data-gameui", "pause", { timeout: 3000 })
     await page.locator("[data-vgui-name='DisconnectButton']").click()
     await expect(main).toHaveAttribute("data-phase", "MainMenu")
     await expect(main).toHaveAttribute("data-scoreboard-visible", "false")
