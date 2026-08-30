@@ -2830,7 +2830,7 @@ class SourceVguiRuntime implements VguiRuntime {
       return
     }
     const corner = panel.proportional ? Math.max(Math.trunc(this.proportional(8, panel) / 2), 8) : 8
-    const mask = Math.max(0, Math.min(15, Number(panel.properties.get("RoundedCorners") ?? 15)))
+    const mask = Math.max(0, Math.min(15, Number(panel.properties.first("RoundedCorners") ?? 15)))
     const textures = ["Texture1", "Texture2", "Texture3", "Texture4"].map((name) => String(panel.animationValues.get(name) ?? ""))
     const cornerPositions = ["0 0", "100% 0", "100% 100%", "0 100%"]
     const bits = [1, 2, 8, 4]
