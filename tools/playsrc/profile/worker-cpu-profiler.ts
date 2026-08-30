@@ -110,6 +110,10 @@ export async function prepareWorkerCpuCapture(browser: CDPSession, pageCdp: CDPS
     }
     return {
       unsampledTargets: targets.filter(target => !gameplay.includes(target)),
+      async heapUsage() {
+        return Promise.all(attached.map(async ({ target, session, contextId }) => ({ targetId: target.targetId, executionContextId: contextId,
+          beforeEpoch: Date.now(), usage: await session.send("Runtime.getHeapUsage"), afterEpoch: Date.now() })))
+      },
       async start() {
         if (started) throw new Error("Worker CPU capture already started")
         started = true

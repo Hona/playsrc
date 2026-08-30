@@ -9,6 +9,7 @@ export default headedProfileConfiguration({
     : process.env.PROFILE_SCENARIOS === "setup-round" ? "setup-round.profile.ts"
     : process.env.PROFILE_SCENARIOS === "control-points" ? "control-points.profile.ts"
     : process.env.PROFILE_SCENARIOS === "koth" ? "koth.profile.ts"
+    : process.env.PROFILE_SCENARIOS === "sustained-koth" ? "sustained-koth.profile.ts"
     : process.env.PROFILE_SCENARIOS === "map-admission" ? "map-admission.profile.ts"
     : process.env.PROFILE_SCENARIOS === "soundscape-selection" ? "soundscape-selection.profile.ts"
     : process.env.PROFILE_SCENARIOS === "soundscape-water" ? "soundscape-water.profile.ts"
