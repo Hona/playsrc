@@ -251,7 +251,8 @@ class Integration implements Tf2TeamSelectionIntegration {
     const model = authored && object(authored, "model")
     if (!model?.children.some(child => child.name.toLowerCase() === "animation" && scalar(child, "name") === animation)) return
     this.#animations.set(name, animation)
-    this.#animationRevisions.set(name, ++this.#animationRevision)
+    this.#animationRevision += 1
+    this.#animationRevisions.set(name, ((this.#animationRevisions.get(name) ?? 0) + 1) >>> 0)
   }
 
   #enter(team: Tf2TeamChoice, entered: boolean): void {

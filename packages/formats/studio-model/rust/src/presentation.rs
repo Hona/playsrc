@@ -5652,8 +5652,8 @@ mod tests {
         }
         let parameters = vec![float(0.0)];
         let mut transitions = crate::SequenceTransitioner::default();
-        assert!(transitions.update(&model, 0, 1.0, 1.0, 0.99, &parameters).unwrap().is_empty());
-        let layers = transitions.update(&model, 1, 0.0, 1.02, 1.0, &parameters).unwrap();
+        assert!(transitions.update(&model, 0, 1.0, 1.0, 0.99, &parameters, 0).unwrap().is_empty());
+        let layers = transitions.update(&model, 1, 0.0, 1.02, 1.0, &parameters, 0).unwrap();
         assert!(transitions.is_transitioning());
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].sequence, 0);
@@ -5665,18 +5665,21 @@ mod tests {
         let world = apply_entity_transform(&model, &pose, source_entity_transform(vector([290.0, 0.0, -34.0]), vector([0.0, 180.0, 0.0])).unwrap()).unwrap();
         let matrix = world.bone_matrices[1].0.map(|v| f32::from_bits(v.0));
         assert!(matrix[8] > 0.0 && -matrix[4] > 0.0, "positive local rotation raises the screen-right axis; do not negate it");
-        let interrupted = transitions.update(&model, 0, 0.0, 1.05, 1.04, &parameters).unwrap();
+        let interrupted = transitions.update(&model, 0, 0.0, 1.05, 1.04, &parameters, 0).unwrap();
         assert_eq!(interrupted.iter().map(|v| v.sequence).collect::<Vec<_>>(), [1, 0]);
-        assert!(transitions.update(&model, 0, 1.0, 1.3, 1.29, &parameters).unwrap().is_empty());
+        assert!(transitions.update(&model, 0, 1.0, 1.3, 1.29, &parameters, 0).unwrap().is_empty());
         assert!(!transitions.is_transitioning());
         // A terminal pose may have been reused for many paints; its next fade
         // starts at the previous paint, not at its last expensive pose sample.
-        let resumed = transitions.update(&model, 1, 0.0, 5.02, 5.0, &parameters).unwrap();
+        let resumed = transitions.update(&model, 1, 0.0, 5.02, 5.0, &parameters, 0).unwrap();
         assert!((f32::from_bits(resumed[0].weight.0) - 0.972).abs() < 1e-5);
         transitions.clear();
-        assert!(transitions.update(&model, 1, 0.0, 6.0, 5.99, &parameters).unwrap().is_empty());
+        assert!(transitions.update(&model, 1, 0.0, 6.0, 5.99, &parameters, 0).unwrap().is_empty());
+        assert_eq!(transitions.update(&model, 1, 0.0, 6.01, 6.0, &parameters, 1).unwrap().len(), 1);
+        assert!(transitions.update(&model, 1, 1.0, 6.3, 6.29, &parameters, 1).unwrap().is_empty());
+        assert!(transitions.update(&model, 1, 0.0, 6.4, 6.39, &parameters, 9).unwrap().is_empty(), "three-bit parity wraps without a forced transition");
         model.sequences[0].flags |= 2;
-        assert!(transitions.update(&model, 0, 0.0, 6.01, 6.0, &parameters).unwrap().is_empty());
+        assert!(transitions.update(&model, 0, 0.0, 6.5, 6.49, &parameters, 10).unwrap().is_empty());
     }
 
     #[test]

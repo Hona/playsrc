@@ -6,6 +6,7 @@ struct Entry {
     cycle: f32,
     time: f32,
     fade_out: f32,
+    parity: u8,
 }
 
 /// C_BaseAnimating sequence transitions, distinct from studio frame interpolation.
@@ -28,31 +29,33 @@ impl SequenceTransitioner {
         time: f32,
         previous_paint_time: f32,
         parameters: &[Float32],
+        revision: u32,
     ) -> Result<Vec<AnimationLayer>, PresentationError> {
         let invalid = || PresentationError { code: PresentationErrorCode::InvalidState, identity: model.identity.clone() };
         if ![cycle, time, previous_paint_time].into_iter().all(f32::is_finite) || previous_paint_time > time {
             return Err(invalid());
         }
         let incoming = model.sequences.get(sequence).ok_or_else(invalid)?;
+        let parity = (revision & 7) as u8;
         if let Some(current) = self.queue.last_mut() {
             if current.time < previous_paint_time {
                 let timing = sequence_timing(model, current.sequence, parameters)?;
                 current.cycle = advance(current.cycle, previous_paint_time - current.time, timing);
                 current.time = previous_paint_time;
             }
-            if current.time != 0.0 && current.sequence != sequence {
+            if current.time != 0.0 && (current.sequence != sequence || current.parity != parity) {
                 if incoming.flags & 2 != 0 {
                     self.queue.clear();
                 } else {
                     current.fade_out = f32::from_bits(model.sequences[current.sequence].fade_out.0)
                         .min(f32::from_bits(incoming.fade_in.0));
                 }
-                self.queue.push(Entry { sequence, cycle, time, fade_out: 0.0 });
+                self.queue.push(Entry { sequence, cycle, time, fade_out: 0.0, parity });
             } else {
-                *current = Entry { sequence, cycle, time, fade_out: 0.0 };
+                *current = Entry { sequence, cycle, time, fade_out: 0.0, parity };
             }
         } else {
-            self.queue.push(Entry { sequence, cycle, time, fade_out: 0.0 });
+            self.queue.push(Entry { sequence, cycle, time, fade_out: 0.0, parity });
         }
         let last = self.queue.len() - 1;
         let mut index = 0;

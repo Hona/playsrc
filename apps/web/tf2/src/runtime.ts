@@ -2498,6 +2498,7 @@ export class Tf2Application {
         const request = Object.freeze({
           identity: 0x1000 + index,
           entityModelPanel: true,
+          entityAnimationRevision: panel.animationRevision,
           modelPanelReset: step.reset,
           model: panel.model.toLowerCase(),
           activity: panel.sequence,

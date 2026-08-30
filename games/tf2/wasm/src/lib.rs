@@ -2487,6 +2487,7 @@ struct ModelPoseRequest {
     class_selection: bool,
     model_panel: bool,
     entity_model_panel: bool,
+    entity_animation_revision: u32,
     pose_transitioning: bool,
     model_panel_reset: bool,
     flex_controllers: Option<BTreeMap<String, f32>>,
@@ -2757,7 +2758,7 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             || (attachments_only == 1 && (kind != 1 || has_fire_view != 1))
             || (has_fire_view == 1 && kind != 1)
             || model_panel_reset > 1 || (model_panel_reset != 0 && !matches!(kind, 3 | 4 | 6 | 8))
-            || (kind == 8 && (actor_identity != 0 || has_cloak || hud_model || item_definition.is_some()))
+            || (kind == 8 && (has_cloak || hud_model || item_definition.is_some()))
             || item_definition.is_some_and(|definition| playsrc_tf2::equipment::supported_item(definition).is_none())
             || item_definition.is_some() && !matches!(kind, 3 | 4 | 5 | 6) && activity_start_tick.is_none()
         {
@@ -2904,10 +2905,11 @@ fn decode_model_requests(bytes: &[u8]) -> Result<Vec<ModelPoseRequest>, ()> {
             class_selection: kind == 3,
             model_panel: matches!(kind, 3 | 4 | 6),
             entity_model_panel: kind == 8,
+            entity_animation_revision: if kind == 8 { actor_identity } else { 0 },
             pose_transitioning: false,
             model_panel_reset: model_panel_reset != 0,
             flex_controllers: None,
-            actor_identity: if kind == 7 { 0 } else { actor_identity },
+            actor_identity: if matches!(kind, 7 | 8) { 0 } else { actor_identity },
             cloak: if kind == 7 { None } else { cloak },
             preparation,
             hud_model,
@@ -3362,7 +3364,7 @@ fn encode_model_poses(
                         retained.model = request.model.clone();
                     }
                     let layers = retained.transitions.update(model, sequence, cycle, request.current_time,
-                        (request.current_time - request.frame_time).max(0.0), &pose_parameters).map_err(|_| ())?;
+                        (request.current_time - request.frame_time).max(0.0), &pose_parameters, request.entity_animation_revision).map_err(|_| ())?;
                     (sequence, cycle, layers)
                 } else { (sequence, cycle, Vec::new()) };
                 let pose = playsrc_studio_model::sample_pose_at_time(

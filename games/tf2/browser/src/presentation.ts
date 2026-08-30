@@ -335,6 +335,7 @@ export type ModelPoseRequest = Readonly<{
   controlPoint?: number
   modelPanel?: boolean
   entityModelPanel?: boolean
+  entityAnimationRevision?: number
   modelPanelReset?: boolean
   cloak?: ActorCloakState
   actorIdentity?: number
@@ -433,6 +434,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
       || (request.worldItem !== undefined && typeof request.worldItem !== "boolean")
       || (request.modelPanel !== undefined && typeof request.modelPanel !== "boolean")
       || (request.entityModelPanel !== undefined && typeof request.entityModelPanel !== "boolean")
+      || (Boolean(request.entityModelPanel) !== (request.entityAnimationRevision !== undefined))
       || (request.entityModelPanel && (request.modelPanel || request.classSelection || request.itemModel || request.phase !== undefined || request.cloak || request.worldItem || request.handsOnlyViewmodel || request.controlPoint !== undefined || request.actorIdentity !== undefined || request.itemDefinition !== undefined || request.packedBody !== undefined))
       || (request.modelPanelReset !== undefined && typeof request.modelPanelReset !== "boolean")
       || ((request.classSelection || request.modelPanel) && ((request.itemModel !== undefined && (request.classSelection || !request.worldItem)) || request.handsOnlyViewmodel || request.phase !== undefined || request.cloak !== undefined))
@@ -449,7 +451,7 @@ export function encodeModelPoseBatch(requests: readonly ModelPoseRequest[]): Uin
     const cloak = request.cloak
     if (cloak && (!Number.isSafeInteger(cloak.identity) || cloak.identity < 1 || cloak.identity > 0xffff_ffff)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
     if (request.controlPoint !== undefined && (!Number.isSafeInteger(request.controlPoint) || request.controlPoint <= 0 || request.controlPoint > 0xffff_ffff || request.actorIdentity !== undefined || cloak || request.itemModel || request.classSelection || request.modelPanel)) throw new ProjectilePresentationError("MalformedFact", "control point pose identity")
-    const actorIdentity = request.actorIdentity ?? cloak?.identity ?? 0
+    const actorIdentity = request.entityAnimationRevision ?? request.actorIdentity ?? cloak?.identity ?? 0
     if (!Number.isSafeInteger(actorIdentity) || actorIdentity < 0 || actorIdentity > UINT32_MAX || (cloak && cloak.identity !== actorIdentity)) throw new ProjectilePresentationError("MalformedFact", "model actor identity")
     view.setUint32(at, request.controlPoint ?? actorIdentity, true); at += 4
     for (const value of cloak ? [cloak.localFactor, cloak.worldFactor, cloak.rawFactor, ...cloak.playerTint] : [0, 0, 0, 0, 0, 0]) {
