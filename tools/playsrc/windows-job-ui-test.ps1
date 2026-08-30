@@ -15,14 +15,17 @@ if($Observe) {
  if((Split-Path $Observe) -ne (Join-Path $config.sourceCacheDir 'evidence/windows-job-ui-tests')){throw 'Invalid observer directory'}
  Add-Type -Path (Join-Path $PSScriptRoot 'windows-readback-guard.cs')
  [PlaysrcReadbackGuard]::Start(45000,536870912,(Join-Path $Observe 'observer-fault.json'))
- Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
  Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class DiagnosticDialog {
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
+ [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window,int id);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr window,StringBuilder text,int count);
+ public static string Text(IntPtr window){var text=new StringBuilder(128);GetWindowTextW(window,text,text.Capacity);return text.ToString();}
 }
 '@
  [IO.File]::WriteAllText((Join-Path $Observe 'ready'),"$PID")
@@ -44,8 +47,8 @@ public static class DiagnosticDialog {
  $handle=[IntPtr][long]$display.dialog.window;[uint32]$pidOfWindow=0
  [void][DiagnosticDialog]::GetWindowThreadProcessId($handle,[ref]$pidOfWindow)
  if($pidOfWindow -ne $helper.Id -or ![DiagnosticDialog]::IsWindowVisible($handle)){throw 'Native diagnostic window differs'}
- $element=[System.Windows.Automation.AutomationElement]::FromHandle($handle)
- $names=@($element.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button))|ForEach-Object {$_.Current.Name})
+ $approve=[DiagnosticDialog]::GetDlgItem($handle,100);$deny=[DiagnosticDialog]::GetDlgItem($handle,101)
+ $names=@([DiagnosticDialog]::Text($approve),[DiagnosticDialog]::Text($deny))
  if($names -notcontains 'Approve' -or $names -notcontains 'Deny'){throw 'Native Approve/Deny controls were not found'}
  $began=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
  if($Case -eq 'race') {
@@ -53,12 +56,10 @@ public static class DiagnosticDialog {
    if($remaining -gt 0){Start-Sleep -Milliseconds $remaining}
  }
  if($Case -in 'approve','deny','race','cancel','failure') {
-   $buttonName=if($Case -in 'deny','race'){'Deny'}else{'Approve'}
-   $button=$element.FindFirst([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,$buttonName))
-   $invoke=$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-   try {$invoke.Invoke()} catch {if($Case -ne 'race'){throw}}
+   $button=if($Case -in 'deny','race'){$deny}else{$approve}
+   if(![DiagnosticDialog]::PostMessageW($button,0xF5,[IntPtr]0,[IntPtr]0) -and $Case -ne 'race'){throw 'Native button delivery failed'}
  } elseif($Case -eq 'close') {
-   $pattern=$element.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern);$pattern.Close()
+   if(![DiagnosticDialog]::PostMessageW($handle,0x10,[IntPtr]0,[IntPtr]0)){throw 'Native close delivery failed'}
  } elseif($Case -eq 'escape') {
    if(![DiagnosticDialog]::PostMessageW($handle,0x100,[IntPtr]27,[IntPtr]0)){throw 'Escape key delivery failed'}
    [void][DiagnosticDialog]::PostMessageW($handle,0x101,[IntPtr]27,[IntPtr]0)
