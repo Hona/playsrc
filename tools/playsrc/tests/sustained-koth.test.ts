@@ -5,7 +5,7 @@ test("retained entropy is explicit and never forwarded as a Playwright option", 
   const identity = "a".repeat(64)
   expect(parseHeadedProfile(["sustained-harvest", "--sustained-entropy", identity]).sustainedEntropy).toBe(identity)
   expect(parseHeadedProfile(["sustained-viaduct", "--sustained-entropy", identity]).playwright).toEqual([])
-  expect(profileMinimumRemainingMilliseconds("sustained-harvest")).toBe(165_000)
+  expect(profileMinimumRemainingMilliseconds("sustained-harvest")).toBe(SUSTAINED_KOTH.minimumBrowserMilliseconds)
   expect(() => parseHeadedProfile(["gameplay", "--sustained-entropy", identity])).toThrow()
   expect(() => parseHeadedProfile(["sustained-harvest", "--sustained-entropy", "../bad"])).toThrow()
 })
