@@ -1322,6 +1322,8 @@ test("profile authored headed Upward offline-practice default roster and actual 
     frames: completed, workers, inputs: measurement.input, longAnimationFrames: measurement.longAnimationFrames,
     trace: traceEvents, cpu: cpuProfile,
     traceOffsetMicroseconds: exactTraceWindow?.offsetMicroseconds ?? 0,
+    mainThread: exactTraceWindow && Number.isSafeInteger(exactTraceWindow.pid) && Number.isSafeInteger(exactTraceWindow.tid)
+      ? { pid: exactTraceWindow.pid!, tid: exactTraceWindow.tid! } : undefined,
   })
   const gpuProcessBefore = processBefore?.processInfo.find(process => process.type === "GPU")
   const gpuProcessAfter = processAfter?.processInfo.find(process => process.type === "GPU")
