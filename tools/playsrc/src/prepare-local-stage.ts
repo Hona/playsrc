@@ -1,4 +1,3 @@
-import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 import path from "node:path"
 import { loadLocalConfig, type LocalConfig } from "./config"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
@@ -6,14 +5,7 @@ import { rustBuildIdentity } from "./build-identity"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
 import { borrowedWindowsJobLock } from "./windows-job-native"
-
-export type LocalPreparationStage = Readonly<{ kind: "wasm" | "producer" }> | Readonly<{ kind: "resources"; target: string }>
-
-export function parseLocalPreparationStage(args: readonly string[]): LocalPreparationStage {
-  if (args.length === 1 && (args[0] === "wasm" || args[0] === "producer")) return { kind: args[0] }
-  if (args.length === 2 && args[0] === "resources" && (TF2_TARGET_NAMES as readonly string[]).includes(args[1]!)) return { kind: "resources", target: args[1]! }
-  throw new Error("build-stage accepts wasm | producer | resources <configured map>")
-}
+import { parseLocalPreparationStage, type LocalPreparationStage } from "./local-job-command"
 
 const owners = { identity: rustBuildIdentity, wasm: buildTf2Wasm, producer: prepareSourceBundleProducer, resources: buildSourceBundle }
 

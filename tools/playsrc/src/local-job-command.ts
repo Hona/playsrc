@@ -1,6 +1,13 @@
 import { parseHeadedProfile } from "./profile-runner"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
-import { parseLocalPreparationStage } from "./prepare-local-stage"
+
+export type LocalPreparationStage = Readonly<{ kind: "wasm" | "producer" }> | Readonly<{ kind: "resources"; target: string }>
+
+export function parseLocalPreparationStage(args: readonly string[]): LocalPreparationStage {
+  if (args.length === 1 && (args[0] === "wasm" || args[0] === "producer")) return { kind: args[0] }
+  if (args.length === 2 && args[0] === "resources" && (TF2_TARGET_NAMES as readonly string[]).includes(args[1]!)) return { kind: "resources", target: args[1]! }
+  throw new Error("build-stage accepts wasm | producer | resources <configured map>")
+}
 
 /** One authority for queue transport, native dispatch and ownership readback.
  * UI policy is derived from the workload, never a caller-supplied switch. */

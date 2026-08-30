@@ -40,7 +40,7 @@ public static partial class PlaysrcNativeJob {
    if(name=="queued-cancel")File.WriteAllText(Path.Combine(run,"cancel"),"test cancellation");
    string file=Path.Combine(run,"request.json");Save(file,request);
    var output=new StringWriter();var previousOut=Console.Out;var previousIn=Console.In;
-   try {Console.SetOut(output);Console.SetIn(new StringReader("{\"error\":null}\n"));Run(file,request.ownerPid,interactive);}
+   try {Console.SetOut(output);Console.SetIn(new StringReader("{\"error\":null}\n"));Run(Json.Serialize(new {request=request,interactive=interactive}),request.ownerPid);}
    finally {Console.SetOut(previousOut);Console.SetIn(previousIn);}
    var receipt=Json.Deserialize<Receipt>(File.ReadAllText(Path.Combine(run,"native-result.json")));
    Assert(receipt.schema=="playsrc-native-job-test-only","test schema isolation");
