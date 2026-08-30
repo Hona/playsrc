@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { expect, test, guardStartupInput } from "./application-test"
+import { profileArtifact } from "./profile-artifacts"
 import { loadLocalConfig } from "../src/config"
 import { applicationBuildIdentity } from "../src/build-identity"
 import { startupNativeReader } from "./native-startup"
@@ -217,6 +218,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     if (!diagnostic) expect(lateStarted - started).toBeGreaterThanOrEqual(90_000)
   } catch (failure) { error = String(failure) }
   finally {
+    let capturedTrace: { raw: Awaited<ReturnType<typeof drainTraceStream>>; dataLossOccurred: boolean } | undefined
     if (!replayArtifact) replayArtifact = await replay.stop(false).catch(failure => ({ failure: String(failure) }))
     if (cpuStarted) workerCpu = await cpu?.stop().catch(failure => ({ failure: String(failure) }))
     if (observerStarted) sampled = await page.evaluate(mark => { const sample = (globalThis as any).__playsrcSustained.stop(); performance.mark(mark, { startTime: sample.ended }); return sample }, TRACE_END).catch(() => null)
@@ -226,15 +228,22 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
         await browser.send("Tracing.end")
         const complete = await finished
         const raw = await drainTraceStream(browser, complete.stream)
-        compositor = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred),
-          identity: { sourceCommit: commit, sourceFingerprint: fingerprint, sourceUnchanged: fingerprint === await applicationBuildIdentity(process.cwd()), target, lateStarted, lateEnded },
-          categories: ["disabled-by-default-display.framedisplayed", "blink.user_timing", "disabled-by-default-v8.gc"],
-          probes: { started: sampled?.started ?? 0, ended: sampled?.ended ?? 0, joins: [], dropped: sampled ? sampled.dropped + sampled.rpc.dropped : 1 } })
+        capturedTrace = { raw, dataLossOccurred: Boolean(complete.dataLossOccurred) }
       } catch (failure) { error ??= String(failure) }
     }
     await worker?.evaluate(() => (globalThis as any).__playsrcWorkerMemoryTracking(false)).catch(() => {})
     await cpu?.close().catch(() => {})
     memory.close(); await native.close(); await Promise.all([cdp.detach(), browser.detach()])
+    await profileArtifact(async () => {
+    if (capturedTrace) {
+      try {
+        const { raw, dataLossOccurred } = capturedTrace
+        compositor = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred,
+          identity: { sourceCommit: commit, sourceFingerprint: fingerprint, sourceUnchanged: fingerprint === await applicationBuildIdentity(process.cwd()), target, lateStarted, lateEnded },
+          categories: ["disabled-by-default-display.framedisplayed", "blink.user_timing", "disabled-by-default-v8.gc"],
+          probes: { started: sampled?.started ?? 0, ended: sampled?.ended ?? 0, joins: [], dropped: sampled ? sampled.dropped + sampled.rpc.dropped : 1 } })
+      } catch (failure) { error ??= String(failure) }
+    }
     const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null, main: null }
     const window = compositor?.analysis.window
     const issues = setupOnly ? [] : sustainedRunIssues(sampled, lateStarted, lateEnded, !diagnostic)
@@ -268,8 +277,11 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       instrumentation: { mainCpu: false, workerCpu: true, operations, note: "Main CPU sampling is not installed: V8 profiler startup heap iteration must not be mistaken for a gameplay freeze. Worker startup/stop spans remain visible in the continuous window." },
       allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
+    if (error) throw new Error(error)
+    if (!setupOnly) {
+      expect(compositor?.manifest.complete).toBe(true)
+      expect(records.at(-1).state.bots.reduce((sum: number, bot: any) => sum + bot.shots, 0)).toBeGreaterThan(records[0].state.bots.reduce((sum: number, bot: any) => sum + bot.shots, 0))
+    }
+    })
   }
-  if (error) throw new Error(error)
-  expect(compositor?.manifest.complete).toBe(true)
-  expect(records.at(-1).state.bots.reduce((sum: number, bot: any) => sum + bot.shots, 0)).toBeGreaterThan(records[0].state.bots.reduce((sum: number, bot: any) => sum + bot.shots, 0))
 })
