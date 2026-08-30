@@ -17,6 +17,7 @@ test("dashboard square corners and authored rounded menu controls paint independ
   const act = async (action: () => Promise<unknown>) => { await admit(); await action() }
   guardStartupInput(page, admit)
   const records: unknown[] = []
+  const checks: Array<() => void> = []
   await profileArtifact(async () => { await writeFile(path.join(directory, "native-admission.json"), JSON.stringify(native.records, null, 2)) })
   const selector = (name: string) => `[data-vgui-name="${name}"]`
   // Configured ClientScheme TanDark / TFOrange / GreenSolid / CreditsGreen.
@@ -25,11 +26,15 @@ test("dashboard square corners and authored rounded menu controls paint independ
   const capture = async (name: string, state: string, fill: number[], side: "left" | "right", rounded: boolean) => {
     const control = page.locator(selector(name))
     await expect(control).toBeVisible()
+    const bounds = (await control.boundingBox())!
+    const viewport = page.viewportSize()!
+    const clip = { x: Math.max(0, bounds.x), y: Math.max(0, bounds.y),
+      width: Math.min(viewport.width, bounds.x + bounds.width) - Math.max(0, bounds.x),
+      height: Math.min(viewport.height, bounds.y + bounds.height) - Math.max(0, bounds.y) }
     await admit()
-    const bytes = await control.screenshot()
+    const bytes = await page.screenshot({ clip })
     await admit()
     const dpr = await page.evaluate(() => devicePixelRatio)
-    const bounds = await control.boundingBox()
     const attributes = await control.evaluate(element => Object.fromEntries([...element.attributes].map(attribute => [attribute.name, attribute.value])))
     await profileArtifact(async () => {
     const file = path.join(directory, `${name}-${state}.png`)
@@ -41,26 +46,30 @@ test("dashboard square corners and authored rounded menu controls paint independ
     }
     const samples = Array.from({ length: 8 }, (_, y) => Array.from({ length: 8 }, (_, x) => pixel(x, y)))
     records.push({ name, state, file, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), dpr,
-      bounds, side, rounded, samples, control: { attributes } })
+      bounds, clip, side, rounded, samples, control: { attributes } })
     await writeFile(path.join(directory, "corners.json"), JSON.stringify(records, null, 2))
     // SDK Panel::DrawBox: each unmasked 8x8 corner is filled, not textured.
     // At fractional backing scale avoid the outer pixel's partial coverage.
+    checks.push(() => {
+    const sameColor = (actual: number[], expected: number[]) => actual.every((channel, index) => Math.abs(channel - expected[index]!) <= 1)
+    // Chromium's constant-color gradient can dither by one channel byte;
+    // retain raw bytes and allow only that quantization, never missing coverage.
     if (!rounded) {
-      for (let y = 1; y < 7; y++) for (let x = 1; x < 7; x++) expect(samples[y]![x], `${name}/${state} square ${x},${y}`).toEqual(fill)
+      for (let y = 1; y < 7; y++) for (let x = 1; x < 7; x++) expect(sameColor(samples[y]![x]!, fill), `${name}/${state} square ${x},${y}`).toBe(true)
     } else {
       // Independent DXT5 alpha decode of configured 8x800corner1.vtf
       // (sha256 343e6cfd978e8d1d912ad1135dea57065485a43d62f4f6b1fd3cec19a33bea5a)
       // and its mirrored corners: at 8x8, (1,1) is discarded by alpha-test .1;
       // (6,6) is fully opaque. No CSS-radius assertion substitutes for pixels.
-      expect(pixel(10, 1), `${name}/${state} authored strip fill`).toEqual(fill)
+      expect(sameColor(pixel(10, 1), fill), `${name}/${state} authored strip fill`).toBe(true)
       // The authored texture's RGB is uniform. Its alpha-255 samples must all
       // equal one another, independently of the material's tint conversion.
       // This is a silhouette check, not a golden for that color conversion.
-      const opaque = (rgb: number[]) => rgb.every((channel, index) => channel === samples[6]![6]![index])
+      const opaque = (rgb: number[]) => sameColor(rgb, samples[6]![6]!)
       if (dpr === 1) {
         // '#' is source alpha 255; '.' includes alpha-test rejection and the
         // four partially covered edge samples (~226/255). Inspect all 64 pixels.
-        // Straight filled corners and the strip above remain byte-exact.
+        // Filled corners and strips use the authored color, with quantization only.
         const coverage = ["......##", "....####", "..######", "..######", ".#######", ".#######", "########", "########"]
         for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) expect(opaque(samples[y]![x]!), `${name}/${state} texture ${x},${y}`).toBe(coverage[y]![x] === "#")
       } else {
@@ -68,6 +77,7 @@ test("dashboard square corners and authored rounded menu controls paint independ
         expect(opaque(samples[6]![6]!), `${name}/${state} opaque corner`).toBe(true)
       }
     }
+    })
     })
   }
   try {
@@ -132,5 +142,6 @@ test("dashboard square corners and authored rounded menu controls paint independ
     await cdp.detach()
   } finally {
     await native.close()
+    await profileArtifact(async () => { for (const check of checks) check() })
   }
 })
