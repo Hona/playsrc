@@ -12,14 +12,15 @@ $source=[regex]::Replace($source,'(?s)static void RequireDesktopEmpty\(IntPtr jo
 if($source.Contains('TaskDialogIndirect(ref config') -or $source.Contains('Check(CreateProcessW(') -or !$source.Contains('return TestSession();')){throw 'Test isolation substitution failed; refusing UI or workload dispatch'}
 $fixture=@'
 public static partial class PlaysrcNativeJob {
- static int prompts, completions, sessions, dispatches;
+  static int prompts, completions, sessions, dispatches, browsers;
  static bool closed;
  static string scenario;
  static void Assert(bool value,string message) {if(!value)throw new Exception(scenario+": "+message);}
  static int TestSession() {sessions++;if(scenario=="session-fault")throw new Exception("session-fault");return Process.GetCurrentProcess().SessionId;}
  static Dialog TestShow(Request request,bool completion) {
   if(completion) {Assert(closed && dispatches==1,"completion before prompt closure/dispatch");completions++;}
-  else prompts++;
+   else prompts++;
+   if(!completion && scenario=="changed-source")File.WriteAllText(Path.Combine(request.run,"desktop-prepared.json"),"changed during prompt");
   closed=true;
   return new Dialog{decision=completion?"dismissed-timeout":scenario=="deny"||scenario=="close"||scenario=="escape"||scenario=="race-deny"?"denied":scenario=="display-fault"?"display-failed":scenario=="timeout"||scenario=="race-timeout"?"approved-timeout":"approved",
    error=scenario=="display-fault"?"display-fault":null,displayedAt=Now-3001,decidedAt=Now,dismissedAt=Now,visibleMilliseconds=3001,window=1,sessionId=Process.GetCurrentProcess().SessionId};
@@ -35,9 +36,11 @@ public static partial class PlaysrcNativeJob {
      var bytes=Encoding.UTF8.GetBytes("{\"testOnly\":true}");File.WriteAllBytes(Path.Combine(request.run,"desktop-prepared.json"),bytes);
      string prepared;using(var hash=SHA256.Create())prepared=BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-","").ToLowerInvariant();
      var stage=new DesktopRequest{job=request.job,task=request.task,run=request.run,lockToken=request.lockToken,childPid=receipt.childPid,childCreatedAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,stage=Guid.NewGuid().ToString(),preparedIdentity=prepared};
+     if(scenario=="stale-request")stage.childCreatedAt--;
      Save(Path.Combine(request.run,"desktop-request.json"),stage);
      DesktopTransition(request,receipt,owner,IntPtr.Zero);
      Assert(closed && receipt.consent.dismissedAt<=receipt.desktopStartedAt,"browser before dismissed consent");
+     browsers++;
      if(scenario=="failure")throw new Exception("browser failed");
      if(scenario=="cancel")throw new OperationCanceledException("browser cancelled");
      stage.succeeded=true;Save(Path.Combine(request.run,"desktop-release.json"),stage);
@@ -52,8 +55,8 @@ public static partial class PlaysrcNativeJob {
  }
  public static string TestLifecycle(string directory,string manifest) {
   int cases=0;
-   foreach(bool interactive in new[]{false,true}) foreach(string name in new[]{"approve","timeout","deny","close","escape","race-deny","race-timeout","display-fault","session-fault","failure","cancel","preflight","queued-cancel","queue-fault","preparation-failure","preparation-cancel"}) {
-   scenario=name;prompts=completions=sessions=dispatches=0;closed=false;
+   foreach(bool interactive in new[]{false,true}) foreach(string name in new[]{"approve","timeout","deny","close","escape","race-deny","race-timeout","display-fault","session-fault","failure","cancel","preflight","queued-cancel","queue-fault","preparation-failure","preparation-cancel","changed-source","stale-request"}) {
+    scenario=name;prompts=completions=sessions=dispatches=browsers=0;closed=false;
    var run=Path.Combine(directory,Guid.NewGuid().ToString());Directory.CreateDirectory(run);
    var request=new Request{job="test-only",task="test-only",run=run,action=name,manifest=manifest,invocation=new[]{interactive?"profile":"diagnostic"},command=new[]{"NEVER EXECUTED"},ownerPid=Process.GetCurrentProcess().Id,lockPath=Path.Combine(run,"lock.json"),lockToken="test-only",deadline=Now+15000,preflightFailure=name=="preflight"?"missing content":null};
    Save(request.lockPath,new {pid=request.ownerPid,token=name=="queue-fault"?"mismatch":"test-only"});
@@ -66,9 +69,10 @@ public static partial class PlaysrcNativeJob {
    Assert(receipt.schema=="playsrc-native-job-test-only","test schema isolation");
    bool preflight=name=="preflight"||name=="queued-cancel"||name=="queue-fault";
     bool prepared=!preflight && name!="preparation-failure" && name!="preparation-cancel";
-    bool rejected=!prepared || interactive && (name=="session-fault"||name=="display-fault"||name=="deny"||name=="close"||name=="escape"||name=="race-deny");
+    bool rejected=!prepared || interactive && (name=="session-fault"||name=="display-fault"||name=="deny"||name=="close"||name=="escape"||name=="race-deny"||name=="changed-source"||name=="stale-request");
     Assert(dispatches==(preflight?0:1),"preparation dispatch count");
-    Assert(prompts==(!interactive||!prepared||name=="session-fault"?0:1),"prompt count");
+    Assert(prompts==(!interactive||!prepared||name=="session-fault"||name=="stale-request"?0:1),"prompt count");
+    Assert(browsers==(interactive&&!rejected?1:0),"browser dispatch count");
    Assert(completions==(interactive&&!rejected&&name!="failure"&&name!="cancel"?1:0),"completion count");
    Assert(receipt.uiInvocations==prompts+completions,"recorded UI count");
    Assert(interactive || sessions==0 && receipt.consent==null && receipt.completion==null && receipt.uiInvocations==0,"background acquired desktop/UI");

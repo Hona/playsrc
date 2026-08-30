@@ -22,6 +22,7 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION)("sessio
       action: "profile runner-handoff session-zero rejection", invocation: ["profile", "runner-handoff"],
       command: [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", repositoryRoot, "runner-handoff"], cwd: repositoryRoot,
       lockPath, lockToken: lock.token, deadline: Date.now() + 60_000, preflightFailure: null }, process.env, async () => {})
+    console.log(`Actual session-zero rejection receipt: ${path.join(run, "native-result.json")}`)
     expect(result.outcome).toBe("failed")
     expect(result.error).toContain("matching physical console")
     expect(result.childPid).toBeGreaterThan(0)
@@ -31,6 +32,5 @@ test.skipIf(process.platform !== "win32" || !process.env.SSH_CONNECTION)("sessio
     expect(result.completion).toBeNull()
     expect(result.treeEmpty).toBe(true)
     expect(result.uiInvocations).toBe(0)
-    console.log(`Actual session-zero rejection receipt: ${path.join(run, "native-result.json")}`)
   } finally { await releaseHeadedProfileLock(lockPath, lock.token) }
 }, 70_000)

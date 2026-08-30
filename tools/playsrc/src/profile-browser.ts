@@ -9,7 +9,7 @@ import { fileFingerprint } from "./file-fingerprint"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive } from "./profile-lock"
 
 type BrowserOwner = { token: string; pid: number; browserPid: number; arguments: string[]; endpoint: string; identity: string; executable: string; executableSha256: string }
-export type BrowserLaunch = { channel?: string; args?: string[] }
+export type BrowserLaunch = { channel?: string; args?: string[]; executablePath?: string }
 export type PreparedBrowser = { launch: BrowserLaunch; identity: string; executable: string; executableSha256: string }
 
 export async function prepareBrowserLaunch(launch: BrowserLaunch): Promise<PreparedBrowser> {
