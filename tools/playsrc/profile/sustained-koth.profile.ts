@@ -9,7 +9,7 @@ import { startupNativeReader } from "./native-startup"
 import { requireStartupNative } from "./static-startup-gate"
 import { chooseTf2Team } from "./team-selection-evidence"
 import { installDeliveryRpcObserver } from "./delivery-rpc"
-import { SUSTAINED_KOTH, sustainedKothTarget, requireSustainedBudget, installSustainedObservation, summarizeSustainedWindow } from "./sustained-koth"
+import { SUSTAINED_KOTH, sustainedKothTarget, requireSustainedBudget, installSustainedObservation, summarizeSustainedWindow, sustainedRunIssues } from "./sustained-koth"
 import { windowsProcessMemory } from "./windows-process-memory"
 import { prepareWorkerCpuCapture } from "./worker-cpu-profiler"
 import { drainTraceStream, retainCompositorEvidence, retainEvidenceBlob } from "./compositor-evidence"
@@ -193,6 +193,9 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null,
       main: mainCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(mainCpu)), "main.cpuprofile") : null }
     const window = compositor?.analysis.window
+    const issues = sustainedRunIssues(sampled, lateStarted, lateEnded)
+    if (!compositor?.manifest.complete) issues.push("Compositor evidence is incomplete")
+    if (issues.length) error ??= issues.join("; ")
     const phases = sampled ? Object.fromEntries([["whole", sampled.started, sampled.ended], ["early", sampled.started, Math.min(sampled.started + 10_000, sampled.ended)], ["late", lateStarted, lateEnded]]
       .filter(([, from, to]) => Number(to) > Number(from)).map(([name, from, to]) => [name, { ...summarizeSustainedWindow(sampled, Number(from), Number(to)),
         compositor: window ? summarizeCompositorTruth(compositor.events, Number(to) - Number(from), { startedMicroseconds: Number(from) * 1000 + window.offsetMicroseconds, endedMicroseconds: Number(to) * 1000 + window.offsetMicroseconds }) : null }])) : null
