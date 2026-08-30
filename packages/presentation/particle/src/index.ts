@@ -177,6 +177,10 @@ export function decodeParticleRenderOutput(
   const bounds = boundsState === 0 ? null : Object.freeze({ minimum, maximum })
   const output: ParticleRenderItem[] = new Array(count)
   const sheets = new SheetImagesCache(view)
+  // Consecutive particles commonly belong to one PCF system (notably weather).
+  // Its immutable UUID does not need sixteen new string concatenations for
+  // every particle. Compare all128 bits; keep only this packet's last identity.
+  let identityOffset = -1, systemUuid = ""
   for (let index = 0; index < count; index += 1) {
     const offset = OUTPUT_HEADER_BYTES + index * OUTPUT_RECORD_BYTES
     const primitive = bytes[offset + 14]
@@ -261,6 +265,15 @@ export function decodeParticleRenderOutput(
     ) {
       throw new ParticleAdapterError("MalformedOutput", "particle output contains an invalid scalar")
     }
+    const uuidOffset = offset + 16
+    if (identityOffset < 0
+      || view.getUint32(uuidOffset, true) !== view.getUint32(identityOffset, true)
+      || view.getUint32(uuidOffset + 4, true) !== view.getUint32(identityOffset + 4, true)
+      || view.getUint32(uuidOffset + 8, true) !== view.getUint32(identityOffset + 8, true)
+      || view.getUint32(uuidOffset + 12, true) !== view.getUint32(identityOffset + 12, true)) {
+      systemUuid = uuid(bytes, uuidOffset)
+      identityOffset = uuidOffset
+    }
     output[index] = Object.freeze({
       identity: view.getUint32(offset, true),
       effectIdentity: view.getUint32(offset + 4, true),
@@ -268,7 +281,7 @@ export function decodeParticleRenderOutput(
       rendererIndex: view.getUint16(offset + 12, true),
       primitive: primitive === 0 ? "sprite" : primitive === 1 ? "trail" : "rope",
       sky: (bytes[offset + 15]! & 1) !== 0,
-      systemUuid: uuid(bytes, offset + 16),
+      systemUuid,
       material,
       position,
       previousPosition,
