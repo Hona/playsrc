@@ -42,6 +42,7 @@
         "@playsrc/rendering": "workspace:*",
         "@playsrc/settings": "workspace:*",
         "@playsrc/vgui": "workspace:*",
+        "@playsrc/wasm": "workspace:*",
       },
     },
     "packages/asset-store": {
@@ -55,6 +56,9 @@
     },
     "packages/presentation/audio": {
       "name": "@playsrc/audio",
+      "dependencies": {
+        "@playsrc/wasm": "workspace:*",
+      },
     },
     "packages/presentation/particle": {
       "name": "@playsrc/particle",
@@ -71,6 +75,9 @@
     },
     "packages/runtime/settings": {
       "name": "@playsrc/settings",
+    },
+    "packages/runtime/wasm": {
+      "name": "@playsrc/wasm",
     },
     "tools/playsrc": {
       "name": "@playsrc/tool",
@@ -325,6 +332,8 @@
     "@playsrc/tool": ["@playsrc/tool@workspace:tools/playsrc"],
 
     "@playsrc/vgui": ["@playsrc/vgui@workspace:packages/presentation/vgui"],
+
+    "@playsrc/wasm": ["@playsrc/wasm@workspace:packages/runtime/wasm"],
 
     "@playwright/test": ["@playwright/test@1.61.1", "", { "dependencies": { "playwright": "1.61.1" }, "bin": { "playwright": "cli.js" } }, "sha512-8nKv6+0RJSL9FE4jYOEGXnPeM/Hg12qZpmqzZjRh3qM0Y7c3z1mrOTfFLids72RDQYVh9WpLEfR5WdpNX4fkig=="],
 
