@@ -91,6 +91,7 @@ const PROFILES = Object.freeze({
   engineer: { config: "playwright.engineer-profile.config.ts", target: "pl_upward" },
   "integrated-lifecycle": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "integrated-lifecycle" } },
   gameui: { config: "playwright.gameui-profile.config.ts", target: "jump_beef" },
+  "button-parity": { config: "playwright.button-parity-profile.config.ts", target: "jump_beef" },
   "main-menu": { config: "playwright.profile.config.ts", target: "jump_beef", environment: { PROFILE_SCENARIOS: "main-menu" } },
   hud: { config: "playwright.hud-profile.config.ts", target: "jump_beef" },
   "class-hud": { config: "playwright.class-hud-profile.config.ts", target: "jump_beef" },

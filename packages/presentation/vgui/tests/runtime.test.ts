@@ -151,6 +151,75 @@ function setup(animationScripts = emptyAnimations, customControls: VguiRuntimeCo
 }
 
 describe("generic Source VGUI runtime", () => {
+  test("CExButton borders use disabled, selected, armed, default precedence without changing Button colors", () => {
+    const controls = ["CExButton", "CExImageButton"].map(name => ({
+      name, baseControl: "Button" as const, element: "button" as const, role: "button", focusable: true,
+      animationVariables: [], acceptedProperties: ["border_default", "border_armed", "border_selected", "border_disabled"],
+    }))
+    const { runtime, root } = setup(emptyAnimations, controls)
+    const names = ["Default", "Armed", "Selected", "Disabled", "ButtonDepressedBorder", "ButtonKeyFocusBorder"]
+    operation(runtime, { kind: "replace-scheme", scheme: { ...scheme, borders: names.map((name, index) => ({
+      ...scheme.borders[0]!, name, kind: "line" as const,
+      sides: { left: [{ color: [index + 1, 0, 0, 255] as const, startOffset: 0, endOffset: 0 }], top: [], right: [], bottom: [] },
+    })) } })
+    for (const control of controls) {
+      const id = operation(runtime, { kind: "create-panel", parent: 1, control: control.name, name: control.name, properties: [
+        ...names.slice(0, 4).map(name => ({ name: `border_${name.toLowerCase()}`, value: name })),
+        { name: "wide", value: "100" }, { name: "tall", value: "24" },
+      ] }).panel!
+      const element = descendants(root).find(value => value.dataset.vguiPanel === String(id))!
+      const expectBorder = (index: number) => expect(element.style.backgroundImage).toContain(`rgba(${index}, 0, 0, 1)`)
+      expectBorder(1)
+      operation(runtime, { kind: "request-focus", panel: id })
+      operation(runtime, { kind: "frame", timeSeconds: 0 })
+      expectBorder(1) // Authored default overrides the base key-focus border too.
+      operation(runtime, { kind: "pointer-move", x: 10, y: 10, pointerId: 1 })
+      operation(runtime, { kind: "frame", timeSeconds: 0 })
+      expectBorder(2)
+      expect(element.style.backgroundColor).toBe("rgba(70, 80, 90, 1)")
+      operation(runtime, { kind: "pointer-press", button: "left", x: 10, y: 10, pointerId: 1, clicks: 1 })
+      operation(runtime, { kind: "frame", timeSeconds: 0 })
+      expectBorder(3) // Selection border, but the depressed color has priority.
+      expect(element.style.backgroundColor).toBe("rgba(200, 180, 100, 1)")
+      operation(runtime, { kind: "set-panel-state", panel: id, enabled: false })
+      expectBorder(4)
+      operation(runtime, { kind: "delete-panel", panel: id })
+      operation(runtime, { kind: "frame", timeSeconds: 0 })
+    }
+    runtime.destroy()
+  })
+
+  test("CEx border selection replaces rounded Button backgrounds and clears prior image borders", () => {
+    const { runtime, root } = setup(emptyAnimations, [{
+      name: "CExButton", baseControl: "Button", element: "button", role: "button", focusable: true,
+      animationVariables: [], acceptedProperties: ["border_default", "border_armed"],
+    }])
+    operation(runtime, { kind: "replace-scheme", scheme: { ...scheme, borders: [
+      { ...scheme.borders[0]!, name: "ButtonBorder", backgroundType: 2 },
+      { ...scheme.borders[0]!, name: "Square", backgroundType: 0 },
+      { name: "Textured", kind: "scalable-image", inset: { left: 0, top: 0, right: 0, bottom: 0 },
+        backgroundType: 0, paintFirst: true, image: "test/icon", color: [255, 255, 255, 255],
+        sourceCornerWidth: 4, sourceCornerHeight: 4, drawCornerWidth: 2, drawCornerHeight: 2 },
+    ] } })
+    const id = operation(runtime, { kind: "create-panel", parent: 1, control: "CExButton", name: "Authored", properties: [
+      { name: "BORDER_DEFAULT", value: "Square" }, { name: "border_armed", value: "Textured" },
+      { name: "wide", value: "100" }, { name: "tall", value: "24" },
+    ] }).panel!
+    const element = descendants(root).find(value => value.dataset.vguiPanel === String(id))!
+    expect(element.style.backgroundColor).toBe("rgba(50, 60, 70, 1)")
+    expect(element.style.backgroundImage).not.toContain("url(")
+    operation(runtime, { kind: "pointer-move", x: 10, y: 10, pointerId: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(element.style.borderImageSource).toContain("data:image/png")
+    operation(runtime, { kind: "pointer-move", x: 110, y: 10, pointerId: 1 })
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(element.style.borderImage).toBe("none")
+    const writes = element.style.writes
+    operation(runtime, { kind: "frame", timeSeconds: 0 })
+    expect(element.style.writes).toBe(writes)
+    runtime.destroy()
+  })
+
   test("property-only image edits invalidate paint while restored batch values retain it", () => {
     const { runtime, root } = setup()
     operation(runtime, { kind: "replace-scheme", scheme: { ...scheme, revision: "animated", images: [{ ...scheme.images[0]!, frames: 2,

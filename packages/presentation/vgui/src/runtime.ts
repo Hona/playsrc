@@ -2555,6 +2555,12 @@ class SourceVguiRuntime implements VguiRuntime {
     panel.element.style.backgroundSize = "auto"
     panel.element.style.backgroundPosition = "0% 0%"
     panel.element.style.backgroundRepeat = "repeat"
+    // A retained image border is not part of the next line/no-border paint.
+    // Keep its allocation for a later state, but never leave its pixels visible.
+    const borderRaster = panel.chromeElements.get("border-raster")
+    if (borderRaster) borderRaster.hidden = true
+    panel.element.style.border = "0"
+    panel.element.style.borderImage = "none"
     let foreground = this.resolveColor("Panel.FgColor", WHITE)
     let background = this.resolveColor("Panel.BgColor", TRANSPARENT)
     if (sameName(sourceControl, "Label")) {
@@ -2672,7 +2678,18 @@ class SourceVguiRuntime implements VguiRuntime {
   }
 
   private presentationBorder(panel: PanelState): VguiBorder | null {
-    if (panel.properties.get("paintborder") === "0") return null
+    if (panel.properties.first("paintborder") === "0") return null
+    // SDK CExButton::GetBorder: these are state-specific border overrides,
+    // not Panel::border. In particular, a default override also wins over
+    // the base Button's depressed/key-focus border.
+    if (sameName(panel.control, "CExButton") || sameName(panel.control, "CExImageButton")) {
+      for (const state of [!panel.enabled ? "disabled" : null, panel.selected ? "selected" : null, panel.armed ? "armed" : null, "default"]) {
+        if (state === null) continue
+        const name = panel.properties.first(`border_${state}`)
+        const border = name ? this.borders.get(asciiFold(name)) : undefined
+        if (border) return border
+      }
+    }
     if (panel.border) return this.borders.get(asciiFold(panel.border)) ?? null
     const control = panel.sourceControl
     let name: string | null = null
