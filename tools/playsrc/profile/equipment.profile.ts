@@ -212,8 +212,10 @@ test("twelve hitscan items admit their models, native firing and authored audio"
     await equipment.locator(`[data-vgui-name='Itemitem-${definition}']`).click()
     await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible({ timeout: 20_000 })
     await equipment.locator("[data-vgui-name='BackButton']").click()
-    await equipment.locator("[data-vgui-name='BackButton']").click()
     await expect(equipment).toBeHidden()
+    await expect(main).toHaveAttribute("data-class-selection-visible", "true")
+    await page.keyboard.press("Escape")
+    await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     // Switching class is a real respawn path even when the current map's room
     // does not admit an immediate loadout refresh.
     if ((await actual())?.definition !== definition) {
@@ -455,8 +457,11 @@ test("projectile unlocks equip through the authored loadout and fire their nativ
     await equipment.locator(`[data-vgui-name='Itemitem-${definition}']`).click()
     await expect(equipment.locator("[data-vgui-name='EquipmentPlayer']")).toBeVisible()
     await page.screenshot({ path: path.join(directory, `${definition}-equipped.png`) })
-    await equipment.locator("[data-vgui-name='BackButton']").click(); await equipment.locator("[data-vgui-name='BackButton']").click()
+    await equipment.locator("[data-vgui-name='BackButton']").click()
     await expect(equipment).toBeHidden()
+    await expect(main).toHaveAttribute("data-class-selection-visible", "true")
+    await page.keyboard.press("Escape")
+    await expect(main).toHaveAttribute("data-class-selection-visible", "false")
     await command("joinclass scout"); await expect.poll(async () => (await actual())?.class).toBe(1)
     await command(`joinclass ${className}`); await expect.poll(async () => (await actual())?.class).toBe(playerClass)
     const selection = metadata.classSlots.find(value => value.class === playerClass)!.selectionSlot

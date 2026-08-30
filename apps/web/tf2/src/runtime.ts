@@ -357,6 +357,7 @@ export class Tf2Application {
   #equipmentProfile?: Tf2EquipmentProfile
   #equipment?: Tf2EquipmentPresentation
   #equipmentRoot?: HTMLElement
+  #equipmentReturn?: () => void
   #equipmentPreview: Tf2EquipmentPreview | null = null
   #equipmentRenderTask?: Promise<void>
   #equipmentPreviewReset = true
@@ -1541,6 +1542,7 @@ export class Tf2Application {
     this.#localMatch = undefined
     this.#equipment?.destroy()
     this.#equipment = undefined
+    this.#equipmentReturn = undefined
     this.#equipmentRoot?.remove()
     this.#equipmentRoot = undefined
     this.#uiResources?.destroy()
@@ -2094,20 +2096,30 @@ export class Tf2Application {
         reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
         clock: { nowSeconds: () => this.#frameClock.current }, random: this.#presentationRandom,
         modelSurface: this.#canvas,
-        onEquip: async (identity, slot, definition) => {
-          const loadout = this.#equipmentProfile!.state()!.classes[identity - 1]!
+        onEquip: async (identity, slot, definition, signal) => {
+          const operation = this.#operation, profile = this.#equipmentProfile!
+          const loadout = profile.state()!.classes[identity - 1]!
           const replacement = definition ?? loadout.baseItems.find(item => item.slot === slot)?.definitionIndex
           const definitions = [...new Set([...loadout.items.filter(item => item.slot !== slot).map(item => item.definitionIndex), ...(replacement === undefined ? [] : [replacement])])]
-          try {
-            await this.#admitEquipment(definitions, this.#loaded ? this.#generation : 0)
-            return await this.#equipmentProfile!.equip(identity, slot, definition)
-          } catch (error) {
-            if (error instanceof DOMException && error.name === "AbortError") return this.#equipmentProfile!.state()!
-            this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Equipment admission failed") })
-            return this.#equipmentProfile!.state()!
-          }
+          const current = AbortSignal.any([signal, operation.signal])
+          current.throwIfAborted()
+          await this.#admitEquipment(definitions, this.#loaded ? this.#generation : 0)
+          current.throwIfAborted()
+          const state = await profile.equip(identity, slot, definition, current)
+          if (this.#closed || !this.#operations.current(operation) || profile !== this.#equipmentProfile) throw new DOMException("Equipment owner was replaced", "AbortError")
+          return state
         },
-        onClose: () => { this.#neutral() },
+        onError: (error, current) => {
+          if (!current) { this.#output(`ERROR: ${this.#failureDetail(error, "Equipment admission failed")}`); return }
+          this.#equipment?.hide()
+          this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Equipment admission failed") })
+        },
+        onClose: () => {
+          this.#neutral()
+          const restore = this.#equipmentReturn
+          this.#equipmentReturn = undefined
+          restore?.()
+        },
         onPreview: preview => {
           const previous = this.#equipmentPreview
           this.#equipmentPreview = preview
@@ -2121,6 +2133,16 @@ export class Tf2Application {
     }
     this.#neutral()
     if (document.pointerLockElement === this.#canvas) void document.exitPointerLock()
+    const selection = this.#classSelection?.state()
+    const focused = document.activeElement
+    this.#equipmentReturn = () => {
+      if (this.#closed || !this.#operations.current(operation)) return
+      if (selection?.visible && selection.team !== null && this.#view.gameUi === "in-game") {
+        this.#classSelection?.dispatch({ kind: "show", team: selection.team, current: selection.current })
+        this.#classSelection?.dispatch({ kind: "hover", identity: selection.selected })
+      }
+      if (focused instanceof HTMLElement && focused.isConnected) focused.focus()
+    }
     this.#classSelection?.dispatch({ kind: "hide" })
     this.#teamSelection?.dispatch({ kind: "hide" })
     this.#equipment.show(state, playerClass)
@@ -2157,6 +2179,7 @@ export class Tf2Application {
     const task = (async () => {
       await priorTask?.catch(error => { if (error?.name !== "AbortError") throw error })
       if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+      const client = this.#client!
       const previous = this.#equipmentAdmissions.get(generation)
       const wanted = [...new Set(definitions)]
       if (previous && wanted.every(definition => previous.definitions.has(definition)) && (generation !== 0 || wanted.length === previous.definitions.size)) return
@@ -2164,14 +2187,23 @@ export class Tf2Application {
       const resources = new Map<string, Uint8Array>()
       const configuration = await this.#decodeResourceSet(this.#resourceGraph!, requested.map(definition => `equipment-${definition}`), resources, operation.signal)
       if (!configuration) throw new Error("Equipment admission did not create a bounded resource generation")
-      let retained = false
+      let retained = false, replacedPanel = false
       try {
         const profile = this.#renderLevel === 2 ? 1 : 0
-        const bytes = await this.#client!.admitEquipmentModels(generation, requested, configuration, profile)
+        if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+        const bytes = await client.admitEquipmentModels(generation, requested, configuration, profile)
+        if (generation === 0) {
+          replacedPanel = true
+          if (this.#equipmentAdmissions.get(0) === previous) {
+            this.#equipmentAdmissions.delete(0)
+            this.#equipmentPanelArtifacts = undefined
+          }
+        }
         const artifacts = parseEquipmentModelArtifacts(bytes, resources)
         if (epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
         this.#equipmentPreparing = true
         await Promise.all([this.#displayTask, this.#equipmentRenderTask, this.#classSelectionRenderTask, this.#teamSelectionRenderTask])
+        if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
         if (!this.#renderer) {
           this.#renderer = await createRenderer({ canvas: this.#canvas,
             serviceAudio: this.#serviceAudio,
@@ -2183,26 +2215,13 @@ export class Tf2Application {
         if (epoch !== this.#equipmentAdmissionEpoch) throw new DOMException("Equipment admission was replaced", "AbortError")
         await this.#renderer.admitModels({ models: artifacts.geometry, modelMaterials: artifacts.modelMaterials, authoredTextures: artifacts.authoredTextures,
           materialStates: artifacts.materialStates, modelFacing: this.#modelFacing(artifacts), particleTextures: artifacts.particleTextures })
-        if (generation === 0) {
-          this.#equipmentPanelArtifacts = artifacts
-          if (previous) for (const source of previous.sources) await this.#client!.releaseResources(source)
-          this.#equipmentAdmissions.set(0, { definitions: new Set(wanted), sources: new Set([configuration.generation]) })
-        } else {
-          if (!this.#artifacts || generation !== this.#generation) throw new DOMException("Equipment map was replaced", "AbortError")
-          this.#artifacts = Object.freeze({ ...this.#artifacts, models: new Map([...this.#artifacts.models, ...artifacts.models]),
-            materialStates: new Map([...this.#artifacts.materialStates, ...artifacts.materialStates]), modelMaterials: new Map([...this.#artifacts.modelMaterials, ...artifacts.modelMaterials]),
-            authoredTextures: new Map([...this.#artifacts.authoredTextures, ...artifacts.authoredTextures]) })
-          this.#viewmodels?.updateArtifacts(this.#artifacts)
-          this.#equipmentAdmissions.set(generation, { definitions: new Set([...(previous?.definitions ?? []), ...wanted]), sources: new Set([...(previous?.sources ?? []), configuration.generation]) })
-        }
-        retained = true
         const camera: Camera = { position: [0, 0, 0], yawDegrees: 0, pitchDegrees: 0, verticalFovDegrees: 30, near: 1, far: 16384 * Math.sqrt(3) }
         const viewport = this.#viewport()
         const requests = equipmentPipelinePoseRequests(artifacts, viewport.width / viewport.height)
         const passes = generation === 0 ? ["panel"] as const : ["panel", "view", "world"] as const
         for (let offset = 0; offset < requests.length; offset += 32) {
           const batch = requests.slice(offset, offset + 32)
-          const poses = await this.#client!.models(generation, encodeModelPoseBatch(batch))
+          const poses = await client.models(generation, encodeModelPoseBatch(batch))
           if (epoch !== this.#equipmentAdmissionEpoch) throw new DOMException("Equipment admission was replaced", "AbortError")
           const byIdentity = new Map(batch.map(request => [request.identity, request]))
           await this.#renderer.prepareModelPipelines(poses.flatMap(pose => {
@@ -2214,9 +2233,23 @@ export class Tf2Application {
           }), camera, generation === 0 ? undefined : this.#mainFog(this.#artifacts!))
         }
         if (artifacts.particleTextures.length) await this.#renderer.prepareParticlePipelines(camera)
+        if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
+        if (generation === 0) {
+          this.#equipmentPanelArtifacts = artifacts
+          this.#equipmentAdmissions.set(0, { definitions: new Set(wanted), sources: new Set([configuration.generation]) })
+        } else {
+          if (!this.#artifacts || generation !== this.#generation) throw new DOMException("Equipment map was replaced", "AbortError")
+          this.#artifacts = Object.freeze({ ...this.#artifacts, models: new Map([...this.#artifacts.models, ...artifacts.models]),
+            materialStates: new Map([...this.#artifacts.materialStates, ...artifacts.materialStates]), modelMaterials: new Map([...this.#artifacts.modelMaterials, ...artifacts.modelMaterials]),
+            authoredTextures: new Map([...this.#artifacts.authoredTextures, ...artifacts.authoredTextures]) })
+          this.#viewmodels?.updateArtifacts(this.#artifacts)
+          this.#equipmentAdmissions.set(generation, { definitions: new Set([...(previous?.definitions ?? []), ...wanted]), sources: new Set([...(previous?.sources ?? []), configuration.generation]) })
+        }
+        retained = true
       } finally {
         this.#equipmentPreparing = false
-        if (!retained) await this.#client?.releaseResources(configuration.generation).catch(() => {})
+        const release = [...(!retained ? [configuration.generation] : []), ...(replacedPanel && previous ? previous.sources : [])]
+        await Promise.all(release.map(source => client.releaseResources(source)))
       }
     })().catch(error => {
       if (this.#closed || epoch !== this.#equipmentAdmissionEpoch || !this.#operations.current(operation)) throw new DOMException("Equipment admission was replaced", "AbortError")
@@ -6021,7 +6054,7 @@ export class Tf2Application {
       return
     }
     if (this.#localMatch?.handleKey(event)) return
-    if (!this.#view.consoleVisible && this.#equipment?.handleKey(event)) return
+    if (!this.#view.consoleVisible && !this.#view.optionsVisible && this.#equipment?.handleKey(event)) return
     if (!this.#view.consoleVisible && this.#classSelection?.handleKey(event, this.#keyboardAction(event) === "changeclass")) return
     if (!this.#view.consoleVisible && this.#teamSelection?.handleKey(event, this.#keyboardAction(event) === "changeteam")) return
     if (event.code === "Escape" && this.#view.optionsVisible && this.#options?.handleKey(event)) return
