@@ -4,6 +4,7 @@ import path from "node:path"
 import { deliveryTimeline, installDeliveryObserver } from "./frame-delivery"
 import { captureProcessMemory } from "./process-memory"
 import { sustainedWorkerMemory } from "./sustained-worker-memory"
+import { retainBeforeApplicationFailure } from "./application-failure-evidence"
 import { drainTraceStream, retainCompositorEvidence } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth } from "./compositor-truth"
 import { SUSTAINED_KOTH, requireSustainedBudget, checkSustainedObservation, sustainedTrends, sustainedGcEvidence, liveSustainedAttachments } from "./sustained-koth-evidence"
@@ -135,8 +136,27 @@ export async function observeSustainedKoth(options: {
     traceConfig: { recordMode: "recordUntilFull", traceBufferSizeInKb: SUSTAINED_KOTH.traceKilobytes, includedCategories: categories } })
   let failure: unknown, sample: any
   const started = await page.evaluate(start => { const at = performance.now(); (globalThis as any).__playsrcDeliveryObserver.start(at); performance.mark(start, { startTime: at }); return at }, TRACE_START)
+  let stopped: Promise<void> | undefined
+  const finish = () => stopped ??= (async () => {
+    sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
+    const { complete, raw } = await stopLightTrace(browserCdp)
+    const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete && !failure, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
+      identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
+      probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
+    await writeFile(file("delivery.json"), JSON.stringify({ sample, seconds, sustainedAcceptance: !options.diagnosticSeconds, evidence: evidence.artifact, complete: evidence.manifest.complete,
+      completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
+      compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
+      nativeDelivery: evidence.analysis, gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
+      trends: failure ? null : sustainedTrends(records, sample.started, sample.ended),
+      changingPresentedFrames: null, changingPixelEvidence: "Not established by display events or two endpoint screenshots; requires native changing-surface evidence",
+      failure: failure ? String(failure) : null }))
+    if (!failure) await processSnapshot()
+    await retain()
+    if (!evidence.manifest.complete && !failure) throw new Error("Sustained presentation evidence incomplete")
+  })()
+  const releaseFailureOwner = retainBeforeApplicationFailure(page, async error => { failure ??= error; await finish() })
   try {
-    for (let index = 0; index < SUSTAINED_KOTH.historyRecords - 1; index++) {
+    for (let index = 0; index < SUSTAINED_KOTH.historyRecords - 1 && !failure; index++) {
       await checkNativeWindow()
       const previous = records.at(-1)!, state = await read(); records.push(state)
       const transition = checkSustainedObservation(state, records[0], previous)
@@ -147,22 +167,9 @@ export async function observeSustainedKoth(options: {
       if (state.at - started >= seconds * 1000) break
       await page.waitForTimeout(Math.min(1000, seconds * 1000 - (state.at - started)))
     }
-  } catch (error) { failure = error }
+  } catch (error) { failure ??= error }
   finally {
-    sample = await page.evaluate(end => { const at = performance.now(); performance.mark(end, { startTime: at }); return (globalThis as any).__playsrcDeliveryObserver.stop(at) }, TRACE_END)
-    const { complete, raw } = await stopLightTrace(browserCdp)
-    const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
-      identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
-      probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
-    await writeFile(file("delivery.json"), JSON.stringify({ sample, seconds, sustainedAcceptance: !options.diagnosticSeconds, evidence: evidence.artifact, complete: evidence.manifest.complete,
-      completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
-      compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
-      nativeDelivery: evidence.analysis, gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
-      trends: failure ? null : sustainedTrends(records, sample.started, sample.ended),
-      changingPresentedFrames: null, changingPixelEvidence: "Not established by display events or two endpoint screenshots; requires native changing-surface evidence",
-      failure: failure ? String(failure) : null }))
-    await processSnapshot(); await retain()
-    if (!evidence.manifest.complete) throw new Error("Sustained presentation evidence incomplete")
+    try { await finish() } finally { releaseFailureOwner() }
   }
   if (failure) throw failure
   if (sample.ended - sample.started < seconds * 1000 || sample.dropped || sample.missedPublications || sample.lifecycle.length) throw new Error("KOTH window incomplete or interrupted")
