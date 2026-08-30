@@ -110,11 +110,9 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
     exit 0
   }
   if($Action -eq 'Cancel') {
-    if(!$Task -or !$latestRun -or $result){throw 'Cancel requires this exact active task/run'}
-    $runner=OwnedRunner ([IO.Path]::ChangeExtension($launchFile,'owner.json'))
-    if(!$runner -or $runner.HasExited){throw 'Owned launcher is not live'}
-    $runner.Dispose()
-    [IO.File]::WriteAllText((Join-Path $latestRun.FullName 'cancel'),"Cancellation requested for $Task")
+    if(!$Task -or $result){throw 'Cancel requires this exact unfinished task'}
+    $cancelFile=if($latestRun){Join-Path $latestRun.FullName 'cancel'}else{Join-Path $directory "$($Task.Substring('playsrc-local-job-'.Length))-cancel"}
+    [IO.File]::WriteAllText($cancelFile,"Cancellation requested for $Task")
     @{task=$Task;run=$latestRun.FullName;cancellationRequested=$true}|ConvertTo-Json -Compress
     exit 0
   }

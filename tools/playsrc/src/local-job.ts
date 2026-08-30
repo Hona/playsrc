@@ -162,10 +162,11 @@ export async function prepareLocalJob(ref: string, commit: string, root = reposi
   } finally { await preparing.close(); await rm(path.join(directory, "running")) }
 }
 
-async function assertCheckout(checkout: string, job: Job): Promise<void> {
+async function assertCheckout(checkout: string, job: Job, deadline = Date.now() + LIMIT): Promise<void> {
   const env = localJobEnvironment(process.env)
-  if (await execute(["git", "rev-parse", "HEAD"], checkout, env) !== job.commit
-    || await execute(["git", "status", "--porcelain", "--untracked-files=normal"], checkout, env) !== ""
+  const query = (args: string[]) => execute(["git", ...args], checkout, env, undefined, Math.max(1, deadline - Date.now()))
+  if (await query(["rev-parse", "HEAD"]) !== job.commit
+    || await query(["status", "--porcelain", "--untracked-files=normal"]) !== ""
     || JSON.stringify(await loadLocalConfig(checkout)) !== JSON.stringify(job.config)) {
     throw new Error("Prepared checkout/configuration changed; prepare a new job instead of resetting it")
   }
@@ -183,6 +184,9 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     if (!task?.startsWith("playsrc-local-job-") || !ID.test(task.slice("playsrc-local-job-".length))) throw new Error("Windows delegated workloads require the scheduled native job bridge")
     const launcher = JSON.parse(await readFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-launch.owner.json`), "utf8"))
     if (launcher.pid !== process.ppid || !Number.isSafeInteger(launcher.startedEpoch) || launcher.sessionId < 1) throw new Error("Scheduled launcher identity differs")
+    // Scheduler retry or duplicate invocation of the same task cannot consume
+    // a second decision or launch again. A new attempt needs a new task token.
+    await writeFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-claim.json`), JSON.stringify({ job: id, task, launcher, pid: process.pid, claimedAt: Date.now() }), { flag: "wx" })
   }
   const admittedAt = Date.now()
   const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
@@ -197,9 +201,6 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     const text = JSON.stringify({ ...owner, phase: name })
     await running!.write(text, 0, "utf8"); await running!.truncate(Buffer.byteLength(text))
   }
-  await phase("source-validation")
-  if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
-  await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
   await mkdir(run)
   await writeFile(path.join(run, "identity.json"), JSON.stringify({ ...owner, run, commit: job.commit }), { flag: "wx" })
@@ -207,9 +208,17 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     const link = path.join(directory, `${task.slice("playsrc-local-job-".length)}-run.json`)
     await writeFile(`${link}.tmp`, JSON.stringify({ job: id, task, run, pid: process.pid }), { flag: "wx" })
     await rename(`${link}.tmp`, link)
+    if (await Bun.file(path.join(directory, `${task.slice("playsrc-local-job-".length)}-cancel`)).exists()) await writeFile(path.join(run, "cancel"), "Cancellation requested while queued\n", { flag: "wx" })
   }
-  await phase("reserve-ports")
-  const startedAt = owner.startedAt, port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
+  const startedAt = owner.startedAt
+  let port: number | undefined, preflightFailure: string | null = null
+  try {
+    await phase("source-validation")
+    if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
+    await assertCheckout(checkout, job, admittedAt + LIMIT - 10_000)
+    await phase("reserve-ports")
+    if (plan.interactive || args[0] === "build") port = await availableDevelopmentPort()
+  } catch (error) { preflightFailure = String(error) }
   const command = plan.interactive
     ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", checkout, ...plan.command.slice(1)]
     : [process.execPath, ...plan.command]
@@ -219,14 +228,17 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
   try {
     if (process.platform === "win32") {
       await phase("native-consent-command-completion")
-      native = await runWindowsNativeJob({ job: id, task: task!, run, action: args.join(" "), command, cwd: checkout,
-        lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, diagnostic: args[0] === "diagnostic" }, localJobEnvironment(process.env, port), async () => {
+      const action = args.map(value => value.replace(/[\x00-\x1f]/g, " ")).join(" ").slice(0, 512)
+      native = await runWindowsNativeJob({ job: id, task: task!, run, action, invocation: args, command, cwd: checkout,
+        lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, diagnostic: args[0] === "diagnostic", preflightFailure }, localJobEnvironment(process.env, port), async () => {
           await phase("verify-source")
-          await assertCheckout(checkout, job)
+          if (preflightFailure) throw new Error(preflightFailure)
+          await assertCheckout(checkout, job, startedAt + LIMIT - 4_000)
         })
       outcome = native.outcome === "completed" ? "passed" : native.outcome
       failure = native.error ?? (outcome === "passed" ? null : `Native job ${outcome} (exit ${native.exitCode})`)
     } else {
+      if (preflightFailure) throw new Error(preflightFailure)
       await phase("command")
       await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
       outcome = "passed"

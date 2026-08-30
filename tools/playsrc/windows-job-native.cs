@@ -18,7 +18,8 @@ using System.Web.Script.Serialization;
 public static class PlaysrcNativeJob {
  public sealed class Request {
   public string job, task, run, action, executable, cwd, lockPath, lockToken, manifest;
-  public string[] arguments;
+  public string preflightFailure;
+  public string[] arguments, invocation;
   public int ownerPid;
   public long deadline;
   public bool diagnostic;
@@ -30,6 +31,7 @@ public static class PlaysrcNativeJob {
  }
  public sealed class Receipt {
   public string schema="playsrc-native-job-v1", job, task, run, action, lockToken, outcome="failed", error;
+  public string[] invocation;
   public int ownerPid, helperPid, sessionId, childPid, exitCode;
   public long ownerCreatedAt, helperCreatedAt, childCreatedAt, startedAt, finishedAt, commandStartedAt, teardownAt;
   public bool treeEmpty;
@@ -243,7 +245,7 @@ public static class PlaysrcNativeJob {
  public static void Run(string file,int parentPid) {
   var request=Json.Deserialize<Request>(File.ReadAllText(file));
   if(request.ownerPid!=parentPid || request.deadline<=Now || request.deadline-Now>175000)throw new Exception("Invalid native owner/deadline");
-  var receipt=new Receipt{job=request.job,task=request.task,run=request.run,action=request.action,lockToken=request.lockToken,ownerPid=parentPid,helperPid=Process.GetCurrentProcess().Id,startedAt=Now};
+  var receipt=new Receipt{job=request.job,task=request.task,run=request.run,action=request.action,invocation=request.invocation,lockToken=request.lockToken,ownerPid=parentPid,helperPid=Process.GetCurrentProcess().Id,startedAt=Now};
   IntPtr context=IntPtr.Zero;UIntPtr cookie=UIntPtr.Zero;
   using(var owner=Process.GetProcessById(parentPid)) {
    receipt.ownerCreatedAt=new DateTimeOffset(owner.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
@@ -267,6 +269,7 @@ public static class PlaysrcNativeJob {
     var activation=new Activation{size=Marshal.SizeOf(typeof(Activation)),source=request.manifest};
     context=CreateActCtxW(ref activation);if(context==new IntPtr(-1))throw Native("Native dialog activation context");
     Check(ActivateActCtx(context,out cookie),"Activate native common controls");
+    if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
     if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
     receipt.consent=Show(request,false,null,owner);
     Save(Path.Combine(request.run,"consent.json"),receipt);
