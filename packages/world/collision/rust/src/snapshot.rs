@@ -1150,7 +1150,7 @@ impl World {
         let mut world_trace = if request.scope == TraceScope::EntitiesOnly {
             miss(request.start, request.end)
         } else {
-            self.trace_hull_with_scratch(request.start, request.end, request.hull, request.mask, &mut scratch.brushes)?
+            self.trace_hull(request.start, request.end, request.hull, request.mask)?
         };
         world_trace.world = self.identity;
         world_trace.snapshot = Some(snapshot.identity);
