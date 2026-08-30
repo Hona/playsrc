@@ -760,7 +760,8 @@ export class Tf2Application {
 
   #beginLoadingPresentation(): void {
     this.#equipmentAdmissionEpoch += 1
-    if (this.#equipment?.visible()) this.#equipment.hide()
+    if (this.#equipment?.visible()) this.#equipment.hide(false)
+    this.#equipmentReturn = undefined
     if (!this.#configuration) throw new Error("TF2 loading configuration is unavailable")
     const target = this.#loadingTarget ?? this.#activeTarget
     if (!target) throw new Error("TF2 loading target is unavailable")
@@ -2111,7 +2112,8 @@ export class Tf2Application {
         },
         onError: (error, current) => {
           if (!current) { this.#output(`ERROR: ${this.#failureDetail(error, "Equipment admission failed")}`); return }
-          this.#equipment?.hide()
+          this.#equipment?.hide(false)
+          this.#equipmentReturn = undefined
           this.#set({ phase: "Failed", gameUi: "failure", detail: this.#failureDetail(error, "Equipment admission failed") })
         },
         onClose: () => {
@@ -2140,6 +2142,9 @@ export class Tf2Application {
       if (selection?.visible && selection.team !== null && this.#view.gameUi === "in-game") {
         this.#classSelection?.dispatch({ kind: "show", team: selection.team, current: selection.current })
         this.#classSelection?.dispatch({ kind: "hover", identity: selection.selected })
+      } else if (this.#gameUi?.state().kind === "pause") {
+        this.#gameUi.dispatch({ kind: "escape" })
+        return
       }
       if (focused instanceof HTMLElement && focused.isConnected) focused.focus()
     }
