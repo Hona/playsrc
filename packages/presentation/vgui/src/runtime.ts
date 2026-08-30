@@ -809,6 +809,8 @@ class SourceVguiRuntime implements VguiRuntime {
     this.style.textContent = VGUI_CSS
     this.host = this.document.createElement("div")
     this.host.className = "playsrc-vgui-root playsrc-vgui-runtime"
+    this.host.tabIndex = -1
+    this.host.style.outline = "none"
     this.host.dataset.vguiOwner = "playsrc"
     this.host.dataset.vguiRuntime = this.runtimeIdentity
     this.host.style.width = `${this.viewport.width}px`
@@ -1958,6 +1960,9 @@ class SourceVguiRuntime implements VguiRuntime {
     this.releaseApplicationModal(panel.id)
     if (this.modalSubtree === panel.id) this.modalSubtree = null
     if (this.outsideClickListener === panel.id) this.outsideClickListener = null
+    // A replacement transaction must keep browser events in this owner until
+    // its next Source focus frame. Ordinary close and foreign focus stay alone.
+    if (!this.destroyed && this.publicationDepth > 0 && this.document.activeElement && panel.element.contains(this.document.activeElement)) this.host.focus({ preventScroll: true })
     panel.element.remove()
     for (const element of panel.itemElements.values()) {
       element.remove()
