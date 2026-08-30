@@ -443,6 +443,7 @@ async function runProfile(arguments_: readonly string[], root: string, mode: "pr
       if (process.platform !== "win32" || mode === "prepare") preparedBrowser = await measure("browser-preflight", () => prepareBrowserLaunch(launch))
     }
     const verifyPrepared = async () => {
+    if (sustainedEntropy && sustainedEntropy !== await fileFingerprint(path.join(config.sourceCacheDir, "profiles/sustained-koth/entropy", `${sustainedEntropy}.bin`))) throw new Error("Prepared sustained entropy differs from its requested identity")
     if (identity !== await applicationBuildIdentity(root) || configuredIdentity !== await configuredProfileIdentity(config, target, root)
       || generatedIdentity !== null && generatedIdentity !== await generatedProfileIdentity(root)
       || harnessIdentity !== await applicationBuildIdentity(repositoryRoot)) throw new Error("Prepared executable/configured inputs changed before desktop admission")
