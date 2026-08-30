@@ -67,15 +67,21 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await expect(main).toHaveAttribute("data-phase", "MainMenu", { timeout: 35_000 })
     await check()
     await page.locator(".gameui-layer [data-vgui-name='FindAGameButton']").click()
+    await check()
     await page.locator(".gameui-layer [data-vgui-name='CreateServerEntry'] [data-vgui-name='ModeButton']").click()
     const dialog = page.getByRole("dialog", { name: "CREATE SERVER" })
+    await check()
     await dialog.locator("[data-vgui-name='MapList']").click()
+    await check()
     await page.getByRole("option", { name: target, exact: true }).click()
+    await check()
     await dialog.getByRole("tab", { name: "GAME" }).click()
+    await check()
     await dialog.locator("[data-vgui-name='GameplayPage'] [data-vgui-name='NumPlayersTextEntry']").fill("23")
+    await check()
     await dialog.getByRole("button", { name: "Start", exact: true }).click()
     await expect(main).toHaveAttribute("data-team-selection-visible", "true", { timeout: 45_000 })
-    await check(); await chooseTf2Team(page, "red")
+    await chooseTf2Team(page, "red", async () => { await check() })
     await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 20_000 })
     await expect(main).toHaveAttribute("data-bot-count", "23", { timeout: 15_000 })
     expect(JSON.parse(await main.getAttribute("data-local-match-settings") ?? "null")).toMatchObject({ entry: "create-server", mapIdentity: target,
@@ -122,6 +128,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       if (Date.now() >= deadline - SUSTAINED_KOTH.sampleMilliseconds - SUSTAINED_KOTH.extractionMilliseconds) throw new Error("Sustained soak exhausted its reserved budget; no shortening")
       if (Date.now() >= nextNative) { await check(); nextNative = Date.now() + 500 }
       if (at >= nextInput) {
+        await check()
         const key = inputPlan.length % 2 === 0 ? "a" : "d"
         const sent = await page.evaluate(() => performance.now()); await page.keyboard.down(key)
         await page.waitForTimeout(150); await page.keyboard.up(key)
@@ -146,6 +153,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await pixels("aged-after-sample")
     expect(sampled.dropped + sampled.rpc.dropped + sampled.missedFrames).toBe(0)
     expect(sampled.lifecycle).toEqual([])
+    expect(sampled.inputs.map((input: any) => input.code)).toEqual(inputPlan.map(input => input.key === "a" ? "KeyA" : "KeyD"))
     expect(lateStarted - started).toBeGreaterThanOrEqual(90_000)
   } catch (failure) { error = String(failure) }
   finally {
