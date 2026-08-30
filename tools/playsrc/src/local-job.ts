@@ -16,11 +16,27 @@ const SHA = /^[0-9a-f]{40}$/
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 type Job = { schema: "playsrc-local-job-v1"; id: string; origin: string; ref: string; commit: string; config: LocalConfig }
 
-/** A task's launch record is its authority, never another run's newer log. */
+/** A task's immutable run link is its authority, never another run's newer log. */
 export async function readLocalTaskResult(directory: string, task: string) {
   const token = task.slice("playsrc-local-job-".length)
   if (!task.startsWith("playsrc-local-job-") || !ID.test(token)) throw new Error("Invalid task identity")
-  const bytes = await readFile(path.join(directory, `${token}-launch.log`))
+  const linked = await readFile(path.join(directory, `${token}-run.json`), "utf8").catch(error => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    return null
+  })
+  let canonical: Buffer | null = null
+  let linkedRun: string | null = null
+  if (linked) {
+    const identity = JSON.parse(linked)
+    if (identity.job !== path.basename(directory) || identity.task !== task || typeof identity.run !== "string"
+      || path.dirname(identity.run) !== directory || !ID.test(path.basename(identity.run))) throw new Error("Malformed task/run identity")
+    linkedRun = identity.run
+    canonical = await readFile(path.join(identity.run, "result.json")).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      return null
+    })
+  }
+  const bytes = canonical ?? await readFile(path.join(directory, `${token}-launch.log`))
   if (bytes.length > 2 * 1024 * 1024) throw new Error("Task launch record exceeds its bound")
   const text = bytes.toString(bytes[0] === 0xff && bytes[1] === 0xfe ? "utf16le" : "utf8").replace(/^\uFEFF/, "").trim()
   if (!text) return { result: null, launchError: null }
@@ -28,7 +44,7 @@ export async function readLocalTaskResult(directory: string, task: string) {
     const result = JSON.parse(text)
     if (result.schema !== "playsrc-local-job-result-v1" || result.id !== path.basename(directory)
       || result.task !== task || !SHA.test(result.commit) || !["passed", "failed", "denied", "cancelled"].includes(result.outcome) || !Array.isArray(result.command)
-      || typeof result.run !== "string" || path.dirname(result.run) !== directory) throw new Error("Malformed task result")
+      || typeof result.run !== "string" || path.dirname(result.run) !== directory || linkedRun && result.run !== linkedRun) throw new Error("Malformed task result")
     return { result, launchError: null }
   } catch { return { result: null, launchError: text } }
 }
@@ -247,7 +263,8 @@ export async function runLocalJob(id: string, args: readonly string[], root = re
     }
   } catch (error) { failure = String(error); outcome = "failed" }
   const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
-  await writeFile(path.join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx" })
+  await writeFile(path.join(run, "result.json.tmp"), JSON.stringify(result, null, 2), { flag: "wx" })
+  await rename(path.join(run, "result.json.tmp"), path.join(run, "result.json"))
   return result
   } finally {
     try { if (running) { await running.close(); await rm(path.join(directory, "running")) } }

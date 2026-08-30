@@ -26,4 +26,5 @@ for($index=0;$index -lt 4 -and $next -gt 0;$index++) {
  $next=[int]$entry.ParentProcessId
 }
 $record=@{privacy='private-native-owner';at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();pid=$self.Id;parentPid=$selfInfo.ParentProcessId;parentName=$parent.Name;sessionId=$self.SessionId;startedEpoch=([DateTimeOffset]$self.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();consoleWindow=$handle.ToInt64();consolePid=$consolePid;consoleProcessCount=$count;consoleProcesses=@($members|Select-Object -First ([Math]::Min($count,32)));consoleOwnerChain=$chain}
-[IO.File]::WriteAllText($Receipt,($record|ConvertTo-Json -Depth 6 -Compress))
+[IO.File]::WriteAllText("$Receipt.tmp",($record|ConvertTo-Json -Depth 6 -Compress))
+[IO.File]::Move("$Receipt.tmp",$Receipt)
