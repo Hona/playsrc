@@ -31,6 +31,8 @@ type WasmExports = Readonly<{
   playsrc_compile_map_cached(bsp: number, length: number, profile: number, sections: number, sectionCount: number, configurationSha256: number, presentation: number, presentationLength: number, retainPayload: number): number
   playsrc_compile_metric_milliseconds(handle: number, index: number): number
   playsrc_memory_bytes(index: number): number
+  playsrc_memory_track_allocations(enabled: number): number
+  playsrc_memory_requests(index: number): bigint
   playsrc_compile_memory_bytes(handle: number, index: number): number
   playsrc_texture_inspection_count(handle: number, index: number): number
   playsrc_model_cache_count(handle: number, index: number): number
@@ -262,6 +264,8 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
         candidate.playsrc_compile_map_cached,
         candidate.playsrc_compile_metric_milliseconds,
         candidate.playsrc_memory_bytes,
+        candidate.playsrc_memory_track_allocations,
+        candidate.playsrc_memory_requests,
         candidate.playsrc_compile_memory_bytes,
         candidate.playsrc_result_length,
         candidate.playsrc_result_error,
@@ -319,12 +323,16 @@ async function initialize(request: Extract<WorkerRequest, { kind: "initialize" }
     }
     await initThreadPool(request.threads)
     wasm = candidate
+    Object.defineProperty(scope, "__playsrcWorkerMemoryTracking", { configurable: true,
+      value: (enabled: boolean) => candidate.playsrc_memory_track_allocations(Number(enabled)) === 1 })
     Object.defineProperty(scope, "__playsrcWorkerMemory", {
       configurable: true,
       get: () => Object.freeze({
         linearBytes: candidate.memory.buffer.byteLength,
         liveBytes: candidate.playsrc_memory_bytes(0),
         highWaterBytes: candidate.playsrc_memory_bytes(1),
+        allocationRequests: Number(candidate.playsrc_memory_requests(0)),
+        requestedBytes: Number(candidate.playsrc_memory_requests(1)),
         borrowedModelSourceBytes: candidate.playsrc_memory_bytes(2),
         copiedModelSourceBytes: candidate.playsrc_memory_bytes(3),
         modelSourceSectionBytes: candidate.playsrc_memory_bytes(4),

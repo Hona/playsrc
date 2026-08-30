@@ -37,6 +37,8 @@ const PROFILES = Object.freeze({
   deathnotice: { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "deathnotice" } },
   "control-points": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "control-points" }, minimumRemainingMilliseconds: environment => environment.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
+  "sustained-harvest": { config: "playwright.profile.config.ts", target: "koth_harvest_final", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_harvest_final" }, minimumRemainingMilliseconds: 165_000 },
+  "sustained-viaduct": { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_viaduct" }, minimumRemainingMilliseconds: 165_000 },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" }, minimumRemainingMilliseconds: environment => environment.PROFILE_MAP_AUTONOMOUS === "1" ? 160_000 : environment.PROFILE_MAP_TARGET === "cp_well" && !environment.PROFILE_MAP_PIPELINE_PROBE && !environment.PROFILE_MAP_LEGACY_SPRITE && !environment.PROFILE_MAP_LEGACY_GLOW && !environment.PROFILE_SPAWN_ONLY ? 130_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "macos-window-identity": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "macos-window-identity" } },
   "sprite-orientation": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "sprite-orientation" } },
@@ -127,13 +129,14 @@ type OwnerMetadata = Readonly<{
 
 type OwnerState = Readonly<{ metadata: OwnerMetadata; reused: boolean; milliseconds: number }>
 
-export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ profile: HeadedProfile; fresh: boolean; freshBrowser?: true; playwright: readonly string[] }> {
+export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ profile: HeadedProfile; fresh: boolean; freshBrowser?: true; sustainedEntropy?: string; playwright: readonly string[] }> {
   const [profile, ...options] = arguments_
   if (!profile || !Object.hasOwn(PROFILES, profile)) {
     throw new Error(`Usage: bun run profile:<${Object.keys(PROFILES).join("|")}> [--fresh] [Playwright options]`)
   }
   let fresh = false
   let freshBrowser = false
+  let sustainedEntropy: string | undefined
   const playwright: string[] = []
   for (let index = 0; index < options.length; index++) {
     const option = options[index]!
@@ -142,13 +145,19 @@ export function parseHeadedProfile(arguments_: readonly string[]): Readonly<{ pr
       throw new Error("Headed profiles require one bounded noninteractive sampling worker")
     }
   }
-  for (const option of options) {
-    if (option === "--fresh") fresh = true
+  for (let index = 0; index < options.length; index++) {
+    const option = options[index]!
+    if (option === "--sustained-entropy") {
+      const identity = options[++index]
+      if (!profile.startsWith("sustained-") || sustainedEntropy || !identity || !/^[0-9a-f]{64}$/.test(identity)) throw new Error("Sustained entropy requires one exact retained SHA256 and a sustained KOTH profile")
+      sustainedEntropy = identity
+    }
+    else if (option === "--fresh") fresh = true
     else if (option === "--fresh-browser") freshBrowser = true
     else if (option === "--headless") throw new Error("headed TF2 profiles never accept headless browser execution")
     else if (option !== "--headed") playwright.push(option)
   }
-  return Object.freeze({ profile: profile as HeadedProfile, fresh, ...(freshBrowser ? { freshBrowser: true as const } : {}), playwright: Object.freeze(playwright) })
+  return Object.freeze({ profile: profile as HeadedProfile, fresh, ...(freshBrowser ? { freshBrowser: true as const } : {}), ...(sustainedEntropy ? { sustainedEntropy } : {}), playwright: Object.freeze(playwright) })
 }
 
 async function writeLease(metadataPath: string, token: string, milliseconds: number): Promise<void> {
@@ -304,7 +313,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
 
 export async function runHeadedProfile(arguments_: readonly string[], root = repositoryRoot): Promise<number> {
   const started = Date.now()
-  const { profile, fresh, freshBrowser, playwright } = parseHeadedProfile(arguments_)
+  const { profile, fresh, freshBrowser, sustainedEntropy, playwright } = parseHeadedProfile(arguments_)
   const configurationStarted = Date.now()
   const config = await loadLocalConfig(root)
   const evidence = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance")
@@ -322,7 +331,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   const metadataPath = path.join(evidence, "development-owner.json")
   const browserPath = path.join(evidence, "headed-browser.json")
   const plan = PROFILES[profile]
-  const environment = "environment" in plan ? plan.environment : {}
+  const environment = { ...("environment" in plan ? plan.environment : {}), ...(sustainedEntropy ? { PROFILE_SUSTAINED_ENTROPY: sustainedEntropy } : {}) }
   const target = headedProfileTarget({ ...process.env, ...environment }, plan.target)
   let lock: { token: string; milliseconds: number } | undefined
   const observations: LockObservation[] = []
