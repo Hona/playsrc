@@ -32,6 +32,18 @@ function fixture(overrides: Partial<Tf2TeamSelectionServerState> = {}) {
 }
 
 describe("authored TF2 RED/BLU team-selection VGUI", () => {
+  test("consumes owned repeats without autoassigning or moving authored focus", () => {
+    const { integration, requests } = fixture()
+    const focused = integration.state().focused
+    for (const code of ["Space", "Enter", "ArrowLeft", "ArrowRight", "Escape", "Period"]) {
+      let prevented = false
+      expect(integration.handleKey({ code, repeat: true, preventDefault() { prevented = true }, stopImmediatePropagation() {} }, code === "Period")).toBe(true)
+      expect(prevented).toBe(true)
+      expect(integration.state().focused).toBe(focused)
+    }
+    expect(requests).toEqual([])
+    integration.destroy()
+  })
   test("mounts the exact authored frame, four controls, and all five real model-panel descriptors", () => {
     const { integration, models } = fixture()
     const snapshot = integration.snapshot()
