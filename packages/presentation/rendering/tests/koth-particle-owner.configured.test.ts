@@ -83,7 +83,8 @@ for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skip
     outstandingColorBytes: outstanding.filter((value: any) => value.format === "rgba16float")
       .reduce((sum: number, value: any) => sum + value.size.width * value.size.height * value.size.depthOrArrayLayers * value.samples * 8, 0),
     outstandingOpaqueDepthTextures: outstanding.filter((value: any) => value.format === "depth24plus").length }
-  await Bun.write(path.join(output, `owner-${referenceMode ? "reference" : "candidate"}-msaa${sampleCount}.json`), JSON.stringify({ target, sampleCount, sourceSha256: loaded.sourceSha256, graphSha256: manifest.graphSha256,
+  await Bun.write(path.join(output, `owner-${referenceMode ? "reference" : "candidate"}-msaa${sampleCount}.json`), JSON.stringify({ target, sampleCount,
+    sourceSha256: loaded.sourceSha256, bundleSha256: loaded.bundleSha256, bundleBytes: loaded.bundleBytes, graphSha256: manifest.graphSha256,
     samples, created, destroyed, programs, materials, outstanding, gpuApi, scope: "Bun CPU microcost and recorded API/compiler ownership only. Fixed native inputs are not recorded combat. No browser, GPU execution, pixels, physical residency, GC or sustained frame/input acceptance." }))
   if (referenceMode) {
     expect(outstanding.some((value: any) => value.format === "rgba16float")).toBe(true)
@@ -94,6 +95,7 @@ for (const target of ["koth_sawmill", "koth_lakeside_final"] as const) test.skip
     // rather than normalizing away differences in generated shader programs.
     const referenceFile = Bun.file(path.join(output, `owner-reference-msaa${sampleCount}.json`))
     const reference = await referenceFile.json()
+    expect(loaded.bundleSha256).toBe(reference.bundleSha256)
     expect(reference.graphSha256).toBe(manifest.graphSha256)
     expect(programs).toEqual(reference.programs)
     expect(materials).toEqual(reference.materials)

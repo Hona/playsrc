@@ -114,7 +114,10 @@ async function buildOfflineTextureOwner(reference: boolean, browser?: { entry: s
   if (!result.success || result.outputs.length !== 1) throw new Error(`Offline owner bundle failed: ${result.logs}`)
   const file = browser?.output ?? path.join(directory, reference ? "owner-loop-reference.mjs" : "owner-loop.mjs")
   await Bun.write(file, result.outputs[0]!)
-  return { module: browser ? undefined : await import(file + `?revision=${Bun.hash(source)}`), sourcePath, sourceSha256: new Bun.CryptoHasher("sha256").update(source).digest("hex") }
+  const bundle = await Bun.file(file).bytes()
+  const bundleSha256 = new Bun.CryptoHasher("sha256").update(bundle).digest("hex")
+  return { module: browser ? undefined : await import(file + `?revision=${bundleSha256}`), sourcePath,
+    sourceSha256: new Bun.CryptoHasher("sha256").update(source).digest("hex"), bundleSha256, bundleBytes: bundle.byteLength }
 }
 
 /** Actual Three compiler/Bindings/Textures; only the WebGPU API is recorded.
