@@ -2540,6 +2540,14 @@ export class Tf2Application {
       })
       const result = await renderer.renderModelPanels(panels)
       if (generation !== this.#generation || revision !== this.#teamSelectionRenderRevision) return
+      const doorProfile = (globalThis as any).__playsrcProfile
+      if (doorProfile?.captureTeamDoors === true) {
+        const frames = doorProfile.teamDoorFrames ??= []
+        if (frames.length < 1024) frames.push({ at: performance.now(), now, milliseconds: result.milliseconds,
+          panels: authored.map(panel => ({ name: panel.name, animation: panel.animation, sequence: panel.sequence,
+            timing: this.#teamSelectionAnimations.get(panel.name),
+            matrices: Array.from(this.#teamSelectionPoses.get(panel.name)?.boneMatrices ?? []) })) })
+      }
       this.#set({ teamSelectionModels: result.panels.map((panel) => `${panel.identity}:${panel.model}:${panel.skin}:${panel.primitives}`).join("|") })
     })().catch((error) => {
       if (generation !== this.#generation || !this.#teamSelection?.state().visible) return
