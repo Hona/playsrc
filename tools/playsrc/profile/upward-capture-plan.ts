@@ -5,6 +5,8 @@ import { profileSampleSeconds } from "./profile-window"
 function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
   const sustainedKoth = environment.PROFILE_KOTH_SUSTAINED === "1"
   const retirementOnly = environment.PROFILE_KOTH_RETIREMENT_ONLY === "1"
+  const diagnostic = environment.PROFILE_KOTH_DIAGNOSTIC === "1"
+  if (diagnostic && (!sustainedKoth || retirementOnly)) throw new Error("KOTH freeze diagnosis requires its separate gameplay plan")
   if (retirementOnly && !sustainedKoth) throw new Error("KOTH retirement requires an explicit KOTH plan")
   if (sustainedKoth && !["koth_sawmill", "koth_lakeside_final"].includes(environment.PROFILE_MAP_TARGET ?? "")) throw new Error("Sustained KOTH requires an explicit admitted target")
   const createServer = sustainedKoth || environment.PROFILE_STARTUP_CREATE_SERVER === "1"
@@ -16,6 +18,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     target: sustainedKoth ? environment.PROFILE_MAP_TARGET as "koth_sawmill" | "koth_lakeside_final" : createServer ? "ctf_2fort" as const : "pl_upward" as const,
     ...(sustainedKoth ? { sustainedSeconds: 90 as const } : {}),
     ...(retirementOnly ? { retirementOnly: true as const } : {}),
+    ...(diagnostic ? { diagnosticSeconds: 15 as const } : {}),
     ...(sustainedKoth && !retirementOnly ? { preludeTelemetry: "ready-to-live-light-v1" as const } : {}),
     entry: createServer ? "create-server" as const : "training" as const,
     exerciseClasses, acceptance, stockOnly,
@@ -28,7 +31,7 @@ function baseCapturePlan(environment: Readonly<NodeJS.ProcessEnv>) {
     classPasses: stockOnly || !exerciseClasses ? 0 : acceptance ? 1 : 2,
     interaction: stockOnly ? "stock-loadouts" : exerciseClasses ? "class-input"
       : environment.PROFILE_UPWARD_TRAINING_INTERACTION === "1" ? "movement-weapon" : "forward-movement",
-    workerCpu: !stockOnly && (exerciseClasses || acceptance) ? "required" : "not-requested",
+    workerCpu: !stockOnly && (exerciseClasses || acceptance || diagnostic) ? "required" : "not-requested",
     ...(!stockOnly && environment.PROFILE_GAMEPLAY_REPLAY === "1" ? { gameplayReplay: "required" as const } : {}),
     ...(!stockOnly && environment.PROFILE_RENDER_OWNERS === "1" ? { renderOwners: "two-frames-after-60-v1" as const } : {}),
     ...(environment.PROFILE_AUTHOR_WORKLOAD === "1" ? { workloadAuthor: 2 as const } : {}),
@@ -68,6 +71,7 @@ export function validateUpwardCapturePlan(value: any): asserts value is UpwardCa
   const resolved = resolve({
     PROFILE_KOTH_SUSTAINED: value.sustainedSeconds === 90 ? "1" : "0",
     PROFILE_KOTH_RETIREMENT_ONLY: value.retirementOnly ? "1" : "0",
+    PROFILE_KOTH_DIAGNOSTIC: value.diagnosticSeconds === 15 ? "1" : "0",
     PROFILE_MAP_TARGET: value.target,
     PROFILE_STARTUP_CREATE_SERVER: value.entry === "create-server" ? "1" : "0",
     PROFILE_UPWARD_CLASS_SWITCH: value.exerciseClasses ? "1" : "0",

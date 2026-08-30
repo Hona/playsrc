@@ -71,11 +71,18 @@ async function observePrelude(options: Parameters<typeof observeSustainedKoth>[0
 export async function observeSustainedKoth(options: {
   page: Page; browserCdp: CDPSession; directory: string; checkNativeWindow: () => Promise<void>;
   sourceFingerprint: string; sourceCommit: string
+  diagnosticSeconds?: 15
 }) {
   const { page, browserCdp, directory, checkNativeWindow } = options
   const file = (name: string) => path.join(directory, `sustained-${name}`)
   const records: any[] = [], memory: any[] = []
   const transitions: ReturnType<typeof checkSustainedObservation>[] = []
+  const seconds = options.diagnosticSeconds ?? SUSTAINED_KOTH.seconds
+  const budget = () => {
+    const remaining = Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now()
+    if (!options.diagnosticSeconds) requireSustainedBudget(remaining)
+    else if (!Number.isFinite(remaining) || remaining < 45_000) throw new Error(`Freeze diagnosis needs45000ms for15s context,5s deep sample and retention; only ${remaining}ms remain`)
+  }
   const read = () => page.evaluate(() => {
     const p = (globalThis as any).__playsrcProfile, main = document.querySelector<HTMLElement>("main")!
     return { at: performance.now(), epoch: performance.timeOrigin + performance.now(), generation: main.dataset.generation,
@@ -87,7 +94,7 @@ export async function observeSustainedKoth(options: {
       ownership: p.rendererOwnership?.() ?? null,
       failures: p.failure, losses: (globalThis as any).__playsrcFrameProfiler.losses, audio: p.audio?.stats() }
   })
-  const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory, transitions,
+  const retain = () => writeFile(file("history.json"), JSON.stringify({ records, memory, transitions, seconds, sustainedAcceptance: !options.diagnosticSeconds,
     scope: "One-second logical texture/API, JS heap, roster and resource observations. Missed seconds remain gaps, never interpolated. API live bytes are not physical GPU residency; heap drops alone do not prove GC. No long-term leak-freedom claim." }))
   const processSnapshot = async () => {
     const processes = await browserCdp.send("SystemInfo.getProcessInfo")
@@ -99,10 +106,10 @@ export async function observeSustainedKoth(options: {
   // 90 seconds and cannot be accelerated to make the workflow fit its cap.
   await observePrelude(options)
   records.push(await read()); await retain()
-  requireSustainedBudget(Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now())
+  budget()
   // Observe the authored objective from a stable test camera without moving,
   // freezing, replacing or retiring any player/bot/effect entity.
-  await page.evaluate(() => {
+  if (!options.diagnosticSeconds) await page.evaluate(() => {
     const p = (globalThis as any).__playsrcProfile, point = p.controlPoints.points[0]
     if (!point) throw new Error("KOTH objective camera is unavailable")
     p.displacementCameraOverride = { ...p.player.camera,
@@ -112,7 +119,7 @@ export async function observeSustainedKoth(options: {
   await checkNativeWindow()
   await page.locator("canvas.world-canvas").screenshot({ path: file("early.png") })
   await processSnapshot()
-  requireSustainedBudget(Number(process.env.PLAYSRC_PROFILE_DEADLINE) - Date.now())
+  budget()
   const categories = [...SUSTAINED_KOTH.categories]
   const available = (await browserCdp.send("Tracing.getCategories")).categories
   if (categories.some(category => !available.includes(category))) throw new Error("Native sustained display/GC trace categories unavailable")
@@ -129,8 +136,8 @@ export async function observeSustainedKoth(options: {
       if (index % 5 === 0) await retain()
       // OS process snapshots stay outside active gameplay. Spawning a shell
       // halfway through would contaminate the interval being measured.
-      if (state.at - started >= 90_000) break
-      await page.waitForTimeout(Math.min(1000, 90_000 - (state.at - started)))
+      if (state.at - started >= seconds * 1000) break
+      await page.waitForTimeout(Math.min(1000, seconds * 1000 - (state.at - started)))
     }
   } catch (error) { failure = error }
   finally {
@@ -139,7 +146,7 @@ export async function observeSustainedKoth(options: {
     const evidence = await retainCompositorEvidence({ directory, raw: raw.bytes, complete: raw.complete, dataLossOccurred: Boolean(complete.dataLossOccurred), categories,
       identity: { sourceCommit: options.sourceCommit, sourceFingerprint: options.sourceFingerprint, instrumentation: "Bounded display/GC events only; no CPU/allocation sampler during soak" },
       probes: { started: sample.started, ended: sample.ended, joins: sample.frames.map((frame: any) => ({ kind: "completed-submission", at: frame.at })), dropped: sample.dropped + sample.missedPublications } })
-    await writeFile(file("delivery.json"), JSON.stringify({ sample, evidence: evidence.artifact, complete: evidence.manifest.complete,
+    await writeFile(file("delivery.json"), JSON.stringify({ sample, seconds, sustainedAcceptance: !options.diagnosticSeconds, evidence: evidence.artifact, complete: evidence.manifest.complete,
       completed: deliveryTimeline(sample.started, sample.ended, sample.frames.map((frame: any) => frame.at)), raf: deliveryTimeline(sample.started, sample.ended, sample.raf),
       compositor: summarizeCompositorTruth(evidence.events, sample.ended - sample.started, evidence.analysis.window ?? undefined),
       nativeDelivery: evidence.analysis, gc: sustainedGcEvidence(evidence.events, evidence.analysis.window, evidence.manifest.complete),
@@ -150,7 +157,7 @@ export async function observeSustainedKoth(options: {
     if (!evidence.manifest.complete) throw new Error("Sustained presentation evidence incomplete")
   }
   if (failure) throw failure
-  if (sample.ended - sample.started < 90_000 || sample.dropped || sample.missedPublications || sample.lifecycle.length) throw new Error("Sustained window incomplete or interrupted")
+  if (sample.ended - sample.started < seconds * 1000 || sample.dropped || sample.missedPublications || sample.lifecycle.length) throw new Error("KOTH window incomplete or interrupted")
   const trend = sustainedTrends(records, sample.started, sample.ended)
   if (!(trend.whole.shots! > 0 && (trend.whole.hits! > 0 || trend.whole.deaths! > 0))) throw new Error("Sustained KOTH lacks observed real combat activity")
   await checkNativeWindow()
