@@ -9,7 +9,7 @@ import type { Tf2TargetName } from "@playsrc/game-tf2-browser/maps"
 import { requireWindowsProfileConsole } from "../profile/windows-desktop"
 import { acquireHeadedProfileLock, releaseHeadedProfileLock, processIsAlive as isAlive, ProfileQueueTimeout, type LockObservation } from "./profile-lock"
 import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-identity"
-import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
+import { browserLease, prepareProfileBrowser, profileNodeExecutable, type BrowserLaunch } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
 import { replaceProfileLeaseFile } from "./profile-lease-rename"
 import { borrowedWindowsJobLock } from "./windows-job-native"
@@ -39,8 +39,8 @@ const PROFILES = Object.freeze({
   deathnotice: { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "deathnotice" } },
   "control-points": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "control-points" }, minimumRemainingMilliseconds: environment => environment.PROFILE_CP_FULL_MATCH === "1" ? 120_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   koth: { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "koth" } },
-  "sustained-harvest": { config: "playwright.profile.config.ts", target: "koth_harvest_final", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_harvest_final", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 151_000 },
-  "sustained-viaduct": { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_viaduct", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 151_000 },
+  "sustained-harvest": { config: "playwright.profile.config.ts", target: "koth_harvest_final", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_harvest_final", PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 151_000 },
+  "sustained-viaduct": { config: "playwright.profile.config.ts", target: "koth_viaduct", environment: { PROFILE_SCENARIOS: "sustained-koth", PROFILE_MAP_TARGET: "koth_viaduct", PLAYSRC_PROFILE_BROWSER_CHANNEL: "msedge", PLAYSRC_PROFILE_VIEWPORT_WIDTH: "1689", PLAYSRC_PROFILE_VIEWPORT_HEIGHT: "1277", PLAYSRC_PROFILE_DEVICE_SCALE_FACTOR: "1" }, minimumRemainingMilliseconds: 151_000 },
   "map-admission": { config: "playwright.profile.config.ts", target: "cp_badlands", environment: { PROFILE_SCENARIOS: "map-admission" }, minimumRemainingMilliseconds: environment => environment.PROFILE_MAP_AUTONOMOUS === "1" ? 160_000 : environment.PROFILE_MAP_TARGET === "cp_well" && !environment.PROFILE_MAP_PIPELINE_PROBE && !environment.PROFILE_MAP_LEGACY_SPRITE && !environment.PROFILE_MAP_LEGACY_GLOW && !environment.PROFILE_SPAWN_ONLY ? 130_000 : DEFAULT_BROWSER_MINIMUM_MILLISECONDS },
   "macos-window-identity": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "macos-window-identity" } },
   "sprite-orientation": { config: "playwright.profile.config.ts", target: "pl_upward", environment: { PROFILE_SCENARIOS: "sprite-orientation" } },
@@ -113,6 +113,13 @@ const PROFILES = Object.freeze({
 } satisfies Record<string, { config: string; target: Tf2TargetName; environment?: Record<string, string>; arguments?: readonly string[]; minimumRemainingMilliseconds?: number | ((environment: Readonly<NodeJS.ProcessEnv>) => number) }>)
 
 export type HeadedProfile = keyof typeof PROFILES
+
+export function profileBrowserLaunch(profile: HeadedProfile, configured: BrowserLaunch): BrowserLaunch {
+  const plan = PROFILES[profile]
+  const environment: Readonly<NodeJS.ProcessEnv> = "environment" in plan ? plan.environment : {}
+  const channel = environment.PLAYSRC_PROFILE_BROWSER_CHANNEL ?? configured.channel
+  return { ...configured, ...(channel ? { channel } : {}) }
+}
 
 export function profileMinimumRemainingMilliseconds(profile: HeadedProfile, environment: Readonly<NodeJS.ProcessEnv> = process.env): number {
   const plan = PROFILES[profile]
@@ -420,7 +427,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       const launch = await measure("controller-preflight", async () => {
         const { default: configuration } = await import(path.join(repositoryRoot, plan.config))
         const use = configuration.use ?? {}
-        return { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) }
+        return profileBrowserLaunch(profile, { ...use.launchOptions, ...(use.channel ? { channel: use.channel } : {}) })
       })
       checkBrowserBudget()
       browser = await measure("browser-owner", () => prepareProfileBrowser(browserPath, launch, remaining, lock!.token, freshBrowser))
