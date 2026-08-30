@@ -37,9 +37,8 @@ export class Tf2EquipmentProfile {
     return state
   }
 
-  equip(playerClass: Tf2Class, slot: number, definitionIndex: number | null, signal?: AbortSignal): Promise<Tf2EquipmentState> {
+  equip(playerClass: Tf2Class, slot: number, definitionIndex: number | null): Promise<Tf2EquipmentState> {
     const task = this.#tail.then(async () => {
-      signal?.throwIfAborted()
       if (this.#closed || !this.#state) throw new Error("Equipment profile is unavailable")
       const mutation = new Uint8Array(7)
       mutation.set([1, playerClass, slot])
