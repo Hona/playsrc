@@ -95,14 +95,18 @@ public static class PlaysrcNativeJob {
  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int command);
  [StructLayout(LayoutKind.Sequential)] struct Rect {public int left,top,right,bottom;}
+ [StructLayout(LayoutKind.Sequential)] struct Point {public int x,y;}
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out Rect rect);
+ [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr window,out Rect rect);
+ [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr window,ref Point point);
  [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr window);
  static void Pixels(IntPtr window,string file,Dialog record) {
   if(GetForegroundWindow()!=window)throw new Exception("Diagnostic dialog is not foreground; no pixel claim");
-  Rect rect;Check(GetWindowRect(window,out rect),"Dialog bounds");
+  // Client pixels only: no rounded frame corners, shadows or private desktop.
+  Rect rect;Check(GetClientRect(window,out rect),"Dialog bounds");var origin=new Point();Check(ClientToScreen(window,ref origin),"Dialog client origin");
   int width=rect.right-rect.left,height=rect.bottom-rect.top;
   if(width<=0 || height<=0 || (long)width*height>4000000)throw new Exception("Invalid dialog pixel bounds");
-  using(var bitmap=new Bitmap(width,height)) {using(var graphics=Graphics.FromImage(bitmap))graphics.CopyFromScreen(rect.left,rect.top,0,0,bitmap.Size);bitmap.Save(file,System.Drawing.Imaging.ImageFormat.Png);}
+  using(var bitmap=new Bitmap(width,height)) {using(var graphics=Graphics.FromImage(bitmap))graphics.CopyFromScreen(origin.x,origin.y,0,0,bitmap.Size);bitmap.Save(file,System.Drawing.Imaging.ImageFormat.Png);}
   if(GetForegroundWindow()!=window)throw new Exception("Foreground changed during diagnostic capture");
   record.pixels=file;record.bytes=new FileInfo(file).Length;
   using(var hash=SHA256.Create())record.sha256=BitConverter.ToString(hash.ComputeHash(File.ReadAllBytes(file))).Replace("-","").ToLowerInvariant();
@@ -127,6 +131,7 @@ public static class PlaysrcNativeJob {
      if(!clock.IsRunning) {
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
       if(request.diagnostic)Pixels(window,Path.Combine(request.run,completion?"completion.png":"consent.png"),record);
+      Save(Path.Combine(request.run,completion?"completion-displayed.json":"consent-displayed.json"),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
      }
      if(clock.ElapsedMilliseconds>=3000) {
       selected=true;record.decision=completion?"dismissed-timeout":"approved-timeout";record.decidedAt=Now;record.visibleMilliseconds=clock.ElapsedMilliseconds;
