@@ -13,8 +13,10 @@ export function attributeFrameTails(options: Readonly<{
   trace: readonly TraceEvent[]
   cpu: CpuProfile
   traceOffsetMicroseconds: number
+  mainThread?: Readonly<{ pid: number; tid: number }>
 }>) {
-  const gc = options.trace.filter(event => event.ph === "X" && typeof event.dur === "number"
+  const gc = options.trace.filter(event => options.mainThread && event.pid === options.mainThread.pid && event.tid === options.mainThread.tid
+    && event.ph === "X" && typeof event.dur === "number"
     && /^(?:MinorGC|MajorGC|Scavenge|MarkCompact)$/iu.test(event.name ?? ""))
   const collections = gc.map(event => ({
     kind: /(?:MinorGC|Scavenge)/iu.test(event.name ?? "") ? "minor" as const
@@ -70,6 +72,7 @@ export function attributeFrameTails(options: Readonly<{
   return Object.freeze({
     frames: tails,
     garbageCollection: {
+      scope: options.mainThread ? "calibrated-page-main-thread" : "unavailable-without-calibrated-main-thread",
       count: collections.length,
       minor: collections.filter(collection => collection.kind === "minor").length,
       major: collections.filter(collection => collection.kind === "major").length,
