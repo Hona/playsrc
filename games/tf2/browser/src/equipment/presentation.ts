@@ -346,13 +346,18 @@ export class Tf2EquipmentPresentation {
             if (this.#destroyed) return
             // A dispatched native mutation can finish after Back. Retain its
             // authoritative state, but never replay its old navigation.
+            const previousItems = this.#state?.classes[this.#class - 1]?.items, nextItems = state.classes[this.#class - 1]!.items
+            const loadoutChanged = !previousItems || previousItems.length !== nextItems.length || previousItems.some((item, index) => item.itemId !== nextItems[index]!.itemId || item.slot !== nextItems[index]!.slot)
             const changed = !this.#state || ((state.revision - this.#state.revision) | 0) > 0
             if (changed) this.#state = state
             if (this.#pending === pending) {
               this.#page = "loadout"; this.#selected = null
               this.#render()
               if (this.#pending === pending) this.#pending = undefined
-            } else if (changed && this.#visible) this.#render()
+            } else if (changed && this.#visible && (this.#page === "backpack" || this.#page === "slot" || this.#page === "loadout" && loadoutChanged)) {
+              const snapshot = this.#runtime.snapshot()
+              this.#render(snapshot.panels.find(panel => panel.id === snapshot.input.keyFocus)?.name)
+            }
           } catch (error) {
             if (this.#destroyed) return
             const current = this.#pending === pending

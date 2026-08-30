@@ -143,6 +143,22 @@ test("the native wrapping revision does not discard a committed equipment change
   } finally { ui.destroy() }
 })
 
+test("a late commit for another class does not rebuild or refocus the active loadout", async () => {
+  const pending = Promise.withResolvers<Tf2EquipmentState>()
+  const { ui, activate, key } = navigationFixture(() => pending.promise)
+  try {
+    ui.show(nativeEquipment, 3); activate("Itemslot-0"); activate("Itemitem-18")
+    ui.show(nativeEquipment, 8); ui.frame(0)
+    key("ArrowDown")
+    const before = ui.snapshot().vgui
+    const focused = before.input.keyFocus
+    expect(before.panels.find(panel => panel.id === focused)?.name).toBe("Itemslot-2")
+    pending.resolve({ ...nativeEquipment, revision: nativeEquipment.revision + 1 })
+    await Promise.resolve(); await Promise.resolve(); ui.frame(0)
+    expect(ui.snapshot().vgui.input.keyFocus).toBe(focused)
+  } finally { ui.destroy() }
+})
+
 test("equipment leaves composing keys to their text owner", () => {
   const { ui } = navigationFixture()
   try {
