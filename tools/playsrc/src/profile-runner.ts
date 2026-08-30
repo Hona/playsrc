@@ -12,6 +12,7 @@ import { configuredProfileIdentity, generatedProfileIdentity } from "./profile-i
 import { browserLease, prepareProfileBrowser, profileNodeExecutable } from "./profile-browser"
 import { applicationBuildIdentity } from "./build-identity"
 import { replaceProfileLeaseFile } from "./profile-lease-rename"
+import { borrowedWindowsJobLock } from "./windows-job-native"
 export { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
 
 const MAX_RUN_MILLISECONDS = 175_000
@@ -201,17 +202,17 @@ function sameOwner(left: OwnerMetadata, right: OwnerMetadata): boolean {
     && left.repository === right.repository && left.target === right.target && left.url === right.url
 }
 
-async function checkRetirementLock(metadataPath: string, pid: number): Promise<void> {
-  const holder = JSON.parse(await readFile(path.join(path.dirname(metadataPath), "chromium-profile.lock"), "utf8")) as { pid?: number }
-  if (holder.pid !== process.pid || holder.pid === pid) throw new Error("Development retirement requires the current checked profile lock; never signal its holder")
+async function checkRetirementLock(metadataPath: string, pid: number, authority?: { ownerPid: number; token: string }): Promise<void> {
+  const holder = JSON.parse(await readFile(path.join(path.dirname(metadataPath), "chromium-profile.lock"), "utf8")) as { pid?: number; token?: string }
+  if (holder.pid !== (authority?.ownerPid ?? process.pid) || authority && holder.token !== authority.token || holder.pid === pid) throw new Error("Development retirement requires the current checked profile lock; never signal its holder")
 }
 
-export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000): Promise<void> {
+export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, maximumMilliseconds = 5_000, authority?: { ownerPid: number; token: string }): Promise<void> {
   if (!Number.isSafeInteger(metadata.pid) || metadata.pid < 1 || metadata.pid === process.pid) throw new Error("Refusing invalid development service PID")
   if (!Number.isSafeInteger(maximumMilliseconds) || maximumMilliseconds < 1 || maximumMilliseconds > 5_000) throw new Error("Development retirement budget must be within 5000 ms")
   const deadline = Date.now() + maximumMilliseconds
   if (isAlive(metadata.pid)) {
-    await checkRetirementLock(metadataPath, metadata.pid)
+    await checkRetirementLock(metadataPath, metadata.pid, authority)
     console.error(`[performance] retiring development owner pid=${metadata.pid} target=${metadata.target} by checked lease`)
     const interruptAt = Date.now() + 1_000
     const forceAt = Date.now() + 2_000
@@ -232,7 +233,7 @@ export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, m
       // the live PID/endpoint and ownership before *each* signal, including KILL.
       const signal = !interrupted && Date.now() >= interruptAt ? "SIGTERM" : interrupted && !forced && Date.now() >= forceAt ? "SIGKILL" : null
       if (signal && current && lease && await ownerEndpointMatches(metadata, Math.min(200, deadline - Date.now()))) {
-        await checkRetirementLock(metadataPath, metadata.pid)
+        await checkRetirementLock(metadataPath, metadata.pid, authority)
         const checked = await readOwner(metadataPath)
         const checkedLease = JSON.parse(await readFile(`${metadataPath}.lease`, "utf8")) as { schema?: string; token?: string; expiresAt?: number }
         if (!checked || !sameOwner(checked, metadata) || checkedLease.schema !== "playsrc-profile-owner-lease-v1"
@@ -258,7 +259,7 @@ export async function stopOwner(metadataPath: string, metadata: OwnerMetadata, m
   }
 }
 
-async function prepareOwner(config: LocalConfig, identity: string, target: string, fresh: boolean, metadataPath: string, remaining: () => number, root = repositoryRoot): Promise<OwnerState> {
+async function prepareOwner(config: LocalConfig, identity: string, target: string, fresh: boolean, metadataPath: string, remaining: () => number, root = repositoryRoot, authority?: { ownerPid: number; token: string }): Promise<OwnerState> {
   const started = Date.now()
   const current = await readOwner(metadataPath)
   const lease = JSON.parse(await readFile(`${metadataPath}.lease`, "utf8").catch(() => "null"))
@@ -266,7 +267,7 @@ async function prepareOwner(config: LocalConfig, identity: string, target: strin
     await writeLease(metadataPath, current.token, MAX_RUN_MILLISECONDS)
     return Object.freeze({ metadata: current, reused: true, milliseconds: Date.now() - started })
   }
-  if (current) await stopOwner(metadataPath, current, Math.max(1, Math.min(5_000, remaining())))
+  if (current) await stopOwner(metadataPath, current, Math.max(1, Math.min(5_000, remaining())), authority)
   const token = randomUUID()
   await writeLease(metadataPath, token, MAX_RUN_MILLISECONDS)
   const logPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", `profile-owner-${token}.log`)
@@ -312,15 +313,18 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   await mkdir(runDirectory, { recursive: true })
   const configurationMilliseconds = Date.now() - configurationStarted
   const lockPath = path.join(evidence, "chromium-profile.lock")
+  const borrowed = await borrowedWindowsJobLock(lockPath, ["profile", ...arguments_].join(" "))
+  if (process.platform === "win32" && !borrowed) throw new Error("Windows profiles require local-job run <job> profile ... and its displayed per-job decision")
+  const runDeadline = Math.min(started + MAX_RUN_MILLISECONDS, borrowed?.deadline ?? Infinity)
   const cancellation = new AbortController()
   // Five seconds of the unchanged total cap belong to cleanup, not sampling.
-  const remaining = () => cancellation.signal.aborted ? 0 : Math.max(0, MAX_RUN_MILLISECONDS - 5_000 - (Date.now() - started))
+  const remaining = () => cancellation.signal.aborted ? 0 : Math.max(0, runDeadline - 5_000 - Date.now())
   const metadataPath = path.join(evidence, "development-owner.json")
   const browserPath = path.join(evidence, "headed-browser.json")
   const plan = PROFILES[profile]
   const environment = "environment" in plan ? plan.environment : {}
   const target = headedProfileTarget({ ...process.env, ...environment }, plan.target)
-  let lock: Awaited<ReturnType<typeof acquireHeadedProfileLock>> | undefined
+  let lock: { token: string; milliseconds: number } | undefined
   const observations: LockObservation[] = []
   let identity: string | null = null
   let harnessIdentity: string | null = null
@@ -370,14 +374,14 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
   process.once("SIGINT", cancel)
   process.once("SIGTERM", cancel)
   const deadline = setTimeout(() => { timedOut = true; cancel() }, remaining())
-  const hardDeadline = setTimeout(() => terminate("SIGKILL"), Math.max(1, MAX_RUN_MILLISECONDS - (Date.now() - started)))
+  const hardDeadline = setTimeout(() => terminate("SIGKILL"), Math.max(1, runDeadline - Date.now()))
   try {
     windowsConsole = await requireWindowsProfileConsole(remaining())
     // Preserve the full release matrix's earlier admission deadline.
     // Queue only while the selected workflow can still fit. Admission must not
     // spend its startup/sample/retention reservation waiting for another owner.
     const maximumWait = Math.min(Math.max(1, remaining() - profileMinimumRemainingMilliseconds(profile)), profile === "application-upgrade" && !playwright.includes("--grep") ? 45_000 : profile === "skinning-equivalence" ? 80_000 : MAX_RUN_MILLISECONDS)
-    lock = await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
+    lock = borrowed ?? await acquireHeadedProfileLock(lockPath, profile, Math.max(1, maximumWait), {
       signal: cancellation.signal,
       onProgress: state => {
         observations.push(state)
@@ -392,7 +396,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     sourceIdentityMilliseconds = Date.now() - identityStarted
     const ownerIdentity = createHash("sha256").update(identity).update(configuredIdentity).update(process.env.PLAYSRC_DEV_PORT ?? "4173").digest("hex")
     if (!process.env.PLAYSRC_PROFILE_ORIGIN) {
-      owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining, root))
+      owner = await measure("development-owner", () => prepareOwner(config, ownerIdentity, target, fresh, metadataPath, remaining, root, borrowed ?? undefined))
       generatedIdentity = await measure("generated-wasm-identity", () => generatedProfileIdentity(root))
     }
     if (process.platform === "win32") windowsConsole = await requireWindowsProfileConsole(remaining())
@@ -445,7 +449,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
         PLAYSRC_PROFILE_SOURCE_FINGERPRINT: identity!,
         PLAYSRC_PROFILE_HARNESS_FINGERPRINT: harnessIdentity!,
         PLAYSRC_PROFILE_BROWSER_ENDPOINT: browser?.endpoint ?? process.env.PLAYSRC_PROFILE_BROWSER_ENDPOINT,
-        PLAYSRC_PROFILE_DEADLINE: String(started + MAX_RUN_MILLISECONDS),
+        PLAYSRC_PROFILE_DEADLINE: String(runDeadline),
       },
       stdio: ["ignore", "inherit", "inherit"],
     })
@@ -484,7 +488,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
     try {
       if (owner) {
         if (outcome === "passed" || outcome === "deferred") await writeLease(metadataPath, owner.metadata.token, OWNER_IDLE_MILLISECONDS)
-        else await measure("development-retirement", () => stopOwner(metadataPath, owner!.metadata, Math.max(1, Math.min(5_000, started + MAX_RUN_MILLISECONDS - Date.now()))))
+        else await measure("development-retirement", () => stopOwner(metadataPath, owner!.metadata, Math.max(1, Math.min(5_000, runDeadline - Date.now())), borrowed ?? undefined))
       }
       if (browser) await browserLease(browserPath, browser.token, OWNER_IDLE_MILLISECONDS)
     } catch (error) {
@@ -493,7 +497,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
       exitCode = 1
       if (outcome === "passed" || outcome === "deferred") outcome = "failed"
     } finally {
-      if (lock) await releaseHeadedProfileLock(lockPath, lock.token)
+      if (lock && !borrowed) await releaseHeadedProfileLock(lockPath, lock.token)
       clearTimeout(deadline)
       clearTimeout(hardDeadline)
       process.off("SIGINT", cancel)
@@ -522,6 +526,7 @@ export async function runHeadedProfile(arguments_: readonly string[], root = rep
           exitCode,
           timedOut,
           windowsConsole,
+          delegatedOwnership: borrowed,
           phases: Object.freeze({
             configurationMilliseconds,
             sourceIdentityMilliseconds,

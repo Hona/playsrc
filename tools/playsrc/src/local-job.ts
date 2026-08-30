@@ -8,6 +8,8 @@ import { loadLocalConfig, repositoryRoot, type LocalConfig } from "./config"
 import { parseHeadedProfile } from "./profile-runner"
 import { TF2_TARGET_NAMES } from "@playsrc/game-tf2-browser/maps"
 import { parseLocalPreparationStage } from "./prepare-local-stage"
+import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lock"
+import { runWindowsNativeJob, type NativeJobReceipt } from "./windows-job-native"
 
 const LIMIT = 175_000
 const SHA = /^[0-9a-f]{40}$/
@@ -25,7 +27,7 @@ export async function readLocalTaskResult(directory: string, task: string) {
   try {
     const result = JSON.parse(text)
     if (result.schema !== "playsrc-local-job-result-v1" || result.id !== path.basename(directory)
-      || !SHA.test(result.commit) || !["passed", "failed"].includes(result.outcome) || !Array.isArray(result.command)
+      || result.task !== task || !SHA.test(result.commit) || !["passed", "failed", "denied", "cancelled"].includes(result.outcome) || !Array.isArray(result.command)
       || typeof result.run !== "string" || path.dirname(result.run) !== directory) throw new Error("Malformed task result")
     return { result, launchError: null }
   } catch { return { result: null, launchError: text } }
@@ -56,6 +58,9 @@ export function localJobCommand(args: readonly string[]): { command: string[]; i
   if (kind === "build-stage") {
     parseLocalPreparationStage(options)
     return { command: ["tools/playsrc/src/prepare-local-stage.ts", ...options], interactive: false }
+  }
+  if (kind === "diagnostic" && options.length === 2 && /^\d{1,5}$/.test(options[0]!) && Number(options[0]) <= 30_000 && /^[01]$/.test(options[1]!)) {
+    return { command: ["-e", `console.log('native diagnostic workload');setTimeout(()=>process.exit(${options[1]}),${options[0]})`], interactive: false }
   }
   throw new Error("Expected test [files...], build <map>, build-stage wasm|producer|resources <map>, or profile <normal profile name> [normal profiler options]")
 }
@@ -166,47 +171,71 @@ async function assertCheckout(checkout: string, job: Job): Promise<void> {
   }
 }
 
-export async function runLocalJob(id: string, args: readonly string[], ready: boolean, root = repositoryRoot) {
+export async function runLocalJob(id: string, args: readonly string[], root = repositoryRoot, task: string | null = null) {
   if (!ID.test(id)) throw new Error("Invalid local job ID")
   const plan = localJobCommand(args)
-  if (plan.interactive && !ready) throw new Error("A profile requires --ready for this user-approved hands-off window")
   const config = await loadLocalConfig(root), directory = path.join(config.sourceCacheDir, "local-jobs", id)
   const job = JSON.parse(await readFile(path.join(directory, "job.json"), "utf8")) as Job
   if (job.schema !== "playsrc-local-job-v1" || job.id !== id || !SHA.test(job.commit)
     || JSON.stringify(job.config) !== JSON.stringify(config)) throw new Error("Local job identity/configuration differs")
   const checkout = path.join(directory, "checkout")
-  const running = await open(path.join(directory, "running"), "wx")
+  if (process.platform === "win32") {
+    if (!task?.startsWith("playsrc-local-job-") || !ID.test(task.slice("playsrc-local-job-".length))) throw new Error("Windows delegated workloads require the scheduled native job bridge")
+    const launcher = JSON.parse(await readFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-launch.owner.json`), "utf8"))
+    if (launcher.pid !== process.ppid || !Number.isSafeInteger(launcher.startedEpoch) || launcher.sessionId < 1) throw new Error("Scheduled launcher identity differs")
+  }
+  const admittedAt = Date.now()
+  const lockPath = path.join(config.sourceCacheDir, "evidence/tf2-browser-performance/chromium-profile.lock")
+  // Acquire once, before claiming the checkout: two tasks for the same prepared
+  // job queue normally instead of the second barging into its running marker.
+  const lock = process.platform === "win32" ? await acquireHeadedProfileLock(lockPath, `job:${id}:${args.join(" ")}`, LIMIT - 15_000) : undefined
+  let running: Awaited<ReturnType<typeof open>> | undefined
   try {
-  const owner = { pid: process.pid, startedAt: Date.now(), job: id, command: plan.command }
+  running = await open(path.join(directory, "running"), "wx")
+  const owner = { pid: process.pid, startedAt: admittedAt, job: id, task, command: plan.command }
   const phase = async (name: string) => {
     const text = JSON.stringify({ ...owner, phase: name })
-    await running.write(text, 0, "utf8"); await running.truncate(Buffer.byteLength(text))
+    await running!.write(text, 0, "utf8"); await running!.truncate(Buffer.byteLength(text))
   }
   await phase("source-validation")
   if (await Bun.file(path.join(directory, "job.pending.json")).exists()) throw new Error("Job preparation is incomplete; retry preparation before running")
   await assertCheckout(checkout, job)
   const run = path.join(directory, randomUUID())
   await mkdir(run)
+  await writeFile(path.join(run, "identity.json"), JSON.stringify({ ...owner, run, commit: job.commit }), { flag: "wx" })
+  if (task) await writeFile(path.join(directory, `${task.slice("playsrc-local-job-".length)}-run.json`), JSON.stringify({ job: id, task, run, pid: process.pid }), { flag: "wx" })
   await phase("reserve-ports")
-  const startedAt = Date.now(), port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
+  const startedAt = owner.startedAt, port = plan.interactive || args[0] === "build" ? await availableDevelopmentPort() : undefined
   const command = plan.interactive
     ? [process.execPath, path.join(repositoryRoot, "tools/playsrc/src/profile-runner.ts"), "--application-root", checkout, ...plan.command.slice(1)]
     : [process.execPath, ...plan.command]
   let failure: string | null = null
+  let native: NativeJobReceipt | null = null
+  let outcome = "failed"
   try {
-    // The shared profiler owns physical admission and its deadline. Do not
-    // block this supervisor in a second synchronous console query.
-    await phase("command")
-    await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
-    await phase("verify-source")
-    await assertCheckout(checkout, job)
-  } catch (error) { failure = String(error) }
-  const result = { schema: "playsrc-local-job-result-v1", id, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome: failure ? "failed" : "passed", failure, run }
+    if (process.platform === "win32") {
+      await phase("native-consent-command-completion")
+      native = await runWindowsNativeJob({ job: id, task: task!, run, action: args.join(" "), command, cwd: checkout,
+        lockPath, lockToken: lock!.token, deadline: startedAt + LIMIT, diagnostic: args[0] === "diagnostic" }, localJobEnvironment(process.env, port), async () => {
+          await phase("verify-source")
+          await assertCheckout(checkout, job)
+        })
+      outcome = native.outcome === "completed" ? "passed" : native.outcome
+      failure = native.error ?? (outcome === "passed" ? null : `Native job ${outcome} (exit ${native.exitCode})`)
+    } else {
+      await phase("command")
+      await execute(command, checkout, localJobEnvironment(process.env, port), path.join(run, "command.log"), Math.max(1, LIMIT - (Date.now() - startedAt)))
+      outcome = "passed"
+      await phase("verify-source")
+      await assertCheckout(checkout, job)
+    }
+  } catch (error) { failure = String(error); outcome = "failed" }
+  const result = { schema: "playsrc-local-job-result-v1", id, task, commit: job.commit, checkout, command, port, startedAt, finishedAt: Date.now(), outcome, failure, run, native, lockWaitMilliseconds: lock?.milliseconds ?? 0 }
   await writeFile(path.join(run, "result.json"), JSON.stringify(result, null, 2), { flag: "wx" })
   return result
   } finally {
-    await running.close()
-    await rm(path.join(directory, "running"))
+    try { if (running) { await running.close(); await rm(path.join(directory, "running")) } }
+    finally { if (lock) await releaseHeadedProfileLock(lockPath, lock.token) }
   }
 }
 
@@ -219,10 +248,17 @@ if (import.meta.main) {
       console.log(JSON.stringify(await readLocalTaskResult(path.join(config.sourceCacheDir, "local-jobs", args[0]!), args[1]!)))
     }
     else if (operation === "run" && args.length >= 2) {
-      const ready = args[1] === "--ready"
-      const result = await runLocalJob(args[0]!, args.slice(ready ? 2 : 1), ready)
+      const task = args[1] === "--task" ? args[2]! : null
+      const workload = args.slice(task ? 3 : 1)
+      localJobCommand(workload)
+      if (process.platform === "win32" && !task) {
+        const output = await execute(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", path.join(repositoryRoot, "tools/playsrc/windows-job.ps1"), "-Job", args[0]!, "-JobArguments", JSON.stringify(workload)], repositoryRoot, localJobEnvironment(process.env), undefined, 15_000)
+        console.log(output)
+      } else {
+      const result = await runLocalJob(args[0]!, workload, repositoryRoot, task)
       console.log(JSON.stringify(result))
       if (result.failure) process.exitCode = 1
-    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> [existing-job] | run <id> [--ready] test|build|build-stage|profile ...")
+      }
+    } else throw new Error("Usage: bun tools/playsrc/src/local-job.ts prepare <ref> <commit> [existing-job] | run <id> test|build|build-stage|profile|diagnostic ...")
   } catch (error) { console.error(String(error)); process.exitCode = 1 }
 }

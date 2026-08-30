@@ -53,14 +53,14 @@ test("local jobs reuse ordinary tests and headed profilers, without inherited re
   expect(localJobCommand(["test", "tools/playsrc/tests/windows-desktop.test.ts"])).toEqual({ command: ["test", "tools/playsrc/tests/windows-desktop.test.ts"], interactive: false })
   expect(localJobCommand(["profile", "gameplay", "--headed"])).toEqual({ command: ["tools/playsrc/src/profile-runner.ts", "gameplay", "--headed"], interactive: true })
   expect(localJobCommand(["build", "jump_beef"])).toEqual({ command: ["tools/playsrc/src/cli.ts", "dev", "jump_beef", "--prepare-only"], interactive: false })
-  for (const args of [["test", "../outside.test.ts"], ["test", "--preload=x"], ["profile", "gameplay", "--headless"], ["profile", "bad"], ["deploy"]]) {
+  for (const args of [["--ready", "profile", "gameplay"], ["test", "../outside.test.ts"], ["test", "--preload=x"], ["profile", "gameplay", "--headless"], ["profile", "bad"], ["deploy"]]) {
     expect(() => localJobCommand(args)).toThrow()
   }
   expect(localJobEnvironment({ PATH: "native-tools", CARGO_HOME: "native-cargo", PLAYSRC_PROFILE_CDP_ENDPOINT: "remote", PLAYSRC_PROFILE_ORIGIN: "https://playsrc.online", PLAYSRC_DEV_PORT: "4173", PROFILE_SKIP: "1", NATIVE_ORIGIN: "remote", VITE_FOO: "bad" }, 49123))
     .toEqual({ PATH: "native-tools", CARGO_HOME: "native-cargo", PLAYSRC_DEV_PORT: "49123" })
 })
 
-test("origin checkout is exact and isolated; ordinary test failures and mutations stay red", async () => {
+test.skipIf(process.platform === "win32")("origin checkout is exact and isolated; ordinary test failures and mutations stay red (non-Windows fixture; Windows requires scheduled UI)", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "playsrc-local-job-"))
   const source = path.join(directory, "source"), origin = path.join(directory, "origin.git")
   const git = (args: string[], cwd = source) => {
@@ -91,20 +91,19 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     const job = await prepareLocalJob("refs/heads/fixture", commit, source)
     expect(git(["rev-parse", "HEAD"], path.join(job.directory, "checkout"))).toBe(commit)
     expect(await readFile(path.join(source, "user-work.txt"), "utf8")).toBe("do not touch")
-    await expect(runLocalJob(job.id, ["profile", "gameplay"], false, source)).rejects.toThrow("hands-off")
-    const passed = await runLocalJob(job.id, ["test", "pass.test.ts"], false, source)
+    const passed = await runLocalJob(job.id, ["test", "pass.test.ts"], source)
     expect(passed.outcome).toBe("passed")
     expect(JSON.parse(await readFile(path.join(passed.run, "result.json"), "utf8")).commit).toBe(commit)
     const token = randomUUID(), launch = path.join(job.directory, `${token}-launch.log`), task = `playsrc-local-job-${token}`
     await writeFile(launch, "Error: rejected before a command started")
     expect(await readLocalTaskResult(job.directory, task)).toEqual({ result: null, launchError: "Error: rejected before a command started" })
-    await writeFile(launch, Buffer.from("\uFEFF" + JSON.stringify(passed), "utf16le"))
+    await writeFile(launch, Buffer.from("\uFEFF" + JSON.stringify({ ...passed, task }), "utf16le"))
     expect((await readLocalTaskResult(job.directory, task)).result.commit).toBe(commit)
     await writeFile(launch, JSON.stringify({ ...passed, id: randomUUID() }))
     expect((await readLocalTaskResult(job.directory, task)).result).toBeNull()
     await writeFile(launch, "")
     expect(await readLocalTaskResult(job.directory, task)).toEqual({ result: null, launchError: null })
-    expect((await runLocalJob(job.id, ["test", "fail.test.ts"], false, source)).outcome).toBe("failed")
+    expect((await runLocalJob(job.id, ["test", "fail.test.ts"], source)).outcome).toBe("failed")
     await mkdir(path.join(job.directory, "checkout", "node_modules"), { recursive: true })
     const nativeCache = path.join(job.directory, "checkout", "node_modules", "native-build-marker")
     await writeFile(nativeCache, "retain native outputs")
@@ -114,12 +113,12 @@ test("origin checkout is exact and isolated; ordinary test failures and mutation
     expect((await prepareLocalJob("refs/heads/fixture", nextCommit, source, job.id)).id).toBe(job.id)
     expect(await readFile(nativeCache, "utf8")).toBe("retain native outputs")
     expect(JSON.parse(await readFile(path.join(passed.run, "result.json"), "utf8")).commit).toBe(commit)
-    expect((await runLocalJob(job.id, ["test", "pass.test.ts"], false, source)).commit).toBe(nextCommit)
+    expect((await runLocalJob(job.id, ["test", "pass.test.ts"], source)).commit).toBe(nextCommit)
     await writeFile(path.join(job.directory, "running"), "another invocation")
-    await expect(runLocalJob(job.id, ["test"], false, source)).rejects.toThrow()
+    await expect(runLocalJob(job.id, ["test"], source)).rejects.toThrow()
     await rm(path.join(job.directory, "running"))
     await writeFile(path.join(job.directory, "checkout", "pass.test.ts"), "changed")
-    await expect(runLocalJob(job.id, ["test"], false, source)).rejects.toThrow("changed")
+    await expect(runLocalJob(job.id, ["test"], source)).rejects.toThrow("changed")
     await expect(prepareLocalJob("refs/heads/fixture", "0".repeat(40), source)).rejects.toThrow()
     expect(git(["status", "--porcelain"])).toBe("?? user-work.txt")
   } finally { await rm(directory, { recursive: true, force: true }) }
