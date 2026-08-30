@@ -99,6 +99,17 @@ test("repeated sheet rectangles share frozen values without borrowing packet byt
   expect(first!.next[0]![0]).toBe(retained)
 })
 
+test("packet-local UUID reuse preserves all128 bits, alternating systems and retained values", () => {
+  const bytes = output({ count: 18 })
+  for (let index = 1; index <= 16; index++) bytes[40 + index * 436 + 16 + index - 1] = index
+  const expected = Array.from({ length: 18 }, (_, index) => Buffer.from(bytes.subarray(40 + index * 436 + 16, 40 + index * 436 + 32)).toString("hex"))
+  const retained = decodeParticleRenderOutput(bytes, ["smoke"])
+  expect(retained.items.map(item => item.systemUuid)).toEqual(expected)
+  bytes.fill(0xff, 40 + 16, 40 + 32)
+  expect(retained.items.map(item => item.systemUuid)).toEqual(expected)
+  expect(decodeParticleRenderOutput(bytes, ["smoke"]).items[0]!.systemUuid).toBe("ff".repeat(16))
+})
+
 test("sheet cache bounds do not omit unique rectangles or accept a nonfinite late record", () => {
   const bytes = output({ count: 600 }), view = new DataView(bytes.buffer)
   for (let index = 0; index < 600; index++) view.setFloat32(40 + index * 436 + 132, index, true)
