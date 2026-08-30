@@ -76,6 +76,9 @@ export function attributeFrameTails(options: Readonly<{
       milliseconds: summarizeDistribution(collections.map(collection => collection.milliseconds)),
       reclaimedBytes: collections.reduce((total, collection) => total + Math.max(0, collection.beforeBytes - collection.afterBytes), 0),
     },
-    inputToVisibleMilliseconds: summarizeDistribution(latency),
+    inputToCompletedSubmissionMilliseconds: summarizeDistribution(latency),
+    inputsWithoutCompletedSubmission: options.inputs.length - latency.length,
+    inputToVisibleMilliseconds: null,
+    inputEvidence: "Mouse revision joined to application completion only; native presentation and changing game pixels are not established",
   })
 }
