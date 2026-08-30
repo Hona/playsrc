@@ -22,14 +22,20 @@ export class ProfileQueueTimeout extends Error {
   }
 }
 
-async function readTicket(filename: string): Promise<Ticket | null> {
-  try {
-    const value = JSON.parse(await readFile(filename, "utf8")) as Ticket
-    if (!Number.isSafeInteger(value.pid) || value.pid < 1 || typeof value.token !== "string") throw new Error(`Malformed headed profile ownership: ${filename}`)
-    return value
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
-    throw error
+export async function readTicket(filename: string, read: (filename: string) => Promise<string> = file => readFile(file, "utf8"), platform = process.platform): Promise<Ticket | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const value = JSON.parse(await read(filename)) as Ticket
+      if (!Number.isSafeInteger(value.pid) || value.pid < 1 || typeof value.token !== "string") throw new Error(`Malformed headed profile ownership: ${filename}`)
+      return value
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+      // Windows can deny an open while a concurrently retired ticket is delete
+      // pending. Retry the read, never skip a still-unreadable owner or remove it.
+      // Persistent denials and malformed metadata still fail closed.
+      if (platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 3) throw error
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
   }
 }
 
