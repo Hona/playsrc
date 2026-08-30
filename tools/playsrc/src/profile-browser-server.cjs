@@ -24,4 +24,9 @@ void (async () => {
   if (stopping) await stop()
   else console.log(JSON.stringify({ endpoint: server.wsEndpoint(), executable: server.process().spawnfile,
     browserPid: server.process().pid, arguments: server.process().spawnargs.slice(1) }))
-})().catch(error => { console.error(error); process.exitCode = 1 })
+})().catch(async error => {
+  console.error(error)
+  // A failed launch still has the lease owner's open stdin. It must exit, not
+  // leave the enclosing delegated job waiting for its full command deadline.
+  try { await stop() } finally { process.exit(1) }
+})

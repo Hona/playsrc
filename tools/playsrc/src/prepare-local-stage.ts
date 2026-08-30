@@ -5,6 +5,7 @@ import { acquireHeadedProfileLock, releaseHeadedProfileLock } from "./profile-lo
 import { rustBuildIdentity } from "./build-identity"
 import { buildTf2Wasm } from "./tf2-wasm-build"
 import { buildSourceBundle, prepareSourceBundleProducer } from "./source-bundle"
+import { borrowedWindowsJobLock } from "./windows-job-native"
 
 export type LocalPreparationStage = Readonly<{ kind: "wasm" | "producer" }> | Readonly<{ kind: "resources"; target: string }>
 
@@ -36,8 +37,10 @@ if (import.meta.main) {
     // A native build must not contend with another lane's measured capture.
     // The local-job owner still bounds the entire stage, including this wait.
     const lockPath = path.join(config.sourceCacheDir, "evidence", "tf2-browser-performance", "chromium-profile.lock")
-    const lock = await acquireHeadedProfileLock(lockPath, `prepare-${stage.kind}`)
+    const borrowed = await borrowedWindowsJobLock(lockPath, ["build-stage", ...process.argv.slice(2)].join(" "))
+    if (process.platform === "win32" && !borrowed) throw new Error("Windows preparation requires local-job run <job> build-stage ... and its displayed per-job decision")
+    const lock = borrowed ?? await acquireHeadedProfileLock(lockPath, `prepare-${stage.kind}`)
     try { console.log(JSON.stringify(await prepareLocalStage(config, stage))) }
-    finally { await releaseHeadedProfileLock(lockPath, lock.token) }
+    finally { if (!borrowed) await releaseHeadedProfileLock(lockPath, lock.token) }
   } catch (error) { console.error(String(error)); process.exitCode = 1 }
 }

@@ -1,7 +1,7 @@
 # SSH is the transport. Task Scheduler only bridges SSH's noninteractive
 # session to the existing user's physical console; it runs the normal profiler.
 param(
-  [ValidateSet('Run','Build','BuildStage','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
+  [ValidateSet('Run','Build','BuildStage','Test','Diagnostic','Cancel','Status','Result','Logs','Doctor','Wait','Artifacts','Recover')][string]$Action = 'Run',
   [Parameter(Mandatory=$true)][string]$Job,
   [string]$Profile,
   [string]$Grep = '',
@@ -11,7 +11,10 @@ param(
   [ValidateSet('wasm','producer','resources')][string]$Stage,
   [string]$Task,
   [switch]$IncludeTrace,
-  [switch]$Ready
+  [string]$JobArguments = '[]',
+  [string]$TestArguments = '[]',
+  [ValidateRange(0,30000)][int]$Milliseconds = 250,
+  [ValidateRange(0,1)][int]$DiagnosticExit = 0
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -22,7 +25,7 @@ $bun = (Get-Command bun -CommandType Application).Source
 $config = Get-Content -Raw (Join-Path $root 'playsrc.local.json') | ConvertFrom-Json
 $directory = Join-Path $config.sourceCacheDir "local-jobs/$Job"
 if (!(Test-Path -LiteralPath (Join-Path $directory 'job.json'))) { throw 'Prepare this job first' }
-if($Action -in 'Wait','Status','Result','Logs','Artifacts','Recover') {
+if($Action -in 'Wait','Status','Result','Logs','Artifacts','Recover','Cancel') {
  $invocation=[Environment]::CommandLine
  if($MyInvocation.InvocationName -eq '.' -or $invocation -notmatch '(?i)\s-File\s' -or $invocation -notmatch '(?i)\s-NonInteractive(?:\s|$)' -or $invocation -match '(?i)\s-NoExit(?:\s|$)'){throw 'Readback requires its own noninteractive -File helper'}
  $heldFile=Join-Path $config.sourceCacheDir 'evidence/tf2-browser-performance/chromium-profile.lock'
@@ -64,7 +67,7 @@ if ($Action -eq 'Doctor') {
   & $bun -e $probe $cargo
   exit $LASTEXITCODE
 }
-if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
+if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
   [PlaysrcReadbackGuard]::Stage='exact-task-query'
   $tasks = if (($Action -in 'Status','Recover') -and $Task) { @(Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) } else { @() }
   $taskState = $null
@@ -73,13 +76,20 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   if ($Task) {
     if ($Task -notmatch '^playsrc-local-job-([a-f0-9-]{36})$' -or !(Test-Path (Join-Path $directory "$($Matches[1])-launch.log"))) { throw 'Task is not recorded for this job' }
     $launchFile = Join-Path $directory "$($Matches[1])-launch.log"
+    $runLink=Join-Path $directory "$($Matches[1])-run.json"
     [PlaysrcReadbackGuard]::Stage='launch-log-read'
     $launchText = Read-PlainJobText $launchFile
     $selectedTask = $tasks | Where-Object TaskName -eq $Task
     $taskState = $selectedTask | Select-Object TaskName,State
     $taskInfo = if ($selectedTask) { Get-ScheduledTaskInfo -TaskName $Task | Select-Object LastRunTime,LastTaskResult } else { $null }
   }
-  $latestRun = Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1
+  $latestRun = if($Task) {
+    if(Test-Path -LiteralPath $runLink) {
+      $identity=Get-Content -Raw -LiteralPath $runLink|ConvertFrom-Json
+      if($identity.task -ne $Task -or $identity.job -ne $Job -or (Split-Path $identity.run) -ne $directory){throw 'Task run identity differs'}
+      Get-Item -LiteralPath $identity.run
+    }
+  } else { Get-ChildItem -LiteralPath $directory -Directory | Where-Object { $_.Name -match '^[a-f0-9-]{36}$' } | Sort-Object CreationTime -Descending | Select-Object -First 1 }
   if ($launchFile -and $latestRun -and $latestRun.CreationTimeUtc -lt (Get-Item -LiteralPath $launchFile).CreationTimeUtc) { $latestRun = $null }
   $latest = if ($latestRun) { Get-Item (Join-Path $latestRun.FullName 'command.log') -ErrorAction SilentlyContinue } else { $null }
   $result = $null
@@ -99,10 +109,23 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
     @{result=$result;launchError=$(if (!$result) { "$launchText$bootstrap" } else { $null })} | ConvertTo-Json -Depth 8 -Compress
     exit 0
   }
+  if($Action -eq 'Cancel') {
+    if(!$Task -or !$latestRun -or $result){throw 'Cancel requires this exact active task/run'}
+    $runner=OwnedRunner ([IO.Path]::ChangeExtension($launchFile,'owner.json'))
+    if(!$runner -or $runner.HasExited){throw 'Owned launcher is not live'}
+    $runner.Dispose()
+    [IO.File]::WriteAllText((Join-Path $latestRun.FullName 'cancel'),"Cancellation requested for $Task")
+    @{task=$Task;run=$latestRun.FullName;cancellationRequested=$true}|ConvertTo-Json -Compress
+    exit 0
+  }
   if ($Action -eq 'Artifacts') {
     [PlaysrcReadbackGuard]::Stage='artifact-enumeration'
     if (!$result -or $result.schema -ne 'playsrc-local-job-result-v1') { throw 'This task has no completed result to collect' }
     $files = @(@{name='job/result.json';path=(Join-Path $result.run 'result.json')})
+    foreach($record in 'identity.json','consent.json','native-request.json','native-helper.json','native-result.json') {
+      $file=Join-Path $result.run $record
+      if(Test-Path -LiteralPath $file){$files+=@{name="job/$record";path=$file}}
+    }
     if ($Task) {
       $policyFile = Join-Path $directory "$($Task.Substring('playsrc-local-job-'.Length))-policy.json"
       if (Test-Path -LiteralPath $policyFile) { $files += @{name='job/launch-policy.json';path=$policyFile} }
@@ -180,13 +203,16 @@ if ($Action -ne 'Run' -and $Action -ne 'Build' -and $Action -ne 'BuildStage') {
   }
   exit 0
 }
-if ($Action -eq 'Run') {
-  if (!$Ready) { throw 'Pass -Ready only for a freshly approved hands-off window' }
+if ($JobArguments -ne '[]') {
+  $workload=@(ConvertFrom-Json -InputObject $JobArguments)
+  if($JobArguments.Trim() -notmatch '^\[.*\]$' -or $workload.Count -lt 1 -or $workload.Count -gt 20){throw 'Invalid job argument array'}
+  foreach($value in $workload){if($value -isnot [string] -or $value.Length -gt 1024 -or $value.Contains([char]0)){throw 'Invalid job argument'}}
+} elseif ($Action -eq 'Run') {
   if ($Profile -notmatch '^[a-z0-9-]+$') { throw 'Expected a normal profile name' }
   if ($Grep.Length -gt 512 -or $Grep.Contains([char]0)) {throw 'Profile selection exceeds its bound'}
 } elseif ($Action -eq 'BuildStage') {
   if (!$Stage -or ($Stage -eq 'resources' -and $Target -notmatch '^[a-z0-9_]+$') -or ($Stage -ne 'resources' -and $Target)) { throw 'Expected wasm | producer | resources with a local build target' }
-} elseif ($Target -notmatch '^[a-z0-9_]+$') { throw 'Expected a local build target' }
+} elseif ($Action -eq 'Build' -and $Target -notmatch '^[a-z0-9_]+$') { throw 'Expected a local build target' }
 $token = [Guid]::NewGuid().ToString()
 $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
@@ -199,9 +225,12 @@ if ($null -eq $extra) { $extra = @() } elseif ($extra -isnot [array]) { $extra =
 if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
-$arguments = if ($Action -eq 'Build') { "build $(Quote $Target)" } elseif ($Action -eq 'BuildStage') { "build-stage $(Quote $Stage)" + $(if ($Stage -eq 'resources') { " $(Quote $Target)" } else { '' }) } else { "--ready profile $(Quote $Profile) " + (($extra | ForEach-Object { Quote $_ }) -join ' ') }
+if($JobArguments -eq '[]') {
+  $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+@(ConvertFrom-Json -InputObject $TestArguments)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}else{@('profile',$Profile)+$extra}
+}
+$arguments = ($workload|ForEach-Object {Quote $_}) -join ' '
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')
-$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) $arguments *> $(Quote $log); exit `$LASTEXITCODE } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
+$command = "`$ErrorActionPreference='Stop'; `$ProgressPreference='SilentlyContinue'; Set-Location $(Quote $root); @{taskPriority=5;processPriority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass;pid=`$PID} | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 $(Quote $policy); try { . $(Quote (Join-Path $root 'tools/playsrc/windows-job-console.ps1')) -Receipt $(Quote $ownerLog); & $(Quote $bun) tools/playsrc/src/local-job.ts run $(Quote $Job) --task $(Quote $name) $arguments > $(Quote $log) 2> $(Quote "$log.bootstrap.log"); exit `$LASTEXITCODE } catch { `$_ | Out-String | Out-File -LiteralPath $(Quote $log) -Append; exit 1 }"
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 New-Item -ItemType File -Path $log | Out-Null
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $root
