@@ -1,5 +1,6 @@
 import { test as base, expect } from "@playwright/test"
 import { ProfilePhases } from "./profile-phases"
+import { finishProfileArtifacts } from "./profile-artifacts"
 
 const startupInputGuards = new WeakMap<object, () => Promise<void>>()
 export function guardStartupInput(page: object, guard: () => Promise<void>): void { startupInputGuards.set(page, guard) }
@@ -32,7 +33,17 @@ export const test = headedBrowser.extend<{
   allowRecoverableApplicationFailure: boolean
   preserveStartupMovie: boolean
   profilePhases: ProfilePhases
-}>({
+}, { desktopArtifacts: { succeeded: boolean } }>({
+  desktopArtifacts: [async ({ browser }, use) => {
+    const state = { succeeded: true }
+    try { await use(state) }
+    finally {
+      if (process.env.PLAYSRC_PROFILE_DESKTOP_CHANNEL) {
+        await browser.close()
+        await finishProfileArtifacts(state.succeeded)
+      }
+    }
+  }, { scope: "worker", auto: true }],
   profilePhases: [async ({}, use, testInfo) => {
     const phases = new ProfilePhases()
     try { await use(phases) }
@@ -40,7 +51,7 @@ export const test = headedBrowser.extend<{
   }, { auto: true }],
   allowRecoverableApplicationFailure: [false, { option: true }],
   preserveStartupMovie: [false, { option: true }],
-  applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure, preserveStartupMovie }, use, testInfo) => {
+  applicationDiagnostics: [async ({ page, allowRecoverableApplicationFailure, preserveStartupMovie, desktopArtifacts }, use, testInfo) => {
     const started = Date.now()
     const transitions: Array<{ milliseconds: number; phase: string; detail: string; startupState: string }> = []
     let rejectFailure: (error: Error) => void = () => {}
@@ -107,6 +118,7 @@ export const test = headedBrowser.extend<{
       await Promise.race([use(), failure])
     } finally {
       finished = true
+      if (testInfo.status !== "passed") desktopArtifacts.succeeded = false
       startupInputGuards.delete(page)
       if (stallTimer) clearTimeout(stallTimer)
       if (lastState) await testInfo.attach("terminal-application-state", { body: JSON.stringify(lastState, null, 2), contentType: "application/json" })

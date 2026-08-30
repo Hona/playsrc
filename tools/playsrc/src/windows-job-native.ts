@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
-import { readFile, writeFile } from "node:fs/promises"
+import { readFile, writeFile, rename } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { repositoryRoot } from "./config"
 import { processIsAlive } from "./profile-lock"
@@ -10,7 +11,8 @@ export type NativeDialog = {
   visibleMilliseconds: number; window: number; sessionId: number
 }
 export type NativeJobReceipt = {
-  schema: "playsrc-native-job-v1"; job: string; task: string; run: string; action: string; lockToken: string
+  schema: "playsrc-native-job-v2"; job: string; task: string; run: string; action: string; lockToken: string
+  stage: string | null; preparedIdentity: string | null; preparedAt: number; desktopStartedAt: number; desktopReleasedAt: number
   invocation: readonly string[]; interactive: boolean; uiInvocations: number
   ownerPid: number; ownerCreatedAt: number; helperPid: number; helperCreatedAt: number; sessionId: number
   childPid: number; childCreatedAt: number; commandStartedAt: number; teardownAt: number
@@ -25,7 +27,7 @@ export function approvedNativeDecision(value: NativeDialog | null): boolean {
 }
 
 export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { job: string; task: string; run: string; action: string; invocation: readonly string[]; interactive: boolean; lockToken: string; ownerPid: number; helperPid: number; spawnedAt: number }): NativeJobReceipt {
-  if (!value || value.schema !== "playsrc-native-job-v1"
+  if (!value || value.schema !== "playsrc-native-job-v2"
     || ["job", "task", "run", "action", "lockToken", "ownerPid", "helperPid", "interactive"].some(key => value[key as keyof NativeJobReceipt] !== expected[key as keyof typeof expected])
     || JSON.stringify(value.invocation) !== JSON.stringify(expected.invocation)
     || ![value.ownerCreatedAt, value.helperCreatedAt, value.startedAt, value.finishedAt, value.teardownAt, value.childPid, value.childCreatedAt, value.commandStartedAt].every(Number.isSafeInteger)
@@ -37,11 +39,15 @@ export function validateNativeJobReceipt(value: NativeJobReceipt, expected: { jo
   if (!Number.isSafeInteger(value.uiInvocations) || value.uiInvocations < 0 || value.uiInvocations > 2
     || value.uiInvocations !== Number(value.consent !== null) + Number(value.completion !== null)) throw new Error("Native UI invocation count differs")
   if (value.commandStartedAt && (value.childPid <= 0 || value.childCreatedAt > value.commandStartedAt)) throw new Error("Workload process identity differs")
-  if (value.interactive && value.commandStartedAt && (!approvedNativeDecision(value.consent) || value.commandStartedAt < value.consent!.dismissedAt)) throw new Error("Workload has no checked displayed approval")
-  if (value.completion && (!value.interactive || value.outcome !== "completed" || !value.commandStartedAt || !approvedNativeDecision(value.consent))) throw new Error("Notification without a completed interactive workload")
+  if (![value.preparedAt, value.desktopStartedAt, value.desktopReleasedAt].every(Number.isSafeInteger)) throw new Error("Missing desktop phase chronology")
+  if (value.consent && (!value.interactive || !value.stage || !/^[a-f0-9]{64}$/.test(value.preparedIdentity ?? "") || value.preparedAt < value.commandStartedAt || value.consent.displayedAt && value.consent.displayedAt < value.preparedAt)) throw new Error("Consent precedes authenticated preparation")
+  if (value.desktopStartedAt && (!approvedNativeDecision(value.consent) || value.desktopStartedAt < value.consent!.dismissedAt || value.desktopReleasedAt < value.desktopStartedAt)) throw new Error("Desktop has no checked scoped approval/release")
+  if (!value.interactive && (value.preparedAt || value.desktopStartedAt || value.desktopReleasedAt || value.stage || value.preparedIdentity)) throw new Error("Background workload acquired desktop ownership")
+  if (value.completion && (!value.interactive || !value.desktopReleasedAt || !approvedNativeDecision(value.consent))) throw new Error("Notification without a completed interactive stage")
   if (value.outcome === "completed" && (!value.commandStartedAt || value.exitCode !== 0 || value.error)) throw new Error("Native completion contradicts workload result")
-  if (value.outcome === "denied" && (value.consent?.decision !== "denied" || value.commandStartedAt)) throw new Error("Native denial contradicts workload result")
-  if (value.teardownAt < value.commandStartedAt || value.completion?.displayedAt && value.completion.displayedAt < value.teardownAt) throw new Error("Completion precedes owned teardown")
+  if (value.interactive && value.outcome === "completed" && !value.desktopReleasedAt) throw new Error("Completed profile has no scoped desktop lifecycle")
+  if (value.outcome === "denied" && (value.consent?.decision !== "denied" || value.desktopStartedAt)) throw new Error("Native denial contradicts workload result")
+  if (value.teardownAt < value.commandStartedAt || value.completion?.displayedAt && value.completion.displayedAt < value.desktopReleasedAt) throw new Error("Completion precedes desktop teardown")
   return value
 }
 
@@ -123,10 +129,10 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
       && (consent.invocation.length === 1 || consent.invocation.slice(1).some(file => path.resolve(file) === path.resolve(invocation.testFile)))
     : JSON.stringify(consent.invocation) === JSON.stringify(invocation)
   const plan = localJobCommand(consent.invocation)
-  if (consent.schema !== "playsrc-native-job-v1" || !invocationMatches || consent.helperPid !== process.ppid
+  if (consent.schema !== "playsrc-native-job-v2" || !invocationMatches || consent.helperPid !== process.ppid
     || path.join(consent.run, "ownership.json") !== file || held.pid !== consent.ownerPid || held.token !== consent.lockToken
     || !processIsAlive(held.pid) || consent.interactive !== plan.interactive
-    || (plan.interactive ? !approvedNativeDecision(consent.consent) : consent.consent !== null || consent.uiInvocations !== 0)) throw new Error("No live per-job native classification/ownership")
+    || consent.consent !== null || consent.uiInvocations !== 0 || consent.desktopStartedAt !== 0) throw new Error("No live per-job native classification/ownership")
   // Creation-time readback defeats recycled helper or lock-owner PIDs.
   const script = `$ErrorActionPreference='Stop';@(${consent.ownerPid},${consent.helperPid})|ForEach-Object {$p=[Diagnostics.Process]::GetProcessById($_);@{pid=$p.Id;created=([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();session=$p.SessionId};$p.Dispose()}|ConvertTo-Json -Compress`
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
@@ -144,4 +150,63 @@ export async function borrowedWindowsJobLock(lockPath: string, invocation: reado
   const deadline = Number(process.env.PLAYSRC_LOCAL_JOB_DEADLINE)
   if (!Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline > consent.startedAt + 175_000) throw new Error("Native job deadline differs")
   return { token: held.token, milliseconds: 0, deadline, ownerPid: held.pid }
+}
+
+/** The profile owner calls this only after its silent preparation. The native
+ * supervisor retains the SAME FIFO resource reservation and process tree across
+ * the transition; ownership.json is never a desktop authorization. */
+export async function withWindowsDesktop<T>(preparedIdentity: string, signal: AbortSignal,
+  work: (release: (succeeded: boolean) => Promise<void>) => Promise<T>, teardown: () => Promise<void>, succeeded: (result: T) => boolean): Promise<T> {
+  if (process.platform !== "win32") return work(async () => {})
+  const file = process.env.PLAYSRC_LOCAL_JOB_OWNER
+  if (!file || !/^[a-f0-9]{64}$/.test(preparedIdentity)) throw new Error("Missing prepared native desktop identity")
+  const owner = JSON.parse(await readFile(file, "utf8")) as NativeJobReceipt
+  await borrowedWindowsJobLock(process.env.PLAYSRC_LOCAL_JOB_LOCK!, owner.invocation)
+  if (!owner.interactive) throw new Error("Background ownership cannot authorize a desktop")
+  const dispatch = JSON.parse(await readFile(path.join(owner.run, "dispatch.json"), "utf8"))
+  if (dispatch.pid !== process.pid || dispatch.helperPid !== process.ppid || dispatch.helperCreatedAt !== owner.helperCreatedAt
+    || dispatch.job !== owner.job || dispatch.task !== owner.task || dispatch.run !== owner.run) throw new Error("Desktop requester is not the owned profile process")
+  const request = { job: owner.job, task: owner.task, run: owner.run, lockToken: owner.lockToken,
+    stage: randomUUID(), preparedIdentity, childPid: process.pid, childCreatedAt: dispatch.createdAt,
+    helperPid: owner.helperPid, helperCreatedAt: owner.helperCreatedAt }
+  const publish = async (name: string, value: unknown) => {
+    const destination = path.join(owner.run, name)
+    await writeFile(`${destination}.tmp`, JSON.stringify(value), { flag: "wx" })
+    await rename(`${destination}.tmp`, destination)
+  }
+  const wait = async (name: string, cancelling: boolean) => {
+    while (Date.now() < Number(process.env.PLAYSRC_LOCAL_JOB_DEADLINE)) {
+      if (cancelling) signal.throwIfAborted()
+      if (!processIsAlive(owner.helperPid)) throw new Error("Desktop supervisor exited")
+      const value = await readFile(path.join(owner.run, name), "utf8").catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        return null
+      })
+      if (value) {
+        const receipt = JSON.parse(value) as NativeJobReceipt
+        for (const key of ["job", "task", "run", "lockToken", "stage", "preparedIdentity", "childPid", "childCreatedAt", "helperPid", "helperCreatedAt"] as const) {
+          if (receipt[key] !== request[key]) throw new Error("Desktop stage receipt differs")
+        }
+        if (receipt.schema !== "playsrc-native-job-v2" || !approvedNativeDecision(receipt.consent) || !receipt.desktopStartedAt) throw new Error("Desktop stage was not authorized")
+        return receipt
+      }
+      await Bun.sleep(25)
+    }
+    throw new Error("Desktop transition exceeded the unchanged job deadline")
+  }
+  signal.throwIfAborted()
+  await publish("desktop-request.json", request)
+  await wait("desktop-grant.json", true)
+  let releasing: Promise<void> | undefined
+  const release = (success: boolean) => releasing ??= (async () => {
+    // No release receipt on unconfirmed teardown. The native Job Object's
+    // kill-on-close fallback owns that failure, not an optimistic lease expiry.
+    await teardown()
+    await publish("desktop-release.json", { ...request, succeeded: success && !signal.aborted })
+    const released = await wait("desktop-released.json", false)
+    if (released.desktopReleasedAt < released.desktopStartedAt) throw new Error("Desktop release was not observed")
+  })()
+  let success = false
+  try { signal.throwIfAborted(); const result = await work(release); success = succeeded(result); return result }
+  finally { await release(success) }
 }

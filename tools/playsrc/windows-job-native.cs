@@ -28,7 +28,9 @@ public static partial class PlaysrcNativeJob {
   public int sessionId;
  }
  public sealed class Receipt {
-  public string schema="playsrc-native-job-v1", job, task, run, action, lockToken, outcome="failed", error;
+   public string schema="playsrc-native-job-v2", job, task, run, action, lockToken, outcome="failed", error;
+   public string stage, preparedIdentity;
+   public long preparedAt, desktopStartedAt, desktopReleasedAt;
   public string[] invocation;
   public int ownerPid, helperPid, sessionId, childPid, uiInvocations;
   public int? exitCode;
@@ -200,7 +202,12 @@ public static partial class PlaysrcNativeJob {
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint exit);
- [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool belongs);
+  delegate bool WindowCallback(IntPtr window,IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(WindowCallback callback,IntPtr data);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string name,uint access,uint share,ref Security security,uint creation,uint flags,IntPtr template);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string application,StringBuilder command,IntPtr processSecurity,IntPtr threadSecurity,bool inherit,uint flags,IntPtr environment,string cwd,ref ExtendedStartup startup,out ProcessInfo process);
  static string Quote(string value) {
@@ -208,7 +215,73 @@ public static partial class PlaysrcNativeJob {
   foreach(char c in value){if(c=='\\'){slashes++;continue;}output.Append('\\',c=='\"'?slashes*2+1:slashes);output.Append(c);slashes=0;}
   return output.Append('\\',slashes*2).Append('"').ToString();
  }
- static uint Active(IntPtr job) {Accounting info;Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"Query owned tree");return info.active;}
+  static uint Active(IntPtr job) {Accounting info;Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero),"Query owned tree");return info.active;}
+  public sealed class DesktopRequest {
+   public string job,task,run,lockToken,stage,preparedIdentity;
+   public int childPid,helperPid;
+   public long childCreatedAt,helperCreatedAt;
+   public bool succeeded;
+  }
+  static DesktopRequest ReadDesktop(Request request,Receipt receipt,string file) {
+   var value=Json.Deserialize<DesktopRequest>(File.ReadAllText(Path.Combine(request.run,file)));
+   if(value.job!=receipt.job || value.task!=receipt.task || value.run!=receipt.run || value.lockToken!=receipt.lockToken
+    || value.childPid!=receipt.childPid || value.childCreatedAt!=receipt.childCreatedAt || value.helperPid!=receipt.helperPid || value.helperCreatedAt!=receipt.helperCreatedAt
+    || String.IsNullOrEmpty(value.stage) || value.preparedIdentity==null || value.preparedIdentity.Length!=64)throw new Exception("Desktop stage identity differs");
+   using(var process=Process.GetProcessById(value.childPid))if(process.HasExited || new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()!=value.childCreatedAt)throw new Exception("Desktop stage process changed");
+   var held=Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(request.lockPath));
+   if((string)held["token"]!=receipt.lockToken || Convert.ToInt32(held["pid"])!=receipt.ownerPid)throw new Exception("Desktop stage lost resource ownership");
+   return value;
+  }
+  static Dialog StageDialog(Request request,bool completion,Process owner) {
+   IntPtr context=IntPtr.Zero;UIntPtr cookie=UIntPtr.Zero;
+   try {
+    ConsoleSession();
+    var activation=new Activation{size=Marshal.SizeOf(typeof(Activation)),source=request.manifest};
+    context=CreateActCtxW(ref activation);if(context==new IntPtr(-1))throw Native("Native dialog activation context");
+    Check(ActivateActCtx(context,out cookie),"Activate native common controls");
+    return Show(request,completion,"completed",owner);
+   } finally {if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);}
+  }
+  static void DesktopTransition(Request request,Receipt receipt,Process owner,IntPtr job) {
+   if(receipt.stage==null && File.Exists(Path.Combine(request.run,"desktop-request.json"))) {
+    if(!receipt.interactive)throw new Exception("Background command requested desktop ownership");
+    var ready=ReadDesktop(request,receipt,"desktop-request.json");
+    receipt.stage=ready.stage;receipt.preparedIdentity=ready.preparedIdentity;receipt.preparedAt=Now;
+    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled before desktop consent");
+    receipt.sessionId=ConsoleSession();
+    receipt.uiInvocations++;receipt.consent=StageDialog(request,false,owner);
+    Save(Path.Combine(request.run,"consent.json"),receipt);
+    if(receipt.consent.error!=null)throw new Exception(receipt.consent.error);
+    if(receipt.consent.decision=="denied") {receipt.outcome="denied";throw new OperationCanceledException("Desktop stage denied");}
+    if(receipt.consent.decision!="approved" && receipt.consent.decision!="approved-timeout")throw new Exception("Unrecognized native decision");
+    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Cancelled after desktop consent");
+    ReadDesktop(request,receipt,"desktop-request.json");
+    receipt.desktopStartedAt=Now;
+    Save(Path.Combine(request.run,"desktop-grant.json"),receipt);
+   }
+   if(receipt.desktopStartedAt!=0 && receipt.desktopReleasedAt==0 && File.Exists(Path.Combine(request.run,"desktop-release.json"))) {
+    var release=ReadDesktop(request,receipt,"desktop-release.json");
+    if(release.stage!=receipt.stage || release.preparedIdentity!=receipt.preparedIdentity)throw new Exception("Desktop release differs from authorization");
+    RequireDesktopEmpty(job);
+    receipt.desktopReleasedAt=Now;
+    Save(Path.Combine(request.run,"desktop-released.json"),receipt);
+    if(release.succeeded && !owner.HasExited && !File.Exists(Path.Combine(request.run,"cancel"))) {
+     receipt.uiInvocations++;receipt.completion=StageDialog(request,true,owner);
+    }
+   }
+  }
+  static void RequireDesktopEmpty(IntPtr job) {
+    bool visible=false;
+    WindowCallback checkWindow=(window,data)=>{
+     if(!IsWindowVisible(window))return true;
+     uint pid;GetWindowThreadProcessId(window,out pid);
+     var process=OpenProcess(0x1000,false,pid);if(process==IntPtr.Zero)return true;
+     try {bool belongs;if(IsProcessInJob(process,job,out belongs) && belongs)visible=true;}finally{CloseHandle(process);}
+     return true;
+    };
+    Check(EnumWindows(checkWindow,IntPtr.Zero),"Confirm owned desktop teardown");GC.KeepAlive(checkWindow);
+    if(visible)throw new Exception("Desktop release requested with an owned visible window");
+  }
  static void Execute(Request request,Receipt receipt,Process owner) {
   IntPtr job=IntPtr.Zero,log=IntPtr.Zero,input=IntPtr.Zero,attributes=IntPtr.Zero,jobList=IntPtr.Zero;var child=new ProcessInfo();bool resumed=false,attributesInitialized=false;
   try {
@@ -237,17 +310,18 @@ public static partial class PlaysrcNativeJob {
    receipt.childPid=(int)child.pid;
    using(var process=Process.GetProcessById(receipt.childPid))receipt.childCreatedAt=new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    Save(Path.Combine(request.run,"dispatch.json"),new {pid=receipt.childPid,createdAt=receipt.childCreatedAt,helperPid=receipt.helperPid,helperCreatedAt=receipt.helperCreatedAt,job=request.job,task=request.task,run=request.run});
-   if(receipt.interactive)ConsoleSession();
    if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before dispatch");
    receipt.commandStartedAt=Now;
    if(ResumeThread(child.thread)==uint.MaxValue)throw Native("Resume workload");resumed=true;
    while(WaitForSingleObject(child.process,50)==258) {
     if(owner.HasExited || File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled");
     if(Now>=request.deadline-7000)throw new OperationCanceledException("175-second job budget: command deadline reached");
-    using(var self=Process.GetCurrentProcess())if(self.PrivateMemorySize64>536870912)throw new Exception("Native helper memory bound exceeded");
+     using(var self=Process.GetCurrentProcess())if(self.PrivateMemorySize64>536870912)throw new Exception("Native helper memory bound exceeded");
+     DesktopTransition(request,receipt,owner,job);
    }
-   uint exit;Check(GetExitCodeProcess(child.process,out exit),"Read workload exit");receipt.exitCode=(int)exit;receipt.outcome=exit==0?"completed":"failed";
-  } catch(OperationCanceledException error) {receipt.outcome="cancelled";receipt.error=error.Message;}
+    uint exit;Check(GetExitCodeProcess(child.process,out exit),"Read workload exit");receipt.exitCode=(int)exit;receipt.outcome=exit==0?"completed":"failed";
+    if(receipt.interactive && exit==0 && (receipt.desktopStartedAt==0 || receipt.desktopReleasedAt==0))throw new Exception("Interactive profile ended without its scoped desktop lifecycle");
+   } catch(OperationCanceledException error) {if(receipt.outcome!="denied")receipt.outcome="cancelled";receipt.error=error.Message;}
   catch(Exception error) {receipt.outcome="failed";receipt.error=error.Message;}
   finally {
    // Completion is AFTER all of this invocation's children are gone.
@@ -268,7 +342,6 @@ public static partial class PlaysrcNativeJob {
   var request=validated.request;bool interactive=validated.interactive;
   if(request.ownerPid!=parentPid || request.deadline<=Now || request.deadline-Now>175000)throw new Exception("Invalid native owner/deadline");
   var receipt=new Receipt{job=request.job,task=request.task,run=request.run,action=request.action,invocation=request.invocation,interactive=interactive,lockToken=request.lockToken,ownerPid=parentPid,helperPid=Process.GetCurrentProcess().Id,startedAt=Now};
-  IntPtr context=IntPtr.Zero;UIntPtr cookie=UIntPtr.Zero;
   using(var owner=Process.GetProcessById(parentPid)) {
    receipt.ownerCreatedAt=new DateTimeOffset(owner.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    receipt.helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
@@ -292,26 +365,17 @@ public static partial class PlaysrcNativeJob {
     if(request.preflightFailure!=null)throw new Exception(request.preflightFailure);
     if(File.Exists(Path.Combine(request.run,"cancel")))throw new OperationCanceledException("Job cancelled before prompt");
     receipt.sessionId=Process.GetCurrentProcess().SessionId;
-    if(interactive) {
-     receipt.sessionId=ConsoleSession();
-     var activation=new Activation{size=Marshal.SizeOf(typeof(Activation)),source=request.manifest};
-     context=CreateActCtxW(ref activation);if(context==new IntPtr(-1))throw Native("Native dialog activation context");
-     Check(ActivateActCtx(context,out cookie),"Activate native common controls");
-     receipt.uiInvocations++;receipt.consent=Show(request,false,null,owner);
-     Save(Path.Combine(request.run,"consent.json"),receipt);
-    }
-    if(interactive && receipt.consent.error!=null) {receipt.error=receipt.consent.error;receipt.treeEmpty=true;if(File.Exists(Path.Combine(request.run,"cancel")))receipt.outcome="cancelled";}
-    else if(interactive && receipt.consent.decision=="denied") {receipt.outcome="denied";receipt.treeEmpty=true;}
-    else if(!interactive || receipt.consent.decision=="approved" || receipt.consent.decision=="approved-timeout") {
+     {
      Save(Path.Combine(request.run,"ownership.json"),receipt);
      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_OWNER",Path.Combine(request.run,"ownership.json"));
      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_LOCK",request.lockPath);
      Environment.SetEnvironmentVariable("PLAYSRC_LOCAL_JOB_DEADLINE",(request.deadline-7000).ToString());
      Execute(request,receipt,owner);
-    } else throw new Exception("Unrecognized native decision");
+     }
    } catch(Exception error) {receipt.error=error.Message;receipt.outcome=error is OperationCanceledException?"cancelled":"failed";if(receipt.childPid==0)receipt.treeEmpty=true;}
    finally {
     receipt.teardownAt=Now;
+    if(receipt.desktopStartedAt!=0 && receipt.desktopReleasedAt==0 && receipt.treeEmpty)receipt.desktopReleasedAt=receipt.teardownAt;
     if(receipt.treeEmpty) {
      Console.WriteLine(Json.Serialize(new {phase="teardown",job=request.job,run=request.run,helperPid=receipt.helperPid,treeEmpty=true}));
      var read=Task.Factory.StartNew(()=>Console.ReadLine());
@@ -323,15 +387,12 @@ public static partial class PlaysrcNativeJob {
       if(verification["error"]!=null)throw new Exception((string)verification["error"]);
      } catch(Exception error) {receipt.outcome="failed";receipt.error=error.Message;}
     }
-    if(interactive && receipt.outcome=="completed" && receipt.commandStartedAt!=0 && receipt.treeEmpty && cookie!=UIntPtr.Zero) {receipt.uiInvocations++;receipt.completion=Show(request,true,receipt.outcome,owner);}
     if(!receipt.treeEmpty){receipt.outcome="failed";receipt.error="Owned child teardown unconfirmed; "+receipt.error;}
     receipt.finishedAt=Now;
     // Freeze the receipt before both serializations. A timer tick between the
     // durable save and stdout must not change an otherwise identical outcome.
     receipt.helperPeakPrivateBytes=Interlocked.Read(ref peakPrivateBytes);
     Save(Path.Combine(request.run,"native-result.json"),receipt);
-    if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);
-    if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);
     Interlocked.Exchange(ref guardDone,1);
    }
    }

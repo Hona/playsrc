@@ -266,8 +266,9 @@ describe("bounded headed profile orchestration", () => {
     await writeFile(filename, JSON.stringify({ token: "leased", pid: process.pid, endpoint: "ws://owned", executable,
       executableSha256: await fileFingerprint(executable), identity: await browserLaunchIdentity(launch) }))
     await browserLease(filename, "leased", 10_000)
-    expect(await prepareProfileBrowser(filename, launch, () => 5_000)).toMatchObject({ reused: true, token: "leased", endpoint: "ws://owned" })
-    await expect(prepareProfileBrowser(filename, launch, () => 0, "exclusive-runner", true)).rejects.toThrow("still retiring")
+    const prepared = { launch, identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }
+    expect(await prepareProfileBrowser(filename, prepared, () => 5_000)).toMatchObject({ reused: true, token: "leased", endpoint: "ws://owned" })
+    await expect(prepareProfileBrowser(filename, prepared, () => 0, "exclusive-runner", true)).rejects.toThrow("still retiring")
     expect(JSON.parse(await readFile(`${filename}.lease`, "utf8"))).toMatchObject({ token: "leased", closeUnderLockToken: "exclusive-runner" })
   })
 
@@ -413,10 +414,10 @@ describe("bounded headed profile orchestration", () => {
     await writeFile(filename, JSON.stringify({ token: "old", pid: process.pid, endpoint: "ws://owned", executable,
       executableSha256: await fileFingerprint(executable), identity: await browserLaunchIdentity(launch) }))
     await browserLease(filename, "old", 10_000)
-    await expect(prepareProfileBrowser(filename, { channel: "chromium" }, () => 0)).rejects.toThrow("still retiring")
+    await expect(prepareProfileBrowser(filename, { launch: { channel: "chromium" }, identity: await browserLaunchIdentity({ channel: "chromium" }), executable, executableSha256: await fileFingerprint(executable) }, () => 0)).rejects.toThrow("still retiring")
     await browserLease(filename, "old", 10_000)
     await writeFile(executable, "other")
-    await expect(prepareProfileBrowser(filename, launch, () => 0)).rejects.toThrow("still retiring")
+    await expect(prepareProfileBrowser(filename, { launch, identity: await browserLaunchIdentity(launch), executable, executableSha256: await fileFingerprint(executable) }, () => 0)).rejects.toThrow("still retiring")
     expect(JSON.parse(await readFile(filename, "utf8")).token).toBe("old")
   })
 

@@ -9,8 +9,9 @@ import { repositoryRoot } from "../src/config"
 // Synthetic receipt tests, NOT evidence of displayed UI or task authorization.
 const consent: NativeDialog = { decision: "approved", error: null, displayedAt: 2000, decidedAt: 2400, dismissedAt: 2401, visibleMilliseconds: 400, window: 1, sessionId: 3 }
 const expected = { job: "job", task: "task", run: "run", action: "profile gameplay", invocation: ["profile", "gameplay"], interactive: true, lockToken: "lock", ownerPid: 10, helperPid: 11, spawnedAt: 1000 }
-const receipt: NativeJobReceipt = { ...expected, schema: "playsrc-native-job-v1", ownerCreatedAt: 500, helperCreatedAt: 1000, sessionId: 3,
-  childPid: 12, childCreatedAt: 2500, commandStartedAt: 2501, teardownAt: 2800, startedAt: 1100, finishedAt: 6500,
+const receipt: NativeJobReceipt = { ...expected, schema: "playsrc-native-job-v2", ownerCreatedAt: 500, helperCreatedAt: 1000, sessionId: 3,
+  stage: "stage", preparedIdentity: "a".repeat(64), preparedAt: 1900, desktopStartedAt: 2500, desktopReleasedAt: 2800,
+  childPid: 12, childCreatedAt: 1500, commandStartedAt: 1501, teardownAt: 6400, startedAt: 1100, finishedAt: 6500,
   outcome: "completed", exitCode: 0, treeEmpty: true, error: null, uiInvocations: 2, consent, completion: { ...consent, decision: "dismissed-timeout", displayedAt: 3000, decidedAt: 6000, dismissedAt: 6001, visibleMilliseconds: 3000 } }
 
 test("only a displayed, dismissed native approval authorizes dispatch; timeout is not display failure", () => {
@@ -25,11 +26,11 @@ test("receipt binds job/task/run/creation-time/lock and teardown; malformed or s
   expect(validateNativeJobReceipt(receipt, expected)).toEqual(receipt)
   for (const changed of [{ task: "other" }, { job: "other" }, { run: "other" }, { helperPid: 44 }, { ownerPid: 44 }, { lockToken: "other" },
     { helperCreatedAt: -1 }, { treeEmpty: false }, { outcome: "denied" }, { exitCode: 1 }, { commandStartedAt: 0 },
-    { commandStartedAt: 2300 }, { invocation: ["diagnostic 250", "0"] }, { consent: { ...consent, decision: "denied" } }, { teardownAt: 7000 }]) {
+    { preparedAt: 2300 }, { desktopStartedAt: 2300 }, { desktopReleasedAt: 0 }, { invocation: ["diagnostic 250", "0"] }, { consent: { ...consent, decision: "denied" } }, { teardownAt: 1400 }]) {
     expect(() => validateNativeJobReceipt({ ...receipt, ...changed } as NativeJobReceipt, expected)).toThrow()
   }
   for (const outcome of ["failed", "cancelled", "denied"] as const) {
-    const value = { ...receipt, outcome, childPid: 0, childCreatedAt: 0, commandStartedAt: 0, exitCode: null, consent: { ...consent, decision: "denied" }, uiInvocations: 1, completion: null, error: "not launched" }
+    const value = { ...receipt, outcome, desktopStartedAt: 0, desktopReleasedAt: 0, exitCode: 1, consent: { ...consent, decision: "denied" }, uiInvocations: 1, completion: null, error: "not launched" }
     expect(validateNativeJobReceipt(value, expected).outcome).toBe(outcome)
   }
 })
@@ -42,7 +43,8 @@ test("only validated interactive workloads use consent; readback and background 
   expect(bridge).toContain("--task $(Quote $name)")
   expect(bridge).toContain("plan @workload")
   expect(bridge).toContain("if($plan.interactive){'Interactive'}else{'S4U'}")
-  expect(native.indexOf("Save(Path.Combine(request.run,\"consent.json\"),receipt)")).toBeLessThan(native.indexOf("Execute(request,receipt,owner)"))
+  expect(native).toContain('DesktopTransition(request,receipt,owner,job)')
+  expect(native).toContain('receipt.preparedAt=Now')
   expect(native).toContain("UpdateProcThreadAttribute(attributes,0,new UIntPtr(0x2000d)")
   expect(native).not.toContain("AssignProcessToJobObject")
   expect(native).toContain("clock.ElapsedMilliseconds>=3000")
@@ -57,7 +59,7 @@ test("only validated interactive workloads use consent; readback and background 
 test("background receipts require ZERO UI invocations for every outcome", () => {
   const background = { ...expected, interactive: false, invocation: ["diagnostic", "0", "0"] }
   for (const outcome of ["completed", "failed", "cancelled"] as const) {
-    const value = { ...receipt, ...background, outcome, consent: null, completion: null, uiInvocations: 0, exitCode: outcome === "completed" ? 0 : 1 }
+    const value = { ...receipt, ...background, outcome, stage: null, preparedIdentity: null, preparedAt: 0, desktopStartedAt: 0, desktopReleasedAt: 0, consent: null, completion: null, uiInvocations: 0, exitCode: outcome === "completed" ? 0 : 1 }
     expect(validateNativeJobReceipt(value, background)).toEqual(value)
     for (const patch of [{ consent }, { completion: receipt.completion }, { uiInvocations: 1 }, { interactive: true }]) {
       expect(() => validateNativeJobReceipt({ ...value, ...patch }, background)).toThrow()
