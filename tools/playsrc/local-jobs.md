@@ -49,6 +49,10 @@ A real native message box identifies the action/profile, job, task and run:
 - One task token is consumed once, including scheduler retries. Use a new task
   for another attempt. Caller-supplied `--ready`/`-Ready` no longer exists.
 
+Only the requested message box is topmost, with one ordinary activation attempt.
+Its visible native window is checked independently of foreground focus, so the
+user can keep typing in another app without turning non-response into a fault.
+
 The prompt is dismissed before browser admission. Approval is **not** evidence
 of idle/foreground: the unchanged two-second genuine-idle and native
 foreground/unobscured/browser-ownership checks still apply. No game window is
