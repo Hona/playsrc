@@ -271,12 +271,12 @@ public static partial class PlaysrcNativeJob {
    receipt.ownerCreatedAt=new DateTimeOffset(owner.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    receipt.helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds();
    var ownerHandle=owner.Handle; // Hold identity, not a recycled PID.
-   int faulted=0,guardDone=0;
+   int faulted=0,guardDone=0;long peakPrivateBytes=0;
    using(var guard=new Timer(_=>{
     if(Volatile.Read(ref guardDone)!=0)return;
     string reason=null;long bytes=0;
     try {using(var self=Process.GetCurrentProcess())bytes=self.PrivateMemorySize64;
-     if(bytes>Interlocked.Read(ref receipt.helperPeakPrivateBytes))Interlocked.Exchange(ref receipt.helperPeakPrivateBytes,bytes);
+     if(bytes>Interlocked.Read(ref peakPrivateBytes))Interlocked.Exchange(ref peakPrivateBytes,bytes);
      if(WaitForSingleObject(ownerHandle,0)==0)reason="owner-exited";else if(Now>=request.deadline)reason="deadline";else if(bytes>536870912)reason="private-memory-limit";
     }catch{reason="owner-readback-failed";}
     if(reason==null || Volatile.Read(ref guardDone)!=0 || Interlocked.Exchange(ref faulted,1)!=0)return;
@@ -323,7 +323,10 @@ public static partial class PlaysrcNativeJob {
     }
      if(interactive && receipt.outcome=="completed" && receipt.commandStartedAt!=0 && receipt.treeEmpty && cookie!=UIntPtr.Zero) {receipt.uiInvocations++;receipt.completion=Show(request,true,receipt.outcome,owner);}
     if(!receipt.treeEmpty){receipt.outcome="failed";receipt.error="Owned child teardown unconfirmed; "+receipt.error;}
-    receipt.finishedAt=Now;
+     receipt.finishedAt=Now;
+     // Freeze the receipt before both serializations. A timer tick between the
+     // durable save and stdout must not change an otherwise identical outcome.
+     receipt.helperPeakPrivateBytes=Interlocked.Read(ref peakPrivateBytes);
      Save(Path.Combine(request.run,"native-result.json"),receipt);
     if(cookie!=UIntPtr.Zero)DeactivateActCtx(0,cookie);
     if(context!=IntPtr.Zero && context!=new IntPtr(-1))ReleaseActCtx(context);
