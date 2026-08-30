@@ -10,10 +10,10 @@ const { createRequire } = require("node:module")
 if (process.argv[2] === "prepare") {
   const launch = JSON.parse(process.argv[3])
   const core = createRequire(createRequire(require.resolve("@playwright/test")).resolve("playwright"))
-  const { registry } = require(path.join(path.dirname(core.resolve("playwright-core")), "lib/coreBundle.js"))
-  const executable = registry.findExecutable(launch.channel || "chromium")
-  if (!executable) throw new Error("Unknown configured Chromium channel")
-  console.log(JSON.stringify({ executable: executable.executablePathOrDie("javascript") }))
+  const { registry: { registry } } = require(path.join(path.dirname(core.resolve("playwright-core")), "lib/coreBundle.js"))
+  const executable = launch.executablePath || registry.findExecutable(launch.channel || "chromium")?.executablePathOrDie("javascript")
+  if (!executable || !path.isAbsolute(executable)) throw new Error("Configured Chromium executable is not an absolute installed path")
+  console.log(JSON.stringify({ executable }))
   process.exit(0)
 }
 
