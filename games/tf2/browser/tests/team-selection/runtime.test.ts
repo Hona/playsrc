@@ -29,6 +29,8 @@ function fixture(overrides: Partial<Tf2TeamSelectionServerState> = {}) {
     onModelPanels: (panels) => models.push(panels),
   })
   integration.dispatch({ kind: "show", server })
+  now = 0.1
+  integration.frame(now)
   return Object.freeze({ ...base, server, integration, requests, models, frame(time: number) { now = time; integration.frame(time) } })
 }
 
@@ -46,11 +48,11 @@ describe("authored TF2 RED/BLU team-selection VGUI", () => {
     integration.dispatch({ kind: "hover", team: "red" })
     integration.dispatch({ kind: "update", server: { ...server, redDisabled: true } })
     expect(integration.state().hovered).toBe("red")
-    frame(0.1)
+    frame(0.2)
     expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.animation).toBe("enter_disabled")
-    frame(2.1)
-    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullidle")
     frame(2.2)
+    expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullidle")
+    frame(2.3)
     expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullhover")
     integration.dispatch({ kind: "hover", team: null })
     expect(integration.modelPanels().find(panel => panel.name === "reddoor")?.sequence).toBe("fullidle")

@@ -158,6 +158,7 @@ class Integration implements Tf2TeamSelectionIntegration {
     this.#onRequest = request.onRequest
     this.#onModelPanels = request.onModelPanels
     this.#clock = request.clock
+    this.#nextTick = Math.floor(request.clock.nowSeconds() * 1000) + 100
     const initialized = initializeVguiRuntime({
       runtimeIdentity: "tf2-team-selection",
       root: request.root,
@@ -259,7 +260,7 @@ class Integration implements Tf2TeamSelectionIntegration {
       this.#entered.add(team)
       const button = this.#source.root.children.find(node => node.name === BUTTON_NAMES[team])
       const delay = button ? Number(scalar(button, "hover") ?? -1) : -1
-      if (delay > 0) this.#hoverDeadlines.set(team, this.#clock.nowSeconds() + delay)
+      if (delay > 0) this.#hoverDeadlines.set(team, Math.fround(Math.fround(this.#clock.nowSeconds()) + delay))
     } else this.#entered.delete(team)
     this.#setAnimation(this.#modelName(team), `${entered ? "enter" : "exit"}_${this.#disabled.get(team) ? "disabled" : "enabled"}`)
   }
@@ -275,7 +276,7 @@ class Integration implements Tf2TeamSelectionIntegration {
         else this.#setAnimation(this.#modelName(team), disabled ? "idle_disabled" : "idle_enabled")
       }
       const deadline = this.#hoverDeadlines.get(team)
-      if (deadline !== undefined && deadline < time) {
+      if (deadline !== undefined && deadline < Math.fround(time)) {
         this.#hoverDeadlines.delete(team)
         this.#setAnimation(this.#modelName(team), disabled ? "hover_disabled" : "hover_enabled")
       }
@@ -289,8 +290,6 @@ class Integration implements Tf2TeamSelectionIntegration {
       this.#entered.clear()
       this.#hoverDeadlines.clear()
       for (const name of MODEL_NAMES) this.#setAnimation(name, "idle_enabled")
-      this.#tickButtons(this.#clock.nowSeconds())
-      this.#nextTick = this.#clock.nowSeconds() + 0.1
     }
     this.#runtime.deferPresentation(() => {
       apply(this.#runtime, { kind: "set-panel-state", panel: 1, visible: state.visible })
@@ -441,8 +440,8 @@ class Integration implements Tf2TeamSelectionIntegration {
     if (this.#state.visible) {
       apply(this.#runtime, { kind: "frame", timeSeconds })
       this.#syncAccessibility()
-      if (timeSeconds >= this.#nextTick) {
-        this.#nextTick = timeSeconds + 0.1
+      if (Math.floor(timeSeconds * 1000) >= this.#nextTick) {
+        this.#nextTick = Math.floor(timeSeconds * 1000) + 100
         const before = this.#animationRevision
         this.#tickButtons(timeSeconds)
         if (before !== this.#animationRevision) this.#onModelPanels(this.modelPanels())
