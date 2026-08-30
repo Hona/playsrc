@@ -201,10 +201,19 @@ if ($Action -notin 'Run','Build','BuildStage','Test','Diagnostic') {
   }
   exit 0
 }
+function ArgumentArray([string]$text,[int]$maximum) {
+ if($text.Length -gt 24576 -or $text.Trim() -notmatch '^\[.*\]$'){throw 'Invalid job argument array'}
+ $values=ConvertFrom-Json -InputObject $text
+ if($null -eq $values){if($text -notmatch '^\s*\[\s*\]\s*$'){throw 'Invalid job argument array'};$values=@()}elseif($values -isnot [array]){$values=@($values)}
+ if($values.Count -gt $maximum){throw 'Job argument count exceeds its bound'}
+ foreach($value in $values){if($value -isnot [string] -or $value.Length -gt 1024 -or $value.Contains([char]0)){throw 'Invalid job argument'}}
+ # ConvertFrom-Json in Windows PowerShell emits an array as ONE pipeline
+ # object. Do not wrap its command in @(), which nests all test files together.
+ return ,$values
+}
 if ($JobArguments -ne '[]') {
-  $workload=@(ConvertFrom-Json -InputObject $JobArguments)
-  if($JobArguments.Trim() -notmatch '^\[.*\]$' -or $workload.Count -lt 1 -or $workload.Count -gt 20){throw 'Invalid job argument array'}
-  foreach($value in $workload){if($value -isnot [string] -or $value.Length -gt 1024 -or $value.Contains([char]0)){throw 'Invalid job argument'}}
+  $workload=ArgumentArray $JobArguments 20
+  if($workload.Count -lt 1){throw 'Expected a workload'}
 } elseif ($Action -eq 'Run') {
   if ($Profile -notmatch '^[a-z0-9-]+$') { throw 'Expected a normal profile name' }
   if ($Grep.Length -gt 512 -or $Grep.Contains([char]0)) {throw 'Profile selection exceeds its bound'}
@@ -216,15 +225,12 @@ $name = "playsrc-local-job-$token"
 $log = Join-Path $directory "$token-launch.log"
 $policy = Join-Path $directory "$token-policy.json"
 function Quote([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
-$extra = ConvertFrom-Json -InputObject $ProfileArguments
-if ($ProfileArguments.Trim() -notmatch '^\[.*\]$' -or $extra.Count -gt 16 -or ($null -eq $extra -and $ProfileArguments -notmatch '^\s*\[\s*\]\s*$')) { throw 'Invalid profiler argument array' }
-foreach ($value in $extra) { if ($value -isnot [string]) { throw 'Invalid profiler argument array' } }
-if ($null -eq $extra) { $extra = @() } elseif ($extra -isnot [array]) { $extra = @($extra) }
+$extra = ArgumentArray $ProfileArguments 16
 if ($Grep) { $extra += @('--grep', $Grep) }
 if ($FreshBrowser) { $extra += '--fresh-browser' }
 if ($extra.Count -gt 16) { throw 'Invalid profiler argument array' }
 if($JobArguments -eq '[]') {
-  $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+@(ConvertFrom-Json -InputObject $TestArguments)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}else{@('profile',$Profile)+$extra}
+  $workload=if($Action -eq 'Build'){@('build',$Target)}elseif($Action -eq 'BuildStage'){@('build-stage',$Stage)+$(if($Target){@($Target)}else{@()})}elseif($Action -eq 'Test'){@('test')+(ArgumentArray $TestArguments 19)}elseif($Action -eq 'Diagnostic'){@('diagnostic',"$Milliseconds","$DiagnosticExit")}else{@('profile',$Profile)+$extra}
 }
 $arguments = ($workload|ForEach-Object {Quote $_}) -join ' '
 $ownerLog=[IO.Path]::ChangeExtension($log,'owner.json')

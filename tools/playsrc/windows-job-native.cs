@@ -134,12 +134,15 @@ public static class PlaysrcNativeJob {
      if(Now>=request.deadline)throw new Exception("Job deadline exceeded");
     }
     if(notification==4 && !selected) {
-     if(!IsWindowVisible(window) || IsIconic(window) || GetForegroundWindow()!=window)throw new Exception("Prompt is not displayed in the foreground");
+     if(!IsWindowVisible(window) || IsIconic(window))throw new Exception("Prompt is not displayed");
      if(!clock.IsRunning) {
+      if(GetForegroundWindow()!=window)throw new Exception("Prompt was not presented in the foreground");
       UpdateWindow(window);record.window=window.ToInt64();record.displayedAt=Now;clock.Start();
       if(request.diagnostic)Pixels(window,Path.Combine(request.run,request.recordPrefix+(completion?"completion.png":"consent.png")),record);
       Save(Path.Combine(request.run,request.recordPrefix+(completion?"completion-displayed.json":"consent-displayed.json")),new {job=request.job,task=request.task,run=request.run,action=request.action,helperPid=Process.GetCurrentProcess().Id,helperCreatedAt=new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime()).ToUnixTimeMilliseconds(),dialog=record});
      }
+     // After confirmed presentation, switching to another app is non-response,
+     // not a display failure or proof of AFK. Sampling has its own idle guard.
      if(clock.ElapsedMilliseconds>=3000) {
       selected=true;record.decision=completion?"dismissed-timeout":"approved-timeout";record.decidedAt=Now;record.visibleMilliseconds=clock.ElapsedMilliseconds;
       SendMessageW(window,0x400+102,new IntPtr(completion?1:100),IntPtr.Zero);
