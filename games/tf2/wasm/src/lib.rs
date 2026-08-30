@@ -2020,6 +2020,20 @@ pub extern "C" fn playsrc_memory_bytes(index: usize) -> usize {
     }
 }
 
+/// Opt-in allocation request accounting; does not collect or resize memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_memory_track_allocations(enabled: u32) -> u32 {
+    if enabled > 1 { return 0; }
+    memory::track_allocations(enabled == 1);
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn playsrc_memory_requests(index: u32) -> u64 {
+    let (requests, bytes) = memory::allocation_totals();
+    match index { 0 => requests, 1 => bytes, _ => 0 }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn playsrc_compile_memory_bytes(handle: u32, index: usize) -> usize {
     with(handle, |slot| {

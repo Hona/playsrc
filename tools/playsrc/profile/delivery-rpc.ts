@@ -1,6 +1,6 @@
 /** Observe the client's existing reply hook without attaching a Worker debugger,
  * replacing a timer, touching the mailbox, or retaining any payload/heap view. */
-export function installDeliveryRpcObserver(host: any = globalThis) {
+export function installDeliveryRpcObserver(host: any = globalThis, kinds?: readonly string[]) {
   const NativeWorker = host.Worker
   const limit = 16_384
   let active = false, started = 0, dropped = 0, records: any[] = [], workers = 0
@@ -20,7 +20,7 @@ export function installDeliveryRpcObserver(host: any = globalThis) {
       this.__playsrcProfileReply = (response: any) => {
         const request = pending.get(response?.id)
         pending.delete(response?.id)
-        if (!active || !request || !response.timings) return
+        if (!active || !request || !response.timings || kinds && !kinds.includes(request.kind)) return
         if (records.length >= limit) { dropped++; return }
         const at = host.performance.now(), timings: Record<string, number | null> = {}
         for (const key of ["queueMilliseconds", "inputCopyMilliseconds", "transactMilliseconds", "outputCopyMilliseconds", "totalMilliseconds",
