@@ -831,6 +831,22 @@ describe("developer console completion and focus input", () => {
     expect(modified.defaultPrevented).toBe(false)
     expect(requests).toHaveLength(count)
   })
+
+  test("does not submit composing Enter or replay a held console-toggle edge", () => {
+    const requests: ConsoleRequest[] = []
+    const { console: developerConsole, root } = mounted(requests)
+    developerConsole.apply({ kind: "activate" })
+    const entry = byName(root, "ConsoleEntry")
+    input(entry, "echo draft")
+    const count = requests.length
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      expect(key(entry, "Enter", { code: "Enter", ...init }).defaultPrevented).toBe(false)
+      expect(key(entry, "`", { code: "Backquote", ...init }).defaultPrevented).toBe(false)
+    }
+    expect(key(entry, "`", { code: "Backquote", repeat: true }).defaultPrevented).toBe(true)
+    expect(requests).toHaveLength(count)
+    expect(entry.value).toBe("echo draft")
+  })
 })
 
 describe("developer console lifecycle and cleanup", () => {
