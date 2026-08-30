@@ -83,17 +83,17 @@ export function summarizeSustainedWindow(sample: any, started: number, ended: nu
   }
 }
 
-export function sustainedRunIssues(sample: any, lateStarted: number, lateEnded: number): string[] {
+export function sustainedRunIssues(sample: any, lateStarted: number, lateEnded: number, acceptance = true): string[] {
   if (!sample || !Number.isFinite(sample.started) || !Number.isFinite(sample.ended) || sample.ended <= sample.started) return ["Missing continuous gameplay interval"]
   const issues: string[] = []
-  if (lateStarted - sample.started < SUSTAINED_KOTH.soakMilliseconds) issues.push("Detailed sample began before90 uninterrupted real seconds")
+  if (acceptance && lateStarted - sample.started < SUSTAINED_KOTH.soakMilliseconds) issues.push("Detailed sample began before90 uninterrupted real seconds")
   if (!Number.isFinite(lateEnded - lateStarted) || lateEnded - lateStarted < 5000 || lateEnded - lateStarted > 10_000) issues.push("Detailed sample is outside5–10seconds")
   if (sample.dropped || sample.rpc?.dropped || sample.missedFrames) issues.push("Incomplete continuous telemetry")
   if (sample.lifecycle?.length) issues.push("Visibility, geometry, input or generation changed")
   if (!sample.rpc?.records?.some((call: any) => call.kind === "observe")) issues.push("Worker observe service/queue telemetry is absent")
   const whole = summarizeSustainedWindow(sample, sample.started, sample.ended)
-  if (whole.observedTicksPerSecond < 65) issues.push("Whole-interval observed simulation is below65Hz")
-  if (lateEnded > lateStarted && summarizeSustainedWindow(sample, lateStarted, lateEnded).observedTicksPerSecond < 63) issues.push("Late observed simulation is below63Hz")
-  if (!sample.inputs?.some((input: any) => input.completedAt !== null)) issues.push("No planned input reached a changed-camera submission")
+  if (acceptance && whole.observedTicksPerSecond < 65) issues.push("Whole-interval observed simulation is below65Hz")
+  if (acceptance && lateEnded > lateStarted && summarizeSustainedWindow(sample, lateStarted, lateEnded).observedTicksPerSecond < 63) issues.push("Late observed simulation is below63Hz")
+  if (acceptance && !sample.inputs?.some((input: any) => input.completedAt !== null)) issues.push("No planned input reached a changed-camera submission")
   return issues
 }

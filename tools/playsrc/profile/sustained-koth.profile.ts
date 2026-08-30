@@ -16,13 +16,18 @@ import { windowsProcessMemory } from "./windows-process-memory"
 import { prepareWorkerCpuCapture } from "./worker-cpu-profiler"
 import { drainTraceStream, retainCompositorEvidence, retainEvidenceBlob } from "./compositor-evidence"
 import { TRACE_START, TRACE_END, summarizeCompositorTruth, chromiumPresentationEventName } from "./compositor-truth"
-import { startGameplayReplayJournal } from "./gameplay-replay"
+import { startGameplayReplayJournal, parseGameplayReplay } from "./gameplay-replay"
 
 test("sustained natural full-roster KOTH with whole-interval delivery and late CPU evidence", async ({ page, context }) => {
   if (process.platform !== "win32") throw new Error("Sustained acceptance requires the approved native Windows local job")
   const target = sustainedKothTarget(process.env.PROFILE_MAP_TARGET)
   const setupOnly = process.env.PROFILE_KOTH_SETUP_ONLY === "1"
+  const diagnostic = process.env.PROFILE_KOTH_DIAGNOSTIC === "1"
+  const soakMilliseconds = diagnostic ? 0 : SUSTAINED_KOTH.soakMilliseconds
+  const captureRemainder = soakMilliseconds + SUSTAINED_KOTH.sampleMilliseconds + SUSTAINED_KOTH.extractionMilliseconds
   let setupComplete = false
+  let setupState: any
+  let firstSimulationObserveMilliseconds: number | undefined
   const { sourceCacheDir } = await loadLocalConfig(process.cwd())
   const directory = process.env.PLAYSRC_PROFILE_RUN_DIRECTORY!
   if (!directory) throw new Error("Use the checked bounded profile runner")
@@ -100,13 +105,22 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await chooseTf2Team(page, "red", async () => { await check() })
     await expect(main).toHaveAttribute("data-phase", "Ready", { timeout: 20_000 })
     await expect(main).toHaveAttribute("data-bot-count", "23", { timeout: 15_000 })
-    expect(JSON.parse(await main.getAttribute("data-local-match-settings") ?? "null")).toMatchObject({ entry: "create-server", mapIdentity: target,
-      configuration: { quota: 23, maximumPlayers: 24, difficulty: 1, mode: "normal", offlinePractice: false } })
+    setupState = await snapshot()
+    const settings = JSON.parse(await main.getAttribute("data-local-match-settings") ?? "null")
+    expect(settings).toMatchObject({ entry: "create-server", mapIdentity: target,
+      configuration: { quota: 23, difficulty: 1, mode: "normal", offlinePractice: false } })
+    // Server capacity comes from the configured map catalog;23 bots plus the
+    // local player do not imply a24-slot server (Harvest is configured for32).
+    expect(settings.configuration.maximumPlayers).toBeGreaterThanOrEqual(24)
     await check()
     // Element focus inside an already native-admitted window; no OS activation.
     await page.locator("canvas.world-canvas").focus()
     await replay.ready(); await replay.mark(0); await replay.mark(1); replayArtifact = await replay.stop()
     if (!replayArtifact.complete || !replayArtifact.entropy) throw new Error("Authenticated startup/entropy capture incomplete")
+    const startupJournal = parseGameplayReplay(await readFile(path.join(directory, replayArtifact.file)))
+    const firstObserve = startupJournal.records.find(record => record.kind === 1)
+    if (!firstObserve) throw new Error("Startup journal has no simulation clock baseline")
+    firstSimulationObserveMilliseconds = firstObserve.bytes.readDoubleLE(0) * 1000
     const capturedEntropy = await readFile(path.join(directory, replayArtifact.entropy.file))
     if (createHash("sha256").update(capturedEntropy).digest("hex") !== replayArtifact.entropy.sha256) throw new Error("Captured entropy differs")
     await mkdir(entropyDirectory, { recursive: true })
@@ -120,11 +134,16 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     await cdp.send("Profiler.enable"); await cdp.send("Profiler.setSamplingInterval", { interval: 1000 })
     await pixels("natural-setup")
     if (setupOnly) { setupComplete = true; return }
+    await check()
+    await page.locator("canvas.world-canvas").click()
+    await page.waitForFunction(() => document.pointerLockElement?.matches("canvas.world-canvas"))
+    await page.waitForTimeout(2100)
     await page.waitForFunction(() => {
       const p = (globalThis as any).__playsrcProfile
       return p?.bots?.length === 23 && p.round?.state === 4 && !p.round.waitingForPlayers && !p.round.inSetup
-    }, undefined, { timeout: Math.max(1, Math.min(40_000, deadline - Date.now() - 111_000)) })
-    requireSustainedBudget(deadline - Date.now())
+    }, undefined, { timeout: Math.max(1, Math.min(40_000, deadline - Date.now() - captureRemainder)) })
+    if (!diagnostic) requireSustainedBudget(deadline - Date.now())
+    else if (deadline - Date.now() < captureRemainder) throw new Error("Insufficient diagnostic capture/extraction budget")
     await check()
     const categories = ["disabled-by-default-display.framedisplayed", "blink.user_timing", "disabled-by-default-v8.gc"]
     const available = (await browser.send("Tracing.getCategories")).categories
@@ -145,7 +164,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       return state.at
     }
     let at = await collect(), nextMemory = started + 2000, nextInput = started, nextNative = Date.now(), agedPixels = false
-    while (at - started < SUSTAINED_KOTH.soakMilliseconds) {
+    while (at - started < soakMilliseconds) {
       if (Date.now() >= deadline - SUSTAINED_KOTH.sampleMilliseconds - SUSTAINED_KOTH.extractionMilliseconds) throw new Error("Sustained soak exhausted its reserved budget; no shortening")
       if (Date.now() >= nextNative) { await check(); nextNative = Date.now() + 500 }
       if (!agedPixels && at - started >= 85_000) { await pixels("aged-before-sample"); agedPixels = true }
@@ -156,6 +175,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       at = await page.evaluate(() => performance.now())
       if (at >= nextMemory) { at = await collect(); nextMemory += 2000 }
     }
+    if (diagnostic) await pixels("diagnostic-before-sample")
     lateStarted = await page.evaluate(() => performance.now())
     await page.evaluate(() => { (globalThis as any).__playsrcFrameProfiler.active = true })
     allocationStart = await worker.evaluate(() => {
@@ -190,7 +210,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     expect(sampled.dropped + sampled.rpc.dropped + sampled.missedFrames).toBe(0)
     expect(sampled.lifecycle).toEqual([])
     expect(sampled.inputs.map((input: any) => input.code)).toEqual(inputPlan.map(input => input.key === "a" ? "KeyA" : "KeyD"))
-    expect(lateStarted - started).toBeGreaterThanOrEqual(90_000)
+    if (!diagnostic) expect(lateStarted - started).toBeGreaterThanOrEqual(90_000)
   } catch (failure) { error = String(failure) }
   finally {
     if (!replayArtifact) replayArtifact = await replay.stop(false).catch(failure => ({ failure: String(failure) }))
@@ -215,7 +235,7 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
     const linkedCpu = { worker: workerCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(workerCpu)), "workers.json") : null,
       main: mainCpu ? await retainEvidenceBlob(directory, Buffer.from(JSON.stringify(mainCpu)), "main.cpuprofile") : null }
     const window = compositor?.analysis.window
-    const issues = setupOnly ? [] : sustainedRunIssues(sampled, lateStarted, lateEnded)
+    const issues = setupOnly ? [] : sustainedRunIssues(sampled, lateStarted, lateEnded, !diagnostic)
     if (lateSimulation?.dropped) issues.push("Late simulation publication evidence was dropped")
     if (!setupOnly && !compositor?.manifest.complete) issues.push("Compositor evidence is incomplete")
     if (issues.length) error ??= issues.join("; ")
@@ -236,8 +256,12 @@ test("sustained natural full-roster KOTH with whole-interval delivery and late C
       presented: [...presentationStreams].map(([stream, times]) => ({ stream, eventName: presentationName,
         ...sustainedFreezes(sampled, Number(from), Number(to), [...new Set(times)].sort((a, b) => a - b), Array.isArray(workerCpu) ? workerCpu : []) })),
     }]))
-    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, setupOnly, setupComplete,
-      acceptanceEligible: !setupOnly, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
+    await writeFile(path.join(directory, "sustained-koth.json"), JSON.stringify({ schema: 1, target, commit, fingerprint, error, setupOnly, setupComplete, setupState, diagnostic,
+      acceptanceEligible: !setupOnly && !diagnostic, started, lateStarted, lateEnded, plan: SUSTAINED_KOTH,
+      age: { firstSimulationObserveMilliseconds, deepStartedMilliseconds: lateStarted,
+        realMillisecondsSinceFirstSimulationObserve: firstSimulationObserveMilliseconds === undefined ? null : lateStarted - firstSimulationObserveMilliseconds,
+        activeSoakMilliseconds: lateStarted ? lateStarted - started : null,
+        firstRecordedTick: records[0]?.state.data.snapshotTick, lastRecordedTick: records.at(-1)?.state.data.snapshotTick },
       records, sampled, phases, freezes, lateSimulation, inputPlan, captures, nativeAdmission: native.records, replayArtifact, suppliedEntropy: entropyIdentity ?? null, cpu: linkedCpu, compositor: compositor?.artifact,
       allocations: { start: allocationStart, end: allocationEnd, scope: "Requested-allocation accounting is enabled only for the late detailed capture; ordinary soak records observe live/high-water/linear memory, not requested allocation rates. Counters outside the enabled interval can retain earlier startup-journal totals." },
       gc: { events: compositor?.events.filter((event: any) => /GC|GarbageCollect/.test(event.name ?? "")), scope: "Only explicit captured V8 GC events are observed GC. Heap drops without those events are inferred/unobserved, not Rust allocator frees or WASM growth. No forced collection." } }))
