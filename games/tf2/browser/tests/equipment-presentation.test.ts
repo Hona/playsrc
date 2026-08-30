@@ -11,9 +11,10 @@ function navigationFixture(onEquip: (playerClass: number, slot: number, definiti
     kind: "line" as const, name, inset: { left: 0, top: 0, right: 0, bottom: 0 }, backgroundType: 0 as const, paintFirst: false, sides: { left: [], top: [], right: [], bottom: [] },
   })) } }
   const errors: unknown[] = [], errorCurrent: boolean[] = []
+  let closes = 0
   const ui = new Tf2EquipmentPresentation({ root: root as unknown as HTMLElement, resources,
     viewport: { width: 1280, height: 800, devicePixelRatio: 1 }, reducedMotion: true,
-    clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0 }, onClose() {}, onPreview() {}, onError(error, current) { errors.push(error); errorCurrent.push(current) }, onEquip })
+    clock: { nowSeconds: () => 0 }, random: { nextUnit: () => 0 }, onClose() { closes++ }, onPreview() {}, onError(error, current) { errors.push(error); errorCurrent.push(current) }, onEquip })
   const activate = (name: string, fraction = 0.5) => {
     const bounds = ui.snapshot().vgui.panels.find(panel => panel.name === name)!.bounds
     // Dispatch at the root: VGUI, not the DOM fixture, must find the target.
@@ -23,7 +24,7 @@ function navigationFixture(onEquip: (playerClass: number, slot: number, definiti
     ui.frame(0)
   }
   const key = (code: string, repeat = false) => ui.handleKey({ code, repeat, preventDefault() {}, stopImmediatePropagation() {} })
-  return { ui, root, activate, key, escape: (repeat = false) => key("Escape", repeat), errors, errorCurrent }
+  return { ui, root, activate, key, escape: (repeat = false) => key("Escape", repeat), errors, errorCurrent, closes: () => closes }
 }
 
 test("loadout Back is hit across its full button", () => {
@@ -138,16 +139,38 @@ test("equipment leaves composing keys to their text owner", () => {
   } finally { ui.destroy() }
 })
 
+test("owner-driven hiding cancels work without restoring a replaced page's focus", async () => {
+  const pending = Promise.withResolvers<Tf2EquipmentState>(), signals: AbortSignal[] = []
+  const { ui, activate, closes } = navigationFixture((_playerClass, _slot, _definition, signal) => { signals.push(signal); return pending.promise })
+  try {
+    ui.show(nativeEquipment, 3); activate("Itemslot-0"); activate("Itemitem-18")
+    ui.hide(false)
+    expect(signals[0]!.aborted).toBe(true)
+    pending.resolve(nativeEquipment)
+    await Promise.resolve(); await Promise.resolve()
+    expect(closes()).toBe(0)
+    expect(ui.visible()).toBe(false)
+  } finally { ui.destroy() }
+})
+
 test("backpack page keys use the same bounded command path and do not rebuild at an edge", () => {
   const { ui, activate, key } = navigationFixture()
   try {
     ui.show(nativeEquipment); activate("BackpackButton")
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "PrevPage")!.enabled).toBe(true)
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "NextPage")!.enabled).toBe(true)
     const before = ui.snapshot().vgui.panels.find(panel => panel.name === "LocalEquipment")!.id
     expect(key("PageUp")).toBe(true)
     expect(ui.snapshot().vgui.panels.find(panel => panel.name === "LocalEquipment")!.id).toBe(before)
     key("PageDown")
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "PrevPage")!.enabled).toBe(true)
+    expect(ui.snapshot().vgui.panels.find(panel => panel.name === "NextPage")!.enabled).toBe(true)
     expect(ui.snapshot().vgui.panels.find(panel => panel.name === "LocalEquipment")!.id).not.toBe(before)
     key("PageUp")
+    activate("PrevPage")
+    expect(ui.snapshot().vgui.panels.some(panel => panel.name === `Itemitem-${nativeEquipment.inventory[50]!.item.definitionIndex}`)).toBe(true)
+    activate("NextPage")
+    expect(ui.snapshot().vgui.panels.some(panel => panel.name === `Itemitem-${nativeEquipment.inventory[0]!.item.definitionIndex}`)).toBe(true)
     for (const fraction of [0.05, 0.5, 0.95]) {
       activate("BackButton", fraction)
       expect(ui.snapshot().page).toBe("classes")

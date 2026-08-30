@@ -99,12 +99,13 @@ export class Tf2EquipmentPresentation {
   }
   visible(): boolean { return this.#visible }
   snapshot() { return { visible: this.#visible, page: this.#page, class: this.#class, vgui: this.#runtime.snapshot() } }
-  hide(): void {
+  hide(notify = true): void {
     this.#cancelEquip()
     this.#clearTooltip()
     this.#visible = false; this.#releaseSurface?.(); this.#releaseSurface = undefined
     this.#apply({ kind: "set-panel-state", panel: 1, visible: false }); this.#request.root.style.display = "none"
-    this.#request.onPreview(null); this.#request.onClose()
+    this.#request.onPreview(null)
+    if (notify) this.#request.onClose()
   }
   #render(restoreFocus?: string): void {
     if (!this.#visible || !this.#state) return
@@ -304,7 +305,7 @@ export class Tf2EquipmentPresentation {
     const inventory = this.#state!.inventory
     return this.#page === "slot" ? inventory.filter(item => item.classSlots.some(slot => slot.class === this.#class && slot.slot === this.#slot)) : inventory
   }
-  #command(command: string): void {
+  #command(command: string, keyboard = false): void {
     if (!this.#visible) return
     if (command === "back") {
       if (this.#page === "classes" || this.#page === "loadout" && this.#class === this.#closeClass) { this.hide(); return }
@@ -317,9 +318,14 @@ export class Tf2EquipmentPresentation {
       this.#cell = this.#pageItems().findIndex(item => item.item.definitionIndex === this.#selected)
     }
     else if (command === "prev" || command === "next") {
-      const next = Math.max(0, Math.min(Math.max(0, Math.ceil(this.#pageItems().length / 50) - 1), this.#pageNumber + (command === "prev" ? -1 : 1)))
+      const pages = Math.max(1, Math.ceil(this.#pageItems().length / 50)), requested = this.#pageNumber + (command === "prev" ? -1 : 1)
+      // Backpack command buttons wrap and deselect; the base panel's page keys
+      // stop at the ends and keep the selected cell.
+      const wrap = this.#page === "backpack" && !keyboard
+      const next = wrap ? (requested + pages) % pages : Math.max(0, Math.min(pages - 1, requested))
       if (next === this.#pageNumber) return
       this.#pageNumber = next
+      if (wrap) this.#cell = -1
       this.#selected = this.#cell < 0 ? null : this.#pageItems()[next * 50 + this.#cell]?.item.definitionIndex ?? null
     }
     else if (command === "unequip" || command.startsWith("item ")) {
@@ -443,7 +449,7 @@ export class Tf2EquipmentPresentation {
       ? event.code === "PageUp" ? "prev" : event.code === "PageDown" ? "next" : undefined : undefined
     if (!command) return false
     event.preventDefault(); event.stopImmediatePropagation()
-    if (!event.repeat || command !== "back") this.#command(command)
+    if (!event.repeat || command !== "back") this.#command(command, true)
     return true
   }
   frame(timeSeconds: number): void {
